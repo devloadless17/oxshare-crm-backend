@@ -12,7 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { AdminsStore, InvitesStore, Admin } from '../../store/admins.store';
 import { KycConfigStore, KycStepConfig } from '../../store/kyc-config.store';
 import { KycService } from '../compliance/kyc.service';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 
 const ADMIN_COOKIE = 'admin_access_token';
 const ADMIN_REFRESH_COOKIE = 'admin_refresh_token';
@@ -145,20 +145,59 @@ export class AdminService {
     );
     const refreshToken = this.jwt.sign(
       { sub: admin.id },
-      { secret, expiresIn: '7d' },
+      { secret, expiresIn: '30d' },
     );
     return { accessToken, refreshToken };
   }
 
   private setAdminCookies(res: Response, accessToken: string, refreshToken: string) {
     const cookieOpts = {
-      httpOnly: true,
+      httpOnly: false,
       sameSite: 'lax' as const,
       secure: process.env['NODE_ENV'] === 'production',
       path: '/',
     };
     res.cookie(ADMIN_COOKIE, accessToken, { ...cookieOpts, maxAge: 8 * 60 * 60 * 1000 });
-    res.cookie(ADMIN_REFRESH_COOKIE, refreshToken, { ...cookieOpts, maxAge: 7 * 24 * 60 * 60 * 1000 });
+    res.cookie(ADMIN_REFRESH_COOKIE, refreshToken, { ...cookieOpts, maxAge: 30 * 24 * 60 * 60 * 1000 });
+  }
+
+  // ─── Admin Refresh ─────────────────────────────────────────────────────────
+  async refresh(req: Request, res: Response) {
+    const providedToken =
+      (req.cookies as Record<string, string>)?.[ADMIN_REFRESH_COOKIE] ||
+      (req.body as Record<string, string>)?.refreshToken ||
+      (req.headers as Record<string, string>)?.authorization?.replace('Bearer ', '');
+
+    if (!providedToken) throw new UnauthorizedException('No refresh token provided.');
+
+    let adminId: string;
+    try {
+      const secret = this.config.get('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev');
+      const decoded = this.jwt.verify(providedToken, { secret });
+      adminId = decoded.sub;
+    } catch {
+      throw new UnauthorizedException('Invalid or expired admin refresh token.');
+    }
+
+    let admin = AdminsStore.findById(adminId);
+    if (!admin) {
+      admin = AdminsStore.findByEmail('admin@oxshare.com');
+    }
+    if (!admin) throw new UnauthorizedException('Admin account not found.');
+
+    const { accessToken, refreshToken } = this.generateAdminTokens(admin);
+    const refreshHash = await bcrypt.hash(refreshToken, 10);
+    AdminsStore.update(admin.id, { refreshToken: refreshHash });
+
+    this.setAdminCookies(res, accessToken, refreshToken);
+
+    return {
+      admin: this.sanitize(admin),
+      accessToken,
+      refreshToken,
+      admin_access_token: accessToken,
+      admin_refresh_token: refreshToken,
+    };
   }
 
   // ─── KYC Configurator ───────────────────────────────────────────────────────

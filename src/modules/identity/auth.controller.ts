@@ -50,14 +50,15 @@ export class AuthController {
 
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Refresh access token using refresh cookie' })
-  refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const refreshToken = req.cookies?.['refresh_token'];
-    const userId = req.cookies?.['user_id'];
-    if (!refreshToken || !userId) {
-      return { message: 'No refresh token.' };
-    }
-    return this.auth.refresh(userId, refreshToken, res);
+  @ApiOperation({ summary: 'Refresh access token' })
+  refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    @Body('refreshToken') bodyToken?: string,
+  ) {
+    const headerToken = req.headers.authorization?.replace('Bearer ', '');
+    const refreshToken = req.cookies?.['refresh_token'] || bodyToken || headerToken;
+    return this.auth.refreshFromToken(refreshToken, res);
   }
 
   @Post('logout')

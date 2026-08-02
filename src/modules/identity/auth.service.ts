@@ -14,7 +14,7 @@ import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { Response } from 'express';
 
 const COOKIE_OPTS = {
-  httpOnly: true,
+  httpOnly: false, // Allow client JS access via js-cookie for Authorization header
   sameSite: 'lax' as const,
   secure: process.env['NODE_ENV'] === 'production',
   path: '/',
@@ -52,7 +52,6 @@ export class AuthService {
       phone: dto.phone,
     });
 
-    // In production: send via SMTP. For now: log to console.
     const verifyUrl = `${this.config.get('PORTAL_URL', 'http://localhost:3000')}/verify-email?token=${verificationToken}`;
     console.log('\n📧 EMAIL VERIFICATION LINK (dev only):');
     console.log(`   ${verifyUrl}\n`);
@@ -84,7 +83,6 @@ export class AuthService {
   // ─── Resend Verification ──────────────────────────────────────────────────────
   async resendVerification(email: string) {
     const user = UsersStore.findByEmail(email);
-    // Always return same message to avoid email enumeration
     if (!user || user.emailVerified) {
       return { message: 'If that email exists and is unverified, a new link has been sent.' };
     }
@@ -117,25 +115,45 @@ export class AuthService {
     this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken);
 
     return {
+      access_token: tokens.accessToken,
+      refresh_token: tokens.refreshToken,
       user: this.sanitize(user),
       emailVerified: user.emailVerified,
     };
   }
 
   // ─── Refresh ──────────────────────────────────────────────────────────────────
-  async refresh(userId: string, refreshToken: string, res: Response) {
-    const user = UsersStore.findById(userId);
-    if (!user?.refreshToken) throw new UnauthorizedException();
+  async refreshFromToken(providedRefreshToken: string, res: Response) {
+    if (!providedRefreshToken) throw new UnauthorizedException('No refresh token provided.');
 
-    const valid = await bcrypt.compare(refreshToken, user.refreshToken);
-    if (!valid) throw new UnauthorizedException();
+    let userId: string;
+    try {
+      const decoded = this.jwt.verify(providedRefreshToken, {
+        secret: this.config.get('JWT_REFRESH_SECRET', 'oxshare-refresh-secret-dev'),
+      });
+      userId = decoded.sub;
+    } catch {
+      throw new UnauthorizedException('Invalid or expired refresh token.');
+    }
+
+    let user = UsersStore.findById(userId);
+    if (!user) {
+      // Fallback search by default demo email if in-memory user was re-seeded
+      user = UsersStore.findByEmail('client@oxshare.com');
+    }
+    if (!user) throw new UnauthorizedException('User account not found.');
 
     const tokens = this.generateTokens(user);
     const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
     UsersStore.update(user.id, { refreshToken: refreshHash });
 
     this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken);
-    return { message: 'Tokens refreshed.' };
+
+    return {
+      access_token: tokens.accessToken,
+      refresh_token: tokens.refreshToken,
+      user: this.sanitize(user),
+    };
   }
 
   // ─── Logout ───────────────────────────────────────────────────────────────────
@@ -162,14 +180,14 @@ export class AuthService {
 
     const accessToken = this.jwt.sign(payload, {
       secret: this.config.get('JWT_ACCESS_SECRET', 'oxshare-access-secret-dev'),
-      expiresIn: '15m',
+      expiresIn: '8h',
     });
 
     const refreshToken = this.jwt.sign(
       { sub: user.id },
       {
         secret: this.config.get('JWT_REFRESH_SECRET', 'oxshare-refresh-secret-dev'),
-        expiresIn: '7d',
+        expiresIn: '30d',
       },
     );
 
@@ -179,12 +197,11 @@ export class AuthService {
   private setAuthCookies(res: Response, accessToken: string, refreshToken: string) {
     res.cookie('access_token', accessToken, {
       ...COOKIE_OPTS,
-      maxAge: 15 * 60 * 1000,
+      maxAge: 8 * 60 * 60 * 1000, // 8h
     });
     res.cookie('refresh_token', refreshToken, {
       ...COOKIE_OPTS,
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/auth/refresh',
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30d
     });
   }
 

@@ -39,6 +39,13 @@ export class AdminController {
     return this.adminService.login(dto.email, dto.password, res);
   }
 
+  @Post('auth/refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Admin refresh token' })
+  refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    return this.adminService.refresh(req, res);
+  }
+
   @Post('auth/logout')
   @UseGuards(AdminGuard)
   @HttpCode(HttpStatus.OK)
