@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { AdminsStore, InvitesStore, Admin } from '../../store/admins.store';
+import { KycConfigStore, KycStepConfig } from '../../store/kyc-config.store';
 import { KycService } from '../compliance/kyc.service';
 import { Response } from 'express';
 
@@ -131,8 +132,8 @@ export class AdminService {
   }
 
   // ─── KYC: reject ──────────────────────────────────────────────────────────
-  rejectKyc(userId: string, adminId: string, reason: string) {
-    return this.kycService.reject(userId, adminId, reason);
+  rejectKyc(userId: string, adminId: string, reason: string, rejectedFields?: string[]) {
+    return this.kycService.reject(userId, adminId, reason, rejectedFields);
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -158,6 +159,31 @@ export class AdminService {
     };
     res.cookie(ADMIN_COOKIE, accessToken, { ...cookieOpts, maxAge: 8 * 60 * 60 * 1000 });
     res.cookie(ADMIN_REFRESH_COOKIE, refreshToken, { ...cookieOpts, maxAge: 7 * 24 * 60 * 60 * 1000 });
+  }
+
+  // ─── KYC Configurator ───────────────────────────────────────────────────────
+  getKycConfig() {
+    return KycConfigStore.getSteps();
+  }
+
+  updateKycConfig(steps: KycStepConfig[]) {
+    return KycConfigStore.setSteps(steps);
+  }
+
+  addKycStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>) {
+    return KycConfigStore.addStep(stepData);
+  }
+
+  updateKycStep(id: string, patch: Partial<KycStepConfig>) {
+    return KycConfigStore.updateStep(id, patch);
+  }
+
+  deleteKycStep(id: string) {
+    return KycConfigStore.deleteStep(id);
+  }
+
+  resetKycConfig() {
+    return KycConfigStore.resetDefaults();
   }
 
   private sanitize(admin: Admin) {

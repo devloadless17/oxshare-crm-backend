@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import * as bcrypt from 'bcryptjs';
 
 export interface User {
   id: string;
@@ -18,8 +19,29 @@ export interface User {
   createdAt: Date;
 }
 
+
+
 const users = new Map<string, User>();
 const usersByEmail = new Map<string, string>(); // email → id
+
+// Seed default demo client user
+const DEMO_USER_ID = uuidv4();
+const demoUser: User = {
+  id: DEMO_USER_ID,
+  email: 'client@oxshare.com',
+  passwordHash: bcrypt.hashSync('client123', 10),
+  firstName: 'John',
+  lastName: 'Doe',
+  type: 'individual',
+  status: 'active',
+  verificationLevel: 0,
+  emailVerified: true,
+  country: 'United Arab Emirates',
+  phone: '+971501234567',
+  createdAt: new Date(),
+};
+users.set(DEMO_USER_ID, demoUser);
+usersByEmail.set('client@oxshare.com', DEMO_USER_ID);
 
 export const UsersStore = {
   create(data: Omit<User, 'id' | 'createdAt'>): User {

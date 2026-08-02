@@ -9,10 +9,10 @@ export type KycStatus =
 export interface PersonalInfo {
   firstName: string;
   lastName: string;
-  dateOfBirth: string;
-  nationality: string;
-  country: string;
-  phone: string;
+  dateOfBirth?: string;
+  nationality?: string;
+  country?: string;
+  phone?: string;
   address?: string;
 }
 
@@ -30,15 +30,18 @@ export interface SelfieInfo {
 }
 
 export interface AddressInfo {
-  docType: 'utility_bill' | 'bank_statement' | 'tenancy_agreement';
+  docType: string;
   filePath?: string;
   fileName?: string;
+  page2FilePath?: string;
+  page2FileName?: string;
 }
 
 export interface KycSubmission {
   userId: string;
   status: KycStatus;
   rejectionReason?: string;
+  rejectedFields?: string[];
   reviewedBy?: string;
   reviewedAt?: Date;
   submittedAt?: Date;
@@ -82,5 +85,13 @@ export const KycStore = {
 
   findByStatus(status: KycStatus): KycSubmission[] {
     return [...submissions.values()].filter((s) => s.status === status);
+  },
+
+  clearAll() {
+    submissions.clear();
+  },
+
+  resetUser(userId: string) {
+    submissions.delete(userId);
   },
 };

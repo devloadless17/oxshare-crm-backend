@@ -26,8 +26,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 
   validate(payload: JwtPayload) {
-    const user = UsersStore.findById(payload.sub);
-    if (!user) throw new UnauthorizedException('User not found');
+    let user = UsersStore.findById(payload.sub);
+    if (!user && payload.email) {
+      user = UsersStore.findByEmail(payload.email);
+    }
+    if (!user) throw new UnauthorizedException('User not found. Please log in again.');
     return user;
   }
 }

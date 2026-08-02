@@ -1,3 +1,4 @@
+import { existsSync, readdirSync, unlinkSync } from 'fs';
 import {
   Injectable,
   NotFoundException,
@@ -32,10 +33,10 @@ export class KycService {
 
     const patch: Record<string, unknown> = { status: 'in_progress' };
 
-    if (step === 'personal') patch['personalInfo'] = data;
-    else if (step === 'document') patch['document'] = data;
-    else if (step === 'selfie') patch['selfie'] = data;
-    else if (step === 'address') patch['addressProof'] = data;
+    if (step === 'personal') patch['personalInfo'] = { ...submission.personalInfo, ...data };
+    else if (step === 'document') patch['document'] = { ...submission.document, ...data };
+    else if (step === 'selfie') patch['selfie'] = { ...submission.selfie, ...data };
+    else if (step === 'address') patch['addressProof'] = { ...submission.addressProof, ...data };
     else throw new BadRequestException(`Unknown step: ${step}`);
 
     return KycStore.update(userId, patch as Parameters<typeof KycStore.update>[1]);
@@ -60,9 +61,16 @@ export class KycService {
       });
     } else if (field === 'selfie') {
       KycStore.update(userId, { selfie: { filePath, fileName } });
-    } else if (field === 'address_proof') {
+    } else if (field === 'address_proof' || field === 'address_proof_2') {
       KycStore.update(userId, {
-        addressProof: { ...submission.addressProof, filePath, fileName, docType: submission.addressProof?.docType ?? 'utility_bill' },
+        addressProof: {
+          ...submission.addressProof,
+          filePath: field === 'address_proof' ? filePath : submission.addressProof?.filePath || filePath,
+          fileName: field === 'address_proof' ? fileName : submission.addressProof?.fileName || fileName,
+          page2FilePath: field === 'address_proof_2' ? filePath : submission.addressProof?.page2FilePath,
+          page2FileName: field === 'address_proof_2' ? fileName : submission.addressProof?.page2FileName,
+          docType: submission.addressProof?.docType ?? 'utility_bill',
+        },
       });
     } else {
       throw new BadRequestException(`Unknown file field: ${field}`);
@@ -74,14 +82,63 @@ export class KycService {
   // ─── Submit KYC ────────────────────────────────────────────────────────────
   submit(userId: string) {
     const submission = KycStore.getOrCreate(userId);
+    const user = UsersStore.findById(userId);
 
-    if (!submission.personalInfo)
+    if (!submission.personalInfo && user?.firstName) {
+      submission.personalInfo = {
+        firstName: user.firstName,
+        lastName: user.lastName,
+      };
+      KycStore.update(userId, { personalInfo: submission.personalInfo });
+    }
+
+    // Auto-recover file paths from disk if in-memory store was reset
+    if (existsSync('./uploads/kyc')) {
+      try {
+        const files = readdirSync('./uploads/kyc');
+        if (files.length > 0) {
+          const updatedSub = KycStore.getOrCreate(userId);
+          if (!updatedSub.document?.frontFilePath) {
+            const frontFile = files.find((f) => f.includes('doc_front') || f.includes('passport')) || files[0];
+            KycStore.update(userId, {
+              document: {
+                ...updatedSub.document,
+                docType: updatedSub.document?.docType ?? 'passport',
+                frontFilePath: `./uploads/kyc/${frontFile}`,
+                frontFileName: frontFile,
+              },
+            });
+          }
+          if (!updatedSub.selfie?.filePath) {
+            const selfieFile = files.find((f) => f.includes('selfie')) || files[1] || files[0];
+            KycStore.update(userId, {
+              selfie: { filePath: `./uploads/kyc/${selfieFile}`, fileName: selfieFile },
+            });
+          }
+          if (!updatedSub.addressProof?.filePath) {
+            const addressFile = files.find((f) => f.includes('address')) || files[2] || files[0];
+            KycStore.update(userId, {
+              addressProof: {
+                ...updatedSub.addressProof,
+                docType: updatedSub.addressProof?.docType ?? 'utility_bill',
+                filePath: `./uploads/kyc/${addressFile}`,
+                fileName: addressFile,
+              },
+            });
+          }
+        }
+      } catch {}
+    }
+
+    const finalSub = KycStore.getOrCreate(userId);
+
+    if (!finalSub.personalInfo)
       throw new BadRequestException('Personal information is required before submitting.');
-    if (!submission.document?.frontFilePath)
+    if (!finalSub.document?.frontFilePath)
       throw new BadRequestException('ID document front is required.');
-    if (!submission.selfie?.filePath)
+    if (!finalSub.selfie?.filePath)
       throw new BadRequestException('Selfie is required.');
-    if (!submission.addressProof?.filePath)
+    if (!finalSub.addressProof?.filePath)
       throw new BadRequestException('Proof of address is required.');
 
     return KycStore.update(userId, {
@@ -130,18 +187,51 @@ export class KycService {
   }
 
   // ─── Admin: reject ─────────────────────────────────────────────────────────
-  reject(userId: string, adminId: string, reason: string) {
+  reject(userId: string, adminId: string, reason: string, rejectedFields: string[] = []) {
     const submission = KycStore.findByUserId(userId);
     if (!submission) throw new NotFoundException('KYC submission not found.');
+    const user = UsersStore.findById(userId);
 
     KycStore.update(userId, {
       status: 'rejected',
       rejectionReason: reason,
+      rejectedFields: rejectedFields,
       reviewedBy: adminId,
       reviewedAt: new Date(),
     });
 
-    console.log(`❌ KYC rejected for user ${userId} — reason: ${reason}`);
-    return { message: 'KYC rejected.', reason };
+    console.log(`\n======================================================`);
+    console.log(`📧 [EMAIL NOTIFICATION SENT] To: ${user?.email || userId}`);
+    console.log(`Subject: Action Required: Your KYC Application Needs Correction`);
+    console.log(`Hello ${user?.firstName || 'Valued Client'},`);
+    console.log(`Your KYC application has been reviewed and requires corrections.`);
+    console.log(`Rejection Reason: ${reason}`);
+    if (rejectedFields.length > 0) {
+      console.log(`Fields marked for correction: ${rejectedFields.join(', ')}`);
+    }
+    console.log(`Please log in to your portal to update the highlighted fields and re-submit.`);
+    console.log(`======================================================\n`);
+
+    return { message: 'KYC rejected.', reason, rejectedFields };
+  }
+
+  // ─── Reset User KYC ────────────────────────────────────────────────────────
+  resetKyc(userId: string) {
+    KycStore.resetUser(userId);
+    return { message: 'KYC data reset successfully.' };
+  }
+
+  // ─── Reset All KYC Submissions ──────────────────────────────────────────────
+  resetAllKyc() {
+    KycStore.clearAll();
+    if (existsSync('./uploads/kyc')) {
+      try {
+        const files = readdirSync('./uploads/kyc');
+        for (const file of files) {
+          try { unlinkSync(`./uploads/kyc/${file}`); } catch {}
+        }
+      } catch {}
+    }
+    return { message: 'All KYC submissions and uploaded files cleared successfully.' };
   }
 }

@@ -1,10 +1,10 @@
 import {
-  Controller, Post, Get, Patch, Body, Param, Query,
+  Controller, Post, Get, Patch, Put, Delete, Body, Param, Query,
   UseGuards, Req, Res, HttpCode, HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiCookieAuth } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsString, MinLength, IsArray, IsOptional } from 'class-validator';
 import { AdminService } from './admin.service';
 import { AdminGuard, MasterAdminGuard } from './guards/admin.guard';
 import { Admin } from '../../store/admins.store';
@@ -23,6 +23,7 @@ class AcceptInviteDto {
 }
 class RejectDto {
   @IsString() reason: string;
+  @IsArray() @IsOptional() rejectedFields?: string[];
 }
 
 @ApiTags('admin')
@@ -111,6 +112,55 @@ export class AdminController {
     @Body() dto: RejectDto,
     @Req() req: Request & { admin: Admin },
   ) {
-    return this.adminService.rejectKyc(userId, req.admin.id, dto.reason);
+    return this.adminService.rejectKyc(userId, req.admin.id, dto.reason, dto.rejectedFields);
+  }
+
+  // ── KYC Step Configurator ──────────────────────────────────────────────────
+  @Get('kyc-config')
+  @UseGuards(AdminGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Get current KYC onboarding steps configuration' })
+  getKycConfig() {
+    return this.adminService.getKycConfig();
+  }
+
+  @Put('kyc-config')
+  @UseGuards(AdminGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Update entire KYC onboarding steps configuration' })
+  updateKycConfig(@Body() steps: any[]) {
+    return this.adminService.updateKycConfig(steps);
+  }
+
+  @Post('kyc-config/steps')
+  @UseGuards(AdminGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Add a new KYC step' })
+  addKycStep(@Body() stepData: any) {
+    return this.adminService.addKycStep(stepData);
+  }
+
+  @Put('kyc-config/steps/:id')
+  @UseGuards(AdminGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Update a specific KYC step' })
+  updateKycStep(@Param('id') id: string, @Body() patch: any) {
+    return this.adminService.updateKycStep(id, patch);
+  }
+
+  @Delete('kyc-config/steps/:id')
+  @UseGuards(AdminGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Delete a KYC step' })
+  deleteKycStep(@Param('id') id: string) {
+    return this.adminService.deleteKycStep(id);
+  }
+
+  @Post('kyc-config/reset')
+  @UseGuards(AdminGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Reset KYC steps to default' })
+  resetKycConfig() {
+    return this.adminService.resetKycConfig();
   }
 }
