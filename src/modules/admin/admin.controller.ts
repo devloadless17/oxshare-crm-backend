@@ -2,7 +2,7 @@ import {
   Controller, Post, Get, Patch, Put, Delete, Body, Param, Query,
   UseGuards, Req, Res, HttpCode, HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiCookieAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiCookieAuth, ApiOkResponse, ApiExtraModels } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { IsEmail, IsString, MinLength, IsArray, IsOptional } from 'class-validator';
 import { AdminService } from './admin.service';
@@ -14,6 +14,19 @@ import {
 } from './guards/admin.guard';
 import { Admin } from '../../store/admins.store';
 import { RejectionContext } from '../../store/rejection-reasons.store';
+import {
+  AdminLoginResponseDto,
+  AdminProfileDto,
+  AuditListResponseDto,
+  ClientListResponseDto,
+  InviteResponseDto,
+  KycListResponseDto,
+  KycSubmissionDto,
+  MessageResponseDto,
+  PermissionModuleDto,
+  RejectionReasonResponseDto,
+  RoleResponseDto,
+} from './dto/responses.dto';
 
 class AdminLoginDto {
   @IsEmail() email: string;
@@ -55,6 +68,7 @@ class RejectionReasonDto {
 }
 
 @ApiTags('admin')
+@ApiExtraModels(PermissionModuleDto)
 @Controller('admin')
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
@@ -63,6 +77,7 @@ export class AdminController {
   @Post('auth/login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Admin login' })
+  @ApiOkResponse({ type: AdminLoginResponseDto })
   login(@Body() dto: AdminLoginDto, @Res({ passthrough: true }) res: Response) {
     return this.adminService.login(dto.email, dto.password, res);
   }
@@ -70,6 +85,7 @@ export class AdminController {
   @Post('auth/refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Admin refresh token' })
+  @ApiOkResponse({ type: AdminLoginResponseDto })
   refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     return this.adminService.refresh(req, res);
   }
@@ -79,6 +95,7 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Admin logout' })
+  @ApiOkResponse({ type: MessageResponseDto })
   logout(@Req() req: Request & { admin: Admin }, @Res({ passthrough: true }) res: Response) {
     return this.adminService.logout(req.admin.id, res);
   }
@@ -87,6 +104,7 @@ export class AdminController {
   @UseGuards(AdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get current admin' })
+  @ApiOkResponse({ type: AdminProfileDto })
   me(@Req() req: Request & { admin: Admin }) {
     return this.adminService.me(req.admin);
   }
@@ -96,6 +114,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Invite a new sub-admin with a role or explicit permissions (master admin only)' })
+  @ApiOkResponse({ type: InviteResponseDto })
   invite(@Body() dto: InviteDto, @Req() req: Request & { admin: Admin }) {
     return this.adminService.createInvite(dto.email, dto.name, req.admin.id, dto.roleId, dto.permissions);
   }
@@ -119,6 +138,7 @@ export class AdminController {
   @RequirePermissions('kyc:review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'List all KYC submissions, optionally filtered by status' })
+  @ApiOkResponse({ type: KycListResponseDto })
   listKyc(
     @Query('status') status?: string,
     @Query('q') q?: string,
@@ -133,6 +153,7 @@ export class AdminController {
   @RequirePermissions('kyc:review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get full KYC submission for a user' })
+  @ApiOkResponse({ type: KycSubmissionDto })
   getKyc(@Param('userId') userId: string) {
     return this.adminService.getKyc(userId);
   }
@@ -142,6 +163,7 @@ export class AdminController {
   @RequirePermissions('kyc:review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Claim a submitted KYC for review (sets under_review)' })
+  @ApiOkResponse({ type: KycSubmissionDto })
   claimKyc(@Param('userId') userId: string, @Req() req: Request & { admin: Admin }) {
     return this.adminService.claimKyc(userId, req.admin.id);
   }
@@ -151,6 +173,7 @@ export class AdminController {
   @RequirePermissions('kyc:review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Approve KYC — bumps user verificationLevel to 1; returns the updated submission' })
+  @ApiOkResponse({ type: KycSubmissionDto })
   approveKyc(@Param('userId') userId: string, @Req() req: Request & { admin: Admin }) {
     return this.adminService.approveKyc(userId, req.admin.id);
   }
@@ -160,6 +183,7 @@ export class AdminController {
   @RequirePermissions('kyc:review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Reject KYC with a reason (free text or a configured reasonId); returns the updated submission' })
+  @ApiOkResponse({ type: KycSubmissionDto })
   rejectKyc(
     @Param('userId') userId: string,
     @Body() dto: RejectDto,
@@ -174,6 +198,7 @@ export class AdminController {
   @RequirePermissions('clients:read')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Paginated, filterable client list' })
+  @ApiOkResponse({ type: ClientListResponseDto })
   listClients(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -190,6 +215,7 @@ export class AdminController {
   @UseGuards(AdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'List configurable rejection reasons, optionally by context (kyc | withdrawal)' })
+  @ApiOkResponse({ type: [RejectionReasonResponseDto] })
   listRejectionReasons(@Query('context') context?: RejectionContext) {
     return this.adminService.listRejectionReasons(context);
   }
@@ -198,6 +224,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Add a rejection reason (master admin only)' })
+  @ApiOkResponse({ type: RejectionReasonResponseDto })
   createRejectionReason(@Body() dto: RejectionReasonDto) {
     return this.adminService.createRejectionReason(dto.context, dto.label);
   }
@@ -206,6 +233,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Rename a rejection reason (master admin only)' })
+  @ApiOkResponse({ type: RejectionReasonResponseDto })
   updateRejectionReason(@Param('id') id: string, @Body('label') label: string) {
     return this.adminService.updateRejectionReason(id, label);
   }
@@ -214,6 +242,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a rejection reason (master admin only)' })
+  @ApiOkResponse({ type: MessageResponseDto })
   deleteRejectionReason(@Param('id') id: string) {
     return this.adminService.deleteRejectionReason(id);
   }
@@ -223,6 +252,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Permission catalog grouped by module (master admin only)' })
+  @ApiOkResponse({ schema: { type: 'object', additionalProperties: { $ref: '#/components/schemas/PermissionModuleDto' } } })
   getPermissions() {
     return this.adminService.getPermissionsCatalog();
   }
@@ -231,6 +261,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'List RBAC roles (master admin only)' })
+  @ApiOkResponse({ type: [RoleResponseDto] })
   listRoles() {
     return this.adminService.listRoles();
   }
@@ -239,6 +270,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Create a custom role (master admin only)' })
+  @ApiOkResponse({ type: RoleResponseDto })
   createRole(@Body() dto: RoleDto, @Req() req: Request & { admin: Admin }) {
     return this.adminService.createRole(dto.name, dto.description, dto.permissions, req.admin.id);
   }
@@ -247,6 +279,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update a custom role (master admin only)' })
+  @ApiOkResponse({ type: RoleResponseDto })
   updateRole(@Param('id') id: string, @Body() dto: UpdateRoleDto, @Req() req: Request & { admin: Admin }) {
     return this.adminService.updateRole(id, dto, req.admin.id);
   }
@@ -255,6 +288,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a custom role (master admin only)' })
+  @ApiOkResponse({ type: MessageResponseDto })
   deleteRole(@Param('id') id: string, @Req() req: Request & { admin: Admin }) {
     return this.adminService.deleteRole(id, req.admin.id);
   }
@@ -263,6 +297,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'List admin accounts (master admin only)' })
+  @ApiOkResponse({ type: [AdminProfileDto] })
   listAdmins() {
     return this.adminService.listAdmins();
   }
@@ -271,6 +306,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update an admin’s name, role, or permissions (master admin only)' })
+  @ApiOkResponse({ type: AdminProfileDto })
   updateAdmin(@Param('id') id: string, @Body() dto: UpdateAdminDto, @Req() req: Request & { admin: Admin }) {
     return this.adminService.updateAdmin(id, dto, req.admin.id);
   }
@@ -279,6 +315,7 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Append-only admin action log (master admin only)' })
+  @ApiOkResponse({ type: AuditListResponseDto })
   listAuditLog(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
