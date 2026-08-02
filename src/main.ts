@@ -35,7 +35,7 @@ async function bootstrap() {
 
   // Swagger docs (available at /api/docs)
   const config = new DocumentBuilder()
-    .setTitle('BBCorp CRM API')
+    .setTitle('OxShare CRM API')
     .setDescription('Forex/CFD Introducing-Broker CRM — Phase 1')
     .setVersion('1.0')
     .addBearerAuth()

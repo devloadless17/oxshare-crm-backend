@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { DatabaseModule } from './database/database.module';
+import { EmailModule } from './modules/email/email.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { TradingModule } from './modules/trading/trading.module';
 import { WalletModule } from './modules/wallet/wallet.module';
@@ -14,7 +16,12 @@ import { HealthModule } from './modules/health/health.module';
     // Global config — loads .env
     ConfigModule.forRoot({ isGlobal: true }),
 
-    // Domain modules (map 1:1 to ARCHITECTURE.md §4)
+    // Infrastructure
+    DatabaseModule,
+    EmailModule,
+    HealthModule,
+
+    // Domain modules
     IdentityModule,
     TradingModule,
     WalletModule,
@@ -22,9 +29,6 @@ import { HealthModule } from './modules/health/health.module';
     PartnersModule,
     ComplianceModule,
     AdminModule,
-
-    // Infrastructure
-    HealthModule,
   ],
 })
 export class AppModule {}
