@@ -6,8 +6,8 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiCookieAuth, ApiConsumes } from '@nestjs/swagger';
 import { diskStorage } from 'multer';
-import { extname } from 'path';
 import { Request } from 'express';
+import { extname } from 'path';
 import { KycService } from './kyc.service';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
@@ -15,7 +15,7 @@ import { User } from '../../store/users.store';
 
 const multerStorage = diskStorage({
   destination: './uploads/kyc',
-  filename: (_req, file, cb) => {
+  filename: (_req: Request, file: { originalname: string }, cb: (err: Error | null, name: string) => void) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
     cb(null, `${uniqueSuffix}${extname(file.originalname)}`);
   },
@@ -24,7 +24,7 @@ const multerStorage = diskStorage({
 @ApiTags('kyc')
 @ApiCookieAuth()
 @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
-@Controller({ path: 'kyc', version: '1' })
+@Controller('kyc')
 export class KycController {
   constructor(private readonly kyc: KycService) {}
 
@@ -57,7 +57,7 @@ export class KycController {
         ],
       }),
     )
-    file: Express.Multer.File,
+    file: Express.Multer.File & { path: string; originalname: string },
     @Body('field') field: string,
   ) {
     return this.kyc.attachFile(req.user.id, field, file.path, file.originalname);

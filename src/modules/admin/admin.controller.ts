@@ -26,7 +26,7 @@ class RejectDto {
 }
 
 @ApiTags('admin')
-@Controller({ path: 'admin', version: '1' })
+@Controller('admin')
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
 

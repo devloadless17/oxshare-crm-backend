@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import * as bcrypt from 'bcryptjs';
 
 export type AdminRole = 'master_admin' | 'sub_admin';
 
@@ -27,16 +28,14 @@ export interface AdminInvite {
 
 const admins = new Map<string, Admin>();
 const adminsByEmail = new Map<string, string>();
-const invites = new Map<string, AdminInvite>(); // token → invite
+const invites = new Map<string, AdminInvite>();
 
-// Seed a default master admin (change credentials via env in production)
+// Seed default master admin — password is hashed synchronously on first load
 const MASTER_ID = uuidv4();
-import * as bcrypt from 'bcryptjs';
-const defaultHash = bcrypt.hashSync('admin123', 10);
 const masterAdmin: Admin = {
   id: MASTER_ID,
   email: 'admin@oxshare.com',
-  passwordHash: defaultHash,
+  passwordHash: bcrypt.hashSync('admin123', 10),
   name: 'Master Admin',
   role: 'master_admin',
   permissions: ['*'],

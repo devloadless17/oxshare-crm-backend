@@ -1,5 +1,5 @@
 import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/common';
-import { User } from '../../store/users.store';
+import { User } from '../../../store/users.store';
 
 @Injectable()
 export class EmailVerifiedGuard implements CanActivate {

@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, VersioningType } from '@nestjs/common';
+import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
@@ -28,11 +28,7 @@ async function bootstrap() {
     }),
   );
 
-  // URI versioning — default version v1
-  app.enableVersioning({
-    type: VersioningType.URI,
-    defaultVersion: '1',
-  });
+
 
   // CORS — allow portal (3000) and admin (3002)
   app.enableCors({
@@ -68,7 +64,7 @@ async function bootstrap() {
 
   console.log(`🚀 API running on        http://localhost:${port}`);
   console.log(`📚 Swagger docs at       http://localhost:${port}/api/docs`);
-  console.log(`❤️  Health check at      http://localhost:${port}/v1/health`);
+  console.log(`❤️  Health check at      http://localhost:${port}/health`);
 }
 
 bootstrap();

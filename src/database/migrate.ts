@@ -2,7 +2,7 @@ import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from './schema';
 import * as dotenv from 'dotenv';
-import * as bcrypt from 'bcrypt';
+import * as bcrypt from 'bcryptjs';
 
 dotenv.config();
 
