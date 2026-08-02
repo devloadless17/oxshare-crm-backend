@@ -1,21 +1,26 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
+import { PassportModule } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
-import { IdentityController } from './identity.controller';
-import { IdentityService } from './identity.service';
+import { AuthController } from './auth.controller';
+import { AuthService } from './auth.service';
+import { JwtStrategy } from './strategies/jwt.strategy';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { EmailVerifiedGuard } from './guards/email-verified.guard';
 
 @Module({
   imports: [
+    PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        secret: config.get<string>('JWT_SECRET', 'super-secret-oxshare-jwt-key'),
-        signOptions: { expiresIn: '7d' },
+        secret: config.get<string>('JWT_ACCESS_SECRET', 'oxshare-access-secret-dev'),
+        signOptions: { expiresIn: '15m' },
       }),
     }),
   ],
-  controllers: [IdentityController],
-  providers: [IdentityService],
-  exports: [IdentityService],
+  controllers: [AuthController],
+  providers: [AuthService, JwtStrategy, JwtAuthGuard, EmailVerifiedGuard],
+  exports: [AuthService, JwtAuthGuard, EmailVerifiedGuard],
 })
 export class IdentityModule {}

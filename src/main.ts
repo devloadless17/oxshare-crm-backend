@@ -1,11 +1,20 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import * as cookieParser from 'cookie-parser';
+import { join } from 'path';
+import { mkdirSync } from 'fs';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // Ensure uploads directory exists
+  mkdirSync(join(process.cwd(), 'uploads', 'kyc'), { recursive: true });
+
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Serve uploaded KYC files (admin only — add auth middleware in production)
+  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads' });
 
   // Cookie parser (needed for httpOnly JWT cookies)
   app.use(cookieParser());

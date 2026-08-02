@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
-import { ComplianceController } from './compliance.controller';
-import { ComplianceService } from './compliance.service';
+import { KycController } from './kyc.controller';
+import { KycService } from './kyc.service';
+import { IdentityModule } from '../identity/identity.module';
 
-/** KYC documents · verification levels · S3 storage */
 @Module({
-  controllers: [ComplianceController],
-  providers: [ComplianceService],
-  exports: [ComplianceService],
+  imports: [IdentityModule],
+  controllers: [KycController],
+  providers: [KycService],
+  exports: [KycService],
 })
 export class ComplianceModule {}
