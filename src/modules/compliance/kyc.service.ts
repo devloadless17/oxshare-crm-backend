@@ -141,9 +141,13 @@ export class KycService {
     if (!finalSub.addressProof?.filePath)
       throw new BadRequestException('Proof of address is required.');
 
+    // A resubmission after rejection starts a fresh review — stale rejection
+    // data must not follow it into the admin queue.
     return KycStore.update(userId, {
       status: 'submitted',
       submittedAt: new Date(),
+      rejectionReason: undefined,
+      rejectedFields: undefined,
     });
   }
 
@@ -183,7 +187,24 @@ export class KycService {
     UsersStore.update(userId, { verificationLevel: 1 });
 
     console.log(`✅ KYC approved for user ${userId} by admin ${adminId}`);
-    return { message: 'KYC approved. User verification level updated to 1.' };
+    return this.getByUserId(userId);
+  }
+
+  // ─── Admin: claim for review ───────────────────────────────────────────────
+  // Marks a submitted KYC as under_review by this admin, so two reviewers
+  // don't process the same submission concurrently.
+  claim(userId: string, adminId: string) {
+    const submission = KycStore.findByUserId(userId);
+    if (!submission) throw new NotFoundException('KYC submission not found.');
+    if (submission.status !== 'submitted') {
+      throw new BadRequestException(
+        submission.status === 'under_review'
+          ? 'This submission is already being reviewed.'
+          : 'Only submitted KYC can be claimed for review.',
+      );
+    }
+    KycStore.update(userId, { status: 'under_review', reviewedBy: adminId });
+    return this.getByUserId(userId);
   }
 
   // ─── Admin: reject ─────────────────────────────────────────────────────────
@@ -212,7 +233,7 @@ export class KycService {
     console.log(`Please log in to your portal to update the highlighted fields and re-submit.`);
     console.log(`======================================================\n`);
 
-    return { message: 'KYC rejected.', reason, rejectedFields };
+    return this.getByUserId(userId);
   }
 
   // ─── Reset User KYC ────────────────────────────────────────────────────────
