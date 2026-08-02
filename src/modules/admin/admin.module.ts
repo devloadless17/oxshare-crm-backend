@@ -3,7 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
-import { AdminGuard, MasterAdminGuard } from './guards/admin.guard';
+import { AdminGuard, MasterAdminGuard, PermissionsGuard } from './guards/admin.guard';
 import { ComplianceModule } from '../compliance/compliance.module';
 
 @Module({
@@ -18,7 +18,7 @@ import { ComplianceModule } from '../compliance/compliance.module';
     }),
   ],
   controllers: [AdminController],
-  providers: [AdminService, AdminGuard, MasterAdminGuard],
+  providers: [AdminService, AdminGuard, MasterAdminGuard, PermissionsGuard],
   exports: [AdminService],
 })
 export class AdminModule {}
