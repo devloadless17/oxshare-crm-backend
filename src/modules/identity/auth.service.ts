@@ -17,6 +17,7 @@ const COOKIE_OPTS = {
   httpOnly: true,
   sameSite: 'lax' as const,
   secure: process.env['NODE_ENV'] === 'production',
+  path: '/',
 };
 
 @Injectable()
@@ -183,7 +184,7 @@ export class AuthService {
     res.cookie('refresh_token', refreshToken, {
       ...COOKIE_OPTS,
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/v1/auth/refresh',
+      path: '/auth/refresh',
     });
   }
 

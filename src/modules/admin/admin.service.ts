@@ -37,7 +37,7 @@ export class AdminService {
     AdminsStore.update(admin.id, { refreshToken: refreshHash });
 
     this.setAdminCookies(res, accessToken, refreshToken);
-    return { admin: this.sanitize(admin) };
+    return { admin: this.sanitize(admin), accessToken, refreshToken };
   }
 
   // ─── Admin Logout ──────────────────────────────────────────────────────────
@@ -154,6 +154,7 @@ export class AdminService {
       httpOnly: true,
       sameSite: 'lax' as const,
       secure: process.env['NODE_ENV'] === 'production',
+      path: '/',
     };
     res.cookie(ADMIN_COOKIE, accessToken, { ...cookieOpts, maxAge: 8 * 60 * 60 * 1000 });
     res.cookie(ADMIN_REFRESH_COOKIE, refreshToken, { ...cookieOpts, maxAge: 7 * 24 * 60 * 60 * 1000 });
