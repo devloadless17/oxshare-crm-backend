@@ -9,8 +9,13 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
+import * as fs from 'fs';
+import * as path from 'path';
 import { AdminsStore, InvitesStore, Admin } from '../../store/admins.store';
 import { KycConfigStore, KycStepConfig } from '../../store/kyc-config.store';
+import { RolesStore } from '../../store/roles.store';
+import { RejectionReasonsStore, RejectionContext } from '../../store/rejection-reasons.store';
+import { UsersStore } from '../../store/users.store';
 import { KycService } from '../compliance/kyc.service';
 import { Request, Response } from 'express';
 
@@ -55,9 +60,24 @@ export class AdminService {
   }
 
   // ─── Create Invite ─────────────────────────────────────────────────────────
-  async createInvite(email: string, name: string, invitedBy: string) {
+  async createInvite(
+    email: string,
+    name: string,
+    invitedBy: string,
+    roleId?: string,
+    permissions?: string[],
+  ) {
     if (AdminsStore.findByEmail(email)) {
       throw new ConflictException('An admin with this email already exists.');
+    }
+
+    // RBAC-07: the inviting master admin chooses the role; RBAC-02: a sub-admin
+    // holds only what is explicitly granted.
+    let grantedPermissions = permissions;
+    if (roleId) {
+      const role = RolesStore.findById(roleId);
+      if (!role) throw new NotFoundException('Role not found.');
+      grantedPermissions = role.permissions;
     }
 
     const token = uuidv4();
@@ -66,6 +86,8 @@ export class AdminService {
       name,
       token,
       role: 'sub_admin',
+      roleId,
+      permissions: grantedPermissions,
       invitedBy,
       expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h
     });
@@ -94,7 +116,8 @@ export class AdminService {
       passwordHash,
       name: invite.name,
       role: 'sub_admin',
-      permissions: ['kyc:review', 'clients:read'],
+      roleId: invite.roleId,
+      permissions: invite.permissions ?? ['kyc:review', 'clients:read'],
     });
 
     InvitesStore.markAccepted(token);
@@ -131,9 +154,158 @@ export class AdminService {
     return this.kycService.approve(userId, adminId);
   }
 
+  // ─── KYC: claim for review ────────────────────────────────────────────────
+  claimKyc(userId: string, adminId: string) {
+    return this.kycService.claim(userId, adminId);
+  }
+
   // ─── KYC: reject ──────────────────────────────────────────────────────────
-  rejectKyc(userId: string, adminId: string, reason: string, rejectedFields?: string[]) {
-    return this.kycService.reject(userId, adminId, reason, rejectedFields);
+  rejectKyc(
+    userId: string,
+    adminId: string,
+    reason?: string,
+    rejectedFields?: string[],
+    reasonId?: string,
+  ) {
+    let effectiveReason = reason?.trim();
+    if (reasonId) {
+      const configured = RejectionReasonsStore.findById(reasonId);
+      if (!configured) throw new NotFoundException('Rejection reason not found.');
+      effectiveReason = effectiveReason
+        ? `${configured.label} — ${effectiveReason}`
+        : configured.label;
+    }
+    if (!effectiveReason) {
+      throw new BadRequestException('A rejection reason (reasonId or reason text) is required.');
+    }
+    return this.kycService.reject(userId, adminId, effectiveReason, rejectedFields);
+  }
+
+  // ─── RBAC: permission catalog ─────────────────────────────────────────────
+  getPermissionsCatalog() {
+    const file = path.join(__dirname, '../../config/permissions.json');
+    const fallback = path.join(process.cwd(), 'src/config/permissions.json');
+    const raw = fs.readFileSync(fs.existsSync(file) ? file : fallback, 'utf-8');
+    return JSON.parse(raw) as Record<string, unknown>;
+  }
+
+  // ─── RBAC: roles ──────────────────────────────────────────────────────────
+  listRoles() {
+    return RolesStore.findAll();
+  }
+
+  createRole(name: string, description: string | undefined, permissions: string[]) {
+    if (RolesStore.findByName(name)) {
+      throw new ConflictException('A role with this name already exists.');
+    }
+    return RolesStore.create({ name, description, permissions });
+  }
+
+  updateRole(id: string, patch: { name?: string; description?: string; permissions?: string[] }) {
+    const role = RolesStore.findById(id);
+    if (!role) throw new NotFoundException('Role not found.');
+    if (role.isSystem) throw new BadRequestException('System roles cannot be modified.');
+    return RolesStore.update(id, patch);
+  }
+
+  deleteRole(id: string) {
+    const role = RolesStore.findById(id);
+    if (!role) throw new NotFoundException('Role not found.');
+    if (role.isSystem) throw new BadRequestException('System roles cannot be deleted.');
+    RolesStore.delete(id);
+    return { message: 'Role deleted.' };
+  }
+
+  // ─── RBAC: admin directory ────────────────────────────────────────────────
+  listAdmins() {
+    return AdminsStore.findAll().map((a) => this.sanitize(a));
+  }
+
+  updateAdmin(id: string, patch: { name?: string; roleId?: string; permissions?: string[] }) {
+    const admin = AdminsStore.findById(id);
+    if (!admin) throw new NotFoundException('Admin not found.');
+    if (admin.role === 'master_admin' && (patch.roleId || patch.permissions)) {
+      throw new BadRequestException('The master admin’s permissions cannot be changed.');
+    }
+
+    let update: Partial<Admin> = { name: patch.name ?? admin.name };
+    if (patch.roleId) {
+      const role = RolesStore.findById(patch.roleId);
+      if (!role) throw new NotFoundException('Role not found.');
+      update = { ...update, roleId: role.id, permissions: role.permissions };
+    } else if (patch.permissions) {
+      update = { ...update, roleId: undefined, permissions: patch.permissions };
+    }
+
+    return this.sanitize(AdminsStore.update(id, update)!);
+  }
+
+  // ─── Clients list (ADM-01 / ADM-14) ───────────────────────────────────────
+  listClients(query: {
+    page?: string;
+    limit?: string;
+    q?: string;
+    type?: string;
+    status?: string;
+    level?: string;
+  }) {
+    const page = Math.max(1, parseInt(query.page ?? '1', 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(query.limit ?? '25', 10) || 25));
+
+    let clients = UsersStore.findAll();
+    if (query.type) clients = clients.filter((u) => u.type === query.type);
+    if (query.status) clients = clients.filter((u) => u.status === query.status);
+    if (query.level !== undefined && query.level !== '') {
+      const level = Number(query.level);
+      clients = clients.filter((u) => u.verificationLevel === level);
+    }
+    if (query.q) {
+      const q = query.q.toLowerCase();
+      clients = clients.filter(
+        (u) =>
+          u.email.toLowerCase().includes(q) ||
+          u.firstName.toLowerCase().includes(q) ||
+          u.lastName.toLowerCase().includes(q),
+      );
+    }
+
+    clients.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const total = clients.length;
+    const items = clients.slice((page - 1) * limit, page * limit).map((u) => ({
+      id: u.id,
+      email: u.email,
+      firstName: u.firstName,
+      lastName: u.lastName,
+      type: u.type,
+      status: u.status,
+      verificationLevel: u.verificationLevel,
+      country: u.country,
+      createdAt: u.createdAt,
+    }));
+
+    return { items, total, page, limit };
+  }
+
+  // ─── Rejection reasons (FR-ADM-03 configurable list) ──────────────────────
+  listRejectionReasons(context?: RejectionContext) {
+    return RejectionReasonsStore.findAll(context);
+  }
+
+  createRejectionReason(context: RejectionContext, label: string) {
+    return RejectionReasonsStore.create(context, label);
+  }
+
+  updateRejectionReason(id: string, label: string) {
+    const updated = RejectionReasonsStore.update(id, label);
+    if (!updated) throw new NotFoundException('Rejection reason not found.');
+    return updated;
+  }
+
+  deleteRejectionReason(id: string) {
+    if (!RejectionReasonsStore.delete(id)) {
+      throw new NotFoundException('Rejection reason not found.');
+    }
+    return { message: 'Rejection reason deleted.' };
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────

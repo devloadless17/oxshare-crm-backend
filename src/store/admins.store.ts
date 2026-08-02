@@ -10,6 +10,8 @@ export interface Admin {
   name: string;
   role: AdminRole;
   permissions: string[];
+  /** RBAC role the permissions were derived from, when assigned via a role. */
+  roleId?: string;
   refreshToken?: string;
   createdAt: Date;
 }
@@ -20,6 +22,9 @@ export interface AdminInvite {
   name: string;
   token: string;
   role: 'sub_admin';
+  /** Role/permissions chosen by the inviting master admin (RBAC-07). */
+  roleId?: string;
+  permissions?: string[];
   invitedBy: string;
   expiresAt: Date;
   accepted: boolean;
