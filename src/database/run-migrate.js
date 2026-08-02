@@ -15,7 +15,7 @@ const pool = new Pool({
 });
 
 async function migrateAndSeed() {
-  console.log('⚡ CONNECTING TO NEON POSTGRESQL & CREATING TABLES...');
+  console.log('⚡ CONNECTING TO NEON POSTGRESQL & CREATING RBAC TABLES...');
 
   await pool.query(`
     DO $$ BEGIN
@@ -38,6 +38,18 @@ async function migrateAndSeed() {
         CREATE TYPE field_type AS ENUM ('text', 'number', 'select', 'file', 'date', 'checkbox');
     EXCEPTION WHEN duplicate_object THEN null; END $$;
 
+    -- 1. Dynamic Roles Table
+    CREATE TABLE IF NOT EXISTS roles (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name VARCHAR(100) NOT NULL UNIQUE,
+      description TEXT,
+      permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+      is_system BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    -- 2. Users Table
     CREATE TABLE IF NOT EXISTS users (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       email VARCHAR(255) NOT NULL UNIQUE,
@@ -51,73 +63,45 @@ async function migrateAndSeed() {
       updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
     );
 
-    CREATE TABLE IF NOT EXISTS verification_tokens (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      token VARCHAR(255) NOT NULL UNIQUE,
-      type token_type NOT NULL,
-      expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS kyc_fields (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      field_name VARCHAR(100) NOT NULL UNIQUE,
-      label VARCHAR(255) NOT NULL,
-      field_type field_type NOT NULL,
-      options JSONB,
-      is_required BOOLEAN NOT NULL DEFAULT true,
-      is_active BOOLEAN NOT NULL DEFAULT true,
-      sort_order INTEGER NOT NULL DEFAULT 0,
-      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS kyc_submissions (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      status kyc_status NOT NULL DEFAULT 'PENDING',
-      rejection_reason TEXT,
-      reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
-      reviewed_at TIMESTAMP WITH TIME ZONE,
-      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS kyc_field_values (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      submission_id UUID NOT NULL REFERENCES kyc_submissions(id) ON DELETE CASCADE,
-      field_id UUID NOT NULL REFERENCES kyc_fields(id) ON DELETE CASCADE,
-      value_text TEXT,
-      file_url TEXT,
-      file_name VARCHAR(255),
-      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-    );
+    -- Alter users table to add role_id if not present
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id UUID REFERENCES roles(id) ON DELETE SET NULL;
   `);
 
-  console.log('✅ TABLES CREATED SUCCESSFULLY IN NEON POSTGRESQL!');
+  console.log('✅ TABLES & COLUMNS UPDATED SUCCESSFULLY IN NEON POSTGRESQL!');
+
+  // Seed default Roles
+  const allPermissions = [
+    'kyc.view', 'kyc.create', 'kyc.edit', 'kyc.delete', 'kyc.review',
+    'users.view', 'users.create', 'users.edit', 'users.suspend',
+    'roles.view', 'roles.manage',
+    'trading.view', 'trading.edit',
+    'withdrawals.view', 'withdrawals.approve'
+  ];
+
+  const superAdminRole = await pool.query(`
+    INSERT INTO roles (name, description, permissions, is_system)
+    VALUES ('Super Admin', 'Full access to all system modules and management settings', $1, true)
+    ON CONFLICT (name) DO UPDATE SET permissions = $1
+    RETURNING id;
+  `, [JSON.stringify(allPermissions)]);
+
+  await pool.query(`
+    INSERT INTO roles (name, description, permissions, is_system)
+    VALUES ('Compliance Manager', 'Manage KYC dynamic fields, verification queue, and user status', $1, true)
+    ON CONFLICT (name) DO NOTHING;
+  `, [JSON.stringify(['kyc.view', 'kyc.create', 'kyc.edit', 'kyc.delete', 'kyc.review', 'users.view'])]);
 
   const adminPasswordHash = await bcrypt.hash('admin123', 10);
   await pool.query(
     `
-    INSERT INTO users (email, password_hash, first_name, last_name, role, status, is_email_verified)
-    VALUES ('admin@bbcorp.com', $1, 'Master', 'Admin', 'SUPER_ADMIN', 'ACTIVE', true)
-    ON CONFLICT (email) DO UPDATE SET password_hash = $1, status = 'ACTIVE';
+    INSERT INTO users (email, password_hash, first_name, last_name, role, role_id, status, is_email_verified)
+    VALUES ('admin@bbcorp.com', $1, 'Master', 'Admin', 'SUPER_ADMIN', $2, 'ACTIVE', true)
+    ON CONFLICT (email) DO UPDATE SET password_hash = $1, role_id = $2, status = 'ACTIVE';
   `,
-    [adminPasswordHash],
+    [adminPasswordHash, superAdminRole.rows[0]?.id],
   );
 
-  await pool.query(`
-    INSERT INTO kyc_fields (field_name, label, field_type, options, is_required, is_active, sort_order)
-    VALUES 
-      ('id_document', 'Government Photo ID (Passport / National ID / Driving License)', 'file', null, true, true, 1),
-      ('proof_of_address', 'Proof of Address (Utility Bill / Bank Statement)', 'file', null, true, true, 2),
-      ('tax_id', 'Tax Identification Number (TIN / SSN)', 'text', null, false, true, 3),
-      ('country_residence', 'Country of Residence', 'select', '["United Arab Emirates", "Saudi Arabia", "Kuwait", "Qatar", "Bahrain", "Oman", "Jordan", "Lebanon", "United Kingdom", "Germany"]', true, true, 4)
-    ON CONFLICT (field_name) DO NOTHING;
-  `);
-
-  console.log('🎉 SEEDING COMPLETE! DEFAULT SUPER ADMIN (admin@bbcorp.com / admin123) READY!');
+  console.log('🎉 SEEDING COMPLETE! DEFAULT ROLES & SUPER ADMIN (admin@bbcorp.com / admin123) READY!');
   await pool.end();
 }
 

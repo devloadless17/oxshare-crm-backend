@@ -36,7 +36,18 @@ export const fieldTypeEnum = pgEnum('field_type', [
   'checkbox',
 ]);
 
-// 1. Users Table
+// 1. Dynamic System Roles Table
+export const roles = pgTable('roles', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  name: varchar('name', { length: 100 }).notNull().unique(),
+  description: text('description'),
+  permissions: jsonb('permissions').$type<string[]>().default([]).notNull(),
+  isSystem: boolean('is_system').default(false).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// 2. Users Table
 export const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),
   email: varchar('email', { length: 255 }).notNull().unique(),
@@ -44,13 +55,14 @@ export const users = pgTable('users', {
   firstName: varchar('first_name', { length: 100 }),
   lastName: varchar('last_name', { length: 100 }),
   role: roleEnum('role').default('CLIENT').notNull(),
+  roleId: uuid('role_id').references(() => roles.id, { onDelete: 'set null' }),
   status: userStatusEnum('status').default('PENDING_VERIFICATION').notNull(),
   isEmailVerified: boolean('is_email_verified').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
-// 2. Verification Tokens Table (for Email verification & Password Reset)
+// 3. Verification Tokens Table
 export const verificationTokens = pgTable('verification_tokens', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id')
@@ -62,13 +74,13 @@ export const verificationTokens = pgTable('verification_tokens', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
-// 3. Dynamic Admin-Configured KYC Fields Table
+// 4. Dynamic Admin-Configured KYC Fields Table
 export const kycFields = pgTable('kyc_fields', {
   id: uuid('id').defaultRandom().primaryKey(),
   fieldName: varchar('field_name', { length: 100 }).notNull().unique(),
   label: varchar('label', { length: 255 }).notNull(),
   fieldType: fieldTypeEnum('field_type').notNull(),
-  options: jsonb('options').$type<string[]>(), // For 'select' inputs
+  options: jsonb('options').$type<string[]>(),
   isRequired: boolean('is_required').default(true).notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   sortOrder: integer('sort_order').default(0).notNull(),
@@ -76,7 +88,7 @@ export const kycFields = pgTable('kyc_fields', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
-// 4. KYC Submissions Table
+// 5. KYC Submissions Table
 export const kycSubmissions = pgTable('kyc_submissions', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id')
@@ -90,7 +102,7 @@ export const kycSubmissions = pgTable('kyc_submissions', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
-// 5. KYC Submitted Values Table
+// 6. KYC Submitted Values Table
 export const kycFieldValues = pgTable('kyc_field_values', {
   id: uuid('id').defaultRandom().primaryKey(),
   submissionId: uuid('submission_id')

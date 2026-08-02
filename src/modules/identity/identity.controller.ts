@@ -18,6 +18,12 @@ export class IdentityController {
     return this.identityService.verifyEmail(dto.token);
   }
 
+  @Post('resend-verification')
+  @HttpCode(HttpStatus.OK)
+  async resendVerification(@Body() dto: { email: string }) {
+    return this.identityService.resendVerificationEmail(dto.email);
+  }
+
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(

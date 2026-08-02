@@ -11,7 +11,7 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '../../database/schema';
 import { eq, and, gt } from 'drizzle-orm';
 import * as bcrypt from 'bcrypt';
-import { v4 as uuidv4 } from 'uuid';
+import * as crypto from 'crypto';
 import { EmailService } from '../email/email.service';
 
 @Injectable()
@@ -21,6 +21,10 @@ export class IdentityService {
     private readonly jwtService: JwtService,
     private readonly emailService: EmailService,
   ) {}
+
+  private hashToken(token: string): string {
+    return crypto.createHash('sha256').update(token).digest('hex');
+  }
 
   async register(dto: { email: string; password: string; firstName?: string; lastName?: string }) {
     const existing = await this.db.query.users.findFirst({
@@ -46,18 +50,20 @@ export class IdentityService {
       })
       .returning();
 
-    // Create verification token (24h)
-    const token = uuidv4();
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    // Generate 64-character cryptographically secure token
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = this.hashToken(rawToken);
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
     await this.db.insert(schema.verificationTokens).values({
       userId: newUser.id,
-      token,
+      token: tokenHash,
       type: 'EMAIL_VERIFY',
       expiresAt,
     });
 
-    await this.emailService.sendVerificationEmail(newUser.email, token);
+    // Send rawToken in link, stored hashed in DB
+    await this.emailService.sendVerificationEmail(newUser.email, rawToken);
 
     return {
       message: 'Registration successful. Please check your email to verify your account.',
@@ -66,9 +72,11 @@ export class IdentityService {
   }
 
   async verifyEmail(token: string) {
+    const tokenHash = this.hashToken(token);
+
     const record = await this.db.query.verificationTokens.findFirst({
       where: and(
-        eq(schema.verificationTokens.token, token),
+        eq(schema.verificationTokens.token, tokenHash),
         eq(schema.verificationTokens.type, 'EMAIL_VERIFY'),
         gt(schema.verificationTokens.expiresAt, new Date()),
       ),
@@ -90,6 +98,44 @@ export class IdentityService {
     return { message: 'Email successfully verified. You may now log in.' };
   }
 
+  async resendVerificationEmail(email: string) {
+    const user = await this.db.query.users.findFirst({
+      where: eq(schema.users.email, email.toLowerCase()),
+    });
+
+    if (!user) {
+      return { message: 'If the email exists, a verification link has been sent.' };
+    }
+
+    if (user.isEmailVerified) {
+      throw new BadRequestException('This email is already verified. You can sign in.');
+    }
+
+    await this.db
+      .delete(schema.verificationTokens)
+      .where(
+        and(
+          eq(schema.verificationTokens.userId, user.id),
+          eq(schema.verificationTokens.type, 'EMAIL_VERIFY'),
+        ),
+      );
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = this.hashToken(rawToken);
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await this.db.insert(schema.verificationTokens).values({
+      userId: user.id,
+      token: tokenHash,
+      type: 'EMAIL_VERIFY',
+      expiresAt,
+    });
+
+    await this.emailService.sendVerificationEmail(user.email, rawToken);
+
+    return { message: 'Verification email resent successfully. Please check your inbox.' };
+  }
+
   async login(dto: { email: string; password: string; role?: 'CLIENT' | 'ADMIN' }) {
     const user = await this.db.query.users.findFirst({
       where: eq(schema.users.email, dto.email.toLowerCase()),
@@ -104,8 +150,18 @@ export class IdentityService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    if (dto.role && user.role !== dto.role && user.role !== 'SUPER_ADMIN') {
-      throw new UnauthorizedException('Access denied for this portal');
+    // Strict Role Separation
+    if (dto.role === 'CLIENT' && user.role !== 'CLIENT') {
+      throw new UnauthorizedException('Access denied. Admin users cannot log into the Client Portal.');
+    }
+
+    if (dto.role === 'ADMIN' && user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN') {
+      throw new UnauthorizedException('Access denied. Client users cannot log into the Admin Panel.');
+    }
+
+    // Require Email Verification for Clients
+    if (user.role === 'CLIENT' && !user.isEmailVerified) {
+      throw new UnauthorizedException('Please verify your email address before logging in.');
     }
 
     // Generate 15-minute Access Token and 30-day Refresh Token
@@ -117,7 +173,7 @@ export class IdentityService {
     return {
       access_token: accessToken,
       refresh_token: refreshToken,
-      expires_in: 900, // 15 minutes in seconds
+      expires_in: 900,
       user: {
         id: user.id,
         email: user.email,
@@ -165,25 +221,28 @@ export class IdentityService {
       return { message: 'If the email exists, a password reset link has been sent.' };
     }
 
-    const token = uuidv4();
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = this.hashToken(rawToken);
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
     await this.db.insert(schema.verificationTokens).values({
       userId: user.id,
-      token,
+      token: tokenHash,
       type: 'PASSWORD_RESET',
       expiresAt,
     });
 
-    await this.emailService.sendPasswordResetEmail(user.email, token);
+    await this.emailService.sendPasswordResetEmail(user.email, rawToken);
 
     return { message: 'If the email exists, a password reset link has been sent.' };
   }
 
   async resetPassword(dto: { token: string; newPassword: string }) {
+    const tokenHash = this.hashToken(dto.token);
+
     const record = await this.db.query.verificationTokens.findFirst({
       where: and(
-        eq(schema.verificationTokens.token, dto.token),
+        eq(schema.verificationTokens.token, tokenHash),
         eq(schema.verificationTokens.type, 'PASSWORD_RESET'),
         gt(schema.verificationTokens.expiresAt, new Date()),
       ),

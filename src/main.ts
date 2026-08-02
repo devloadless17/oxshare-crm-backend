@@ -19,8 +19,11 @@ async function bootstrap() {
     }),
   );
 
-  // URI versioning — all routes under /v1/...
-  app.enableVersioning({ type: VersioningType.URI });
+  // URI versioning — default version v1
+  app.enableVersioning({
+    type: VersioningType.URI,
+    defaultVersion: '1',
+  });
 
   // CORS — allow portal (3000) and admin (3002)
   app.enableCors({

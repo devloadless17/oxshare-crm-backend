@@ -48,6 +48,7 @@ export class EmailService {
         });
       }
       this.logger.log(`Verification email sent to ${email}`);
+      this.logger.log(`🔗 VERIFICATION LINK: ${verificationUrl}`);
     } catch (error) {
       this.logger.warn(`Failed to send verification email (Logged verification URL: ${verificationUrl})`);
     }
@@ -80,6 +81,7 @@ export class EmailService {
         });
       }
       this.logger.log(`Password reset email sent to ${email}`);
+      this.logger.log(`🔗 PASSWORD RESET LINK: ${resetUrl}`);
     } catch (error) {
       this.logger.warn(`Failed to send reset email (Logged reset URL: ${resetUrl})`);
     }
