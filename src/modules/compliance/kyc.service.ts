@@ -7,9 +7,12 @@ import {
 } from '@nestjs/common';
 import { KycStore, KycStatus } from '../../store/kyc.store';
 import { UsersStore } from '../../store/users.store';
+import { EmailService } from '../email/email.service';
 
 @Injectable()
 export class KycService {
+  constructor(private readonly email: EmailService) {}
+
   // ─── Get status ────────────────────────────────────────────────────────────
   getStatus(userId: string) {
     const submission = KycStore.getOrCreate(userId);
@@ -151,10 +154,12 @@ export class KycService {
     });
   }
 
-  // ─── Admin: list all ───────────────────────────────────────────────────────
-  listAll(status?: KycStatus) {
-    const all = status ? KycStore.findByStatus(status) : KycStore.findAll();
-    return all.map((sub) => {
+  // ─── Admin: list all (paginated, searchable, with per-status counts) ───────
+  listAll(filter: { status?: KycStatus; q?: string; page?: number; limit?: number } = {}) {
+    const page = Math.max(1, filter.page ?? 1);
+    const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
+
+    const all = KycStore.findAll().map((sub) => {
       const user = UsersStore.findById(sub.userId);
       return {
         ...sub,
@@ -163,6 +168,33 @@ export class KycService {
           : null,
       };
     });
+
+    // Tab counts are computed over the FULL set so the UI stays correct
+    // regardless of the active filter.
+    const counts: Record<string, number> = { all: all.length };
+    for (const sub of all) counts[sub.status] = (counts[sub.status] ?? 0) + 1;
+
+    let list = all;
+    if (filter.status) list = list.filter((sub) => sub.status === filter.status);
+    if (filter.q) {
+      const q = filter.q.toLowerCase();
+      list = list.filter(
+        (sub) =>
+          sub.user &&
+          (sub.user.email.toLowerCase().includes(q) ||
+            sub.user.firstName.toLowerCase().includes(q) ||
+            sub.user.lastName.toLowerCase().includes(q)),
+      );
+    }
+
+    list.sort((a, b) => (b.submittedAt?.getTime() ?? 0) - (a.submittedAt?.getTime() ?? 0));
+    return {
+      items: list.slice((page - 1) * limit, page * limit),
+      total: list.length,
+      page,
+      limit,
+      counts,
+    };
   }
 
   // ─── Admin: get one ────────────────────────────────────────────────────────
@@ -186,6 +218,11 @@ export class KycService {
 
     UsersStore.update(userId, { verificationLevel: 1 });
 
+    const user = UsersStore.findById(userId);
+    if (user) {
+      // Sent inline per ARCH §8.5 — fire-and-forget, failure is logged by EmailService
+      void this.email.sendKycDecisionEmail(user.email, user.firstName, 'approved');
+    }
     console.log(`✅ KYC approved for user ${userId} by admin ${adminId}`);
     return this.getByUserId(userId);
   }
@@ -221,17 +258,10 @@ export class KycService {
       reviewedAt: new Date(),
     });
 
-    console.log(`\n======================================================`);
-    console.log(`📧 [EMAIL NOTIFICATION SENT] To: ${user?.email || userId}`);
-    console.log(`Subject: Action Required: Your KYC Application Needs Correction`);
-    console.log(`Hello ${user?.firstName || 'Valued Client'},`);
-    console.log(`Your KYC application has been reviewed and requires corrections.`);
-    console.log(`Rejection Reason: ${reason}`);
-    if (rejectedFields.length > 0) {
-      console.log(`Fields marked for correction: ${rejectedFields.join(', ')}`);
+    if (user) {
+      // Sent inline per FR-ADM-03 — the client is emailed the reason and can retry
+      void this.email.sendKycDecisionEmail(user.email, user.firstName, 'rejected', reason, rejectedFields);
     }
-    console.log(`Please log in to your portal to update the highlighted fields and re-submit.`);
-    console.log(`======================================================\n`);
 
     return this.getByUserId(userId);
   }

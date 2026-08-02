@@ -16,7 +16,9 @@ import { KycConfigStore, KycStepConfig } from '../../store/kyc-config.store';
 import { RolesStore } from '../../store/roles.store';
 import { RejectionReasonsStore, RejectionContext } from '../../store/rejection-reasons.store';
 import { UsersStore } from '../../store/users.store';
+import { AuditLogStore } from '../../store/audit-log.store';
 import { KycService } from '../compliance/kyc.service';
+import { EmailService } from '../email/email.service';
 import { Request, Response } from 'express';
 
 const ADMIN_COOKIE = 'admin_access_token';
@@ -28,6 +30,7 @@ export class AdminService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly kycService: KycService,
+    private readonly email: EmailService,
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
@@ -93,8 +96,12 @@ export class AdminService {
     });
 
     const inviteUrl = `${this.config.get('ADMIN_URL', 'http://localhost:3002')}/invite/accept?token=${token}`;
-    console.log('\n📧 ADMIN INVITE LINK (dev only):');
-    console.log(`   ${inviteUrl}\n`);
+    void this.email.sendAdminInviteEmail(email, name, inviteUrl);
+    this.audit(invitedBy, 'admin.invite', 'admin_invite', invite.id, {
+      email,
+      roleId,
+      permissions: grantedPermissions,
+    });
 
     return {
       message: `Invite sent to ${email}`,
@@ -140,8 +147,13 @@ export class AdminService {
   }
 
   // ─── KYC: list all ────────────────────────────────────────────────────────
-  listKyc(status?: string) {
-    return this.kycService.listAll(status as Parameters<typeof this.kycService.listAll>[0]);
+  listKyc(query: { status?: string; q?: string; page?: string; limit?: string }) {
+    return this.kycService.listAll({
+      status: query.status as import('../../store/kyc.store').KycStatus | undefined,
+      q: query.q,
+      page: parseInt(query.page ?? '1', 10) || 1,
+      limit: parseInt(query.limit ?? '25', 10) || 25,
+    });
   }
 
   // ─── KYC: get one ─────────────────────────────────────────────────────────
@@ -151,12 +163,44 @@ export class AdminService {
 
   // ─── KYC: approve ─────────────────────────────────────────────────────────
   approveKyc(userId: string, adminId: string) {
-    return this.kycService.approve(userId, adminId);
+    const result = this.kycService.approve(userId, adminId);
+    this.audit(adminId, 'kyc.approve', 'kyc_submission', userId, { verificationLevel: 1 });
+    return result;
+  }
+
+  // ─── Audit log (D-21, append-only) ────────────────────────────────────────
+  private audit(
+    actorId: string,
+    action: string,
+    subjectType: string,
+    subjectId: string,
+    details?: Record<string, unknown>,
+  ) {
+    const actor = AdminsStore.findById(actorId);
+    AuditLogStore.record({
+      actorId,
+      actorEmail: actor?.email ?? 'unknown',
+      action,
+      subjectType,
+      subjectId,
+      details,
+    });
+  }
+
+  listAuditLog(query: { page?: string; limit?: string; action?: string; subjectType?: string }) {
+    return AuditLogStore.findAll({
+      page: parseInt(query.page ?? '1', 10) || 1,
+      limit: parseInt(query.limit ?? '25', 10) || 25,
+      action: query.action,
+      subjectType: query.subjectType,
+    });
   }
 
   // ─── KYC: claim for review ────────────────────────────────────────────────
   claimKyc(userId: string, adminId: string) {
-    return this.kycService.claim(userId, adminId);
+    const result = this.kycService.claim(userId, adminId);
+    this.audit(adminId, 'kyc.claim', 'kyc_submission', userId);
+    return result;
   }
 
   // ─── KYC: reject ──────────────────────────────────────────────────────────
@@ -178,7 +222,12 @@ export class AdminService {
     if (!effectiveReason) {
       throw new BadRequestException('A rejection reason (reasonId or reason text) is required.');
     }
-    return this.kycService.reject(userId, adminId, effectiveReason, rejectedFields);
+    const result = this.kycService.reject(userId, adminId, effectiveReason, rejectedFields);
+    this.audit(adminId, 'kyc.reject', 'kyc_submission', userId, {
+      reason: effectiveReason,
+      rejectedFields,
+    });
+    return result;
   }
 
   // ─── RBAC: permission catalog ─────────────────────────────────────────────
@@ -194,25 +243,30 @@ export class AdminService {
     return RolesStore.findAll();
   }
 
-  createRole(name: string, description: string | undefined, permissions: string[]) {
+  createRole(name: string, description: string | undefined, permissions: string[], actorId?: string) {
     if (RolesStore.findByName(name)) {
       throw new ConflictException('A role with this name already exists.');
     }
-    return RolesStore.create({ name, description, permissions });
+    const role = RolesStore.create({ name, description, permissions });
+    if (actorId) this.audit(actorId, 'role.create', 'role', role.id, { name, permissions });
+    return role;
   }
 
-  updateRole(id: string, patch: { name?: string; description?: string; permissions?: string[] }) {
+  updateRole(id: string, patch: { name?: string; description?: string; permissions?: string[] }, actorId?: string) {
     const role = RolesStore.findById(id);
     if (!role) throw new NotFoundException('Role not found.');
     if (role.isSystem) throw new BadRequestException('System roles cannot be modified.');
-    return RolesStore.update(id, patch);
+    const updated = RolesStore.update(id, patch);
+    if (actorId) this.audit(actorId, 'role.update', 'role', id, { before: role.permissions, after: updated?.permissions });
+    return updated;
   }
 
-  deleteRole(id: string) {
+  deleteRole(id: string, actorId?: string) {
     const role = RolesStore.findById(id);
     if (!role) throw new NotFoundException('Role not found.');
     if (role.isSystem) throw new BadRequestException('System roles cannot be deleted.');
     RolesStore.delete(id);
+    if (actorId) this.audit(actorId, 'role.delete', 'role', id, { name: role.name });
     return { message: 'Role deleted.' };
   }
 
@@ -221,7 +275,7 @@ export class AdminService {
     return AdminsStore.findAll().map((a) => this.sanitize(a));
   }
 
-  updateAdmin(id: string, patch: { name?: string; roleId?: string; permissions?: string[] }) {
+  updateAdmin(id: string, patch: { name?: string; roleId?: string; permissions?: string[] }, actorId?: string) {
     const admin = AdminsStore.findById(id);
     if (!admin) throw new NotFoundException('Admin not found.');
     if (admin.role === 'master_admin' && (patch.roleId || patch.permissions)) {
@@ -237,7 +291,14 @@ export class AdminService {
       update = { ...update, roleId: undefined, permissions: patch.permissions };
     }
 
-    return this.sanitize(AdminsStore.update(id, update)!);
+    const updated = AdminsStore.update(id, update)!;
+    if (actorId) {
+      this.audit(actorId, 'admin.update', 'admin', id, {
+        before: { permissions: admin.permissions, roleId: admin.roleId },
+        after: { permissions: updated.permissions, roleId: updated.roleId },
+      });
+    }
+    return this.sanitize(updated);
   }
 
   // ─── Clients list (ADM-01 / ADM-14) ───────────────────────────────────────

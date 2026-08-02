@@ -119,8 +119,13 @@ export class AdminController {
   @RequirePermissions('kyc:review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'List all KYC submissions, optionally filtered by status' })
-  listKyc(@Query('status') status?: string) {
-    return this.adminService.listKyc(status);
+  listKyc(
+    @Query('status') status?: string,
+    @Query('q') q?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminService.listKyc({ status, q, page, limit });
   }
 
   @Get('kyc/:userId')
@@ -234,24 +239,24 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Create a custom role (master admin only)' })
-  createRole(@Body() dto: RoleDto) {
-    return this.adminService.createRole(dto.name, dto.description, dto.permissions);
+  createRole(@Body() dto: RoleDto, @Req() req: Request & { admin: Admin }) {
+    return this.adminService.createRole(dto.name, dto.description, dto.permissions, req.admin.id);
   }
 
   @Put('roles/:id')
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update a custom role (master admin only)' })
-  updateRole(@Param('id') id: string, @Body() dto: UpdateRoleDto) {
-    return this.adminService.updateRole(id, dto);
+  updateRole(@Param('id') id: string, @Body() dto: UpdateRoleDto, @Req() req: Request & { admin: Admin }) {
+    return this.adminService.updateRole(id, dto, req.admin.id);
   }
 
   @Delete('roles/:id')
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a custom role (master admin only)' })
-  deleteRole(@Param('id') id: string) {
-    return this.adminService.deleteRole(id);
+  deleteRole(@Param('id') id: string, @Req() req: Request & { admin: Admin }) {
+    return this.adminService.deleteRole(id, req.admin.id);
   }
 
   @Get('users')
@@ -266,8 +271,21 @@ export class AdminController {
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update an admin’s name, role, or permissions (master admin only)' })
-  updateAdmin(@Param('id') id: string, @Body() dto: UpdateAdminDto) {
-    return this.adminService.updateAdmin(id, dto);
+  updateAdmin(@Param('id') id: string, @Body() dto: UpdateAdminDto, @Req() req: Request & { admin: Admin }) {
+    return this.adminService.updateAdmin(id, dto, req.admin.id);
+  }
+
+  @Get('audit-log')
+  @UseGuards(MasterAdminGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Append-only admin action log (master admin only)' })
+  listAuditLog(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('action') action?: string,
+    @Query('subjectType') subjectType?: string,
+  ) {
+    return this.adminService.listAuditLog({ page, limit, action, subjectType });
   }
 
   // ── KYC Step Configurator ──────────────────────────────────────────────────
