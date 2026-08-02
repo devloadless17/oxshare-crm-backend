@@ -23,7 +23,7 @@ export class EmailService {
 
   async sendVerificationEmail(email: string, token: string): Promise<void> {
     const portalUrl = this.configService.get<string>('PORTAL_URL', 'http://localhost:3000');
-    const verificationUrl = `${portalUrl}/verify-email?token=${token}`;
+    const verificationUrl = `${portalUrl}/auth/verify-email?token=${token}`;
 
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
@@ -56,7 +56,7 @@ export class EmailService {
 
   async sendPasswordResetEmail(email: string, token: string): Promise<void> {
     const portalUrl = this.configService.get<string>('PORTAL_URL', 'http://localhost:3000');
-    const resetUrl = `${portalUrl}/reset-password?token=${token}`;
+    const resetUrl = `${portalUrl}/auth/reset-password?token=${token}`;
 
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
