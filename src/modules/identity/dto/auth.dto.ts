@@ -41,6 +41,11 @@ export class LoginDto {
   @ApiProperty({ example: 'StrongPass123!' })
   @IsString()
   password: string;
+
+  @ApiPropertyOptional({ example: 'CLIENT' })
+  @IsOptional()
+  @IsString()
+  role?: string;
 }
 
 export class ResendVerificationDto {
