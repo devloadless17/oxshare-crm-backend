@@ -13,8 +13,8 @@ async function bootstrap() {
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // Serve uploaded KYC files (admin only — add auth middleware in production)
-  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads' });
+  // KYC uploads are PII — served only via the authenticated UploadsController
+  // (compliance module), never as anonymous static assets.
 
   // Cookie parser (needed for httpOnly JWT cookies)
   app.use(cookieParser());
