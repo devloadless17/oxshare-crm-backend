@@ -205,3 +205,27 @@ export class LedgerListResponseDto {
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
 }
+
+export class IbProgramDto {
+  @ApiProperty() id: string;
+  @ApiProperty() name: string;
+  @ApiPropertyOptional({ type: String, nullable: true }) description?: string | null;
+  @ApiProperty() position: number;
+  @ApiProperty({ enum: ['commission', 'rebate', 'hybrid'] }) mode: string;
+  @ApiProperty({ enum: ['spread_share', 'per_lot', 'fixed_per_deal'] }) method: string;
+  @ApiProperty({ description: 'Percentage or money depending on method — always a string' })
+  commissionValue: string;
+  @ApiProperty({ description: 'Client rebate value — always a string' }) rebateValue: string;
+  @ApiProperty({ description: 'L1 share of the commission pool, percent as a string' })
+  l1Share: string;
+  @ApiProperty({ description: 'L2 share of the commission pool, percent as a string' })
+  l2Share: string;
+  @ApiProperty({ description: 'Hours accruals wait before confirming (§12.6)' })
+  settlementWindowHours: number;
+  @ApiProperty({ description: 'Credit the client rebate on deal close instead of after the window (§12.8)' })
+  rebateOnClose: boolean;
+  @ApiProperty() selectable: boolean;
+  @ApiProperty() active: boolean;
+  @ApiProperty() createdAt: Date;
+  @ApiProperty() updatedAt: Date;
+}

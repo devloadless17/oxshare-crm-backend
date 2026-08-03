@@ -4,7 +4,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiCookieAuth, ApiOkResponse, ApiExtraModels } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { IsEmail, IsString, MinLength, IsArray, IsOptional, IsIn } from 'class-validator';
+import { IsEmail, IsString, MinLength, IsArray, IsOptional, IsIn, IsBoolean, IsInt, IsNumberString, Min } from 'class-validator';
 import { AdminService } from './admin.service';
 import {
   AdminGuard,
@@ -29,6 +29,7 @@ import {
   LedgerListResponseDto,
   WithdrawalListResponseDto,
   WithdrawalRowDto,
+  IbProgramDto,
 } from './dto/responses.dto';
 
 class AdminLoginDto {
@@ -75,6 +76,26 @@ class SettleWithdrawalDto {
 class RejectionReasonDto {
   @IsString() context: RejectionContext;
   @IsString() label: string;
+}
+class ProgramDto {
+  @IsString() name: string;
+  @IsString() @IsOptional() description?: string;
+  @IsInt() @IsOptional() position?: number;
+  @IsIn(['commission', 'rebate', 'hybrid']) mode: 'commission' | 'rebate' | 'hybrid';
+  @IsIn(['spread_share', 'per_lot', 'fixed_per_deal'])
+  method: 'spread_share' | 'per_lot' | 'fixed_per_deal';
+  // Money and percentages arrive as STRINGS and stay strings (§6.1).
+  @IsNumberString() commissionValue: string;
+  @IsNumberString() @IsOptional() rebateValue?: string;
+  @IsNumberString() l1Share: string;
+  @IsNumberString() l2Share: string;
+  @IsInt() @Min(0) @IsOptional() settlementWindowHours?: number;
+  @IsBoolean() @IsOptional() rebateOnClose?: boolean;
+  @IsBoolean() @IsOptional() selectable?: boolean;
+  @IsBoolean() @IsOptional() active?: boolean;
+}
+class ProgramActiveDto {
+  @IsBoolean() active: boolean;
 }
 class ClientStatusDto {
   @IsIn(['active', 'suspended']) status: 'active' | 'suspended';
@@ -343,6 +364,59 @@ export class AdminController {
     @Query('limit') limit?: string,
   ) {
     return this.adminService.listLedger({ userId, walletId, entryType, page, limit });
+  }
+
+
+  // ── Commission plans (ADM-10 · IB-06) ─────────────────────────────────────
+  // Where the client configures the numbers ARCHITECTURE §12 leaves open:
+  // L1/L2 shares (§12.2), rates and ladder (§12.3), settlement window (§12.6)
+  // and rebate timing (§12.8). Nothing hardcoded, changeable without a deploy.
+  @Get('commission-plans')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('commissions.view')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'IB programs / commission plans, ordered by ladder position' })
+  @ApiOkResponse({ type: [IbProgramDto] })
+  listPrograms() {
+    return this.adminService.listPrograms();
+  }
+
+  @Post('commission-plans')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('commissions.manage')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Create a commission plan (validated: shares ≤ 100%, mode/value coherence)' })
+  @ApiOkResponse({ type: IbProgramDto })
+  createProgram(@Body() dto: ProgramDto, @Req() req: Request & { admin: Admin }) {
+    return this.adminService.createProgram(dto, req.admin);
+  }
+
+  @Put('commission-plans/:id')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('commissions.manage')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Update a commission plan — audited with before/after values' })
+  @ApiOkResponse({ type: IbProgramDto })
+  updateProgram(
+    @Param('id') id: string,
+    @Body() dto: ProgramDto,
+    @Req() req: Request & { admin: Admin },
+  ) {
+    return this.adminService.updateProgram(id, dto, req.admin);
+  }
+
+  @Patch('commission-plans/:id/active')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('commissions.manage')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Activate or deactivate a plan — plans are never deleted, accruals reference them' })
+  @ApiOkResponse({ type: IbProgramDto })
+  setProgramActive(
+    @Param('id') id: string,
+    @Body() dto: ProgramActiveDto,
+    @Req() req: Request & { admin: Admin },
+  ) {
+    return this.adminService.setProgramActive(id, dto.active, req.admin);
   }
 
   // ── RBAC: permission catalog, roles, admin directory (RBAC-02/07) ─────────

@@ -7,12 +7,14 @@ import { AdminGuard, MasterAdminGuard, PermissionsGuard } from './guards/admin.g
 import { ComplianceModule } from '../compliance/compliance.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { WalletModule } from '../wallet/wallet.module';
+import { PartnersModule } from '../partners/partners.module';
 
 @Module({
   imports: [
     ComplianceModule,
     PaymentsModule,
     WalletModule,
+    PartnersModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({

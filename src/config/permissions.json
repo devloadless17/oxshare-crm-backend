@@ -98,5 +98,19 @@
         "label": "View Ledger Entries"
       }
     ]
+  },
+  "commissions": {
+    "moduleName": "Commission Plans",
+    "description": "IB programs, rates, L1/L2 shares and settlement windows (ADM-10)",
+    "permissions": [
+      {
+        "key": "commissions.view",
+        "label": "View Commission Plans"
+      },
+      {
+        "key": "commissions.manage",
+        "label": "Create, Edit & Deactivate Plans"
+      }
+    ]
   }
 }

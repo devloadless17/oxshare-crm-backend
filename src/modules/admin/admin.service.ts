@@ -22,6 +22,7 @@ import { KycService } from '../compliance/kyc.service';
 import { EmailService } from '../email/email.service';
 import { TransactionsService } from '../payments/transactions.service';
 import { WalletService } from '../wallet/wallet.service';
+import { ProgramInput, ProgramsService } from '../partners/programs.service';
 import { Request, Response } from 'express';
 
 const ADMIN_COOKIE = 'admin_access_token';
@@ -36,6 +37,7 @@ export class AdminService {
     private readonly email: EmailService,
     private readonly transactions: TransactionsService,
     private readonly wallets: WalletService,
+    private readonly programs: ProgramsService,
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
@@ -569,6 +571,61 @@ export class AdminService {
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '50', 10) || 50,
     });
+  }
+
+
+  // ─── Commission plans (ADM-10 · IB-06) ────────────────────────────────────
+  // These values drive the commission engine, so every change is audited with
+  // before/after — "who changed the L1 share" must be answerable.
+  async listPrograms() {
+    return this.programs.findAll();
+  }
+
+  async createProgram(input: ProgramInput, actor: Admin) {
+    const row = await this.programs.create(input);
+    this.audit(actor.id, 'program.create', 'ib_program', row.id, {
+      name: row.name,
+      mode: row.mode,
+      method: row.method,
+      commissionValue: row.commissionValue,
+      l1Share: row.l1Share,
+      l2Share: row.l2Share,
+      settlementWindowHours: row.settlementWindowHours,
+      rebateOnClose: row.rebateOnClose,
+    });
+    return row;
+  }
+
+  async updateProgram(id: string, input: ProgramInput, actor: Admin) {
+    const before = await this.programs.findById(id);
+    const row = await this.programs.update(id, input);
+    this.audit(actor.id, 'program.update', 'ib_program', id, {
+      before: {
+        commissionValue: before.commissionValue,
+        rebateValue: before.rebateValue,
+        l1Share: before.l1Share,
+        l2Share: before.l2Share,
+        settlementWindowHours: before.settlementWindowHours,
+        rebateOnClose: before.rebateOnClose,
+      },
+      after: {
+        commissionValue: row.commissionValue,
+        rebateValue: row.rebateValue,
+        l1Share: row.l1Share,
+        l2Share: row.l2Share,
+        settlementWindowHours: row.settlementWindowHours,
+        rebateOnClose: row.rebateOnClose,
+      },
+    });
+    return row;
+  }
+
+  async setProgramActive(id: string, active: boolean, actor: Admin) {
+    const row = await this.programs.setActive(id, active);
+    this.audit(actor.id, active ? 'program.activate' : 'program.deactivate', 'ib_program', id, {
+      name: row.name,
+    });
+    return row;
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────

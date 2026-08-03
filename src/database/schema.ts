@@ -262,6 +262,61 @@ export const transactions = pgTable(
   ],
 );
 
+// ── ib_programs (IB-06 · ADM-10 · §5) ────────────────────────────────────────
+//
+// This table is the answer to the "open" commission decisions. §12.2 (L1/L2
+// split), §12.3 (ladder and rates), §12.6 (settlement window) and §12.8
+// (rebate timing) are not numbers to hardcode once someone emails them — the
+// feature list makes them ADMIN-CONFIGURED (ADM-10 "Commission plans CRUD,
+// including L1/L2 shares"; IB-16 "commission method configured in program
+// catalogue"). The client sets them in the admin UI, per program, and can
+// change them without a deploy.
+//
+// commissionMethod also settles D-11 by declaration rather than assumption:
+// instead of guessing what MT5's `spread` means, each program states how its
+// commission is computed and the engine implements the declared method.
+export const commissionModeEnum = pgEnum('commission_mode', ['commission', 'rebate', 'hybrid']);
+export const commissionMethodEnum = pgEnum('commission_method', [
+  'spread_share', // commissionValue = % of the deal spread (IB-16 default)
+  'per_lot',      // commissionValue = money per traded lot
+  'fixed_per_deal',
+]);
+
+export const ibPrograms = pgTable(
+  'ib_programs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    name: varchar('name', { length: 120 }).notNull().unique(),
+    description: text('description'),
+    /** Ladder position — lower is the entry tier (IB-06). */
+    position: integer('position').notNull().default(1),
+    mode: commissionModeEnum('mode').notNull().default('commission'),
+    method: commissionMethodEnum('method').notNull().default('spread_share'),
+    /** Money or percentage depending on `method` — a string either way (§6.1). */
+    commissionValue: numeric('commission_value', { precision: 28, scale: 8 }).notNull().default('0'),
+    /** Client rebate, used when mode is rebate|hybrid. */
+    rebateValue: numeric('rebate_value', { precision: 28, scale: 8 }).notNull().default('0'),
+    /** Split of the commission pool. Percentages, exact — never floats. */
+    l1Share: numeric('l1_share', { precision: 5, scale: 2 }).notNull().default('0'),
+    l2Share: numeric('l2_share', { precision: 5, scale: 2 }).notNull().default('0'),
+    /** §12.6 — per program, so the client sets it instead of us guessing. */
+    settlementWindowHours: integer('settlement_window_hours').notNull().default(24),
+    /**
+     * §12.8 rebate timing. FALSE (rebate waits for the same settlement window
+     * as commission) is the ARCHITECTURE recommendation: crediting on close
+     * pays out on trades that may need reversing, and Phase 1 has no clawback.
+     * Configurable, but the admin UI warns before enabling it.
+     */
+    rebateOnClose: boolean('rebate_on_close').notNull().default(false),
+    /** Whether an IB may select this program (§5 `selectable`). */
+    selectable: boolean('selectable').notNull().default(true),
+    active: boolean('active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('ib_programs_position_idx').on(t.position)],
+);
+
 // ── Audit log — APPEND ONLY (D-21). No UPDATE, no DELETE, ever. ──────────────
 export const auditLog = pgTable(
   'audit_log',
