@@ -1,6 +1,7 @@
 import * as bcrypt from 'bcryptjs';
 import { getDb } from './db';
-import { admins, rejectionReasons, roles, users } from './schema';
+import { admins, kycConfigSteps, rejectionReasons, roles, users } from './schema';
+import { DEFAULT_KYC_STEPS } from '../store/kyc-config.store';
 
 // Idempotent dev/bootstrap seeds — safe to run on every boot. Idempotency
 // lives in database constraints (unique email / role name / (context,label)),
@@ -65,6 +66,24 @@ export async function runSeeds(): Promise<void> {
     .insert(rejectionReasons)
     .values([...kycReasons, ...withdrawalReasons])
     .onConflictDoNothing();
+
+  // Default KYC onboarding steps — only when the config table is empty, so a
+  // builder-customized flow is never overwritten by a reboot.
+  const [existingStep] = await db.select().from(kycConfigSteps).limit(1);
+  if (!existingStep) {
+    await db.insert(kycConfigSteps).values(
+      DEFAULT_KYC_STEPS.map((s) => ({
+        id: s.id,
+        stepNumber: s.stepNumber,
+        slug: s.slug,
+        title: s.title,
+        description: s.description,
+        icon: s.icon,
+        enabled: s.enabled,
+        fields: s.fields as unknown as Record<string, unknown>[],
+      })),
+    );
+  }
 
   console.log('🌱 Seeds applied (idempotent): master role/admin, demo client, rejection reasons');
 }

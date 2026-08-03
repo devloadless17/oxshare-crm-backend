@@ -15,7 +15,7 @@ export class KycService {
 
   // ─── Get status ────────────────────────────────────────────────────────────
   async getStatus(userId: string) {
-    const submission = KycStore.getOrCreate(userId);
+    const submission = await KycStore.getOrCreate(userId);
     const user = await UsersStore.findById(userId);
     return {
       ...submission,
@@ -24,8 +24,8 @@ export class KycService {
   }
 
   // ─── Save step data ────────────────────────────────────────────────────────
-  saveStep(userId: string, step: string, data: Record<string, unknown>) {
-    const submission = KycStore.getOrCreate(userId);
+  async saveStep(userId: string, step: string, data: Record<string, unknown>) {
+    const submission = await KycStore.getOrCreate(userId);
 
     if (submission.status === 'approved') {
       throw new ForbiddenException('KYC already approved.');
@@ -42,30 +42,30 @@ export class KycService {
     else if (step === 'address') patch['addressProof'] = { ...submission.addressProof, ...data };
     else throw new BadRequestException(`Unknown step: ${step}`);
 
-    return KycStore.update(userId, patch as Parameters<typeof KycStore.update>[1]);
+    return await KycStore.update(userId, patch as Parameters<typeof KycStore.update>[1]);
   }
 
   // ─── Attach uploaded file to a step ────────────────────────────────────────
-  attachFile(
+  async attachFile(
     userId: string,
     field: string,
     filePath: string,
     fileName: string,
   ) {
-    const submission = KycStore.getOrCreate(userId);
+    const submission = await KycStore.getOrCreate(userId);
 
     if (field === 'doc_front') {
-      KycStore.update(userId, {
+      await KycStore.update(userId, {
         document: { ...submission.document, frontFilePath: filePath, frontFileName: fileName, docType: submission.document?.docType ?? 'passport' },
       });
     } else if (field === 'doc_back') {
-      KycStore.update(userId, {
+      await KycStore.update(userId, {
         document: { ...submission.document, backFilePath: filePath, backFileName: fileName, docType: submission.document?.docType ?? 'passport' },
       });
     } else if (field === 'selfie') {
-      KycStore.update(userId, { selfie: { filePath, fileName } });
+      await KycStore.update(userId, { selfie: { filePath, fileName } });
     } else if (field === 'address_proof' || field === 'address_proof_2') {
-      KycStore.update(userId, {
+      await KycStore.update(userId, {
         addressProof: {
           ...submission.addressProof,
           filePath: field === 'address_proof' ? filePath : submission.addressProof?.filePath || filePath,
@@ -84,7 +84,7 @@ export class KycService {
 
   // ─── Submit KYC ────────────────────────────────────────────────────────────
   async submit(userId: string) {
-    const submission = KycStore.getOrCreate(userId);
+    const submission = await KycStore.getOrCreate(userId);
     const user = await UsersStore.findById(userId);
 
     if (!submission.personalInfo && user?.firstName) {
@@ -92,48 +92,10 @@ export class KycService {
         firstName: user.firstName,
         lastName: user.lastName,
       };
-      KycStore.update(userId, { personalInfo: submission.personalInfo });
+      await KycStore.update(userId, { personalInfo: submission.personalInfo });
     }
 
-    // Auto-recover file paths from disk if in-memory store was reset
-    if (existsSync('./uploads/kyc')) {
-      try {
-        const files = readdirSync('./uploads/kyc');
-        if (files.length > 0) {
-          const updatedSub = KycStore.getOrCreate(userId);
-          if (!updatedSub.document?.frontFilePath) {
-            const frontFile = files.find((f) => f.includes('doc_front') || f.includes('passport')) || files[0];
-            KycStore.update(userId, {
-              document: {
-                ...updatedSub.document,
-                docType: updatedSub.document?.docType ?? 'passport',
-                frontFilePath: `./uploads/kyc/${frontFile}`,
-                frontFileName: frontFile,
-              },
-            });
-          }
-          if (!updatedSub.selfie?.filePath) {
-            const selfieFile = files.find((f) => f.includes('selfie')) || files[1] || files[0];
-            KycStore.update(userId, {
-              selfie: { filePath: `./uploads/kyc/${selfieFile}`, fileName: selfieFile },
-            });
-          }
-          if (!updatedSub.addressProof?.filePath) {
-            const addressFile = files.find((f) => f.includes('address')) || files[2] || files[0];
-            KycStore.update(userId, {
-              addressProof: {
-                ...updatedSub.addressProof,
-                docType: updatedSub.addressProof?.docType ?? 'utility_bill',
-                filePath: `./uploads/kyc/${addressFile}`,
-                fileName: addressFile,
-              },
-            });
-          }
-        }
-      } catch {}
-    }
-
-    const finalSub = KycStore.getOrCreate(userId);
+    const finalSub = await KycStore.getOrCreate(userId);
 
     if (!finalSub.personalInfo)
       throw new BadRequestException('Personal information is required before submitting.');
@@ -146,7 +108,7 @@ export class KycService {
 
     // A resubmission after rejection starts a fresh review — stale rejection
     // data must not follow it into the admin queue.
-    return KycStore.update(userId, {
+    return await KycStore.update(userId, {
       status: 'submitted',
       submittedAt: new Date(),
       rejectionReason: undefined,
@@ -160,7 +122,7 @@ export class KycService {
     const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
 
     const all = await Promise.all(
-      KycStore.findAll().map(async (sub) => {
+      (await KycStore.findAll()).map(async (sub) => {
         const user = await UsersStore.findById(sub.userId);
         return {
           ...sub,
@@ -201,7 +163,7 @@ export class KycService {
 
   // ─── Admin: get one ────────────────────────────────────────────────────────
   async getByUserId(userId: string) {
-    const submission = KycStore.findByUserId(userId);
+    const submission = await KycStore.findByUserId(userId);
     if (!submission) throw new NotFoundException('KYC submission not found.');
     const user = await UsersStore.findById(userId);
     return { ...submission, user };
@@ -209,10 +171,10 @@ export class KycService {
 
   // ─── Admin: approve ────────────────────────────────────────────────────────
   async approve(userId: string, adminId: string) {
-    const submission = KycStore.findByUserId(userId);
+    const submission = await KycStore.findByUserId(userId);
     if (!submission) throw new NotFoundException('KYC submission not found.');
 
-    KycStore.update(userId, {
+    await KycStore.update(userId, {
       status: 'approved',
       reviewedBy: adminId,
       reviewedAt: new Date(),
@@ -232,8 +194,8 @@ export class KycService {
   // ─── Admin: claim for review ───────────────────────────────────────────────
   // Marks a submitted KYC as under_review by this admin, so two reviewers
   // don't process the same submission concurrently.
-  claim(userId: string, adminId: string) {
-    const submission = KycStore.findByUserId(userId);
+  async claim(userId: string, adminId: string) {
+    const submission = await KycStore.findByUserId(userId);
     if (!submission) throw new NotFoundException('KYC submission not found.');
     if (submission.status !== 'submitted') {
       throw new BadRequestException(
@@ -242,17 +204,17 @@ export class KycService {
           : 'Only submitted KYC can be claimed for review.',
       );
     }
-    KycStore.update(userId, { status: 'under_review', reviewedBy: adminId });
+    await KycStore.update(userId, { status: 'under_review', reviewedBy: adminId });
     return this.getByUserId(userId);
   }
 
   // ─── Admin: reject ─────────────────────────────────────────────────────────
   async reject(userId: string, adminId: string, reason: string, rejectedFields: string[] = []) {
-    const submission = KycStore.findByUserId(userId);
+    const submission = await KycStore.findByUserId(userId);
     if (!submission) throw new NotFoundException('KYC submission not found.');
     const user = await UsersStore.findById(userId);
 
-    KycStore.update(userId, {
+    await KycStore.update(userId, {
       status: 'rejected',
       rejectionReason: reason,
       rejectedFields: rejectedFields,
@@ -269,14 +231,14 @@ export class KycService {
   }
 
   // ─── Reset User KYC ────────────────────────────────────────────────────────
-  resetKyc(userId: string) {
-    KycStore.resetUser(userId);
+  async resetKyc(userId: string) {
+    await KycStore.resetUser(userId);
     return { message: 'KYC data reset successfully.' };
   }
 
   // ─── Reset All KYC Submissions ──────────────────────────────────────────────
-  resetAllKyc() {
-    KycStore.clearAll();
+  async resetAllKyc() {
+    await KycStore.clearAll();
     if (existsSync('./uploads/kyc')) {
       try {
         const files = readdirSync('./uploads/kyc');

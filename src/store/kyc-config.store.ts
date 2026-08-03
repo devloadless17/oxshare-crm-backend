@@ -1,4 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
+import { asc, eq } from 'drizzle-orm';
+import { getDb } from '../database/db';
+import { kycConfigSteps } from '../database/schema';
 
 export interface KycFieldConfig {
   id: string;
@@ -21,7 +24,9 @@ export interface KycStepConfig {
   fields: KycFieldConfig[];
 }
 
-const defaultSteps: KycStepConfig[] = [
+// The five default onboarding steps. Seeded idempotently at bootstrap
+// (src/database/seed.ts); the builder edits the table from there.
+export const DEFAULT_KYC_STEPS: KycStepConfig[] = [
   {
     id: 'step-1',
     stepNumber: 1,
@@ -61,9 +66,7 @@ const defaultSteps: KycStepConfig[] = [
     description: 'Live selfie photo matching your identity document.',
     icon: 'Camera',
     enabled: true,
-    fields: [
-      { id: 'f-11', name: 'selfie', label: 'Selfie Photo', type: 'camera', required: true },
-    ],
+    fields: [{ id: 'f-11', name: 'selfie', label: 'Selfie Photo', type: 'camera', required: true }],
   },
   {
     id: 'step-4',
@@ -90,46 +93,89 @@ const defaultSteps: KycStepConfig[] = [
   },
 ];
 
-let stepsConfig: KycStepConfig[] = [...defaultSteps];
+type Row = typeof kycConfigSteps.$inferSelect;
+
+const toStep = (r: Row): KycStepConfig => ({
+  id: r.id,
+  stepNumber: r.stepNumber,
+  slug: r.slug,
+  title: r.title,
+  description: r.description ?? '',
+  icon: r.icon ?? 'FileText',
+  enabled: r.enabled,
+  fields: (r.fields as unknown as KycFieldConfig[]) ?? [],
+});
+
+const toRow = (s: KycStepConfig) => ({
+  id: s.id,
+  stepNumber: s.stepNumber,
+  slug: s.slug,
+  title: s.title,
+  description: s.description,
+  icon: s.icon,
+  enabled: s.enabled,
+  fields: s.fields as unknown as Record<string, unknown>[],
+});
 
 export const KycConfigStore = {
-  getSteps(): KycStepConfig[] {
-    return stepsConfig.sort((a, b) => a.stepNumber - b.stepNumber);
+  async getSteps(): Promise<KycStepConfig[]> {
+    const rows = await getDb()
+      .select()
+      .from(kycConfigSteps)
+      .orderBy(asc(kycConfigSteps.stepNumber));
+    return rows.map(toStep);
   },
 
-  setSteps(steps: KycStepConfig[]): KycStepConfig[] {
-    stepsConfig = steps.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
+  async setSteps(steps: KycStepConfig[]): Promise<KycStepConfig[]> {
+    const reindexed = steps.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
+    const db = getDb();
+    await db.transaction(async (tx) => {
+      await tx.delete(kycConfigSteps);
+      if (reindexed.length > 0) await tx.insert(kycConfigSteps).values(reindexed.map(toRow));
+    });
     return this.getSteps();
   },
 
-  addStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>): KycStepConfig {
-    const id = `step-${uuidv4()}`;
+  async addStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>): Promise<KycStepConfig> {
+    const existing = await this.getSteps();
     const newStep: KycStepConfig = {
       ...stepData,
-      id,
-      stepNumber: stepsConfig.length + 1,
+      id: `step-${uuidv4()}`,
+      stepNumber: existing.length + 1,
     };
-    stepsConfig.push(newStep);
+    await getDb().insert(kycConfigSteps).values(toRow(newStep));
     return newStep;
   },
 
-  updateStep(id: string, patch: Partial<KycStepConfig>): KycStepConfig | undefined {
-    const idx = stepsConfig.findIndex((s) => s.id === id);
-    if (idx === -1) return undefined;
-    stepsConfig[idx] = { ...stepsConfig[idx], ...patch };
-    return stepsConfig[idx];
+  async updateStep(id: string, patch: Partial<KycStepConfig>): Promise<KycStepConfig | undefined> {
+    const [existing] = await getDb()
+      .select()
+      .from(kycConfigSteps)
+      .where(eq(kycConfigSteps.id, id))
+      .limit(1);
+    if (!existing) return undefined;
+    const merged = { ...toStep(existing), ...patch, id };
+    const [row] = await getDb()
+      .update(kycConfigSteps)
+      .set(toRow(merged))
+      .where(eq(kycConfigSteps.id, id))
+      .returning();
+    return toStep(row);
   },
 
-  deleteStep(id: string): boolean {
-    const initialLen = stepsConfig.length;
-    stepsConfig = stepsConfig.filter((s) => s.id !== id);
-    // Re-index step numbers
-    stepsConfig = stepsConfig.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
-    return stepsConfig.length < initialLen;
+  async deleteStep(id: string): Promise<boolean> {
+    const deleted = await getDb()
+      .delete(kycConfigSteps)
+      .where(eq(kycConfigSteps.id, id))
+      .returning();
+    if (deleted.length === 0) return false;
+    // Re-index the remaining steps
+    const remaining = await this.getSteps();
+    await this.setSteps(remaining);
+    return true;
   },
 
-  resetDefaults(): KycStepConfig[] {
-    stepsConfig = [...defaultSteps];
-    return this.getSteps();
+  async resetDefaults(): Promise<KycStepConfig[]> {
+    return this.setSteps([...DEFAULT_KYC_STEPS]);
   },
 };

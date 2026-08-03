@@ -1,3 +1,7 @@
+import { eq } from 'drizzle-orm';
+import { getDb } from '../database/db';
+import { kycSubmissions } from '../database/schema';
+
 export type KycStatus =
   | 'not_started'
   | 'in_progress'
@@ -53,45 +57,96 @@ export interface KycSubmission {
   updatedAt: Date;
 }
 
-const submissions = new Map<string, KycSubmission>();
+type Row = typeof kycSubmissions.$inferSelect;
+
+const toSubmission = (r: Row): KycSubmission => ({
+  userId: r.userId,
+  status: r.status,
+  rejectionReason: r.rejectionReason ?? undefined,
+  rejectedFields: r.rejectedFields ?? undefined,
+  reviewedBy: r.reviewedBy ?? undefined,
+  reviewedAt: r.reviewedAt ?? undefined,
+  submittedAt: r.submittedAt ?? undefined,
+  personalInfo: (r.personalInfo as unknown as PersonalInfo) ?? undefined,
+  document: (r.document as unknown as DocumentInfo) ?? undefined,
+  selfie: (r.selfie as unknown as SelfieInfo) ?? undefined,
+  addressProof: (r.addressProof as unknown as AddressInfo) ?? undefined,
+  createdAt: r.createdAt,
+  updatedAt: r.updatedAt,
+});
+
+// Explicit nulls clear columns (e.g. resubmission clears rejection data);
+// absent keys leave them untouched.
+const toColumns = (patch: Partial<KycSubmission>) => {
+  const set: Record<string, unknown> = { updatedAt: new Date() };
+  const map: Array<[keyof KycSubmission, string]> = [
+    ['status', 'status'],
+    ['rejectionReason', 'rejectionReason'],
+    ['rejectedFields', 'rejectedFields'],
+    ['reviewedBy', 'reviewedBy'],
+    ['reviewedAt', 'reviewedAt'],
+    ['submittedAt', 'submittedAt'],
+    ['personalInfo', 'personalInfo'],
+    ['document', 'document'],
+    ['selfie', 'selfie'],
+    ['addressProof', 'addressProof'],
+  ];
+  for (const [key, col] of map) {
+    if (key in patch) set[col] = patch[key] ?? null;
+  }
+  return set;
+};
 
 export const KycStore = {
-  getOrCreate(userId: string): KycSubmission {
-    if (!submissions.has(userId)) {
-      submissions.set(userId, {
-        userId,
-        status: 'not_started',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-    }
-    return submissions.get(userId)!;
+  async getOrCreate(userId: string): Promise<KycSubmission> {
+    const existing = await this.findByUserId(userId);
+    if (existing) return existing;
+    const [row] = await getDb()
+      .insert(kycSubmissions)
+      .values({ userId, status: 'not_started' })
+      .onConflictDoNothing({ target: kycSubmissions.userId })
+      .returning();
+    // Conflict means a concurrent create won — read it back.
+    return row ? toSubmission(row) : (await this.findByUserId(userId))!;
   },
 
-  findByUserId(userId: string): KycSubmission | undefined {
-    return submissions.get(userId);
+  async findByUserId(userId: string): Promise<KycSubmission | undefined> {
+    const [row] = await getDb()
+      .select()
+      .from(kycSubmissions)
+      .where(eq(kycSubmissions.userId, userId))
+      .limit(1);
+    return row ? toSubmission(row) : undefined;
   },
 
-  update(userId: string, patch: Partial<KycSubmission>): KycSubmission {
-    const existing = this.getOrCreate(userId);
-    const updated: KycSubmission = { ...existing, ...patch, updatedAt: new Date() };
-    submissions.set(userId, updated);
-    return updated;
+  async update(userId: string, patch: Partial<KycSubmission>): Promise<KycSubmission> {
+    await this.getOrCreate(userId);
+    const [row] = await getDb()
+      .update(kycSubmissions)
+      .set(toColumns(patch))
+      .where(eq(kycSubmissions.userId, userId))
+      .returning();
+    return toSubmission(row);
   },
 
-  findAll(): KycSubmission[] {
-    return [...submissions.values()];
+  async findAll(): Promise<KycSubmission[]> {
+    const rows = await getDb().select().from(kycSubmissions);
+    return rows.map(toSubmission);
   },
 
-  findByStatus(status: KycStatus): KycSubmission[] {
-    return [...submissions.values()].filter((s) => s.status === status);
+  async findByStatus(status: KycStatus): Promise<KycSubmission[]> {
+    const rows = await getDb()
+      .select()
+      .from(kycSubmissions)
+      .where(eq(kycSubmissions.status, status));
+    return rows.map(toSubmission);
   },
 
-  clearAll() {
-    submissions.clear();
+  async clearAll(): Promise<void> {
+    await getDb().delete(kycSubmissions);
   },
 
-  resetUser(userId: string) {
-    submissions.delete(userId);
+  async resetUser(userId: string): Promise<void> {
+    await getDb().delete(kycSubmissions).where(eq(kycSubmissions.userId, userId));
   },
 };

@@ -43,8 +43,8 @@ export class KycController {
 
   @Get('config')
   @ApiOperation({ summary: 'Get active KYC onboarding steps' })
-  getConfig() {
-    return KycConfigStore.getSteps().filter((s) => s.enabled);
+  async getConfig() {
+    return (await KycConfigStore.getSteps()).filter((s) => s.enabled);
   }
 
   @Get('status')

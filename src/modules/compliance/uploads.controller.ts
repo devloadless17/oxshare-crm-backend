@@ -73,7 +73,7 @@ export class UploadsController {
         const payload = this.jwt.verify<{ sub: string }>(clientToken, {
           secret: this.config.get('JWT_ACCESS_SECRET', 'oxshare-access-secret-dev'),
         });
-        if (this.submissionReferencesFile(payload.sub, fileName)) return true;
+        if (await this.submissionReferencesFile(payload.sub, fileName)) return true;
         throw new ForbiddenException('You can only access your own documents.');
       } catch (e) {
         if (e instanceof ForbiddenException) throw e;
@@ -83,8 +83,8 @@ export class UploadsController {
     throw new UnauthorizedException('Authentication required to access documents.');
   }
 
-  private submissionReferencesFile(userId: string, fileName: string): boolean {
-    const sub = KycStore.findByUserId(userId);
+  private async submissionReferencesFile(userId: string, fileName: string): Promise<boolean> {
+    const sub = await KycStore.findByUserId(userId);
     if (!sub) return false;
     const paths = [
       sub.document?.frontFilePath,
