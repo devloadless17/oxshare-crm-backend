@@ -1,9 +1,11 @@
-import { v4 as uuidv4 } from 'uuid';
+import { and, count, desc, eq, SQL } from 'drizzle-orm';
+import { getDb } from '../database/db';
+import { auditLog } from '../database/schema';
 
 // D-21: admin action log — actor, action, subject, details, timestamp.
-// Append-only by design: the store exposes no update or delete. History not
-// recorded is history lost, so this exists from the first admin slice even
-// though Rev 9 doesn't list it. Moves to an append-only Postgres table later.
+// First Postgres-backed store: entries survive backend restarts. Append-only
+// by design — this store exposes no update and no delete, and none may ever
+// be added. History not recorded is history lost.
 export interface AuditEntry {
   id: string;
   actorId: string;
@@ -15,34 +17,55 @@ export interface AuditEntry {
   createdAt: Date;
 }
 
-const entries: AuditEntry[] = [];
-
 export const AuditLogStore = {
-  record(data: Omit<AuditEntry, 'id' | 'createdAt'>): AuditEntry {
-    const entry: AuditEntry = { ...data, id: uuidv4(), createdAt: new Date() };
-    entries.push(entry);
-    return entry;
+  async record(data: Omit<AuditEntry, 'id' | 'createdAt'>): Promise<AuditEntry> {
+    const [row] = await getDb()
+      .insert(auditLog)
+      .values({
+        actorId: data.actorId,
+        actorEmail: data.actorEmail,
+        action: data.action,
+        subjectType: data.subjectType,
+        subjectId: data.subjectId,
+        details: data.details,
+      })
+      .returning();
+    return { ...row, details: row.details ?? undefined };
   },
 
-  findAll(filter: {
-    page?: number;
-    limit?: number;
-    action?: string;
-    subjectType?: string;
-    actorId?: string;
-  } = {}) {
+  async findAll(
+    filter: {
+      page?: number;
+      limit?: number;
+      action?: string;
+      subjectType?: string;
+      actorId?: string;
+    } = {},
+  ) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
 
-    let list = [...entries];
-    if (filter.action) list = list.filter((e) => e.action === filter.action);
-    if (filter.subjectType) list = list.filter((e) => e.subjectType === filter.subjectType);
-    if (filter.actorId) list = list.filter((e) => e.actorId === filter.actorId);
+    const conditions: SQL[] = [];
+    if (filter.action) conditions.push(eq(auditLog.action, filter.action));
+    if (filter.subjectType) conditions.push(eq(auditLog.subjectType, filter.subjectType));
+    if (filter.actorId) conditions.push(eq(auditLog.actorId, filter.actorId));
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-    list.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const db = getDb();
+    const [rows, [{ value: total }]] = await Promise.all([
+      db
+        .select()
+        .from(auditLog)
+        .where(where)
+        .orderBy(desc(auditLog.createdAt))
+        .limit(limit)
+        .offset((page - 1) * limit),
+      db.select({ value: count() }).from(auditLog).where(where),
+    ]);
+
     return {
-      items: list.slice((page - 1) * limit, page * limit),
-      total: list.length,
+      items: rows.map((r) => ({ ...r, details: r.details ?? undefined })),
+      total,
       page,
       limit,
     };

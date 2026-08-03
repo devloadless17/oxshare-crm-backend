@@ -1,118 +1,158 @@
 import {
-  pgTable,
-  uuid,
-  varchar,
-  text,
   boolean,
+  index,
   integer,
-  timestamp,
   jsonb,
   pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+  varchar,
 } from 'drizzle-orm/pg-core';
 
-// Enums
-export const roleEnum = pgEnum('role', ['CLIENT', 'ADMIN', 'SUPER_ADMIN']);
-export const userStatusEnum = pgEnum('user_status', [
-  'PENDING_VERIFICATION',
-  'ACTIVE',
-  'SUSPENDED',
-]);
-export const tokenTypeEnum = pgEnum('token_type', [
-  'EMAIL_VERIFY',
-  'PASSWORD_RESET',
-]);
-export const kycStatusEnum = pgEnum('kyc_status', [
-  'PENDING',
-  'APPROVED',
-  'REJECTED',
-  'CHANGES_REQUESTED',
-]);
-export const fieldTypeEnum = pgEnum('field_type', [
-  'text',
-  'number',
-  'select',
-  'file',
-  'date',
-  'checkbox',
-]);
+// Drizzle schema for the LIVE domain model, aligned with ARCHITECTURE §5 where
+// that section defines the table (users) and with the in-memory stores being
+// migrated (src/store/*.store.ts) everywhere else.
+//
+// Deliberately NOT here yet: the money/trading tables (wallets, ledger_entries,
+// commission_accruals, transactions, payouts, deals, trading_accounts,
+// ib_profiles/programs, referral_attributions). They land with the money
+// milestone together with the §11 acceptance tests — their UNIQUE constraints
+// ARE the idempotency design and must not be scaffolded casually.
 
-// 1. Dynamic System Roles Table
+export const userTypeEnum = pgEnum('user_type', ['individual', 'referral', 'partner']);
+export const userStatusEnum = pgEnum('user_status', ['active', 'pending', 'suspended']);
+export const kycStatusEnum = pgEnum('kyc_status', [
+  'not_started',
+  'in_progress',
+  'submitted',
+  'under_review',
+  'approved',
+  'rejected',
+]);
+export const adminRoleEnum = pgEnum('admin_role', ['master_admin', 'sub_admin']);
+export const rejectionContextEnum = pgEnum('rejection_context', ['kyc', 'withdrawal']);
+
+// ── users (ARCHITECTURE §5; indexes per "Required indexes") ──────────────────
+export const users = pgTable(
+  'users',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    email: varchar('email', { length: 255 }).notNull().unique(),
+    passwordHash: varchar('password_hash', { length: 255 }).notNull(),
+    firstName: varchar('first_name', { length: 100 }).notNull(),
+    lastName: varchar('last_name', { length: 100 }).notNull(),
+    type: userTypeEnum('type').notNull().default('individual'),
+    status: userStatusEnum('status').notNull().default('active'),
+    verificationLevel: integer('verification_level').notNull().default(0),
+    emailVerified: boolean('email_verified').notNull().default(false),
+    emailVerificationToken: varchar('email_verification_token', { length: 255 }),
+    emailVerificationExpiry: timestamp('email_verification_expiry', { withTimezone: true }),
+    refreshToken: text('refresh_token'),
+    country: varchar('country', { length: 100 }),
+    phone: varchar('phone', { length: 32 }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('users_type_idx').on(t.type),
+    index('users_status_idx').on(t.status),
+    index('users_verification_level_idx').on(t.verificationLevel),
+    index('users_created_at_idx').on(t.createdAt),
+    index('users_country_idx').on(t.country),
+  ],
+);
+
+// ── RBAC ─────────────────────────────────────────────────────────────────────
 export const roles = pgTable('roles', {
   id: uuid('id').defaultRandom().primaryKey(),
   name: varchar('name', { length: 100 }).notNull().unique(),
   description: text('description'),
-  permissions: jsonb('permissions').$type<string[]>().default([]).notNull(),
-  isSystem: boolean('is_system').default(false).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  permissions: jsonb('permissions').$type<string[]>().notNull().default([]),
+  isSystem: boolean('is_system').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-// 2. Users Table
-export const users = pgTable('users', {
+export const admins = pgTable('admins', {
   id: uuid('id').defaultRandom().primaryKey(),
   email: varchar('email', { length: 255 }).notNull().unique(),
   passwordHash: varchar('password_hash', { length: 255 }).notNull(),
-  firstName: varchar('first_name', { length: 100 }),
-  lastName: varchar('last_name', { length: 100 }),
-  role: roleEnum('role').default('CLIENT').notNull(),
-  roleId: uuid('role_id').references(() => roles.id, { onDelete: 'set null' }),
-  status: userStatusEnum('status').default('PENDING_VERIFICATION').notNull(),
-  isEmailVerified: boolean('is_email_verified').default(false).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  name: varchar('name', { length: 100 }).notNull(),
+  role: adminRoleEnum('role').notNull().default('sub_admin'),
+  permissions: jsonb('permissions').$type<string[]>().notNull().default([]),
+  roleId: uuid('role_id').references(() => roles.id, { onDelete: 'restrict' }),
+  refreshToken: text('refresh_token'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-// 3. Verification Tokens Table
-export const verificationTokens = pgTable('verification_tokens', {
+export const adminInvites = pgTable('admin_invites', {
   id: uuid('id').defaultRandom().primaryKey(),
-  userId: uuid('user_id')
-    .references(() => users.id, { onDelete: 'cascade' })
-    .notNull(),
+  email: varchar('email', { length: 255 }).notNull(),
+  name: varchar('name', { length: 100 }).notNull(),
   token: varchar('token', { length: 255 }).notNull().unique(),
-  type: tokenTypeEnum('type').notNull(),
-  expiresAt: timestamp('expires_at').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  role: adminRoleEnum('role').notNull().default('sub_admin'),
+  roleId: uuid('role_id').references(() => roles.id, { onDelete: 'set null' }),
+  permissions: jsonb('permissions').$type<string[]>(),
+  invitedBy: uuid('invited_by').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  accepted: boolean('accepted').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-// 4. Dynamic Admin-Configured KYC Fields Table
-export const kycFields = pgTable('kyc_fields', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  fieldName: varchar('field_name', { length: 100 }).notNull().unique(),
-  label: varchar('label', { length: 255 }).notNull(),
-  fieldType: fieldTypeEnum('field_type').notNull(),
-  options: jsonb('options').$type<string[]>(),
-  isRequired: boolean('is_required').default(true).notNull(),
-  isActive: boolean('is_active').default(true).notNull(),
-  sortOrder: integer('sort_order').default(0).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+// ── Compliance / KYC ─────────────────────────────────────────────────────────
+export const kycSubmissions = pgTable(
+  'kyc_submissions',
+  {
+    userId: uuid('user_id').primaryKey(), // one submission per user (FSD lifecycle)
+    status: kycStatusEnum('status').notNull().default('not_started'),
+    personalInfo: jsonb('personal_info').$type<Record<string, string>>(),
+    document: jsonb('document').$type<Record<string, string>>(),
+    selfie: jsonb('selfie').$type<Record<string, string>>(),
+    addressProof: jsonb('address_proof').$type<Record<string, string>>(),
+    rejectionReason: text('rejection_reason'),
+    rejectedFields: jsonb('rejected_fields').$type<string[]>(),
+    submittedAt: timestamp('submitted_at', { withTimezone: true }),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+    reviewedBy: uuid('reviewed_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('kyc_submissions_status_idx').on(t.status)],
+);
+
+export const kycConfigSteps = pgTable('kyc_config_steps', {
+  id: text('id').primaryKey(), // human slugs like 'step-personal' from the builder
+  stepNumber: integer('step_number').notNull(),
+  slug: varchar('slug', { length: 100 }).notNull(),
+  title: varchar('title', { length: 200 }).notNull(),
+  description: text('description'),
+  icon: varchar('icon', { length: 50 }),
+  enabled: boolean('enabled').notNull().default(true),
+  fields: jsonb('fields').$type<Record<string, unknown>[]>().notNull().default([]),
 });
 
-// 5. KYC Submissions Table
-export const kycSubmissions = pgTable('kyc_submissions', {
+export const rejectionReasons = pgTable('rejection_reasons', {
   id: uuid('id').defaultRandom().primaryKey(),
-  userId: uuid('user_id')
-    .references(() => users.id, { onDelete: 'cascade' })
-    .notNull(),
-  status: kycStatusEnum('status').default('PENDING').notNull(),
-  rejectionReason: text('rejection_reason'),
-  reviewedBy: uuid('reviewed_by').references(() => users.id, { onDelete: 'set null' }),
-  reviewedAt: timestamp('reviewed_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  context: rejectionContextEnum('context').notNull(),
+  label: varchar('label', { length: 500 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-// 6. KYC Submitted Values Table
-export const kycFieldValues = pgTable('kyc_field_values', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  submissionId: uuid('submission_id')
-    .references(() => kycSubmissions.id, { onDelete: 'cascade' })
-    .notNull(),
-  fieldId: uuid('field_id')
-    .references(() => kycFields.id, { onDelete: 'cascade' })
-    .notNull(),
-  valueText: text('value_text'),
-  fileUrl: text('file_url'),
-  fileName: varchar('file_name', { length: 255 }),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+// ── Audit log — APPEND ONLY (D-21). No UPDATE, no DELETE, ever. ──────────────
+export const auditLog = pgTable(
+  'audit_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    actorId: uuid('actor_id').notNull(),
+    actorEmail: varchar('actor_email', { length: 255 }).notNull(),
+    action: varchar('action', { length: 100 }).notNull(),
+    subjectType: varchar('subject_type', { length: 100 }).notNull(),
+    subjectId: varchar('subject_id', { length: 255 }).notNull(),
+    details: jsonb('details').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('audit_log_created_at_idx').on(t.createdAt),
+    index('audit_log_action_idx').on(t.action),
+  ],
+);

@@ -181,14 +181,16 @@ export class AdminService {
     details?: Record<string, unknown>,
   ) {
     const actor = AdminsStore.findById(actorId);
-    AuditLogStore.record({
+    // Fire-and-forget: an audit-write failure must never fail the admin action,
+    // but it must be loud in the logs.
+    void AuditLogStore.record({
       actorId,
       actorEmail: actor?.email ?? 'unknown',
       action,
       subjectType,
       subjectId,
       details,
-    });
+    }).catch((err) => console.error('[audit] failed to record admin action:', action, err?.message ?? err));
   }
 
   listAuditLog(query: { page?: string; limit?: string; action?: string; subjectType?: string }) {
