@@ -55,6 +55,142 @@ export default tseslint.config(
     },
   },
   {
+    // ── §6.1: monetary values are strings and decimals, never floats ────────
+    // Verified 0 violations when this landed; the rule keeps it that way.
+    // `money.ts` owns every arithmetic operation and uses decimal.js.
+    files: ['src/modules/wallet/**/*.ts', 'src/modules/partners/**/*.ts', 'src/modules/payments/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-globals': [
+        'error',
+        {
+          name: 'parseFloat',
+          message:
+            'ARCHITECTURE §6.1: never coerce a monetary value to a float. Use decimal.js via modules/wallet/money.ts.',
+        },
+        {
+          name: 'parseInt',
+          message:
+            'Suspicious in a money path. If this is not money, use Number.parseInt with an explicit radix.',
+        },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "CallExpression[callee.name='Number']",
+          message:
+            'ARCHITECTURE §6.1: Number() on a monetary string silently truncates past 2^53. Use decimal.js via modules/wallet/money.ts.',
+        },
+      ],
+    },
+  },
+
+  {
+    // ── The money path declares its dependencies ────────────────────────────
+    // These four services used to call the module-level getDb() singleton from
+    // inside each method. They now take the db by constructor injection, which
+    // is behaviour-identical (DRIZZLE_DB's factory *is* getDb) but visible.
+    // Reaching for the global again would silently undo that.
+    files: [
+      'src/modules/wallet/**/*.ts',
+      'src/modules/partners/**/*.ts',
+      'src/modules/payments/**/*.ts',
+    ],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '../../database/db',
+              importNames: ['getDb'],
+              message:
+                'Inject the db instead: `@Inject(DRIZZLE_DB) private readonly db: Db`. Type-only imports (Db, Executor) from this module are fine.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  {
+    // ── Domain code must not know about HTTP ────────────────────────────────
+    // Services and stores throw DomainError subclasses; AllExceptionsFilter is
+    // the single place that maps them to status codes. Verified 0 violations
+    // when this landed — HttpException appears only in controllers, guards,
+    // strategies and the filter, which is the transport edge and correct.
+    files: ['src/**/*.service.ts', 'src/store/**/*.ts', 'src/modules/partners/commission.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@nestjs/common',
+              importNames: [
+                'HttpException',
+                'BadRequestException',
+                'UnauthorizedException',
+                'ForbiddenException',
+                'NotFoundException',
+                'ConflictException',
+                'InternalServerErrorException',
+                'HttpStatus',
+              ],
+              message:
+                'Throw a DomainError from common/errors/domain-errors.ts instead. AllExceptionsFilter maps it to a status code — that mapping lives in exactly one place on purpose.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  {
+    // ── Layering direction ─────────────────────────────────────────────────
+    // The repository and shared layers may not depend on feature modules. This
+    // is what actually prevents import cycles, and it does so without pulling in
+    // eslint-plugin-import (whose no-cycle rule rebuilds the whole module graph
+    // on every run). Measured: 0 cycles across src/ when this landed.
+    files: ['src/store/**/*.ts', 'src/common/**/*.ts', 'src/config/**/*.ts', 'src/database/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/modules/**', '../modules/*', '../../modules/*'],
+              message:
+                'Layering inversion: store/, common/, config/ and database/ are depended UPON by modules, never the reverse. Move the shared piece down, or invert with an interface.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  {
+    // The two pure seams (ARCHITECTURE §8.6). No DB, no HTTP, no Nest — that is
+    // what makes them unit-testable without Testcontainers.
+    files: ['src/modules/partners/commission.ts', 'src/modules/wallet/money.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@nestjs/*', 'drizzle-orm*', '**/database/*', '**/store/*'],
+              message:
+                'ARCHITECTURE §8.6: this file is a pure seam — no DB, no HTTP, no framework. Put anything needing those in the sibling *.service.ts.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  {
     // Bootstrap and seeding legitimately write to stdout before a logger exists.
     files: ['src/main.ts', 'src/database/seed.ts'],
     rules: { 'no-console': 'off' },
@@ -66,6 +202,10 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-member-access': 'off',
       '@typescript-eslint/no-explicit-any': 'off',
+      // no-console guards the structured-logging path and once caught a leaked
+      // verification token on stdout. Neither concern applies in a spec, where
+      // writing a diagnostic for the person reading the run IS the point.
+      'no-console': 'off',
     },
   },
 );

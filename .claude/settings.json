@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post-edit.sh",
+            "timeout": 120,
+            "statusMessage": "Gating the file you just edited"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/typecheck-async.sh",
+            "asyncRewake": true,
+            "timeout": 300,
+            "rewakeSummary": "Project typecheck failed",
+            "statusMessage": "Type-checking the project"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre-stop.sh",
+            "timeout": 600,
+            "statusMessage": "Running the full repo gate before finishing"
+          }
+        ]
+      }
+    ]
+  }
+}

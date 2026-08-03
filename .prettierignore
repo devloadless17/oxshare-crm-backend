@@ -1,0 +1,8 @@
+# Drizzle-generated SQL and journal. Hand-editing migrations is forbidden
+# (see CLAUDE.md); formatting them is the same mistake with extra steps.
+src/database/migrations/
+
+# Build output and dependencies
+dist/
+node_modules/
+coverage/

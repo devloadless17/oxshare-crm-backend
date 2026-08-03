@@ -1,0 +1,7 @@
+# Fast gate only: prettier + eslint --fix on staged files, via the same
+# scripts/gate-file.sh that the Claude Code PostToolUse hook runs.
+#
+# Deliberately NOT here: the test suites and the project typecheck. A commit gate
+# that takes minutes gets bypassed with --no-verify, and a bypassed gate is worse
+# than an honest CI failure. Those run in the Stop hook and in CI.
+npx --no-install lint-staged

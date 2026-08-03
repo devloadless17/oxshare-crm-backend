@@ -19,14 +19,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
 
-      # `npm ci` fails on the committed lockfile (missing Babel/Jest tree),
-      # so install until that is regenerated — see the repo CLAUDE.md.
+      # `npm ci` works again: the dead "jest" config block and its ts-jest
+      # dependency were removed (the repo runs Vitest) and the lockfile
+      # regenerated. Reproducible installs matter most on the money repo.
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Type-check
         run: npx tsc --noEmit
+
+      # Formatting is a gate, not a preference: the two frontends keep several
+      # deliberately identical "twin" files, and unformatted code makes a real
+      # behavioural diff between them impossible to spot.
+      - name: Format check
+        run: npm run format:check
 
       # No continue-on-error: this gate previously passed because no ESLint
       # config existed at all, which let a floating promise on an authorization
