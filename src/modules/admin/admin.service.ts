@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AdminsStore, InvitesStore, Admin } from '../../store/admins.store';
 import { KycConfigStore, KycStepConfig } from '../../store/kyc-config.store';
-import { RolesStore } from '../../store/roles.store';
+import { RolesStore, resolvePermissions } from '../../store/roles.store';
 import { RejectionReasonsStore, RejectionContext } from '../../store/rejection-reasons.store';
 import { UsersStore } from '../../store/users.store';
 import { AuditLogStore } from '../../store/audit-log.store';
@@ -265,6 +265,20 @@ export class AdminService {
     const role = RolesStore.findById(id);
     if (!role) throw new NotFoundException('Role not found.');
     if (role.isSystem) throw new BadRequestException('System roles cannot be deleted.');
+    // A role in use cannot be deleted — silently orphaning its admins would
+    // leave them running on the stale per-admin snapshot.
+    const holders = AdminsStore.findByRoleId(id);
+    if (holders.length > 0) {
+      throw new ConflictException(
+        `Role is assigned to ${holders.length} admin(s). Reassign them first.`,
+      );
+    }
+    const pending = InvitesStore.findPendingByRoleId(id);
+    if (pending.length > 0) {
+      throw new ConflictException(
+        `Role is referenced by ${pending.length} pending invite(s). Wait for expiry or invite again with another role.`,
+      );
+    }
     RolesStore.delete(id);
     if (actorId) this.audit(actorId, 'role.delete', 'role', id, { name: role.name });
     return { message: 'Role deleted.' };
@@ -460,6 +474,8 @@ export class AdminService {
 
   private sanitize(admin: Admin) {
     const { passwordHash, refreshToken, ...safe } = admin;
-    return safe;
+    // Surface the LIVE permission set (role-derived when roleId is set) so the
+    // frontend's nav gating always matches what the guards will enforce.
+    return { ...safe, permissions: resolvePermissions(admin.roleId, admin.permissions) };
   }
 }

@@ -10,6 +10,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { Admin, AdminsStore } from '../../../store/admins.store';
+import { resolvePermissions } from '../../../store/roles.store';
 import { Request } from 'express';
 
 type AdminRequest = Request & { admin?: Admin };
@@ -104,5 +105,7 @@ function authenticateAdmin(req: AdminRequest, jwt: JwtService, config: ConfigSer
 
   const admin = AdminsStore.findById(adminId);
   if (!admin) throw new UnauthorizedException('Admin not found.');
-  return admin;
+  // Role-derived permissions resolve live: editing a role takes effect on the
+  // next request from every admin holding it — no re-login, no stale grants.
+  return { ...admin, permissions: resolvePermissions(admin.roleId, admin.permissions) };
 }

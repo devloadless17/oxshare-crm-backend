@@ -78,6 +78,10 @@ export const AdminsStore = {
   findAll(): Admin[] {
     return [...admins.values()];
   },
+
+  findByRoleId(roleId: string): Admin[] {
+    return [...admins.values()].filter((a) => a.roleId === roleId);
+  },
 };
 
 export const InvitesStore = {
@@ -95,5 +99,12 @@ export const InvitesStore = {
   markAccepted(token: string): void {
     const invite = invites.get(token);
     if (invite) invites.set(token, { ...invite, accepted: true });
+  },
+
+  findPendingByRoleId(roleId: string): AdminInvite[] {
+    const now = Date.now();
+    return [...invites.values()].filter(
+      (i) => i.roleId === roleId && !i.accepted && i.expiresAt.getTime() > now,
+    );
   },
 };

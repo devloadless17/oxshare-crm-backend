@@ -56,3 +56,21 @@ export const RolesStore = {
     return roles.delete(id);
   },
 };
+
+/**
+ * The permissions an admin holds RIGHT NOW.
+ *
+ * When the admin was assigned via a role, the role is the single source of
+ * truth — editing a role must immediately grant/revoke for every admin holding
+ * it (RBAC-02: "granted permissions only"). The per-admin snapshot is only a
+ * fallback for admins invited with explicit permissions (no roleId) or whose
+ * role no longer exists (deletion is blocked while assigned, so that means a
+ * pre-existing token raced a delete).
+ */
+export function resolvePermissions(roleId: string | undefined, snapshot: string[]): string[] {
+  if (roleId) {
+    const role = roles.get(roleId);
+    if (role) return role.permissions;
+  }
+  return snapshot;
+}
