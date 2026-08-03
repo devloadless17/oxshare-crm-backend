@@ -4,6 +4,7 @@ import { getDb } from '../../database/db';
 import {
   commissionAccruals,
   deals,
+  ledgerEntries,
   ibProfiles,
   ibPrograms,
   referralAttributions,
@@ -11,6 +12,13 @@ import {
 } from '../../database/schema';
 import { WalletService } from '../wallet/wallet.service';
 import { IbNode, availableAt, calculate, resolveChain } from './commission';
+
+/** Thrown to roll back when a concurrent worker already confirmed an accrual. */
+class AccrualAlreadyConfirmed extends Error {
+  constructor(accrualId: string) {
+    super(`Accrual ${accrualId} was confirmed by another worker.`);
+  }
+}
 
 export interface IngestDealInput {
   mt5Ticket: string;
@@ -190,41 +198,123 @@ export class CommissionService {
    * there first the rowcount is zero and we skip, exactly like §8.7's payout
    * guard. Running this twice concurrently cannot double-credit anyone.
    */
-  async confirmMatured(now: Date = new Date()) {
+  async confirmMatured(now: Date = new Date(), batchSize = 500) {
     const db = getDb();
+    // Bounded: this used to select every matured accrual with no LIMIT and
+    // loop serially, which grows without bound in production.
     const matured = await db
       .select()
       .from(commissionAccruals)
       .where(
         and(eq(commissionAccruals.status, 'accrued'), lte(commissionAccruals.availableAt, now)),
-      );
+      )
+      .limit(batchSize);
 
     let confirmed = 0;
-    for (const accrual of matured) {
-      const [claimed] = await db
-        .update(commissionAccruals)
-        .set({ status: 'confirmed', confirmedAt: now })
-        .where(
-          and(
-            eq(commissionAccruals.id, accrual.id),
-            eq(commissionAccruals.status, 'accrued'), // ← the guard
-          ),
-        )
-        .returning();
-      if (!claimed) continue; // another worker confirmed it first
+    let failed = 0;
 
-      await this.wallets.post({
-        userId: accrual.ibUserId,
-        currency: accrual.currency,
-        amount: accrual.amount,
-        entryType: 'commission',
-        referenceType: 'accrual',
-        referenceId: accrual.id,
-      });
-      confirmed += 1;
+    for (const accrual of matured) {
+      try {
+        // ONE transaction per accrual, crediting BEFORE confirming.
+        //
+        // This ordering is §8.6's, and the previous inverse was a silent
+        // money-loss bug: marking the accrual 'confirmed' first meant a failed
+        // wallet credit left it permanently excluded from the selector above —
+        // the IB was never paid while the table claimed they were, and
+        // reconciliation could not see it because a missing credit satisfies
+        // both sides of the balance check.
+        await db.transaction(async (tx) => {
+          await this.wallets.post(
+            {
+              userId: accrual.ibUserId,
+              currency: accrual.currency,
+              amount: accrual.amount,
+              entryType: 'commission',
+              referenceType: 'accrual',
+              referenceId: accrual.id,
+            },
+            tx,
+          );
+
+          // The conditional update is the concurrency guard: if another worker
+          // already confirmed this accrual, rowcount is 0 and we roll back —
+          // and the credit above is idempotent on (wallet, 'accrual', id)
+          // anyway, so neither worker can double-pay.
+          const [claimed] = await tx
+            .update(commissionAccruals)
+            .set({ status: 'confirmed', confirmedAt: now })
+            .where(
+              and(
+                eq(commissionAccruals.id, accrual.id),
+                eq(commissionAccruals.status, 'accrued'),
+              ),
+            )
+            .returning();
+
+          if (!claimed) {
+            throw new AccrualAlreadyConfirmed(accrual.id);
+          }
+        });
+        confirmed += 1;
+      } catch (error) {
+        if (error instanceof AccrualAlreadyConfirmed) continue; // another worker won
+        failed += 1;
+        this.logger.error(
+          `Failed to confirm accrual ${accrual.id} for IB ${accrual.ibUserId}: ${(error as Error).message}`,
+        );
+      }
     }
 
-    return { examined: matured.length, confirmed };
+    if (failed > 0) {
+      this.logger.warn(`${failed} accrual(s) failed to confirm and will be retried next run.`);
+    }
+    return { examined: matured.length, confirmed, failed };
+  }
+
+  /**
+   * The cross-check reconciliation cannot perform.
+   *
+   * `WalletService.reconcile()` compares a wallet's ledger sum to its balance,
+   * so a commission that was marked confirmed but never credited satisfies
+   * both sides and stays invisible. This asserts the other direction: every
+   * confirmed accrual must have the ledger entry that paid it.
+   */
+  async findAccrualLedgerEntry(accrualId: string) {
+    const [entry] = await getDb()
+      .select()
+      .from(ledgerEntries)
+      .where(
+        and(
+          eq(ledgerEntries.referenceType, 'accrual'),
+          eq(ledgerEntries.referenceId, accrualId),
+        ),
+      )
+      .limit(1);
+    return entry;
+  }
+
+  /**
+   * Audit every confirmed accrual against the ledger. Intended for a scheduled
+   * integrity check and for CI — an unpaid "confirmed" accrual is a partner
+   * who was silently short-paid.
+   */
+  async auditConfirmedAccruals(): Promise<{ checked: number; unpaid: string[] }> {
+    const confirmed = await getDb()
+      .select()
+      .from(commissionAccruals)
+      .where(eq(commissionAccruals.status, 'confirmed'));
+
+    const unpaid: string[] = [];
+    for (const accrual of confirmed) {
+      const entry = await this.findAccrualLedgerEntry(accrual.id);
+      if (!entry) unpaid.push(accrual.id);
+    }
+    if (unpaid.length > 0) {
+      this.logger.error(
+        `INTEGRITY: ${unpaid.length} accrual(s) marked confirmed with no ledger credit: ${unpaid.join(', ')}`,
+      );
+    }
+    return { checked: confirmed.length, unpaid };
   }
 
   /** Convenience for the ingest path: store the deal, then accrue if it is new. */

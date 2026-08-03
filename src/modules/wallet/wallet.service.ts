@@ -1,8 +1,23 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
+import Decimal from 'decimal.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { getDb } from '../../database/db';
 import { ledgerEntries, wallets } from '../../database/schema';
 import { available, money, MoneyInput, toDecimal } from './money';
+
+/**
+ * A database handle: either the pool or an open transaction.
+ *
+ * Every money method accepts one. Passing a transaction lets a CALLER compose
+ * several money operations atomically — which is what `settle()` and
+ * `confirmMatured()` need. Omitting it keeps the single-operation behaviour,
+ * where the method opens its own transaction.
+ *
+ * Derived from Drizzle's own signature rather than hand-written, so it cannot
+ * drift from the driver.
+ */
+type Db = ReturnType<typeof getDb>;
+export type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
 
 export type Currency = 'USD' | 'USDT';
 export type LedgerEntryType =
@@ -48,8 +63,10 @@ export interface PostParams {
  */
 @Injectable()
 export class WalletService {
-  async getOrCreateWallet(userId: string, currency: Currency) {
-    const db = getDb();
+  /** Create-if-absent without locking. Callers that will move money should use
+   *  post()/hold()/release(), which lock as part of their transaction. */
+  async getOrCreateWallet(userId: string, currency: Currency, executor?: Executor) {
+    const db = executor ?? getDb();
     await db
       .insert(wallets)
       .values({ userId, currency })
@@ -62,73 +79,99 @@ export class WalletService {
     return wallet;
   }
 
-  async post(params: PostParams) {
+  async post(params: PostParams, executor?: Executor) {
+    // With a caller-supplied transaction we join it; without one we open our
+    // own. Either way the lock, the ledger insert and the balance update share
+    // a single atomic scope.
+    if (executor) return this.postWithin(executor, params);
+    return getDb().transaction((tx) => this.postWithin(tx, params));
+  }
+
+  private async postWithin(tx: Executor, params: PostParams) {
     const { userId, currency, entryType, referenceType, referenceId } = params;
     const amount = toDecimal(params.amount);
     if (amount.isZero()) {
       throw new BadRequestException('A ledger entry must move a non-zero amount.');
     }
 
-    await this.getOrCreateWallet(userId, currency);
+    // 1. Ensure the wallet exists and lock it — both inside this transaction,
+    //    so creation and the lock cannot be separated by a concurrent writer.
+    const wallet = await this.lockWallet(tx, userId, currency);
 
-    return getDb().transaction(async (tx) => {
-      // 1. Lock the wallet row for the duration of the transaction.
-      const [wallet] = await tx
+    // 2. Compute the new balance with decimal.js — never bare arithmetic.
+    const newBalance = toDecimal(wallet.balance).plus(amount);
+    if (newBalance.isNegative() && !params.allowOverdraft) {
+      throw new BadRequestException(
+        `Insufficient balance: ${money(wallet.balance)} ${currency} cannot absorb ${money(amount)}.`,
+      );
+    }
+
+    // 3. Append the ledger entry. A conflict means this cause already posted.
+    const [entry] = await tx
+      .insert(ledgerEntries)
+      .values({
+        walletId: wallet.id,
+        amount: money(amount),
+        balanceAfter: money(newBalance),
+        entryType,
+        referenceType,
+        referenceId,
+      })
+      .onConflictDoNothing({
+        target: [ledgerEntries.walletId, ledgerEntries.referenceType, ledgerEntries.referenceId],
+      })
+      .returning();
+
+    if (!entry) {
+      // Idempotent replay: return the original entry, balance untouched.
+      const [existing] = await tx
         .select()
-        .from(wallets)
-        .where(and(eq(wallets.userId, userId), eq(wallets.currency, currency)))
-        .for('update')
+        .from(ledgerEntries)
+        .where(
+          and(
+            eq(ledgerEntries.walletId, wallet.id),
+            eq(ledgerEntries.referenceType, referenceType),
+            eq(ledgerEntries.referenceId, referenceId),
+          ),
+        )
         .limit(1);
+      return { entry: existing, wallet, replayed: true as const };
+    }
 
-      // 2. Compute the new balance with decimal.js — never bare arithmetic.
-      const newBalance = toDecimal(wallet.balance).plus(amount);
-      if (newBalance.isNegative() && !params.allowOverdraft) {
-        throw new BadRequestException(
-          `Insufficient balance: ${money(wallet.balance)} ${currency} cannot absorb ${money(amount)}.`,
-        );
-      }
+    // 4. Move the wallet to the balance this entry recorded.
+    const [updated] = await tx
+      .update(wallets)
+      .set({ balance: money(newBalance) })
+      .where(eq(wallets.id, wallet.id))
+      .returning();
 
-      // 3. Append the ledger entry. A conflict means this cause already posted.
-      const [entry] = await tx
-        .insert(ledgerEntries)
-        .values({
-          walletId: wallet.id,
-          amount: money(amount),
-          balanceAfter: money(newBalance),
-          entryType,
-          referenceType,
-          referenceId,
-        })
-        .onConflictDoNothing({
-          target: [ledgerEntries.walletId, ledgerEntries.referenceType, ledgerEntries.referenceId],
-        })
-        .returning();
+    return { entry, wallet: updated, replayed: false as const };
+  }
 
-      if (!entry) {
-        // Idempotent replay: return the original entry, balance untouched.
-        const [existing] = await tx
-          .select()
-          .from(ledgerEntries)
-          .where(
-            and(
-              eq(ledgerEntries.walletId, wallet.id),
-              eq(ledgerEntries.referenceType, referenceType),
-              eq(ledgerEntries.referenceId, referenceId),
-            ),
-          )
-          .limit(1);
-        return { entry: existing, wallet, replayed: true as const };
-      }
+  /**
+   * Create-if-absent and lock, in one scope. Previously wallet creation ran
+   * before the transaction opened and the locked SELECT was destructured
+   * without a null check — a missing row crashed with a TypeError mid-payment.
+   */
+  private async lockWallet(tx: Executor, userId: string, currency: Currency) {
+    await tx
+      .insert(wallets)
+      .values({ userId, currency })
+      .onConflictDoNothing({ target: [wallets.userId, wallets.currency] });
 
-      // 4. Move the wallet to the balance this entry recorded.
-      const [updated] = await tx
-        .update(wallets)
-        .set({ balance: money(newBalance) })
-        .where(eq(wallets.id, wallet.id))
-        .returning();
+    const [wallet] = await tx
+      .select()
+      .from(wallets)
+      .where(and(eq(wallets.userId, userId), eq(wallets.currency, currency)))
+      .for('update')
+      .limit(1);
 
-      return { entry, wallet: updated, replayed: false as const };
-    });
+    if (!wallet) {
+      throw new InternalServerErrorException(
+        `Wallet ${currency} for user ${userId} could not be created or locked.`,
+      );
+    }
+    return wallet;
   }
 
   /**
@@ -136,18 +179,16 @@ export class WalletService {
    * on_hold is not a balance change, so it writes no ledger entry — the debit
    * is posted only when the provider confirms.
    */
-  async hold(userId: string, currency: Currency, amount: MoneyInput) {
+  async hold(userId: string, currency: Currency, amount: MoneyInput, executor?: Executor) {
     const value = toDecimal(amount);
     if (!value.isPositive()) throw new BadRequestException('Hold amount must be positive.');
-    await this.getOrCreateWallet(userId, currency);
+    if (executor) return this.holdWithin(executor, userId, currency, value);
+    return getDb().transaction((tx) => this.holdWithin(tx, userId, currency, value));
+  }
 
-    return getDb().transaction(async (tx) => {
-      const [wallet] = await tx
-        .select()
-        .from(wallets)
-        .where(and(eq(wallets.userId, userId), eq(wallets.currency, currency)))
-        .for('update')
-        .limit(1);
+  private async holdWithin(tx: Executor, userId: string, currency: Currency, value: Decimal) {
+    {
+      const wallet = await this.lockWallet(tx, userId, currency);
 
       const availableNow = toDecimal(available(wallet.balance, wallet.onHold));
       if (availableNow.lessThan(value)) {
@@ -162,20 +203,19 @@ export class WalletService {
         .where(eq(wallets.id, wallet.id))
         .returning();
       return updated;
-    });
+    }
   }
 
   /** Release a hold — on rejection, or after the matching debit is posted. */
-  async release(userId: string, currency: Currency, amount: MoneyInput) {
+  async release(userId: string, currency: Currency, amount: MoneyInput, executor?: Executor) {
     const value = toDecimal(amount);
-    return getDb().transaction(async (tx) => {
-      const [wallet] = await tx
-        .select()
-        .from(wallets)
-        .where(and(eq(wallets.userId, userId), eq(wallets.currency, currency)))
-        .for('update')
-        .limit(1);
-      if (!wallet) throw new BadRequestException('Wallet not found.');
+    if (executor) return this.releaseWithin(executor, userId, currency, value);
+    return getDb().transaction((tx) => this.releaseWithin(tx, userId, currency, value));
+  }
+
+  private async releaseWithin(tx: Executor, userId: string, currency: Currency, value: Decimal) {
+    {
+      const wallet = await this.lockWallet(tx, userId, currency);
 
       // Never let on_hold go negative, whatever the caller asks for.
       const remaining = toDecimal(wallet.onHold).minus(value);
@@ -185,7 +225,7 @@ export class WalletService {
         .where(eq(wallets.id, wallet.id))
         .returning();
       return updated;
-    });
+    }
   }
 
   async listWallets(userId: string) {

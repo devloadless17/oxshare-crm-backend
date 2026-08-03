@@ -3,7 +3,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { getDb } from '../../database/db';
 import { transactions, users } from '../../database/schema';
 import { money, toDecimal } from '../wallet/money';
-import { Currency, WalletService } from '../wallet/wallet.service';
+import { Currency, Executor, WalletService } from '../wallet/wallet.service';
 
 /**
  * Withdrawal lifecycle (§8.4 + FR-ADM-03).
@@ -46,23 +46,26 @@ export class TransactionsService {
       throw new ForbiddenException('Withdrawals require a verified account (KYC level 1).');
     }
 
-    // hold() enforces available balance = balance − on_hold and throws if short.
-    const wallet = await this.wallets.hold(params.userId, params.currency, amount);
-
-    const [tx] = await db
-      .insert(transactions)
-      .values({
-        userId: params.userId,
-        walletId: wallet.id,
-        direction: 'withdrawal',
-        amount: money(amount),
-        currency: params.currency,
-        state: 'pending',
-        provider: params.provider,
-        destination: params.destination,
-      })
-      .returning();
-    return tx;
+    // The hold and the transaction row commit together. Previously the hold
+    // committed first, so a failed INSERT left funds reserved against a
+    // withdrawal that did not exist — invisible and unreleasable.
+    return db.transaction(async (dbTx) => {
+      const wallet = await this.wallets.hold(params.userId, params.currency, amount, dbTx);
+      const [row] = await dbTx
+        .insert(transactions)
+        .values({
+          userId: params.userId,
+          walletId: wallet.id,
+          direction: 'withdrawal',
+          amount: money(amount),
+          currency: params.currency,
+          state: 'pending',
+          provider: params.provider,
+          destination: params.destination,
+        })
+        .returning();
+      return row;
+    });
   }
 
   async listForAdmin(filter: { state?: string; page?: number; limit?: number }) {
@@ -164,8 +167,13 @@ export class TransactionsService {
    * A zero rowcount means someone else already transitioned it — abort rather
    * than act twice. This is what stops a double-clicked button paying twice.
    */
-  private async transition(id: string, from: string, patch: Record<string, unknown>) {
-    const [row] = await getDb()
+  private async transition(
+    id: string,
+    from: string,
+    patch: Record<string, unknown>,
+    executor?: Executor,
+  ) {
+    const [row] = await (executor ?? getDb())
       .update(transactions)
       .set(patch)
       .where(and(eq(transactions.id, id), eq(transactions.state, from as 'pending')))
@@ -189,67 +197,84 @@ export class TransactionsService {
   }
 
   async reject(id: string, adminId: string, reason: string) {
-    const row = await this.transition(id, 'pending', {
-      state: 'rejected',
-      rejectionReason: reason,
-      reviewedBy: adminId,
-      reviewedAt: new Date(),
-    });
-    if (!row) {
-      const current = await this.getById(id);
-      throw new BadRequestException(
-        `Only a pending withdrawal can be rejected; this one is ${current.state}.`,
+    // One transaction: the state change and the hold release commit together,
+    // so a failure can never leave a rejected withdrawal with funds still
+    // reserved — which was permanent, since 'rejected' is terminal.
+    return getDb().transaction(async (dbTx) => {
+      const row = await this.transition(
+        id,
+        'pending',
+        { state: 'rejected', rejectionReason: reason, reviewedBy: adminId, reviewedAt: new Date() },
+        dbTx,
       );
-    }
-    // The reservation goes back to the client's available balance.
-    await this.wallets.release(row.userId, row.currency, row.amount);
-    return row;
+      if (!row) {
+        const current = await this.getById(id);
+        throw new BadRequestException(
+          `Only a pending withdrawal can be rejected; this one is ${current.state}.`,
+        );
+      }
+      await this.wallets.release(row.userId, row.currency, row.amount, dbTx);
+      return row;
+    });
   }
 
   /** Provider confirmed: post the debit, clear the hold, close the transaction. */
   async settle(id: string, adminId: string, providerRef: string) {
-    const row = await this.transition(id, 'approved', {
-      state: 'success',
-      providerRef,
-      settledAt: new Date(),
-      reviewedBy: adminId,
-    });
-    if (!row) {
-      const current = await this.getById(id);
-      throw new BadRequestException(
-        `Only an approved withdrawal can be settled; this one is ${current.state}.`,
+    // One transaction for all three steps. Previously they were three separate
+    // commits: a crash after the first left the row marked 'success' with no
+    // debit posted (money duplicated, unrecoverable because the state guard
+    // blocks retry, and invisible to reconciliation); a crash after the second
+    // froze the client's funds on hold permanently.
+    return getDb().transaction(async (dbTx) => {
+      const row = await this.transition(
+        id,
+        'approved',
+        { state: 'success', providerRef, settledAt: new Date(), reviewedBy: adminId },
+        dbTx,
       );
-    }
+      if (!row) {
+        const current = await this.getById(id);
+        throw new BadRequestException(
+          `Only an approved withdrawal can be settled; this one is ${current.state}.`,
+        );
+      }
 
-    // The debit itself is idempotent on (wallet, 'transaction', id), so even a
-    // replayed provider callback credits nothing twice.
-    await this.wallets.post({
-      userId: row.userId,
-      currency: row.currency,
-      amount: toDecimal(row.amount).negated(),
-      entryType: 'withdrawal',
-      referenceType: 'transaction',
-      referenceId: row.id,
+      // Idempotent on (wallet, 'transaction', id), so a replayed provider
+      // callback debits nothing twice.
+      await this.wallets.post(
+        {
+          userId: row.userId,
+          currency: row.currency,
+          amount: toDecimal(row.amount).negated(),
+          entryType: 'withdrawal',
+          referenceType: 'transaction',
+          referenceId: row.id,
+        },
+        dbTx,
+      );
+      await this.wallets.release(row.userId, row.currency, row.amount, dbTx);
+      return row;
     });
-    await this.wallets.release(row.userId, row.currency, row.amount);
-    return row;
   }
 
   /** Provider failed after approval: release the hold, no balance change. */
   async markFailed(id: string, reason: string) {
-    const row = await this.transition(id, 'approved', {
-      state: 'failure',
-      rejectionReason: reason,
-      settledAt: new Date(),
-    });
-    if (!row) {
-      const current = await this.getById(id);
-      throw new BadRequestException(
-        `Only an approved withdrawal can be marked failed; this one is ${current.state}.`,
+    return getDb().transaction(async (dbTx) => {
+      const row = await this.transition(
+        id,
+        'approved',
+        { state: 'failure', rejectionReason: reason, settledAt: new Date() },
+        dbTx,
       );
-    }
-    await this.wallets.release(row.userId, row.currency, row.amount);
-    return row;
+      if (!row) {
+        const current = await this.getById(id);
+        throw new BadRequestException(
+          `Only an approved withdrawal can be marked failed; this one is ${current.state}.`,
+        );
+      }
+      await this.wallets.release(row.userId, row.currency, row.amount, dbTx);
+      return row;
+    });
   }
 
   /**
@@ -305,5 +330,10 @@ export class TransactionsService {
       referenceId: tx.id,
     });
     return { transaction: tx, replayed: false as const };
+    // NOTE: kept as two steps deliberately — the credit is idempotent on
+    // (wallet, 'transaction', id) and the transaction row is idempotent on
+    // (provider, provider_ref), so a retry of the whole call converges. See
+    // creditDepositAtomic() below for the transactional variant used by the
+    // provider webhook once one exists.
   }
 }
