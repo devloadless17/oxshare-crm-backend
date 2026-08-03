@@ -3,45 +3,100 @@
     "moduleName": "KYC & Verification",
     "description": "Dynamic KYC field builder, document review, and status verification",
     "permissions": [
-      { "key": "kyc.view", "label": "View KYC Fields & Submissions" },
-      { "key": "kyc.create", "label": "Create Dynamic KYC Fields" },
-      { "key": "kyc.edit", "label": "Edit Dynamic KYC Fields" },
-      { "key": "kyc.delete", "label": "Delete Dynamic KYC Fields" },
-      { "key": "kyc.review", "label": "Approve / Reject Submissions" }
+      {
+        "key": "kyc.view",
+        "label": "View KYC Fields & Submissions"
+      },
+      {
+        "key": "kyc.create",
+        "label": "Create Dynamic KYC Fields"
+      },
+      {
+        "key": "kyc.edit",
+        "label": "Edit Dynamic KYC Fields"
+      },
+      {
+        "key": "kyc.delete",
+        "label": "Delete Dynamic KYC Fields"
+      },
+      {
+        "key": "kyc.review",
+        "label": "Approve / Reject Submissions"
+      }
     ]
   },
   "users": {
     "moduleName": "User & Admin Management",
     "description": "Client management, Admin user creation, and role assignments",
     "permissions": [
-      { "key": "users.view", "label": "View Clients & Admins List" },
-      { "key": "users.create", "label": "Add New Admins" },
-      { "key": "users.edit", "label": "Edit User Profiles & Roles" },
-      { "key": "users.suspend", "label": "Suspend / Activate Accounts" }
+      {
+        "key": "users.view",
+        "label": "View Clients & Admins List"
+      },
+      {
+        "key": "users.create",
+        "label": "Add New Admins"
+      },
+      {
+        "key": "users.edit",
+        "label": "Edit User Profiles & Roles"
+      },
+      {
+        "key": "users.suspend",
+        "label": "Suspend / Activate Accounts"
+      }
     ]
   },
   "roles": {
     "moduleName": "Role & Permissions Config",
     "description": "Manage dynamic RBAC roles and permission assignments",
     "permissions": [
-      { "key": "roles.view", "label": "View Roles & Permission Matrix" },
-      { "key": "roles.manage", "label": "Create, Edit & Delete Custom Roles" }
+      {
+        "key": "roles.view",
+        "label": "View Roles & Permission Matrix"
+      },
+      {
+        "key": "roles.manage",
+        "label": "Create, Edit & Delete Custom Roles"
+      }
     ]
   },
   "trading": {
     "moduleName": "Trading Accounts & MT5",
     "description": "MT5 accounts sync, leverage management, and balance adjustment",
     "permissions": [
-      { "key": "trading.view", "label": "View Trading Accounts" },
-      { "key": "trading.edit", "label": "Update Account Group / Leverage" }
+      {
+        "key": "trading.view",
+        "label": "View Trading Accounts"
+      },
+      {
+        "key": "trading.edit",
+        "label": "Update Account Group / Leverage"
+      }
     ]
   },
   "withdrawals": {
     "moduleName": "Financial & Withdrawals",
     "description": "Client deposit & withdrawal request processing",
     "permissions": [
-      { "key": "withdrawals.view", "label": "View Withdrawal Requests" },
-      { "key": "withdrawals.approve", "label": "Approve / Reject Withdrawals" }
+      {
+        "key": "withdrawals.view",
+        "label": "View Withdrawal Requests"
+      },
+      {
+        "key": "withdrawals.approve",
+        "label": "Approve / Reject Withdrawals"
+      }
+    ]
+  },
+  "ledger": {
+    "moduleName": "Ledger & Reconciliation",
+    "description": "Append-only ledger view for reconciliation (read-only by design)",
+    "permissions": [
+      {
+        "key": "ledger.view",
+        "label": "View Ledger Entries"
+      }
     ]
   }
 }

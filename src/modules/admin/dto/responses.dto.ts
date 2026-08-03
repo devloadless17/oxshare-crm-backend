@@ -166,12 +166,12 @@ export class WithdrawalRowDto {
   @ApiProperty({ enum: ['pending', 'approved', 'success', 'failure', 'rejected'] })
   state: string;
   @ApiProperty() provider: string;
-  @ApiPropertyOptional({ nullable: true }) providerRef?: string | null;
-  @ApiPropertyOptional({ nullable: true }) destination?: string | null;
-  @ApiPropertyOptional({ nullable: true }) rejectionReason?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true }) providerRef?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true }) destination?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;
   @ApiProperty() requestedAt: Date;
-  @ApiPropertyOptional({ nullable: true }) reviewedAt?: Date | null;
-  @ApiPropertyOptional({ nullable: true }) settledAt?: Date | null;
+  @ApiPropertyOptional({ type: Date, nullable: true }) reviewedAt?: Date | null;
+  @ApiPropertyOptional({ type: Date, nullable: true }) settledAt?: Date | null;
   @ApiProperty({ type: WithdrawalUserDto }) user: WithdrawalUserDto;
 }
 

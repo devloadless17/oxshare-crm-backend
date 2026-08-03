@@ -331,7 +331,7 @@ export class AdminController {
   // ── Ledger (ADM-13) ───────────────────────────────────────────────────────
   @Get('ledger')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('withdrawals.view')
+  @RequirePermissions('ledger.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Append-only ledger, filterable for reconciliation' })
   @ApiOkResponse({ type: LedgerListResponseDto })
