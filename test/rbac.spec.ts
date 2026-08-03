@@ -5,24 +5,16 @@ import { Test } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
-import { AdminService } from '../src/modules/admin/admin.service';
+import { AdminAuditService } from '../src/modules/admin/admin-audit.service';
+import { AdminRbacService } from '../src/modules/admin/admin-rbac.service';
 import {
   AdminAuthenticator,
   PermissionsGuard,
   PERMISSIONS_KEY,
 } from '../src/modules/admin/guards/admin.guard';
 import { AdminsStore, type Admin } from '../src/store/admins.store';
-import { AuditLogStore } from '../src/store/audit-log.store';
 import { InvitesStore } from '../src/store/admins.store';
-import { KycConfigStore } from '../src/store/kyc-config.store';
-import { RejectionReasonsStore } from '../src/store/rejection-reasons.store';
 import { RolesStore, type Role } from '../src/store/roles.store';
-import { UsersStore } from '../src/store/users.store';
-import { KycService } from '../src/modules/compliance/kyc.service';
-import { EmailService } from '../src/modules/email/email.service';
-import { TransactionsService } from '../src/modules/payments/transactions.service';
-import { WalletService } from '../src/modules/wallet/wallet.service';
-import { ProgramsService } from '../src/modules/partners/programs.service';
 
 // The RBAC surface had ZERO tests, which is how a missing `await` on the
 // anti-escalation guard shipped: the rejected promise was discarded and the
@@ -61,7 +53,7 @@ const CUSTOM_ROLE: Role = {
   createdAt: new Date(),
 };
 
-async function buildAdminService(
+async function buildRbacService(
   overrides: {
     roles?: Partial<RolesStore>;
     admins?: Partial<AdminsStore>;
@@ -82,14 +74,7 @@ async function buildAdminService(
 
   const moduleRef = await Test.createTestingModule({
     providers: [
-      AdminService,
-      { provide: JwtService, useValue: { sign: vi.fn(), verify: vi.fn() } },
-      { provide: ConfigService, useValue: { get: vi.fn(), getOrThrow: vi.fn() } },
-      { provide: KycService, useValue: {} },
-      { provide: EmailService, useValue: { sendAdminInviteEmail: vi.fn() } },
-      { provide: TransactionsService, useValue: {} },
-      { provide: WalletService, useValue: {} },
-      { provide: ProgramsService, useValue: {} },
+      AdminRbacService,
       {
         provide: AdminsStore,
         useValue: {
@@ -103,27 +88,19 @@ async function buildAdminService(
       },
       {
         provide: InvitesStore,
-        useValue: {
-          create: vi.fn(),
-          findByToken: vi.fn(),
-          markAccepted: vi.fn(),
-          findPendingByRoleId: vi.fn().mockResolvedValue([]),
-        },
+        useValue: { findPendingByRoleId: vi.fn().mockResolvedValue([]) },
       },
-      { provide: UsersStore, useValue: {} },
       { provide: RolesStore, useValue: rolesFake },
-      { provide: KycConfigStore, useValue: {} },
-      { provide: AuditLogStore, useValue: { record: vi.fn(), findAll: vi.fn() } },
-      { provide: RejectionReasonsStore, useValue: {} },
+      { provide: AdminAuditService, useValue: { record: vi.fn() } },
     ],
   }).compile();
 
-  return { service: moduleRef.get(AdminService), rolesFake };
+  return { service: moduleRef.get(AdminRbacService), rolesFake };
 }
 
-describe('AdminService anti-escalation', () => {
+describe('AdminRbacService anti-escalation', () => {
   it('REGRESSION C1: a sub-admin cannot grant themselves the wildcard via updateRole', async () => {
-    const { service, rolesFake } = await buildAdminService();
+    const { service, rolesFake } = await buildRbacService();
 
     await expect(service.updateRole('role-1', { permissions: ['*'] }, SUB_ADMIN)).rejects.toThrow(
       AuthorizationError,
@@ -135,7 +112,7 @@ describe('AdminService anti-escalation', () => {
   });
 
   it('a sub-admin cannot grant a permission they do not themselves hold', async () => {
-    const { service, rolesFake } = await buildAdminService();
+    const { service, rolesFake } = await buildRbacService();
 
     await expect(
       service.updateRole('role-1', { permissions: ['withdrawals.approve'] }, SUB_ADMIN),
@@ -144,21 +121,21 @@ describe('AdminService anti-escalation', () => {
   });
 
   it('a sub-admin may grant a permission they do hold', async () => {
-    const { service, rolesFake } = await buildAdminService();
+    const { service, rolesFake } = await buildRbacService();
 
     await service.updateRole('role-1', { permissions: ['roles.view'] }, SUB_ADMIN);
     expect(rolesFake.update).toHaveBeenCalledWith('role-1', { permissions: ['roles.view'] });
   });
 
   it('the master admin may grant the wildcard', async () => {
-    const { service, rolesFake } = await buildAdminService();
+    const { service, rolesFake } = await buildRbacService();
 
     await service.updateRole('role-1', { permissions: ['*'] }, MASTER);
     expect(rolesFake.update).toHaveBeenCalled();
   });
 
   it('rejects permission keys that are not in the catalog', async () => {
-    const { service, rolesFake } = await buildAdminService();
+    const { service, rolesFake } = await buildRbacService();
 
     await expect(
       service.updateRole('role-1', { permissions: ['definitely.not.real'] }, MASTER),
@@ -167,7 +144,7 @@ describe('AdminService anti-escalation', () => {
   });
 
   it('applies the same guard on create, not just update', async () => {
-    const { service, rolesFake } = await buildAdminService();
+    const { service, rolesFake } = await buildRbacService();
 
     await expect(service.createRole('Escalated', undefined, ['*'], SUB_ADMIN)).rejects.toThrow(
       AuthorizationError,

@@ -37,7 +37,12 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { AdminService } from './admin.service';
+import { AdminAuditService } from './admin-audit.service';
+import { AdminAuthService } from './admin-auth.service';
+import { AdminClientsService } from './admin-clients.service';
+import { AdminComplianceService } from './admin-compliance.service';
+import { AdminMoneyService } from './admin-money.service';
+import { AdminRbacService } from './admin-rbac.service';
 import {
   AdminGuard,
   MasterAdminGuard,
@@ -168,7 +173,14 @@ class ClientStatusDto {
 @ApiExtraModels(PermissionModuleDto)
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly auth: AdminAuthService,
+    private readonly rbac: AdminRbacService,
+    private readonly compliance: AdminComplianceService,
+    private readonly clients: AdminClientsService,
+    private readonly money: AdminMoneyService,
+    private readonly audit: AdminAuditService,
+  ) {}
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   @Post('auth/login')
@@ -178,7 +190,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Admin login' })
   @ApiOkResponse({ type: AdminLoginResponseDto })
   login(@Body() dto: AdminLoginDto, @Res({ passthrough: true }) res: Response) {
-    return this.adminService.login(dto.email, dto.password, res);
+    return this.auth.login(dto.email, dto.password, res);
   }
 
   @Post('auth/refresh')
@@ -186,7 +198,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Admin refresh token' })
   @ApiOkResponse({ type: AdminLoginResponseDto })
   refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    return this.adminService.refresh(req, res);
+    return this.auth.refresh(req, res);
   }
 
   @Post('auth/logout')
@@ -196,7 +208,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Admin logout' })
   @ApiOkResponse({ type: MessageResponseDto })
   logout(@Req() req: Request & { admin: Admin }, @Res({ passthrough: true }) res: Response) {
-    return this.adminService.logout(req.admin.id, res);
+    return this.auth.logout(req.admin.id, res);
   }
 
   @Get('auth/me')
@@ -205,7 +217,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Get current admin' })
   @ApiOkResponse({ type: AdminProfileDto })
   me(@Req() req: Request & { admin: Admin }) {
-    return this.adminService.me(req.admin);
+    return this.auth.me(req.admin);
   }
 
   // ── Invite ────────────────────────────────────────────────────────────────
@@ -218,13 +230,7 @@ export class AdminController {
   })
   @ApiOkResponse({ type: InviteResponseDto })
   invite(@Body() dto: InviteDto, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.createInvite(
-      dto.email,
-      dto.name,
-      req.admin,
-      dto.roleId,
-      dto.permissions,
-    );
+    return this.auth.createInvite(dto.email, dto.name, req.admin, dto.roleId, dto.permissions);
   }
 
   @Get('invite/validate')
@@ -235,7 +241,7 @@ export class AdminController {
     summary: 'Validate invite token — returns email and name for pre-fill',
   })
   validateInvite(@Query('token') token: string) {
-    return this.adminService.validateInviteToken(token);
+    return this.auth.validateInviteToken(token);
   }
 
   @Post('invite/accept')
@@ -245,7 +251,7 @@ export class AdminController {
     summary: 'Accept invite and set password — logs admin in immediately',
   })
   acceptInvite(@Body() dto: AcceptInviteDto, @Res({ passthrough: true }) res: Response) {
-    return this.adminService.acceptInvite(dto.token, dto.password, res);
+    return this.auth.acceptInvite(dto.token, dto.password, res);
   }
 
   // ── KYC Review — requires the kyc:review permission (RBAC-02/03) ──────────
@@ -263,7 +269,7 @@ export class AdminController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.adminService.listKyc({ status, q, page, limit });
+    return this.compliance.listKyc({ status, q, page, limit });
   }
 
   @Get('kyc/:userId')
@@ -273,7 +279,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Get full KYC submission for a user' })
   @ApiOkResponse({ type: KycSubmissionDto })
   getKyc(@Param('userId') userId: string) {
-    return this.adminService.getKyc(userId);
+    return this.compliance.getKyc(userId);
   }
 
   @Patch('kyc/:userId/claim')
@@ -285,7 +291,7 @@ export class AdminController {
   })
   @ApiOkResponse({ type: KycSubmissionDto })
   claimKyc(@Param('userId') userId: string, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.claimKyc(userId, req.admin.id);
+    return this.compliance.claimKyc(userId, req.admin.id);
   }
 
   @Patch('kyc/:userId/approve')
@@ -297,7 +303,7 @@ export class AdminController {
   })
   @ApiOkResponse({ type: KycSubmissionDto })
   approveKyc(@Param('userId') userId: string, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.approveKyc(userId, req.admin.id);
+    return this.compliance.approveKyc(userId, req.admin.id);
   }
 
   @Patch('kyc/:userId/reject')
@@ -314,7 +320,7 @@ export class AdminController {
     @Body() dto: RejectDto,
     @Req() req: Request & { admin: Admin },
   ) {
-    return this.adminService.rejectKyc(
+    return this.compliance.rejectKyc(
       userId,
       req.admin.id,
       dto.reason,
@@ -338,7 +344,7 @@ export class AdminController {
     @Query('status') status?: string,
     @Query('level') level?: string,
   ) {
-    return this.adminService.listClients({
+    return this.clients.listClients({
       page,
       limit,
       q,
@@ -360,7 +366,7 @@ export class AdminController {
     @Body() dto: ClientStatusDto,
     @Req() req: Request & { admin: Admin },
   ) {
-    return this.adminService.setClientStatus(id, dto.status, req.admin);
+    return this.clients.setClientStatus(id, dto.status, req.admin);
   }
 
   // ── Rejection reasons (FR-ADM-03 configurable list) ───────────────────────
@@ -372,7 +378,7 @@ export class AdminController {
   })
   @ApiOkResponse({ type: [RejectionReasonResponseDto] })
   listRejectionReasons(@Query('context') context?: RejectionContext) {
-    return this.adminService.listRejectionReasons(context);
+    return this.compliance.listRejectionReasons(context);
   }
 
   @Post('rejection-reasons')
@@ -381,7 +387,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Add a rejection reason (master admin only)' })
   @ApiOkResponse({ type: RejectionReasonResponseDto })
   createRejectionReason(@Body() dto: RejectionReasonDto) {
-    return this.adminService.createRejectionReason(dto.context, dto.label);
+    return this.compliance.createRejectionReason(dto.context, dto.label);
   }
 
   @Put('rejection-reasons/:id')
@@ -390,7 +396,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Rename a rejection reason (master admin only)' })
   @ApiOkResponse({ type: RejectionReasonResponseDto })
   updateRejectionReason(@Param('id') id: string, @Body('label') label: string) {
-    return this.adminService.updateRejectionReason(id, label);
+    return this.compliance.updateRejectionReason(id, label);
   }
 
   @Delete('rejection-reasons/:id')
@@ -399,7 +405,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Delete a rejection reason (master admin only)' })
   @ApiOkResponse({ type: MessageResponseDto })
   deleteRejectionReason(@Param('id') id: string) {
-    return this.adminService.deleteRejectionReason(id);
+    return this.compliance.deleteRejectionReason(id);
   }
 
   // ── Withdrawals (ADM-03 · §8.4) ───────────────────────────────────────────
@@ -416,7 +422,7 @@ export class AdminController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.adminService.listWithdrawals({ state, page, limit });
+    return this.money.listWithdrawals({ state, page, limit });
   }
 
   @Patch('withdrawals/:id/approve')
@@ -428,7 +434,7 @@ export class AdminController {
   })
   @ApiOkResponse({ type: WithdrawalRowDto })
   approveWithdrawal(@Param('id') id: string, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.approveWithdrawal(id, req.admin);
+    return this.money.approveWithdrawal(id, req.admin);
   }
 
   @Patch('withdrawals/:id/reject')
@@ -444,7 +450,7 @@ export class AdminController {
     @Body() dto: WithdrawalRejectDto,
     @Req() req: Request & { admin: Admin },
   ) {
-    return this.adminService.rejectWithdrawal(id, req.admin, dto.reason, dto.reasonId);
+    return this.money.rejectWithdrawal(id, req.admin, dto.reason, dto.reasonId);
   }
 
   @Patch('withdrawals/:id/settle')
@@ -460,7 +466,7 @@ export class AdminController {
     @Body() dto: SettleWithdrawalDto,
     @Req() req: Request & { admin: Admin },
   ) {
-    return this.adminService.settleWithdrawal(id, req.admin, dto.providerRef);
+    return this.money.settleWithdrawal(id, req.admin, dto.providerRef);
   }
 
   // ── Ledger (ADM-13) ───────────────────────────────────────────────────────
@@ -479,7 +485,7 @@ export class AdminController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.adminService.listLedger({
+    return this.money.listLedger({
       userId,
       walletId,
       entryType,
@@ -501,7 +507,7 @@ export class AdminController {
   })
   @ApiOkResponse({ type: [IbProgramDto] })
   listPrograms() {
-    return this.adminService.listPrograms();
+    return this.money.listPrograms();
   }
 
   @Post('commission-plans')
@@ -513,7 +519,7 @@ export class AdminController {
   })
   @ApiOkResponse({ type: IbProgramDto })
   createProgram(@Body() dto: ProgramDto, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.createProgram(dto, req.admin);
+    return this.money.createProgram(dto, req.admin);
   }
 
   @Put('commission-plans/:id')
@@ -529,7 +535,7 @@ export class AdminController {
     @Body() dto: ProgramDto,
     @Req() req: Request & { admin: Admin },
   ) {
-    return this.adminService.updateProgram(id, dto, req.admin);
+    return this.money.updateProgram(id, dto, req.admin);
   }
 
   @Patch('commission-plans/:id/active')
@@ -545,7 +551,7 @@ export class AdminController {
     @Body() dto: ProgramActiveDto,
     @Req() req: Request & { admin: Admin },
   ) {
-    return this.adminService.setProgramActive(id, dto.active, req.admin);
+    return this.money.setProgramActive(id, dto.active, req.admin);
   }
 
   // ── RBAC: permission catalog, roles, admin directory (RBAC-02/07) ─────────
@@ -565,7 +571,7 @@ export class AdminController {
     },
   })
   getPermissions() {
-    return this.adminService.getPermissionsCatalog();
+    return this.rbac.getPermissionsCatalog();
   }
 
   @Get('roles')
@@ -577,7 +583,7 @@ export class AdminController {
   })
   @ApiOkResponse({ type: [RoleResponseDto] })
   listRoles() {
-    return this.adminService.listRoles();
+    return this.rbac.listRoles();
   }
 
   @Post('roles')
@@ -587,7 +593,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Create a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: RoleResponseDto })
   createRole(@Body() dto: RoleDto, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.createRole(dto.name, dto.description, dto.permissions, req.admin);
+    return this.rbac.createRole(dto.name, dto.description, dto.permissions, req.admin);
   }
 
   @Put('roles/:id')
@@ -601,7 +607,7 @@ export class AdminController {
     @Body() dto: UpdateRoleDto,
     @Req() req: Request & { admin: Admin },
   ) {
-    return this.adminService.updateRole(id, dto, req.admin);
+    return this.rbac.updateRole(id, dto, req.admin);
   }
 
   @Delete('roles/:id')
@@ -611,7 +617,7 @@ export class AdminController {
   @ApiOperation({ summary: 'Delete a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: MessageResponseDto })
   deleteRole(@Param('id') id: string, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.deleteRole(id, req.admin.id);
+    return this.rbac.deleteRole(id, req.admin.id);
   }
 
   @Get('users')
@@ -621,7 +627,7 @@ export class AdminController {
   @ApiOperation({ summary: 'List admin accounts (requires users.view)' })
   @ApiOkResponse({ type: [AdminProfileDto] })
   listAdmins() {
-    return this.adminService.listAdmins();
+    return this.rbac.listAdmins();
   }
 
   @Patch('users/:id')
@@ -637,7 +643,7 @@ export class AdminController {
     @Body() dto: UpdateAdminDto,
     @Req() req: Request & { admin: Admin },
   ) {
-    return this.adminService.updateAdmin(id, dto, req.admin);
+    return this.rbac.updateAdmin(id, dto, req.admin);
   }
 
   @Get('audit-log')
@@ -651,7 +657,7 @@ export class AdminController {
     @Query('action') action?: string,
     @Query('subjectType') subjectType?: string,
   ) {
-    return this.adminService.listAuditLog({ page, limit, action, subjectType });
+    return this.audit.listAuditLog({ page, limit, action, subjectType });
   }
 
   // ── KYC Step Configurator ──────────────────────────────────────────────────
@@ -661,7 +667,7 @@ export class AdminController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get current KYC onboarding steps configuration' })
   getKycConfig() {
-    return this.adminService.getKycConfig();
+    return this.compliance.getKycConfig();
   }
 
   @Put('kyc-config')
@@ -670,7 +676,7 @@ export class AdminController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update entire KYC onboarding steps configuration' })
   updateKycConfig(@Body() dto: KycConfigDto) {
-    return this.adminService.updateKycConfig(dto.steps as unknown as KycStepConfig[]);
+    return this.compliance.updateKycConfig(dto.steps as unknown as KycStepConfig[]);
   }
 
   @Post('kyc-config/steps')
@@ -679,7 +685,7 @@ export class AdminController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Add a new KYC step' })
   addKycStep(@Body() dto: KycStepDto) {
-    return this.adminService.addKycStep(dto as unknown as Omit<KycStepConfig, 'id' | 'stepNumber'>);
+    return this.compliance.addKycStep(dto as unknown as Omit<KycStepConfig, 'id' | 'stepNumber'>);
   }
 
   @Put('kyc-config/steps/:id')
@@ -688,7 +694,7 @@ export class AdminController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update a specific KYC step' })
   updateKycStep(@Param('id') id: string, @Body() dto: KycStepDto) {
-    return this.adminService.updateKycStep(id, dto);
+    return this.compliance.updateKycStep(id, dto);
   }
 
   @Delete('kyc-config/steps/:id')
@@ -697,7 +703,7 @@ export class AdminController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a KYC step' })
   deleteKycStep(@Param('id') id: string) {
-    return this.adminService.deleteKycStep(id);
+    return this.compliance.deleteKycStep(id);
   }
 
   @Post('kyc-config/reset')
@@ -706,6 +712,6 @@ export class AdminController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Reset KYC steps to default' })
   resetKycConfig() {
-    return this.adminService.resetKycConfig();
+    return this.compliance.resetKycConfig();
   }
 }

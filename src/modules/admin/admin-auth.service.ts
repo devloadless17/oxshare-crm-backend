@@ -1,0 +1,223 @@
+import { Injectable } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
+import * as bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
+import { Request, Response } from 'express';
+import { Admin, AdminsStore, InvitesStore } from '../../store/admins.store';
+import { RolesStore } from '../../store/roles.store';
+import { EmailService } from '../email/email.service';
+import {
+  AuthenticationError,
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
+import { AdminAuditService } from './admin-audit.service';
+import { AdminRbacService } from './admin-rbac.service';
+
+const ADMIN_COOKIE = 'admin_access_token';
+const ADMIN_REFRESH_COOKIE = 'admin_refresh_token';
+
+/**
+ * Admin sessions and the invite lifecycle.
+ *
+ * Split out of a 726-line AdminService that owned fifteen unrelated concerns.
+ * This is the one that matters most: it mints credentials, so it is the one
+ * that most needs to be readable in a single screen and testable on its own.
+ */
+@Injectable()
+export class AdminAuthService {
+  constructor(
+    private readonly jwt: JwtService,
+    private readonly config: ConfigService,
+    private readonly email: EmailService,
+    private readonly admins: AdminsStore,
+    private readonly invites: InvitesStore,
+    private readonly roles: RolesStore,
+    private readonly audit: AdminAuditService,
+    private readonly rbac: AdminRbacService,
+  ) {}
+
+  // ─── Admin Login ───────────────────────────────────────────────────────────
+  async login(email: string, password: string, res: Response) {
+    const admin = await this.admins.findByEmail(email);
+    if (!admin) throw new AuthenticationError('Invalid credentials.');
+
+    const valid = await bcrypt.compare(password, admin.passwordHash);
+    if (!valid) throw new AuthenticationError('Invalid credentials.');
+
+    const { accessToken, refreshToken } = this.generateAdminTokens(admin);
+    const refreshHash = await bcrypt.hash(refreshToken, 10);
+    await this.admins.update(admin.id, { refreshToken: refreshHash });
+
+    this.setAdminCookies(res, accessToken, refreshToken);
+    return { admin: await this.rbac.sanitize(admin), accessToken, refreshToken };
+  }
+  // ─── Admin Logout ──────────────────────────────────────────────────────────
+  async logout(adminId: string, res: Response) {
+    await this.admins.update(adminId, { refreshToken: undefined });
+    res.clearCookie(ADMIN_COOKIE);
+    res.clearCookie(ADMIN_REFRESH_COOKIE);
+    return { message: 'Logged out.' };
+  }
+  // ─── Admin Me ──────────────────────────────────────────────────────────────
+  async me(admin: Admin) {
+    return await this.rbac.sanitize(admin);
+  }
+  // ─── Create Invite ─────────────────────────────────────────────────────────
+  async createInvite(
+    email: string,
+    name: string,
+    actor: Admin,
+    roleId?: string,
+    permissions?: string[],
+  ) {
+    if (await this.admins.findByEmail(email)) {
+      throw new ConflictError('An admin with this email already exists.');
+    }
+
+    // RBAC-07: the inviting admin chooses the role; RBAC-02: a sub-admin
+    // holds only what is explicitly granted. Whatever the grant path — role,
+    // explicit list, or the default — it must be grantable by the actor.
+    let grantedPermissions = permissions;
+    if (roleId) {
+      const role = await this.roles.findById(roleId);
+      if (!role) throw new NotFoundError('Role not found.');
+      grantedPermissions = role.permissions;
+    }
+    await this.rbac.assertGrantable(actor, grantedPermissions ?? ['kyc.review', 'users.view']);
+    const invitedBy = actor.id;
+
+    const token = uuidv4();
+    const invite = await this.invites.create({
+      email,
+      name,
+      token,
+      role: 'sub_admin',
+      roleId,
+      permissions: grantedPermissions,
+      invitedBy,
+      expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h
+    });
+
+    const inviteUrl = `${this.config.get('ADMIN_URL', 'http://localhost:3002')}/invite/accept?token=${token}`;
+    void this.email.sendAdminInviteEmail(email, name, inviteUrl);
+    this.audit.record(invitedBy, 'admin.invite', 'admin_invite', invite.id, {
+      email,
+      roleId,
+      permissions: grantedPermissions,
+    });
+
+    // The token is a bearer credential that creates an admin account. It goes
+    // to the invitee's mailbox and nowhere else — not the response body, which
+    // would land in proxy logs, SPA memory and error-reporting tools.
+    // The link is echoed only outside production, to keep local dev workable.
+    const isProduction = this.config.get('NODE_ENV') === 'production';
+    return {
+      message: `Invite sent to ${email}`,
+      ...(isProduction ? {} : { inviteUrl }),
+    };
+  }
+  // ─── Accept Invite ─────────────────────────────────────────────────────────
+  async acceptInvite(token: string, password: string, res: Response) {
+    const invite = await this.invites.findByToken(token);
+    if (!invite) throw new NotFoundError('Invite not found or already used.');
+    if (invite.accepted) throw new ValidationError('This invite has already been used.');
+    if (invite.expiresAt < new Date()) throw new ValidationError('Invite has expired.');
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    const admin = await this.admins.create({
+      email: invite.email,
+      passwordHash,
+      name: invite.name,
+      role: 'sub_admin',
+      roleId: invite.roleId,
+      permissions: invite.permissions ?? ['kyc.review', 'users.view'],
+    });
+
+    await this.invites.markAccepted(token);
+
+    const { accessToken, refreshToken } = this.generateAdminTokens(admin);
+    const refreshHash = await bcrypt.hash(refreshToken, 10);
+    await this.admins.update(admin.id, { refreshToken: refreshHash });
+    this.setAdminCookies(res, accessToken, refreshToken);
+
+    return { message: 'Account created. Welcome aboard!', admin: await this.rbac.sanitize(admin) };
+  }
+  // ─── Validate invite token (for UI pre-fill) ───────────────────────────────
+  async validateInviteToken(token: string) {
+    const invite = await this.invites.findByToken(token);
+    if (!invite || invite.accepted || invite.expiresAt < new Date()) {
+      throw new ValidationError('Invalid or expired invite token.');
+    }
+    return { email: invite.email, name: invite.name, role: invite.role };
+  }
+  // ─── Helpers ──────────────────────────────────────────────────────────────
+  private generateAdminTokens(admin: Admin) {
+    const secret = this.config.get('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev');
+    const accessToken = this.jwt.sign(
+      { sub: admin.id, email: admin.email, role: admin.role },
+      { secret, expiresIn: '8h' },
+    );
+    const refreshToken = this.jwt.sign({ sub: admin.id }, { secret, expiresIn: '30d' });
+    return { accessToken, refreshToken };
+  }
+  private setAdminCookies(res: Response, accessToken: string, refreshToken: string) {
+    const cookieOpts = {
+      httpOnly: false,
+      sameSite: 'lax' as const,
+      secure: process.env['NODE_ENV'] === 'production',
+      path: '/',
+    };
+    res.cookie(ADMIN_COOKIE, accessToken, { ...cookieOpts, maxAge: 8 * 60 * 60 * 1000 });
+    res.cookie(ADMIN_REFRESH_COOKIE, refreshToken, {
+      ...cookieOpts,
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+  }
+  // ─── Admin Refresh ─────────────────────────────────────────────────────────
+  async refresh(req: Request, res: Response) {
+    const providedToken =
+      (req.cookies as Record<string, string>)?.[ADMIN_REFRESH_COOKIE] ||
+      (req.body as Record<string, string>)?.refreshToken ||
+      (req.headers as Record<string, string>)?.authorization?.replace('Bearer ', '');
+
+    if (!providedToken) throw new AuthenticationError('No refresh token provided.');
+
+    let adminId: string;
+    try {
+      const secret = this.config.get('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev');
+      const decoded = this.jwt.verify(providedToken, { secret });
+      adminId = decoded.sub;
+    } catch {
+      throw new AuthenticationError('Invalid or expired admin refresh token.');
+    }
+
+    // An unknown subject is a failed authentication, never a reason to fall back
+    // to another account. The previous fallback to the seeded master admin meant
+    // any token with any `sub` became a master-admin session, and deleting a
+    // compromised admin did not revoke them.
+    const admin = await this.admins.findById(adminId);
+    if (!admin) throw new AuthenticationError('Admin account not found.');
+
+    // Compare against the stored hash. Without this the hash written at login
+    // was decorative: logout cleared it but never checked it, so a stolen
+    // 30-day refresh token stayed valid through logout and suspension.
+    if (!admin.refreshToken) {
+      throw new AuthenticationError('Session has been revoked. Please log in again.');
+    }
+    const tokenMatches = await bcrypt.compare(providedToken, admin.refreshToken);
+    if (!tokenMatches) {
+      throw new AuthenticationError('Refresh token is no longer valid. Please log in again.');
+    }
+
+    const { accessToken, refreshToken } = this.generateAdminTokens(admin);
+    const refreshHash = await bcrypt.hash(refreshToken, 10);
+    await this.admins.update(admin.id, { refreshToken: refreshHash });
+
+    this.setAdminCookies(res, accessToken, refreshToken);
+
+    return { admin: await this.rbac.sanitize(admin), accessToken, refreshToken };
+  }
+}
