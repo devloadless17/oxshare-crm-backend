@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import Decimal from 'decimal.js';
-import { eq } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { closeDb, resetDb } from '../src/database/db';
 import {

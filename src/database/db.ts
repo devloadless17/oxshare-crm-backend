@@ -13,9 +13,19 @@ export function getDb(): NodePgDatabase<typeof schema> {
   if (!instance) {
     const connectionString =
       process.env['DATABASE_URL'] ?? 'postgresql://oxshare:oxshare_dev@localhost:5432/oxshare';
+    // TLS: verify certificates. The previous `rejectUnauthorized: false` for
+    // managed hosts disabled verification entirely, and every other host got no
+    // TLS at all. Local dev over a loopback socket is the only exemption.
+    const isLocal = /@(localhost|127\.0\.0\.1|postgres)[:/]/.test(connectionString);
     pool = new Pool({
       connectionString,
-      ssl: connectionString.includes('neon.tech') ? { rejectUnauthorized: false } : false,
+      ssl: isLocal ? false : { rejectUnauthorized: true },
+      // Bounded pool + timeouts: an unbounded pool on a money system turns one
+      // slow query into total connection starvation.
+      max: Number(process.env['DB_POOL_MAX'] ?? 10),
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
+      statement_timeout: 30_000,
     });
     instance = drizzle(pool, { schema });
   }
@@ -38,7 +48,7 @@ export async function closeDb(): Promise<void> {
 /** Cheap connectivity probe for the health endpoint. */
 export async function pingDb(): Promise<boolean> {
   try {
-    await getDb().execute('select 1' as unknown as never);
+    await getDb().execute('select 1');
     return true;
   } catch {
     return false;

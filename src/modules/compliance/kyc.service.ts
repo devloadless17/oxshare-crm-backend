@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, unlinkSync } from 'fs';
 import {
   Injectable,
+  Logger,
+  InternalServerErrorException,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
@@ -11,6 +13,8 @@ import { EmailService } from '../email/email.service';
 
 @Injectable()
 export class KycService {
+  private readonly logger = new Logger(KycService.name);
+
   constructor(private readonly email: EmailService) {}
 
   // ─── Get status ────────────────────────────────────────────────────────────
@@ -42,7 +46,7 @@ export class KycService {
     else if (step === 'address') patch['addressProof'] = { ...submission.addressProof, ...data };
     else throw new BadRequestException(`Unknown step: ${step}`);
 
-    return await KycStore.update(userId, patch as Parameters<typeof KycStore.update>[1]);
+    return await KycStore.update(userId, patch);
   }
 
   // ─── Attach uploaded file to a step ────────────────────────────────────────
@@ -187,7 +191,7 @@ export class KycService {
       // Sent inline per ARCH §8.5 — fire-and-forget, failure is logged by EmailService
       void this.email.sendKycDecisionEmail(user.email, user.firstName, 'approved');
     }
-    console.log(`✅ KYC approved for user ${userId} by admin ${adminId}`);
+    this.logger.log(`KYC approved for user ${userId} by admin ${adminId}`);
     return this.getByUserId(userId);
   }
 
@@ -239,13 +243,23 @@ export class KycService {
   // ─── Reset All KYC Submissions ──────────────────────────────────────────────
   async resetAllKyc() {
     await KycStore.clearAll();
+    // Report what could not be removed instead of silently claiming success —
+    // a partial wipe on a compliance path must be visible.
+    const failures: string[] = [];
     if (existsSync('./uploads/kyc')) {
-      try {
-        const files = readdirSync('./uploads/kyc');
-        for (const file of files) {
-          try { unlinkSync(`./uploads/kyc/${file}`); } catch {}
+      for (const file of readdirSync('./uploads/kyc')) {
+        try {
+          unlinkSync(`./uploads/kyc/${file}`);
+        } catch (error) {
+          failures.push(file);
+          this.logger.error(`Failed to delete ${file}: ${(error as Error).message}`);
         }
-      } catch {}
+      }
+    }
+    if (failures.length > 0) {
+      throw new InternalServerErrorException(
+        `KYC records cleared but ${failures.length} file(s) could not be deleted.`,
+      );
     }
     return { message: 'All KYC submissions and uploaded files cleared successfully.' };
   }

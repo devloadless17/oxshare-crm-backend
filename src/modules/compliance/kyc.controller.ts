@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Body, Param, Query,
+  Controller, Get, Post, Body,
   UseGuards, Req, UseInterceptors, UploadedFile,
   ParseFilePipe, MaxFileSizeValidator, BadRequestException,
 } from '@nestjs/common';
@@ -93,9 +93,9 @@ export class KycController {
     return this.kyc.resetKyc(req.user.id);
   }
 
-  @Post('reset-all')
-  @ApiOperation({ summary: 'Reset all KYC submissions and clear uploaded files' })
-  resetAll() {
-    return this.kyc.resetAllKyc();
-  }
+  // REMOVED: POST /kyc/reset-all. It was reachable by any verified client and
+  // deleted every KYC submission plus every uploaded document, system-wide.
+  // A destructive maintenance operation does not belong on a client-facing
+  // controller; if it is needed again it belongs behind MasterAdminGuard and
+  // a non-production check.
 }

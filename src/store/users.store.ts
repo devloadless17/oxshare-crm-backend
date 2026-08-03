@@ -24,7 +24,7 @@ type Row = typeof users.$inferSelect;
 
 const toUser = (r: Row): User => ({
   ...r,
-  verificationLevel: (r.verificationLevel === 1 ? 1 : 0) as 0 | 1,
+  verificationLevel: (r.verificationLevel === 1 ? 1 : 0),
   emailVerificationToken: r.emailVerificationToken ?? undefined,
   emailVerificationExpiry: r.emailVerificationExpiry ?? undefined,
   refreshToken: r.refreshToken ?? undefined,

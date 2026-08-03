@@ -28,9 +28,11 @@ jobs:
       - name: Type-check
         run: npx tsc --noEmit
 
+      # No continue-on-error: this gate previously passed because no ESLint
+      # config existed at all, which let a floating promise on an authorization
+      # check reach main.
       - name: Lint
         run: npm run lint
-        continue-on-error: true
 
       # Testcontainers starts its own Postgres 16; the runner's Docker is all
       # it needs. Tests run against the real committed migrations, never a mock.

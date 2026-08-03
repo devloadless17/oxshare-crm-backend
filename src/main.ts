@@ -61,8 +61,12 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, document);
 
-  const { runSeeds } = await import('./database/seed');
-  await runSeeds();
+  // Seeds create a known-password master admin. That is a development
+  // convenience and a production compromise, so it never runs in production.
+  if (process.env['NODE_ENV'] !== 'production') {
+    const { runSeeds } = await import('./database/seed');
+    await runSeeds();
+  }
 
   const port = process.env['PORT'] ?? 3001;
   await app.listen(port);
@@ -72,4 +76,4 @@ async function bootstrap() {
   console.log(`❤️  Health check at      http://localhost:${port}/health`);
 }
 
-bootstrap();
+void bootstrap();

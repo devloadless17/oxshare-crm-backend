@@ -26,10 +26,9 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 
   async validate(payload: JwtPayload) {
-    let user = await UsersStore.findById(payload.sub);
-    if (!user && payload.email) {
-      user = await UsersStore.findByEmail(payload.email);
-    }
+    // Identity comes from `sub` only. Falling back to the token's `email` claim
+    // let a token naming one account resolve to another.
+    const user = await UsersStore.findById(payload.sub);
     if (!user) throw new UnauthorizedException('User not found. Please log in again.');
     // Suspension takes effect on the next request — a live token is no shield.
     if (user.status === 'suspended') {

@@ -4,7 +4,8 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiCookieAuth, ApiOkResponse, ApiExtraModels } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { IsEmail, IsString, MinLength, IsArray, IsOptional, IsIn, IsBoolean, IsInt, IsNumberString, Min } from 'class-validator';
+import { IsEmail, IsString, MinLength, IsArray, IsOptional, IsIn, IsBoolean, IsInt, IsNumberString, IsNotEmpty, Min, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 import { AdminService } from './admin.service';
 import {
   AdminGuard,
@@ -13,6 +14,7 @@ import {
   RequirePermissions,
 } from './guards/admin.guard';
 import { Admin } from '../../store/admins.store';
+import { KycStepConfig } from '../../store/kyc-config.store';
 import { RejectionContext } from '../../store/rejection-reasons.store';
 import {
   AdminLoginResponseDto,
@@ -96,6 +98,29 @@ class ProgramDto {
 }
 class ProgramActiveDto {
   @IsBoolean() active: boolean;
+}
+class KycFieldDto {
+  @IsString() id: string;
+  @IsString() @IsNotEmpty() name: string;
+  @IsString() @IsNotEmpty() label: string;
+  @IsIn(['text', 'date', 'phone', 'select', 'file', 'camera', 'checkbox'])
+  type: 'text' | 'date' | 'phone' | 'select' | 'file' | 'camera' | 'checkbox';
+  @IsBoolean() required: boolean;
+  @IsArray() @IsString({ each: true }) @IsOptional() options?: string[];
+  @IsString() @IsOptional() hint?: string;
+}
+class KycStepDto {
+  @IsString() @IsOptional() id?: string;
+  @IsInt() @IsOptional() stepNumber?: number;
+  @IsString() @IsNotEmpty() slug: string;
+  @IsString() @IsNotEmpty() title: string;
+  @IsString() @IsOptional() description?: string;
+  @IsString() @IsOptional() icon?: string;
+  @IsBoolean() @IsOptional() enabled?: boolean;
+  @IsArray() @ValidateNested({ each: true }) @Type(() => KycFieldDto) fields: KycFieldDto[];
+}
+class KycConfigDto {
+  @IsArray() @ValidateNested({ each: true }) @Type(() => KycStepDto) steps: KycStepDto[];
 }
 class ClientStatusDto {
   @IsIn(['active', 'suspended']) status: 'active' | 'suspended';
@@ -519,8 +544,8 @@ export class AdminController {
   @RequirePermissions('kyc.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update entire KYC onboarding steps configuration' })
-  updateKycConfig(@Body() steps: any[]) {
-    return this.adminService.updateKycConfig(steps);
+  updateKycConfig(@Body() dto: KycConfigDto) {
+    return this.adminService.updateKycConfig(dto.steps as unknown as KycStepConfig[]);
   }
 
   @Post('kyc-config/steps')
@@ -528,8 +553,8 @@ export class AdminController {
   @RequirePermissions('kyc.create')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Add a new KYC step' })
-  addKycStep(@Body() stepData: any) {
-    return this.adminService.addKycStep(stepData);
+  addKycStep(@Body() dto: KycStepDto) {
+    return this.adminService.addKycStep(dto as unknown as Omit<KycStepConfig, 'id' | 'stepNumber'>);
   }
 
   @Put('kyc-config/steps/:id')
@@ -537,8 +562,8 @@ export class AdminController {
   @RequirePermissions('kyc.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update a specific KYC step' })
-  updateKycStep(@Param('id') id: string, @Body() patch: any) {
-    return this.adminService.updateKycStep(id, patch);
+  updateKycStep(@Param('id') id: string, @Body() dto: KycStepDto) {
+    return this.adminService.updateKycStep(id, dto);
   }
 
   @Delete('kyc-config/steps/:id')

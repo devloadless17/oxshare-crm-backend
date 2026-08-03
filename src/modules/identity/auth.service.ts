@@ -1,9 +1,9 @@
 import {
+  Logger,
   Injectable,
   ConflictException,
   UnauthorizedException,
   ForbiddenException,
-  NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -12,6 +12,7 @@ import * as bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { UsersStore, User } from '../../store/users.store';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
+import { EmailService } from '../email/email.service';
 import { Response } from 'express';
 
 const COOKIE_OPTS = {
@@ -23,9 +24,12 @@ const COOKIE_OPTS = {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly email: EmailService,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -53,9 +57,10 @@ export class AuthService {
       phone: dto.phone,
     });
 
-    const verifyUrl = `${this.config.get('PORTAL_URL', 'http://localhost:3000')}/verify-email?token=${verificationToken}`;
-    console.log('\n📧 EMAIL VERIFICATION LINK (dev only):');
-    console.log(`   ${verifyUrl}\n`);
+    // The verification link is a bearer credential. It is emailed and never
+    // written to stdout — it used to be console.logged in every environment.
+    await this.email.sendVerificationEmail(user.email, verificationToken);
+    this.logger.log(`Verification email dispatched to ${user.email}`);
 
     return {
       message: 'Registration successful. Please check your email to verify your account.',
@@ -94,9 +99,8 @@ export class AuthService {
       emailVerificationExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
 
-    const verifyUrl = `${this.config.get('PORTAL_URL', 'http://localhost:3000')}/verify-email?token=${token}`;
-    console.log('\n📧 RESEND VERIFICATION LINK (dev only):');
-    console.log(`   ${verifyUrl}\n`);
+    await this.email.sendVerificationEmail(user.email, token);
+    this.logger.log(`Verification email re-sent to ${user.email}`);
 
     return { message: 'If that email exists and is unverified, a new link has been sent.' };
   }
@@ -143,11 +147,10 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired refresh token.');
     }
 
-    let user = await UsersStore.findById(userId);
-    if (!user) {
-      // Fallback search by default demo email if in-memory user was re-seeded
-      user = await UsersStore.findByEmail('client@oxshare.com');
-    }
+    // No fallback: an unknown subject is a failed authentication. The previous
+    // fallback to the seeded demo client turned any signed token into that
+    // account's session.
+    const user = await UsersStore.findById(userId);
     if (!user) throw new UnauthorizedException('User account not found.');
     if (user.status === 'suspended') {
       throw new UnauthorizedException('Your account has been suspended.');

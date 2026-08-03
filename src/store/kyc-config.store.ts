@@ -175,7 +175,7 @@ export const KycConfigStore = {
     return true;
   },
 
-  async resetDefaults(): Promise<KycStepConfig[]> {
+  resetDefaults(): Promise<KycStepConfig[]> {
     return this.setSteps([...DEFAULT_KYC_STEPS]);
   },
 };

@@ -23,7 +23,12 @@
       "@/*": [
         "src/*"
       ]
-    }
+    },
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "strictPropertyInitialization": false
   },
   "exclude": [
     "node_modules",

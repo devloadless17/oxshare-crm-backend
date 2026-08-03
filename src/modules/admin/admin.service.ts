@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   UnauthorizedException,
   ConflictException,
   NotFoundException,
@@ -30,6 +31,8 @@ const ADMIN_REFRESH_COOKIE = 'admin_refresh_token';
 
 @Injectable()
 export class AdminService {
+  private readonly logger = new Logger(AdminService.name);
+
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
@@ -113,10 +116,14 @@ export class AdminService {
       permissions: grantedPermissions,
     });
 
+    // The token is a bearer credential that creates an admin account. It goes
+    // to the invitee's mailbox and nowhere else — not the response body, which
+    // would land in proxy logs, SPA memory and error-reporting tools.
+    // The link is echoed only outside production, to keep local dev workable.
+    const isProduction = this.config.get('NODE_ENV') === 'production';
     return {
       message: `Invite sent to ${email}`,
-      token, // exposed in dev — remove in production
-      inviteUrl,
+      ...(isProduction ? {} : { inviteUrl }),
     };
   }
 
@@ -198,7 +205,7 @@ export class AdminService {
         subjectId,
         details,
       });
-    })().catch((err) => console.error('[audit] failed to record admin action:', action, err?.message ?? err));
+    })().catch((err: Error) => this.logger.error(`Failed to record admin action ${action}: ${err.message}`));
   }
 
   listAuditLog(query: { page?: string; limit?: string; action?: string; subjectType?: string }) {
@@ -274,6 +281,7 @@ export class AdminService {
    * - a non-master actor can only grant keys from their own permission set.
    * The actor's permissions arrive live-resolved from the guard.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await -- async by contract: every caller awaits it, and role lookups will become async here.
   private async assertGrantable(actor: Admin, permissions: string[]) {
     const catalog = this.catalogKeys();
     const unknown = permissions.filter(
@@ -289,7 +297,7 @@ export class AdminService {
     }
     if (actorIsMaster) return;
 
-    const held = new Set(actor.permissions.map(AdminService.normalizeKey));
+    const held = new Set(actor.permissions.map((p) => AdminService.normalizeKey(p)));
     const beyond = permissions.filter((p) => !held.has(AdminService.normalizeKey(p)));
     if (beyond.length > 0) {
       throw new ForbiddenException(
@@ -320,7 +328,7 @@ export class AdminService {
     if (patch.name && patch.name !== role.name && await RolesStore.findByName(patch.name)) {
       throw new ConflictException('A role with this name already exists.');
     }
-    if (patch.permissions) this.assertGrantable(actor, patch.permissions);
+    if (patch.permissions) await this.assertGrantable(actor, patch.permissions);
     const updated = await RolesStore.update(id, patch);
     this.audit(actor.id, 'role.update', 'role', id, { before: role.permissions, after: updated?.permissions });
     return updated;
@@ -671,10 +679,11 @@ export class AdminService {
       throw new UnauthorizedException('Invalid or expired admin refresh token.');
     }
 
-    let admin = await AdminsStore.findById(adminId);
-    if (!admin) {
-      admin = await AdminsStore.findByEmail('admin@oxshare.com');
-    }
+    // An unknown subject is a failed authentication, never a reason to fall back
+    // to another account. The previous fallback to the seeded master admin meant
+    // any token with any `sub` became a master-admin session, and deleting a
+    // compromised admin did not revoke them.
+    const admin = await AdminsStore.findById(adminId);
     if (!admin) throw new UnauthorizedException('Admin account not found.');
 
     const { accessToken, refreshToken } = this.generateAdminTokens(admin);

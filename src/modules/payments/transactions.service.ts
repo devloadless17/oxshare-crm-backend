@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { getDb } from '../../database/db';
-import { transactions, users, wallets } from '../../database/schema';
+import { transactions, users } from '../../database/schema';
 import { money, toDecimal } from '../wallet/money';
 import { Currency, WalletService } from '../wallet/wallet.service';
 
