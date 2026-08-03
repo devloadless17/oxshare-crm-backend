@@ -686,6 +686,17 @@ export class AdminService {
     const admin = await AdminsStore.findById(adminId);
     if (!admin) throw new UnauthorizedException('Admin account not found.');
 
+    // Compare against the stored hash. Without this the hash written at login
+    // was decorative: logout cleared it but never checked it, so a stolen
+    // 30-day refresh token stayed valid through logout and suspension.
+    if (!admin.refreshToken) {
+      throw new UnauthorizedException('Session has been revoked. Please log in again.');
+    }
+    const tokenMatches = await bcrypt.compare(providedToken, admin.refreshToken);
+    if (!tokenMatches) {
+      throw new UnauthorizedException('Refresh token is no longer valid. Please log in again.');
+    }
+
     const { accessToken, refreshToken } = this.generateAdminTokens(admin);
     const refreshHash = await bcrypt.hash(refreshToken, 10);
     await AdminsStore.update(admin.id, { refreshToken: refreshHash });

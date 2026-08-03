@@ -13,6 +13,7 @@ import {
   PermissionsGuard,
   RequirePermissions,
 } from './guards/admin.guard';
+import { Throttle } from '@nestjs/throttler';
 import { Admin } from '../../store/admins.store';
 import { KycStepConfig } from '../../store/kyc-config.store';
 import { RejectionContext } from '../../store/rejection-reasons.store';
@@ -134,6 +135,8 @@ export class AdminController {
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   @Post('auth/login')
+  // Master-admin credentials: 5 attempts per minute per IP. Unprotected before.
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Admin login' })
   @ApiOkResponse({ type: AdminLoginResponseDto })
@@ -180,12 +183,16 @@ export class AdminController {
   }
 
   @Get('invite/validate')
+  // Unauthenticated and returns invitee PII for a valid token — a guessing
+  // oracle without a throttle.
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @ApiOperation({ summary: 'Validate invite token — returns email and name for pre-fill' })
   validateInvite(@Query('token') token: string) {
     return this.adminService.validateInviteToken(token);
   }
 
   @Post('invite/accept')
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Accept invite and set password — logs admin in immediately' })
   acceptInvite(@Body() dto: AcceptInviteDto, @Res({ passthrough: true }) res: Response) {

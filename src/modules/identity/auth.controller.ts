@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiCookieAuth } from '@nestjs/swagger';
 import { Request, Response } from 'express';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { RegisterDto, LoginDto, ResendVerificationDto } from './dto/auth.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -23,6 +24,7 @@ export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
   @Post('register')
+  @Throttle({ default: { ttl: 3_600_000, limit: 10 } })
   @ApiOperation({ summary: 'Register a new portal user' })
   register(@Body() dto: RegisterDto) {
     return this.auth.register(dto);
@@ -35,6 +37,8 @@ export class AuthController {
   }
 
   @Post('resend-verification')
+  // §8.4's pattern: a mail-bomb vector without a per-user limit.
+  @Throttle({ default: { ttl: 900_000, limit: 3 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Resend email verification link' })
   resendVerification(@Body() dto: ResendVerificationDto) {
@@ -42,6 +46,7 @@ export class AuthController {
   }
 
   @Post('login')
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Login — sets httpOnly JWT cookies' })
   login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {

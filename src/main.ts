@@ -4,6 +4,7 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
 import { join } from 'path';
 import { mkdirSync } from 'fs';
 
@@ -18,7 +19,18 @@ async function bootstrap() {
   // KYC uploads are PII — served only via the authenticated UploadsController
   // (compliance module), never as anonymous static assets.
 
-  // Cookie parser (needed for httpOnly JWT cookies)
+  // Security headers. Absent entirely before — and directly relevant here
+  // because KYC documents are served from this origin (nosniff stops a
+  // mislabelled upload being interpreted as HTML).
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: { defaultSrc: ["'self'"], frameAncestors: ["'none'"] },
+      },
+      crossOriginResourcePolicy: { policy: 'same-site' },
+    }),
+  );
+
   app.use(cookieParser());
 
   // Global validation pipe — whitelist & transform DTOs

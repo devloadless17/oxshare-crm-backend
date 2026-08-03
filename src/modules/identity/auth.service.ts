@@ -152,6 +152,17 @@ export class AuthService {
     // account's session.
     const user = await UsersStore.findById(userId);
     if (!user) throw new UnauthorizedException('User account not found.');
+
+    // Same revocation check as the admin path — the stored hash was never
+    // compared, so logout did not actually end the session.
+    if (!user.refreshToken) {
+      throw new UnauthorizedException('Session has been revoked. Please log in again.');
+    }
+    const tokenMatches = await bcrypt.compare(providedRefreshToken, user.refreshToken);
+    if (!tokenMatches) {
+      throw new UnauthorizedException('Refresh token is no longer valid. Please log in again.');
+    }
+
     if (user.status === 'suspended') {
       throw new UnauthorizedException('Your account has been suspended.');
     }

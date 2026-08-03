@@ -44,6 +44,12 @@ export class UploadsController {
 
     const fullPath = join(process.cwd(), 'uploads', 'kyc', name);
     if (!existsSync(fullPath)) throw new NotFoundException('Document not found.');
+
+    // Never let the browser interpret a KYC document as active content on this
+    // origin — this origin holds the session cookies.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `inline; filename="${name}"`);
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     return res.sendFile(fullPath);
   }
 

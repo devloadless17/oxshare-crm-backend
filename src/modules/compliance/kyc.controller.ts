@@ -7,18 +7,42 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiCookieAuth, ApiConsumes } from '@nestjs/swagger';
 import { diskStorage } from 'multer';
 import { Request } from 'express';
-import { extname } from 'path';
+import { randomUUID } from 'crypto';
 import { KycService } from './kyc.service';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { KycConfigStore } from '../../store/kyc-config.store';
 
+/**
+ * Upload hardening.
+ *
+ * The stored extension previously came from the client-supplied filename while
+ * the type check trusted the client-supplied Content-Type. Uploading
+ * `payload.html` declared as `image/png` stored a `.html` file that the uploads
+ * controller then served with `Content-Type: text/html` from the API origin —
+ * the same origin that holds the session cookies. That is stored XSS into
+ * session theft.
+ *
+ * Now: the extension is derived from an allowlist keyed on the declared type,
+ * never from the filename, and the served response is forced to download with
+ * nosniff (see uploads.controller.ts).
+ */
+const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'application/pdf': '.pdf',
+};
+
 const multerStorage = diskStorage({
   destination: './uploads/kyc',
-  filename: (_req: Request, file: { originalname: string }, cb: (err: Error | null, name: string) => void) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, `${uniqueSuffix}${extname(file.originalname)}`);
+  filename: (_req: Request, file: Express.Multer.File, cb: (err: Error | null, name: string) => void) => {
+    const extension = ALLOWED_UPLOAD_TYPES[file.mimetype.toLowerCase()] ?? '.bin';
+    // randomUUID, not Date.now()+Math.random(): the old scheme was guessable,
+    // and these are filenames for identity documents.
+    cb(null, `${randomUUID()}${extension}`);
   },
 });
 
@@ -27,7 +51,7 @@ const fileFilter = (
   file: Express.Multer.File,
   cb: (error: Error | null, acceptFile: boolean) => void,
 ) => {
-  if (file.mimetype.match(/^image\/(jpeg|png|webp|jpg)$/i) || file.mimetype === 'application/pdf') {
+  if (ALLOWED_UPLOAD_TYPES[file.mimetype.toLowerCase()]) {
     cb(null, true);
   } else {
     cb(new BadRequestException('Only JPG, PNG, WEBP images and PDF files are allowed.'), false);
