@@ -22,6 +22,19 @@ export function getDb(): NodePgDatabase<typeof schema> {
   return instance;
 }
 
+/** Tests only: drop the cached instance so the next getDb() re-reads DATABASE_URL. */
+export function resetDb(): void {
+  instance = null;
+  pool = null;
+}
+
+/** Close the pool — test teardown and graceful shutdown. */
+export async function closeDb(): Promise<void> {
+  await pool?.end();
+  instance = null;
+  pool = null;
+}
+
 /** Cheap connectivity probe for the health endpoint. */
 export async function pingDb(): Promise<boolean> {
   try {

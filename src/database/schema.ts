@@ -1,5 +1,6 @@
 import {
   boolean,
+  numeric,
   uniqueIndex,
   index,
   integer,
@@ -16,11 +17,11 @@ import {
 // that section defines the table (users) and with the in-memory stores being
 // migrated (src/store/*.store.ts) everywhere else.
 //
-// Deliberately NOT here yet: the money/trading tables (wallets, ledger_entries,
-// commission_accruals, transactions, payouts, deals, trading_accounts,
-// ib_profiles/programs, referral_attributions). They land with the money
-// milestone together with the §11 acceptance tests — their UNIQUE constraints
-// ARE the idempotency design and must not be scaffolded casually.
+// The money tables below are governed by ARCHITECTURE §6, which is
+// non-negotiable. Read it before touching them. Still deferred: the
+// trading/IB tables (deals, trading_accounts, ib_profiles/programs,
+// commission_accruals, referral_attributions) — they arrive with the MT5
+// bridge and the commission engine.
 
 export const userTypeEnum = pgEnum('user_type', ['individual', 'referral', 'partner']);
 export const userStatusEnum = pgEnum('user_status', ['active', 'pending', 'suspended']);
@@ -141,6 +142,68 @@ export const rejectionReasons = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('rejection_reasons_context_label_uq').on(t.context, t.label)],
+);
+
+
+// ═══ MONEY (ARCHITECTURE §6 — non-negotiable) ════════════════════════════════
+//
+// 1. NUMERIC(28,8) everywhere; node-postgres hands these to JS as STRINGS and
+//    they must stay strings across every boundary. decimal.js does the math.
+// 2. Every ledger write locks the wallet row (SELECT ... FOR UPDATE) inside one
+//    transaction — see WalletService.post().
+// 3. Idempotency lives in these constraints, never in check-then-insert.
+// 4. ledger_entries is APPEND ONLY — enforced by a database trigger in the
+//    migration, not by convention. Corrections are compensating rows.
+
+export const currencyEnum = pgEnum('currency', ['USD', 'USDT']);
+export const ledgerEntryTypeEnum = pgEnum('ledger_entry_type', [
+  'deposit',
+  'withdrawal',
+  'commission',
+  'rebate',
+  'payout',
+  'adjustment',
+]);
+
+export const wallets = pgTable(
+  'wallets',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    currency: currencyEnum('currency').notNull(),
+    balance: numeric('balance', { precision: 28, scale: 8 }).notNull().default('0'),
+    onHold: numeric('on_hold', { precision: 28, scale: 8 }).notNull().default('0'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('wallets_user_currency_uq').on(t.userId, t.currency)],
+);
+
+export const ledgerEntries = pgTable(
+  'ledger_entries',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    walletId: uuid('wallet_id')
+      .notNull()
+      .references(() => wallets.id, { onDelete: 'restrict' }),
+    // Signed: credits positive, debits negative. Sum per wallet == balance.
+    amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
+    // The running balance AFTER this entry (FSD requirement, §6.2).
+    balanceAfter: numeric('balance_after', { precision: 28, scale: 8 }).notNull(),
+    entryType: ledgerEntryTypeEnum('entry_type').notNull(),
+    // What caused this row — every money movement traces back to its cause.
+    referenceType: varchar('reference_type', { length: 50 }).notNull(),
+    referenceId: varchar('reference_id', { length: 255 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('ledger_entries_wallet_idx').on(t.walletId),
+    index('ledger_entries_created_at_idx').on(t.createdAt),
+    // Idempotency for replayed causes (deal ingest, payment callbacks, payouts):
+    // the same (type, id) can never post twice against the same wallet.
+    uniqueIndex('ledger_entries_wallet_reference_uq').on(t.walletId, t.referenceType, t.referenceId),
+  ],
 );
 
 // ── Audit log — APPEND ONLY (D-21). No UPDATE, no DELETE, ever. ──────────────

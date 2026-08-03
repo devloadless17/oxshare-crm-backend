@@ -15,6 +15,13 @@
       "when": 1785768336281,
       "tag": "0001_wooden_sentinels",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785770051599,
+      "tag": "0002_round_alex_power",
+      "breakpoints": true
     }
   ]
 }
