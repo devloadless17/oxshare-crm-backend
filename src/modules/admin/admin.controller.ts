@@ -111,12 +111,13 @@ export class AdminController {
 
   // ── Invite ────────────────────────────────────────────────────────────────
   @Post('invite')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('users.create')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Invite a new sub-admin with a role or explicit permissions (master admin only)' })
+  @ApiOperation({ summary: 'Invite a new sub-admin with a role or explicit permissions (requires users.create)' })
   @ApiOkResponse({ type: InviteResponseDto })
   invite(@Body() dto: InviteDto, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.createInvite(dto.email, dto.name, req.admin.id, dto.roleId, dto.permissions);
+    return this.adminService.createInvite(dto.email, dto.name, req.admin, dto.roleId, dto.permissions);
   }
 
   @Get('invite/validate')
@@ -249,66 +250,73 @@ export class AdminController {
 
   // ── RBAC: permission catalog, roles, admin directory (RBAC-02/07) ─────────
   @Get('permissions')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('roles.view', 'users.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Permission catalog grouped by module (master admin only)' })
+  @ApiOperation({ summary: 'Permission catalog grouped by module (requires roles.view or users.view)' })
   @ApiOkResponse({ schema: { type: 'object', additionalProperties: { $ref: '#/components/schemas/PermissionModuleDto' } } })
   getPermissions() {
     return this.adminService.getPermissionsCatalog();
   }
 
   @Get('roles')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('roles.view', 'users.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'List RBAC roles (master admin only)' })
+  @ApiOperation({ summary: 'List RBAC roles (requires roles.view or users.view)' })
   @ApiOkResponse({ type: [RoleResponseDto] })
   listRoles() {
     return this.adminService.listRoles();
   }
 
   @Post('roles')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('roles.manage')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Create a custom role (master admin only)' })
+  @ApiOperation({ summary: 'Create a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: RoleResponseDto })
   createRole(@Body() dto: RoleDto, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.createRole(dto.name, dto.description, dto.permissions, req.admin.id);
+    return this.adminService.createRole(dto.name, dto.description, dto.permissions, req.admin);
   }
 
   @Put('roles/:id')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('roles.manage')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Update a custom role (master admin only)' })
+  @ApiOperation({ summary: 'Update a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: RoleResponseDto })
   updateRole(@Param('id') id: string, @Body() dto: UpdateRoleDto, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.updateRole(id, dto, req.admin.id);
+    return this.adminService.updateRole(id, dto, req.admin);
   }
 
   @Delete('roles/:id')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('roles.manage')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Delete a custom role (master admin only)' })
+  @ApiOperation({ summary: 'Delete a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: MessageResponseDto })
   deleteRole(@Param('id') id: string, @Req() req: Request & { admin: Admin }) {
     return this.adminService.deleteRole(id, req.admin.id);
   }
 
   @Get('users')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('users.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'List admin accounts (master admin only)' })
+  @ApiOperation({ summary: 'List admin accounts (requires users.view)' })
   @ApiOkResponse({ type: [AdminProfileDto] })
   listAdmins() {
     return this.adminService.listAdmins();
   }
 
   @Patch('users/:id')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('users.edit')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Update an admin’s name, role, or permissions (master admin only)' })
+  @ApiOperation({ summary: 'Update an admin’s name, role, or permissions (requires users.edit)' })
   @ApiOkResponse({ type: AdminProfileDto })
   updateAdmin(@Param('id') id: string, @Body() dto: UpdateAdminDto, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.updateAdmin(id, dto, req.admin.id);
+    return this.adminService.updateAdmin(id, dto, req.admin);
   }
 
   @Get('audit-log')
@@ -327,7 +335,8 @@ export class AdminController {
 
   // ── KYC Step Configurator ──────────────────────────────────────────────────
   @Get('kyc-config')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get current KYC onboarding steps configuration' })
   getKycConfig() {
@@ -335,7 +344,8 @@ export class AdminController {
   }
 
   @Put('kyc-config')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update entire KYC onboarding steps configuration' })
   updateKycConfig(@Body() steps: any[]) {
@@ -343,7 +353,8 @@ export class AdminController {
   }
 
   @Post('kyc-config/steps')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.create')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Add a new KYC step' })
   addKycStep(@Body() stepData: any) {
@@ -351,7 +362,8 @@ export class AdminController {
   }
 
   @Put('kyc-config/steps/:id')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update a specific KYC step' })
   updateKycStep(@Param('id') id: string, @Body() patch: any) {
@@ -359,7 +371,8 @@ export class AdminController {
   }
 
   @Delete('kyc-config/steps/:id')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.delete')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a KYC step' })
   deleteKycStep(@Param('id') id: string) {
@@ -367,7 +380,8 @@ export class AdminController {
   }
 
   @Post('kyc-config/reset')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Reset KYC steps to default' })
   resetKycConfig() {

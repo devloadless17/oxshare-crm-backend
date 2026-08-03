@@ -4,6 +4,7 @@ import {
   ConflictException,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -66,7 +67,7 @@ export class AdminService {
   async createInvite(
     email: string,
     name: string,
-    invitedBy: string,
+    actor: Admin,
     roleId?: string,
     permissions?: string[],
   ) {
@@ -74,14 +75,17 @@ export class AdminService {
       throw new ConflictException('An admin with this email already exists.');
     }
 
-    // RBAC-07: the inviting master admin chooses the role; RBAC-02: a sub-admin
-    // holds only what is explicitly granted.
+    // RBAC-07: the inviting admin chooses the role; RBAC-02: a sub-admin
+    // holds only what is explicitly granted. Whatever the grant path — role,
+    // explicit list, or the default — it must be grantable by the actor.
     let grantedPermissions = permissions;
     if (roleId) {
       const role = RolesStore.findById(roleId);
       if (!role) throw new NotFoundException('Role not found.');
       grantedPermissions = role.permissions;
     }
+    this.assertGrantable(actor, grantedPermissions ?? ['kyc.review', 'users.view']);
+    const invitedBy = actor.id;
 
     const token = uuidv4();
     const invite = InvitesStore.create({
@@ -235,7 +239,53 @@ export class AdminService {
     const file = path.join(__dirname, '../../config/permissions.json');
     const fallback = path.join(process.cwd(), 'src/config/permissions.json');
     const raw = fs.readFileSync(fs.existsSync(file) ? file : fallback, 'utf-8');
-    return JSON.parse(raw) as Record<string, unknown>;
+    return JSON.parse(raw) as Record<
+      string,
+      { moduleName: string; description: string; permissions: { key: string; label: string }[] }
+    >;
+  }
+
+  /** Every grantable key, from the catalog — the single vocabulary for roles. */
+  private catalogKeys(): Set<string> {
+    const keys = new Set<string>();
+    for (const module of Object.values(this.getPermissionsCatalog())) {
+      for (const p of module.permissions) keys.add(p.key);
+    }
+    return keys;
+  }
+
+  private static normalizeKey(key: string): string {
+    return key.replace(/:/g, '.').toLowerCase();
+  }
+
+  /**
+   * Anti-escalation invariant: nobody hands out access they don't hold.
+   * - every key must exist in the catalog ('*' is reserved for the master),
+   * - a non-master actor can only grant keys from their own permission set.
+   * The actor's permissions arrive live-resolved from the guard.
+   */
+  private assertGrantable(actor: Admin, permissions: string[]) {
+    const catalog = this.catalogKeys();
+    const unknown = permissions.filter(
+      (p) => p !== '*' && !catalog.has(AdminService.normalizeKey(p)),
+    );
+    if (unknown.length > 0) {
+      throw new BadRequestException(`Unknown permission key(s): ${unknown.join(', ')}.`);
+    }
+
+    const actorIsMaster = actor.permissions.includes('*');
+    if (permissions.includes('*') && !actorIsMaster) {
+      throw new ForbiddenException('Only the master admin can grant the * wildcard.');
+    }
+    if (actorIsMaster) return;
+
+    const held = new Set(actor.permissions.map(AdminService.normalizeKey));
+    const beyond = permissions.filter((p) => !held.has(AdminService.normalizeKey(p)));
+    if (beyond.length > 0) {
+      throw new ForbiddenException(
+        `You cannot grant permissions you do not hold: ${beyond.join(', ')}.`,
+      );
+    }
   }
 
   // ─── RBAC: roles ──────────────────────────────────────────────────────────
@@ -243,21 +293,26 @@ export class AdminService {
     return RolesStore.findAll();
   }
 
-  createRole(name: string, description: string | undefined, permissions: string[], actorId?: string) {
+  createRole(name: string, description: string | undefined, permissions: string[], actor: Admin) {
     if (RolesStore.findByName(name)) {
       throw new ConflictException('A role with this name already exists.');
     }
+    this.assertGrantable(actor, permissions);
     const role = RolesStore.create({ name, description, permissions });
-    if (actorId) this.audit(actorId, 'role.create', 'role', role.id, { name, permissions });
+    this.audit(actor.id, 'role.create', 'role', role.id, { name, permissions });
     return role;
   }
 
-  updateRole(id: string, patch: { name?: string; description?: string; permissions?: string[] }, actorId?: string) {
+  updateRole(id: string, patch: { name?: string; description?: string; permissions?: string[] }, actor: Admin) {
     const role = RolesStore.findById(id);
     if (!role) throw new NotFoundException('Role not found.');
     if (role.isSystem) throw new BadRequestException('System roles cannot be modified.');
+    if (patch.name && patch.name !== role.name && RolesStore.findByName(patch.name)) {
+      throw new ConflictException('A role with this name already exists.');
+    }
+    if (patch.permissions) this.assertGrantable(actor, patch.permissions);
     const updated = RolesStore.update(id, patch);
-    if (actorId) this.audit(actorId, 'role.update', 'role', id, { before: role.permissions, after: updated?.permissions });
+    this.audit(actor.id, 'role.update', 'role', id, { before: role.permissions, after: updated?.permissions });
     return updated;
   }
 
@@ -289,29 +344,34 @@ export class AdminService {
     return AdminsStore.findAll().map((a) => this.sanitize(a));
   }
 
-  updateAdmin(id: string, patch: { name?: string; roleId?: string; permissions?: string[] }, actorId?: string) {
+  updateAdmin(id: string, patch: { name?: string; roleId?: string; permissions?: string[] }, actor: Admin) {
     const admin = AdminsStore.findById(id);
     if (!admin) throw new NotFoundException('Admin not found.');
     if (admin.role === 'master_admin' && (patch.roleId || patch.permissions)) {
       throw new BadRequestException('The master admin’s permissions cannot be changed.');
+    }
+    // Nobody rewrites their own access — not even a harmless-looking subset;
+    // it keeps every permission change attributable to someone else's decision.
+    if (actor.id === id && (patch.roleId || patch.permissions)) {
+      throw new ForbiddenException('You cannot change your own role or permissions.');
     }
 
     let update: Partial<Admin> = { name: patch.name ?? admin.name };
     if (patch.roleId) {
       const role = RolesStore.findById(patch.roleId);
       if (!role) throw new NotFoundException('Role not found.');
+      this.assertGrantable(actor, role.permissions);
       update = { ...update, roleId: role.id, permissions: role.permissions };
     } else if (patch.permissions) {
+      this.assertGrantable(actor, patch.permissions);
       update = { ...update, roleId: undefined, permissions: patch.permissions };
     }
 
     const updated = AdminsStore.update(id, update)!;
-    if (actorId) {
-      this.audit(actorId, 'admin.update', 'admin', id, {
-        before: { permissions: admin.permissions, roleId: admin.roleId },
-        after: { permissions: updated.permissions, roleId: updated.roleId },
-      });
-    }
+    this.audit(actor.id, 'admin.update', 'admin', id, {
+      before: { permissions: admin.permissions, roleId: admin.roleId },
+      after: { permissions: updated.permissions, roleId: updated.roleId },
+    });
     return this.sanitize(updated);
   }
 
