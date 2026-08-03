@@ -63,12 +63,15 @@ const fileFilter = (
 @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
 @Controller('kyc')
 export class KycController {
-  constructor(private readonly kyc: KycService) {}
+  constructor(
+    private readonly kyc: KycService,
+    private readonly kycConfig: KycConfigStore,
+  ) {}
 
   @Get('config')
   @ApiOperation({ summary: 'Get active KYC onboarding steps' })
   async getConfig() {
-    return (await KycConfigStore.getSteps()).filter((s) => s.enabled);
+    return (await this.kycConfig.getSteps()).filter((s) => s.enabled);
   }
 
   @Get('status')

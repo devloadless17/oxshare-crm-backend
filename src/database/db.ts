@@ -2,10 +2,17 @@ import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema';
 
+/** The drizzle instance. Also the type a transaction handle is assignable to. */
+export type Db = NodePgDatabase<typeof schema>;
+
+/** Either the pool-backed instance or a transaction handle, so a repository
+ *  method can run inside a caller's transaction (ARCHITECTURE §6.2). */
+export type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
+
 // Lazy singleton: created on first use, which is always after Nest's
 // ConfigModule has loaded .env — never at import time, when process.env
-// may not be populated yet. Stores import getDb() directly (they are plain
-// objects outside Nest DI); DatabaseModule exposes the same instance to DI.
+// may not be populated yet. DatabaseModule provides this instance under
+// DRIZZLE_DB; every store takes it by constructor injection.
 let instance: NodePgDatabase<typeof schema> | null = null;
 let pool: Pool | null = null;
 

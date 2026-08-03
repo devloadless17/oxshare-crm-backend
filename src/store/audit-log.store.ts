@@ -1,5 +1,7 @@
 import { and, count, desc, eq, SQL } from 'drizzle-orm';
-import { getDb } from '../database/db';
+import { Inject, Injectable } from '@nestjs/common';
+import { DRIZZLE_DB } from '../database/database.module';
+import type { Db } from '../database/db';
 import { auditLog } from '../database/schema';
 
 // D-21: admin action log — actor, action, subject, details, timestamp.
@@ -17,9 +19,12 @@ export interface AuditEntry {
   createdAt: Date;
 }
 
-export const AuditLogStore = {
+@Injectable()
+export class AuditLogStore {
+  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+
   async record(data: Omit<AuditEntry, 'id' | 'createdAt'>): Promise<AuditEntry> {
-    const [row] = await getDb()
+    const [row] = await this.db
       .insert(auditLog)
       .values({
         actorId: data.actorId,
@@ -31,7 +36,7 @@ export const AuditLogStore = {
       })
       .returning();
     return { ...row, details: row.details ?? undefined };
-  },
+  }
 
   async findAll(
     filter: {
@@ -51,7 +56,7 @@ export const AuditLogStore = {
     if (filter.actorId) conditions.push(eq(auditLog.actorId, filter.actorId));
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const db = getDb();
+    const db = this.db;
     const [rows, [{ value: total }]] = await Promise.all([
       db
         .select()
@@ -69,5 +74,5 @@ export const AuditLogStore = {
       page,
       limit,
     };
-  },
-};
+  }
+}

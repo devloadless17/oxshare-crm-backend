@@ -15,7 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AdminsStore, InvitesStore, Admin } from '../../store/admins.store';
 import { KycConfigStore, KycStepConfig } from '../../store/kyc-config.store';
-import { RolesStore, resolvePermissions } from '../../store/roles.store';
+import { RolesStore } from '../../store/roles.store';
 import { RejectionReasonsStore, RejectionContext } from '../../store/rejection-reasons.store';
 import { UsersStore } from '../../store/users.store';
 import { AuditLogStore } from '../../store/audit-log.store';
@@ -41,11 +41,18 @@ export class AdminService {
     private readonly transactions: TransactionsService,
     private readonly wallets: WalletService,
     private readonly programs: ProgramsService,
+    private readonly admins: AdminsStore,
+    private readonly invites: InvitesStore,
+    private readonly users: UsersStore,
+    private readonly roles: RolesStore,
+    private readonly kycConfig: KycConfigStore,
+    private readonly auditLog: AuditLogStore,
+    private readonly rejectionReasons: RejectionReasonsStore,
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
   async login(email: string, password: string, res: Response) {
-    const admin = await AdminsStore.findByEmail(email);
+    const admin = await this.admins.findByEmail(email);
     if (!admin) throw new UnauthorizedException('Invalid credentials.');
 
     const valid = await bcrypt.compare(password, admin.passwordHash);
@@ -53,7 +60,7 @@ export class AdminService {
 
     const { accessToken, refreshToken } = this.generateAdminTokens(admin);
     const refreshHash = await bcrypt.hash(refreshToken, 10);
-    await AdminsStore.update(admin.id, { refreshToken: refreshHash });
+    await this.admins.update(admin.id, { refreshToken: refreshHash });
 
     this.setAdminCookies(res, accessToken, refreshToken);
     return { admin: await this.sanitize(admin), accessToken, refreshToken };
@@ -61,7 +68,7 @@ export class AdminService {
 
   // ─── Admin Logout ──────────────────────────────────────────────────────────
   async logout(adminId: string, res: Response) {
-    await AdminsStore.update(adminId, { refreshToken: undefined });
+    await this.admins.update(adminId, { refreshToken: undefined });
     res.clearCookie(ADMIN_COOKIE);
     res.clearCookie(ADMIN_REFRESH_COOKIE);
     return { message: 'Logged out.' };
@@ -80,7 +87,7 @@ export class AdminService {
     roleId?: string,
     permissions?: string[],
   ) {
-    if (await AdminsStore.findByEmail(email)) {
+    if (await this.admins.findByEmail(email)) {
       throw new ConflictException('An admin with this email already exists.');
     }
 
@@ -89,7 +96,7 @@ export class AdminService {
     // explicit list, or the default — it must be grantable by the actor.
     let grantedPermissions = permissions;
     if (roleId) {
-      const role = await RolesStore.findById(roleId);
+      const role = await this.roles.findById(roleId);
       if (!role) throw new NotFoundException('Role not found.');
       grantedPermissions = role.permissions;
     }
@@ -97,7 +104,7 @@ export class AdminService {
     const invitedBy = actor.id;
 
     const token = uuidv4();
-    const invite = await InvitesStore.create({
+    const invite = await this.invites.create({
       email,
       name,
       token,
@@ -129,13 +136,13 @@ export class AdminService {
 
   // ─── Accept Invite ─────────────────────────────────────────────────────────
   async acceptInvite(token: string, password: string, res: Response) {
-    const invite = await InvitesStore.findByToken(token);
+    const invite = await this.invites.findByToken(token);
     if (!invite) throw new NotFoundException('Invite not found or already used.');
     if (invite.accepted) throw new BadRequestException('This invite has already been used.');
     if (invite.expiresAt < new Date()) throw new BadRequestException('Invite has expired.');
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const admin = await AdminsStore.create({
+    const admin = await this.admins.create({
       email: invite.email,
       passwordHash,
       name: invite.name,
@@ -144,11 +151,11 @@ export class AdminService {
       permissions: invite.permissions ?? ['kyc.review', 'users.view'],
     });
 
-    await InvitesStore.markAccepted(token);
+    await this.invites.markAccepted(token);
 
     const { accessToken, refreshToken } = this.generateAdminTokens(admin);
     const refreshHash = await bcrypt.hash(refreshToken, 10);
-    await AdminsStore.update(admin.id, { refreshToken: refreshHash });
+    await this.admins.update(admin.id, { refreshToken: refreshHash });
     this.setAdminCookies(res, accessToken, refreshToken);
 
     return { message: 'Account created. Welcome aboard!', admin: await this.sanitize(admin) };
@@ -156,7 +163,7 @@ export class AdminService {
 
   // ─── Validate invite token (for UI pre-fill) ───────────────────────────────
   async validateInviteToken(token: string) {
-    const invite = await InvitesStore.findByToken(token);
+    const invite = await this.invites.findByToken(token);
     if (!invite || invite.accepted || invite.expiresAt < new Date()) {
       throw new BadRequestException('Invalid or expired invite token.');
     }
@@ -196,8 +203,8 @@ export class AdminService {
     // Fire-and-forget: an audit-write failure must never fail the admin action,
     // but it must be loud in the logs.
     void (async () => {
-      const actor = await AdminsStore.findById(actorId);
-      await AuditLogStore.record({
+      const actor = await this.admins.findById(actorId);
+      await this.auditLog.record({
         actorId,
         actorEmail: actor?.email ?? 'unknown',
         action,
@@ -209,7 +216,7 @@ export class AdminService {
   }
 
   listAuditLog(query: { page?: string; limit?: string; action?: string; subjectType?: string }) {
-    return AuditLogStore.findAll({
+    return this.auditLog.findAll({
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '25', 10) || 25,
       action: query.action,
@@ -234,7 +241,7 @@ export class AdminService {
   ) {
     let effectiveReason = reason?.trim();
     if (reasonId) {
-      const configured = await RejectionReasonsStore.findById(reasonId);
+      const configured = await this.rejectionReasons.findById(reasonId);
       if (!configured) throw new NotFoundException('Rejection reason not found.');
       effectiveReason = effectiveReason
         ? `${configured.label} — ${effectiveReason}`
@@ -308,63 +315,63 @@ export class AdminService {
 
   // ─── RBAC: roles ──────────────────────────────────────────────────────────
   async listRoles() {
-    return await RolesStore.findAll();
+    return await this.roles.findAll();
   }
 
   async createRole(name: string, description: string | undefined, permissions: string[], actor: Admin) {
-    if (await RolesStore.findByName(name)) {
+    if (await this.roles.findByName(name)) {
       throw new ConflictException('A role with this name already exists.');
     }
     await this.assertGrantable(actor, permissions);
-    const role = await RolesStore.create({ name, description, permissions });
+    const role = await this.roles.create({ name, description, permissions });
     this.audit(actor.id, 'role.create', 'role', role.id, { name, permissions });
     return role;
   }
 
   async updateRole(id: string, patch: { name?: string; description?: string; permissions?: string[] }, actor: Admin) {
-    const role = await RolesStore.findById(id);
+    const role = await this.roles.findById(id);
     if (!role) throw new NotFoundException('Role not found.');
     if (role.isSystem) throw new BadRequestException('System roles cannot be modified.');
-    if (patch.name && patch.name !== role.name && await RolesStore.findByName(patch.name)) {
+    if (patch.name && patch.name !== role.name && await this.roles.findByName(patch.name)) {
       throw new ConflictException('A role with this name already exists.');
     }
     if (patch.permissions) await this.assertGrantable(actor, patch.permissions);
-    const updated = await RolesStore.update(id, patch);
+    const updated = await this.roles.update(id, patch);
     this.audit(actor.id, 'role.update', 'role', id, { before: role.permissions, after: updated?.permissions });
     return updated;
   }
 
   async deleteRole(id: string, actorId?: string) {
-    const role = await RolesStore.findById(id);
+    const role = await this.roles.findById(id);
     if (!role) throw new NotFoundException('Role not found.');
     if (role.isSystem) throw new BadRequestException('System roles cannot be deleted.');
     // A role in use cannot be deleted — silently orphaning its admins would
     // leave them running on the stale per-admin snapshot.
-    const holders = await AdminsStore.findByRoleId(id);
+    const holders = await this.admins.findByRoleId(id);
     if (holders.length > 0) {
       throw new ConflictException(
         `Role is assigned to ${holders.length} admin(s). Reassign them first.`,
       );
     }
-    const pending = await InvitesStore.findPendingByRoleId(id);
+    const pending = await this.invites.findPendingByRoleId(id);
     if (pending.length > 0) {
       throw new ConflictException(
         `Role is referenced by ${pending.length} pending invite(s). Wait for expiry or invite again with another role.`,
       );
     }
-    await RolesStore.delete(id);
+    await this.roles.delete(id);
     if (actorId) this.audit(actorId, 'role.delete', 'role', id, { name: role.name });
     return { message: 'Role deleted.' };
   }
 
   // ─── RBAC: admin directory ────────────────────────────────────────────────
   async listAdmins() {
-    const all = await AdminsStore.findAll();
+    const all = await this.admins.findAll();
     return Promise.all(all.map((a) => this.sanitize(a)));
   }
 
   async updateAdmin(id: string, patch: { name?: string; roleId?: string; permissions?: string[] }, actor: Admin) {
-    const admin = await AdminsStore.findById(id);
+    const admin = await this.admins.findById(id);
     if (!admin) throw new NotFoundException('Admin not found.');
     if (admin.role === 'master_admin' && (patch.roleId || patch.permissions)) {
       throw new BadRequestException('The master admin’s permissions cannot be changed.');
@@ -377,7 +384,7 @@ export class AdminService {
 
     let update: Partial<Admin> = { name: patch.name ?? admin.name };
     if (patch.roleId) {
-      const role = await RolesStore.findById(patch.roleId);
+      const role = await this.roles.findById(patch.roleId);
       if (!role) throw new NotFoundException('Role not found.');
       await this.assertGrantable(actor, role.permissions);
       update = { ...update, roleId: role.id, permissions: role.permissions };
@@ -386,7 +393,7 @@ export class AdminService {
       update = { ...update, roleId: undefined, permissions: patch.permissions };
     }
 
-    const updated = (await AdminsStore.update(id, update))!;
+    const updated = (await this.admins.update(id, update))!;
     this.audit(actor.id, 'admin.update', 'admin', id, {
       before: { permissions: admin.permissions, roleId: admin.roleId },
       after: { permissions: updated.permissions, roleId: updated.roleId },
@@ -416,7 +423,7 @@ export class AdminService {
       level = parsed;
     }
 
-    const { items, total } = await UsersStore.findPage({
+    const { items, total } = await this.users.findPage({
       page,
       limit,
       q: query.q?.trim() || undefined,
@@ -429,13 +436,13 @@ export class AdminService {
 
   // ─── Client suspension (users.suspend) ────────────────────────────────────
   async setClientStatus(userId: string, status: 'active' | 'suspended', actor: Admin) {
-    const user = await UsersStore.findById(userId);
+    const user = await this.users.findById(userId);
     if (!user) throw new NotFoundException('Client not found.');
     if (user.status === status) {
       throw new BadRequestException(`Client is already ${status}.`);
     }
 
-    const updated = (await UsersStore.update(userId, { status }))!;
+    const updated = (await this.users.update(userId, { status }))!;
     // Suspension bites immediately: the JWT strategy re-checks status on every
     // request, and login/refresh refuse suspended accounts.
     this.audit(actor.id, status === 'suspended' ? 'client.suspend' : 'client.activate', 'user', userId, {
@@ -459,21 +466,21 @@ export class AdminService {
 
   // ─── Rejection reasons (FR-ADM-03 configurable list) ──────────────────────
   async listRejectionReasons(context?: RejectionContext) {
-    return await RejectionReasonsStore.findAll(context);
+    return await this.rejectionReasons.findAll(context);
   }
 
   async createRejectionReason(context: RejectionContext, label: string) {
-    return await RejectionReasonsStore.create(context, label);
+    return await this.rejectionReasons.create(context, label);
   }
 
   async updateRejectionReason(id: string, label: string) {
-    const updated = await RejectionReasonsStore.update(id, label);
+    const updated = await this.rejectionReasons.update(id, label);
     if (!updated) throw new NotFoundException('Rejection reason not found.');
     return updated;
   }
 
   async deleteRejectionReason(id: string) {
-    if (!await RejectionReasonsStore.delete(id)) {
+    if (!await this.rejectionReasons.delete(id)) {
       throw new NotFoundException('Rejection reason not found.');
     }
     return { message: 'Rejection reason deleted.' };
@@ -504,7 +511,7 @@ export class AdminService {
     // optional note alongside it.
     let effectiveReason = reason?.trim();
     if (reasonId) {
-      const configured = await RejectionReasonsStore.findById(reasonId);
+      const configured = await this.rejectionReasons.findById(reasonId);
       if (!configured) throw new NotFoundException('Rejection reason not found.');
       effectiveReason = effectiveReason ? `${configured.label} — ${effectiveReason}` : configured.label;
     }
@@ -513,7 +520,7 @@ export class AdminService {
     }
 
     const row = await this.transactions.reject(id, actor.id, effectiveReason);
-    const user = await UsersStore.findById(row.userId);
+    const user = await this.users.findById(row.userId);
     if (user) {
       void this.email.sendWithdrawalDecisionEmail(
         user.email,
@@ -533,7 +540,7 @@ export class AdminService {
 
   async settleWithdrawal(id: string, actor: Admin, providerRef: string) {
     const row = await this.transactions.settle(id, actor.id, providerRef);
-    const user = await UsersStore.findById(row.userId);
+    const user = await this.users.findById(row.userId);
     if (user) {
       void this.email.sendWithdrawalDecisionEmail(
         user.email,
@@ -670,7 +677,7 @@ export class AdminService {
     // to another account. The previous fallback to the seeded master admin meant
     // any token with any `sub` became a master-admin session, and deleting a
     // compromised admin did not revoke them.
-    const admin = await AdminsStore.findById(adminId);
+    const admin = await this.admins.findById(adminId);
     if (!admin) throw new UnauthorizedException('Admin account not found.');
 
     // Compare against the stored hash. Without this the hash written at login
@@ -686,48 +693,42 @@ export class AdminService {
 
     const { accessToken, refreshToken } = this.generateAdminTokens(admin);
     const refreshHash = await bcrypt.hash(refreshToken, 10);
-    await AdminsStore.update(admin.id, { refreshToken: refreshHash });
+    await this.admins.update(admin.id, { refreshToken: refreshHash });
 
     this.setAdminCookies(res, accessToken, refreshToken);
 
-    return {
-      admin: await this.sanitize(admin),
-      accessToken,
-      refreshToken,
-      admin_access_token: accessToken,
-      admin_refresh_token: refreshToken,
-    };
+    return { admin: await this.sanitize(admin), accessToken, refreshToken };
   }
 
   // ─── KYC Configurator ───────────────────────────────────────────────────────
   getKycConfig() {
-    return KycConfigStore.getSteps();
+    return this.kycConfig.getSteps();
   }
 
   updateKycConfig(steps: KycStepConfig[]) {
-    return KycConfigStore.setSteps(steps);
+    return this.kycConfig.setSteps(steps);
   }
 
   addKycStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>) {
-    return KycConfigStore.addStep(stepData);
+    return this.kycConfig.addStep(stepData);
   }
 
   updateKycStep(id: string, patch: Partial<KycStepConfig>) {
-    return KycConfigStore.updateStep(id, patch);
+    return this.kycConfig.updateStep(id, patch);
   }
 
   deleteKycStep(id: string) {
-    return KycConfigStore.deleteStep(id);
+    return this.kycConfig.deleteStep(id);
   }
 
   resetKycConfig() {
-    return KycConfigStore.resetDefaults();
+    return this.kycConfig.resetDefaults();
   }
 
   private async sanitize(admin: Admin) {
     const { passwordHash, refreshToken, ...safe } = admin;
     // Surface the LIVE permission set (role-derived when roleId is set) so the
     // frontend's nav gating always matches what the guards will enforce.
-    return { ...safe, permissions: await resolvePermissions(admin.roleId, admin.permissions) };
+    return { ...safe, permissions: await this.roles.resolvePermissions(admin.roleId, admin.permissions) };
   }
 }

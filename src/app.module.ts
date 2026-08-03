@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
+import { StoreModule } from './store/store.module';
 import { EmailModule } from './modules/email/email.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { TradingModule } from './modules/trading/trading.module';
@@ -36,6 +37,7 @@ import { HealthModule } from './modules/health/health.module';
 
     // Infrastructure
     DatabaseModule,
+    StoreModule,
     EmailModule,
     HealthModule,
 

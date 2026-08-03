@@ -10,21 +10,58 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { Admin, AdminsStore } from '../../../store/admins.store';
-import { resolvePermissions } from '../../../store/roles.store';
+import { RolesStore } from '../../../store/roles.store';
 import { Request } from 'express';
 
 type AdminRequest = Request & { admin?: Admin };
 
+/**
+ * Cookie → admin, with permissions resolved live.
+ *
+ * Shared by all three guards below; a service so the stores arrive by
+ * injection rather than being reached for from a module-level singleton.
+ */
 @Injectable()
-export class AdminGuard implements CanActivate {
+export class AdminAuthenticator {
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly admins: AdminsStore,
+    private readonly roles: RolesStore,
   ) {}
+
+  async authenticate(req: AdminRequest): Promise<Admin> {
+    const token = req.cookies?.['admin_access_token'];
+    if (!token) throw new UnauthorizedException('Admin authentication required.');
+
+    let adminId: string;
+    try {
+      const payload = this.jwt.verify<{ sub: string; role: string }>(token, {
+        secret: this.config.getOrThrow<string>('ADMIN_JWT_SECRET'),
+      });
+      adminId = payload.sub;
+    } catch {
+      throw new UnauthorizedException('Invalid or expired admin token.');
+    }
+
+    const admin = await this.admins.findById(adminId);
+    if (!admin) throw new UnauthorizedException('Admin not found.');
+    // Role-derived permissions resolve live: editing a role takes effect on the
+    // next request from every admin holding it — no re-login, no stale grants.
+    return {
+      ...admin,
+      permissions: await this.roles.resolvePermissions(admin.roleId, admin.permissions),
+    };
+  }
+}
+
+@Injectable()
+export class AdminGuard implements CanActivate {
+  constructor(private readonly authenticator: AdminAuthenticator) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<AdminRequest>();
-    req.admin = await authenticateAdmin(req, this.jwt, this.config);
+    req.admin = await this.authenticator.authenticate(req);
     return true;
   }
 }
@@ -33,14 +70,11 @@ export class AdminGuard implements CanActivate {
 // makes the admin client treat the session as dead and log the admin out.
 @Injectable()
 export class MasterAdminGuard implements CanActivate {
-  constructor(
-    private readonly jwt: JwtService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly authenticator: AdminAuthenticator) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<AdminRequest>();
-    const admin = await authenticateAdmin(req, this.jwt, this.config);
+    const admin = await this.authenticator.authenticate(req);
     if (admin.role !== 'master_admin') {
       throw new ForbiddenException('Master admin access required.');
     }
@@ -63,14 +97,13 @@ const normalize = (key: string) => key.replace(/:/g, '.').toLowerCase();
 @Injectable()
 export class PermissionsGuard implements CanActivate {
   constructor(
-    private readonly jwt: JwtService,
-    private readonly config: ConfigService,
+    private readonly authenticator: AdminAuthenticator,
     private readonly reflector: Reflector,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<AdminRequest>();
-    const admin = await authenticateAdmin(req, this.jwt, this.config);
+    const admin = await this.authenticator.authenticate(req);
     req.admin = admin;
 
     const required = this.reflector.getAllAndOverride<string[]>(PERMISSIONS_KEY, [
@@ -87,25 +120,4 @@ export class PermissionsGuard implements CanActivate {
       `Missing permission: this action requires ${required.join(' or ')}.`,
     );
   }
-}
-
-async function authenticateAdmin(req: AdminRequest, jwt: JwtService, config: ConfigService): Promise<Admin> {
-  const token = req.cookies?.['admin_access_token'];
-  if (!token) throw new UnauthorizedException('Admin authentication required.');
-
-  let adminId: string;
-  try {
-    const payload = jwt.verify<{ sub: string; role: string }>(token, {
-      secret: config.get('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev'),
-    });
-    adminId = payload.sub;
-  } catch {
-    throw new UnauthorizedException('Invalid or expired admin token.');
-  }
-
-  const admin = await AdminsStore.findById(adminId);
-  if (!admin) throw new UnauthorizedException('Admin not found.');
-  // Role-derived permissions resolve live: editing a role takes effect on the
-  // next request from every admin holding it — no re-login, no stale grants.
-  return { ...admin, permissions: await resolvePermissions(admin.roleId, admin.permissions) };
 }

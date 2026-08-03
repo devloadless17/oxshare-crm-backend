@@ -15,7 +15,7 @@ import { Request, Response } from 'express';
 import { existsSync } from 'fs';
 import { basename, join } from 'path';
 import { AdminsStore } from '../../store/admins.store';
-import { resolvePermissions } from '../../store/roles.store';
+import { RolesStore } from '../../store/roles.store';
 import { KycStore } from '../../store/kyc.store';
 
 // KYC documents are PII (ARCHITECTURE §8.5): never served anonymously.
@@ -29,6 +29,9 @@ export class UploadsController {
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly admins: AdminsStore,
+    private readonly roles: RolesStore,
+    private readonly kyc: KycStore,
   ) {}
 
   @Get('kyc/:file')
@@ -58,11 +61,11 @@ export class UploadsController {
     if (adminToken) {
       try {
         const payload = this.jwt.verify<{ sub: string }>(adminToken, {
-          secret: this.config.get('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev'),
+          secret: this.config.getOrThrow<string>('ADMIN_JWT_SECRET'),
         });
-        const admin = await AdminsStore.findById(payload.sub);
+        const admin = await this.admins.findById(payload.sub);
         if (admin) {
-          const held = await resolvePermissions(admin.roleId, admin.permissions);
+          const held = await this.roles.resolvePermissions(admin.roleId, admin.permissions);
           const normalized = held.map((p) => p.replace(/:/g, '.').toLowerCase());
           if (held.includes('*') || normalized.includes('kyc.review')) return true;
           throw new ForbiddenException('The kyc.review permission is required to view documents.');
@@ -77,7 +80,7 @@ export class UploadsController {
     if (clientToken) {
       try {
         const payload = this.jwt.verify<{ sub: string }>(clientToken, {
-          secret: this.config.get('JWT_ACCESS_SECRET', 'oxshare-access-secret-dev'),
+          secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
         });
         if (await this.submissionReferencesFile(payload.sub, fileName)) return true;
         throw new ForbiddenException('You can only access your own documents.');
@@ -90,7 +93,7 @@ export class UploadsController {
   }
 
   private async submissionReferencesFile(userId: string, fileName: string): Promise<boolean> {
-    const sub = await KycStore.findByUserId(userId);
+    const sub = await this.kyc.findByUserId(userId);
     if (!sub) return false;
     const paths = [
       sub.document?.frontFilePath,

@@ -112,5 +112,33 @@
         "label": "Create, Edit & Deactivate Plans"
       }
     ]
+  },
+  "partners": {
+    "moduleName": "Partners & IBs",
+    "description": "IB applications, approval and parent assignment (ADM-11)",
+    "permissions": [
+      {
+        "key": "partners.view",
+        "label": "View Partners & Applications"
+      },
+      {
+        "key": "partners.manage",
+        "label": "Approve / Reject / Assign Parent IB"
+      }
+    ]
+  },
+  "payouts": {
+    "moduleName": "IB Payouts",
+    "description": "Partner payout review and settlement (ADM-12)",
+    "permissions": [
+      {
+        "key": "payouts.view",
+        "label": "View Payout Requests"
+      },
+      {
+        "key": "payouts.review",
+        "label": "Approve / Reject / Pay Payouts"
+      }
+    ]
   }
 }

@@ -1,5 +1,7 @@
 import { and, desc, eq, ilike, or, sql, SQL } from 'drizzle-orm';
-import { getDb } from '../database/db';
+import { Inject, Injectable } from '@nestjs/common';
+import { DRIZZLE_DB } from '../database/database.module';
+import type { Db } from '../database/db';
 import { kycSubmissions, users } from '../database/schema';
 
 export type KycStatus =
@@ -97,42 +99,45 @@ const toColumns = (patch: Partial<KycSubmission>) => {
   return set;
 };
 
-export const KycStore = {
+@Injectable()
+export class KycStore {
+  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+
   async getOrCreate(userId: string): Promise<KycSubmission> {
     const existing = await this.findByUserId(userId);
     if (existing) return existing;
-    const [row] = await getDb()
+    const [row] = await this.db
       .insert(kycSubmissions)
       .values({ userId, status: 'not_started' })
       .onConflictDoNothing({ target: kycSubmissions.userId })
       .returning();
     // Conflict means a concurrent create won — read it back.
     return row ? toSubmission(row) : (await this.findByUserId(userId))!;
-  },
+  }
 
   async findByUserId(userId: string): Promise<KycSubmission | undefined> {
-    const [row] = await getDb()
+    const [row] = await this.db
       .select()
       .from(kycSubmissions)
       .where(eq(kycSubmissions.userId, userId))
       .limit(1);
     return row ? toSubmission(row) : undefined;
-  },
+  }
 
   async update(userId: string, patch: Partial<KycSubmission>): Promise<KycSubmission> {
     await this.getOrCreate(userId);
-    const [row] = await getDb()
+    const [row] = await this.db
       .update(kycSubmissions)
       .set(toColumns(patch))
       .where(eq(kycSubmissions.userId, userId))
       .returning();
     return toSubmission(row);
-  },
+  }
 
   async findAll(): Promise<KycSubmission[]> {
-    const rows = await getDb().select().from(kycSubmissions);
+    const rows = await this.db.select().from(kycSubmissions);
     return rows.map(toSubmission);
-  },
+  }
 
   /**
    * Admin queue: submissions joined to their user, filtered and paginated in
@@ -144,7 +149,7 @@ export const KycStore = {
     page: number;
     limit: number;
   }) {
-    const db = getDb();
+    const db = this.db;
     const conditions: SQL[] = [];
     if (filter.status) conditions.push(eq(kycSubmissions.status, filter.status));
     if (filter.q) {
@@ -191,21 +196,21 @@ export const KycStore = {
       limit: filter.limit,
       counts,
     };
-  },
+  }
 
   async findByStatus(status: KycStatus): Promise<KycSubmission[]> {
-    const rows = await getDb()
+    const rows = await this.db
       .select()
       .from(kycSubmissions)
       .where(eq(kycSubmissions.status, status));
     return rows.map(toSubmission);
-  },
+  }
 
   async clearAll(): Promise<void> {
-    await getDb().delete(kycSubmissions);
-  },
+    await this.db.delete(kycSubmissions);
+  }
 
   async resetUser(userId: string): Promise<void> {
-    await getDb().delete(kycSubmissions).where(eq(kycSubmissions.userId, userId));
-  },
-};
+    await this.db.delete(kycSubmissions).where(eq(kycSubmissions.userId, userId));
+  }
+}

@@ -1,5 +1,7 @@
 import { and, count, desc, eq, ilike, or, sql, SQL } from 'drizzle-orm';
-import { getDb } from '../database/db';
+import { Inject, Injectable } from '@nestjs/common';
+import { DRIZZLE_DB } from '../database/database.module';
+import type { Db } from '../database/db';
 import { users } from '../database/schema';
 
 export interface User {
@@ -32,45 +34,48 @@ const toUser = (r: Row): User => ({
   phone: r.phone ?? undefined,
 });
 
-export const UsersStore = {
+@Injectable()
+export class UsersStore {
+  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+
   async create(data: Omit<User, 'id' | 'createdAt'>): Promise<User> {
-    const [row] = await getDb().insert(users).values(data).returning();
+    const [row] = await this.db.insert(users).values(data).returning();
     return toUser(row);
-  },
+  }
 
   async findById(id: string): Promise<User | undefined> {
-    const [row] = await getDb().select().from(users).where(eq(users.id, id)).limit(1);
+    const [row] = await this.db.select().from(users).where(eq(users.id, id)).limit(1);
     return row ? toUser(row) : undefined;
-  },
+  }
 
   async findByEmail(email: string): Promise<User | undefined> {
-    const [row] = await getDb()
+    const [row] = await this.db
       .select()
       .from(users)
       .where(eq(users.email, email.toLowerCase()))
       .limit(1);
     return row ? toUser(row) : undefined;
-  },
+  }
 
   async findByVerificationToken(token: string): Promise<User | undefined> {
-    const [row] = await getDb()
+    const [row] = await this.db
       .select()
       .from(users)
       .where(eq(users.emailVerificationToken, token))
       .limit(1);
     return row ? toUser(row) : undefined;
-  },
+  }
 
   async update(id: string, patch: Partial<User>): Promise<User | undefined> {
     const { id: _ignored, createdAt: _also, ...rest } = patch;
-    const [row] = await getDb().update(users).set(rest).where(eq(users.id, id)).returning();
+    const [row] = await this.db.update(users).set(rest).where(eq(users.id, id)).returning();
     return row ? toUser(row) : undefined;
-  },
+  }
 
   async findAll(): Promise<User[]> {
-    const rows = await getDb().select().from(users);
+    const rows = await this.db.select().from(users);
     return rows.map(toUser);
-  },
+  }
 
   /**
    * Paginated, filtered and sorted IN SQL (ADM-01).
@@ -92,7 +97,7 @@ export const UsersStore = {
     status?: string;
     level?: number;
   }) {
-    const db = getDb();
+    const db = this.db;
     const conditions: SQL[] = [];
 
     if (filter.type) conditions.push(eq(users.type, filter.type as 'individual'));
@@ -135,10 +140,10 @@ export const UsersStore = {
     ]);
 
     return { items: rows, total: countRow.value };
-  },
+  }
 
   async count(): Promise<number> {
-    const [{ value }] = await getDb().select({ value: count() }).from(users);
+    const [{ value }] = await this.db.select({ value: count() }).from(users);
     return value;
-  },
-};
+  }
+}

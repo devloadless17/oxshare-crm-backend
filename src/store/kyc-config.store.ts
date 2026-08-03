@@ -1,6 +1,8 @@
 import { v4 as uuidv4 } from 'uuid';
 import { asc, eq } from 'drizzle-orm';
-import { getDb } from '../database/db';
+import { Inject, Injectable } from '@nestjs/common';
+import { DRIZZLE_DB } from '../database/database.module';
+import type { Db } from '../database/db';
 import { kycConfigSteps } from '../database/schema';
 
 export interface KycFieldConfig {
@@ -117,24 +119,27 @@ const toRow = (s: KycStepConfig) => ({
   fields: s.fields as unknown as Record<string, unknown>[],
 });
 
-export const KycConfigStore = {
+@Injectable()
+export class KycConfigStore {
+  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+
   async getSteps(): Promise<KycStepConfig[]> {
-    const rows = await getDb()
+    const rows = await this.db
       .select()
       .from(kycConfigSteps)
       .orderBy(asc(kycConfigSteps.stepNumber));
     return rows.map(toStep);
-  },
+  }
 
   async setSteps(steps: KycStepConfig[]): Promise<KycStepConfig[]> {
     const reindexed = steps.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
-    const db = getDb();
+    const db = this.db;
     await db.transaction(async (tx) => {
       await tx.delete(kycConfigSteps);
       if (reindexed.length > 0) await tx.insert(kycConfigSteps).values(reindexed.map(toRow));
     });
     return this.getSteps();
-  },
+  }
 
   async addStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>): Promise<KycStepConfig> {
     const existing = await this.getSteps();
@@ -143,28 +148,28 @@ export const KycConfigStore = {
       id: `step-${uuidv4()}`,
       stepNumber: existing.length + 1,
     };
-    await getDb().insert(kycConfigSteps).values(toRow(newStep));
+    await this.db.insert(kycConfigSteps).values(toRow(newStep));
     return newStep;
-  },
+  }
 
   async updateStep(id: string, patch: Partial<KycStepConfig>): Promise<KycStepConfig | undefined> {
-    const [existing] = await getDb()
+    const [existing] = await this.db
       .select()
       .from(kycConfigSteps)
       .where(eq(kycConfigSteps.id, id))
       .limit(1);
     if (!existing) return undefined;
     const merged = { ...toStep(existing), ...patch, id };
-    const [row] = await getDb()
+    const [row] = await this.db
       .update(kycConfigSteps)
       .set(toRow(merged))
       .where(eq(kycConfigSteps.id, id))
       .returning();
     return toStep(row);
-  },
+  }
 
   async deleteStep(id: string): Promise<boolean> {
-    const deleted = await getDb()
+    const deleted = await this.db
       .delete(kycConfigSteps)
       .where(eq(kycConfigSteps.id, id))
       .returning();
@@ -173,9 +178,9 @@ export const KycConfigStore = {
     const remaining = await this.getSteps();
     await this.setSteps(remaining);
     return true;
-  },
+  }
 
   resetDefaults(): Promise<KycStepConfig[]> {
     return this.setSteps([...DEFAULT_KYC_STEPS]);
-  },
-};
+  }
+}

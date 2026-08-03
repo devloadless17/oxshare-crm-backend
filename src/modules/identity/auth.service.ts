@@ -30,11 +30,12 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly email: EmailService,
+    private readonly users: UsersStore,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
   async register(dto: RegisterDto) {
-    if (await UsersStore.findByEmail(dto.email)) {
+    if (await this.users.findByEmail(dto.email)) {
       throw new ConflictException('An account with this email already exists.');
     }
 
@@ -42,7 +43,7 @@ export class AuthService {
     const verificationToken = uuidv4();
     const verificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
 
-    const user = await UsersStore.create({
+    const user = await this.users.create({
       email: dto.email.toLowerCase(),
       passwordHash,
       firstName: dto.firstName,
@@ -70,13 +71,13 @@ export class AuthService {
 
   // ─── Verify Email ─────────────────────────────────────────────────────────────
   async verifyEmail(token: string) {
-    const user = await UsersStore.findByVerificationToken(token);
+    const user = await this.users.findByVerificationToken(token);
     if (!user) throw new BadRequestException('Invalid or expired verification token.');
     if (user.emailVerificationExpiry && user.emailVerificationExpiry < new Date()) {
       throw new BadRequestException('Verification token has expired. Please request a new one.');
     }
 
-    await UsersStore.update(user.id, {
+    await this.users.update(user.id, {
       emailVerified: true,
       verificationLevel: 0,
       emailVerificationToken: undefined,
@@ -88,13 +89,13 @@ export class AuthService {
 
   // ─── Resend Verification ──────────────────────────────────────────────────────
   async resendVerification(email: string) {
-    const user = await UsersStore.findByEmail(email);
+    const user = await this.users.findByEmail(email);
     if (!user || user.emailVerified) {
       return { message: 'If that email exists and is unverified, a new link has been sent.' };
     }
 
     const token = uuidv4();
-    await UsersStore.update(user.id, {
+    await this.users.update(user.id, {
       emailVerificationToken: token,
       emailVerificationExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
@@ -107,7 +108,7 @@ export class AuthService {
 
   // ─── Login ────────────────────────────────────────────────────────────────────
   async login(dto: LoginDto, res: Response) {
-    const user = await UsersStore.findByEmail(dto.email);
+    const user = await this.users.findByEmail(dto.email);
     if (!user) throw new UnauthorizedException('Invalid email or password.');
 
     const passwordMatch = await bcrypt.compare(dto.password, user.passwordHash);
@@ -121,7 +122,7 @@ export class AuthService {
 
     const tokens = this.generateTokens(user);
     const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
-    await UsersStore.update(user.id, { refreshToken: refreshHash });
+    await this.users.update(user.id, { refreshToken: refreshHash });
 
     this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken);
 
@@ -150,7 +151,7 @@ export class AuthService {
     // No fallback: an unknown subject is a failed authentication. The previous
     // fallback to the seeded demo client turned any signed token into that
     // account's session.
-    const user = await UsersStore.findById(userId);
+    const user = await this.users.findById(userId);
     if (!user) throw new UnauthorizedException('User account not found.');
 
     // Same revocation check as the admin path — the stored hash was never
@@ -169,7 +170,7 @@ export class AuthService {
 
     const tokens = this.generateTokens(user);
     const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
-    await UsersStore.update(user.id, { refreshToken: refreshHash });
+    await this.users.update(user.id, { refreshToken: refreshHash });
 
     this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken);
 
@@ -182,7 +183,7 @@ export class AuthService {
 
   // ─── Logout ───────────────────────────────────────────────────────────────────
   async logout(userId: string, res: Response) {
-    await UsersStore.update(userId, { refreshToken: undefined });
+    await this.users.update(userId, { refreshToken: undefined });
     res.clearCookie('access_token');
     res.clearCookie('refresh_token');
     return { message: 'Logged out successfully.' };
@@ -236,6 +237,6 @@ export class AuthService {
   }
 
   async findUserById(id: string): Promise<User | undefined> {
-    return await UsersStore.findById(id);
+    return await this.users.findById(id);
   }
 }
