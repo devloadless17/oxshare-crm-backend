@@ -5,10 +5,14 @@ import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { AdminGuard, MasterAdminGuard, PermissionsGuard } from './guards/admin.guard';
 import { ComplianceModule } from '../compliance/compliance.module';
+import { PaymentsModule } from '../payments/payments.module';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   imports: [
     ComplianceModule,
+    PaymentsModule,
+    WalletModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({

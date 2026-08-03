@@ -20,6 +20,8 @@ import { UsersStore } from '../../store/users.store';
 import { AuditLogStore } from '../../store/audit-log.store';
 import { KycService } from '../compliance/kyc.service';
 import { EmailService } from '../email/email.service';
+import { TransactionsService } from '../payments/transactions.service';
+import { WalletService } from '../wallet/wallet.service';
 import { Request, Response } from 'express';
 
 const ADMIN_COOKIE = 'admin_access_token';
@@ -32,6 +34,8 @@ export class AdminService {
     private readonly config: ConfigService,
     private readonly kycService: KycService,
     private readonly email: EmailService,
+    private readonly transactions: TransactionsService,
+    private readonly wallets: WalletService,
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
@@ -476,6 +480,95 @@ export class AdminService {
       throw new NotFoundException('Rejection reason not found.');
     }
     return { message: 'Rejection reason deleted.' };
+  }
+
+
+  // ─── Withdrawals (ADM-03 · §8.4) ──────────────────────────────────────────
+  // Every transition here moves client money, so every one is audited.
+  async listWithdrawals(query: { state?: string; page?: string; limit?: string }) {
+    return this.transactions.listForAdmin({
+      state: query.state,
+      page: parseInt(query.page ?? '1', 10) || 1,
+      limit: parseInt(query.limit ?? '25', 10) || 25,
+    });
+  }
+
+  async approveWithdrawal(id: string, actor: Admin) {
+    const row = await this.transactions.approve(id, actor.id);
+    this.audit(actor.id, 'withdrawal.approve', 'transaction', id, {
+      amount: row.amount,
+      currency: row.currency,
+    });
+    return row;
+  }
+
+  async rejectWithdrawal(id: string, actor: Admin, reason?: string, reasonId?: string) {
+    // FR-ADM-03: the reason comes from the configurable list; free text is an
+    // optional note alongside it.
+    let effectiveReason = reason?.trim();
+    if (reasonId) {
+      const configured = await RejectionReasonsStore.findById(reasonId);
+      if (!configured) throw new NotFoundException('Rejection reason not found.');
+      effectiveReason = effectiveReason ? `${configured.label} — ${effectiveReason}` : configured.label;
+    }
+    if (!effectiveReason) {
+      throw new BadRequestException('A rejection reason (reasonId or reason text) is required.');
+    }
+
+    const row = await this.transactions.reject(id, actor.id, effectiveReason);
+    const user = await UsersStore.findById(row.userId);
+    if (user) {
+      void this.email.sendWithdrawalDecisionEmail(
+        user.email,
+        user.firstName,
+        'rejected',
+        row.amount,
+        row.currency,
+        effectiveReason,
+      );
+    }
+    this.audit(actor.id, 'withdrawal.reject', 'transaction', id, {
+      amount: row.amount,
+      reason: effectiveReason,
+    });
+    return row;
+  }
+
+  async settleWithdrawal(id: string, actor: Admin, providerRef: string) {
+    const row = await this.transactions.settle(id, actor.id, providerRef);
+    const user = await UsersStore.findById(row.userId);
+    if (user) {
+      void this.email.sendWithdrawalDecisionEmail(
+        user.email,
+        user.firstName,
+        'paid',
+        row.amount,
+        row.currency,
+      );
+    }
+    this.audit(actor.id, 'withdrawal.settle', 'transaction', id, {
+      amount: row.amount,
+      currency: row.currency,
+      providerRef,
+    });
+    return row;
+  }
+
+  // ─── Ledger view (ADM-13) ─────────────────────────────────────────────────
+  async listLedger(query: {
+    userId?: string;
+    walletId?: string;
+    entryType?: string;
+    page?: string;
+    limit?: string;
+  }) {
+    return this.wallets.listEntries({
+      userId: query.userId,
+      walletId: query.walletId,
+      entryType: query.entryType as undefined,
+      page: parseInt(query.page ?? '1', 10) || 1,
+      limit: parseInt(query.limit ?? '50', 10) || 50,
+    });
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────

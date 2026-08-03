@@ -206,6 +206,62 @@ export const ledgerEntries = pgTable(
   ],
 );
 
+// ── transactions (CORE-13 state machine · §5 · §8.3/§8.4) ────────────────────
+//
+// §5 names three states (pending|success|failure) — that is the PROVIDER
+// lifecycle. FR-ADM-03 additionally requires an admin to approve or reject a
+// withdrawal before any provider is called, so the machine carries two more:
+//
+//   pending ──approve──> approved ──settle──> success
+//      │                    │
+//      └──reject──> rejected└──provider fails──> failure
+//
+// Money movement per state: request holds the funds (no ledger entry — a hold
+// is not a balance change); reject/failure release the hold; success posts the
+// debit through WalletService and clears the hold. Logged as DECISIONS D-38.
+export const transactionDirectionEnum = pgEnum('transaction_direction', ['deposit', 'withdrawal']);
+export const transactionStateEnum = pgEnum('transaction_state', [
+  'pending',
+  'approved',
+  'success',
+  'failure',
+  'rejected',
+]);
+
+export const transactions = pgTable(
+  'transactions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    walletId: uuid('wallet_id')
+      .notNull()
+      .references(() => wallets.id, { onDelete: 'restrict' }),
+    direction: transactionDirectionEnum('direction').notNull(),
+    amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
+    currency: currencyEnum('currency').notNull(),
+    state: transactionStateEnum('state').notNull().default('pending'),
+    provider: varchar('provider', { length: 50 }).notNull(),
+    /** Provider's own reference. §6.3: UNIQUE(provider, provider_ref) is the
+     *  idempotency guarantee for replayed payment callbacks. */
+    providerRef: varchar('provider_ref', { length: 255 }),
+    /** Withdrawal destination (bank/wallet address) as the client supplied it. */
+    destination: varchar('destination', { length: 255 }),
+    rejectionReason: text('rejection_reason'),
+    reviewedBy: uuid('reviewed_by'),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('transactions_user_idx').on(t.userId),
+    index('transactions_state_idx').on(t.state),
+    index('transactions_created_at_idx').on(t.createdAt),
+    uniqueIndex('transactions_provider_ref_uq').on(t.provider, t.providerRef),
+  ],
+);
+
 // ── Audit log — APPEND ONLY (D-21). No UPDATE, no DELETE, ever. ──────────────
 export const auditLog = pgTable(
   'audit_log',

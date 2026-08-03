@@ -26,6 +26,9 @@ import {
   PermissionModuleDto,
   RejectionReasonResponseDto,
   RoleResponseDto,
+  LedgerListResponseDto,
+  WithdrawalListResponseDto,
+  WithdrawalRowDto,
 } from './dto/responses.dto';
 
 class AdminLoginDto {
@@ -61,6 +64,13 @@ class UpdateAdminDto {
   @IsString() @IsOptional() name?: string;
   @IsString() @IsOptional() roleId?: string;
   @IsArray() @IsOptional() permissions?: string[];
+}
+class WithdrawalRejectDto {
+  @IsString() @IsOptional() reason?: string;
+  @IsString() @IsOptional() reasonId?: string;
+}
+class SettleWithdrawalDto {
+  @IsString() providerRef: string;
 }
 class RejectionReasonDto {
   @IsString() context: RejectionContext;
@@ -262,6 +272,77 @@ export class AdminController {
   @ApiOkResponse({ type: MessageResponseDto })
   deleteRejectionReason(@Param('id') id: string) {
     return this.adminService.deleteRejectionReason(id);
+  }
+
+
+  // ── Withdrawals (ADM-03 · §8.4) ───────────────────────────────────────────
+  @Get('withdrawals')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('withdrawals.view')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Withdrawal requests with per-state counts (amounts are strings)' })
+  @ApiOkResponse({ type: WithdrawalListResponseDto })
+  listWithdrawals(
+    @Query('state') state?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminService.listWithdrawals({ state, page, limit });
+  }
+
+  @Patch('withdrawals/:id/approve')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('withdrawals.approve')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Approve a pending withdrawal — funds stay on hold until settlement' })
+  @ApiOkResponse({ type: WithdrawalRowDto })
+  approveWithdrawal(@Param('id') id: string, @Req() req: Request & { admin: Admin }) {
+    return this.adminService.approveWithdrawal(id, req.admin);
+  }
+
+  @Patch('withdrawals/:id/reject')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('withdrawals.approve')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Reject a pending withdrawal — releases the hold, emails the client' })
+  @ApiOkResponse({ type: WithdrawalRowDto })
+  rejectWithdrawal(
+    @Param('id') id: string,
+    @Body() dto: WithdrawalRejectDto,
+    @Req() req: Request & { admin: Admin },
+  ) {
+    return this.adminService.rejectWithdrawal(id, req.admin, dto.reason, dto.reasonId);
+  }
+
+  @Patch('withdrawals/:id/settle')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('withdrawals.approve')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Mark an approved withdrawal paid — posts the debit and clears the hold' })
+  @ApiOkResponse({ type: WithdrawalRowDto })
+  settleWithdrawal(
+    @Param('id') id: string,
+    @Body() dto: SettleWithdrawalDto,
+    @Req() req: Request & { admin: Admin },
+  ) {
+    return this.adminService.settleWithdrawal(id, req.admin, dto.providerRef);
+  }
+
+  // ── Ledger (ADM-13) ───────────────────────────────────────────────────────
+  @Get('ledger')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('withdrawals.view')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Append-only ledger, filterable for reconciliation' })
+  @ApiOkResponse({ type: LedgerListResponseDto })
+  listLedger(
+    @Query('userId') userId?: string,
+    @Query('walletId') walletId?: string,
+    @Query('entryType') entryType?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminService.listLedger({ userId, walletId, entryType, page, limit });
   }
 
   // ── RBAC: permission catalog, roles, admin directory (RBAC-02/07) ─────────

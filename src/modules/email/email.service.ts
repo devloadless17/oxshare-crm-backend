@@ -137,6 +137,46 @@ export class EmailService {
     }
   }
 
+  // FR-ADM-03: withdrawal decisions are emailed to the client, rejections
+  // carrying the reason so they can correct and retry.
+  async sendWithdrawalDecisionEmail(
+    email: string,
+    firstName: string,
+    decision: 'rejected' | 'paid',
+    amount: string,
+    currency: string,
+    reason?: string,
+  ): Promise<void> {
+    const portalUrl = this.configService.get<string>('PORTAL_URL', 'http://localhost:3000');
+    const paid = decision === 'paid';
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
+        <h2 style="color: ${paid ? '#22c55e' : '#f87171'};">
+          ${paid ? 'Your withdrawal has been sent' : 'Your withdrawal was declined'}
+        </h2>
+        <p>Hello ${firstName || 'Valued Client'},</p>
+        <p>Withdrawal of <strong>${amount} ${currency}</strong> ${paid ? 'has been processed and sent to your nominated destination.' : 'could not be processed.'}</p>
+        ${!paid && reason ? `<p style="background: rgba(248,113,113,0.1); border: 1px solid rgba(248,113,113,0.3); border-radius: 8px; padding: 12px;"><strong>Reason:</strong> ${reason}</p><p>The reserved funds have been returned to your available balance and you may submit a new request.</p>` : ''}
+        <div style="margin: 30px 0;">
+          <a href="${portalUrl}" style="background: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">Go to Portal</a>
+        </div>
+      </div>
+    `;
+    try {
+      if (this.configService.get('NODE_ENV') !== 'test') {
+        await this.transporter.sendMail({
+          from: this.configService.get('SMTP_FROM', '"OxShare Payments" <no-reply@oxshare.com>'),
+          to: email,
+          subject: paid ? 'Withdrawal Sent — OxShare' : 'Withdrawal Declined — OxShare',
+          html,
+        });
+      }
+      this.logger.log(`Withdrawal ${decision} email sent to ${email}`);
+    } catch {
+      this.logger.warn(`Failed to send withdrawal ${decision} email to ${email}`);
+    }
+  }
+
   async sendAdminInviteEmail(email: string, name: string, inviteUrl: string): Promise<void> {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">

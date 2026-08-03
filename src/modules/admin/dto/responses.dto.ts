@@ -148,3 +148,60 @@ export class AuditListResponseDto {
 export class MessageResponseDto {
   @ApiProperty() message: string;
 }
+
+// ── Money (ARCHITECTURE §6: every monetary field is a STRING) ────────────────
+
+export class WithdrawalUserDto {
+  @ApiProperty() id: string;
+  @ApiProperty() email: string;
+  @ApiProperty() firstName: string;
+  @ApiProperty() lastName: string;
+}
+
+export class WithdrawalRowDto {
+  @ApiProperty() id: string;
+  @ApiProperty({ description: 'Monetary value — always a string, never a number' })
+  amount: string;
+  @ApiProperty({ enum: ['USD', 'USDT'] }) currency: string;
+  @ApiProperty({ enum: ['pending', 'approved', 'success', 'failure', 'rejected'] })
+  state: string;
+  @ApiProperty() provider: string;
+  @ApiPropertyOptional({ nullable: true }) providerRef?: string | null;
+  @ApiPropertyOptional({ nullable: true }) destination?: string | null;
+  @ApiPropertyOptional({ nullable: true }) rejectionReason?: string | null;
+  @ApiProperty() requestedAt: Date;
+  @ApiPropertyOptional({ nullable: true }) reviewedAt?: Date | null;
+  @ApiPropertyOptional({ nullable: true }) settledAt?: Date | null;
+  @ApiProperty({ type: WithdrawalUserDto }) user: WithdrawalUserDto;
+}
+
+export class WithdrawalListResponseDto {
+  @ApiProperty({ type: [WithdrawalRowDto] }) items: WithdrawalRowDto[];
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() limit: number;
+  @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
+  counts: Record<string, number>;
+}
+
+export class LedgerEntryDto {
+  @ApiProperty() id: string;
+  @ApiProperty() walletId: string;
+  @ApiProperty() userId: string;
+  @ApiProperty({ description: 'Signed monetary value as a string' }) amount: string;
+  @ApiProperty({ description: 'Running balance after this entry, as a string' })
+  balanceAfter: string;
+  @ApiProperty({ enum: ['deposit', 'withdrawal', 'commission', 'rebate', 'payout', 'adjustment'] })
+  entryType: string;
+  @ApiProperty() referenceType: string;
+  @ApiProperty() referenceId: string;
+  @ApiProperty({ enum: ['USD', 'USDT'] }) currency: string;
+  @ApiProperty() createdAt: Date;
+}
+
+export class LedgerListResponseDto {
+  @ApiProperty({ type: [LedgerEntryDto] }) items: LedgerEntryDto[];
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() limit: number;
+}
