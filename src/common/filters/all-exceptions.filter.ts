@@ -55,28 +55,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const { status, message, code } = this.classify(exception);
 
+    // The correlation id is attached by JsonLogger from the async-local
+    // request context, so it does not need repeating in every message.
     // 5xx means we did not anticipate it — log everything we have.
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
-        JSON.stringify({
-          requestId,
-          method: request.method,
-          path: request.url,
-          status,
-          message: exception instanceof Error ? exception.message : String(exception),
-        }),
+        `${request.method} ${request.url} → ${status}: ${
+          exception instanceof Error ? exception.message : String(exception)
+        }`,
         exception instanceof Error ? exception.stack : undefined,
       );
     } else {
-      this.logger.warn(
-        JSON.stringify({
-          requestId,
-          method: request.method,
-          path: request.url,
-          status,
-          code,
-        }),
-      );
+      this.logger.warn(`${request.method} ${request.url} → ${status} ${code}`);
     }
 
     response.status(status).json({

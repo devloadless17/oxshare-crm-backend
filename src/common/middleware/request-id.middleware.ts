@@ -1,6 +1,7 @@
 import { Injectable, NestMiddleware } from '@nestjs/common';
 import { NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import { requestContext } from '../logging/request-context';
 
 /**
  * Correlation ID for every request.
@@ -20,6 +21,9 @@ export class RequestIdMiddleware implements NestMiddleware {
     const id = inbound && /^[\w-]{8,128}$/.test(inbound) ? inbound : randomUUID();
     req.id = id;
     res.setHeader('x-request-id', id);
-    next();
+
+    // Everything downstream of here — including code that never sees `req` —
+    // can reach this id through currentRequestId().
+    requestContext.run({ requestId: id, method: req.method, path: req.originalUrl }, next);
   }
 }

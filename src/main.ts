@@ -3,6 +3,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { JsonLogger } from './common/logging/json.logger';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { join } from 'path';
@@ -16,6 +17,9 @@ async function bootstrap() {
   // received — re-serializing the parsed body would change them.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
+    // JSON lines carrying the correlation id in production; readable text in
+    // development.
+    logger: new JsonLogger(),
   });
 
   // KYC uploads are PII — served only via the authenticated UploadsController
