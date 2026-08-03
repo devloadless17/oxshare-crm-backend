@@ -1,6 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, eq, lte } from 'drizzle-orm';
-import { getDb } from '../../database/db';
 import {
   commissionAccruals,
   deals,
@@ -12,6 +11,8 @@ import {
 } from '../../database/schema';
 import { WalletService } from '../wallet/wallet.service';
 import { IbNode, availableAt, calculate, resolveChain } from './commission';
+import { DRIZZLE_DB } from '../../database/database.module';
+import type { Db } from '../../database/db';
 
 /** Thrown to roll back when a concurrent worker already confirmed an accrual. */
 class AccrualAlreadyConfirmed extends Error {
@@ -50,11 +51,23 @@ export interface IngestDealInput {
 export class CommissionService {
   private readonly logger = new Logger(CommissionService.name);
 
-  constructor(private readonly wallets: WalletService) {}
+  /**
+   * The db is injected, not fetched from the module-level singleton.
+   *
+   * `this.db` and the DRIZZLE_DB provider return the *same* lazy instance
+   * (see database.module.ts), so this is behaviour-identical — but a declared
+   * dependency can be seen, and reaching for a global from inside a money method
+   * could not. `executor ?? this.db` still lets a caller pass a transaction
+   * handle so a method joins their transaction (§6.2).
+   */
+  constructor(
+    private readonly wallets: WalletService,
+    @Inject(DRIZZLE_DB) private readonly db: Db,
+  ) {}
 
   /** §6.3: re-delivering the same ticket is a no-op, not a duplicate deal. */
   async ingestDeal(input: IngestDealInput) {
-    const db = getDb();
+    const db = this.db;
     const [account] = await db
       .select()
       .from(tradingAccounts)
@@ -96,7 +109,7 @@ export class CommissionService {
    * UNIQUE(deal_id, ib_user_id, level) constraint absorbs replays.
    */
   async accrueForDeal(dealId: string) {
-    const db = getDb();
+    const db = this.db;
     const [deal] = await db.select().from(deals).where(eq(deals.id, dealId)).limit(1);
     if (!deal) return { accruals: [], reason: 'deal-not-found' as const };
 
@@ -208,7 +221,7 @@ export class CommissionService {
    * guard. Running this twice concurrently cannot double-credit anyone.
    */
   async confirmMatured(now: Date = new Date(), batchSize = 500) {
-    const db = getDb();
+    const db = this.db;
     // Bounded: this used to select every matured accrual with no LIMIT and
     // loop serially, which grows without bound in production.
     const matured = await db
@@ -286,7 +299,7 @@ export class CommissionService {
    * confirmed accrual must have the ledger entry that paid it.
    */
   async findAccrualLedgerEntry(accrualId: string) {
-    const [entry] = await getDb()
+    const [entry] = await this.db
       .select()
       .from(ledgerEntries)
       .where(
@@ -305,7 +318,7 @@ export class CommissionService {
     checked: number;
     unpaid: string[];
   }> {
-    const confirmed = await getDb()
+    const confirmed = await this.db
       .select()
       .from(commissionAccruals)
       .where(eq(commissionAccruals.status, 'confirmed'));

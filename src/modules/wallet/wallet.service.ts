@@ -1,10 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { getDb } from '../../database/db';
 import { ledgerEntries, wallets } from '../../database/schema';
 import { available, money, MoneyInput, toDecimal } from './money';
 import { MoneyRuleError, ValidationError } from '../../common/errors/domain-errors';
+import { DRIZZLE_DB } from '../../database/database.module';
 
 /**
  * A database handle: either the pool or an open transaction.
@@ -59,10 +60,21 @@ export interface PostParams {
  */
 @Injectable()
 export class WalletService {
+  /**
+   * The db is injected, not fetched from the module-level singleton.
+   *
+   * `this.db` and the DRIZZLE_DB provider return the *same* lazy instance
+   * (see database.module.ts), so this is behaviour-identical — but a declared
+   * dependency can be seen, and reaching for a global from inside a money method
+   * could not. `executor ?? this.db` still lets a caller pass a transaction
+   * handle so a method joins their transaction (§6.2).
+   */
+  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+
   /** Create-if-absent without locking. Callers that will move money should use
    *  post()/hold()/release(), which lock as part of their transaction. */
   async getOrCreateWallet(userId: string, currency: Currency, executor?: Executor) {
-    const db = executor ?? getDb();
+    const db = executor ?? this.db;
     await db
       .insert(wallets)
       .values({ userId, currency })
@@ -80,7 +92,7 @@ export class WalletService {
     // own. Either way the lock, the ledger insert and the balance update share
     // a single atomic scope.
     if (executor) return this.postWithin(executor, params);
-    return getDb().transaction((tx) => this.postWithin(tx, params));
+    return this.db.transaction((tx) => this.postWithin(tx, params));
   }
 
   private async postWithin(tx: Executor, params: PostParams) {
@@ -180,7 +192,7 @@ export class WalletService {
     const value = toDecimal(amount);
     if (!value.isPositive()) throw new ValidationError('Hold amount must be positive.');
     if (executor) return this.holdWithin(executor, userId, currency, value);
-    return getDb().transaction((tx) => this.holdWithin(tx, userId, currency, value));
+    return this.db.transaction((tx) => this.holdWithin(tx, userId, currency, value));
   }
 
   private async holdWithin(tx: Executor, userId: string, currency: Currency, value: Decimal) {
@@ -207,7 +219,7 @@ export class WalletService {
   async release(userId: string, currency: Currency, amount: MoneyInput, executor?: Executor) {
     const value = toDecimal(amount);
     if (executor) return this.releaseWithin(executor, userId, currency, value);
-    return getDb().transaction((tx) => this.releaseWithin(tx, userId, currency, value));
+    return this.db.transaction((tx) => this.releaseWithin(tx, userId, currency, value));
   }
 
   private async releaseWithin(tx: Executor, userId: string, currency: Currency, value: Decimal) {
@@ -226,7 +238,7 @@ export class WalletService {
   }
 
   async listWallets(userId: string) {
-    const rows = await getDb().select().from(wallets).where(eq(wallets.userId, userId));
+    const rows = await this.db.select().from(wallets).where(eq(wallets.userId, userId));
     return rows.map((w) => ({
       ...w,
       balance: money(w.balance),
@@ -245,7 +257,7 @@ export class WalletService {
   }) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(200, Math.max(1, filter.limit ?? 50));
-    const db = getDb();
+    const db = this.db;
 
     const conditions = [];
     if (filter.walletId) conditions.push(eq(ledgerEntries.walletId, filter.walletId));
@@ -288,7 +300,7 @@ export class WalletService {
    * assert it.
    */
   async reconcile(walletId: string) {
-    const db = getDb();
+    const db = this.db;
     const [wallet] = await db.select().from(wallets).where(eq(wallets.id, walletId)).limit(1);
     const [{ total }] = await db
       .select({ total: sql<string>`coalesce(sum(${ledgerEntries.amount}), 0)::text` })

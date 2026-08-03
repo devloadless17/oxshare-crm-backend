@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import Decimal from 'decimal.js';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
-import { closeDb, resetDb } from '../src/database/db';
+import { closeDb, getDb, resetDb } from '../src/database/db';
 import {
   commissionAccruals,
   ibProfiles,
@@ -46,8 +46,8 @@ beforeAll(async () => {
   resetDb();
   ctx = await startMoneyTestDb();
   resetDb();
-  wallets = new WalletService();
-  commission = new CommissionService(wallets);
+  wallets = new WalletService(getDb());
+  commission = new CommissionService(wallets, getDb());
 
   // A two-level IB structure: client → L1 → L2
   l2UserId = await makeUser('l2@test.local');

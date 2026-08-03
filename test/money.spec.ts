@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import Decimal from 'decimal.js';
 import { sql } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
-import { closeDb, resetDb } from '../src/database/db';
+import { closeDb, getDb, resetDb } from '../src/database/db';
 import { ledgerEntries, users, wallets } from '../src/database/schema';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { money } from '../src/modules/wallet/money';
@@ -29,7 +29,7 @@ beforeAll(async () => {
   resetDb();
   ctx = await startMoneyTestDb();
   resetDb(); // pick up the container's DATABASE_URL
-  walletService = new WalletService();
+  walletService = new WalletService(getDb());
 });
 
 afterAll(async () => {

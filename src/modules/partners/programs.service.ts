@@ -1,10 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { asc, eq } from 'drizzle-orm';
 import Decimal from 'decimal.js';
-import { getDb } from '../../database/db';
 import { ibPrograms } from '../../database/schema';
 import { money, toDecimal } from '../wallet/money';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import { DRIZZLE_DB } from '../../database/database.module';
+import type { Db } from '../../database/db';
 
 export type CommissionMode = 'commission' | 'rebate' | 'hybrid';
 export type CommissionMethod = 'spread_share' | 'per_lot' | 'fixed_per_deal';
@@ -38,6 +39,17 @@ export interface ProgramInput {
  */
 @Injectable()
 export class ProgramsService {
+  /**
+   * The db is injected, not fetched from the module-level singleton.
+   *
+   * `this.db` and the DRIZZLE_DB provider return the *same* lazy instance
+   * (see database.module.ts), so this is behaviour-identical — but a declared
+   * dependency can be seen, and reaching for a global from inside a money method
+   * could not. `executor ?? this.db` still lets a caller pass a transaction
+   * handle so a method joins their transaction (§6.2).
+   */
+  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+
   private validate(input: ProgramInput) {
     const l1 = toDecimal(input.l1Share);
     const l2 = toDecimal(input.l2Share);
@@ -109,18 +121,18 @@ export class ProgramsService {
   }
 
   async findAll() {
-    return getDb().select().from(ibPrograms).orderBy(asc(ibPrograms.position));
+    return this.db.select().from(ibPrograms).orderBy(asc(ibPrograms.position));
   }
 
   async findById(id: string) {
-    const [row] = await getDb().select().from(ibPrograms).where(eq(ibPrograms.id, id)).limit(1);
+    const [row] = await this.db.select().from(ibPrograms).where(eq(ibPrograms.id, id)).limit(1);
     if (!row) throw new NotFoundError('Program not found.');
     return row;
   }
 
   async create(input: ProgramInput) {
     this.validate(input);
-    const existing = await getDb()
+    const existing = await this.db
       .select()
       .from(ibPrograms)
       .where(eq(ibPrograms.name, input.name.trim()))
@@ -128,14 +140,14 @@ export class ProgramsService {
     if (existing.length > 0) {
       throw new ConflictError('A program with this name already exists.');
     }
-    const [row] = await getDb().insert(ibPrograms).values(this.toColumns(input)).returning();
+    const [row] = await this.db.insert(ibPrograms).values(this.toColumns(input)).returning();
     return row;
   }
 
   async update(id: string, input: ProgramInput) {
     await this.findById(id);
     this.validate(input);
-    const [row] = await getDb()
+    const [row] = await this.db
       .update(ibPrograms)
       .set(this.toColumns(input))
       .where(eq(ibPrograms.id, id))
@@ -149,7 +161,7 @@ export class ProgramsService {
    */
   async setActive(id: string, active: boolean) {
     await this.findById(id);
-    const [row] = await getDb()
+    const [row] = await this.db
       .update(ibPrograms)
       .set({ active, updatedAt: new Date() })
       .where(eq(ibPrograms.id, id))

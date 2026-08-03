@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
-import { closeDb, resetDb } from '../src/database/db';
+import { closeDb, getDb, resetDb } from '../src/database/db';
 import {
   commissionAccruals,
   deals,
@@ -48,9 +48,9 @@ beforeAll(async () => {
   resetDb();
   ctx = await startMoneyTestDb();
   resetDb();
-  wallets = new WalletService();
-  txService = new TransactionsService(wallets);
-  commission = new CommissionService(wallets);
+  wallets = new WalletService(getDb());
+  txService = new TransactionsService(wallets, getDb());
+  commission = new CommissionService(wallets, getDb());
 });
 
 afterAll(async () => {

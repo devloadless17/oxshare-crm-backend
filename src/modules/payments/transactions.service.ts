@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, sql } from 'drizzle-orm';
-import { getDb } from '../../database/db';
 import { transactions, users } from '../../database/schema';
 import { money, toDecimal } from '../wallet/money';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
+import { DRIZZLE_DB } from '../../database/database.module';
+import type { Db } from '../../database/db';
 import {
   AuthorizationError,
   MoneyRuleError,
@@ -32,7 +33,19 @@ import {
  */
 @Injectable()
 export class TransactionsService {
-  constructor(private readonly wallets: WalletService) {}
+  /**
+   * The db is injected, not fetched from the module-level singleton.
+   *
+   * `this.db` and the DRIZZLE_DB provider return the *same* lazy instance
+   * (see database.module.ts), so this is behaviour-identical — but a declared
+   * dependency can be seen, and reaching for a global from inside a money method
+   * could not. `executor ?? this.db` still lets a caller pass a transaction
+   * handle so a method joins their transaction (§6.2).
+   */
+  constructor(
+    private readonly wallets: WalletService,
+    @Inject(DRIZZLE_DB) private readonly db: Db,
+  ) {}
 
   async requestWithdrawal(params: {
     userId: string;
@@ -44,7 +57,7 @@ export class TransactionsService {
     const amount = toDecimal(params.amount);
     if (!amount.isPositive()) throw new ValidationError('Withdrawal amount must be positive.');
 
-    const db = getDb();
+    const db = this.db;
     const [user] = await db.select().from(users).where(eq(users.id, params.userId)).limit(1);
     if (!user) throw new NotFoundError('User not found.');
     // §8.4: funded features are gated on KYC level 1 (FR-CORE-15).
@@ -77,7 +90,7 @@ export class TransactionsService {
   async listForAdmin(filter: { state?: string; page?: number; limit?: number }) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
-    const db = getDb();
+    const db = this.db;
 
     const conditions = [eq(transactions.direction, 'withdrawal')];
     if (filter.state) {
@@ -152,7 +165,7 @@ export class TransactionsService {
   }
 
   async listForUser(userId: string) {
-    const rows = await getDb()
+    const rows = await this.db
       .select()
       .from(transactions)
       .where(eq(transactions.userId, userId))
@@ -162,7 +175,7 @@ export class TransactionsService {
   }
 
   async getById(id: string) {
-    const [tx] = await getDb().select().from(transactions).where(eq(transactions.id, id)).limit(1);
+    const [tx] = await this.db.select().from(transactions).where(eq(transactions.id, id)).limit(1);
     if (!tx) throw new NotFoundError('Transaction not found.');
     return tx;
   }
@@ -179,7 +192,7 @@ export class TransactionsService {
     patch: Record<string, unknown>,
     executor?: Executor,
   ) {
-    const [row] = await (executor ?? getDb())
+    const [row] = await (executor ?? this.db)
       .update(transactions)
       .set(patch)
       .where(and(eq(transactions.id, id), eq(transactions.state, from as 'pending')))
@@ -206,7 +219,7 @@ export class TransactionsService {
     // One transaction: the state change and the hold release commit together,
     // so a failure can never leave a rejected withdrawal with funds still
     // reserved — which was permanent, since 'rejected' is terminal.
-    return getDb().transaction(async (dbTx) => {
+    return this.db.transaction(async (dbTx) => {
       const row = await this.transition(
         id,
         'pending',
@@ -231,7 +244,7 @@ export class TransactionsService {
     // debit posted (money duplicated, unrecoverable because the state guard
     // blocks retry, and invisible to reconciliation); a crash after the second
     // froze the client's funds on hold permanently.
-    return getDb().transaction(async (dbTx) => {
+    return this.db.transaction(async (dbTx) => {
       const row = await this.transition(
         id,
         'approved',
@@ -265,7 +278,7 @@ export class TransactionsService {
 
   /** Provider failed after approval: release the hold, no balance change. */
   async markFailed(id: string, reason: string) {
-    return getDb().transaction(async (dbTx) => {
+    return this.db.transaction(async (dbTx) => {
       const row = await this.transition(
         id,
         'approved',
@@ -296,7 +309,7 @@ export class TransactionsService {
     providerRef: string;
   }) {
     const wallet = await this.wallets.getOrCreateWallet(params.userId, params.currency);
-    const [tx] = await getDb()
+    const [tx] = await this.db
       .insert(transactions)
       .values({
         userId: params.userId,
@@ -314,7 +327,7 @@ export class TransactionsService {
 
     if (!tx) {
       // Replayed callback — the original transaction and credit stand.
-      const [existing] = await getDb()
+      const [existing] = await this.db
         .select()
         .from(transactions)
         .where(
