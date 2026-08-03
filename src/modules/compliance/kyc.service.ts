@@ -1,15 +1,13 @@
 import { existsSync, readdirSync, unlinkSync } from 'fs';
-import {
-  Injectable,
-  Logger,
-  InternalServerErrorException,
-  NotFoundException,
-  BadRequestException,
-  ForbiddenException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { KycStore, KycStatus } from '../../store/kyc.store';
 import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
+import {
+  AuthorizationError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
 
 @Injectable()
 export class KycService {
@@ -36,10 +34,10 @@ export class KycService {
     const submission = await this.kycStore.getOrCreate(userId);
 
     if (submission.status === 'approved') {
-      throw new ForbiddenException('KYC already approved.');
+      throw new AuthorizationError('KYC already approved.');
     }
     if (submission.status === 'under_review' || submission.status === 'submitted') {
-      throw new ForbiddenException('KYC is under review. You cannot edit it now.');
+      throw new AuthorizationError('KYC is under review. You cannot edit it now.');
     }
 
     const patch: Record<string, unknown> = { status: 'in_progress' };
@@ -48,7 +46,7 @@ export class KycService {
     else if (step === 'document') patch['document'] = { ...submission.document, ...data };
     else if (step === 'selfie') patch['selfie'] = { ...submission.selfie, ...data };
     else if (step === 'address') patch['addressProof'] = { ...submission.addressProof, ...data };
-    else throw new BadRequestException(`Unknown step: ${step}`);
+    else throw new ValidationError(`Unknown step: ${step}`);
 
     return await this.kycStore.update(userId, patch);
   }
@@ -93,7 +91,7 @@ export class KycService {
         },
       });
     } else {
-      throw new BadRequestException(`Unknown file field: ${field}`);
+      throw new ValidationError(`Unknown file field: ${field}`);
     }
 
     return { message: 'File uploaded.', field, fileName };
@@ -115,12 +113,12 @@ export class KycService {
     const finalSub = await this.kycStore.getOrCreate(userId);
 
     if (!finalSub.personalInfo)
-      throw new BadRequestException('Personal information is required before submitting.');
+      throw new ValidationError('Personal information is required before submitting.');
     if (!finalSub.document?.frontFilePath)
-      throw new BadRequestException('ID document front is required.');
-    if (!finalSub.selfie?.filePath) throw new BadRequestException('Selfie is required.');
+      throw new ValidationError('ID document front is required.');
+    if (!finalSub.selfie?.filePath) throw new ValidationError('Selfie is required.');
     if (!finalSub.addressProof?.filePath)
-      throw new BadRequestException('Proof of address is required.');
+      throw new ValidationError('Proof of address is required.');
 
     // A resubmission after rejection starts a fresh review — stale rejection
     // data must not follow it into the admin queue.
@@ -148,7 +146,7 @@ export class KycService {
   // ─── Admin: get one ────────────────────────────────────────────────────────
   async getByUserId(userId: string) {
     const submission = await this.kycStore.findByUserId(userId);
-    if (!submission) throw new NotFoundException('KYC submission not found.');
+    if (!submission) throw new NotFoundError('KYC submission not found.');
     const user = await this.users.findById(userId);
     return { ...submission, user };
   }
@@ -156,7 +154,7 @@ export class KycService {
   // ─── Admin: approve ────────────────────────────────────────────────────────
   async approve(userId: string, adminId: string) {
     const submission = await this.kycStore.findByUserId(userId);
-    if (!submission) throw new NotFoundException('KYC submission not found.');
+    if (!submission) throw new NotFoundError('KYC submission not found.');
 
     await this.kycStore.update(userId, {
       status: 'approved',
@@ -180,9 +178,9 @@ export class KycService {
   // don't process the same submission concurrently.
   async claim(userId: string, adminId: string) {
     const submission = await this.kycStore.findByUserId(userId);
-    if (!submission) throw new NotFoundException('KYC submission not found.');
+    if (!submission) throw new NotFoundError('KYC submission not found.');
     if (submission.status !== 'submitted') {
-      throw new BadRequestException(
+      throw new ValidationError(
         submission.status === 'under_review'
           ? 'This submission is already being reviewed.'
           : 'Only submitted KYC can be claimed for review.',
@@ -195,7 +193,7 @@ export class KycService {
   // ─── Admin: reject ─────────────────────────────────────────────────────────
   async reject(userId: string, adminId: string, reason: string, rejectedFields: string[] = []) {
     const submission = await this.kycStore.findByUserId(userId);
-    if (!submission) throw new NotFoundException('KYC submission not found.');
+    if (!submission) throw new NotFoundError('KYC submission not found.');
     const user = await this.users.findById(userId);
 
     await this.kycStore.update(userId, {
@@ -243,9 +241,9 @@ export class KycService {
       }
     }
     if (failures.length > 0) {
-      throw new InternalServerErrorException(
-        `KYC records cleared but ${failures.length} file(s) could not be deleted.`,
-      );
+      // A partial filesystem failure is an internal fault, not a rule the
+      // caller broke — let it surface as a 500 with the detail in the log only.
+      throw new Error(`KYC records cleared but ${failures.length} file(s) could not be deleted.`);
     }
     return { message: 'All KYC submissions and uploaded files cleared successfully.' };
   }

@@ -1,14 +1,10 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { asc, eq } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { getDb } from '../../database/db';
 import { ibPrograms } from '../../database/schema';
 import { money, toDecimal } from '../wallet/money';
+import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 
 export type CommissionMode = 'commission' | 'rebate' | 'hybrid';
 export type CommissionMethod = 'spread_share' | 'per_lot' | 'fixed_per_deal';
@@ -53,42 +49,42 @@ export class ProgramsService {
       ['L2 share', l2],
     ] as const) {
       if (value.isNegative() || value.greaterThan(100)) {
-        throw new BadRequestException(`${label} must be between 0 and 100 percent.`);
+        throw new ValidationError(`${label} must be between 0 and 100 percent.`);
       }
     }
     // ASSUMPTION (logged in DECISIONS D-39): the two levels split the commission
     // pool, so their shares cannot exceed 100%. A sum below 100 leaves the
     // remainder with the broker, which is why this is ≤ and not ==.
     if (l1.plus(l2).greaterThan(100)) {
-      throw new BadRequestException(
+      throw new ValidationError(
         `L1 + L2 shares cannot exceed 100% (got ${l1.toString()} + ${l2.toString()}).`,
       );
     }
     // §8.6: resolution stops at L2. A program paying L2 but not L1 is a
     // misconfiguration — an L2 only earns through the L1 beneath it.
     if (l1.isZero() && l2.greaterThan(0)) {
-      throw new BadRequestException('L2 cannot earn while L1 earns nothing — check the split.');
+      throw new ValidationError('L2 cannot earn while L1 earns nothing — check the split.');
     }
     if (commission.isNegative() || rebate.isNegative()) {
-      throw new BadRequestException('Commission and rebate values cannot be negative.');
+      throw new ValidationError('Commission and rebate values cannot be negative.');
     }
     if (input.method === 'spread_share' && commission.greaterThan(100)) {
-      throw new BadRequestException(
+      throw new ValidationError(
         'With the spread-share method the commission value is a percentage of the spread and cannot exceed 100.',
       );
     }
     if (input.mode === 'commission' && rebate.greaterThan(0)) {
-      throw new BadRequestException(
+      throw new ValidationError(
         'A commission-only program cannot carry a rebate value — use rebate or hybrid mode.',
       );
     }
     if (input.mode === 'rebate' && commission.greaterThan(0)) {
-      throw new BadRequestException(
+      throw new ValidationError(
         'A rebate-only program cannot carry a commission value — use commission or hybrid mode.',
       );
     }
     if ((input.settlementWindowHours ?? 24) < 0) {
-      throw new BadRequestException('The settlement window cannot be negative.');
+      throw new ValidationError('The settlement window cannot be negative.');
     }
   }
 
@@ -118,7 +114,7 @@ export class ProgramsService {
 
   async findById(id: string) {
     const [row] = await getDb().select().from(ibPrograms).where(eq(ibPrograms.id, id)).limit(1);
-    if (!row) throw new NotFoundException('Program not found.');
+    if (!row) throw new NotFoundError('Program not found.');
     return row;
   }
 
@@ -130,7 +126,7 @@ export class ProgramsService {
       .where(eq(ibPrograms.name, input.name.trim()))
       .limit(1);
     if (existing.length > 0) {
-      throw new ConflictException('A program with this name already exists.');
+      throw new ConflictError('A program with this name already exists.');
     }
     const [row] = await getDb().insert(ibPrograms).values(this.toColumns(input)).returning();
     return row;

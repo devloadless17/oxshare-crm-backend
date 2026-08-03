@@ -2,7 +2,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { closeDb, resetDb } from '../src/database/db';
-import { commissionAccruals, deals, ibPrograms, tradingAccounts, transactions, users } from '../src/database/schema';
+import {
+  commissionAccruals,
+  deals,
+  ibPrograms,
+  tradingAccounts,
+  transactions,
+  users,
+} from '../src/database/schema';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { CommissionService } from '../src/modules/partners/commission.service';
@@ -55,12 +62,20 @@ describe('settle() is atomic — a failure mid-settlement leaves no money strand
   it('rolls the state change back when the ledger debit fails', async () => {
     const userId = await makeVerifiedUser('settle-fault@test.local');
     await wallets.post({
-      userId, currency: 'USD', amount: '1000',
-      entryType: 'deposit', referenceType: 'seed', referenceId: 'sf-1',
+      userId,
+      currency: 'USD',
+      amount: '1000',
+      entryType: 'deposit',
+      referenceType: 'seed',
+      referenceId: 'sf-1',
     });
 
     const requested = await txService.requestWithdrawal({
-      userId, amount: '300', currency: 'USD', destination: 'IBAN-1', provider: 'whish',
+      userId,
+      amount: '300',
+      currency: 'USD',
+      destination: 'IBAN-1',
+      provider: 'whish',
     });
     await txService.approve(requested.id, '00000000-0000-0000-0000-000000000001');
 
@@ -78,10 +93,16 @@ describe('settle() is atomic — a failure mid-settlement leaves no money strand
 
     const [wallet] = await wallets.listWallets(userId);
     expect(wallet.balance).toBe('1000.00000000');
-    expect(wallet.onHold, 'the hold must survive so the settlement can be retried').toBe('300.00000000');
+    expect(wallet.onHold, 'the hold must survive so the settlement can be retried').toBe(
+      '300.00000000',
+    );
 
     // And the operation is retryable — the previous design blocked retry forever.
-    const settled = await txService.settle(requested.id, '00000000-0000-0000-0000-000000000001', 'ref-1');
+    const settled = await txService.settle(
+      requested.id,
+      '00000000-0000-0000-0000-000000000001',
+      'ref-1',
+    );
     expect(settled.state).toBe('success');
 
     const [after] = await wallets.listWallets(userId);
@@ -93,31 +114,49 @@ describe('settle() is atomic — a failure mid-settlement leaves no money strand
   it('rolls back the hold when the withdrawal row cannot be written', async () => {
     const userId = await makeVerifiedUser('request-fault@test.local');
     await wallets.post({
-      userId, currency: 'USD', amount: '500',
-      entryType: 'deposit', referenceType: 'seed', referenceId: 'rf-1',
+      userId,
+      currency: 'USD',
+      amount: '500',
+      entryType: 'deposit',
+      referenceType: 'seed',
+      referenceId: 'rf-1',
     });
 
     // A destination longer than the column forces the INSERT to fail after the
     // hold — which previously committed separately and froze the funds.
     await expect(
       txService.requestWithdrawal({
-        userId, amount: '100', currency: 'USD', destination: 'x'.repeat(300), provider: 'whish',
+        userId,
+        amount: '100',
+        currency: 'USD',
+        destination: 'x'.repeat(300),
+        provider: 'whish',
       }),
     ).rejects.toThrow();
 
     const [wallet] = await wallets.listWallets(userId);
-    expect(wallet.onHold, 'no funds may be reserved for a withdrawal that does not exist').toBe('0.00000000');
+    expect(wallet.onHold, 'no funds may be reserved for a withdrawal that does not exist').toBe(
+      '0.00000000',
+    );
     expect(wallet.available).toBe('500.00000000');
   });
 
   it('releases the hold atomically on rejection', async () => {
     const userId = await makeVerifiedUser('reject-fault@test.local');
     await wallets.post({
-      userId, currency: 'USD', amount: '400',
-      entryType: 'deposit', referenceType: 'seed', referenceId: 'rj-1',
+      userId,
+      currency: 'USD',
+      amount: '400',
+      entryType: 'deposit',
+      referenceType: 'seed',
+      referenceId: 'rj-1',
     });
     const requested = await txService.requestWithdrawal({
-      userId, amount: '150', currency: 'USD', destination: 'IBAN-2', provider: 'whish',
+      userId,
+      amount: '150',
+      currency: 'USD',
+      destination: 'IBAN-2',
+      provider: 'whish',
     });
 
     const spy = vi.spyOn(wallets, 'release').mockRejectedValueOnce(new Error('release failed'));
@@ -127,7 +166,9 @@ describe('settle() is atomic — a failure mid-settlement leaves no money strand
     spy.mockRestore();
 
     const [row] = await ctx.db.select().from(transactions).where(eq(transactions.id, requested.id));
-    expect(row.state, 'a rejection that could not release funds must not be recorded').toBe('pending');
+    expect(row.state, 'a rejection that could not release funds must not be recorded').toBe(
+      'pending',
+    );
 
     // Retry succeeds and the funds come back.
     await txService.reject(requested.id, '00000000-0000-0000-0000-000000000001', 'bad details');
@@ -145,8 +186,13 @@ describe('confirmMatured() credits before confirming — no silent under-payment
     const [program] = await ctx.db
       .insert(ibPrograms)
       .values({
-        name: 'Atomicity Test Plan', mode: 'commission', method: 'per_lot',
-        commissionValue: '10', rebateValue: '0', l1Share: '100', l2Share: '0',
+        name: 'Atomicity Test Plan',
+        mode: 'commission',
+        method: 'per_lot',
+        commissionValue: '10',
+        rebateValue: '0',
+        l1Share: '100',
+        l2Share: '0',
       })
       .returning();
     const [account] = await ctx.db
@@ -156,13 +202,21 @@ describe('confirmMatured() credits before confirming — no silent under-payment
     const [deal] = await ctx.db
       .insert(deals)
       .values({
-        mt5Ticket: 'ATOM-1', tradingAccountId: account.id, symbol: 'EURUSD',
-        volume: '1', spread: '1', closedAt: new Date('2026-08-01T00:00:00Z'),
+        mt5Ticket: 'ATOM-1',
+        tradingAccountId: account.id,
+        symbol: 'EURUSD',
+        volume: '1',
+        spread: '1',
+        closedAt: new Date('2026-08-01T00:00:00Z'),
       })
       .returning();
     await ctx.db.insert(commissionAccruals).values({
-      dealId: deal.id, ibUserId, level: 1, programId: program.id,
-      amount: '25.00000000', status: 'accrued',
+      dealId: deal.id,
+      ibUserId,
+      level: 1,
+      programId: program.id,
+      amount: '25.00000000',
+      status: 'accrued',
       availableAt: new Date('2026-08-01T00:00:00Z'),
     });
 
@@ -179,7 +233,9 @@ describe('confirmMatured() credits before confirming — no silent under-payment
     const [stillAccrued] = await ctx.db
       .select()
       .from(commissionAccruals)
-      .where(and(eq(commissionAccruals.dealId, deal.id), eq(commissionAccruals.ibUserId, ibUserId)));
+      .where(
+        and(eq(commissionAccruals.dealId, deal.id), eq(commissionAccruals.ibUserId, ibUserId)),
+      );
     expect(stillAccrued.status, 'a failed credit must leave the accrual retryable').toBe('accrued');
     expect(stillAccrued.confirmedAt).toBeNull();
 

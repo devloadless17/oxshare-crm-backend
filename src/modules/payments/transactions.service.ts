@@ -1,14 +1,15 @@
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { getDb } from '../../database/db';
 import { transactions, users } from '../../database/schema';
 import { money, toDecimal } from '../wallet/money';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
+import {
+  AuthorizationError,
+  MoneyRuleError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
 
 /**
  * Withdrawal lifecycle (§8.4 + FR-ADM-03).
@@ -41,14 +42,14 @@ export class TransactionsService {
     provider: string;
   }) {
     const amount = toDecimal(params.amount);
-    if (!amount.isPositive()) throw new BadRequestException('Withdrawal amount must be positive.');
+    if (!amount.isPositive()) throw new ValidationError('Withdrawal amount must be positive.');
 
     const db = getDb();
     const [user] = await db.select().from(users).where(eq(users.id, params.userId)).limit(1);
-    if (!user) throw new NotFoundException('User not found.');
+    if (!user) throw new NotFoundError('User not found.');
     // §8.4: funded features are gated on KYC level 1 (FR-CORE-15).
     if (user.verificationLevel < 1) {
-      throw new ForbiddenException('Withdrawals require a verified account (KYC level 1).');
+      throw new AuthorizationError('Withdrawals require a verified account (KYC level 1).');
     }
 
     // The hold and the transaction row commit together. Previously the hold
@@ -162,7 +163,7 @@ export class TransactionsService {
 
   async getById(id: string) {
     const [tx] = await getDb().select().from(transactions).where(eq(transactions.id, id)).limit(1);
-    if (!tx) throw new NotFoundException('Transaction not found.');
+    if (!tx) throw new NotFoundError('Transaction not found.');
     return tx;
   }
 
@@ -194,7 +195,7 @@ export class TransactionsService {
     });
     if (!row) {
       const current = await this.getById(id);
-      throw new BadRequestException(
+      throw new MoneyRuleError(
         `Only a pending withdrawal can be approved; this one is ${current.state}.`,
       );
     }
@@ -214,7 +215,7 @@ export class TransactionsService {
       );
       if (!row) {
         const current = await this.getById(id);
-        throw new BadRequestException(
+        throw new MoneyRuleError(
           `Only a pending withdrawal can be rejected; this one is ${current.state}.`,
         );
       }
@@ -239,7 +240,7 @@ export class TransactionsService {
       );
       if (!row) {
         const current = await this.getById(id);
-        throw new BadRequestException(
+        throw new MoneyRuleError(
           `Only an approved withdrawal can be settled; this one is ${current.state}.`,
         );
       }
@@ -273,7 +274,7 @@ export class TransactionsService {
       );
       if (!row) {
         const current = await this.getById(id);
-        throw new BadRequestException(
+        throw new MoneyRuleError(
           `Only an approved withdrawal can be marked failed; this one is ${current.state}.`,
         );
       }

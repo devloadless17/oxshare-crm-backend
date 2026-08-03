@@ -1,9 +1,10 @@
-import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { getDb } from '../../database/db';
 import { ledgerEntries, wallets } from '../../database/schema';
 import { available, money, MoneyInput, toDecimal } from './money';
+import { MoneyRuleError, ValidationError } from '../../common/errors/domain-errors';
 
 /**
  * A database handle: either the pool or an open transaction.
@@ -86,7 +87,7 @@ export class WalletService {
     const { userId, currency, entryType, referenceType, referenceId } = params;
     const amount = toDecimal(params.amount);
     if (amount.isZero()) {
-      throw new BadRequestException('A ledger entry must move a non-zero amount.');
+      throw new ValidationError('A ledger entry must move a non-zero amount.');
     }
 
     // 1. Ensure the wallet exists and lock it — both inside this transaction,
@@ -96,7 +97,7 @@ export class WalletService {
     // 2. Compute the new balance with decimal.js — never bare arithmetic.
     const newBalance = toDecimal(wallet.balance).plus(amount);
     if (newBalance.isNegative() && !params.allowOverdraft) {
-      throw new BadRequestException(
+      throw new MoneyRuleError(
         `Insufficient balance: ${money(wallet.balance)} ${currency} cannot absorb ${money(amount)}.`,
       );
     }
@@ -162,9 +163,10 @@ export class WalletService {
       .limit(1);
 
     if (!wallet) {
-      throw new InternalServerErrorException(
-        `Wallet ${currency} for user ${userId} could not be created or locked.`,
-      );
+      // Not a money rule and not the caller's fault: the upsert above just ran,
+      // so an absent row means the database is in a state we do not understand.
+      // A plain Error becomes a 500 with the stack logged and nothing leaked.
+      throw new Error(`Wallet ${currency} for user ${userId} could not be created or locked.`);
     }
     return wallet;
   }
@@ -176,7 +178,7 @@ export class WalletService {
    */
   async hold(userId: string, currency: Currency, amount: MoneyInput, executor?: Executor) {
     const value = toDecimal(amount);
-    if (!value.isPositive()) throw new BadRequestException('Hold amount must be positive.');
+    if (!value.isPositive()) throw new ValidationError('Hold amount must be positive.');
     if (executor) return this.holdWithin(executor, userId, currency, value);
     return getDb().transaction((tx) => this.holdWithin(tx, userId, currency, value));
   }
@@ -187,7 +189,7 @@ export class WalletService {
 
       const availableNow = toDecimal(available(wallet.balance, wallet.onHold));
       if (availableNow.lessThan(value)) {
-        throw new BadRequestException(
+        throw new MoneyRuleError(
           `Insufficient available balance: ${money(availableNow)} ${currency} available, ${money(value)} requested.`,
         );
       }

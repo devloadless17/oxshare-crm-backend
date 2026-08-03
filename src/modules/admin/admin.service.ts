@@ -1,12 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  UnauthorizedException,
-  ConflictException,
-  NotFoundException,
-  BadRequestException,
-  ForbiddenException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
@@ -25,6 +17,13 @@ import { TransactionsService } from '../payments/transactions.service';
 import { WalletService } from '../wallet/wallet.service';
 import { ProgramInput, ProgramsService } from '../partners/programs.service';
 import { Request, Response } from 'express';
+import {
+  AuthenticationError,
+  AuthorizationError,
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
 
 const ADMIN_COOKIE = 'admin_access_token';
 const ADMIN_REFRESH_COOKIE = 'admin_refresh_token';
@@ -53,10 +52,10 @@ export class AdminService {
   // ─── Admin Login ───────────────────────────────────────────────────────────
   async login(email: string, password: string, res: Response) {
     const admin = await this.admins.findByEmail(email);
-    if (!admin) throw new UnauthorizedException('Invalid credentials.');
+    if (!admin) throw new AuthenticationError('Invalid credentials.');
 
     const valid = await bcrypt.compare(password, admin.passwordHash);
-    if (!valid) throw new UnauthorizedException('Invalid credentials.');
+    if (!valid) throw new AuthenticationError('Invalid credentials.');
 
     const { accessToken, refreshToken } = this.generateAdminTokens(admin);
     const refreshHash = await bcrypt.hash(refreshToken, 10);
@@ -88,7 +87,7 @@ export class AdminService {
     permissions?: string[],
   ) {
     if (await this.admins.findByEmail(email)) {
-      throw new ConflictException('An admin with this email already exists.');
+      throw new ConflictError('An admin with this email already exists.');
     }
 
     // RBAC-07: the inviting admin chooses the role; RBAC-02: a sub-admin
@@ -97,7 +96,7 @@ export class AdminService {
     let grantedPermissions = permissions;
     if (roleId) {
       const role = await this.roles.findById(roleId);
-      if (!role) throw new NotFoundException('Role not found.');
+      if (!role) throw new NotFoundError('Role not found.');
       grantedPermissions = role.permissions;
     }
     await this.assertGrantable(actor, grantedPermissions ?? ['kyc.review', 'users.view']);
@@ -137,9 +136,9 @@ export class AdminService {
   // ─── Accept Invite ─────────────────────────────────────────────────────────
   async acceptInvite(token: string, password: string, res: Response) {
     const invite = await this.invites.findByToken(token);
-    if (!invite) throw new NotFoundException('Invite not found or already used.');
-    if (invite.accepted) throw new BadRequestException('This invite has already been used.');
-    if (invite.expiresAt < new Date()) throw new BadRequestException('Invite has expired.');
+    if (!invite) throw new NotFoundError('Invite not found or already used.');
+    if (invite.accepted) throw new ValidationError('This invite has already been used.');
+    if (invite.expiresAt < new Date()) throw new ValidationError('Invite has expired.');
 
     const passwordHash = await bcrypt.hash(password, 12);
     const admin = await this.admins.create({
@@ -165,7 +164,7 @@ export class AdminService {
   async validateInviteToken(token: string) {
     const invite = await this.invites.findByToken(token);
     if (!invite || invite.accepted || invite.expiresAt < new Date()) {
-      throw new BadRequestException('Invalid or expired invite token.');
+      throw new ValidationError('Invalid or expired invite token.');
     }
     return { email: invite.email, name: invite.name, role: invite.role };
   }
@@ -244,13 +243,13 @@ export class AdminService {
     let effectiveReason = reason?.trim();
     if (reasonId) {
       const configured = await this.rejectionReasons.findById(reasonId);
-      if (!configured) throw new NotFoundException('Rejection reason not found.');
+      if (!configured) throw new NotFoundError('Rejection reason not found.');
       effectiveReason = effectiveReason
         ? `${configured.label} — ${effectiveReason}`
         : configured.label;
     }
     if (!effectiveReason) {
-      throw new BadRequestException('A rejection reason (reasonId or reason text) is required.');
+      throw new ValidationError('A rejection reason (reasonId or reason text) is required.');
     }
     const result = this.kycService.reject(userId, adminId, effectiveReason, rejectedFields);
     this.audit(adminId, 'kyc.reject', 'kyc_submission', userId, {
@@ -297,19 +296,19 @@ export class AdminService {
       (p) => p !== '*' && !catalog.has(AdminService.normalizeKey(p)),
     );
     if (unknown.length > 0) {
-      throw new BadRequestException(`Unknown permission key(s): ${unknown.join(', ')}.`);
+      throw new ValidationError(`Unknown permission key(s): ${unknown.join(', ')}.`);
     }
 
     const actorIsMaster = actor.permissions.includes('*');
     if (permissions.includes('*') && !actorIsMaster) {
-      throw new ForbiddenException('Only the master admin can grant the * wildcard.');
+      throw new AuthorizationError('Only the master admin can grant the * wildcard.');
     }
     if (actorIsMaster) return;
 
     const held = new Set(actor.permissions.map((p) => AdminService.normalizeKey(p)));
     const beyond = permissions.filter((p) => !held.has(AdminService.normalizeKey(p)));
     if (beyond.length > 0) {
-      throw new ForbiddenException(
+      throw new AuthorizationError(
         `You cannot grant permissions you do not hold: ${beyond.join(', ')}.`,
       );
     }
@@ -327,7 +326,7 @@ export class AdminService {
     actor: Admin,
   ) {
     if (await this.roles.findByName(name)) {
-      throw new ConflictException('A role with this name already exists.');
+      throw new ConflictError('A role with this name already exists.');
     }
     await this.assertGrantable(actor, permissions);
     const role = await this.roles.create({ name, description, permissions });
@@ -341,10 +340,10 @@ export class AdminService {
     actor: Admin,
   ) {
     const role = await this.roles.findById(id);
-    if (!role) throw new NotFoundException('Role not found.');
-    if (role.isSystem) throw new BadRequestException('System roles cannot be modified.');
+    if (!role) throw new NotFoundError('Role not found.');
+    if (role.isSystem) throw new ValidationError('System roles cannot be modified.');
     if (patch.name && patch.name !== role.name && (await this.roles.findByName(patch.name))) {
-      throw new ConflictException('A role with this name already exists.');
+      throw new ConflictError('A role with this name already exists.');
     }
     if (patch.permissions) await this.assertGrantable(actor, patch.permissions);
     const updated = await this.roles.update(id, patch);
@@ -357,19 +356,19 @@ export class AdminService {
 
   async deleteRole(id: string, actorId?: string) {
     const role = await this.roles.findById(id);
-    if (!role) throw new NotFoundException('Role not found.');
-    if (role.isSystem) throw new BadRequestException('System roles cannot be deleted.');
+    if (!role) throw new NotFoundError('Role not found.');
+    if (role.isSystem) throw new ValidationError('System roles cannot be deleted.');
     // A role in use cannot be deleted — silently orphaning its admins would
     // leave them running on the stale per-admin snapshot.
     const holders = await this.admins.findByRoleId(id);
     if (holders.length > 0) {
-      throw new ConflictException(
+      throw new ConflictError(
         `Role is assigned to ${holders.length} admin(s). Reassign them first.`,
       );
     }
     const pending = await this.invites.findPendingByRoleId(id);
     if (pending.length > 0) {
-      throw new ConflictException(
+      throw new ConflictError(
         `Role is referenced by ${pending.length} pending invite(s). Wait for expiry or invite again with another role.`,
       );
     }
@@ -390,20 +389,20 @@ export class AdminService {
     actor: Admin,
   ) {
     const admin = await this.admins.findById(id);
-    if (!admin) throw new NotFoundException('Admin not found.');
+    if (!admin) throw new NotFoundError('Admin not found.');
     if (admin.role === 'master_admin' && (patch.roleId || patch.permissions)) {
-      throw new BadRequestException('The master admin’s permissions cannot be changed.');
+      throw new ValidationError('The master admin’s permissions cannot be changed.');
     }
     // Nobody rewrites their own access — not even a harmless-looking subset;
     // it keeps every permission change attributable to someone else's decision.
     if (actor.id === id && (patch.roleId || patch.permissions)) {
-      throw new ForbiddenException('You cannot change your own role or permissions.');
+      throw new AuthorizationError('You cannot change your own role or permissions.');
     }
 
     let update: Partial<Admin> = { name: patch.name ?? admin.name };
     if (patch.roleId) {
       const role = await this.roles.findById(patch.roleId);
-      if (!role) throw new NotFoundException('Role not found.');
+      if (!role) throw new NotFoundError('Role not found.');
       await this.assertGrantable(actor, role.permissions);
       update = { ...update, roleId: role.id, permissions: role.permissions };
     } else if (patch.permissions) {
@@ -436,7 +435,7 @@ export class AdminService {
     if (query.level !== undefined && query.level !== '') {
       const parsed = Number(query.level);
       if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1) {
-        throw new BadRequestException('level must be 0 or 1.');
+        throw new ValidationError('level must be 0 or 1.');
       }
       level = parsed;
     }
@@ -455,9 +454,9 @@ export class AdminService {
   // ─── Client suspension (users.suspend) ────────────────────────────────────
   async setClientStatus(userId: string, status: 'active' | 'suspended', actor: Admin) {
     const user = await this.users.findById(userId);
-    if (!user) throw new NotFoundException('Client not found.');
+    if (!user) throw new NotFoundError('Client not found.');
     if (user.status === status) {
-      throw new BadRequestException(`Client is already ${status}.`);
+      throw new ValidationError(`Client is already ${status}.`);
     }
 
     const updated = (await this.users.update(userId, { status }))!;
@@ -499,13 +498,13 @@ export class AdminService {
 
   async updateRejectionReason(id: string, label: string) {
     const updated = await this.rejectionReasons.update(id, label);
-    if (!updated) throw new NotFoundException('Rejection reason not found.');
+    if (!updated) throw new NotFoundError('Rejection reason not found.');
     return updated;
   }
 
   async deleteRejectionReason(id: string) {
     if (!(await this.rejectionReasons.delete(id))) {
-      throw new NotFoundException('Rejection reason not found.');
+      throw new NotFoundError('Rejection reason not found.');
     }
     return { message: 'Rejection reason deleted.' };
   }
@@ -535,13 +534,13 @@ export class AdminService {
     let effectiveReason = reason?.trim();
     if (reasonId) {
       const configured = await this.rejectionReasons.findById(reasonId);
-      if (!configured) throw new NotFoundException('Rejection reason not found.');
+      if (!configured) throw new NotFoundError('Rejection reason not found.');
       effectiveReason = effectiveReason
         ? `${configured.label} — ${effectiveReason}`
         : configured.label;
     }
     if (!effectiveReason) {
-      throw new BadRequestException('A rejection reason (reasonId or reason text) is required.');
+      throw new ValidationError('A rejection reason (reasonId or reason text) is required.');
     }
 
     const row = await this.transactions.reject(id, actor.id, effectiveReason);
@@ -686,7 +685,7 @@ export class AdminService {
       (req.body as Record<string, string>)?.refreshToken ||
       (req.headers as Record<string, string>)?.authorization?.replace('Bearer ', '');
 
-    if (!providedToken) throw new UnauthorizedException('No refresh token provided.');
+    if (!providedToken) throw new AuthenticationError('No refresh token provided.');
 
     let adminId: string;
     try {
@@ -694,7 +693,7 @@ export class AdminService {
       const decoded = this.jwt.verify(providedToken, { secret });
       adminId = decoded.sub;
     } catch {
-      throw new UnauthorizedException('Invalid or expired admin refresh token.');
+      throw new AuthenticationError('Invalid or expired admin refresh token.');
     }
 
     // An unknown subject is a failed authentication, never a reason to fall back
@@ -702,17 +701,17 @@ export class AdminService {
     // any token with any `sub` became a master-admin session, and deleting a
     // compromised admin did not revoke them.
     const admin = await this.admins.findById(adminId);
-    if (!admin) throw new UnauthorizedException('Admin account not found.');
+    if (!admin) throw new AuthenticationError('Admin account not found.');
 
     // Compare against the stored hash. Without this the hash written at login
     // was decorative: logout cleared it but never checked it, so a stolen
     // 30-day refresh token stayed valid through logout and suspension.
     if (!admin.refreshToken) {
-      throw new UnauthorizedException('Session has been revoked. Please log in again.');
+      throw new AuthenticationError('Session has been revoked. Please log in again.');
     }
     const tokenMatches = await bcrypt.compare(providedToken, admin.refreshToken);
     if (!tokenMatches) {
-      throw new UnauthorizedException('Refresh token is no longer valid. Please log in again.');
+      throw new AuthenticationError('Refresh token is no longer valid. Please log in again.');
     }
 
     const { accessToken, refreshToken } = this.generateAdminTokens(admin);

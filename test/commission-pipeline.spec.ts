@@ -88,10 +88,10 @@ afterAll(async () => {
 
 // spread × volume × 30%, then split 70/30
 const FIXTURE = [
-  { ticket: 'T-1', volume: '1', spread: '2.0' },      // pool 0.60
-  { ticket: 'T-2', volume: '2.5', spread: '1.4' },    // pool 1.05
-  { ticket: 'T-3', volume: '0.01', spread: '3.33' },  // pool 0.009999
-  { ticket: 'T-4', volume: '100', spread: '0.7' },    // pool 21.00
+  { ticket: 'T-1', volume: '1', spread: '2.0' }, // pool 0.60
+  { ticket: 'T-2', volume: '2.5', spread: '1.4' }, // pool 1.05
+  { ticket: 'T-3', volume: '0.01', spread: '3.33' }, // pool 0.009999
+  { ticket: 'T-4', volume: '100', spread: '0.7' }, // pool 21.00
 ];
 
 const poolOf = (f: { volume: string; spread: string }) =>
@@ -185,10 +185,7 @@ describe('§11 idempotency — replaying the whole pipeline', () => {
     );
     expect(confirmAgain.confirmed).toBe(0);
 
-    const after = await Promise.all([
-      wallets.listWallets(l1UserId),
-      wallets.listWallets(l2UserId),
-    ]);
+    const after = await Promise.all([wallets.listWallets(l1UserId), wallets.listWallets(l2UserId)]);
     expect(after[0][0].balance).toBe(before[0][0].balance);
     expect(after[1][0].balance).toBe(before[1][0].balance);
 

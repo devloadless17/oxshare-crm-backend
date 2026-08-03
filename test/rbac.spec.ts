@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { AuthorizationError } from '../src/common/errors/domain-errors';
 import { Test } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -60,16 +61,20 @@ const CUSTOM_ROLE: Role = {
   createdAt: new Date(),
 };
 
-async function buildAdminService(overrides: {
-  roles?: Partial<RolesStore>;
-  admins?: Partial<AdminsStore>;
-} = {}) {
+async function buildAdminService(
+  overrides: {
+    roles?: Partial<RolesStore>;
+    admins?: Partial<AdminsStore>;
+  } = {},
+) {
   const rolesFake = {
     findAll: vi.fn(),
     findById: vi.fn().mockResolvedValue(CUSTOM_ROLE),
     findByName: vi.fn().mockResolvedValue(undefined),
-    create: vi.fn(async (data: { permissions: string[] }) => ({ ...CUSTOM_ROLE, ...data })),
-    update: vi.fn(async (id: string, patch: object) => ({ ...CUSTOM_ROLE, ...patch })),
+    create: vi.fn((data: { permissions: string[] }) =>
+      Promise.resolve({ ...CUSTOM_ROLE, ...data }),
+    ),
+    update: vi.fn((_id: string, patch: object) => Promise.resolve({ ...CUSTOM_ROLE, ...patch })),
     delete: vi.fn(),
     resolvePermissions: vi.fn(),
     ...overrides.roles,
@@ -85,8 +90,26 @@ async function buildAdminService(overrides: {
       { provide: TransactionsService, useValue: {} },
       { provide: WalletService, useValue: {} },
       { provide: ProgramsService, useValue: {} },
-      { provide: AdminsStore, useValue: { findById: vi.fn(), findByEmail: vi.fn(), update: vi.fn(), create: vi.fn(), findAll: vi.fn(), ...overrides.admins } },
-      { provide: InvitesStore, useValue: { create: vi.fn(), findByToken: vi.fn(), markAccepted: vi.fn(), findPendingByRoleId: vi.fn().mockResolvedValue([]) } },
+      {
+        provide: AdminsStore,
+        useValue: {
+          findById: vi.fn(),
+          findByEmail: vi.fn(),
+          update: vi.fn(),
+          create: vi.fn(),
+          findAll: vi.fn(),
+          ...overrides.admins,
+        },
+      },
+      {
+        provide: InvitesStore,
+        useValue: {
+          create: vi.fn(),
+          findByToken: vi.fn(),
+          markAccepted: vi.fn(),
+          findPendingByRoleId: vi.fn().mockResolvedValue([]),
+        },
+      },
       { provide: UsersStore, useValue: {} },
       { provide: RolesStore, useValue: rolesFake },
       { provide: KycConfigStore, useValue: {} },
@@ -103,7 +126,7 @@ describe('AdminService anti-escalation', () => {
     const { service, rolesFake } = await buildAdminService();
 
     await expect(service.updateRole('role-1', { permissions: ['*'] }, SUB_ADMIN)).rejects.toThrow(
-      ForbiddenException,
+      AuthorizationError,
     );
 
     // The point of the regression: the guard rejecting is not enough — the
@@ -116,7 +139,7 @@ describe('AdminService anti-escalation', () => {
 
     await expect(
       service.updateRole('role-1', { permissions: ['withdrawals.approve'] }, SUB_ADMIN),
-    ).rejects.toThrow(ForbiddenException);
+    ).rejects.toThrow(AuthorizationError);
     expect(rolesFake.update).not.toHaveBeenCalled();
   });
 
@@ -147,7 +170,7 @@ describe('AdminService anti-escalation', () => {
     const { service, rolesFake } = await buildAdminService();
 
     await expect(service.createRole('Escalated', undefined, ['*'], SUB_ADMIN)).rejects.toThrow(
-      ForbiddenException,
+      AuthorizationError,
     );
     expect(rolesFake.create).not.toHaveBeenCalled();
   });
@@ -155,14 +178,16 @@ describe('AdminService anti-escalation', () => {
 
 describe('AdminAuthenticator', () => {
   function build(admin: Admin | undefined, rolePermissions?: string[]) {
-    const jwt = { verify: vi.fn().mockReturnValue({ sub: admin?.id ?? 'ghost', role: 'sub_admin' }) };
+    const jwt = {
+      verify: vi.fn().mockReturnValue({ sub: admin?.id ?? 'ghost', role: 'sub_admin' }),
+    };
     const config = { getOrThrow: vi.fn().mockReturnValue('test-secret') };
     const admins = { findById: vi.fn().mockResolvedValue(admin) };
     const roles = {
       resolvePermissions: vi
         .fn()
-        .mockImplementation(async (_roleId: string | undefined, snapshot: string[]) =>
-          rolePermissions ?? snapshot,
+        .mockImplementation((_roleId: string | undefined, snapshot: string[]) =>
+          Promise.resolve(rolePermissions ?? snapshot),
         ),
     };
     return new AdminAuthenticator(

@@ -1,11 +1,4 @@
-import {
-  Logger,
-  Injectable,
-  ConflictException,
-  UnauthorizedException,
-  ForbiddenException,
-  BadRequestException,
-} from '@nestjs/common';
+import { Logger, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
@@ -14,6 +7,12 @@ import { UsersStore, User } from '../../store/users.store';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { EmailService } from '../email/email.service';
 import { Response } from 'express';
+import {
+  AuthenticationError,
+  AuthorizationError,
+  ConflictError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
 
 const COOKIE_OPTS = {
   httpOnly: false, // Allow client JS access via js-cookie for Authorization header
@@ -36,7 +35,7 @@ export class AuthService {
   // ─── Register ────────────────────────────────────────────────────────────────
   async register(dto: RegisterDto) {
     if (await this.users.findByEmail(dto.email)) {
-      throw new ConflictException('An account with this email already exists.');
+      throw new ConflictError('An account with this email already exists.');
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 12);
@@ -72,9 +71,9 @@ export class AuthService {
   // ─── Verify Email ─────────────────────────────────────────────────────────────
   async verifyEmail(token: string) {
     const user = await this.users.findByVerificationToken(token);
-    if (!user) throw new BadRequestException('Invalid or expired verification token.');
+    if (!user) throw new ValidationError('Invalid or expired verification token.');
     if (user.emailVerificationExpiry && user.emailVerificationExpiry < new Date()) {
-      throw new BadRequestException('Verification token has expired. Please request a new one.');
+      throw new ValidationError('Verification token has expired. Please request a new one.');
     }
 
     await this.users.update(user.id, {
@@ -109,15 +108,15 @@ export class AuthService {
   // ─── Login ────────────────────────────────────────────────────────────────────
   async login(dto: LoginDto, res: Response) {
     const user = await this.users.findByEmail(dto.email);
-    if (!user) throw new UnauthorizedException('Invalid email or password.');
+    if (!user) throw new AuthenticationError('Invalid email or password.');
 
     const passwordMatch = await bcrypt.compare(dto.password, user.passwordHash);
-    if (!passwordMatch) throw new UnauthorizedException('Invalid email or password.');
+    if (!passwordMatch) throw new AuthenticationError('Invalid email or password.');
 
     // Checked only after the password matches, so a suspended-account message
     // never leaks whether credentials were valid.
     if (user.status === 'suspended') {
-      throw new ForbiddenException('Your account has been suspended. Please contact support.');
+      throw new AuthorizationError('Your account has been suspended. Please contact support.');
     }
 
     const tokens = this.generateTokens(user);
@@ -136,7 +135,7 @@ export class AuthService {
 
   // ─── Refresh ──────────────────────────────────────────────────────────────────
   async refreshFromToken(providedRefreshToken: string, res: Response) {
-    if (!providedRefreshToken) throw new UnauthorizedException('No refresh token provided.');
+    if (!providedRefreshToken) throw new AuthenticationError('No refresh token provided.');
 
     let userId: string;
     try {
@@ -145,27 +144,27 @@ export class AuthService {
       });
       userId = decoded.sub;
     } catch {
-      throw new UnauthorizedException('Invalid or expired refresh token.');
+      throw new AuthenticationError('Invalid or expired refresh token.');
     }
 
     // No fallback: an unknown subject is a failed authentication. The previous
     // fallback to the seeded demo client turned any signed token into that
     // account's session.
     const user = await this.users.findById(userId);
-    if (!user) throw new UnauthorizedException('User account not found.');
+    if (!user) throw new AuthenticationError('User account not found.');
 
     // Same revocation check as the admin path — the stored hash was never
     // compared, so logout did not actually end the session.
     if (!user.refreshToken) {
-      throw new UnauthorizedException('Session has been revoked. Please log in again.');
+      throw new AuthenticationError('Session has been revoked. Please log in again.');
     }
     const tokenMatches = await bcrypt.compare(providedRefreshToken, user.refreshToken);
     if (!tokenMatches) {
-      throw new UnauthorizedException('Refresh token is no longer valid. Please log in again.');
+      throw new AuthenticationError('Refresh token is no longer valid. Please log in again.');
     }
 
     if (user.status === 'suspended') {
-      throw new UnauthorizedException('Your account has been suspended.');
+      throw new AuthenticationError('Your account has been suspended.');
     }
 
     const tokens = this.generateTokens(user);

@@ -43,20 +43,48 @@ describe('§6.1 decimals, never floats', () => {
   it('holds precision at the eighth decimal place where a float would drift', async () => {
     const userId = await makeUser('precision@test.local');
     // 0.1 + 0.2 !== 0.3 in binary floating point. It must here.
-    await walletService.post({ userId, currency: 'USD', amount: '0.1', entryType: 'deposit', referenceType: 'test', referenceId: 'p1' });
-    await walletService.post({ userId, currency: 'USD', amount: '0.2', entryType: 'deposit', referenceType: 'test', referenceId: 'p2' });
+    await walletService.post({
+      userId,
+      currency: 'USD',
+      amount: '0.1',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: 'p1',
+    });
+    await walletService.post({
+      userId,
+      currency: 'USD',
+      amount: '0.2',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: 'p2',
+    });
     const [wallet] = await walletService.listWallets(userId);
     expect(wallet.balance).toBe('0.30000000');
 
     // And at the far end of NUMERIC(28,8)'s scale.
-    await walletService.post({ userId, currency: 'USD', amount: '0.00000001', entryType: 'deposit', referenceType: 'test', referenceId: 'p3' });
+    await walletService.post({
+      userId,
+      currency: 'USD',
+      amount: '0.00000001',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: 'p3',
+    });
     const [after] = await walletService.listWallets(userId);
     expect(after.balance).toBe('0.30000001');
   });
 
   it('serializes every monetary value as a string across the boundary', async () => {
     const userId = await makeUser('strings@test.local');
-    const { entry } = await walletService.post({ userId, currency: 'USD', amount: '12.5', entryType: 'deposit', referenceType: 'test', referenceId: 's1' });
+    const { entry } = await walletService.post({
+      userId,
+      currency: 'USD',
+      amount: '12.5',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: 's1',
+    });
     expect(typeof entry.amount).toBe('string');
     expect(typeof entry.balanceAfter).toBe('string');
     const [wallet] = await walletService.listWallets(userId);
@@ -68,7 +96,14 @@ describe('§6.1 decimals, never floats', () => {
 describe('§11 reconciliation — ledger sum equals balance, to the cent', () => {
   it('balances after a mixed fixture of credits and debits', async () => {
     const userId = await makeUser('reconcile@test.local');
-    const movements = ['100.00000000', '250.55000000', '-75.25000000', '0.00000001', '-0.00000001', '999.99999999'];
+    const movements = [
+      '100.00000000',
+      '250.55000000',
+      '-75.25000000',
+      '0.00000001',
+      '-0.00000001',
+      '999.99999999',
+    ];
     for (const [i, amount] of movements.entries()) {
       await walletService.post({
         userId,
@@ -94,7 +129,10 @@ describe('§11 reconciliation — ledger sum equals balance, to the cent', () =>
     expect(allWallets.length).toBeGreaterThan(0);
     for (const w of allWallets) {
       const result = await walletService.reconcile(w.id);
-      expect(result.balanced, `wallet ${w.id} drifted: balance ${result.balance} vs ledger ${result.ledgerSum}`).toBe(true);
+      expect(
+        result.balanced,
+        `wallet ${w.id} drifted: balance ${result.balance} vs ledger ${result.ledgerSum}`,
+      ).toBe(true);
     }
   });
 });
@@ -102,7 +140,14 @@ describe('§11 reconciliation — ledger sum equals balance, to the cent', () =>
 describe('§11 idempotency — the same cause delivered twice', () => {
   it('credits once when a payment callback is replayed', async () => {
     const userId = await makeUser('idem-callback@test.local');
-    const callback = { userId, currency: 'USD' as const, amount: '500.00', entryType: 'deposit' as const, referenceType: 'provider_callback', referenceId: 'whish-ref-123' };
+    const callback = {
+      userId,
+      currency: 'USD' as const,
+      amount: '500.00',
+      entryType: 'deposit' as const,
+      referenceType: 'provider_callback',
+      referenceId: 'whish-ref-123',
+    };
 
     const first = await walletService.post(callback);
     const second = await walletService.post(callback);
@@ -114,14 +159,31 @@ describe('§11 idempotency — the same cause delivered twice', () => {
     const [wallet] = await walletService.listWallets(userId);
     expect(wallet.balance).toBe('500.00000000');
 
-    const entries = await ctx.db.select().from(ledgerEntries).where(sql`${ledgerEntries.walletId} = ${wallet.id}`);
+    const entries = await ctx.db
+      .select()
+      .from(ledgerEntries)
+      .where(sql`${ledgerEntries.walletId} = ${wallet.id}`);
     expect(entries).toHaveLength(1);
   });
 
   it('stays balanced when a payout confirmation is replayed', async () => {
     const userId = await makeUser('idem-payout@test.local');
-    await walletService.post({ userId, currency: 'USD', amount: '1000', entryType: 'deposit', referenceType: 'seed', referenceId: 'i2-seed' });
-    const payout = { userId, currency: 'USD' as const, amount: '-250', entryType: 'payout' as const, referenceType: 'payout', referenceId: 'payout-abc' };
+    await walletService.post({
+      userId,
+      currency: 'USD',
+      amount: '1000',
+      entryType: 'deposit',
+      referenceType: 'seed',
+      referenceId: 'i2-seed',
+    });
+    const payout = {
+      userId,
+      currency: 'USD' as const,
+      amount: '-250',
+      entryType: 'payout' as const,
+      referenceType: 'payout',
+      referenceId: 'payout-abc',
+    };
 
     await walletService.post(payout);
     const balanceAfterFirst = (await walletService.listWallets(userId))[0].balance;
@@ -161,7 +223,10 @@ describe('§11 concurrency — no lost update under simultaneous credits', () =>
     expect(result.balanced).toBe(true);
 
     // Every entry recorded a distinct running balance — proof the lock held.
-    const entries = await ctx.db.select().from(ledgerEntries).where(sql`${ledgerEntries.walletId} = ${wallet.id}`);
+    const entries = await ctx.db
+      .select()
+      .from(ledgerEntries)
+      .where(sql`${ledgerEntries.walletId} = ${wallet.id}`);
     expect(entries).toHaveLength(CREDITS);
     expect(new Set(entries.map((e) => e.balanceAfter)).size).toBe(CREDITS);
   });
@@ -170,9 +235,18 @@ describe('§11 concurrency — no lost update under simultaneous credits', () =>
 describe('§6.4 the ledger is append-only', () => {
   it('refuses UPDATE and DELETE at the database level', async () => {
     const userId = await makeUser('append-only@test.local');
-    await walletService.post({ userId, currency: 'USD', amount: '42', entryType: 'deposit', referenceType: 'test', referenceId: 'ao1' });
+    await walletService.post({
+      userId,
+      currency: 'USD',
+      amount: '42',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: 'ao1',
+    });
 
-    await expect(ctx.db.execute(sql`UPDATE ledger_entries SET amount = '999'`)).rejects.toThrow(/append-only/);
+    await expect(ctx.db.execute(sql`UPDATE ledger_entries SET amount = '999'`)).rejects.toThrow(
+      /append-only/,
+    );
     await expect(ctx.db.execute(sql`DELETE FROM ledger_entries`)).rejects.toThrow(/append-only/);
   });
 });
@@ -180,7 +254,14 @@ describe('§6.4 the ledger is append-only', () => {
 describe('§8.4 holds gate withdrawable funds', () => {
   it('reserves against available balance and never overdraws', async () => {
     const userId = await makeUser('holds@test.local');
-    await walletService.post({ userId, currency: 'USD', amount: '300', entryType: 'deposit', referenceType: 'seed', referenceId: 'h-seed' });
+    await walletService.post({
+      userId,
+      currency: 'USD',
+      amount: '300',
+      entryType: 'deposit',
+      referenceType: 'seed',
+      referenceId: 'h-seed',
+    });
 
     await walletService.hold(userId, 'USD', '120');
     const [held] = await walletService.listWallets(userId);
@@ -188,7 +269,9 @@ describe('§8.4 holds gate withdrawable funds', () => {
     expect(held.onHold).toBe('120.00000000');
     expect(held.available).toBe('180.00000000');
 
-    await expect(walletService.hold(userId, 'USD', '200')).rejects.toThrow(/Insufficient available balance/);
+    await expect(walletService.hold(userId, 'USD', '200')).rejects.toThrow(
+      /Insufficient available balance/,
+    );
 
     await walletService.release(userId, 'USD', '120');
     const [released] = await walletService.listWallets(userId);
@@ -198,9 +281,23 @@ describe('§8.4 holds gate withdrawable funds', () => {
 
   it('rejects a debit that would overdraw the wallet', async () => {
     const userId = await makeUser('overdraft@test.local');
-    await walletService.post({ userId, currency: 'USD', amount: '50', entryType: 'deposit', referenceType: 'seed', referenceId: 'o-seed' });
+    await walletService.post({
+      userId,
+      currency: 'USD',
+      amount: '50',
+      entryType: 'deposit',
+      referenceType: 'seed',
+      referenceId: 'o-seed',
+    });
     await expect(
-      walletService.post({ userId, currency: 'USD', amount: '-51', entryType: 'withdrawal', referenceType: 'test', referenceId: 'o1' }),
+      walletService.post({
+        userId,
+        currency: 'USD',
+        amount: '-51',
+        entryType: 'withdrawal',
+        referenceType: 'test',
+        referenceId: 'o1',
+      }),
     ).rejects.toThrow(/Insufficient balance/);
   });
 });
