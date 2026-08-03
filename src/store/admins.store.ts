@@ -76,8 +76,11 @@ export class AdminsStore {
   async update(id: string, patch: Partial<Admin>): Promise<Admin | undefined> {
     const { id: _ignored, createdAt: _also, ...rest } = patch;
     // Explicit nulls clear optional columns (e.g. logout clears refreshToken)
-    const set = { ...rest, roleId: 'roleId' in rest ? (rest.roleId ?? null) : undefined,
-      refreshToken: 'refreshToken' in rest ? (rest.refreshToken ?? null) : undefined };
+    const set = {
+      ...rest,
+      roleId: 'roleId' in rest ? (rest.roleId ?? null) : undefined,
+      refreshToken: 'refreshToken' in rest ? (rest.refreshToken ?? null) : undefined,
+    };
     const [row] = await this.db.update(admins).set(set).where(eq(admins.id, id)).returning();
     return row ? toAdmin(row) : undefined;
   }

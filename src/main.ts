@@ -14,7 +14,9 @@ async function bootstrap() {
 
   // rawBody: the MT5 bridge webhook verifies an HMAC over the exact bytes
   // received — re-serializing the parsed body would change them.
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
 
   // KYC uploads are PII — served only via the authenticated UploadsController
   // (compliance module), never as anonymous static assets.
@@ -41,8 +43,6 @@ async function bootstrap() {
       transform: true,
     }),
   );
-
-
 
   // CORS — allow portal (3000) and admin (3002)
   app.enableCors({

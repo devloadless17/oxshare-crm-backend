@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { asc, eq } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { getDb } from '../../database/db';
@@ -43,7 +48,10 @@ export class ProgramsService {
     const commission = toDecimal(input.commissionValue);
     const rebate = toDecimal(input.rebateValue ?? '0');
 
-    for (const [label, value] of [['L1 share', l1], ['L2 share', l2]] as const) {
+    for (const [label, value] of [
+      ['L1 share', l1],
+      ['L2 share', l2],
+    ] as const) {
       if (value.isNegative() || value.greaterThan(100)) {
         throw new BadRequestException(`${label} must be between 0 and 100 percent.`);
       }

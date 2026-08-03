@@ -1,10 +1,41 @@
 import {
-  Controller, Post, Get, Patch, Put, Delete, Body, Param, Query,
-  UseGuards, Req, Res, HttpCode, HttpStatus,
+  Controller,
+  Post,
+  Get,
+  Patch,
+  Put,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  Req,
+  Res,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiCookieAuth, ApiOkResponse, ApiExtraModels } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiCookieAuth,
+  ApiOkResponse,
+  ApiExtraModels,
+} from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { IsEmail, IsString, MinLength, IsArray, IsOptional, IsIn, IsBoolean, IsInt, IsNumberString, IsNotEmpty, Min, ValidateNested } from 'class-validator';
+import {
+  IsEmail,
+  IsString,
+  MinLength,
+  IsArray,
+  IsOptional,
+  IsIn,
+  IsBoolean,
+  IsInt,
+  IsNumberString,
+  IsNotEmpty,
+  Min,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { AdminService } from './admin.service';
 import {
@@ -118,10 +149,16 @@ class KycStepDto {
   @IsString() @IsOptional() description?: string;
   @IsString() @IsOptional() icon?: string;
   @IsBoolean() @IsOptional() enabled?: boolean;
-  @IsArray() @ValidateNested({ each: true }) @Type(() => KycFieldDto) fields: KycFieldDto[];
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => KycFieldDto)
+  fields: KycFieldDto[];
 }
 class KycConfigDto {
-  @IsArray() @ValidateNested({ each: true }) @Type(() => KycStepDto) steps: KycStepDto[];
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => KycStepDto)
+  steps: KycStepDto[];
 }
 class ClientStatusDto {
   @IsIn(['active', 'suspended']) status: 'active' | 'suspended';
@@ -176,17 +213,27 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('users.create')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Invite a new sub-admin with a role or explicit permissions (requires users.create)' })
+  @ApiOperation({
+    summary: 'Invite a new sub-admin with a role or explicit permissions (requires users.create)',
+  })
   @ApiOkResponse({ type: InviteResponseDto })
   invite(@Body() dto: InviteDto, @Req() req: Request & { admin: Admin }) {
-    return this.adminService.createInvite(dto.email, dto.name, req.admin, dto.roleId, dto.permissions);
+    return this.adminService.createInvite(
+      dto.email,
+      dto.name,
+      req.admin,
+      dto.roleId,
+      dto.permissions,
+    );
   }
 
   @Get('invite/validate')
   // Unauthenticated and returns invitee PII for a valid token — a guessing
   // oracle without a throttle.
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
-  @ApiOperation({ summary: 'Validate invite token — returns email and name for pre-fill' })
+  @ApiOperation({
+    summary: 'Validate invite token — returns email and name for pre-fill',
+  })
   validateInvite(@Query('token') token: string) {
     return this.adminService.validateInviteToken(token);
   }
@@ -194,7 +241,9 @@ export class AdminController {
   @Post('invite/accept')
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Accept invite and set password — logs admin in immediately' })
+  @ApiOperation({
+    summary: 'Accept invite and set password — logs admin in immediately',
+  })
   acceptInvite(@Body() dto: AcceptInviteDto, @Res({ passthrough: true }) res: Response) {
     return this.adminService.acceptInvite(dto.token, dto.password, res);
   }
@@ -204,7 +253,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.review')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'List all KYC submissions, optionally filtered by status' })
+  @ApiOperation({
+    summary: 'List all KYC submissions, optionally filtered by status',
+  })
   @ApiOkResponse({ type: KycListResponseDto })
   listKyc(
     @Query('status') status?: string,
@@ -229,7 +280,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.review')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Claim a submitted KYC for review (sets under_review)' })
+  @ApiOperation({
+    summary: 'Claim a submitted KYC for review (sets under_review)',
+  })
   @ApiOkResponse({ type: KycSubmissionDto })
   claimKyc(@Param('userId') userId: string, @Req() req: Request & { admin: Admin }) {
     return this.adminService.claimKyc(userId, req.admin.id);
@@ -239,7 +292,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.review')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Approve KYC — bumps user verificationLevel to 1; returns the updated submission' })
+  @ApiOperation({
+    summary: 'Approve KYC — bumps user verificationLevel to 1; returns the updated submission',
+  })
   @ApiOkResponse({ type: KycSubmissionDto })
   approveKyc(@Param('userId') userId: string, @Req() req: Request & { admin: Admin }) {
     return this.adminService.approveKyc(userId, req.admin.id);
@@ -249,14 +304,23 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.review')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Reject KYC with a reason (free text or a configured reasonId); returns the updated submission' })
+  @ApiOperation({
+    summary:
+      'Reject KYC with a reason (free text or a configured reasonId); returns the updated submission',
+  })
   @ApiOkResponse({ type: KycSubmissionDto })
   rejectKyc(
     @Param('userId') userId: string,
     @Body() dto: RejectDto,
     @Req() req: Request & { admin: Admin },
   ) {
-    return this.adminService.rejectKyc(userId, req.admin.id, dto.reason, dto.rejectedFields, dto.reasonId);
+    return this.adminService.rejectKyc(
+      userId,
+      req.admin.id,
+      dto.reason,
+      dto.rejectedFields,
+      dto.reasonId,
+    );
   }
 
   // ── Clients (ADM-01 / ADM-14) ─────────────────────────────────────────────
@@ -274,14 +338,23 @@ export class AdminController {
     @Query('status') status?: string,
     @Query('level') level?: string,
   ) {
-    return this.adminService.listClients({ page, limit, q, type, status, level });
+    return this.adminService.listClients({
+      page,
+      limit,
+      q,
+      type,
+      status,
+      level,
+    });
   }
 
   @Patch('clients/:id/status')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('users.suspend')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Suspend or reactivate a client account (requires users.suspend)' })
+  @ApiOperation({
+    summary: 'Suspend or reactivate a client account (requires users.suspend)',
+  })
   setClientStatus(
     @Param('id') id: string,
     @Body() dto: ClientStatusDto,
@@ -294,7 +367,9 @@ export class AdminController {
   @Get('rejection-reasons')
   @UseGuards(AdminGuard)
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'List configurable rejection reasons, optionally by context (kyc | withdrawal)' })
+  @ApiOperation({
+    summary: 'List configurable rejection reasons, optionally by context (kyc | withdrawal)',
+  })
   @ApiOkResponse({ type: [RejectionReasonResponseDto] })
   listRejectionReasons(@Query('context') context?: RejectionContext) {
     return this.adminService.listRejectionReasons(context);
@@ -327,13 +402,14 @@ export class AdminController {
     return this.adminService.deleteRejectionReason(id);
   }
 
-
   // ── Withdrawals (ADM-03 · §8.4) ───────────────────────────────────────────
   @Get('withdrawals')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('withdrawals.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Withdrawal requests with per-state counts (amounts are strings)' })
+  @ApiOperation({
+    summary: 'Withdrawal requests with per-state counts (amounts are strings)',
+  })
   @ApiOkResponse({ type: WithdrawalListResponseDto })
   listWithdrawals(
     @Query('state') state?: string,
@@ -347,7 +423,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('withdrawals.approve')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Approve a pending withdrawal — funds stay on hold until settlement' })
+  @ApiOperation({
+    summary: 'Approve a pending withdrawal — funds stay on hold until settlement',
+  })
   @ApiOkResponse({ type: WithdrawalRowDto })
   approveWithdrawal(@Param('id') id: string, @Req() req: Request & { admin: Admin }) {
     return this.adminService.approveWithdrawal(id, req.admin);
@@ -357,7 +435,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('withdrawals.approve')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Reject a pending withdrawal — releases the hold, emails the client' })
+  @ApiOperation({
+    summary: 'Reject a pending withdrawal — releases the hold, emails the client',
+  })
   @ApiOkResponse({ type: WithdrawalRowDto })
   rejectWithdrawal(
     @Param('id') id: string,
@@ -371,7 +451,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('withdrawals.approve')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Mark an approved withdrawal paid — posts the debit and clears the hold' })
+  @ApiOperation({
+    summary: 'Mark an approved withdrawal paid — posts the debit and clears the hold',
+  })
   @ApiOkResponse({ type: WithdrawalRowDto })
   settleWithdrawal(
     @Param('id') id: string,
@@ -386,7 +468,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('ledger.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Append-only ledger, filterable for reconciliation' })
+  @ApiOperation({
+    summary: 'Append-only ledger, filterable for reconciliation',
+  })
   @ApiOkResponse({ type: LedgerListResponseDto })
   listLedger(
     @Query('userId') userId?: string,
@@ -395,9 +479,14 @@ export class AdminController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.adminService.listLedger({ userId, walletId, entryType, page, limit });
+    return this.adminService.listLedger({
+      userId,
+      walletId,
+      entryType,
+      page,
+      limit,
+    });
   }
-
 
   // ── Commission plans (ADM-10 · IB-06) ─────────────────────────────────────
   // Where the client configures the numbers ARCHITECTURE §12 leaves open:
@@ -407,7 +496,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('commissions.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'IB programs / commission plans, ordered by ladder position' })
+  @ApiOperation({
+    summary: 'IB programs / commission plans, ordered by ladder position',
+  })
   @ApiOkResponse({ type: [IbProgramDto] })
   listPrograms() {
     return this.adminService.listPrograms();
@@ -417,7 +508,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('commissions.manage')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Create a commission plan (validated: shares ≤ 100%, mode/value coherence)' })
+  @ApiOperation({
+    summary: 'Create a commission plan (validated: shares ≤ 100%, mode/value coherence)',
+  })
   @ApiOkResponse({ type: IbProgramDto })
   createProgram(@Body() dto: ProgramDto, @Req() req: Request & { admin: Admin }) {
     return this.adminService.createProgram(dto, req.admin);
@@ -427,7 +520,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('commissions.manage')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Update a commission plan — audited with before/after values' })
+  @ApiOperation({
+    summary: 'Update a commission plan — audited with before/after values',
+  })
   @ApiOkResponse({ type: IbProgramDto })
   updateProgram(
     @Param('id') id: string,
@@ -441,7 +536,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('commissions.manage')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Activate or deactivate a plan — plans are never deleted, accruals reference them' })
+  @ApiOperation({
+    summary: 'Activate or deactivate a plan — plans are never deleted, accruals reference them',
+  })
   @ApiOkResponse({ type: IbProgramDto })
   setProgramActive(
     @Param('id') id: string,
@@ -456,8 +553,17 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('roles.view', 'users.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Permission catalog grouped by module (requires roles.view or users.view)' })
-  @ApiOkResponse({ schema: { type: 'object', additionalProperties: { $ref: '#/components/schemas/PermissionModuleDto' } } })
+  @ApiOperation({
+    summary: 'Permission catalog grouped by module (requires roles.view or users.view)',
+  })
+  @ApiOkResponse({
+    schema: {
+      type: 'object',
+      additionalProperties: {
+        $ref: '#/components/schemas/PermissionModuleDto',
+      },
+    },
+  })
   getPermissions() {
     return this.adminService.getPermissionsCatalog();
   }
@@ -466,7 +572,9 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('roles.view', 'users.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'List RBAC roles (requires roles.view or users.view)' })
+  @ApiOperation({
+    summary: 'List RBAC roles (requires roles.view or users.view)',
+  })
   @ApiOkResponse({ type: [RoleResponseDto] })
   listRoles() {
     return this.adminService.listRoles();
@@ -488,7 +596,11 @@ export class AdminController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: RoleResponseDto })
-  updateRole(@Param('id') id: string, @Body() dto: UpdateRoleDto, @Req() req: Request & { admin: Admin }) {
+  updateRole(
+    @Param('id') id: string,
+    @Body() dto: UpdateRoleDto,
+    @Req() req: Request & { admin: Admin },
+  ) {
     return this.adminService.updateRole(id, dto, req.admin);
   }
 
@@ -516,9 +628,15 @@ export class AdminController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('users.edit')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Update an admin’s name, role, or permissions (requires users.edit)' })
+  @ApiOperation({
+    summary: 'Update an admin’s name, role, or permissions (requires users.edit)',
+  })
   @ApiOkResponse({ type: AdminProfileDto })
-  updateAdmin(@Param('id') id: string, @Body() dto: UpdateAdminDto, @Req() req: Request & { admin: Admin }) {
+  updateAdmin(
+    @Param('id') id: string,
+    @Body() dto: UpdateAdminDto,
+    @Req() req: Request & { admin: Admin },
+  ) {
     return this.adminService.updateAdmin(id, dto, req.admin);
   }
 

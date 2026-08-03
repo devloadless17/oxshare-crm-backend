@@ -8,13 +8,7 @@ import { WalletModule } from '../wallet/wallet.module';
 import { PartnersModule } from '../partners/partners.module';
 
 @Module({
-  imports: [
-    ComplianceModule,
-    PaymentsModule,
-    WalletModule,
-    PartnersModule,
-    AdminAuthModule,
-  ],
+  imports: [ComplianceModule, PaymentsModule, WalletModule, PartnersModule, AdminAuthModule],
   controllers: [AdminController],
   providers: [AdminService],
   exports: [AdminService],

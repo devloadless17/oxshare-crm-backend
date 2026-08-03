@@ -69,7 +69,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
       );
     } else {
       this.logger.warn(
-        JSON.stringify({ requestId, method: request.method, path: request.url, status, code }),
+        JSON.stringify({
+          requestId,
+          method: request.method,
+          path: request.url,
+          status,
+          code,
+        }),
       );
     }
 
@@ -83,7 +89,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
     });
   }
 
-  private classify(exception: unknown): { status: HttpStatus; message: string | string[]; code: string } {
+  private classify(exception: unknown): {
+    status: HttpStatus;
+    message: string | string[];
+    code: string;
+  } {
     // 1. Domain errors — the layer services are supposed to throw from.
     if (exception instanceof DomainError) {
       for (const [type, status] of DOMAIN_STATUS) {
@@ -91,7 +101,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
           return { status, message: exception.message, code: exception.code };
         }
       }
-      return { status: HttpStatus.BAD_REQUEST, message: exception.message, code: exception.code };
+      return {
+        status: HttpStatus.BAD_REQUEST,
+        message: exception.message,
+        code: exception.code,
+      };
     }
 
     // 2. Nest's own exceptions, including ValidationPipe's array messages.

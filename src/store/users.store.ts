@@ -26,7 +26,7 @@ type Row = typeof users.$inferSelect;
 
 const toUser = (r: Row): User => ({
   ...r,
-  verificationLevel: (r.verificationLevel === 1 ? 1 : 0),
+  verificationLevel: r.verificationLevel === 1 ? 1 : 0,
   emailVerificationToken: r.emailVerificationToken ?? undefined,
   emailVerificationExpiry: r.emailVerificationExpiry ?? undefined,
   refreshToken: r.refreshToken ?? undefined,
@@ -109,11 +109,7 @@ export class UsersStore {
       // Case-insensitive prefix/substring across the three searchable columns.
       const term = `%${filter.q}%`;
       conditions.push(
-        or(
-          ilike(users.email, term),
-          ilike(users.firstName, term),
-          ilike(users.lastName, term),
-        )!,
+        or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))!,
       );
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -136,7 +132,10 @@ export class UsersStore {
         .orderBy(desc(users.createdAt))
         .limit(filter.limit)
         .offset((filter.page - 1) * filter.limit),
-      db.select({ value: sql<number>`count(*)::int` }).from(users).where(where),
+      db
+        .select({ value: sql<number>`count(*)::int` })
+        .from(users)
+        .where(where),
     ]);
 
     return { items: rows, total: countRow.value };

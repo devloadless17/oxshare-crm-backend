@@ -168,8 +168,7 @@ export function calculate(
   const base = program.mode === 'rebate' ? new Decimal(0) : poolFor(commissionValue);
   const rebate = program.mode === 'commission' ? new Decimal(0) : poolFor(rebateValue);
 
-  const shareFor = (level: 1 | 2) =>
-    toDecimal(level === 1 ? program.l1Share : program.l2Share);
+  const shareFor = (level: 1 | 2) => toDecimal(level === 1 ? program.l1Share : program.l2Share);
 
   const accruals: Accrual[] = [];
   for (const entry of chain) {
@@ -177,7 +176,11 @@ export function calculate(
     // Skip zero legs: a ledger entry must move a non-zero amount, and an
     // accrual of nothing is noise in the money history.
     if (amount.isZero()) continue;
-    accruals.push({ ibUserId: entry.ibUserId, level: entry.level, amount: money(amount) });
+    accruals.push({
+      ibUserId: entry.ibUserId,
+      level: entry.level,
+      amount: money(amount),
+    });
   }
 
   return { base: money(base), accruals, rebate: money(rebate) };

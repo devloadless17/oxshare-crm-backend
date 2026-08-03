@@ -180,13 +180,22 @@ export class CommissionService {
           availableAt: matureAt,
         })
         .onConflictDoNothing({
-          target: [commissionAccruals.dealId, commissionAccruals.ibUserId, commissionAccruals.level],
+          target: [
+            commissionAccruals.dealId,
+            commissionAccruals.ibUserId,
+            commissionAccruals.level,
+          ],
         })
         .returning();
       if (row) written.push(row);
     }
 
-    return { accruals: written, reason: 'ok' as const, base: result.base, rebate: result.rebate };
+    return {
+      accruals: written,
+      reason: 'ok' as const,
+      base: result.base,
+      rebate: result.rebate,
+    };
   }
 
   /**
@@ -244,10 +253,7 @@ export class CommissionService {
             .update(commissionAccruals)
             .set({ status: 'confirmed', confirmedAt: now })
             .where(
-              and(
-                eq(commissionAccruals.id, accrual.id),
-                eq(commissionAccruals.status, 'accrued'),
-              ),
+              and(eq(commissionAccruals.id, accrual.id), eq(commissionAccruals.status, 'accrued')),
             )
             .returning();
 
@@ -284,10 +290,7 @@ export class CommissionService {
       .select()
       .from(ledgerEntries)
       .where(
-        and(
-          eq(ledgerEntries.referenceType, 'accrual'),
-          eq(ledgerEntries.referenceId, accrualId),
-        ),
+        and(eq(ledgerEntries.referenceType, 'accrual'), eq(ledgerEntries.referenceId, accrualId)),
       )
       .limit(1);
     return entry;
@@ -298,7 +301,10 @@ export class CommissionService {
    * integrity check and for CI — an unpaid "confirmed" accrual is a partner
    * who was silently short-paid.
    */
-  async auditConfirmedAccruals(): Promise<{ checked: number; unpaid: string[] }> {
+  async auditConfirmedAccruals(): Promise<{
+    checked: number;
+    unpaid: string[];
+  }> {
     const confirmed = await getDb()
       .select()
       .from(commissionAccruals)
@@ -326,6 +332,11 @@ export class CommissionService {
     const accrual = created
       ? await this.accrueForDeal(deal.id)
       : { accruals: [], reason: 'replayed' as const };
-    return { deal, created, accruals: accrual.accruals, reason: accrual.reason };
+    return {
+      deal,
+      created,
+      accruals: accrual.accruals,
+      reason: accrual.reason,
+    };
   }
 }

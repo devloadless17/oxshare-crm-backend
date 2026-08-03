@@ -5,12 +5,7 @@ import type { Db } from '../database/db';
 import { kycSubmissions, users } from '../database/schema';
 
 export type KycStatus =
-  | 'not_started'
-  | 'in_progress'
-  | 'submitted'
-  | 'under_review'
-  | 'approved'
-  | 'rejected';
+  'not_started' | 'in_progress' | 'submitted' | 'under_review' | 'approved' | 'rejected';
 
 export interface PersonalInfo {
   firstName: string;
@@ -143,12 +138,7 @@ export class KycStore {
    * Admin queue: submissions joined to their user, filtered and paginated in
    * SQL, with per-status counts computed by the database in one grouped query.
    */
-  async findPageWithUsers(filter: {
-    status?: KycStatus;
-    q?: string;
-    page: number;
-    limit: number;
-  }) {
+  async findPageWithUsers(filter: { status?: KycStatus; q?: string; page: number; limit: number }) {
     const db = this.db;
     const conditions: SQL[] = [];
     if (filter.status) conditions.push(eq(kycSubmissions.status, filter.status));
@@ -162,9 +152,15 @@ export class KycStore {
 
     const [rows, [countRow], statusCounts] = await Promise.all([
       db
-        .select({ submission: kycSubmissions, user: {
-          id: users.id, email: users.email, firstName: users.firstName, lastName: users.lastName,
-        } })
+        .select({
+          submission: kycSubmissions,
+          user: {
+            id: users.id,
+            email: users.email,
+            firstName: users.firstName,
+            lastName: users.lastName,
+          },
+        })
         .from(kycSubmissions)
         .innerJoin(users, eq(kycSubmissions.userId, users.id))
         .where(where)
@@ -178,7 +174,10 @@ export class KycStore {
         .where(where),
       // Counts over the FULL set so admin tab counts stay correct under a filter.
       db
-        .select({ status: kycSubmissions.status, value: sql<number>`count(*)::int` })
+        .select({
+          status: kycSubmissions.status,
+          value: sql<number>`count(*)::int`,
+        })
         .from(kycSubmissions)
         .groupBy(kycSubmissions.status),
     ]);

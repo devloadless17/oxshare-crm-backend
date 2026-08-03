@@ -49,8 +49,12 @@ export const users = pgTable(
     status: userStatusEnum('status').notNull().default('active'),
     verificationLevel: integer('verification_level').notNull().default(0),
     emailVerified: boolean('email_verified').notNull().default(false),
-    emailVerificationToken: varchar('email_verification_token', { length: 255 }),
-    emailVerificationExpiry: timestamp('email_verification_expiry', { withTimezone: true }),
+    emailVerificationToken: varchar('email_verification_token', {
+      length: 255,
+    }),
+    emailVerificationExpiry: timestamp('email_verification_expiry', {
+      withTimezone: true,
+    }),
     refreshToken: text('refresh_token'),
     country: varchar('country', { length: 100 }),
     phone: varchar('phone', { length: 32 }),
@@ -144,7 +148,6 @@ export const rejectionReasons = pgTable(
   (t) => [uniqueIndex('rejection_reasons_context_label_uq').on(t.context, t.label)],
 );
 
-
 // ═══ MONEY (ARCHITECTURE §6 — non-negotiable) ════════════════════════════════
 //
 // 1. NUMERIC(28,8) everywhere; node-postgres hands these to JS as STRINGS and
@@ -190,7 +193,10 @@ export const ledgerEntries = pgTable(
     // Signed: credits positive, debits negative. Sum per wallet == balance.
     amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
     // The running balance AFTER this entry (FSD requirement, §6.2).
-    balanceAfter: numeric('balance_after', { precision: 28, scale: 8 }).notNull(),
+    balanceAfter: numeric('balance_after', {
+      precision: 28,
+      scale: 8,
+    }).notNull(),
     entryType: ledgerEntryTypeEnum('entry_type').notNull(),
     // What caused this row — every money movement traces back to its cause.
     referenceType: varchar('reference_type', { length: 50 }).notNull(),
@@ -202,7 +208,11 @@ export const ledgerEntries = pgTable(
     index('ledger_entries_created_at_idx').on(t.createdAt),
     // Idempotency for replayed causes (deal ingest, payment callbacks, payouts):
     // the same (type, id) can never post twice against the same wallet.
-    uniqueIndex('ledger_entries_wallet_reference_uq').on(t.walletId, t.referenceType, t.referenceId),
+    uniqueIndex('ledger_entries_wallet_reference_uq').on(
+      t.walletId,
+      t.referenceType,
+      t.referenceId,
+    ),
   ],
 );
 
@@ -278,7 +288,7 @@ export const transactions = pgTable(
 export const commissionModeEnum = pgEnum('commission_mode', ['commission', 'rebate', 'hybrid']);
 export const commissionMethodEnum = pgEnum('commission_method', [
   'spread_share', // commissionValue = % of the deal spread (IB-16 default)
-  'per_lot',      // commissionValue = money per traded lot
+  'per_lot', // commissionValue = money per traded lot
   'fixed_per_deal',
 ]);
 
@@ -293,7 +303,9 @@ export const ibPrograms = pgTable(
     mode: commissionModeEnum('mode').notNull().default('commission'),
     method: commissionMethodEnum('method').notNull().default('spread_share'),
     /** Money or percentage depending on `method` — a string either way (§6.1). */
-    commissionValue: numeric('commission_value', { precision: 28, scale: 8 }).notNull().default('0'),
+    commissionValue: numeric('commission_value', { precision: 28, scale: 8 })
+      .notNull()
+      .default('0'),
     /** Client rebate, used when mode is rebate|hybrid. */
     rebateValue: numeric('rebate_value', { precision: 28, scale: 8 }).notNull().default('0'),
     /** Split of the commission pool. Percentages, exact — never floats. */
@@ -379,7 +391,9 @@ export const ibProfiles = pgTable(
      * §8.6: no closure table, no recursive CTE — resolution stops at L2.
      */
     parentIbId: uuid('parent_ib_id'),
-    programId: uuid('program_id').references(() => ibPrograms.id, { onDelete: 'restrict' }),
+    programId: uuid('program_id').references(() => ibPrograms.id, {
+      onDelete: 'restrict',
+    }),
     status: ibStatusEnum('status').notNull().default('pending'),
     referralCode: varchar('referral_code', { length: 50 }).unique(),
     approvedBy: uuid('approved_by'),
@@ -418,7 +432,9 @@ export const commissionAccruals = pgTable(
       .references(() => users.id, { onDelete: 'restrict' }),
     /** 1 or 2 — the constraint admits any level, the resolver stops at 2. */
     level: integer('level').notNull(),
-    programId: uuid('program_id').references(() => ibPrograms.id, { onDelete: 'restrict' }),
+    programId: uuid('program_id').references(() => ibPrograms.id, {
+      onDelete: 'restrict',
+    }),
     amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
     currency: currencyEnum('currency').notNull().default('USD'),
     status: accrualStatusEnum('status').notNull().default('accrued'),

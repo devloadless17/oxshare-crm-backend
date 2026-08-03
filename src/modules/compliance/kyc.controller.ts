@@ -1,7 +1,15 @@
 import {
-  Controller, Get, Post, Body,
-  UseGuards, Req, UseInterceptors, UploadedFile,
-  ParseFilePipe, MaxFileSizeValidator, BadRequestException,
+  Controller,
+  Get,
+  Post,
+  Body,
+  UseGuards,
+  Req,
+  UseInterceptors,
+  UploadedFile,
+  ParseFilePipe,
+  MaxFileSizeValidator,
+  BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiCookieAuth, ApiConsumes } from '@nestjs/swagger';
@@ -38,7 +46,11 @@ const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
 
 const multerStorage = diskStorage({
   destination: './uploads/kyc',
-  filename: (_req: Request, file: Express.Multer.File, cb: (err: Error | null, name: string) => void) => {
+  filename: (
+    _req: Request,
+    file: Express.Multer.File,
+    cb: (err: Error | null, name: string) => void,
+  ) => {
     const extension = ALLOWED_UPLOAD_TYPES[file.mimetype.toLowerCase()] ?? '.bin';
     // randomUUID, not Date.now()+Math.random(): the old scheme was guessable,
     // and these are filenames for identity documents.
@@ -81,7 +93,9 @@ export class KycController {
   }
 
   @Post('step')
-  @ApiOperation({ summary: 'Save data for a KYC step (personal/document/selfie/address)' })
+  @ApiOperation({
+    summary: 'Save data for a KYC step (personal/document/selfie/address)',
+  })
   saveStep(
     @Req() req: Request & { user: User },
     @Body() body: { step: string; data: Record<string, unknown> },
@@ -90,7 +104,9 @@ export class KycController {
   }
 
   @Post('upload')
-  @ApiOperation({ summary: 'Upload a KYC file (doc_front, doc_back, selfie, address_proof)' })
+  @ApiOperation({
+    summary: 'Upload a KYC file (doc_front, doc_back, selfie, address_proof)',
+  })
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file', { storage: multerStorage, fileFilter }))
   uploadFile(
@@ -109,7 +125,9 @@ export class KycController {
   }
 
   @Post('submit')
-  @ApiOperation({ summary: 'Submit KYC for review — all steps must be complete' })
+  @ApiOperation({
+    summary: 'Submit KYC for review — all steps must be complete',
+  })
   submit(@Req() req: Request & { user: User }) {
     return this.kyc.submit(req.user.id);
   }

@@ -36,7 +36,9 @@ export class UploadsController {
 
   @Get('kyc/:file')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Serve a KYC document to its owner or a kyc.review admin' })
+  @ApiOperation({
+    summary: 'Serve a KYC document to its owner or a kyc.review admin',
+  })
   async serveKycFile(@Param('file') file: string, @Req() req: Request, @Res() res: Response) {
     const name = basename(file); // neutralize any traversal attempt
 

@@ -14,7 +14,10 @@ export interface Role {
 }
 
 type Row = typeof roles.$inferSelect;
-const toRole = (r: Row): Role => ({ ...r, description: r.description ?? undefined });
+const toRole = (r: Row): Role => ({
+  ...r,
+  description: r.description ?? undefined,
+});
 
 @Injectable()
 export class RolesStore {

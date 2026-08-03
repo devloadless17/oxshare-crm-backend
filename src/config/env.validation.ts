@@ -14,9 +14,18 @@ const envSchema = z
     // Optional in development (code falls back to dev defaults); required in
     // production — enforced below.
     DATABASE_URL: z.string().url().optional(),
-    ADMIN_JWT_SECRET: z.string().min(32, 'ADMIN_JWT_SECRET must be at least 32 characters').optional(),
-    JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters').optional(),
-    JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters').optional(),
+    ADMIN_JWT_SECRET: z
+      .string()
+      .min(32, 'ADMIN_JWT_SECRET must be at least 32 characters')
+      .optional(),
+    JWT_ACCESS_SECRET: z
+      .string()
+      .min(32, 'JWT_ACCESS_SECRET must be at least 32 characters')
+      .optional(),
+    JWT_REFRESH_SECRET: z
+      .string()
+      .min(32, 'JWT_REFRESH_SECRET must be at least 32 characters')
+      .optional(),
 
     SMTP_HOST: z.string().optional(),
     SMTP_PORT: z.coerce.number().int().optional(),
@@ -25,11 +34,19 @@ const envSchema = z
     SMTP_FROM: z.string().optional(),
 
     // Shared secret with the MT5 bridge (token header + HMAC signature).
-    MT5_BRIDGE_SECRET: z.string().min(16, 'MT5_BRIDGE_SECRET must be at least 16 characters').optional(),
+    MT5_BRIDGE_SECRET: z
+      .string()
+      .min(16, 'MT5_BRIDGE_SECRET must be at least 16 characters')
+      .optional(),
   })
   .passthrough(); // unknown keys pass through untouched
 
-const PROD_REQUIRED = ['DATABASE_URL', 'ADMIN_JWT_SECRET', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'] as const;
+const PROD_REQUIRED = [
+  'DATABASE_URL',
+  'ADMIN_JWT_SECRET',
+  'JWT_ACCESS_SECRET',
+  'JWT_REFRESH_SECRET',
+] as const;
 
 export function validateEnv(config: Record<string, unknown>): Record<string, unknown> {
   // The trap that actually happened (3 Aug 2026): a .env set JWT_SECRET, which

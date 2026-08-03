@@ -1,17 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import {
-  Accrual,
-  IbNode,
-  calculate,
-  resolveChain,
-  wouldCreateCycle,
-} from './commission';
+import { Accrual, IbNode, calculate, resolveChain, wouldCreateCycle } from './commission';
 
 // ARCHITECTURE §11, fourth acceptance test: the two-level rule. Pure functions,
 // so these run in milliseconds with no database — which is the point of the
 // seam. §8.6: "an IB three levels above a trading client earns nothing".
 
-const ib = (userId: string, parentIbUserId: string | null = null, status: IbNode['status'] = 'approved'): IbNode => ({
+const ib = (
+  userId: string,
+  parentIbUserId: string | null = null,
+  status: IbNode['status'] = 'approved',
+): IbNode => ({
   userId,
   parentIbUserId,
   status,
@@ -168,7 +166,12 @@ describe('calculate — the money maths (§6.1 decimals)', () => {
 
 describe('calculate — declared methods (D-11 answered by configuration)', () => {
   const chain = [{ ibUserId: 'L1', level: 1 as const }];
-  const base = { mode: 'commission' as const, rebateValue: '0', l1Share: '100', l2Share: '0' };
+  const base = {
+    mode: 'commission' as const,
+    rebateValue: '0',
+    l1Share: '100',
+    l2Share: '0',
+  };
 
   it('per_lot pays value × volume, ignoring the spread', () => {
     const result = calculate(
@@ -180,15 +183,31 @@ describe('calculate — declared methods (D-11 answered by configuration)', () =
   });
 
   it('fixed_per_deal pays the same regardless of size', () => {
-    const small = calculate({ spread: '1', volume: '0.01' }, { ...base, method: 'fixed_per_deal', commissionValue: '5' }, chain);
-    const large = calculate({ spread: '9', volume: '100' }, { ...base, method: 'fixed_per_deal', commissionValue: '5' }, chain);
+    const small = calculate(
+      { spread: '1', volume: '0.01' },
+      { ...base, method: 'fixed_per_deal', commissionValue: '5' },
+      chain,
+    );
+    const large = calculate(
+      { spread: '9', volume: '100' },
+      { ...base, method: 'fixed_per_deal', commissionValue: '5' },
+      chain,
+    );
     expect(small.base).toBe('5.00000000');
     expect(large.base).toBe(small.base);
   });
 
   it('spread_share scales with volume — the documented assumption, stated', () => {
-    const one = calculate({ spread: '2', volume: '1' }, { ...base, method: 'spread_share', commissionValue: '50' }, chain);
-    const ten = calculate({ spread: '2', volume: '10' }, { ...base, method: 'spread_share', commissionValue: '50' }, chain);
+    const one = calculate(
+      { spread: '2', volume: '1' },
+      { ...base, method: 'spread_share', commissionValue: '50' },
+      chain,
+    );
+    const ten = calculate(
+      { spread: '2', volume: '10' },
+      { ...base, method: 'spread_share', commissionValue: '50' },
+      chain,
+    );
     expect(one.base).toBe('1.00000000');
     expect(ten.base).toBe('10.00000000');
   });
@@ -199,19 +218,31 @@ describe('calculate — modes decide who is paid', () => {
   const shape = { method: 'per_lot' as const, l1Share: '100', l2Share: '0' };
 
   it('commission mode pays the IB and no rebate', () => {
-    const r = calculate({ spread: '1', volume: '1' }, { ...shape, mode: 'commission', commissionValue: '10', rebateValue: '0' }, chain);
+    const r = calculate(
+      { spread: '1', volume: '1' },
+      { ...shape, mode: 'commission', commissionValue: '10', rebateValue: '0' },
+      chain,
+    );
     expect(r.accruals[0].amount).toBe('10.00000000');
     expect(r.rebate).toBe('0.00000000');
   });
 
   it('rebate mode pays the client and no IB', () => {
-    const r = calculate({ spread: '1', volume: '1' }, { ...shape, mode: 'rebate', commissionValue: '0', rebateValue: '4' }, chain);
+    const r = calculate(
+      { spread: '1', volume: '1' },
+      { ...shape, mode: 'rebate', commissionValue: '0', rebateValue: '4' },
+      chain,
+    );
     expect(r.accruals).toEqual([]);
     expect(r.rebate).toBe('4.00000000');
   });
 
   it('hybrid mode pays both', () => {
-    const r = calculate({ spread: '1', volume: '1' }, { ...shape, mode: 'hybrid', commissionValue: '10', rebateValue: '4' }, chain);
+    const r = calculate(
+      { spread: '1', volume: '1' },
+      { ...shape, mode: 'hybrid', commissionValue: '10', rebateValue: '4' },
+      chain,
+    );
     expect(r.accruals[0].amount).toBe('10.00000000');
     expect(r.rebate).toBe('4.00000000');
   });

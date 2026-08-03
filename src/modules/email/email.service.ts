@@ -50,7 +50,9 @@ export class EmailService {
       this.logger.log(`Verification email sent to ${email}`);
       this.logger.log(`🔗 VERIFICATION LINK: ${verificationUrl}`);
     } catch (error) {
-      this.logger.warn(`Failed to send verification email (Logged verification URL: ${verificationUrl})`);
+      this.logger.warn(
+        `Failed to send verification email (Logged verification URL: ${verificationUrl})`,
+      );
     }
   }
 
@@ -104,14 +106,18 @@ export class EmailService {
           ${approved ? 'Your identity is verified' : 'Your KYC application needs correction'}
         </h2>
         <p>Hello ${firstName || 'Valued Client'},</p>
-        ${approved
-          ? `<p>Your KYC application has been approved. Your account has been upgraded to verification level 1 and all gated features are now unlocked.</p>`
-          : `<p>Your KYC application has been reviewed and requires corrections before it can be approved.</p>
+        ${
+          approved
+            ? `<p>Your KYC application has been approved. Your account has been upgraded to verification level 1 and all gated features are now unlocked.</p>`
+            : `<p>Your KYC application has been reviewed and requires corrections before it can be approved.</p>
              <p style="background: rgba(248,113,113,0.1); border: 1px solid rgba(248,113,113,0.3); border-radius: 8px; padding: 12px;"><strong>Reason:</strong> ${reason ?? ''}</p>
-             ${rejectedFields && rejectedFields.length > 0
-               ? `<p><strong>Fields to correct:</strong> ${rejectedFields.join(', ')}</p>`
-               : ''}
-             <p>Please log in, update the highlighted information, and resubmit.</p>`}
+             ${
+               rejectedFields && rejectedFields.length > 0
+                 ? `<p><strong>Fields to correct:</strong> ${rejectedFields.join(', ')}</p>`
+                 : ''
+             }
+             <p>Please log in, update the highlighted information, and resubmit.</p>`
+        }
         <div style="margin: 30px 0;">
           <a href="${portalUrl}" style="background: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">
             Go to Portal

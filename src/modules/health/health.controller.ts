@@ -11,15 +11,7 @@ export class HealthController {
       status: 'ok',
       timestamp: new Date().toISOString(),
       version: '1.0.0',
-      modules: [
-        'identity',
-        'trading',
-        'wallet',
-        'payments',
-        'partners',
-        'compliance',
-        'admin',
-      ],
+      modules: ['identity', 'trading', 'wallet', 'payments', 'partners', 'compliance', 'admin'],
     };
   }
 }

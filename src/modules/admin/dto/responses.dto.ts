@@ -50,19 +50,26 @@ export class KycAddressProofDto {
 
 export class KycSubmissionDto {
   @ApiProperty() userId: string;
-  @ApiProperty({ enum: ['not_started', 'in_progress', 'submitted', 'under_review', 'approved', 'rejected'] })
+  @ApiProperty({
+    enum: ['not_started', 'in_progress', 'submitted', 'under_review', 'approved', 'rejected'],
+  })
   status: string;
   @ApiPropertyOptional() submittedAt?: Date;
   @ApiPropertyOptional() reviewedAt?: Date;
   @ApiPropertyOptional() reviewedBy?: string;
   @ApiPropertyOptional() rejectionReason?: string;
   @ApiPropertyOptional({ type: [String] }) rejectedFields?: string[];
-  @ApiPropertyOptional({ type: 'object', additionalProperties: { type: 'string' } })
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: { type: 'string' },
+  })
   personalInfo?: Record<string, string>;
   @ApiPropertyOptional({ type: KycDocumentDto }) document?: KycDocumentDto;
   @ApiPropertyOptional({ type: KycSelfieDto }) selfie?: KycSelfieDto;
-  @ApiPropertyOptional({ type: KycAddressProofDto }) addressProof?: KycAddressProofDto;
-  @ApiPropertyOptional({ type: KycUserDto, nullable: true }) user?: KycUserDto | null;
+  @ApiPropertyOptional({ type: KycAddressProofDto })
+  addressProof?: KycAddressProofDto;
+  @ApiPropertyOptional({ type: KycUserDto, nullable: true })
+  user?: KycUserDto | null;
 }
 
 export class KycListResponseDto {
@@ -122,7 +129,8 @@ export class PermissionModuleDto {
 
 export class InviteResponseDto {
   @ApiProperty() message: string;
-  @ApiProperty({ description: 'Dev only — removed in production' }) token: string;
+  @ApiProperty({ description: 'Dev only — removed in production' })
+  token: string;
   @ApiProperty() inviteUrl: string;
 }
 
@@ -160,10 +168,14 @@ export class WithdrawalUserDto {
 
 export class WithdrawalRowDto {
   @ApiProperty() id: string;
-  @ApiProperty({ description: 'Monetary value — always a string, never a number' })
+  @ApiProperty({
+    description: 'Monetary value — always a string, never a number',
+  })
   amount: string;
   @ApiProperty({ enum: ['USD', 'USDT'] }) currency: string;
-  @ApiProperty({ enum: ['pending', 'approved', 'success', 'failure', 'rejected'] })
+  @ApiProperty({
+    enum: ['pending', 'approved', 'success', 'failure', 'rejected'],
+  })
   state: string;
   @ApiProperty() provider: string;
   @ApiPropertyOptional({ type: String, nullable: true }) providerRef?: string | null;
@@ -188,10 +200,13 @@ export class LedgerEntryDto {
   @ApiProperty() id: string;
   @ApiProperty() walletId: string;
   @ApiProperty() userId: string;
-  @ApiProperty({ description: 'Signed monetary value as a string' }) amount: string;
+  @ApiProperty({ description: 'Signed monetary value as a string' })
+  amount: string;
   @ApiProperty({ description: 'Running balance after this entry, as a string' })
   balanceAfter: string;
-  @ApiProperty({ enum: ['deposit', 'withdrawal', 'commission', 'rebate', 'payout', 'adjustment'] })
+  @ApiProperty({
+    enum: ['deposit', 'withdrawal', 'commission', 'rebate', 'payout', 'adjustment'],
+  })
   entryType: string;
   @ApiProperty() referenceType: string;
   @ApiProperty() referenceId: string;
@@ -212,17 +227,27 @@ export class IbProgramDto {
   @ApiPropertyOptional({ type: String, nullable: true }) description?: string | null;
   @ApiProperty() position: number;
   @ApiProperty({ enum: ['commission', 'rebate', 'hybrid'] }) mode: string;
-  @ApiProperty({ enum: ['spread_share', 'per_lot', 'fixed_per_deal'] }) method: string;
-  @ApiProperty({ description: 'Percentage or money depending on method — always a string' })
+  @ApiProperty({ enum: ['spread_share', 'per_lot', 'fixed_per_deal'] })
+  method: string;
+  @ApiProperty({
+    description: 'Percentage or money depending on method — always a string',
+  })
   commissionValue: string;
-  @ApiProperty({ description: 'Client rebate value — always a string' }) rebateValue: string;
-  @ApiProperty({ description: 'L1 share of the commission pool, percent as a string' })
+  @ApiProperty({ description: 'Client rebate value — always a string' })
+  rebateValue: string;
+  @ApiProperty({
+    description: 'L1 share of the commission pool, percent as a string',
+  })
   l1Share: string;
-  @ApiProperty({ description: 'L2 share of the commission pool, percent as a string' })
+  @ApiProperty({
+    description: 'L2 share of the commission pool, percent as a string',
+  })
   l2Share: string;
   @ApiProperty({ description: 'Hours accruals wait before confirming (§12.6)' })
   settlementWindowHours: number;
-  @ApiProperty({ description: 'Credit the client rebate on deal close instead of after the window (§12.8)' })
+  @ApiProperty({
+    description: 'Credit the client rebate on deal close instead of after the window (§12.8)',
+  })
   rebateOnClose: boolean;
   @ApiProperty() selectable: boolean;
   @ApiProperty() active: boolean;

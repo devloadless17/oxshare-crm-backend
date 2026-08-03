@@ -212,7 +212,9 @@ export class AdminService {
         subjectId,
         details,
       });
-    })().catch((err: Error) => this.logger.error(`Failed to record admin action ${action}: ${err.message}`));
+    })().catch((err: Error) =>
+      this.logger.error(`Failed to record admin action ${action}: ${err.message}`),
+    );
   }
 
   listAuditLog(query: { page?: string; limit?: string; action?: string; subjectType?: string }) {
@@ -318,7 +320,12 @@ export class AdminService {
     return await this.roles.findAll();
   }
 
-  async createRole(name: string, description: string | undefined, permissions: string[], actor: Admin) {
+  async createRole(
+    name: string,
+    description: string | undefined,
+    permissions: string[],
+    actor: Admin,
+  ) {
     if (await this.roles.findByName(name)) {
       throw new ConflictException('A role with this name already exists.');
     }
@@ -328,16 +335,23 @@ export class AdminService {
     return role;
   }
 
-  async updateRole(id: string, patch: { name?: string; description?: string; permissions?: string[] }, actor: Admin) {
+  async updateRole(
+    id: string,
+    patch: { name?: string; description?: string; permissions?: string[] },
+    actor: Admin,
+  ) {
     const role = await this.roles.findById(id);
     if (!role) throw new NotFoundException('Role not found.');
     if (role.isSystem) throw new BadRequestException('System roles cannot be modified.');
-    if (patch.name && patch.name !== role.name && await this.roles.findByName(patch.name)) {
+    if (patch.name && patch.name !== role.name && (await this.roles.findByName(patch.name))) {
       throw new ConflictException('A role with this name already exists.');
     }
     if (patch.permissions) await this.assertGrantable(actor, patch.permissions);
     const updated = await this.roles.update(id, patch);
-    this.audit(actor.id, 'role.update', 'role', id, { before: role.permissions, after: updated?.permissions });
+    this.audit(actor.id, 'role.update', 'role', id, {
+      before: role.permissions,
+      after: updated?.permissions,
+    });
     return updated;
   }
 
@@ -370,7 +384,11 @@ export class AdminService {
     return Promise.all(all.map((a) => this.sanitize(a)));
   }
 
-  async updateAdmin(id: string, patch: { name?: string; roleId?: string; permissions?: string[] }, actor: Admin) {
+  async updateAdmin(
+    id: string,
+    patch: { name?: string; roleId?: string; permissions?: string[] },
+    actor: Admin,
+  ) {
     const admin = await this.admins.findById(id);
     if (!admin) throw new NotFoundException('Admin not found.');
     if (admin.role === 'master_admin' && (patch.roleId || patch.permissions)) {
@@ -445,11 +463,17 @@ export class AdminService {
     const updated = (await this.users.update(userId, { status }))!;
     // Suspension bites immediately: the JWT strategy re-checks status on every
     // request, and login/refresh refuse suspended accounts.
-    this.audit(actor.id, status === 'suspended' ? 'client.suspend' : 'client.activate', 'user', userId, {
-      email: user.email,
-      before: user.status,
-      after: status,
-    });
+    this.audit(
+      actor.id,
+      status === 'suspended' ? 'client.suspend' : 'client.activate',
+      'user',
+      userId,
+      {
+        email: user.email,
+        before: user.status,
+        after: status,
+      },
+    );
 
     return {
       id: updated.id,
@@ -480,12 +504,11 @@ export class AdminService {
   }
 
   async deleteRejectionReason(id: string) {
-    if (!await this.rejectionReasons.delete(id)) {
+    if (!(await this.rejectionReasons.delete(id))) {
       throw new NotFoundException('Rejection reason not found.');
     }
     return { message: 'Rejection reason deleted.' };
   }
-
 
   // ─── Withdrawals (ADM-03 · §8.4) ──────────────────────────────────────────
   // Every transition here moves client money, so every one is audited.
@@ -513,7 +536,9 @@ export class AdminService {
     if (reasonId) {
       const configured = await this.rejectionReasons.findById(reasonId);
       if (!configured) throw new NotFoundException('Rejection reason not found.');
-      effectiveReason = effectiveReason ? `${configured.label} — ${effectiveReason}` : configured.label;
+      effectiveReason = effectiveReason
+        ? `${configured.label} — ${effectiveReason}`
+        : configured.label;
     }
     if (!effectiveReason) {
       throw new BadRequestException('A rejection reason (reasonId or reason text) is required.');
@@ -574,7 +599,6 @@ export class AdminService {
       limit: parseInt(query.limit ?? '50', 10) || 50,
     });
   }
-
 
   // ─── Commission plans (ADM-10 · IB-06) ────────────────────────────────────
   // These values drive the commission engine, so every change is audited with
@@ -637,10 +661,7 @@ export class AdminService {
       { sub: admin.id, email: admin.email, role: admin.role },
       { secret, expiresIn: '8h' },
     );
-    const refreshToken = this.jwt.sign(
-      { sub: admin.id },
-      { secret, expiresIn: '30d' },
-    );
+    const refreshToken = this.jwt.sign({ sub: admin.id }, { secret, expiresIn: '30d' });
     return { accessToken, refreshToken };
   }
 
@@ -652,7 +673,10 @@ export class AdminService {
       path: '/',
     };
     res.cookie(ADMIN_COOKIE, accessToken, { ...cookieOpts, maxAge: 8 * 60 * 60 * 1000 });
-    res.cookie(ADMIN_REFRESH_COOKIE, refreshToken, { ...cookieOpts, maxAge: 30 * 24 * 60 * 60 * 1000 });
+    res.cookie(ADMIN_REFRESH_COOKIE, refreshToken, {
+      ...cookieOpts,
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
   }
 
   // ─── Admin Refresh ─────────────────────────────────────────────────────────
@@ -729,6 +753,9 @@ export class AdminService {
     const { passwordHash, refreshToken, ...safe } = admin;
     // Surface the LIVE permission set (role-derived when roleId is set) so the
     // frontend's nav gating always matches what the guards will enforce.
-    return { ...safe, permissions: await this.roles.resolvePermissions(admin.roleId, admin.permissions) };
+    return {
+      ...safe,
+      permissions: await this.roles.resolvePermissions(admin.roleId, admin.permissions),
+    };
   }
 }

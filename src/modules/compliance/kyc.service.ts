@@ -54,21 +54,26 @@ export class KycService {
   }
 
   // ─── Attach uploaded file to a step ────────────────────────────────────────
-  async attachFile(
-    userId: string,
-    field: string,
-    filePath: string,
-    fileName: string,
-  ) {
+  async attachFile(userId: string, field: string, filePath: string, fileName: string) {
     const submission = await this.kycStore.getOrCreate(userId);
 
     if (field === 'doc_front') {
       await this.kycStore.update(userId, {
-        document: { ...submission.document, frontFilePath: filePath, frontFileName: fileName, docType: submission.document?.docType ?? 'passport' },
+        document: {
+          ...submission.document,
+          frontFilePath: filePath,
+          frontFileName: fileName,
+          docType: submission.document?.docType ?? 'passport',
+        },
       });
     } else if (field === 'doc_back') {
       await this.kycStore.update(userId, {
-        document: { ...submission.document, backFilePath: filePath, backFileName: fileName, docType: submission.document?.docType ?? 'passport' },
+        document: {
+          ...submission.document,
+          backFilePath: filePath,
+          backFileName: fileName,
+          docType: submission.document?.docType ?? 'passport',
+        },
       });
     } else if (field === 'selfie') {
       await this.kycStore.update(userId, { selfie: { filePath, fileName } });
@@ -76,10 +81,14 @@ export class KycService {
       await this.kycStore.update(userId, {
         addressProof: {
           ...submission.addressProof,
-          filePath: field === 'address_proof' ? filePath : submission.addressProof?.filePath || filePath,
-          fileName: field === 'address_proof' ? fileName : submission.addressProof?.fileName || fileName,
-          page2FilePath: field === 'address_proof_2' ? filePath : submission.addressProof?.page2FilePath,
-          page2FileName: field === 'address_proof_2' ? fileName : submission.addressProof?.page2FileName,
+          filePath:
+            field === 'address_proof' ? filePath : submission.addressProof?.filePath || filePath,
+          fileName:
+            field === 'address_proof' ? fileName : submission.addressProof?.fileName || fileName,
+          page2FilePath:
+            field === 'address_proof_2' ? filePath : submission.addressProof?.page2FilePath,
+          page2FileName:
+            field === 'address_proof_2' ? fileName : submission.addressProof?.page2FileName,
           docType: submission.addressProof?.docType ?? 'utility_bill',
         },
       });
@@ -109,8 +118,7 @@ export class KycService {
       throw new BadRequestException('Personal information is required before submitting.');
     if (!finalSub.document?.frontFilePath)
       throw new BadRequestException('ID document front is required.');
-    if (!finalSub.selfie?.filePath)
-      throw new BadRequestException('Selfie is required.');
+    if (!finalSub.selfie?.filePath) throw new BadRequestException('Selfie is required.');
     if (!finalSub.addressProof?.filePath)
       throw new BadRequestException('Proof of address is required.');
 
@@ -200,7 +208,13 @@ export class KycService {
 
     if (user) {
       // Sent inline per FR-ADM-03 — the client is emailed the reason and can retry
-      void this.email.sendKycDecisionEmail(user.email, user.firstName, 'rejected', reason, rejectedFields);
+      void this.email.sendKycDecisionEmail(
+        user.email,
+        user.firstName,
+        'rejected',
+        reason,
+        rejectedFields,
+      );
     }
 
     return this.getByUserId(userId);

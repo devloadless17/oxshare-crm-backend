@@ -21,12 +21,7 @@ export type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
 
 export type Currency = 'USD' | 'USDT';
 export type LedgerEntryType =
-  | 'deposit'
-  | 'withdrawal'
-  | 'commission'
-  | 'rebate'
-  | 'payout'
-  | 'adjustment';
+  'deposit' | 'withdrawal' | 'commission' | 'rebate' | 'payout' | 'adjustment';
 
 export interface PostParams {
   userId: string;
