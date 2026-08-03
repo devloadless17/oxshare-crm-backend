@@ -1,0 +1,28 @@
+# Local development infrastructure.
+#   docker compose up -d        start
+#   docker compose down         stop (data kept)
+#   docker compose down -v      stop + wipe data (fresh database)
+#
+# Dev runs against this local Postgres; the shared Neon instance is
+# staging/demo only (its URL stays commented in .env). Tests use
+# Testcontainers (ARCHITECTURE §2/§11) and manage their own containers.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: oxshare-postgres
+    environment:
+      POSTGRES_USER: oxshare
+      POSTGRES_PASSWORD: oxshare_dev
+      POSTGRES_DB: oxshare
+    ports:
+      - '5432:5432'
+    volumes:
+      - oxshare_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U oxshare -d oxshare']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  oxshare_pgdata:
