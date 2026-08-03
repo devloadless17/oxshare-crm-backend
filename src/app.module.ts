@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { EmailModule } from './modules/email/email.module';
 import { IdentityModule } from './modules/identity/identity.module';
@@ -13,8 +14,8 @@ import { HealthModule } from './modules/health/health.module';
 
 @Module({
   imports: [
-    // Global config — loads .env
-    ConfigModule.forRoot({ isGlobal: true }),
+    // Global config — loads .env, validated at boot (refuses to start on invalid)
+    ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
 
     // Infrastructure
     DatabaseModule,
