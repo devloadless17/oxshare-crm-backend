@@ -1,5 +1,6 @@
-import { v4 as uuidv4 } from 'uuid';
-import * as bcrypt from 'bcryptjs';
+import { and, eq, gt } from 'drizzle-orm';
+import { getDb } from '../database/db';
+import { adminInvites, admins } from '../database/schema';
 
 export type AdminRole = 'master_admin' | 'sub_admin';
 
@@ -31,80 +32,95 @@ export interface AdminInvite {
   createdAt: Date;
 }
 
-const admins = new Map<string, Admin>();
-const adminsByEmail = new Map<string, string>();
-const invites = new Map<string, AdminInvite>();
+type AdminRow = typeof admins.$inferSelect;
+type InviteRow = typeof adminInvites.$inferSelect;
 
-// Seed default master admin — password is hashed synchronously on first load
-const MASTER_ID = uuidv4();
-const masterAdmin: Admin = {
-  id: MASTER_ID,
-  email: 'admin@oxshare.com',
-  passwordHash: bcrypt.hashSync('admin123', 10),
-  name: 'Master Admin',
-  role: 'master_admin',
-  permissions: ['*'],
-  createdAt: new Date(),
-};
-admins.set(MASTER_ID, masterAdmin);
-adminsByEmail.set('admin@oxshare.com', MASTER_ID);
+const toAdmin = (r: AdminRow): Admin => ({
+  ...r,
+  roleId: r.roleId ?? undefined,
+  refreshToken: r.refreshToken ?? undefined,
+});
+
+const toInvite = (r: InviteRow): AdminInvite => ({
+  ...r,
+  role: 'sub_admin',
+  roleId: r.roleId ?? undefined,
+  permissions: r.permissions ?? undefined,
+});
 
 export const AdminsStore = {
-  create(data: Omit<Admin, 'id' | 'createdAt'>): Admin {
-    const id = uuidv4();
-    const admin: Admin = { ...data, id, createdAt: new Date() };
-    admins.set(id, admin);
-    adminsByEmail.set(data.email.toLowerCase(), id);
-    return admin;
+  async create(data: Omit<Admin, 'id' | 'createdAt'>): Promise<Admin> {
+    const [row] = await getDb().insert(admins).values(data).returning();
+    return toAdmin(row);
   },
 
-  findById(id: string): Admin | undefined {
-    return admins.get(id);
+  async findById(id: string): Promise<Admin | undefined> {
+    const [row] = await getDb().select().from(admins).where(eq(admins.id, id)).limit(1);
+    return row ? toAdmin(row) : undefined;
   },
 
-  findByEmail(email: string): Admin | undefined {
-    const id = adminsByEmail.get(email.toLowerCase());
-    return id ? admins.get(id) : undefined;
+  async findByEmail(email: string): Promise<Admin | undefined> {
+    const [row] = await getDb()
+      .select()
+      .from(admins)
+      .where(eq(admins.email, email.toLowerCase()))
+      .limit(1);
+    return row ? toAdmin(row) : undefined;
   },
 
-  update(id: string, patch: Partial<Admin>): Admin | undefined {
-    const admin = admins.get(id);
-    if (!admin) return undefined;
-    const updated = { ...admin, ...patch };
-    admins.set(id, updated);
-    return updated;
+  async update(id: string, patch: Partial<Admin>): Promise<Admin | undefined> {
+    const { id: _ignored, createdAt: _also, ...rest } = patch;
+    // Explicit nulls clear optional columns (e.g. logout clears refreshToken)
+    const set = { ...rest, roleId: 'roleId' in rest ? (rest.roleId ?? null) : undefined,
+      refreshToken: 'refreshToken' in rest ? (rest.refreshToken ?? null) : undefined };
+    const [row] = await getDb().update(admins).set(set).where(eq(admins.id, id)).returning();
+    return row ? toAdmin(row) : undefined;
   },
 
-  findAll(): Admin[] {
-    return [...admins.values()];
+  async findAll(): Promise<Admin[]> {
+    const rows = await getDb().select().from(admins);
+    return rows.map(toAdmin);
   },
 
-  findByRoleId(roleId: string): Admin[] {
-    return [...admins.values()].filter((a) => a.roleId === roleId);
+  async findByRoleId(roleId: string): Promise<Admin[]> {
+    const rows = await getDb().select().from(admins).where(eq(admins.roleId, roleId));
+    return rows.map(toAdmin);
   },
 };
 
 export const InvitesStore = {
-  create(data: Omit<AdminInvite, 'id' | 'createdAt' | 'accepted'>): AdminInvite {
-    const id = uuidv4();
-    const invite: AdminInvite = { ...data, id, accepted: false, createdAt: new Date() };
-    invites.set(data.token, invite);
-    return invite;
+  async create(data: Omit<AdminInvite, 'id' | 'createdAt' | 'accepted'>): Promise<AdminInvite> {
+    const [row] = await getDb()
+      .insert(adminInvites)
+      .values({ ...data, accepted: false })
+      .returning();
+    return toInvite(row);
   },
 
-  findByToken(token: string): AdminInvite | undefined {
-    return invites.get(token);
+  async findByToken(token: string): Promise<AdminInvite | undefined> {
+    const [row] = await getDb()
+      .select()
+      .from(adminInvites)
+      .where(eq(adminInvites.token, token))
+      .limit(1);
+    return row ? toInvite(row) : undefined;
   },
 
-  markAccepted(token: string): void {
-    const invite = invites.get(token);
-    if (invite) invites.set(token, { ...invite, accepted: true });
+  async markAccepted(token: string): Promise<void> {
+    await getDb().update(adminInvites).set({ accepted: true }).where(eq(adminInvites.token, token));
   },
 
-  findPendingByRoleId(roleId: string): AdminInvite[] {
-    const now = Date.now();
-    return [...invites.values()].filter(
-      (i) => i.roleId === roleId && !i.accepted && i.expiresAt.getTime() > now,
-    );
+  async findPendingByRoleId(roleId: string): Promise<AdminInvite[]> {
+    const rows = await getDb()
+      .select()
+      .from(adminInvites)
+      .where(
+        and(
+          eq(adminInvites.roleId, roleId),
+          eq(adminInvites.accepted, false),
+          gt(adminInvites.expiresAt, new Date()),
+        ),
+      );
+    return rows.map(toInvite);
   },
 };

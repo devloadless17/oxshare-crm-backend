@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "rejection_reasons_context_label_uq" ON "rejection_reasons" USING btree ("context","label");

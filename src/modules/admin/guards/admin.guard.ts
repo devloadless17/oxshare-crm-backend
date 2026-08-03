@@ -24,7 +24,7 @@ export class AdminGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<AdminRequest>();
-    req.admin = authenticateAdmin(req, this.jwt, this.config);
+    req.admin = await authenticateAdmin(req, this.jwt, this.config);
     return true;
   }
 }
@@ -40,7 +40,7 @@ export class MasterAdminGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<AdminRequest>();
-    const admin = authenticateAdmin(req, this.jwt, this.config);
+    const admin = await authenticateAdmin(req, this.jwt, this.config);
     if (admin.role !== 'master_admin') {
       throw new ForbiddenException('Master admin access required.');
     }
@@ -70,7 +70,7 @@ export class PermissionsGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<AdminRequest>();
-    const admin = authenticateAdmin(req, this.jwt, this.config);
+    const admin = await authenticateAdmin(req, this.jwt, this.config);
     req.admin = admin;
 
     const required = this.reflector.getAllAndOverride<string[]>(PERMISSIONS_KEY, [
@@ -89,7 +89,7 @@ export class PermissionsGuard implements CanActivate {
   }
 }
 
-function authenticateAdmin(req: AdminRequest, jwt: JwtService, config: ConfigService): Admin {
+async function authenticateAdmin(req: AdminRequest, jwt: JwtService, config: ConfigService): Promise<Admin> {
   const token = req.cookies?.['admin_access_token'];
   if (!token) throw new UnauthorizedException('Admin authentication required.');
 
@@ -103,9 +103,9 @@ function authenticateAdmin(req: AdminRequest, jwt: JwtService, config: ConfigSer
     throw new UnauthorizedException('Invalid or expired admin token.');
   }
 
-  const admin = AdminsStore.findById(adminId);
+  const admin = await AdminsStore.findById(adminId);
   if (!admin) throw new UnauthorizedException('Admin not found.');
   // Role-derived permissions resolve live: editing a role takes effect on the
   // next request from every admin holding it — no re-login, no stale grants.
-  return { ...admin, permissions: resolvePermissions(admin.roleId, admin.permissions) };
+  return { ...admin, permissions: await resolvePermissions(admin.roleId, admin.permissions) };
 }

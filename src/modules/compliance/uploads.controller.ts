@@ -34,10 +34,10 @@ export class UploadsController {
   @Get('kyc/:file')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Serve a KYC document to its owner or a kyc.review admin' })
-  serveKycFile(@Param('file') file: string, @Req() req: Request, @Res() res: Response) {
+  async serveKycFile(@Param('file') file: string, @Req() req: Request, @Res() res: Response) {
     const name = basename(file); // neutralize any traversal attempt
 
-    if (!this.isAuthorized(req, name)) {
+    if (!(await this.isAuthorized(req, name))) {
       // isAuthorized throws the precise error; this is unreachable, kept for clarity
       throw new ForbiddenException('Not allowed to access this document.');
     }
@@ -47,16 +47,16 @@ export class UploadsController {
     return res.sendFile(fullPath);
   }
 
-  private isAuthorized(req: Request, fileName: string): boolean {
+  private async isAuthorized(req: Request, fileName: string): Promise<boolean> {
     const adminToken = req.cookies?.['admin_access_token'];
     if (adminToken) {
       try {
         const payload = this.jwt.verify<{ sub: string }>(adminToken, {
           secret: this.config.get('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev'),
         });
-        const admin = AdminsStore.findById(payload.sub);
+        const admin = await AdminsStore.findById(payload.sub);
         if (admin) {
-          const held = resolvePermissions(admin.roleId, admin.permissions);
+          const held = await resolvePermissions(admin.roleId, admin.permissions);
           const normalized = held.map((p) => p.replace(/:/g, '.').toLowerCase());
           if (held.includes('*') || normalized.includes('kyc.review')) return true;
           throw new ForbiddenException('The kyc.review permission is required to view documents.');

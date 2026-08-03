@@ -1,5 +1,6 @@
-import { v4 as uuidv4 } from 'uuid';
-import * as bcrypt from 'bcryptjs';
+import { count, eq } from 'drizzle-orm';
+import { getDb } from '../database/db';
+import { users } from '../database/schema';
 
 export interface User {
   id: string;
@@ -19,65 +20,60 @@ export interface User {
   createdAt: Date;
 }
 
+type Row = typeof users.$inferSelect;
 
-
-const users = new Map<string, User>();
-const usersByEmail = new Map<string, string>(); // email → id
-
-// Seed default demo client user
-const DEMO_USER_ID = uuidv4();
-const demoUser: User = {
-  id: DEMO_USER_ID,
-  email: 'client@oxshare.com',
-  passwordHash: bcrypt.hashSync('client123', 10),
-  firstName: 'John',
-  lastName: 'Doe',
-  type: 'individual',
-  status: 'active',
-  verificationLevel: 0,
-  emailVerified: true,
-  country: 'United Arab Emirates',
-  phone: '+971501234567',
-  createdAt: new Date(),
-};
-users.set(DEMO_USER_ID, demoUser);
-usersByEmail.set('client@oxshare.com', DEMO_USER_ID);
+const toUser = (r: Row): User => ({
+  ...r,
+  verificationLevel: (r.verificationLevel === 1 ? 1 : 0) as 0 | 1,
+  emailVerificationToken: r.emailVerificationToken ?? undefined,
+  emailVerificationExpiry: r.emailVerificationExpiry ?? undefined,
+  refreshToken: r.refreshToken ?? undefined,
+  country: r.country ?? undefined,
+  phone: r.phone ?? undefined,
+});
 
 export const UsersStore = {
-  create(data: Omit<User, 'id' | 'createdAt'>): User {
-    const id = uuidv4();
-    const user: User = { ...data, id, createdAt: new Date() };
-    users.set(id, user);
-    usersByEmail.set(data.email.toLowerCase(), id);
-    return user;
+  async create(data: Omit<User, 'id' | 'createdAt'>): Promise<User> {
+    const [row] = await getDb().insert(users).values(data).returning();
+    return toUser(row);
   },
 
-  findById(id: string): User | undefined {
-    return users.get(id);
+  async findById(id: string): Promise<User | undefined> {
+    const [row] = await getDb().select().from(users).where(eq(users.id, id)).limit(1);
+    return row ? toUser(row) : undefined;
   },
 
-  findByEmail(email: string): User | undefined {
-    const id = usersByEmail.get(email.toLowerCase());
-    return id ? users.get(id) : undefined;
+  async findByEmail(email: string): Promise<User | undefined> {
+    const [row] = await getDb()
+      .select()
+      .from(users)
+      .where(eq(users.email, email.toLowerCase()))
+      .limit(1);
+    return row ? toUser(row) : undefined;
   },
 
-  findByVerificationToken(token: string): User | undefined {
-    return [...users.values()].find((u) => u.emailVerificationToken === token);
+  async findByVerificationToken(token: string): Promise<User | undefined> {
+    const [row] = await getDb()
+      .select()
+      .from(users)
+      .where(eq(users.emailVerificationToken, token))
+      .limit(1);
+    return row ? toUser(row) : undefined;
   },
 
-  update(id: string, patch: Partial<User>): User | undefined {
-    const user = users.get(id);
-    if (!user) return undefined;
-    const updated = { ...user, ...patch };
-    users.set(id, updated);
-    return updated;
+  async update(id: string, patch: Partial<User>): Promise<User | undefined> {
+    const { id: _ignored, createdAt: _also, ...rest } = patch;
+    const [row] = await getDb().update(users).set(rest).where(eq(users.id, id)).returning();
+    return row ? toUser(row) : undefined;
   },
 
-  findAll(): User[] {
-    return [...users.values()];
+  async findAll(): Promise<User[]> {
+    const rows = await getDb().select().from(users);
+    return rows.map(toUser);
   },
 
-  count(): number {
-    return users.size;
+  async count(): Promise<number> {
+    const [{ value }] = await getDb().select({ value: count() }).from(users);
+    return value;
   },
 };

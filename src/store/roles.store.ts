@@ -1,4 +1,6 @@
-import { v4 as uuidv4 } from 'uuid';
+import { eq } from 'drizzle-orm';
+import { getDb } from '../database/db';
+import { roles } from '../database/schema';
 
 export interface Role {
   id: string;
@@ -9,51 +11,47 @@ export interface Role {
   createdAt: Date;
 }
 
-const roles = new Map<string, Role>();
-
-// Seed the system role. '*' is the wildcard granting every permission.
-const MASTER_ROLE_ID = uuidv4();
-roles.set(MASTER_ROLE_ID, {
-  id: MASTER_ROLE_ID,
-  name: 'Master Admin',
-  description: 'Full access to every administration section and operation (RBAC-01).',
-  permissions: ['*'],
-  isSystem: true,
-  createdAt: new Date(),
-});
+type Row = typeof roles.$inferSelect;
+const toRole = (r: Row): Role => ({ ...r, description: r.description ?? undefined });
 
 export const RolesStore = {
-  findAll(): Role[] {
-    return [...roles.values()];
+  async findAll(): Promise<Role[]> {
+    const rows = await getDb().select().from(roles);
+    return rows.map(toRole);
   },
 
-  findById(id: string): Role | undefined {
-    return roles.get(id);
+  async findById(id: string): Promise<Role | undefined> {
+    const [row] = await getDb().select().from(roles).where(eq(roles.id, id)).limit(1);
+    return row ? toRole(row) : undefined;
   },
 
-  findByName(name: string): Role | undefined {
-    return [...roles.values()].find((r) => r.name.toLowerCase() === name.toLowerCase());
+  async findByName(name: string): Promise<Role | undefined> {
+    const all = await getDb().select().from(roles);
+    const row = all.find((r) => r.name.toLowerCase() === name.toLowerCase());
+    return row ? toRole(row) : undefined;
   },
 
-  create(data: Omit<Role, 'id' | 'createdAt' | 'isSystem'>): Role {
-    const id = uuidv4();
-    const role: Role = { ...data, id, isSystem: false, createdAt: new Date() };
-    roles.set(id, role);
-    return role;
+  async create(data: Omit<Role, 'id' | 'createdAt' | 'isSystem'>): Promise<Role> {
+    const [row] = await getDb()
+      .insert(roles)
+      .values({ ...data, isSystem: false })
+      .returning();
+    return toRole(row);
   },
 
-  update(id: string, patch: Partial<Pick<Role, 'name' | 'description' | 'permissions'>>): Role | undefined {
-    const role = roles.get(id);
-    if (!role) return undefined;
-    const updated = { ...role, ...patch };
-    roles.set(id, updated);
-    return updated;
+  async update(
+    id: string,
+    patch: Partial<Pick<Role, 'name' | 'description' | 'permissions'>>,
+  ): Promise<Role | undefined> {
+    const [row] = await getDb().update(roles).set(patch).where(eq(roles.id, id)).returning();
+    return row ? toRole(row) : undefined;
   },
 
-  delete(id: string): boolean {
-    const role = roles.get(id);
+  async delete(id: string): Promise<boolean> {
+    const role = await this.findById(id);
     if (!role || role.isSystem) return false;
-    return roles.delete(id);
+    const deleted = await getDb().delete(roles).where(eq(roles.id, id)).returning();
+    return deleted.length > 0;
   },
 };
 
@@ -67,9 +65,12 @@ export const RolesStore = {
  * role no longer exists (deletion is blocked while assigned, so that means a
  * pre-existing token raced a delete).
  */
-export function resolvePermissions(roleId: string | undefined, snapshot: string[]): string[] {
+export async function resolvePermissions(
+  roleId: string | undefined,
+  snapshot: string[],
+): Promise<string[]> {
   if (roleId) {
-    const role = roles.get(roleId);
+    const role = await RolesStore.findById(roleId);
     if (role) return role.permissions;
   }
   return snapshot;

@@ -8,6 +8,13 @@
       "when": 1785767241432,
       "tag": "0000_medical_bruce_banner",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785768336281,
+      "tag": "0001_wooden_sentinels",
+      "breakpoints": true
     }
   ]
 }

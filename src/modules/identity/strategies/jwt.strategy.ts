@@ -25,10 +25,10 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
   }
 
-  validate(payload: JwtPayload) {
-    let user = UsersStore.findById(payload.sub);
+  async validate(payload: JwtPayload) {
+    let user = await UsersStore.findById(payload.sub);
     if (!user && payload.email) {
-      user = UsersStore.findByEmail(payload.email);
+      user = await UsersStore.findByEmail(payload.email);
     }
     if (!user) throw new UnauthorizedException('User not found. Please log in again.');
     // Suspension takes effect on the next request — a live token is no shield.

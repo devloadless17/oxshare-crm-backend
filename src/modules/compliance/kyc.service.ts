@@ -14,9 +14,9 @@ export class KycService {
   constructor(private readonly email: EmailService) {}
 
   // ─── Get status ────────────────────────────────────────────────────────────
-  getStatus(userId: string) {
+  async getStatus(userId: string) {
     const submission = KycStore.getOrCreate(userId);
-    const user = UsersStore.findById(userId);
+    const user = await UsersStore.findById(userId);
     return {
       ...submission,
       verificationLevel: user?.verificationLevel ?? 0,
@@ -83,9 +83,9 @@ export class KycService {
   }
 
   // ─── Submit KYC ────────────────────────────────────────────────────────────
-  submit(userId: string) {
+  async submit(userId: string) {
     const submission = KycStore.getOrCreate(userId);
-    const user = UsersStore.findById(userId);
+    const user = await UsersStore.findById(userId);
 
     if (!submission.personalInfo && user?.firstName) {
       submission.personalInfo = {
@@ -155,19 +155,21 @@ export class KycService {
   }
 
   // ─── Admin: list all (paginated, searchable, with per-status counts) ───────
-  listAll(filter: { status?: KycStatus; q?: string; page?: number; limit?: number } = {}) {
+  async listAll(filter: { status?: KycStatus; q?: string; page?: number; limit?: number } = {}) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
 
-    const all = KycStore.findAll().map((sub) => {
-      const user = UsersStore.findById(sub.userId);
-      return {
-        ...sub,
-        user: user
-          ? { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName }
-          : null,
-      };
-    });
+    const all = await Promise.all(
+      KycStore.findAll().map(async (sub) => {
+        const user = await UsersStore.findById(sub.userId);
+        return {
+          ...sub,
+          user: user
+            ? { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName }
+            : null,
+        };
+      }),
+    );
 
     // Tab counts are computed over the FULL set so the UI stays correct
     // regardless of the active filter.
@@ -198,15 +200,15 @@ export class KycService {
   }
 
   // ─── Admin: get one ────────────────────────────────────────────────────────
-  getByUserId(userId: string) {
+  async getByUserId(userId: string) {
     const submission = KycStore.findByUserId(userId);
     if (!submission) throw new NotFoundException('KYC submission not found.');
-    const user = UsersStore.findById(userId);
+    const user = await UsersStore.findById(userId);
     return { ...submission, user };
   }
 
   // ─── Admin: approve ────────────────────────────────────────────────────────
-  approve(userId: string, adminId: string) {
+  async approve(userId: string, adminId: string) {
     const submission = KycStore.findByUserId(userId);
     if (!submission) throw new NotFoundException('KYC submission not found.');
 
@@ -216,9 +218,9 @@ export class KycService {
       reviewedAt: new Date(),
     });
 
-    UsersStore.update(userId, { verificationLevel: 1 });
+    await UsersStore.update(userId, { verificationLevel: 1 });
 
-    const user = UsersStore.findById(userId);
+    const user = await UsersStore.findById(userId);
     if (user) {
       // Sent inline per ARCH §8.5 — fire-and-forget, failure is logged by EmailService
       void this.email.sendKycDecisionEmail(user.email, user.firstName, 'approved');
@@ -245,10 +247,10 @@ export class KycService {
   }
 
   // ─── Admin: reject ─────────────────────────────────────────────────────────
-  reject(userId: string, adminId: string, reason: string, rejectedFields: string[] = []) {
+  async reject(userId: string, adminId: string, reason: string, rejectedFields: string[] = []) {
     const submission = KycStore.findByUserId(userId);
     if (!submission) throw new NotFoundException('KYC submission not found.');
-    const user = UsersStore.findById(userId);
+    const user = await UsersStore.findById(userId);
 
     KycStore.update(userId, {
       status: 'rejected',

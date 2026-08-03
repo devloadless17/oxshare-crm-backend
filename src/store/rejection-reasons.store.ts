@@ -1,7 +1,10 @@
-import { v4 as uuidv4 } from 'uuid';
+import { eq } from 'drizzle-orm';
+import { getDb } from '../database/db';
+import { rejectionReasons } from '../database/schema';
 
 // FR-ADM-03: rejection of a withdrawal or verification request is accompanied
-// by "a reason from a configurable list". This store is that list.
+// by "a reason from a configurable list". Defaults are seeded idempotently in
+// src/database/seed.ts (UNIQUE(context, label) makes re-seeding a no-op).
 export type RejectionContext = 'kyc' | 'withdrawal';
 
 export interface RejectionReason {
@@ -11,58 +14,42 @@ export interface RejectionReason {
   createdAt: Date;
 }
 
-const reasons = new Map<string, RejectionReason>();
-
-const seed = (context: RejectionContext, labels: string[]) => {
-  for (const label of labels) {
-    const id = uuidv4();
-    reasons.set(id, { id, context, label, createdAt: new Date() });
-  }
-};
-
-seed('kyc', [
-  'Identity document is blurry or unreadable',
-  'Identity document is expired',
-  'Selfie does not match the identity document',
-  'Proof of address is older than 3 months',
-  'Proof of address does not match the declared address',
-  'Personal information does not match the documents',
-  'Document appears altered or tampered with',
-]);
-
-seed('withdrawal', [
-  'Beneficiary details do not match the account holder',
-  'Insufficient verified balance',
-  'Account verification (KYC) incomplete',
-  'Suspicious activity — additional verification required',
-]);
-
 export const RejectionReasonsStore = {
-  findAll(context?: RejectionContext): RejectionReason[] {
-    const all = [...reasons.values()];
-    return context ? all.filter((r) => r.context === context) : all;
+  async findAll(context?: RejectionContext): Promise<RejectionReason[]> {
+    const db = getDb();
+    return context
+      ? db.select().from(rejectionReasons).where(eq(rejectionReasons.context, context))
+      : db.select().from(rejectionReasons);
   },
 
-  findById(id: string): RejectionReason | undefined {
-    return reasons.get(id);
+  async findById(id: string): Promise<RejectionReason | undefined> {
+    const [row] = await getDb()
+      .select()
+      .from(rejectionReasons)
+      .where(eq(rejectionReasons.id, id))
+      .limit(1);
+    return row;
   },
 
-  create(context: RejectionContext, label: string): RejectionReason {
-    const id = uuidv4();
-    const reason: RejectionReason = { id, context, label, createdAt: new Date() };
-    reasons.set(id, reason);
-    return reason;
+  async create(context: RejectionContext, label: string): Promise<RejectionReason> {
+    const [row] = await getDb().insert(rejectionReasons).values({ context, label }).returning();
+    return row;
   },
 
-  update(id: string, label: string): RejectionReason | undefined {
-    const reason = reasons.get(id);
-    if (!reason) return undefined;
-    const updated = { ...reason, label };
-    reasons.set(id, updated);
-    return updated;
+  async update(id: string, label: string): Promise<RejectionReason | undefined> {
+    const [row] = await getDb()
+      .update(rejectionReasons)
+      .set({ label })
+      .where(eq(rejectionReasons.id, id))
+      .returning();
+    return row;
   },
 
-  delete(id: string): boolean {
-    return reasons.delete(id);
+  async delete(id: string): Promise<boolean> {
+    const deleted = await getDb()
+      .delete(rejectionReasons)
+      .where(eq(rejectionReasons.id, id))
+      .returning();
+    return deleted.length > 0;
   },
 };

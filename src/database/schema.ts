@@ -1,5 +1,6 @@
 import {
   boolean,
+  uniqueIndex,
   index,
   integer,
   jsonb,
@@ -131,12 +132,16 @@ export const kycConfigSteps = pgTable('kyc_config_steps', {
   fields: jsonb('fields').$type<Record<string, unknown>[]>().notNull().default([]),
 });
 
-export const rejectionReasons = pgTable('rejection_reasons', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  context: rejectionContextEnum('context').notNull(),
-  label: varchar('label', { length: 500 }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const rejectionReasons = pgTable(
+  'rejection_reasons',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    context: rejectionContextEnum('context').notNull(),
+    label: varchar('label', { length: 500 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('rejection_reasons_context_label_uq').on(t.context, t.label)],
+);
 
 // ── Audit log — APPEND ONLY (D-21). No UPDATE, no DELETE, ever. ──────────────
 export const auditLog = pgTable(
