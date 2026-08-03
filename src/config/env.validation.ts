@@ -23,6 +23,9 @@ const envSchema = z
     SMTP_USER: z.string().optional(),
     SMTP_PASS: z.string().optional(),
     SMTP_FROM: z.string().optional(),
+
+    // Shared secret with the MT5 bridge (token header + HMAC signature).
+    MT5_BRIDGE_SECRET: z.string().min(16, 'MT5_BRIDGE_SECRET must be at least 16 characters').optional(),
   })
   .passthrough(); // unknown keys pass through untouched
 

@@ -11,7 +11,9 @@ async function bootstrap() {
   // Ensure uploads directory exists
   mkdirSync(join(process.cwd(), 'uploads', 'kyc'), { recursive: true });
 
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // rawBody: the MT5 bridge webhook verifies an HMAC over the exact bytes
+  // received — re-serializing the parsed body would change them.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
 
   // KYC uploads are PII — served only via the authenticated UploadsController
   // (compliance module), never as anonymous static assets.
