@@ -36,6 +36,13 @@
       "when": 1785771422026,
       "tag": "0004_odd_spot",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785771896781,
+      "tag": "0005_lying_moon_knight",
+      "breakpoints": true
     }
   ]
 }

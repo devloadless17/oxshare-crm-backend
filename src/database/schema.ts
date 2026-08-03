@@ -317,6 +317,123 @@ export const ibPrograms = pgTable(
   (t) => [index('ib_programs_position_idx').on(t.position)],
 );
 
+// ═══ IB / TRADING (§5 · §8.6) ════════════════════════════════════════════════
+//
+// The UNIQUE constraints here ARE the idempotency design (§6.3) — not hints,
+// not optimisations. Deal ingest, commission accrual and referral attribution
+// each rely on one, with ON CONFLICT DO NOTHING rather than check-then-insert.
+
+export const ibStatusEnum = pgEnum('ib_status', ['pending', 'approved', 'rejected', 'suspended']);
+export const accrualStatusEnum = pgEnum('accrual_status', ['accrued', 'confirmed']);
+export const tradingEnvironmentEnum = pgEnum('trading_environment', ['live', 'demo']);
+
+export const tradingAccounts = pgTable(
+  'trading_accounts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** §6.3: the MT5 login is unique — one CRM account per trading account. */
+    mt5Login: varchar('mt5_login', { length: 50 }).notNull().unique(),
+    mt5Group: varchar('mt5_group', { length: 100 }),
+    environment: tradingEnvironmentEnum('environment').notNull().default('live'),
+    tier: varchar('tier', { length: 50 }),
+    leverage: integer('leverage'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('trading_accounts_user_idx').on(t.userId)],
+);
+
+export const deals = pgTable(
+  'deals',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** §6.3 THE deal-ingest idempotency key. Re-delivery is a no-op. */
+    mt5Ticket: varchar('mt5_ticket', { length: 50 }).notNull().unique(),
+    tradingAccountId: uuid('trading_account_id')
+      .notNull()
+      .references(() => tradingAccounts.id, { onDelete: 'restrict' }),
+    symbol: varchar('symbol', { length: 30 }).notNull(),
+    volume: numeric('volume', { precision: 28, scale: 8 }).notNull(),
+    /** Spread as delivered by the bridge; its unit is declared per program. */
+    spread: numeric('spread', { precision: 28, scale: 8 }).notNull(),
+    profit: numeric('profit', { precision: 28, scale: 8 }).notNull().default('0'),
+    openedAt: timestamp('opened_at', { withTimezone: true }),
+    closedAt: timestamp('closed_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('deals_closed_at_idx').on(t.closedAt)],
+);
+
+export const ibProfiles = pgTable(
+  'ib_profiles',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .unique()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * The ENTIRE hierarchy. One nullable self-reference, walked at most twice.
+     * §8.6: no closure table, no recursive CTE — resolution stops at L2.
+     */
+    parentIbId: uuid('parent_ib_id'),
+    programId: uuid('program_id').references(() => ibPrograms.id, { onDelete: 'restrict' }),
+    status: ibStatusEnum('status').notNull().default('pending'),
+    referralCode: varchar('referral_code', { length: 50 }).unique(),
+    approvedBy: uuid('approved_by'),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    rejectionReason: text('rejection_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('ib_profiles_parent_idx').on(t.parentIbId),
+    index('ib_profiles_status_idx').on(t.status),
+  ],
+);
+
+export const referralAttributions = pgTable('referral_attributions', {
+  /** §6.3 UNIQUE(client_user_id): attribution is permanent — one IB per client,
+   *  forever. There is deliberately no "change my IB" flow. */
+  clientUserId: uuid('client_user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'restrict' }),
+  ibUserId: uuid('ib_user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'restrict' }),
+  active: boolean('active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const commissionAccruals = pgTable(
+  'commission_accruals',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    dealId: uuid('deal_id')
+      .notNull()
+      .references(() => deals.id, { onDelete: 'restrict' }),
+    ibUserId: uuid('ib_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** 1 or 2 — the constraint admits any level, the resolver stops at 2. */
+    level: integer('level').notNull(),
+    programId: uuid('program_id').references(() => ibPrograms.id, { onDelete: 'restrict' }),
+    amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
+    currency: currencyEnum('currency').notNull().default('USD'),
+    status: accrualStatusEnum('status').notNull().default('accrued'),
+    /** closed_at + the program's settlement window (§8.6 confirm job). */
+    availableAt: timestamp('available_at', { withTimezone: true }).notNull(),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /** §6.3 THE accrual idempotency guarantee. Re-running accrual is a no-op. */
+    uniqueIndex('commission_accruals_deal_ib_level_uq').on(t.dealId, t.ibUserId, t.level),
+    index('commission_accruals_status_available_idx').on(t.status, t.availableAt),
+  ],
+);
+
 // ── Audit log — APPEND ONLY (D-21). No UPDATE, no DELETE, ever. ──────────────
 export const auditLog = pgTable(
   'audit_log',
