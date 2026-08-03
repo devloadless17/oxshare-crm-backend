@@ -1,6 +1,6 @@
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, ilike, or, sql, SQL } from 'drizzle-orm';
 import { getDb } from '../database/db';
-import { kycSubmissions } from '../database/schema';
+import { kycSubmissions, users } from '../database/schema';
 
 export type KycStatus =
   | 'not_started'
@@ -132,6 +132,65 @@ export const KycStore = {
   async findAll(): Promise<KycSubmission[]> {
     const rows = await getDb().select().from(kycSubmissions);
     return rows.map(toSubmission);
+  },
+
+  /**
+   * Admin queue: submissions joined to their user, filtered and paginated in
+   * SQL, with per-status counts computed by the database in one grouped query.
+   */
+  async findPageWithUsers(filter: {
+    status?: KycStatus;
+    q?: string;
+    page: number;
+    limit: number;
+  }) {
+    const db = getDb();
+    const conditions: SQL[] = [];
+    if (filter.status) conditions.push(eq(kycSubmissions.status, filter.status));
+    if (filter.q) {
+      const term = `%${filter.q}%`;
+      conditions.push(
+        or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))!,
+      );
+    }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [rows, [countRow], statusCounts] = await Promise.all([
+      db
+        .select({ submission: kycSubmissions, user: {
+          id: users.id, email: users.email, firstName: users.firstName, lastName: users.lastName,
+        } })
+        .from(kycSubmissions)
+        .innerJoin(users, eq(kycSubmissions.userId, users.id))
+        .where(where)
+        .orderBy(desc(kycSubmissions.submittedAt))
+        .limit(filter.limit)
+        .offset((filter.page - 1) * filter.limit),
+      db
+        .select({ value: sql<number>`count(*)::int` })
+        .from(kycSubmissions)
+        .innerJoin(users, eq(kycSubmissions.userId, users.id))
+        .where(where),
+      // Counts over the FULL set so admin tab counts stay correct under a filter.
+      db
+        .select({ status: kycSubmissions.status, value: sql<number>`count(*)::int` })
+        .from(kycSubmissions)
+        .groupBy(kycSubmissions.status),
+    ]);
+
+    const counts: Record<string, number> = { all: 0 };
+    for (const row of statusCounts) {
+      counts[row.status] = row.value;
+      counts['all'] += row.value;
+    }
+
+    return {
+      items: rows.map((r) => ({ ...toSubmission(r.submission), user: r.user })),
+      total: countRow.value,
+      page: filter.page,
+      limit: filter.limit,
+      counts,
+    };
   },
 
   async findByStatus(status: KycStatus): Promise<KycSubmission[]> {

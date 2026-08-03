@@ -125,44 +125,12 @@ export class KycService {
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
 
-    const all = await Promise.all(
-      (await KycStore.findAll()).map(async (sub) => {
-        const user = await UsersStore.findById(sub.userId);
-        return {
-          ...sub,
-          user: user
-            ? { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName }
-            : null,
-        };
-      }),
-    );
-
-    // Tab counts are computed over the FULL set so the UI stays correct
-    // regardless of the active filter.
-    const counts: Record<string, number> = { all: all.length };
-    for (const sub of all) counts[sub.status] = (counts[sub.status] ?? 0) + 1;
-
-    let list = all;
-    if (filter.status) list = list.filter((sub) => sub.status === filter.status);
-    if (filter.q) {
-      const q = filter.q.toLowerCase();
-      list = list.filter(
-        (sub) =>
-          sub.user &&
-          (sub.user.email.toLowerCase().includes(q) ||
-            sub.user.firstName.toLowerCase().includes(q) ||
-            sub.user.lastName.toLowerCase().includes(q)),
-      );
-    }
-
-    list.sort((a, b) => (b.submittedAt?.getTime() ?? 0) - (a.submittedAt?.getTime() ?? 0));
-    return {
-      items: list.slice((page - 1) * limit, page * limit),
-      total: list.length,
-      page,
-      limit,
-      counts,
-    };
+    // One joined query, filtered/sorted/paginated in SQL, plus one grouped
+    // count. The previous version loaded every submission and then issued one
+    // UsersStore.findById per row inside Promise.all — 1+N, which at 50K rows
+    // fires 50,001 queries in a burst and can exhaust the pool that
+    // WalletService.post() needs for its FOR UPDATE lock.
+    return KycStore.findPageWithUsers({ status: filter.status, q: filter.q, page, limit });
   }
 
   // ─── Admin: get one ────────────────────────────────────────────────────────

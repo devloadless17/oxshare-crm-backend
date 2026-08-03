@@ -1,4 +1,4 @@
-import { count, eq } from 'drizzle-orm';
+import { and, count, desc, eq, ilike, or, sql, SQL } from 'drizzle-orm';
 import { getDb } from '../database/db';
 import { users } from '../database/schema';
 
@@ -70,6 +70,71 @@ export const UsersStore = {
   async findAll(): Promise<User[]> {
     const rows = await getDb().select().from(users);
     return rows.map(toUser);
+  },
+
+  /**
+   * Paginated, filtered and sorted IN SQL (ADM-01).
+   *
+   * The previous implementation loaded every row with `SELECT *` — including
+   * password_hash and refresh_token — then filtered, sorted and sliced in
+   * JavaScript. ARCHITECTURE §5 names ~219,000 clients and warns that "the risk
+   * is unindexed filters and N+1 queries in the admin table"; the required
+   * indexes existed and were never reached because no predicate got to SQL.
+   *
+   * Only the columns the admin list renders are selected — secrets never leave
+   * the database.
+   */
+  async findPage(filter: {
+    page: number;
+    limit: number;
+    q?: string;
+    type?: string;
+    status?: string;
+    level?: number;
+  }) {
+    const db = getDb();
+    const conditions: SQL[] = [];
+
+    if (filter.type) conditions.push(eq(users.type, filter.type as 'individual'));
+    if (filter.status) conditions.push(eq(users.status, filter.status as 'active'));
+    if (typeof filter.level === 'number' && !Number.isNaN(filter.level)) {
+      conditions.push(eq(users.verificationLevel, filter.level));
+    }
+    if (filter.q) {
+      // Case-insensitive prefix/substring across the three searchable columns.
+      const term = `%${filter.q}%`;
+      conditions.push(
+        or(
+          ilike(users.email, term),
+          ilike(users.firstName, term),
+          ilike(users.lastName, term),
+        )!,
+      );
+    }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [rows, [countRow]] = await Promise.all([
+      db
+        .select({
+          id: users.id,
+          email: users.email,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          type: users.type,
+          status: users.status,
+          verificationLevel: users.verificationLevel,
+          country: users.country,
+          createdAt: users.createdAt,
+        })
+        .from(users)
+        .where(where)
+        .orderBy(desc(users.createdAt))
+        .limit(filter.limit)
+        .offset((filter.page - 1) * filter.limit),
+      db.select({ value: sql<number>`count(*)::int` }).from(users).where(where),
+    ]);
+
+    return { items: rows, total: countRow.value };
   },
 
   async count(): Promise<number> {

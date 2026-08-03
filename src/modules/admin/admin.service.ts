@@ -406,37 +406,24 @@ export class AdminService {
     const page = Math.max(1, parseInt(query.page ?? '1', 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(query.limit ?? '25', 10) || 25));
 
-    let clients = await UsersStore.findAll();
-    if (query.type) clients = clients.filter((u) => u.type === query.type);
-    if (query.status) clients = clients.filter((u) => u.status === query.status);
+    // An unparseable ?level= used to become NaN and silently return nothing.
+    let level: number | undefined;
     if (query.level !== undefined && query.level !== '') {
-      const level = Number(query.level);
-      clients = clients.filter((u) => u.verificationLevel === level);
-    }
-    if (query.q) {
-      const q = query.q.toLowerCase();
-      clients = clients.filter(
-        (u) =>
-          u.email.toLowerCase().includes(q) ||
-          u.firstName.toLowerCase().includes(q) ||
-          u.lastName.toLowerCase().includes(q),
-      );
+      const parsed = Number(query.level);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1) {
+        throw new BadRequestException('level must be 0 or 1.');
+      }
+      level = parsed;
     }
 
-    clients.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-    const total = clients.length;
-    const items = clients.slice((page - 1) * limit, page * limit).map((u) => ({
-      id: u.id,
-      email: u.email,
-      firstName: u.firstName,
-      lastName: u.lastName,
-      type: u.type,
-      status: u.status,
-      verificationLevel: u.verificationLevel,
-      country: u.country,
-      createdAt: u.createdAt,
-    }));
-
+    const { items, total } = await UsersStore.findPage({
+      page,
+      limit,
+      q: query.q?.trim() || undefined,
+      type: query.type,
+      status: query.status,
+      level,
+    });
     return { items, total, page, limit };
   }
 
