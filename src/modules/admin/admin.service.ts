@@ -124,7 +124,7 @@ export class AdminService {
       name: invite.name,
       role: 'sub_admin',
       roleId: invite.roleId,
-      permissions: invite.permissions ?? ['kyc:review', 'clients:read'],
+      permissions: invite.permissions ?? ['kyc.review', 'users.view'],
     });
 
     InvitesStore.markAccepted(token);

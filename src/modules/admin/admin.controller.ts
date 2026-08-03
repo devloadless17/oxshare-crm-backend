@@ -135,7 +135,7 @@ export class AdminController {
   // ── KYC Review — requires the kyc:review permission (RBAC-02/03) ──────────
   @Get('kyc')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('kyc:review')
+  @RequirePermissions('kyc.review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'List all KYC submissions, optionally filtered by status' })
   @ApiOkResponse({ type: KycListResponseDto })
@@ -150,7 +150,7 @@ export class AdminController {
 
   @Get('kyc/:userId')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('kyc:review')
+  @RequirePermissions('kyc.review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get full KYC submission for a user' })
   @ApiOkResponse({ type: KycSubmissionDto })
@@ -160,7 +160,7 @@ export class AdminController {
 
   @Patch('kyc/:userId/claim')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('kyc:review')
+  @RequirePermissions('kyc.review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Claim a submitted KYC for review (sets under_review)' })
   @ApiOkResponse({ type: KycSubmissionDto })
@@ -170,7 +170,7 @@ export class AdminController {
 
   @Patch('kyc/:userId/approve')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('kyc:review')
+  @RequirePermissions('kyc.review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Approve KYC — bumps user verificationLevel to 1; returns the updated submission' })
   @ApiOkResponse({ type: KycSubmissionDto })
@@ -180,7 +180,7 @@ export class AdminController {
 
   @Patch('kyc/:userId/reject')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('kyc:review')
+  @RequirePermissions('kyc.review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Reject KYC with a reason (free text or a configured reasonId); returns the updated submission' })
   @ApiOkResponse({ type: KycSubmissionDto })
@@ -195,7 +195,7 @@ export class AdminController {
   // ── Clients (ADM-01 / ADM-14) ─────────────────────────────────────────────
   @Get('clients')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('clients:read')
+  @RequirePermissions('users.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Paginated, filterable client list' })
   @ApiOkResponse({ type: ClientListResponseDto })

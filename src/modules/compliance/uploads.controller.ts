@@ -15,6 +15,7 @@ import { Request, Response } from 'express';
 import { existsSync } from 'fs';
 import { basename, join } from 'path';
 import { AdminsStore } from '../../store/admins.store';
+import { resolvePermissions } from '../../store/roles.store';
 import { KycStore } from '../../store/kyc.store';
 
 // KYC documents are PII (ARCHITECTURE §8.5): never served anonymously.
@@ -32,7 +33,7 @@ export class UploadsController {
 
   @Get('kyc/:file')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Serve a KYC document to its owner or a kyc:review admin' })
+  @ApiOperation({ summary: 'Serve a KYC document to its owner or a kyc.review admin' })
   serveKycFile(@Param('file') file: string, @Req() req: Request, @Res() res: Response) {
     const name = basename(file); // neutralize any traversal attempt
 
@@ -55,9 +56,10 @@ export class UploadsController {
         });
         const admin = AdminsStore.findById(payload.sub);
         if (admin) {
-          const normalized = admin.permissions.map((p) => p.replace(/:/g, '.').toLowerCase());
-          if (admin.permissions.includes('*') || normalized.includes('kyc.review')) return true;
-          throw new ForbiddenException('The kyc:review permission is required to view documents.');
+          const held = resolvePermissions(admin.roleId, admin.permissions);
+          const normalized = held.map((p) => p.replace(/:/g, '.').toLowerCase());
+          if (held.includes('*') || normalized.includes('kyc.review')) return true;
+          throw new ForbiddenException('The kyc.review permission is required to view documents.');
         }
       } catch (e) {
         if (e instanceof ForbiddenException) throw e;
