@@ -421,6 +421,36 @@ export class AdminService {
     return { items, total, page, limit };
   }
 
+  // ─── Client suspension (users.suspend) ────────────────────────────────────
+  setClientStatus(userId: string, status: 'active' | 'suspended', actor: Admin) {
+    const user = UsersStore.findById(userId);
+    if (!user) throw new NotFoundException('Client not found.');
+    if (user.status === status) {
+      throw new BadRequestException(`Client is already ${status}.`);
+    }
+
+    const updated = UsersStore.update(userId, { status })!;
+    // Suspension bites immediately: the JWT strategy re-checks status on every
+    // request, and login/refresh refuse suspended accounts.
+    this.audit(actor.id, status === 'suspended' ? 'client.suspend' : 'client.activate', 'user', userId, {
+      email: user.email,
+      before: user.status,
+      after: status,
+    });
+
+    return {
+      id: updated.id,
+      email: updated.email,
+      firstName: updated.firstName,
+      lastName: updated.lastName,
+      type: updated.type,
+      status: updated.status,
+      verificationLevel: updated.verificationLevel,
+      country: updated.country,
+      createdAt: updated.createdAt,
+    };
+  }
+
   // ─── Rejection reasons (FR-ADM-03 configurable list) ──────────────────────
   listRejectionReasons(context?: RejectionContext) {
     return RejectionReasonsStore.findAll(context);

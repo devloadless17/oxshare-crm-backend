@@ -4,7 +4,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiCookieAuth, ApiOkResponse, ApiExtraModels } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { IsEmail, IsString, MinLength, IsArray, IsOptional } from 'class-validator';
+import { IsEmail, IsString, MinLength, IsArray, IsOptional, IsIn } from 'class-validator';
 import { AdminService } from './admin.service';
 import {
   AdminGuard,
@@ -65,6 +65,9 @@ class UpdateAdminDto {
 class RejectionReasonDto {
   @IsString() context: RejectionContext;
   @IsString() label: string;
+}
+class ClientStatusDto {
+  @IsIn(['active', 'suspended']) status: 'active' | 'suspended';
 }
 
 @ApiTags('admin')
@@ -209,6 +212,19 @@ export class AdminController {
     @Query('level') level?: string,
   ) {
     return this.adminService.listClients({ page, limit, q, type, status, level });
+  }
+
+  @Patch('clients/:id/status')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('users.suspend')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Suspend or reactivate a client account (requires users.suspend)' })
+  setClientStatus(
+    @Param('id') id: string,
+    @Body() dto: ClientStatusDto,
+    @Req() req: Request & { admin: Admin },
+  ) {
+    return this.adminService.setClientStatus(id, dto.status, req.admin);
   }
 
   // ── Rejection reasons (FR-ADM-03 configurable list) ───────────────────────

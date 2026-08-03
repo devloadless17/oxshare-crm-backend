@@ -2,6 +2,7 @@ import {
   Injectable,
   ConflictException,
   UnauthorizedException,
+  ForbiddenException,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
@@ -108,6 +109,12 @@ export class AuthService {
     const passwordMatch = await bcrypt.compare(dto.password, user.passwordHash);
     if (!passwordMatch) throw new UnauthorizedException('Invalid email or password.');
 
+    // Checked only after the password matches, so a suspended-account message
+    // never leaks whether credentials were valid.
+    if (user.status === 'suspended') {
+      throw new ForbiddenException('Your account has been suspended. Please contact support.');
+    }
+
     const tokens = this.generateTokens(user);
     const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
     UsersStore.update(user.id, { refreshToken: refreshHash });
@@ -142,6 +149,9 @@ export class AuthService {
       user = UsersStore.findByEmail('client@oxshare.com');
     }
     if (!user) throw new UnauthorizedException('User account not found.');
+    if (user.status === 'suspended') {
+      throw new UnauthorizedException('Your account has been suspended.');
+    }
 
     const tokens = this.generateTokens(user);
     const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);

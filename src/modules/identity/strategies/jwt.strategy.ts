@@ -31,6 +31,10 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       user = UsersStore.findByEmail(payload.email);
     }
     if (!user) throw new UnauthorizedException('User not found. Please log in again.');
+    // Suspension takes effect on the next request — a live token is no shield.
+    if (user.status === 'suspended') {
+      throw new UnauthorizedException('Your account has been suspended.');
+    }
     return user;
   }
 }
