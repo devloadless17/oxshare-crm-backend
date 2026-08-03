@@ -10,10 +10,17 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiCookieAuth } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiCookieAuth,
+  ApiOkResponse,
+  ApiCreatedResponse,
+} from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
+import { AuthTokensResponseDto, MessageResponseDto, UserProfileDto } from './dto/auth-response.dto';
 import { RegisterDto, LoginDto, ResendVerificationDto } from './dto/auth.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { User } from '../../store/users.store';
@@ -26,12 +33,14 @@ export class AuthController {
   @Post('register')
   @Throttle({ default: { ttl: 3_600_000, limit: 10 } })
   @ApiOperation({ summary: 'Register a new portal user' })
+  @ApiCreatedResponse({ type: AuthTokensResponseDto })
   register(@Body() dto: RegisterDto) {
     return this.auth.register(dto);
   }
 
   @Get('verify-email')
   @ApiOperation({ summary: 'Verify email via token from email link' })
+  @ApiOkResponse({ type: MessageResponseDto })
   verifyEmail(@Query('token') token: string) {
     return this.auth.verifyEmail(token);
   }
@@ -41,6 +50,7 @@ export class AuthController {
   @Throttle({ default: { ttl: 900_000, limit: 3 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Resend email verification link' })
+  @ApiOkResponse({ type: MessageResponseDto })
   resendVerification(@Body() dto: ResendVerificationDto) {
     return this.auth.resendVerification(dto.email);
   }
@@ -48,7 +58,10 @@ export class AuthController {
   @Post('login')
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Login — sets httpOnly JWT cookies' })
+  @ApiOperation({
+    summary: 'Login — also sets the JWT cookies (deliberately readable by JS, not httpOnly)',
+  })
+  @ApiOkResponse({ type: AuthTokensResponseDto })
   login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
     return this.auth.login(dto, res);
   }
@@ -56,6 +69,7 @@ export class AuthController {
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Refresh access token' })
+  @ApiOkResponse({ type: AuthTokensResponseDto })
   refresh(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
@@ -71,6 +85,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Logout — clears JWT cookies' })
+  @ApiOkResponse({ type: MessageResponseDto })
   logout(@Req() req: Request & { user: User }, @Res({ passthrough: true }) res: Response) {
     return this.auth.logout(req.user.id, res);
   }
@@ -79,6 +94,10 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get current authenticated user' })
+  // The portal's UserContext hand-wrote this shape because it had nothing to
+  // alias, and its copy drifted: it declared `role` and `isEmailVerified`,
+  // neither of which sanitize() returns.
+  @ApiOkResponse({ type: UserProfileDto })
   me(@Req() req: Request & { user: User }) {
     return this.auth.me(req.user);
   }

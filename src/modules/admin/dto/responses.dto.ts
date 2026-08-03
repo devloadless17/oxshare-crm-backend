@@ -153,9 +153,7 @@ export class AuditListResponseDto {
   @ApiProperty() limit: number;
 }
 
-export class MessageResponseDto {
-  @ApiProperty() message: string;
-}
+export { MessageResponseDto } from '../../../common/dto/message-response.dto';
 
 // ── Money (ARCHITECTURE §6: every monetary field is a STRING) ────────────────
 
@@ -196,30 +194,10 @@ export class WithdrawalListResponseDto {
   counts: Record<string, number>;
 }
 
-export class LedgerEntryDto {
-  @ApiProperty() id: string;
-  @ApiProperty() walletId: string;
-  @ApiProperty() userId: string;
-  @ApiProperty({ description: 'Signed monetary value as a string' })
-  amount: string;
-  @ApiProperty({ description: 'Running balance after this entry, as a string' })
-  balanceAfter: string;
-  @ApiProperty({
-    enum: ['deposit', 'withdrawal', 'commission', 'rebate', 'payout', 'adjustment'],
-  })
-  entryType: string;
-  @ApiProperty() referenceType: string;
-  @ApiProperty() referenceId: string;
-  @ApiProperty({ enum: ['USD', 'USDT'] }) currency: string;
-  @ApiProperty() createdAt: Date;
-}
-
-export class LedgerListResponseDto {
-  @ApiProperty({ type: [LedgerEntryDto] }) items: LedgerEntryDto[];
-  @ApiProperty() total: number;
-  @ApiProperty() page: number;
-  @ApiProperty() limit: number;
-}
+// Ledger DTOs live in the wallet module, which owns the ledger domain; admin
+// already depends on wallet. Re-exported so the schema names the admin frontend
+// aliases from types.gen.ts stay exactly as they were.
+export { LedgerEntryDto, LedgerListResponseDto } from '../../wallet/dto/wallet-response.dto';
 
 export class IbProgramDto {
   @ApiProperty() id: string;

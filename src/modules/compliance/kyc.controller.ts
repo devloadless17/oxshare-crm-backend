@@ -12,7 +12,14 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiTags, ApiOperation, ApiCookieAuth, ApiConsumes } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiCookieAuth,
+  ApiConsumes,
+  ApiOkResponse,
+  ApiBody,
+} from '@nestjs/swagger';
 import { diskStorage } from 'multer';
 import { Request } from 'express';
 import { randomUUID } from 'crypto';
@@ -21,6 +28,8 @@ import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { KycConfigStore } from '../../store/kyc-config.store';
+import { SaveKycStepDto, UploadKycFileDto } from './dto/kyc.dto';
+import { KycStatusDto, KycStepConfigDto } from './dto/kyc-response.dto';
 
 /**
  * Upload hardening.
@@ -82,12 +91,16 @@ export class KycController {
 
   @Get('config')
   @ApiOperation({ summary: 'Get active KYC onboarding steps' })
+  // A bare array, already filtered to enabled and ordered by stepNumber. An
+  // empty result is not a renderable "no config" state — see the DTO note.
+  @ApiOkResponse({ type: [KycStepConfigDto] })
   async getConfig() {
     return (await this.kycConfig.getSteps()).filter((s) => s.enabled);
   }
 
   @Get('status')
   @ApiOperation({ summary: 'Get current user KYC status and submitted data' })
+  @ApiOkResponse({ type: KycStatusDto })
   status(@Req() req: Request & { user: User }) {
     return this.kyc.getStatus(req.user.id);
   }
@@ -96,11 +109,8 @@ export class KycController {
   @ApiOperation({
     summary: 'Save data for a KYC step (personal/document/selfie/address)',
   })
-  saveStep(
-    @Req() req: Request & { user: User },
-    @Body() body: { step: string; data: Record<string, unknown> },
-  ) {
-    return this.kyc.saveStep(req.user.id, body.step, body.data);
+  saveStep(@Req() req: Request & { user: User }, @Body() dto: SaveKycStepDto) {
+    return this.kyc.saveStep(req.user.id, dto.step, dto.data);
   }
 
   @Post('upload')
@@ -108,6 +118,16 @@ export class KycController {
     summary: 'Upload a KYC file (doc_front, doc_back, selfie, address_proof)',
   })
   @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file', 'field'],
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        field: { type: 'string', example: 'doc_front' },
+      },
+    },
+  })
   @UseInterceptors(FileInterceptor('file', { storage: multerStorage, fileFilter }))
   uploadFile(
     @Req() req: Request & { user: User },
@@ -119,9 +139,9 @@ export class KycController {
       }),
     )
     file: Express.Multer.File & { path: string; originalname: string },
-    @Body('field') field: string,
+    @Body() dto: UploadKycFileDto,
   ) {
-    return this.kyc.attachFile(req.user.id, field, file.path, file.originalname);
+    return this.kyc.attachFile(req.user.id, dto.field, file.path, file.originalname);
   }
 
   @Post('submit')
