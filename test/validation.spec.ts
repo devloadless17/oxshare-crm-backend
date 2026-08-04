@@ -140,7 +140,7 @@ describe('R-2.2 the error envelope carries a field map', () => {
    * These assert the structure, not the prose.
    */
   it('names the field that failed, not just what went wrong', async () => {
-    const res = await request(app.getHttpServer())
+    const res = await request(server)
       .post('/auth/register')
       .send({ email: 'not-an-email', password: 'x' });
 
@@ -151,7 +151,7 @@ describe('R-2.2 the error envelope carries a field map', () => {
   });
 
   it('keeps the sentence list, so nothing reading it today breaks', async () => {
-    const res = await request(app.getHttpServer())
+    const res = await request(server)
       .post('/auth/register')
       .send({ email: 'not-an-email', password: 'x' });
 
@@ -160,7 +160,7 @@ describe('R-2.2 the error envelope carries a field map', () => {
   });
 
   it('gives one message per field, which is what a form renders', async () => {
-    const res = await request(app.getHttpServer())
+    const res = await request(server)
       .post('/auth/register')
       .send({ email: 'not-an-email', password: 'x' });
 
@@ -173,7 +173,7 @@ describe('R-2.2 the error envelope carries a field map', () => {
     // The old fallback was `body.error`, which for a 400 is the literal string
     // "Bad Request" — prose that changes when Nest changes, and that cannot
     // distinguish two different 400s from each other.
-    const res = await request(app.getHttpServer()).post('/auth/register').send({});
+    const res = await request(server).post('/auth/register').send({});
 
     expect(res.body.code).not.toBe('Bad Request');
     expect(res.body.code).toMatch(/^[A-Z_]+$/);
@@ -182,7 +182,7 @@ describe('R-2.2 the error envelope carries a field map', () => {
   it('omits `fields` entirely when the failure is not a validation failure', async () => {
     // A consumer checking `if (body.fields)` must not also have to check for an
     // empty object.
-    const res = await request(app.getHttpServer()).get('/admin/clients');
+    const res = await request(server).get('/admin/clients');
 
     expect(res.status).toBe(401);
     expect(res.body.fields).toBeUndefined();

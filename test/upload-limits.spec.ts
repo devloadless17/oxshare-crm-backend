@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Test } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
+import type { Server } from 'http';
 import { existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { KycController } from '../src/modules/compliance/kyc.controller';
@@ -47,6 +48,11 @@ function storedBytes(dir: string): number {
 interface Recorded {
   attached: { userId: string; field: string; path: string }[];
   failNext: boolean;
+}
+
+/** `app.getHttpServer()` is typed `any`; narrow it once rather than at every call. */
+function httpServer(app: INestApplication): Server {
+  return app.getHttpServer() as Server;
 }
 
 async function makeApp(recorded: Recorded): Promise<INestApplication> {
@@ -95,7 +101,7 @@ describe('KYC upload — size is bounded before anything is written', () => {
     const app = await makeApp(recorded);
 
     try {
-      await request(app.getHttpServer())
+      await request(httpServer(app))
         .post('/kyc/upload')
         .field('field', 'doc_front')
         .attach('file', Buffer.alloc(64 * 1024, 1), {
@@ -120,7 +126,7 @@ describe('KYC upload — size is bounded before anything is written', () => {
 
     try {
       // 11 MB against a 10 MB ceiling.
-      await request(app.getHttpServer())
+      await request(httpServer(app))
         .post('/kyc/upload')
         .field('field', 'doc_front')
         .attach('file', Buffer.alloc(11 * MB, 1), {
@@ -158,7 +164,7 @@ describe('KYC upload — size is bounded before anything is written', () => {
     const app = await makeApp(recorded);
 
     try {
-      await request(app.getHttpServer())
+      await request(httpServer(app))
         .post('/kyc/upload')
         .field('field', 'doc_front')
         .attach('file', Buffer.from('<script>alert(1)</script>'), {
@@ -182,7 +188,7 @@ describe('KYC upload — size is bounded before anything is written', () => {
     const before = existsSync(dir) ? readdirSync(dir) : [];
 
     try {
-      await request(app.getHttpServer())
+      await request(httpServer(app))
         .post('/kyc/upload')
         .field('field', 'doc_front')
         .attach('file', Buffer.alloc(1024, 1), {
