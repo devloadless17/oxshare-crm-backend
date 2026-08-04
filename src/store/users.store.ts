@@ -1,4 +1,4 @@
-import { and, count, desc, eq, ilike, or, sql, SQL } from 'drizzle-orm';
+import { and, count, desc, eq, sql, SQL } from 'drizzle-orm';
 import type { CursorPosition } from '../common/pagination';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -111,10 +111,29 @@ export class UsersStore {
       conditions.push(eq(users.verificationLevel, filter.level));
     }
     if (filter.q) {
-      // Case-insensitive prefix/substring across the three searchable columns.
-      const term = `%${filter.q}%`;
+      /*
+       * ONE predicate over the three searchable columns concatenated, matching
+       * the expression index in migration 0010 exactly.
+       *
+       * This was `ilike(email) OR ilike(first_name) OR ilike(last_name)`. A
+       * LEADING wildcard cannot use a b-tree, so the unique index on email did
+       * nothing for it and every keystroke was a sequential scan over the whole
+       * table — precisely the "unindexed filters" ARCHITECTURE §5 warns about at
+       * ~219,000 rows.
+       *
+       * pg_trgm's GIN index makes an infix ILIKE indexable, but ONLY when the
+       * query's expression is character-for-character what the index was built
+       * on. That is why this is written as one concatenation rather than three
+       * ORs, and why the coalesce and the separator are not cosmetic: change
+       * either here and the index silently stops being used, with nothing
+       * failing and only the query plan to tell you.
+       *
+       * The space separator also stops a match spanning a column boundary — a
+       * search for "n j" should not match first_name "John" against a
+       * neighbouring column's leading character.
+       */
       conditions.push(
-        or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))!,
+        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${filter.q}%`}`,
       );
     }
     /*
