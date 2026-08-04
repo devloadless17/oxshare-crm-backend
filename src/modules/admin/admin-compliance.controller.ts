@@ -41,6 +41,7 @@ import {
   RejectionReasonResponseDto,
 } from './dto/responses.dto';
 import {
+  AnyAdmin,
   AdminGuard,
   MasterAdminGuard,
   PermissionsGuard,
@@ -129,6 +130,10 @@ export class AdminComplianceController {
   }
 
   // ── Rejection reasons (FR-ADM-03 configurable list) ───────────────────────
+  @AnyAdmin(
+    'A shared reference list of configured reasons, shown beside the reject button on both the ' +
+      'KYC and withdrawal queues. Reading it reveals no client data; WRITING it is master-only.',
+  )
   @Get('rejection-reasons')
   @UseGuards(AdminGuard)
   @ApiCookieAuth()

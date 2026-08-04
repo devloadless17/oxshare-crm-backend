@@ -33,7 +33,7 @@ import {
   InviteResponseDto,
   MessageResponseDto,
 } from './dto/responses.dto';
-import { AdminGuard, PermissionsGuard, RequirePermissions } from './guards/admin.guard';
+import { AnyAdmin, AdminGuard, PermissionsGuard, RequirePermissions } from './guards/admin.guard';
 import { NoCsrf } from '../../common/security/csrf.guard';
 
 /** Admin sign-in, session refresh and the invitation flow. */
@@ -76,6 +76,10 @@ export class AdminAuthController {
       'when the token is missing would leave a user unable to log out — strictly ' +
       'worse for them than the nuisance it prevents.',
   )
+  @AnyAdmin(
+    'Ending your own session requires no privilege beyond having one, and gating it behind a ' +
+      'permission would leave an admin unable to log out of a panel they can already see.',
+  )
   @Post('auth/logout')
   @UseGuards(AdminGuard)
   @HttpCode(HttpStatus.OK)
@@ -86,6 +90,10 @@ export class AdminAuthController {
     return this.auth.logout(req.admin.id, res);
   }
 
+  @AnyAdmin(
+    'Returns the caller their OWN profile and resolved permissions. Every admin needs it on ' +
+      'every page load — it is what the nav gates on — and it exposes nothing they do not already hold.',
+  )
   @Get('auth/me')
   @UseGuards(AdminGuard)
   @ApiCookieAuth()

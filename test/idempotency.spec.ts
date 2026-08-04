@@ -124,20 +124,33 @@ describe('R-5.2 idempotent money requests', () => {
       Array.from({ length: 50 }, () => run('key-race', body, handler)),
     );
 
+    // THE guarantee, and the only one that is scheduling-independent: however
+    // the 50 interleave, the money moves once.
     expect(counter.runs).toBe(1);
 
-    // Every loser is refused, never silently given a half-written answer.
-    const rejected = results.filter((r) => r.status === 'rejected');
-    expect(rejected).toHaveLength(49);
-    for (const r of rejected) {
-      expect(r.reason).toBeInstanceOf(ConflictError);
-    }
-
-    const [row] = await ctx.db
+    // Exactly one key row exists — the UNIQUE index, doing the arbitration.
+    const rows = await ctx.db
       .select()
       .from(idempotencyKeys)
       .where(eq(idempotencyKeys.key, 'key-race'));
-    expect(row.responseStatus).toBe(201);
+    expect(rows).toHaveLength(1);
+
+    /*
+     * Every loser is either refused (409, the first request is still running) or
+     * given the identical stored answer (it had finished by then). Which of the
+     * two depends on timing, so asserting a specific split — "49 rejected" —
+     * tests the scheduler rather than the code, and duly flaked once in a full
+     * suite run. What must ALWAYS hold is that no loser gets a different answer
+     * and none of them causes a second effect.
+     */
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    expect(fulfilled.length).toBeGreaterThanOrEqual(1);
+    for (const r of fulfilled) {
+      expect(r.value).toEqual({ id: 'tx-race' });
+    }
+    for (const r of results.filter((r) => r.status === 'rejected')) {
+      expect(r.reason).toBeInstanceOf(ConflictError);
+    }
   });
 
   it('refuses the same key with a DIFFERENT body', async () => {

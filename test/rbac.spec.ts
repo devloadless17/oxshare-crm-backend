@@ -9,6 +9,7 @@ import { AdminAuditService } from '../src/modules/admin/admin-audit.service';
 import { AdminRbacService } from '../src/modules/admin/admin-rbac.service';
 import {
   AdminAuthenticator,
+  ANY_ADMIN_KEY,
   PermissionsGuard,
   PERMISSIONS_KEY,
 } from '../src/modules/admin/guards/admin.guard';
@@ -207,9 +208,15 @@ describe('AdminAuthenticator', () => {
 });
 
 describe('PermissionsGuard', () => {
-  function buildGuard(admin: Admin, required: string[] | undefined) {
+  function buildGuard(admin: Admin, required: string[] | undefined, anyAdmin?: string) {
     const authenticator = { authenticate: vi.fn().mockResolvedValue(admin) };
-    const reflector = { getAllAndOverride: vi.fn().mockReturnValue(required) };
+    // The guard asks for two keys: the required permissions, then — only when
+    // there are none — whether the route explicitly allows any admin.
+    const reflector = {
+      getAllAndOverride: vi
+        .fn()
+        .mockImplementation((key: string) => (key === ANY_ADMIN_KEY ? anyAdmin : required)),
+    };
     const guard = new PermissionsGuard(
       authenticator as unknown as AdminAuthenticator,
       reflector as unknown as Reflector,
@@ -222,8 +229,26 @@ describe('PermissionsGuard', () => {
     return { guard, context, reflector };
   }
 
-  it('allows a route with no @RequirePermissions', async () => {
+  it('DENIES a route that declares no permission at all (R-4.2)', async () => {
+    /*
+     * This test asserted the opposite until 4 Aug 2026, and in doing so it
+     * pinned the defect: `if (!required) return true` meant a controller
+     * decorated with @UseGuards(PermissionsGuard) but no @RequirePermissions
+     * admitted any authenticated admin. Coverage was complete, but by
+     * discipline — an endpoint that forgot the decorator looked exactly like one
+     * that never needed it, and no reviewer can tell those apart in a diff.
+     *
+     * The absence of a declaration is now a refusal, so the failure mode of
+     * forgetting is a 403 in development rather than an open door in production.
+     */
     const { guard, context } = buildGuard(SUB_ADMIN, undefined);
+    await expect(guard.canActivate(context)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('allows a route that explicitly declares @AnyAdmin', async () => {
+    // The escape hatch is a written decision, not an omission — and it still
+    // requires a valid admin session, since the authenticator runs first.
+    const { guard, context } = buildGuard(SUB_ADMIN, undefined, 'reads the shared reason list');
     await expect(guard.canActivate(context)).resolves.toBe(true);
   });
 

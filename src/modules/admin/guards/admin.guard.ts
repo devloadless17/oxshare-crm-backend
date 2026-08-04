@@ -89,6 +89,15 @@ export class MasterAdminGuard implements CanActivate {
 
 export const PERMISSIONS_KEY = 'required_permissions';
 
+/**
+ * "Any authenticated admin may do this" — stated, not assumed.
+ *
+ * The reason is required so the next reader sees a decision rather than an
+ * omission (PLATFORM-CONVENTIONS R-4.2).
+ */
+export const ANY_ADMIN_KEY = 'any_admin';
+export const AnyAdmin = (reason: string) => SetMetadata(ANY_ADMIN_KEY, reason);
+
 /** Route decorator: any ONE of the listed permissions grants access ('*' always does). */
 export const RequirePermissions = (...permissions: string[]) =>
   SetMetadata(PERMISSIONS_KEY, permissions);
@@ -114,7 +123,35 @@ export class PermissionsGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
-    if (!required || required.length === 0) return true;
+
+    /*
+     * DENY BY DEFAULT — PLATFORM-CONVENTIONS R-4.2.
+     *
+     * This used to be `if (!required) return true`, which meant a controller
+     * decorated with @UseGuards(PermissionsGuard) but no @RequirePermissions
+     * admitted ANY authenticated admin. Coverage happened to be complete, but by
+     * discipline: an endpoint that forgot the decorator was indistinguishable
+     * from one that never needed it, and reviewing a diff cannot tell them
+     * apart. That is how a money-moving route ends up open on a busy Friday.
+     *
+     * Now the absence of a declaration is a refusal. A route that genuinely
+     * needs no more than "is an authenticated admin" says so with @AnyAdmin(),
+     * which is a decision someone wrote down rather than one nobody made.
+     */
+    if (!required || required.length === 0) {
+      if (
+        this.reflector.getAllAndOverride<string>(ANY_ADMIN_KEY, [
+          context.getHandler(),
+          context.getClass(),
+        ])
+      ) {
+        return true;
+      }
+      throw new ForbiddenException(
+        'This action declares no required permission. Add @RequirePermissions(...) or, if any ' +
+          'authenticated admin may perform it, @AnyAdmin() with a reason.',
+      );
+    }
 
     if (admin.permissions.includes('*')) return true;
     const held = new Set(admin.permissions.map(normalize));
