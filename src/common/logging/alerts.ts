@@ -31,6 +31,8 @@ export const ALERT_KINDS = {
   WEBHOOK_SIGNATURE_FAILURE: 'bridge.signature_failure',
   /** The reconciliation job itself could not run — the ledger is UNCHECKED. */
   RECONCILIATION_UNAVAILABLE: 'reconciliation.unavailable',
+  /** A correctly-signed deal batch that this API could not parse at all. */
+  MT5_BATCH_REJECTED: 'bridge.batch_rejected',
 } as const;
 
 export type AlertKind = (typeof ALERT_KINDS)[keyof typeof ALERT_KINDS];
@@ -104,6 +106,10 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.REFRESH_TOKEN_REUSE]: {
     severity: 'page',
     rule: 'Any occurrence. A refresh token was replayed, which means a credential left the browser it was issued to.',
+  },
+  [ALERT_KINDS.MT5_BATCH_REJECTED]: {
+    severity: 'page',
+    rule: 'Any occurrence. The batch was correctly signed, so it IS our bridge — the two sides disagree about the payload shape. Nothing accrues while this holds, and the symptom is silence rather than errors: the bridge keeps posting, we keep answering 202, and partners go unpaid until somebody notices.',
   },
   [ALERT_KINDS.WEBHOOK_SIGNATURE_FAILURE]: {
     severity: 'notify',

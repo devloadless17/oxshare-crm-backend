@@ -14,17 +14,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { Request } from 'express';
 import { CommissionService } from '../partners/commission.service';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
-
-interface BridgeDeal {
-  ticket: number | string;
-  login: number | string;
-  symbol: string;
-  volume: string;
-  spread: string;
-  profit?: string;
-  opened_at?: string;
-  closed_at: string;
-}
+import { DealShapeError, parseDeal, readDealsArray } from './deal-payload';
 
 /**
  * The push half of MT5 ingestion (BRIDGE-CONTRACT, §3.1, §8.6).
@@ -62,46 +52,76 @@ export class Mt5WebhookController {
   async receiveDeals(@Req() req: Request & { rawBody?: Buffer }) {
     this.assertAuthentic(req);
 
-    const body = req.body as { deals?: BridgeDeal[] };
-    const incoming = Array.isArray(body?.deals) ? body.deals : [];
-    if (incoming.length === 0) {
-      throw new BadRequestException('Expected a non-empty `deals` array.');
+    /*
+     * The batch envelope is the one thing worth refusing outright: if there is
+     * no `deals` array at all, the bridge and this handler disagree about the
+     * contract, and answering 202 to that would report success for nothing.
+     */
+    let incoming: unknown[];
+    try {
+      incoming = readDealsArray(req.body);
+    } catch (error) {
+      throw new BadRequestException((error as Error).message);
     }
 
     let ingested = 0;
     let duplicates = 0;
     let accrued = 0;
     let failed = 0;
+    let rejected = 0;
 
     // Ordered by closed_at ascending per the contract, so a partial failure
     // can resume. One bad deal must not abort the batch.
-    for (const deal of incoming) {
+    for (const entry of incoming) {
+      /*
+       * Shape first, and OUTSIDE the ingest try/catch, so a malformed deal is
+       * distinguishable from a deal that failed to ingest. They need different
+       * responses: `failed` is ours to retry, `rejected` is the bridge sending
+       * something it should not, and collapsing them would let a contract break
+       * hide inside the normal failure count.
+       */
+      let deal;
       try {
-        const result = await this.commission.ingestAndAccrue({
-          mt5Ticket: String(deal.ticket),
-          mt5Login: String(deal.login),
-          symbol: deal.symbol,
-          volume: deal.volume,
-          spread: deal.spread,
-          profit: deal.profit,
-          openedAt: deal.opened_at ? new Date(deal.opened_at) : undefined,
-          closedAt: new Date(deal.closed_at),
-        });
+        deal = parseDeal(entry);
+      } catch (error) {
+        rejected += 1;
+        const field = error instanceof DealShapeError ? error.field : 'unknown';
+        this.logger.error(`Rejected malformed deal (${field}): ${(error as Error).message}`);
+        continue;
+      }
+
+      try {
+        const result = await this.commission.ingestAndAccrue(deal);
         if (result.created) ingested += 1;
         else duplicates += 1;
         accrued += result.accruals.length;
       } catch (error) {
         failed += 1;
-        this.logger.error(
-          `Failed to ingest deal ${String(deal.ticket)}: ${(error as Error).message}`,
-        );
+        this.logger.error(`Failed to ingest deal ${deal.mt5Ticket}: ${(error as Error).message}`);
       }
     }
 
+    /*
+     * A batch nobody could parse is a contract break, not bad luck. It is
+     * alerted rather than logged because the symptom otherwise is silence: the
+     * bridge keeps posting, we keep answering 202, and no commission accrues
+     * until someone notices partners are unpaid.
+     */
+    if (rejected === incoming.length) {
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.MT5_BATCH_REJECTED,
+        'page',
+        'Every deal in an authenticated MT5 batch failed shape validation.',
+        { received: incoming.length },
+      );
+    }
+
     this.logger.log(
-      `MT5 batch: ${ingested} ingested, ${duplicates} already seen, ${accrued} accruals, ${failed} failed`,
+      `MT5 batch: ${ingested} ingested, ${duplicates} already seen, ${accrued} accruals, ` +
+        `${failed} failed, ${rejected} rejected`,
     );
-    return { received: incoming.length, ingested, duplicates, accrued, failed };
+    return { received: incoming.length, ingested, duplicates, accrued, failed, rejected };
   }
 
   /**
