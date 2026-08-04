@@ -44,8 +44,10 @@ jobs:
 
       # Testcontainers starts its own Postgres 16; the runner's Docker is all
       # it needs. Tests run against the real committed migrations, never a mock.
+      # --coverage so the thresholds in vitest.config.mts actually bind. They are
+      # floors pinned to measured numbers, not aspirations, and may only go up.
       - name: Money-path tests (§11 reconciliation, idempotency, concurrency, two-level)
-        run: npm test
+        run: npm run test:coverage
 
       - name: Build
         run: npm run build

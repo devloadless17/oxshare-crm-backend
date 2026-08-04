@@ -191,6 +191,15 @@ export default tseslint.config(
   },
 
   {
+    // Root-level config files are not part of the app's tsconfig project graph,
+    // so type-aware rules cannot resolve them and report a parse error instead.
+    // `npm run lint` used to dodge this by globbing only {src,apps,libs,test},
+    // which meant nothing linted these files at all.
+    files: ['*.mjs', '*.mts', '*.js', 'drizzle.config.ts'],
+    ...tseslint.configs.disableTypeChecked,
+  },
+
+  {
     // Bootstrap and seeding legitimately write to stdout before a logger exists.
     files: ['src/main.ts', 'src/database/seed.ts'],
     rules: { 'no-console': 'off' },

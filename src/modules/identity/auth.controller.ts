@@ -20,7 +20,12 @@ import {
 import { Request, Response } from 'express';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
-import { AuthTokensResponseDto, MessageResponseDto, UserProfileDto } from './dto/auth-response.dto';
+import {
+  AuthTokensResponseDto,
+  MessageResponseDto,
+  RegistrationResponseDto,
+  UserProfileDto,
+} from './dto/auth-response.dto';
 import { RegisterDto, LoginDto, ResendVerificationDto } from './dto/auth.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { User } from '../../store/users.store';
@@ -33,7 +38,9 @@ export class AuthController {
   @Post('register')
   @Throttle({ default: { ttl: 3_600_000, limit: 10 } })
   @ApiOperation({ summary: 'Register a new portal user' })
-  @ApiCreatedResponse({ type: AuthTokensResponseDto })
+  // Returns { message, userId }, not tokens: the account is unverified until the
+  // emailed link is followed, so there is no session to hand back.
+  @ApiCreatedResponse({ type: RegistrationResponseDto })
   register(@Body() dto: RegisterDto) {
     return this.auth.register(dto);
   }

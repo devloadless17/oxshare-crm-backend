@@ -61,3 +61,23 @@ export class AuthTokensResponseDto {
   @ApiProperty({ description: 'Mirrors user.emailVerified; kept for older portal builds.' })
   emailVerified: boolean;
 }
+
+/**
+ * `POST /auth/register`.
+ *
+ * Registration does NOT return tokens — the account is unverified until the
+ * emailed link is followed, so there is no session to hand back yet. This was
+ * briefly documented as returning AuthTokensResponseDto, which was simply wrong;
+ * the portal's `register` page reads `.message`, and aliasing the generated type
+ * turned that mistake into a compile error in the portal. Transcribed from the
+ * live response.
+ */
+export class RegistrationResponseDto {
+  @ApiProperty({
+    example: 'Registration successful. Please check your email to verify your account.',
+  })
+  message: string;
+
+  @ApiProperty({ description: 'The new user id. No session exists until the email is verified.' })
+  userId: string;
+}
