@@ -13,13 +13,16 @@ import {
   ConflictError,
   ValidationError,
 } from '../../common/errors/domain-errors';
+import { CsrfService } from '../../common/security/csrf.service';
+import {
+  clearSessionCookie,
+  csrfCookieOptions,
+  sessionCookieNames,
+  sessionCookieOptions,
+} from '../../common/security/session-cookies';
 
-const COOKIE_OPTS = {
-  httpOnly: false, // Allow client JS access via js-cookie for Authorization header
-  sameSite: 'lax' as const,
-  secure: process.env['NODE_ENV'] === 'production',
-  path: '/',
-};
+const ACCESS_TTL_MS = 8 * 60 * 60 * 1000;
+const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class AuthService {
@@ -30,6 +33,7 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly email: EmailService,
     private readonly users: UsersStore,
+    private readonly csrf: CsrfService,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -123,7 +127,7 @@ export class AuthService {
     const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
     await this.users.update(user.id, { refreshToken: refreshHash });
 
-    this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken);
+    this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken, user.id);
 
     return {
       access_token: tokens.accessToken,
@@ -171,7 +175,7 @@ export class AuthService {
     const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
     await this.users.update(user.id, { refreshToken: refreshHash });
 
-    this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken);
+    this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken, user.id);
 
     return {
       access_token: tokens.accessToken,
@@ -183,8 +187,9 @@ export class AuthService {
   // ─── Logout ───────────────────────────────────────────────────────────────────
   async logout(userId: string, res: Response) {
     await this.users.update(userId, { refreshToken: undefined });
-    res.clearCookie('access_token');
-    res.clearCookie('refresh_token');
+    clearSessionCookie(res, sessionCookieNames.clientAccess());
+    clearSessionCookie(res, sessionCookieNames.clientRefresh());
+    clearSessionCookie(res, sessionCookieNames.csrf());
     return { message: 'Logged out successfully.' };
   }
 
@@ -218,15 +223,28 @@ export class AuthService {
     return { accessToken, refreshToken };
   }
 
-  private setAuthCookies(res: Response, accessToken: string, refreshToken: string) {
-    res.cookie('access_token', accessToken, {
-      ...COOKIE_OPTS,
-      maxAge: 8 * 60 * 60 * 1000, // 8h
-    });
-    res.cookie('refresh_token', refreshToken, {
-      ...COOKIE_OPTS,
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30d
-    });
+  /**
+   * Sets the session pair plus the anti-forgery token.
+   *
+   * Names and attributes come from common/security/session-cookies.ts, which
+   * explains why `__Host-` and app-unique names matter when many OxShare sites
+   * share one registrable domain (PLATFORM-CONVENTIONS §3.0). These cookies were
+   * previously httpOnly:false so the portal could read them for a Bearer header;
+   * that header was never what authenticated the request, and it put a 30-day
+   * refresh token within reach of any script on the origin.
+   */
+  private setAuthCookies(res: Response, accessToken: string, refreshToken: string, userId: string) {
+    res.cookie(sessionCookieNames.clientAccess(), accessToken, sessionCookieOptions(ACCESS_TTL_MS));
+    res.cookie(
+      sessionCookieNames.clientRefresh(),
+      refreshToken,
+      sessionCookieOptions(REFRESH_TTL_MS),
+    );
+    res.cookie(
+      sessionCookieNames.csrf(),
+      this.csrf.issue(userId),
+      csrfCookieOptions(CsrfService.TTL_MS),
+    );
   }
 
   private sanitize(user: User) {

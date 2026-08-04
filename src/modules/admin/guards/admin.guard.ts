@@ -12,6 +12,7 @@ import { Reflector } from '@nestjs/core';
 import { Admin, AdminsStore } from '../../../store/admins.store';
 import { RolesStore } from '../../../store/roles.store';
 import { Request } from 'express';
+import { COOKIE_BASES, readSessionCookie } from '../../../common/security/session-cookies';
 
 type AdminRequest = Request & { admin?: Admin };
 
@@ -31,7 +32,10 @@ export class AdminAuthenticator {
   ) {}
 
   async authenticate(req: AdminRequest): Promise<Admin> {
-    const token = req.cookies?.['admin_access_token'];
+    const token = readSessionCookie(
+      req.cookies as Record<string, string | undefined> | undefined,
+      COOKIE_BASES.adminAccess,
+    );
     if (!token) throw new UnauthorizedException('Admin authentication required.');
 
     let adminId: string;

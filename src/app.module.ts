@@ -18,6 +18,8 @@ import { PartnersModule } from './modules/partners/partners.module';
 import { ComplianceModule } from './modules/compliance/compliance.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { HealthModule } from './modules/health/health.module';
+import { SecurityModule } from './common/security/security.module';
+import { CsrfGuard } from './common/security/csrf.guard';
 
 @Module({
   imports: [
@@ -39,6 +41,7 @@ import { HealthModule } from './modules/health/health.module';
     DatabaseModule,
     StoreModule,
     EmailModule,
+    SecurityModule,
     HealthModule,
 
     // Domain modules
@@ -56,6 +59,18 @@ import { HealthModule } from './modules/health/health.module';
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
     // Global baseline throttle; sensitive routes tighten it with @Throttle.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    /*
+     * Origin validation + CSRF on every cookie-authenticated state change
+     * (PLATFORM-CONVENTIONS R-3.6). GLOBAL rather than per-route deliberately:
+     * a route that forgets to opt in looks exactly like one that never needed
+     * protecting, and that is how a money-moving endpoint ends up open. Routes
+     * with no session cookie are skipped automatically — login, the bridge
+     * webhook — so there is no list to maintain and nothing to forget.
+     */
+    // useExisting, not useClass: CsrfGuard's own dependencies (JwtService) live
+    // in SecurityModule, so instantiating a second copy here fails to resolve
+    // them. This reuses the instance that module already built.
+    { provide: APP_GUARD, useExisting: CsrfGuard },
   ],
 })
 export class AppModule implements NestModule {

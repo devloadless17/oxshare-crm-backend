@@ -10,7 +10,7 @@
     "start": "node dist/main",
     "dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "lint": "eslint . --max-warnings 20",
+    "lint": "eslint . --max-warnings 11",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
     "type-check": "tsc --noEmit",

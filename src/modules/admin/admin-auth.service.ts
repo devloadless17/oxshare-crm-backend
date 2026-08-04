@@ -15,9 +15,18 @@ import {
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { AdminRbacService } from './admin-rbac.service';
+import { CsrfService } from '../../common/security/csrf.service';
+import {
+  COOKIE_BASES,
+  clearSessionCookie,
+  csrfCookieOptions,
+  readSessionCookie,
+  sessionCookieNames,
+  sessionCookieOptions,
+} from '../../common/security/session-cookies';
 
-const ADMIN_COOKIE = 'admin_access_token';
-const ADMIN_REFRESH_COOKIE = 'admin_refresh_token';
+const ACCESS_TTL_MS = 8 * 60 * 60 * 1000;
+const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Admin sessions and the invite lifecycle.
@@ -37,6 +46,7 @@ export class AdminAuthService {
     private readonly roles: RolesStore,
     private readonly audit: AdminAuditService,
     private readonly rbac: AdminRbacService,
+    private readonly csrf: CsrfService,
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
@@ -51,14 +61,15 @@ export class AdminAuthService {
     const refreshHash = await bcrypt.hash(refreshToken, 10);
     await this.admins.update(admin.id, { refreshToken: refreshHash });
 
-    this.setAdminCookies(res, accessToken, refreshToken);
+    this.setAdminCookies(res, accessToken, refreshToken, admin.id);
     return { admin: await this.rbac.sanitize(admin), accessToken, refreshToken };
   }
   // ─── Admin Logout ──────────────────────────────────────────────────────────
   async logout(adminId: string, res: Response) {
     await this.admins.update(adminId, { refreshToken: undefined });
-    res.clearCookie(ADMIN_COOKIE);
-    res.clearCookie(ADMIN_REFRESH_COOKIE);
+    clearSessionCookie(res, sessionCookieNames.adminAccess());
+    clearSessionCookie(res, sessionCookieNames.adminRefresh());
+    clearSessionCookie(res, sessionCookieNames.csrf());
     return { message: 'Logged out.' };
   }
   // ─── Admin Me ──────────────────────────────────────────────────────────────
@@ -141,7 +152,7 @@ export class AdminAuthService {
     const { accessToken, refreshToken } = this.generateAdminTokens(admin);
     const refreshHash = await bcrypt.hash(refreshToken, 10);
     await this.admins.update(admin.id, { refreshToken: refreshHash });
-    this.setAdminCookies(res, accessToken, refreshToken);
+    this.setAdminCookies(res, accessToken, refreshToken, admin.id);
 
     return { message: 'Account created. Welcome aboard!', admin: await this.rbac.sanitize(admin) };
   }
@@ -163,25 +174,46 @@ export class AdminAuthService {
     const refreshToken = this.jwt.sign({ sub: admin.id }, { secret, expiresIn: '30d' });
     return { accessToken, refreshToken };
   }
-  private setAdminCookies(res: Response, accessToken: string, refreshToken: string) {
-    const cookieOpts = {
-      httpOnly: false,
-      sameSite: 'lax' as const,
-      secure: process.env['NODE_ENV'] === 'production',
-      path: '/',
-    };
-    res.cookie(ADMIN_COOKIE, accessToken, { ...cookieOpts, maxAge: 8 * 60 * 60 * 1000 });
-    res.cookie(ADMIN_REFRESH_COOKIE, refreshToken, {
-      ...cookieOpts,
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+  /**
+   * Sets the session pair plus the anti-forgery token.
+   *
+   * Names and attributes come from common/security/session-cookies.ts — see the
+   * §3.0 note there on why `__Host-` and app-unique names are load-bearing when
+   * many OxShare sites share one registrable domain. Nothing here writes a
+   * cookie name or a flag as a literal.
+   *
+   * The CSRF token is minted for THIS admin id and rotates on every login and
+   * refresh, so it can never outlive the session it proves.
+   */
+  private setAdminCookies(
+    res: Response,
+    accessToken: string,
+    refreshToken: string,
+    adminId: string,
+  ) {
+    res.cookie(sessionCookieNames.adminAccess(), accessToken, sessionCookieOptions(ACCESS_TTL_MS));
+    res.cookie(
+      sessionCookieNames.adminRefresh(),
+      refreshToken,
+      sessionCookieOptions(REFRESH_TTL_MS),
+    );
+    res.cookie(
+      sessionCookieNames.csrf(),
+      this.csrf.issue(adminId),
+      csrfCookieOptions(CsrfService.TTL_MS),
+    );
   }
   // ─── Admin Refresh ─────────────────────────────────────────────────────────
   async refresh(req: Request, res: Response) {
     const providedToken =
-      (req.cookies as Record<string, string>)?.[ADMIN_REFRESH_COOKIE] ||
-      (req.body as Record<string, string>)?.refreshToken ||
-      (req.headers as Record<string, string>)?.authorization?.replace('Bearer ', '');
+      // Cookie ONLY. The body and Authorization fallbacks are gone: two
+      // credential channels for one session means two threat models, and the
+      // root CLAUDE.md already described this path as cookie-only, which was
+      // true of AdminGuard and false here (PLATFORM-CONVENTIONS R-3.1).
+      readSessionCookie(
+        req.cookies as Record<string, string | undefined> | undefined,
+        COOKIE_BASES.adminRefresh,
+      );
 
     if (!providedToken) throw new AuthenticationError('No refresh token provided.');
 
@@ -216,7 +248,7 @@ export class AdminAuthService {
     const refreshHash = await bcrypt.hash(refreshToken, 10);
     await this.admins.update(admin.id, { refreshToken: refreshHash });
 
-    this.setAdminCookies(res, accessToken, refreshToken);
+    this.setAdminCookies(res, accessToken, refreshToken, admin.id);
 
     return { admin: await this.rbac.sanitize(admin), accessToken, refreshToken };
   }

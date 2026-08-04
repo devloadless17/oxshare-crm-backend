@@ -15,6 +15,7 @@ import {
 import { AdminsStore, type Admin } from '../src/store/admins.store';
 import { InvitesStore } from '../src/store/admins.store';
 import { RolesStore, type Role } from '../src/store/roles.store';
+import { sessionCookieNames } from '../src/common/security/session-cookies';
 
 // The RBAC surface had ZERO tests, which is how a missing `await` on the
 // anti-escalation guard shipped: the rejected promise was discarded and the
@@ -175,23 +176,31 @@ describe('AdminAuthenticator', () => {
     );
   }
 
-  const req = (cookies: Record<string, string>) => ({ cookies }) as never;
+  // The cookie NAME comes from the same source of truth the guard reads, so a
+  // rename cannot leave this test asserting against a name nothing sets.
+  const req = (token: string) =>
+    ({ cookies: { [sessionCookieNames.adminAccess()]: token } }) as never;
+
+  /** A request carrying no cookies at all — distinct from one carrying a bad token. */
+  const reqWithoutCookie = () => ({ cookies: {} }) as never;
 
   it('rejects a request with no admin cookie', async () => {
-    await expect(build(SUB_ADMIN).authenticate(req({}))).rejects.toThrow(UnauthorizedException);
+    await expect(build(SUB_ADMIN).authenticate(reqWithoutCookie())).rejects.toThrow(
+      UnauthorizedException,
+    );
   });
 
   it('REGRESSION C3: an unknown subject is rejected, never upgraded to the seeded master', async () => {
     // The old code fell back to findByEmail('admin@oxshare.com') here, so any
     // signed token with a stale `sub` became the master admin.
-    await expect(
-      build(undefined).authenticate(req({ admin_access_token: 'signed' })),
-    ).rejects.toThrow(UnauthorizedException);
+    await expect(build(undefined).authenticate(req('signed'))).rejects.toThrow(
+      UnauthorizedException,
+    );
   });
 
   it('resolves permissions from the role live, not from the token snapshot', async () => {
     const authenticator = build({ ...SUB_ADMIN, roleId: 'role-1' }, ['kyc.review']);
-    const admin = await authenticator.authenticate(req({ admin_access_token: 'signed' }));
+    const admin = await authenticator.authenticate(req('signed'));
     // Editing the role must take effect on the next request, with no re-login.
     expect(admin.permissions).toEqual(['kyc.review']);
   });

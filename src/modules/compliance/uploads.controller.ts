@@ -17,6 +17,7 @@ import { basename, join } from 'path';
 import { AdminsStore } from '../../store/admins.store';
 import { RolesStore } from '../../store/roles.store';
 import { KycStore } from '../../store/kyc.store';
+import { COOKIE_BASES, readSessionCookie } from '../../common/security/session-cookies';
 
 // KYC documents are PII (ARCHITECTURE §8.5): never served anonymously.
 // Same URL shape the static server used, so existing document URLs keep working:
@@ -59,7 +60,10 @@ export class UploadsController {
   }
 
   private async isAuthorized(req: Request, fileName: string): Promise<boolean> {
-    const adminToken = req.cookies?.['admin_access_token'];
+    const adminToken = readSessionCookie(
+      req.cookies as Record<string, string | undefined> | undefined,
+      COOKIE_BASES.adminAccess,
+    );
     if (adminToken) {
       try {
         const payload = this.jwt.verify<{ sub: string }>(adminToken, {
@@ -78,7 +82,10 @@ export class UploadsController {
       }
     }
 
-    const clientToken = req.cookies?.['access_token'];
+    const clientToken = readSessionCookie(
+      req.cookies as Record<string, string | undefined> | undefined,
+      COOKIE_BASES.clientAccess,
+    );
     if (clientToken) {
       try {
         const payload = this.jwt.verify<{ sub: string }>(clientToken, {

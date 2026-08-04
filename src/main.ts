@@ -58,7 +58,11 @@ async function bootstrap() {
     // which is exactly why it has to be right BEFORE anything calls the API
     // cross-origin, or the header is silently dropped and the chain breaks with
     // no error anywhere.
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
+    // X-OxShare-CSRF: the anti-forgery header (R-3.6). A header missing from
+    // this list is stripped by the browser with no error anywhere — the request
+    // simply arrives without it and fails the CSRF check for a reason nothing
+    // logs.
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'X-OxShare-CSRF'],
     // So a caller can read the id back off a response it did not set one on.
     exposedHeaders: ['X-Request-Id'],
   });

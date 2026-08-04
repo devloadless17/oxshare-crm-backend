@@ -34,6 +34,7 @@ import {
   MessageResponseDto,
 } from './dto/responses.dto';
 import { AdminGuard, PermissionsGuard, RequirePermissions } from './guards/admin.guard';
+import { NoCsrf } from '../../common/security/csrf.guard';
 
 /** Admin sign-in, session refresh and the invitation flow. */
 @ApiTags('admin')
@@ -52,6 +53,11 @@ export class AdminAuthController {
     return this.auth.login(dto.email, dto.password, res);
   }
 
+  @NoCsrf(
+    'Rotating a session the caller already holds grants no new authority, and a ' +
+      'refresh must keep working when the CSRF token has expired alongside the ' +
+      'access token — otherwise a returning user is locked out rather than renewed.',
+  )
   @Post('auth/refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Admin refresh token' })
@@ -60,6 +66,11 @@ export class AdminAuthController {
     return this.auth.refresh(req, res);
   }
 
+  @NoCsrf(
+    'Ending a session is not an attack worth defending against, and blocking it ' +
+      'when the token is missing would leave a user unable to log out — strictly ' +
+      'worse for them than the nuisance it prevents.',
+  )
   @Post('auth/logout')
   @UseGuards(AdminGuard)
   @HttpCode(HttpStatus.OK)

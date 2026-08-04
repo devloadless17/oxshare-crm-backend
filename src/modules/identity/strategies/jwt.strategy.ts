@@ -1,6 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
+import { COOKIE_BASES, readSessionCookie } from '../../../common/security/session-cookies';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { UsersStore } from '../../../store/users.store';
@@ -20,7 +21,13 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([
-        (req: Request) => req?.cookies?.['access_token'] ?? null,
+        // Cookie first, under both spellings — see session-cookies.ts on why the
+        // name gains a `__Host-` prefix once the deployment has TLS.
+        (req: Request) =>
+          readSessionCookie(
+            req?.cookies as Record<string, string | undefined> | undefined,
+            COOKIE_BASES.clientAccess,
+          ) ?? null,
         ExtractJwt.fromAuthHeaderAsBearerToken(),
       ]),
       ignoreExpiration: false,

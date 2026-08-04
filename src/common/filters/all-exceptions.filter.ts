@@ -42,6 +42,30 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
 /** Postgres error codes worth translating rather than leaking as a 500. */
 const PG_CONFLICT = '23505'; // unique_violation
 const PG_FK_VIOLATION = '23503'; // foreign_key_violation
+const PG_INVALID_TEXT = '22P02'; // invalid_text_representation — e.g. a non-UUID id
+
+/**
+ * Finds the Postgres error code, wherever the driver stack has buried it.
+ *
+ * This USED to read `exception.code` directly, and that stopped working the day
+ * drizzle-orm 0.45 landed: it wraps driver errors in its own
+ * `Failed query: …` Error and moves the original to `cause`. Nothing failed
+ * loudly — the wrapper simply has no `code`, so every unique violation and every
+ * foreign-key violation silently became a 500 instead of a 409 or a 400. The
+ * same wrapping broke a message assertion in money.spec, which is the only
+ * reason it was noticed at all.
+ *
+ * Walking the chain is version-proof: it finds the code whether the driver error
+ * is thrown bare or wrapped any number of times.
+ */
+function pgErrorCode(exception: unknown): string | undefined {
+  for (let error: unknown = exception, depth = 0; error && depth < 5; depth++) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'string') return code;
+    error = (error as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -113,7 +137,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     // 3. Database constraint violations — meaningful, not internal errors.
-    const pgCode = (exception as { code?: string })?.code;
+    const pgCode = pgErrorCode(exception);
     if (pgCode === PG_CONFLICT) {
       return {
         status: HttpStatus.CONFLICT,
@@ -126,6 +150,22 @@ export class AllExceptionsFilter implements ExceptionFilter {
         status: HttpStatus.BAD_REQUEST,
         message: 'A referenced record does not exist.',
         code: 'INVALID_REFERENCE',
+      };
+    }
+    /*
+     * A malformed identifier is the CALLER's mistake, not ours.
+     *
+     * `PATCH /admin/withdrawals/does-not-exist/approve` reached the SQL layer,
+     * Postgres rejected "does-not-exist" as a uuid, and the result was a 500 —
+     * so bad input from a typo'd URL was logged with a full stack as an
+     * unexpected server error, competing for attention with real incidents.
+     * Mapping it here covers every route at once, including ones written later.
+     */
+    if (pgCode === PG_INVALID_TEXT) {
+      return {
+        status: HttpStatus.BAD_REQUEST,
+        message: 'A value in the request is not a valid identifier.',
+        code: 'INVALID_IDENTIFIER',
       };
     }
 
