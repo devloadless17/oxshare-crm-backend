@@ -78,6 +78,13 @@
       "when": 1785846210356,
       "tag": "0010_client_list_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1785846270356,
+      "tag": "0011_password_reset",
+      "breakpoints": true
     }
   ]
 }

@@ -50,6 +50,28 @@ const HANDLER_AUTHENTICATED: Record<string, string> = {
 };
 
 const PUBLIC_ROUTES: Record<string, string> = {
+  /*
+   * Password reset — the caller is by definition someone who cannot sign in.
+   *
+   * Both are rate limited (R-3.5): forgot-password 3/hour, because it sends
+   * mail to an address the caller names and is otherwise a user-enumeration
+   * probe and a mail bomb aimed at someone else's inbox; reset-password 5/15min,
+   * because the token is 122 bits of randomness so guessing is not the threat —
+   * what needs bounding is an attacker grinding an unauthenticated lookup that
+   * touches the database on every attempt.
+   *
+   * forgot-password also answers identically whether or not the account exists,
+   * so being open here leaks nothing about who banks with OxShare.
+   */
+  'POST /auth/forgot-password':
+    'Requests a reset link; the caller cannot sign in. Throttled 3/hour, answer is identical for unknown addresses.',
+  'POST /identity/forgot-password':
+    'Alias of POST /auth/forgot-password — the same handler, registered under both prefixes.',
+  'POST /auth/reset-password':
+    'Completes a reset; the emailed token IS the authentication. Single use, 30-minute TTL, throttled 5/15min.',
+  'POST /identity/reset-password':
+    'Alias of POST /auth/reset-password — the same handler, registered under both prefixes.',
+
   // Establishing a session cannot require one.
   'POST /admin/auth/login': 'Establishes the admin session; credentials are the authentication.',
   'POST /auth/login': 'Establishes the client session; credentials are the authentication.',

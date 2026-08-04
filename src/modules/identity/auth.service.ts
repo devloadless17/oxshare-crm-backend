@@ -12,7 +12,7 @@ import {
   ConflictError,
   ValidationError,
 } from '../../common/errors/domain-errors';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { CsrfService } from '../../common/security/csrf.service';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
@@ -40,6 +40,19 @@ import {
  */
 const ACCESS_TTL_MS = 15 * 60 * 1000;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * SHA-256 of a reset token, hex.
+ *
+ * A fast hash on purpose. The token is 122 bits of randomness from
+ * `randomUUID`, so there is no guessable secret for a slow KDF to protect —
+ * argon2 here would buy nothing and add latency to an unauthenticated lookup an
+ * attacker can trigger at will. What this defends against is a database dump
+ * being replayable as reset links, and a digest is sufficient for that.
+ */
+function hashResetToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
 
 @Injectable()
 export class AuthService {
@@ -126,6 +139,92 @@ export class AuthService {
     this.logger.log(`Verification email re-sent to ${user.email}`);
 
     return { message: 'If that email exists and is unverified, a new link has been sent.' };
+  }
+
+  // ─── Password reset ─────────────────────────────────────────────────────────
+  //
+  // FR-CORE-09 · PLATFORM-CONVENTIONS R-3.5. The portal has had this UI live for
+  // months with no endpoint behind it — both calls 404'd, so a client who forgot
+  // their password had no recovery path and nothing explaining why.
+
+  /**
+   * Start a reset. ALWAYS answers the same, whether or not the account exists.
+   *
+   * An endpoint that says "no account with that email" is a membership oracle:
+   * anyone can test an address list against it and learn who banks here. That
+   * matters more for a broker than for most products, and it costs nothing to
+   * avoid — the honest-looking error is the vulnerability.
+   *
+   * The token is random and high-entropy; only its SHA-256 goes to the database,
+   * so a dump or a read-only injection cannot be turned into a working reset
+   * link (see schema.ts).
+   */
+  async requestPasswordReset(email: string) {
+    const generic = {
+      message: 'If an account exists for that address, a reset link is on its way.',
+    };
+
+    const user = await this.users.findByEmail(email);
+    if (!user) return generic;
+
+    // A suspended account must not be recoverable by its holder — reinstating it
+    // is an admin decision, and a working reset would route around that.
+    if (user.status === 'suspended') return generic;
+
+    const token = randomUUID();
+    await this.users.update(user.id, {
+      passwordResetTokenHash: hashResetToken(token),
+      // 30 minutes (R-3.5). Long enough to find the email, short enough that a
+      // link left in an inbox is not a standing key to the account.
+      passwordResetExpiry: new Date(Date.now() + 30 * 60 * 1000),
+    });
+
+    await this.email.sendPasswordResetEmail(user.email, token);
+    // The recipient, never the token — the link is a credential (R-6.3).
+    this.logger.log(`Password reset requested for ${user.email}`);
+    return generic;
+  }
+
+  /**
+   * Complete a reset.
+   *
+   * Single-use and time-boxed, and — the part that is easy to leave out — it
+   * REVOKES EVERY SESSION. Someone resetting a password is usually doing it
+   * because they believe they are compromised; leaving the attacker's 30-day
+   * refresh token alive would make the reset theatre.
+   */
+  async resetPassword(token: string, newPassword: string) {
+    const user = await this.users.findByPasswordResetTokenHash(hashResetToken(token));
+
+    // One message for "no such token" and "expired token". Distinguishing them
+    // tells an attacker which of their guesses was once real.
+    const invalid = new ValidationError(
+      'This reset link is invalid or has expired. Please request a new one.',
+    );
+    if (!user) throw invalid;
+    if (!user.passwordResetExpiry || user.passwordResetExpiry < new Date()) {
+      // Clear the dead token rather than leaving it to linger and be retried.
+      await this.users.update(user.id, {
+        passwordResetTokenHash: undefined,
+        passwordResetExpiry: undefined,
+      });
+      throw invalid;
+    }
+
+    await this.users.update(user.id, {
+      passwordHash: await this.passwords.hash(newPassword),
+      // Cleared in the same write as the new password: the token is spent the
+      // moment it works, so a replay finds nothing.
+      passwordResetTokenHash: undefined,
+      passwordResetExpiry: undefined,
+      refreshToken: undefined,
+    });
+
+    // Every refresh-token family for this user, not just the current one.
+    await this.refreshTokens.revokeAllForSubject('portal', user.id);
+
+    this.logger.log(`Password reset completed for ${user.email}; all sessions revoked`);
+    return { message: 'Your password has been updated. Please sign in again.' };
   }
 
   // ─── Login ────────────────────────────────────────────────────────────────────

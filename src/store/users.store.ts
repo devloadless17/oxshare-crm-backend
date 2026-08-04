@@ -18,6 +18,9 @@ export interface User {
   emailVerificationToken?: string;
   emailVerificationExpiry?: Date;
   refreshToken?: string;
+  /** SHA-256 of the emailed reset token — never the token itself. */
+  passwordResetTokenHash?: string;
+  passwordResetExpiry?: Date;
   country?: string;
   phone?: string;
   createdAt: Date;
@@ -31,6 +34,8 @@ const toUser = (r: Row): User => ({
   emailVerificationToken: r.emailVerificationToken ?? undefined,
   emailVerificationExpiry: r.emailVerificationExpiry ?? undefined,
   refreshToken: r.refreshToken ?? undefined,
+  passwordResetTokenHash: r.passwordResetTokenHash ?? undefined,
+  passwordResetExpiry: r.passwordResetExpiry ?? undefined,
   country: r.country ?? undefined,
   phone: r.phone ?? undefined,
 });
@@ -58,6 +63,23 @@ export class UsersStore {
     return row ? toUser(row) : undefined;
   }
 
+  /**
+   * Look a user up by the HASH of their reset token.
+   *
+   * The caller hashes the token it received; this never sees the token itself,
+   * which is the whole point of storing a digest (see schema.ts). Indexed,
+   * because this lookup is unauthenticated and an attacker can trigger it at
+   * will — without the index it is a sequential scan on demand.
+   */
+  async findByPasswordResetTokenHash(hash: string): Promise<User | undefined> {
+    const [row] = await this.db
+      .select()
+      .from(users)
+      .where(eq(users.passwordResetTokenHash, hash))
+      .limit(1);
+    return row ? toUser(row) : undefined;
+  }
+
   async findByVerificationToken(token: string): Promise<User | undefined> {
     const [row] = await this.db
       .select()
@@ -67,9 +89,30 @@ export class UsersStore {
     return row ? toUser(row) : undefined;
   }
 
+  /**
+   * Patch a user. A key present with `undefined` means CLEAR that column.
+   *
+   * Drizzle drops undefined values from `.set()`, which makes "clear this
+   * field" inexpressible and, when every value is undefined, throws "No values
+   * to set" — a runtime failure from what reads like an ordinary update. The
+   * password-reset expiry path hit exactly that: clearing a dead token is an
+   * update whose every field is a clear.
+   *
+   * `in` rather than a truthiness check, so omitting a key (leave it alone) and
+   * passing it as undefined (clear it) stay distinguishable — which is the
+   * distinction Drizzle's own behaviour loses.
+   */
   async update(id: string, patch: Partial<User>): Promise<User | undefined> {
     const { id: _ignored, createdAt: _also, ...rest } = patch;
-    const [row] = await this.db.update(users).set(rest).where(eq(users.id, id)).returning();
+
+    const values: Record<string, unknown> = {};
+    for (const key of Object.keys(rest)) {
+      const value = (rest as Record<string, unknown>)[key];
+      values[key] = value === undefined ? null : value;
+    }
+    if (Object.keys(values).length === 0) return this.findById(id);
+
+    const [row] = await this.db.update(users).set(values).where(eq(users.id, id)).returning();
     return row ? toUser(row) : undefined;
   }
 

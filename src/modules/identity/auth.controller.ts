@@ -27,7 +27,13 @@ import {
   RegistrationResponseDto,
   UserProfileDto,
 } from './dto/auth-response.dto';
-import { RegisterDto, LoginDto, ResendVerificationDto } from './dto/auth.dto';
+import {
+  RegisterDto,
+  LoginDto,
+  ResendVerificationDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
+} from './dto/auth.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { User } from '../../store/users.store';
 import { NoCsrf } from '../../common/security/csrf.guard';
@@ -74,6 +80,41 @@ export class AuthController {
       'protect. Requiring a token here also creates a lockout — an expired or ' +
       'absent token would make it impossible to log in and obtain a fresh one.',
   )
+  /*
+   * Password reset — FR-CORE-09 · R-3.5.
+   *
+   * Both routes are unauthenticated by necessity: the caller is someone who
+   * cannot sign in. That makes the rate limits part of the design rather than
+   * decoration.
+   */
+  @Post('forgot-password')
+  // 3 per hour per IP (R-3.5). This sends mail to an address the caller names,
+  // so without a limit it is both a user-enumeration probe and a mail bomb
+  // aimed at somebody else's inbox.
+  @Throttle({ default: { ttl: 3_600_000, limit: 3 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Request a password reset link — always answers the same, existing account or not',
+  })
+  @ApiOkResponse({ type: MessageResponseDto })
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.auth.requestPasswordReset(dto.email);
+  }
+
+  @Post('reset-password')
+  // 5 per 15 minutes. The token is 122 bits of randomness so guessing it is not
+  // the threat; what this bounds is an attacker grinding the unauthenticated
+  // lookup, which touches the database on every attempt.
+  @Throttle({ default: { ttl: 900_000, limit: 5 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Set a new password from a reset token — single use, and revokes every session',
+  })
+  @ApiOkResponse({ type: MessageResponseDto })
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.auth.resetPassword(dto.token, dto.newPassword);
+  }
+
   @Post('login')
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)

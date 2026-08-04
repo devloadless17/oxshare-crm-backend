@@ -56,6 +56,18 @@ export const users = pgTable(
       withTimezone: true,
     }),
     refreshToken: text('refresh_token'),
+    /*
+     * Password reset — a SHA-256 HASH of the token, never the token.
+     *
+     * The emailed token is a bearer credential that can take over an account.
+     * Storing it verbatim would mean a database dump, a leaked backup or a
+     * read-only SQL injection hands an attacker a working reset link for every
+     * user with one outstanding. Hashing costs nothing here — the token is
+     * high-entropy random, so a fast hash is sufficient and bcrypt/argon2 would
+     * only add latency to a lookup.
+     */
+    passwordResetTokenHash: varchar('password_reset_token_hash', { length: 64 }),
+    passwordResetExpiry: timestamp('password_reset_expiry', { withTimezone: true }),
     country: varchar('country', { length: 100 }),
     phone: varchar('phone', { length: 32 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
