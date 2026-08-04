@@ -8,6 +8,36 @@ export default defineConfig({
     include: ['src/**/*.spec.ts', 'test/**/*.spec.ts'],
     testTimeout: 120_000,
     hookTimeout: 180_000,
+
+    /*
+     * Test secrets, so the suite is hermetic.
+     *
+     * `AdminAuthModule` builds its JwtModule with
+     * `config.getOrThrow('ADMIN_JWT_SECRET')` — deliberately, since a JWT signed
+     * with a fallback secret is worse than a boot failure. But that makes every
+     * spec which boots AppModule (di-wiring, openapi-routes, validation) depend
+     * on a `.env` file that is gitignored and therefore does not exist on CI or
+     * in a fresh clone. Those three suites had been failing on CI for four
+     * commits with `Configuration key "ADMIN_JWT_SECRET" does not exist`, while
+     * every local run passed because every local machine has a .env.
+     *
+     * Declaring them here rather than in the workflow keeps "it passed locally"
+     * and "it passed in CI" the same statement — a fresh clone with no .env now
+     * runs the full suite. process.env takes precedence over the .env file in
+     * @nestjs/config, so these values win and the run is deterministic.
+     *
+     * They are obviously fake and over the 32-character minimum that
+     * config/env.validation.ts enforces. Nothing here weakens production: that
+     * validation still refuses to start without real secrets.
+     */
+    env: {
+      NODE_ENV: 'test',
+      ADMIN_JWT_SECRET: 'test-only-admin-secret-never-used-outside-vitest',
+      JWT_ACCESS_SECRET: 'test-only-access-secret-never-used-outside-vitest',
+      JWT_REFRESH_SECRET: 'test-only-refresh-secret-never-used-outside-vitest',
+      MT5_BRIDGE_SECRET: 'test-only-bridge-secret-never-used-outside-vitest',
+    },
+
     // One container, shared connection: money tests must observe each other's
     // concurrency, so they may not run in isolated parallel workers.
     fileParallelism: false,
