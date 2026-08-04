@@ -62,8 +62,9 @@ export class AdminMoneyController {
     @Query('state') state?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
   ) {
-    return this.money.listWithdrawals({ state, page, limit });
+    return this.money.listWithdrawals({ state, page, limit, cursor });
   }
 
   @Patch('withdrawals/:id/approve')
@@ -141,6 +142,7 @@ export class AdminMoneyController {
     @Query('entryType') entryType?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
   ) {
     return this.money.listLedger({
       userId,
@@ -148,6 +150,7 @@ export class AdminMoneyController {
       entryType,
       page,
       limit,
+      cursor,
     });
   }
 

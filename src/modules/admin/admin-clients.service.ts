@@ -4,6 +4,7 @@ import { UsersStore } from '../../store/users.store';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { buildCursorPage, decodeCursor, pageSize } from '../../common/pagination';
 import { AdminAuditService } from './admin-audit.service';
+import { assertActorCan } from '../../common/security/actor';
 
 /**
  * ADM-01 client directory and ADM-02 suspension.
@@ -74,6 +75,8 @@ export class AdminClientsService {
   }
   // ─── Client suspension (users.suspend) ────────────────────────────────────
   async setClientStatus(userId: string, status: 'active' | 'suspended', actor: Admin) {
+    // Suspension kills live sessions and blocks login — a real privilege.
+    assertActorCan(actor, 'users.suspend', 'suspend or reactivate a client');
     const user = await this.users.findById(userId);
     if (!user) throw new NotFoundError('Client not found.');
     if (user.status === status) {

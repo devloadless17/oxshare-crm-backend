@@ -29,9 +29,10 @@ export class AdminAuditController {
   listAuditLog(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
     @Query('action') action?: string,
     @Query('subjectType') subjectType?: string,
   ) {
-    return this.audit.listAuditLog({ page, limit, action, subjectType });
+    return this.audit.listAuditLog({ page, limit, cursor, action, subjectType });
   }
 }

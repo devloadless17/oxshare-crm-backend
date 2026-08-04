@@ -8,6 +8,8 @@ import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
+import { assertActorCan } from '../../common/security/actor';
+import { decodeCursor } from '../../common/pagination';
 
 /**
  * The money desk: withdrawal review (§8.4), the append-only ledger view
@@ -31,11 +33,14 @@ export class AdminMoneyService {
 
   // ─── Withdrawals (ADM-03 · §8.4) ──────────────────────────────────────────
   // Every transition here moves client money, so every one is audited.
-  async listWithdrawals(query: { state?: string; page?: string; limit?: string }) {
+  async listWithdrawals(query: { state?: string; page?: string; limit?: string; cursor?: string }) {
     return this.transactions.listForAdmin({
       state: query.state,
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '25', 10) || 25,
+      // R-2.4. This is a work queue an admin reads while clients keep
+      // submitting — the concurrent-insert case offset paging gets wrong.
+      cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
     });
   }
   /*
@@ -49,6 +54,9 @@ export class AdminMoneyService {
    * retried; an unrecorded payout cannot be un-made.
    */
   async approveWithdrawal(id: string, actor: Admin) {
+    // R-4.3: asserted HERE, not only in the guard. A guard runs on an HTTP
+    // request; this method is what a queued job would call.
+    assertActorCan(actor, 'withdrawals.approve', 'approve a withdrawal');
     return this.transactions.approve(id, actor.id, (tx, row) =>
       this.audit.recordWithin(tx, actor.id, 'withdrawal.approve', 'transaction', id, {
         amount: row.amount,
@@ -57,6 +65,7 @@ export class AdminMoneyService {
     );
   }
   async rejectWithdrawal(id: string, actor: Admin, reason?: string, reasonId?: string) {
+    assertActorCan(actor, 'withdrawals.approve', 'reject a withdrawal');
     // FR-ADM-03: the reason comes from the configurable list; free text is an
     // optional note alongside it.
     let effectiveReason = reason?.trim();
@@ -92,6 +101,8 @@ export class AdminMoneyService {
     return row;
   }
   async settleWithdrawal(id: string, actor: Admin, providerRef: string) {
+    // Settlement is the step that actually moves the money out.
+    assertActorCan(actor, 'withdrawals.approve', 'settle a withdrawal');
     const row = await this.transactions.settle(id, actor.id, providerRef, (tx, settled) =>
       this.audit.recordWithin(tx, actor.id, 'withdrawal.settle', 'transaction', id, {
         amount: settled.amount,
@@ -118,6 +129,7 @@ export class AdminMoneyService {
     entryType?: string;
     page?: string;
     limit?: string;
+    cursor?: string;
   }) {
     return this.wallets.listEntries({
       userId: query.userId,
@@ -125,6 +137,7 @@ export class AdminMoneyService {
       entryType: query.entryType as undefined,
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '50', 10) || 50,
+      cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
     });
   }
   // ─── Commission plans (ADM-10 · IB-06) ────────────────────────────────────
@@ -134,6 +147,8 @@ export class AdminMoneyService {
     return this.programs.findAll();
   }
   async createProgram(input: ProgramInput, actor: Admin) {
+    // A plan decides what every future accrual pays.
+    assertActorCan(actor, 'commissions.manage', 'create a commission plan');
     const row = await this.programs.create(input);
     this.audit.record(actor.id, 'program.create', 'ib_program', row.id, {
       name: row.name,
@@ -148,6 +163,7 @@ export class AdminMoneyService {
     return row;
   }
   async updateProgram(id: string, input: ProgramInput, actor: Admin) {
+    assertActorCan(actor, 'commissions.manage', 'update a commission plan');
     const before = await this.programs.findById(id);
     const row = await this.programs.update(id, input);
     this.audit.record(actor.id, 'program.update', 'ib_program', id, {
@@ -171,6 +187,7 @@ export class AdminMoneyService {
     return row;
   }
   async setProgramActive(id: string, active: boolean, actor: Admin) {
+    assertActorCan(actor, 'commissions.manage', 'activate or deactivate a commission plan');
     const row = await this.programs.setActive(id, active);
     this.audit.record(
       actor.id,

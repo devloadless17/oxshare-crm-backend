@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, gte, ne, sql } from 'drizzle-orm';
 import { transactions, users } from '../../database/schema';
 import { money, toDecimal } from '../wallet/money';
+import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
 import { MoneyLimits } from '../../config/money-limits';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
 import { DRIZZLE_DB } from '../../database/database.module';
@@ -158,16 +159,34 @@ export class TransactionsService {
     });
   }
 
-  async listForAdmin(filter: { state?: string; page?: number; limit?: number }) {
+  async listForAdmin(filter: {
+    state?: string;
+    page?: number;
+    limit?: number;
+    /** Keyset position — R-2.4. When present, `page` is ignored. */
+    cursor?: CursorPosition;
+  }) {
     const page = Math.max(1, filter.page ?? 1);
-    const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
+    const limit = pageSize(filter.limit);
     const db = this.db;
 
     const conditions = [eq(transactions.direction, 'withdrawal')];
     if (filter.state) {
       conditions.push(eq(transactions.state, filter.state as 'pending'));
     }
+    /*
+     * Keyset seek — R-2.4. This is the withdrawal QUEUE: an admin works down it
+     * while clients keep submitting, which is precisely the concurrent-insert
+     * case where offset paging skips a row. A skipped withdrawal is one nobody
+     * actions, and nothing about it looks wrong.
+     */
+    if (filter.cursor) {
+      conditions.push(
+        sql`(${transactions.createdAt}, ${transactions.id}) < (${filter.cursor.createdAt}::timestamptz, ${filter.cursor.id}::uuid)`,
+      );
+    }
     const where = and(...conditions);
+    const usingCursor = Boolean(filter.cursor) || page <= 1;
 
     const rows = await db
       .select({
@@ -190,9 +209,9 @@ export class TransactionsService {
       .from(transactions)
       .innerJoin(users, eq(transactions.userId, users.id))
       .where(where)
-      .orderBy(desc(transactions.createdAt))
-      .limit(limit)
-      .offset((page - 1) * limit);
+      .orderBy(desc(transactions.createdAt), desc(transactions.id))
+      .limit(limit + 1)
+      .offset(usingCursor ? 0 : (page - 1) * limit);
 
     const [{ value: total }] = await db
       .select({ value: sql<number>`count(*)::int` })
@@ -212,7 +231,16 @@ export class TransactionsService {
       counts['all'] += row.value;
     }
 
-    const items = rows.map((r) => ({
+    // `buildCursorPage` needs `id` and `createdAt`; the projection renames the
+    // latter to `requestedAt` for the API, so the page is built from the raw rows
+    // and the shaping happens after.
+    const paged = buildCursorPage(
+      rows.map((r) => ({ ...r, createdAt: r.requestedAt })),
+      limit,
+      total,
+    );
+
+    const items = paged.items.map((r) => ({
       id: r.id,
       amount: money(r.amount), // money crosses the boundary as a string
       currency: r.currency,
@@ -232,7 +260,7 @@ export class TransactionsService {
       },
     }));
 
-    return { items, total, page, limit, counts };
+    return { items, nextCursor: paged.nextCursor, total, page, limit, counts };
   }
 
   async listForUser(userId: string) {

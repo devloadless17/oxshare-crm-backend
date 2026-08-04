@@ -1700,6 +1700,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "cursor",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1912,6 +1920,14 @@
           },
           {
             "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
             "required": true,
             "in": "query",
             "schema": {
@@ -2364,6 +2380,14 @@
           },
           {
             "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
             "required": true,
             "in": "query",
             "schema": {

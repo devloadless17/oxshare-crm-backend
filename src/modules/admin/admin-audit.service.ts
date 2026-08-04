@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AdminsStore } from '../../store/admins.store';
 import { AuditLogStore } from '../../store/audit-log.store';
 import type { Executor } from '../../database/db';
+import { decodeCursor } from '../../common/pagination';
 
 /**
  * D-21 admin action log.
@@ -90,10 +91,20 @@ export class AdminAuditService {
     );
   }
 
-  listAuditLog(query: { page?: string; limit?: string; action?: string; subjectType?: string }) {
+  listAuditLog(query: {
+    page?: string;
+    limit?: string;
+    cursor?: string;
+    action?: string;
+    subjectType?: string;
+  }) {
     return this.auditLog.findAll({
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '25', 10) || 25,
+      // R-2.4. An audit trail with a gap is worse than none, because it is
+      // believed — and OFFSET over an append-only table that only grows is
+      // exactly where a gap appears.
+      cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
       action: query.action,
       subjectType: query.subjectType,
     });

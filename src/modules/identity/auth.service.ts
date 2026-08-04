@@ -25,7 +25,20 @@ import {
   sessionCookieOptions,
 } from '../../common/security/session-cookies';
 
-const ACCESS_TTL_MS = 8 * 60 * 60 * 1000;
+/*
+ * 15 minutes, not 8 hours — PLATFORM-CONVENTIONS R-3.3.
+ *
+ * An access token is checked by SIGNATURE on every request and against the
+ * database only on REFRESH, so its lifetime is exactly how long a revoked
+ * session keeps working: suspend an admin, and an 8-hour token kept them signed
+ * in for the rest of the working day.
+ *
+ * 15 minutes is affordable because the refresh path is already built — both
+ * frontends refresh proactively every 10 minutes and again on any 401, and
+ * rotation now detects replay (R-3.3). The cost is one extra round trip per 15
+ * minutes; the benefit is that revocation means something.
+ */
+const ACCESS_TTL_MS = 15 * 60 * 1000;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 @Injectable()
@@ -291,7 +304,7 @@ export class AuthService {
     const claims = { audience: TOKEN_AUDIENCE.portal, issuer: TOKEN_ISSUER };
     const accessToken = this.jwt.sign(payload, {
       secret: this.config.get<string>('JWT_ACCESS_SECRET', 'oxshare-access-secret-dev'),
-      expiresIn: '8h',
+      expiresIn: '15m',
       ...claims,
     });
 

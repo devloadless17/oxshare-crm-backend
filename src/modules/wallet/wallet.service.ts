@@ -6,6 +6,7 @@ import { ledgerEntries, wallets } from '../../database/schema';
 import { available, money, MoneyInput, toDecimal } from './money';
 import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { DRIZZLE_DB } from '../../database/database.module';
+import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
 
 /**
  * A database handle: either the pool or an open transaction.
@@ -254,16 +255,31 @@ export class WalletService {
     entryType?: LedgerEntryType;
     page?: number;
     limit?: number;
+    /** Keyset position — R-2.4. When present, `page` is ignored. */
+    cursor?: CursorPosition;
   }) {
     const page = Math.max(1, filter.page ?? 1);
-    const limit = Math.min(200, Math.max(1, filter.limit ?? 50));
+    const limit = pageSize(filter.limit);
     const db = this.db;
 
     const conditions = [];
     if (filter.walletId) conditions.push(eq(ledgerEntries.walletId, filter.walletId));
     if (filter.entryType) conditions.push(eq(ledgerEntries.entryType, filter.entryType));
     if (filter.userId) conditions.push(eq(wallets.userId, filter.userId));
+    /*
+     * Keyset seek — R-2.4. The ledger is append-only and never stops growing, so
+     * it reaches OFFSET depth faster than any other list here. It is also the
+     * one used FOR reconciliation (ADM-13): a page that silently skips an entry
+     * while new ones are written is a reconciliation that balances against the
+     * wrong set of rows.
+     */
+    if (filter.cursor) {
+      conditions.push(
+        sql`(${ledgerEntries.createdAt}, ${ledgerEntries.id}) < (${filter.cursor.createdAt}::timestamptz, ${filter.cursor.id}::uuid)`,
+      );
+    }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
+    const usingCursor = Boolean(filter.cursor) || page <= 1;
 
     const rows = await db
       .select({
@@ -281,9 +297,9 @@ export class WalletService {
       .from(ledgerEntries)
       .innerJoin(wallets, eq(ledgerEntries.walletId, wallets.id))
       .where(where)
-      .orderBy(desc(ledgerEntries.createdAt))
-      .limit(limit)
-      .offset((page - 1) * limit);
+      .orderBy(desc(ledgerEntries.createdAt), desc(ledgerEntries.id))
+      .limit(limit + 1)
+      .offset(usingCursor ? 0 : (page - 1) * limit);
 
     const [{ value: total }] = await db
       .select({ value: sql<number>`count(*)::int` })
@@ -291,7 +307,7 @@ export class WalletService {
       .innerJoin(wallets, eq(ledgerEntries.walletId, wallets.id))
       .where(where);
 
-    return { items: rows, total, page, limit };
+    return { ...buildCursorPage(rows, limit, total), page, limit };
   }
 
   /**
