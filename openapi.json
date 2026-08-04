@@ -1,0 +1,4271 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "description": "Dependency-free deliberately: restarting a healthy process because the database is briefly slow turns a blip into an outage. Use /health/ready to decide whether to send traffic.",
+        "operationId": "HealthController_liveness",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LivenessDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Liveness — is the process up? Checks no dependencies, by design.",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "HealthController_readiness",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Every required dependency is up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessDto"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "At least one required dependency is down. Same body, 503 status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Readiness — can this instance actually serve? Probes every dependency.",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "operationId": "AuthController_register[0]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrationResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Register a new portal user",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/identity/register": {
+      "post": {
+        "operationId": "AuthController_register[1]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrationResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Register a new portal user",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/verify-email": {
+      "get": {
+        "operationId": "AuthController_verifyEmail[0]",
+        "parameters": [
+          {
+            "name": "token",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Verify email via token from email link",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/identity/verify-email": {
+      "get": {
+        "operationId": "AuthController_verifyEmail[1]",
+        "parameters": [
+          {
+            "name": "token",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Verify email via token from email link",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/resend-verification": {
+      "post": {
+        "operationId": "AuthController_resendVerification[0]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResendVerificationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Resend email verification link",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/identity/resend-verification": {
+      "post": {
+        "operationId": "AuthController_resendVerification[1]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResendVerificationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Resend email verification link",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "operationId": "AuthController_login[0]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthTokensResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Login — also sets the JWT cookies (deliberately readable by JS, not httpOnly)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/identity/login": {
+      "post": {
+        "operationId": "AuthController_login[1]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthTokensResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Login — also sets the JWT cookies (deliberately readable by JS, not httpOnly)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "operationId": "AuthController_refresh[0]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthTokensResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Refresh access token",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/identity/refresh": {
+      "post": {
+        "operationId": "AuthController_refresh[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthTokensResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Refresh access token",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "AuthController_logout[0]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Logout — clears JWT cookies",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/identity/logout": {
+      "post": {
+        "operationId": "AuthController_logout[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Logout — clears JWT cookies",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "operationId": "AuthController_me[0]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserProfileDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Get current authenticated user",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/identity/me": {
+      "get": {
+        "operationId": "AuthController_me[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserProfileDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Get current authenticated user",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/trading/ping": {
+      "get": {
+        "operationId": "TradingController_ping",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Health ping for trading module",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/partners/ping": {
+      "get": {
+        "operationId": "PartnersController_ping",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Health ping for partners module",
+        "tags": [
+          "partners"
+        ]
+      }
+    },
+    "/wallet": {
+      "get": {
+        "operationId": "WalletController_myWallets",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WalletDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's wallets — balance, on_hold and available, all as strings",
+        "tags": [
+          "wallet"
+        ]
+      }
+    },
+    "/wallet/ledger": {
+      "get": {
+        "operationId": "WalletController_myLedger",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's own ledger entries",
+        "tags": [
+          "wallet"
+        ]
+      }
+    },
+    "/payments/withdrawals": {
+      "post": {
+        "operationId": "PaymentsController_requestWithdrawal",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended withdrawal, reused only when retrying that same one. Without it a double-clicked button creates two withdrawals and places two holds (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestWithdrawalDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Request a withdrawal — requires KYC level 1; reserves the amount on hold",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/payments/transactions": {
+      "get": {
+        "operationId": "PaymentsController_myTransactions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TransactionDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's own transactions",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/kyc/config": {
+      "get": {
+        "operationId": "KycController_getConfig",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/KycStepConfigDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Get active KYC onboarding steps",
+        "tags": [
+          "kyc"
+        ]
+      }
+    },
+    "/kyc/status": {
+      "get": {
+        "operationId": "KycController_status",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Get current user KYC status and submitted data",
+        "tags": [
+          "kyc"
+        ]
+      }
+    },
+    "/kyc/step": {
+      "post": {
+        "operationId": "KycController_saveStep",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveKycStepDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Save data for a KYC step (personal/document/selfie/address)",
+        "tags": [
+          "kyc"
+        ]
+      }
+    },
+    "/kyc/upload": {
+      "post": {
+        "operationId": "KycController_uploadFile",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file",
+                  "field"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "field": {
+                    "type": "string",
+                    "example": "doc_front"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Upload a KYC file (doc_front, doc_back, selfie, address_proof)",
+        "tags": [
+          "kyc"
+        ]
+      }
+    },
+    "/kyc/submit": {
+      "post": {
+        "operationId": "KycController_submit",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Submit KYC for review — all steps must be complete",
+        "tags": [
+          "kyc"
+        ]
+      }
+    },
+    "/kyc/reset": {
+      "post": {
+        "operationId": "KycController_reset",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Reset KYC submission for current user",
+        "tags": [
+          "kyc"
+        ]
+      }
+    },
+    "/uploads/kyc/{file}": {
+      "get": {
+        "operationId": "UploadsController_serveKycFile",
+        "parameters": [
+          {
+            "name": "file",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Serve a KYC document to its owner or a kyc.review admin",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/admin/auth/login": {
+      "post": {
+        "operationId": "AdminAuthController_login",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLoginResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Admin login",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/auth/refresh": {
+      "post": {
+        "operationId": "AdminAuthController_refresh",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLoginResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Admin refresh token",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/auth/logout": {
+      "post": {
+        "operationId": "AdminAuthController_logout",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Admin logout",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/auth/me": {
+      "get": {
+        "operationId": "AdminAuthController_me",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminProfileDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Get current admin",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/invite": {
+      "post": {
+        "operationId": "AdminAuthController_invite",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InviteDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Invite a new sub-admin with a role or explicit permissions (requires users.create)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/invite/validate": {
+      "get": {
+        "operationId": "AdminAuthController_validateInvite",
+        "parameters": [
+          {
+            "name": "token",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Validate invite token — returns email and name for pre-fill",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/invite/accept": {
+      "post": {
+        "operationId": "AdminAuthController_acceptInvite",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptInviteDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Accept invite and set password — logs admin in immediately",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/clients": {
+      "get": {
+        "operationId": "AdminClientsController_listClients",
+        "parameters": [
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "level",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Paginated, filterable client list",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/clients/{id}/status": {
+      "patch": {
+        "operationId": "AdminClientsController_setClientStatus",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientStatusDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Suspend or reactivate a client account (requires users.suspend)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/kyc": {
+      "get": {
+        "operationId": "AdminComplianceController_listKyc",
+        "parameters": [
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "List all KYC submissions, optionally filtered by status",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/kyc/{userId}": {
+      "get": {
+        "operationId": "AdminComplianceController_getKyc",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycSubmissionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Get full KYC submission for a user",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/kyc/{userId}/claim": {
+      "patch": {
+        "operationId": "AdminComplianceController_claimKyc",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycSubmissionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Claim a submitted KYC for review (sets under_review)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/kyc/{userId}/approve": {
+      "patch": {
+        "operationId": "AdminComplianceController_approveKyc",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycSubmissionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Approve KYC — bumps user verificationLevel to 1; returns the updated submission",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/kyc/{userId}/reject": {
+      "patch": {
+        "operationId": "AdminComplianceController_rejectKyc",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycSubmissionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Reject KYC with a reason (free text or a configured reasonId); returns the updated submission",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/rejection-reasons": {
+      "get": {
+        "operationId": "AdminComplianceController_listRejectionReasons",
+        "parameters": [
+          {
+            "name": "context",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RejectionReasonResponseDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "List configurable rejection reasons, optionally by context (kyc | withdrawal)",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "AdminComplianceController_createRejectionReason",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectionReasonDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RejectionReasonResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add a rejection reason (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/rejection-reasons/{id}": {
+      "put": {
+        "operationId": "AdminComplianceController_updateRejectionReason",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RejectionReasonResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Rename a rejection reason (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "operationId": "AdminComplianceController_deleteRejectionReason",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Delete a rejection reason (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/kyc-config": {
+      "get": {
+        "operationId": "AdminComplianceController_getKycConfig",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Get current KYC onboarding steps configuration",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "AdminComplianceController_updateKycConfig",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KycConfigDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update entire KYC onboarding steps configuration",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/kyc-config/steps": {
+      "post": {
+        "operationId": "AdminComplianceController_addKycStep",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KycStepDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add a new KYC step",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/kyc-config/steps/{id}": {
+      "put": {
+        "operationId": "AdminComplianceController_updateKycStep",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KycStepDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update a specific KYC step",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "operationId": "AdminComplianceController_deleteKycStep",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Delete a KYC step",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/kyc-config/reset": {
+      "post": {
+        "operationId": "AdminComplianceController_resetKycConfig",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Reset KYC steps to default",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/withdrawals": {
+      "get": {
+        "operationId": "AdminMoneyController_listWithdrawals",
+        "parameters": [
+          {
+            "name": "state",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Withdrawal requests with per-state counts (amounts are strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/withdrawals/{id}/approve": {
+      "patch": {
+        "operationId": "AdminMoneyController_approveWithdrawal",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalRowDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Approve a pending withdrawal — funds stay on hold until settlement",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/withdrawals/{id}/reject": {
+      "patch": {
+        "operationId": "AdminMoneyController_rejectWithdrawal",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WithdrawalRejectDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalRowDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Reject a pending withdrawal — releases the hold, emails the client",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/withdrawals/{id}/settle": {
+      "patch": {
+        "operationId": "AdminMoneyController_settleWithdrawal",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettleWithdrawalDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalRowDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark an approved withdrawal paid — posts the debit and clears the hold",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/reconciliation": {
+      "get": {
+        "description": "The same check the hourly job runs: every wallet balance against the sum of its own ledger, and every confirmed accrual against the entry that should have credited it. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed.",
+        "operationId": "AdminMoneyController_reconcile",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Run reconciliation now and return the report (§12.2)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/ledger": {
+      "get": {
+        "operationId": "AdminMoneyController_listLedger",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "walletId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entryType",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Append-only ledger, filterable for reconciliation",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/commission-plans": {
+      "get": {
+        "operationId": "AdminMoneyController_listPrograms",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IbProgramDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "IB programs / commission plans, ordered by ladder position",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "AdminMoneyController_createProgram",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProgramDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbProgramDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Create a commission plan (validated: shares ≤ 100%, mode/value coherence)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/commission-plans/{id}": {
+      "put": {
+        "operationId": "AdminMoneyController_updateProgram",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProgramDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbProgramDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update a commission plan — audited with before/after values",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/commission-plans/{id}/active": {
+      "patch": {
+        "operationId": "AdminMoneyController_setProgramActive",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProgramActiveDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbProgramDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Activate or deactivate a plan — plans are never deleted, accruals reference them",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/permissions": {
+      "get": {
+        "operationId": "AdminRbacController_getPermissions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/PermissionModuleDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Permission catalog grouped by module (requires roles.view or users.view)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/roles": {
+      "get": {
+        "operationId": "AdminRbacController_listRoles",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RoleResponseDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "List RBAC roles (requires roles.view or users.view)",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "AdminRbacController_createRole",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Create a custom role (requires roles.manage)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/roles/{id}": {
+      "put": {
+        "operationId": "AdminRbacController_updateRole",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoleDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update a custom role (requires roles.manage)",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "operationId": "AdminRbacController_deleteRole",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Delete a custom role (requires roles.manage)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/users": {
+      "get": {
+        "operationId": "AdminRbacController_listAdmins",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminProfileDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "List admin accounts (requires users.view)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/users/{id}": {
+      "patch": {
+        "operationId": "AdminRbacController_updateAdmin",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAdminDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminProfileDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update an admin’s name, role, or permissions (requires users.edit)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/audit-log": {
+      "get": {
+        "operationId": "AdminAuditController_listAuditLog",
+        "parameters": [
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subjectType",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Append-only admin action log (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "OxShare CRM API",
+    "description": "Forex/CFD Introducing-Broker CRM — Phase 1",
+    "version": "1.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      },
+      "cookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "access_token"
+      }
+    },
+    "schemas": {
+      "LivenessDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "timestamp": {
+            "type": "string",
+            "example": "2026-08-04T10:13:00.563Z"
+          },
+          "uptimeSeconds": {
+            "type": "number",
+            "description": "Seconds since the process started.",
+            "example": 1284
+          }
+        },
+        "required": [
+          "status",
+          "timestamp",
+          "uptimeSeconds"
+        ]
+      },
+      "DependencyHealthDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "postgres"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "not_configured"
+            ],
+            "description": "'not_configured' is deliberately distinct from 'down': a dependency we have not wired yet is not a fault, but hiding it would make this endpoint claim a coverage it does not have."
+          },
+          "latencyMs": {
+            "type": "number",
+            "description": "Round-trip time in milliseconds.",
+            "example": 3
+          },
+          "detail": {
+            "type": "string",
+            "description": "Why it is down. Never carries a connection string or credentials."
+          },
+          "required": {
+            "type": "boolean",
+            "description": "Whether a failure here makes the whole instance unready (503).",
+            "example": true
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "required"
+        ]
+      },
+      "ReadinessDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "not_ready"
+            ],
+            "description": "'not_ready' is served with HTTP 503 so a load balancer acts on it."
+          },
+          "timestamp": {
+            "type": "string",
+            "example": "2026-08-04T10:13:00.563Z"
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DependencyHealthDto"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "timestamp",
+          "dependencies"
+        ]
+      },
+      "RegisterDto": {
+        "type": "object",
+        "properties": {
+          "firstName": {
+            "type": "string",
+            "example": "John"
+          },
+          "lastName": {
+            "type": "string",
+            "example": "Doe"
+          },
+          "email": {
+            "type": "string",
+            "example": "john@example.com"
+          },
+          "password": {
+            "type": "string",
+            "example": "StrongPass123!",
+            "minLength": 8
+          },
+          "country": {
+            "type": "string",
+            "example": "US"
+          },
+          "phone": {
+            "type": "string",
+            "example": "+1234567890"
+          }
+        },
+        "required": [
+          "firstName",
+          "lastName",
+          "email",
+          "password"
+        ]
+      },
+      "RegistrationResponseDto": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "Registration successful. Please check your email to verify your account."
+          },
+          "userId": {
+            "type": "string",
+            "description": "The new user id. No session exists until the email is verified."
+          }
+        },
+        "required": [
+          "message",
+          "userId"
+        ]
+      },
+      "MessageResponseDto": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "Logged out."
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "ResendVerificationDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "john@example.com"
+          }
+        },
+        "required": [
+          "email"
+        ]
+      },
+      "LoginDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "john@example.com"
+          },
+          "password": {
+            "type": "string",
+            "example": "StrongPass123!"
+          },
+          "role": {
+            "type": "string",
+            "example": "CLIENT"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "UserProfileDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "example": "client@oxshare.com"
+          },
+          "firstName": {
+            "type": "string",
+            "example": "John"
+          },
+          "lastName": {
+            "type": "string",
+            "example": "Doe"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "individual",
+              "corporate"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "suspended"
+            ]
+          },
+          "verificationLevel": {
+            "type": "number",
+            "description": "KYC tier. 0 = unverified, 1 = approved.",
+            "example": 1
+          },
+          "emailVerified": {
+            "type": "boolean"
+          },
+          "country": {
+            "type": "string",
+            "example": "United Arab Emirates"
+          },
+          "phone": {
+            "type": "string",
+            "example": "+971501234567"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "firstName",
+          "lastName",
+          "type",
+          "status",
+          "verificationLevel",
+          "emailVerified",
+          "createdAt"
+        ]
+      },
+      "AuthTokensResponseDto": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/UserProfileDto"
+          },
+          "emailVerified": {
+            "type": "boolean",
+            "description": "Mirrors user.emailVerified; kept for older portal builds."
+          }
+        },
+        "required": [
+          "user",
+          "emailVerified"
+        ]
+      },
+      "WalletDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "balance": {
+            "type": "string",
+            "example": "700.00000000",
+            "description": "Decimal string (§6.1)."
+          },
+          "onHold": {
+            "type": "string",
+            "example": "0.00000000",
+            "description": "Reserved against pending withdrawals."
+          },
+          "available": {
+            "type": "string",
+            "example": "700.00000000",
+            "description": "balance − onHold, computed server-side so both sides agree."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "currency",
+          "balance",
+          "onHold",
+          "available",
+          "createdAt"
+        ]
+      },
+      "LedgerEntryDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "walletId": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string",
+            "description": "Signed monetary value as a string"
+          },
+          "balanceAfter": {
+            "type": "string",
+            "description": "Running balance after this entry, as a string"
+          },
+          "entryType": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal",
+              "commission",
+              "rebate",
+              "payout",
+              "adjustment"
+            ]
+          },
+          "referenceType": {
+            "type": "string"
+          },
+          "referenceId": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "walletId",
+          "userId",
+          "amount",
+          "balanceAfter",
+          "entryType",
+          "referenceType",
+          "referenceId",
+          "currency",
+          "createdAt"
+        ]
+      },
+      "LedgerListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LedgerEntryDto"
+            }
+          },
+          "total": {
+            "type": "number",
+            "description": "Total matching entries, ignoring pagination."
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "limit"
+        ]
+      },
+      "RequestWithdrawalDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "300.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "destination": {
+            "type": "string",
+            "description": "Payout target, e.g. an IBAN or a USDT address."
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "whish",
+              "usdt"
+            ]
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "destination",
+          "provider"
+        ]
+      },
+      "TransactionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "walletId": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "example": "300.00000000",
+            "description": "Decimal string (§6.1)."
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "success",
+              "failed"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "whish",
+              "usdt"
+            ]
+          },
+          "providerRef": {
+            "type": "object",
+            "description": "The provider's own reference. Backs UNIQUE(provider, provider_ref), which is what makes settlement idempotent in the database (§6.3)."
+          },
+          "destination": {
+            "type": "object"
+          },
+          "rejectionReason": {
+            "type": "object"
+          },
+          "reviewedBy": {
+            "type": "object"
+          },
+          "reviewedAt": {
+            "type": "object"
+          },
+          "settledAt": {
+            "type": "object"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "walletId",
+          "direction",
+          "amount",
+          "currency",
+          "state",
+          "createdAt"
+        ]
+      },
+      "KycFieldConfigDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "f-1"
+          },
+          "name": {
+            "type": "string",
+            "description": "Machine name the portal submits.",
+            "example": "firstName"
+          },
+          "label": {
+            "type": "string",
+            "example": "First Name"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "date",
+              "phone",
+              "select",
+              "file",
+              "camera",
+              "checkbox"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "options": {
+            "description": "Choices, for type: select.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hint": {
+            "type": "string",
+            "example": "As on your ID"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "label",
+          "type",
+          "required"
+        ]
+      },
+      "KycStepConfigDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "step-1"
+          },
+          "stepNumber": {
+            "type": "number",
+            "example": 1
+          },
+          "slug": {
+            "type": "string",
+            "description": "Submitted as the `step` key on POST /kyc/step.",
+            "example": "personal"
+          },
+          "title": {
+            "type": "string",
+            "example": "Personal Information"
+          },
+          "description": {
+            "type": "string"
+          },
+          "icon": {
+            "type": "string",
+            "description": "lucide icon name.",
+            "example": "User"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycFieldConfigDto"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "stepNumber",
+          "slug",
+          "title",
+          "enabled",
+          "fields"
+        ]
+      },
+      "KycDocumentStateDto": {
+        "type": "object",
+        "properties": {
+          "docType": {
+            "type": "string",
+            "example": "passport"
+          },
+          "frontFilePath": {
+            "type": "string"
+          },
+          "frontFileName": {
+            "type": "string"
+          },
+          "backFilePath": {
+            "type": "string"
+          },
+          "backFileName": {
+            "type": "string"
+          }
+        }
+      },
+      "KycFileStateDto": {
+        "type": "object",
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "docType": {
+            "type": "string",
+            "example": "utility_bill"
+          },
+          "page2FilePath": {
+            "type": "string",
+            "description": "Second page, for multi-page address proof."
+          }
+        }
+      },
+      "KycStatusDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "not_started",
+              "in_progress",
+              "submitted",
+              "under_review",
+              "approved",
+              "rejected"
+            ]
+          },
+          "personalInfo": {
+            "type": "object",
+            "description": "Free-form key/value bag whose keys come from the step configuration.",
+            "additionalProperties": true
+          },
+          "document": {
+            "$ref": "#/components/schemas/KycDocumentStateDto"
+          },
+          "selfie": {
+            "$ref": "#/components/schemas/KycFileStateDto"
+          },
+          "addressProof": {
+            "$ref": "#/components/schemas/KycFileStateDto"
+          },
+          "rejectionReason": {
+            "type": "string",
+            "description": "Set when status is rejected."
+          },
+          "rejectedFields": {
+            "description": "Field names the client must re-submit.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "submittedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reviewedBy": {
+            "type": "string"
+          },
+          "reviewedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userId",
+          "status",
+          "createdAt"
+        ]
+      },
+      "SaveKycStepDto": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "example": "personal"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": true,
+            "example": {
+              "firstName": "John",
+              "lastName": "Doe"
+            }
+          }
+        },
+        "required": [
+          "step",
+          "data"
+        ]
+      },
+      "AdminLoginDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "admin@oxshare.com"
+          },
+          "password": {
+            "type": "string",
+            "example": "admin123"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "AdminProfileDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "master_admin",
+              "sub_admin"
+            ]
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "roleId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "role",
+          "permissions",
+          "createdAt"
+        ]
+      },
+      "AdminLoginResponseDto": {
+        "type": "object",
+        "properties": {
+          "admin": {
+            "$ref": "#/components/schemas/AdminProfileDto"
+          }
+        },
+        "required": [
+          "admin"
+        ]
+      },
+      "InviteDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "new.admin@oxshare.com"
+          },
+          "name": {
+            "type": "string",
+            "example": "Jane Doe"
+          },
+          "roleId": {
+            "type": "string",
+            "description": "Existing role id to assign on acceptance."
+          },
+          "permissions": {
+            "description": "Explicit permission keys, when not assigning a role.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "email",
+          "name"
+        ]
+      },
+      "InviteResponseDto": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string",
+            "description": "Dev only — removed in production"
+          },
+          "inviteUrl": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "token",
+          "inviteUrl"
+        ]
+      },
+      "AcceptInviteDto": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Single-use token from the invitation email."
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8
+          }
+        },
+        "required": [
+          "token",
+          "password"
+        ]
+      },
+      "ClientRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "individual",
+              "referral",
+              "partner"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "pending",
+              "suspended"
+            ]
+          },
+          "verificationLevel": {
+            "type": "number",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "country": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "firstName",
+          "lastName",
+          "type",
+          "status",
+          "verificationLevel",
+          "createdAt"
+        ]
+      },
+      "ClientListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientRowDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "limit"
+        ]
+      },
+      "ClientStatusDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "suspended"
+            ],
+            "description": "Suspending blocks sign-in but preserves the client and their ledger history."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "KycDocumentDto": {
+        "type": "object",
+        "properties": {
+          "docType": {
+            "type": "string"
+          },
+          "frontFilePath": {
+            "type": "string"
+          },
+          "backFilePath": {
+            "type": "string"
+          },
+          "frontFileName": {
+            "type": "string"
+          },
+          "backFileName": {
+            "type": "string"
+          }
+        }
+      },
+      "KycSelfieDto": {
+        "type": "object",
+        "properties": {
+          "filePath": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          }
+        }
+      },
+      "KycAddressProofDto": {
+        "type": "object",
+        "properties": {
+          "docType": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "page2FilePath": {
+            "type": "string"
+          },
+          "page2FileName": {
+            "type": "string"
+          }
+        }
+      },
+      "KycUserDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "firstName",
+          "lastName"
+        ]
+      },
+      "KycSubmissionDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "not_started",
+              "in_progress",
+              "submitted",
+              "under_review",
+              "approved",
+              "rejected"
+            ]
+          },
+          "submittedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reviewedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reviewedBy": {
+            "type": "string"
+          },
+          "rejectionReason": {
+            "type": "string"
+          },
+          "rejectedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "personalInfo": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "document": {
+            "$ref": "#/components/schemas/KycDocumentDto"
+          },
+          "selfie": {
+            "$ref": "#/components/schemas/KycSelfieDto"
+          },
+          "addressProof": {
+            "$ref": "#/components/schemas/KycAddressProofDto"
+          },
+          "user": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/KycUserDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "userId",
+          "status"
+        ]
+      },
+      "KycListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycSubmissionDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "limit",
+          "counts"
+        ]
+      },
+      "RejectDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Free-text reason, when not using a configured reasonId."
+          },
+          "reasonId": {
+            "type": "string",
+            "description": "Id of a configured rejection reason."
+          },
+          "rejectedFields": {
+            "description": "Field names the client must re-submit, e.g. [\"doc_front\"].",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RejectionReasonResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "context": {
+            "type": "string",
+            "enum": [
+              "kyc",
+              "withdrawal"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "context",
+          "label",
+          "createdAt"
+        ]
+      },
+      "RejectionReasonDto": {
+        "type": "object",
+        "properties": {
+          "context": {
+            "type": "string",
+            "enum": [
+              "kyc",
+              "withdrawal"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "example": "Document expired"
+          }
+        },
+        "required": [
+          "context",
+          "label"
+        ]
+      },
+      "KycFieldDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "Machine name submitted by the portal.",
+            "example": "firstName"
+          },
+          "label": {
+            "type": "string",
+            "example": "First Name"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "date",
+              "phone",
+              "select",
+              "file",
+              "camera",
+              "checkbox"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "options": {
+            "description": "Choices, for type: select.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hint": {
+            "type": "string",
+            "example": "As shown on your ID"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "label",
+          "type",
+          "required"
+        ]
+      },
+      "KycStepDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "stepNumber": {
+            "type": "number",
+            "description": "Server-assigned ordering; ignored on create."
+          },
+          "slug": {
+            "type": "string",
+            "example": "personal"
+          },
+          "title": {
+            "type": "string",
+            "example": "Personal Information"
+          },
+          "description": {
+            "type": "string"
+          },
+          "icon": {
+            "type": "string",
+            "description": "lucide icon name.",
+            "example": "User"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycFieldDto"
+            }
+          }
+        },
+        "required": [
+          "slug",
+          "title",
+          "fields"
+        ]
+      },
+      "KycConfigDto": {
+        "type": "object",
+        "properties": {
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycStepDto"
+            }
+          }
+        },
+        "required": [
+          "steps"
+        ]
+      },
+      "WithdrawalUserDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "firstName",
+          "lastName"
+        ]
+      },
+      "WithdrawalRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string",
+            "description": "Monetary value — always a string, never a number"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "success",
+              "failure",
+              "rejected"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "providerRef": {
+            "type": "string",
+            "nullable": true
+          },
+          "destination": {
+            "type": "string",
+            "nullable": true
+          },
+          "rejectionReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "requestedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reviewedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "settledAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "user": {
+            "$ref": "#/components/schemas/WithdrawalUserDto"
+          }
+        },
+        "required": [
+          "id",
+          "amount",
+          "currency",
+          "state",
+          "provider",
+          "requestedAt",
+          "user"
+        ]
+      },
+      "WithdrawalListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WithdrawalRowDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "limit",
+          "counts"
+        ]
+      },
+      "WithdrawalRejectDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Free-text reason, when not using a configured reasonId."
+          },
+          "reasonId": {
+            "type": "string",
+            "description": "Id of a configured rejection reason."
+          }
+        }
+      },
+      "SettleWithdrawalDto": {
+        "type": "object",
+        "properties": {
+          "providerRef": {
+            "type": "string",
+            "example": "wise-tx-9f3a1c"
+          }
+        },
+        "required": [
+          "providerRef"
+        ]
+      },
+      "IbProgramDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "position": {
+            "type": "number"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "commission",
+              "rebate",
+              "hybrid"
+            ]
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "spread_share",
+              "per_lot",
+              "fixed_per_deal"
+            ]
+          },
+          "commissionValue": {
+            "type": "string",
+            "description": "Percentage or money depending on method — always a string"
+          },
+          "rebateValue": {
+            "type": "string",
+            "description": "Client rebate value — always a string"
+          },
+          "l1Share": {
+            "type": "string",
+            "description": "L1 share of the commission pool, percent as a string"
+          },
+          "l2Share": {
+            "type": "string",
+            "description": "L2 share of the commission pool, percent as a string"
+          },
+          "settlementWindowHours": {
+            "type": "number",
+            "description": "Hours accruals wait before confirming (§12.6)"
+          },
+          "rebateOnClose": {
+            "type": "boolean",
+            "description": "Credit the client rebate on deal close instead of after the window (§12.8)"
+          },
+          "selectable": {
+            "type": "boolean"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "position",
+          "mode",
+          "method",
+          "commissionValue",
+          "rebateValue",
+          "l1Share",
+          "l2Share",
+          "settlementWindowHours",
+          "rebateOnClose",
+          "selectable",
+          "active",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "ProgramDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Standard IB"
+          },
+          "description": {
+            "type": "string"
+          },
+          "position": {
+            "type": "number",
+            "description": "Display order in the plan list."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "commission",
+              "rebate",
+              "hybrid"
+            ]
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "spread_share",
+              "per_lot",
+              "fixed_per_deal"
+            ]
+          },
+          "commissionValue": {
+            "type": "string",
+            "example": "12.50000000",
+            "description": "Money/percent as a decimal string (§6.1) — never a number."
+          },
+          "rebateValue": {
+            "type": "string",
+            "example": "2.00000000"
+          },
+          "l1Share": {
+            "type": "string",
+            "example": "70.00000000",
+            "description": "Level-1 IB share, percent as a decimal string."
+          },
+          "l2Share": {
+            "type": "string",
+            "example": "30.00000000",
+            "description": "Level-2 IB share. Resolution stops at L2 — there is no L3."
+          },
+          "settlementWindowHours": {
+            "type": "number",
+            "description": "Hours an accrual is held before it can be confirmed.",
+            "minimum": 0
+          },
+          "rebateOnClose": {
+            "type": "boolean",
+            "description": "Pay the rebate on position close rather than on open."
+          },
+          "selectable": {
+            "type": "boolean",
+            "description": "Offer this plan to IBs for self-selection."
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "mode",
+          "method",
+          "commissionValue",
+          "l1Share",
+          "l2Share"
+        ]
+      },
+      "ProgramActiveDto": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active"
+        ]
+      },
+      "PermissionItemDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label"
+        ]
+      },
+      "PermissionModuleDto": {
+        "type": "object",
+        "properties": {
+          "moduleName": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PermissionItemDto"
+            }
+          }
+        },
+        "required": [
+          "moduleName",
+          "description",
+          "permissions"
+        ]
+      },
+      "RoleResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "isSystem": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "permissions",
+          "isSystem",
+          "createdAt"
+        ]
+      },
+      "RoleDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "KYC Reviewer"
+          },
+          "description": {
+            "type": "string"
+          },
+          "permissions": {
+            "example": [
+              "kyc.view",
+              "kyc.review"
+            ],
+            "description": "Permission keys from GET /admin/permissions.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "permissions"
+        ]
+      },
+      "UpdateRoleDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "UpdateAdminDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "roleId": {
+            "type": "string",
+            "description": "Reassign to an existing role."
+          },
+          "permissions": {
+            "description": "Direct permission grants.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "AuditEntryDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "actorId": {
+            "type": "string"
+          },
+          "actorEmail": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "subjectType": {
+            "type": "string"
+          },
+          "subjectId": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "actorId",
+          "actorEmail",
+          "action",
+          "subjectType",
+          "subjectId",
+          "createdAt"
+        ]
+      },
+      "AuditListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEntryDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "limit"
+        ]
+      }
+    }
+  }
+}

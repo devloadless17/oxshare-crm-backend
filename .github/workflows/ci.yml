@@ -59,3 +59,15 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # PLATFORM-CONVENTIONS R-1.3 — the API contract, checked rather than trusted.
+      #
+      # Both frontends generate their types from this document. Until it was
+      # committed, nothing verified the generated types still matched: the
+      # frontend pipelines type-check against their OWN committed types.gen.ts,
+      # so a backend shape change with no regeneration left all three builds
+      # green while the running system was broken. The admin workflow even
+      # carried a comment claiming it caught that; it never runs the backend, so
+      # it could not.
+      - name: API contract is up to date
+        run: node scripts/gen-openapi.mjs --check

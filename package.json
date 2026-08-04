@@ -20,7 +20,9 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "prepare": "husky",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "gen:openapi": "npm run build && node scripts/gen-openapi.mjs",
+    "check:openapi": "npm run build && node scripts/gen-openapi.mjs --check"
   },
   "dependencies": {
     "@casl/ability": "^6.7.2",
