@@ -17,6 +17,8 @@ import { Admin } from '../../store/admins.store';
 import { ClientStatusDto } from './dto/requests/clients.dto';
 import { ClientListResponseDto } from './dto/responses.dto';
 import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
+import { UuidParam, enumQuery, searchQuery } from '../../common/query-params';
+import { userStatusEnum, userTypeEnum } from '../../database/schema';
 
 /** Client directory and suspend/reinstate (ADM-01 / ADM-14). */
 @ApiTags('admin')
@@ -46,9 +48,15 @@ export class AdminClientsController {
       limit,
       cursor,
       withTotal,
-      q,
-      type,
-      status,
+      // Bounded because it reaches a trigram predicate: a very long term is
+      // cheap to send and expensive for Postgres to answer.
+      q: searchQuery(q),
+      // Both are Postgres enum columns compared behind a cast in
+      // `users.store.ts`, so an unrecognised value surfaced as a 500 carrying a
+      // database error rather than a 400 naming the field. `level` was already
+      // parsed in the service; these two were not.
+      type: enumQuery(type, userTypeEnum.enumValues, 'type'),
+      status: enumQuery(status, userStatusEnum.enumValues, 'status'),
       level,
     });
   }
@@ -61,7 +69,7 @@ export class AdminClientsController {
     summary: 'Suspend or reactivate a client account (requires users.suspend)',
   })
   setClientStatus(
-    @Param('id') id: string,
+    @Param('id', UuidParam) id: string,
     @Body() dto: ClientStatusDto,
     @Req() req: Request & { admin: Admin },
   ) {

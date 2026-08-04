@@ -39,6 +39,8 @@ import {
 } from './dto/responses.dto';
 import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
 import { ReconciliationService } from '../wallet/reconciliation.service';
+import { UuidParam, enumQuery } from '../../common/query-params';
+import { transactionStateEnum } from '../../database/schema';
 
 /** Withdrawal lifecycle, the ADM-13 ledger view and IB commission plans. */
 @ApiTags('admin')
@@ -64,7 +66,15 @@ export class AdminMoneyController {
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
   ) {
-    return this.money.listWithdrawals({ state, page, limit, cursor });
+    return this.money.listWithdrawals({
+      // `transactions.service.ts` compared this against a Postgres enum column
+      // behind a cast, so an unrecognised value came back as a 500 carrying a
+      // database error. Checked against the schema's own value list instead.
+      state: enumQuery(state, transactionStateEnum.enumValues, 'state'),
+      page,
+      limit,
+      cursor,
+    });
   }
 
   @Patch('withdrawals/:id/approve')
@@ -75,7 +85,7 @@ export class AdminMoneyController {
     summary: 'Approve a pending withdrawal — funds stay on hold until settlement',
   })
   @ApiOkResponse({ type: WithdrawalRowDto })
-  approveWithdrawal(@Param('id') id: string, @Req() req: Request & { admin: Admin }) {
+  approveWithdrawal(@Param('id', UuidParam) id: string, @Req() req: Request & { admin: Admin }) {
     return this.money.approveWithdrawal(id, req.admin);
   }
 
@@ -88,7 +98,7 @@ export class AdminMoneyController {
   })
   @ApiOkResponse({ type: WithdrawalRowDto })
   rejectWithdrawal(
-    @Param('id') id: string,
+    @Param('id', UuidParam) id: string,
     @Body() dto: WithdrawalRejectDto,
     @Req() req: Request & { admin: Admin },
   ) {
@@ -104,7 +114,7 @@ export class AdminMoneyController {
   })
   @ApiOkResponse({ type: WithdrawalRowDto })
   settleWithdrawal(
-    @Param('id') id: string,
+    @Param('id', UuidParam) id: string,
     @Body() dto: SettleWithdrawalDto,
     @Req() req: Request & { admin: Admin },
   ) {

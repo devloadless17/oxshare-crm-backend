@@ -14,6 +14,7 @@ import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swa
 import { AdminAuditService } from './admin-audit.service';
 import { AuditListResponseDto } from './dto/responses.dto';
 import { MasterAdminGuard } from './guards/admin.guard';
+import { searchQuery } from '../../common/query-params';
 
 /** Append-only admin action log (master admin only). */
 @ApiTags('admin')
@@ -33,6 +34,18 @@ export class AdminAuditController {
     @Query('action') action?: string,
     @Query('subjectType') subjectType?: string,
   ) {
-    return this.audit.listAuditLog({ page, limit, cursor, action, subjectType });
+    /*
+     * `action` and `subjectType` are varchar(100), not enums, so an odd value
+     * matches nothing rather than erroring — the risk here is size, not shape.
+     * Bounded to the column width: a term longer than the column cannot match
+     * any row anyway, so accepting one only buys the database a pointless scan.
+     */
+    return this.audit.listAuditLog({
+      page,
+      limit,
+      cursor,
+      action: searchQuery(action, 'action'),
+      subjectType: searchQuery(subjectType, 'subjectType'),
+    });
   }
 }

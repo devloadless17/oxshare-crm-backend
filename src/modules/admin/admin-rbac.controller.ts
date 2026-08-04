@@ -39,6 +39,7 @@ import {
   RoleResponseDto,
 } from './dto/responses.dto';
 import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
+import { UuidParam } from '../../common/query-params';
 
 /** Permission catalog, roles and the admin directory (RBAC-02/07). */
 @ApiTags('admin')
@@ -96,7 +97,7 @@ export class AdminRbacController {
   @ApiOperation({ summary: 'Update a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: RoleResponseDto })
   updateRole(
-    @Param('id') id: string,
+    @Param('id', UuidParam) id: string,
     @Body() dto: UpdateRoleDto,
     @Req() req: Request & { admin: Admin },
   ) {
@@ -109,7 +110,7 @@ export class AdminRbacController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: MessageResponseDto })
-  deleteRole(@Param('id') id: string, @Req() req: Request & { admin: Admin }) {
+  deleteRole(@Param('id', UuidParam) id: string, @Req() req: Request & { admin: Admin }) {
     return this.rbac.deleteRole(id, req.admin.id);
   }
 
@@ -132,7 +133,7 @@ export class AdminRbacController {
   })
   @ApiOkResponse({ type: AdminProfileDto })
   updateAdmin(
-    @Param('id') id: string,
+    @Param('id', UuidParam) id: string,
     @Body() dto: UpdateAdminDto,
     @Req() req: Request & { admin: Admin },
   ) {
