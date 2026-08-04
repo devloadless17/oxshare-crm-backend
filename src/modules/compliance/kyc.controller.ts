@@ -23,6 +23,7 @@ import {
 import { diskStorage } from 'multer';
 import { Request } from 'express';
 import { randomUUID } from 'crypto';
+import { unlink } from 'fs/promises';
 import { KycService } from './kyc.service';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
@@ -52,6 +53,26 @@ const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
   'image/webp': '.webp',
   'application/pdf': '.pdf',
 };
+
+/**
+ * The size ceiling, declared once and enforced where it actually stops bytes.
+ *
+ * `MaxFileSizeValidator` is a ParseFilePipe, and a pipe runs AFTER multer has
+ * already streamed the whole request body to disk. So the 10 MB limit this file
+ * advertised was real for the response and useless for the disk: an
+ * authenticated client could post a multi-gigabyte body, have every byte written
+ * under ./uploads/kyc, and only then receive a 413.
+ *
+ * That matters more here than it would elsewhere. KYC documents live on the API
+ * host's LOCAL DISK (ARCHITECTURE §8.5's private-S3 move is still pending), so
+ * the same volume holds every identity document the business is required to
+ * keep — and nothing throttles this route beyond the global 120/min.
+ *
+ * multer's own `limits` is the fix: it aborts the stream mid-flight, so the
+ * bytes are never written. The pipe validator stays as the second line, because
+ * it is what turns the abort into an honest 413 for the caller.
+ */
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 const multerStorage = diskStorage({
   destination: './uploads/kyc',
@@ -128,20 +149,40 @@ export class KycController {
       },
     },
   })
-  @UseInterceptors(FileInterceptor('file', { storage: multerStorage, fileFilter }))
-  uploadFile(
+  // `limits` is what actually stops the bytes — see MAX_UPLOAD_BYTES above.
+  // `files: 1` matters too: without it a client may post any number of parts
+  // under the field name, each one its own 10 MB.
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: multerStorage,
+      fileFilter,
+      limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+    }),
+  )
+  async uploadFile(
     @Req() req: Request & { user: User },
     @UploadedFile(
+      // Kept as the second line of defence. multer now rejects oversize bodies
+      // before they land, so in practice this fires only if the two numbers ever
+      // drift apart — which is why they now come from the same constant.
       new ParseFilePipe({
-        validators: [
-          new MaxFileSizeValidator({ maxSize: 10 * 1024 * 1024 }), // 10MB
-        ],
+        validators: [new MaxFileSizeValidator({ maxSize: MAX_UPLOAD_BYTES })],
       }),
     )
     file: Express.Multer.File & { path: string; originalname: string },
     @Body() dto: UploadKycFileDto,
   ) {
-    return this.kyc.attachFile(req.user.id, dto.field, file.path, file.originalname);
+    try {
+      return await this.kyc.attachFile(req.user.id, dto.field, file.path, file.originalname);
+    } catch (error) {
+      // The bytes are already on disk by the time the service runs. If recording
+      // them fails, the file is unreferenced by any submission — so it can never
+      // be served, never be reviewed, and never be cleaned up by anything else.
+      // Orphaned identity documents accumulating on the API host is both a disk
+      // problem and a data-retention one.
+      await unlink(file.path).catch(() => undefined);
+      throw error;
+    }
   }
 
   @Post('submit')
