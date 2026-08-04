@@ -19,6 +19,7 @@
   "GET /auth/me",
   "GET /auth/verify-email",
   "GET /health",
+  "GET /health/ready",
   "GET /identity/me",
   "GET /identity/verify-email",
   "GET /kyc/config",

@@ -1,0 +1,39 @@
+# Dependency scanning — PLATFORM-CONVENTIONS R-7.6.
+#
+# There was none, in any repo, and CI installs with `--no-audit`, so a published
+# CVE in a system that signs JWTs and moves client money could sit unnoticed
+# indefinitely. `npm audit` in CI (ci.yml) catches what is already installed;
+# this opens the PR that fixes it.
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ['dependencies']
+    groups:
+      # One PR for the routine noise. These cannot change money behaviour, and
+      # reviewing forty separate patch bumps is how real updates get ignored.
+      dev-dependencies:
+        dependency-type: development
+        update-types: ['minor', 'patch']
+      nest:
+        patterns: ['@nestjs/*']
+        update-types: ['minor', 'patch']
+
+    # ARCHITECTURE §2: "Do not use ^ ranges for decimal.js, drizzle-orm, or
+    # bullmq — a minor bump in any of those can change money behaviour or job
+    # semantics silently." They are pinned exactly in package.json, and they are
+    # deliberately EXCLUDED from every group above so each arrives as its own PR
+    # with its own changelog read. The pin means the bump is visible, not that it
+    # never happens.
+    ignore: []
+
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: monthly
+    labels: ['dependencies']

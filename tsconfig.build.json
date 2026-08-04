@@ -1,4 +1,26 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+  // `exclude` REPLACES the base list, it does not extend it — so every entry in
+  // tsconfig.json's exclude must be repeated here or it is silently lost.
+  //
+  // That is what happened to `drizzle.config.ts` (DECISIONS D-37): excluding it
+  // in tsconfig.json fixed `tsc --noEmit`, but `nest build` reads THIS file, kept
+  // compiling the root-level config, and therefore computed a common source root
+  // of `.` rather than `src`. Output landed in `dist/src/main.js` while
+  // `"start": "node dist/main"` pointed at `dist/main.js` — so the production
+  // start command could not start the process at all. Only `nest start --watch`
+  // worked, because it never reads this file.
+  //
+  // The fix is `include`, not a longer `exclude`. Excluding files one at a time
+  // is a losing game: `drizzle.config.ts` was excluded and `vitest.config.mts`
+  // then held the root at `.` on its own, and the next root-level config file
+  // would do it again — silently, since a shifted output directory is not an
+  // error, just a build whose entrypoint has moved.
+  //
+  // Naming `src/**/*` states the intent directly: the build compiles the
+  // application, and the common source root is `src` no matter what else sits
+  // beside package.json. Output is `dist/main.js`, which is what
+  // `"start": "node dist/main"` has always expected.
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "test", "**/*spec.ts"]
 }

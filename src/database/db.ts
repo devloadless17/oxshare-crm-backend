@@ -1,6 +1,11 @@
+import { Logger } from '@nestjs/common';
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema';
+
+// Nest's Logger, not console: this file runs inside the app, so its output has to
+// land in the same JSON stream (with the correlation id) as everything else.
+const logger = new Logger('Database');
 
 /** The drizzle instance. Also the type a transaction handle is assignable to. */
 export type Db = NodePgDatabase<typeof schema>;
@@ -34,6 +39,30 @@ export function getDb(): NodePgDatabase<typeof schema> {
       connectionTimeoutMillis: 10_000,
       statement_timeout: 30_000,
     });
+
+    // WITHOUT THIS HANDLER THE PROCESS DIES.
+    //
+    // `pg` emits 'error' on the Pool when an IDLE client's connection breaks —
+    // a database restart, a failover, an admin `pg_terminate_backend`, a network
+    // blip. An 'error' event with no listener is, in Node, an unhandled error:
+    // it does not reject a promise, it terminates the process.
+    //
+    // Verified by stopping Postgres under a running API (4 Aug 2026): the whole
+    // service exited with "terminating connection due to administrator command".
+    // Every instance would go down together on a routine database restart, and
+    // /health/ready could never report the outage because nothing was alive to
+    // answer it.
+    //
+    // Logging and swallowing is the correct handling: the pool discards the
+    // broken client and the next query opens a fresh one, so this is recoverable
+    // by design — it only looked fatal because nobody was listening. Queries
+    // in flight still reject normally and surface to their own callers.
+    pool.on('error', (error: Error) => {
+      logger.error(
+        `Idle Postgres client errored (pool will discard it and reconnect): ${error.message}`,
+      );
+    });
+
     instance = drizzle(pool, { schema });
   }
   return instance;

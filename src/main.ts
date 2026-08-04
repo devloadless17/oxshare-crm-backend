@@ -52,7 +52,15 @@ async function bootstrap() {
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    // X-Request-Id: both frontends generate a correlation id per request
+    // (PLATFORM-CONVENTIONS R-6.1). Today they reach us through their own-origin
+    // /api rewrite, so no preflight happens and this list is not consulted —
+    // which is exactly why it has to be right BEFORE anything calls the API
+    // cross-origin, or the header is silently dropped and the chain breaks with
+    // no error anywhere.
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
+    // So a caller can read the id back off a response it did not set one on.
+    exposedHeaders: ['X-Request-Id'],
   });
 
   // Swagger docs (available at /api/docs)

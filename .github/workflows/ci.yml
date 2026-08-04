@@ -27,6 +27,14 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
+      # PLATFORM-CONVENTIONS R-7.6. `--no-audit` above keeps the install quiet
+      # and fast; auditing is a separate, FAILING step rather than a line of
+      # install noise nobody reads. `high` and above only — a moderate advisory
+      # in a dev-only transitive dependency must not be able to block a fix to
+      # the money path.
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
       - name: Type-check
         run: npx tsc --noEmit
 

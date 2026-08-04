@@ -25,6 +25,35 @@ async function makeUser(email: string): Promise<string> {
   return row.id;
 }
 
+/**
+ * Assert a write was rejected by the §6.4 append-only TRIGGER.
+ *
+ * The trigger raises a Postgres error whose message contains "append-only", but
+ * WHERE that message ends up in the thrown JS error is a driver/ORM detail, not
+ * a property of the rule. drizzle-orm 0.45 wraps driver errors in its own
+ * `Failed query: …` message and moves the original to `cause`; matching the top
+ * level alone made this test fail on that upgrade while the trigger was working
+ * perfectly.
+ *
+ * So: walk the whole cause chain. A wrapper change can no longer break this test,
+ * and — more importantly — it can no longer make it pass for the wrong reason,
+ * because the assertion still demands the trigger's own words somewhere in it.
+ */
+async function expectRejectedAsAppendOnly(write: Promise<unknown>): Promise<void> {
+  const thrown = await write.then(
+    () => {
+      throw new Error('Expected the write to be rejected by the append-only trigger — it was not.');
+    },
+    (error: unknown) => error,
+  );
+
+  const chain: string[] = [];
+  for (let error: unknown = thrown; error instanceof Error; error = error.cause) {
+    chain.push(error.message);
+  }
+  expect(chain.join('\n')).toMatch(/append-only/);
+}
+
 beforeAll(async () => {
   resetDb();
   ctx = await startMoneyTestDb();
@@ -244,10 +273,8 @@ describe('§6.4 the ledger is append-only', () => {
       referenceId: 'ao1',
     });
 
-    await expect(ctx.db.execute(sql`UPDATE ledger_entries SET amount = '999'`)).rejects.toThrow(
-      /append-only/,
-    );
-    await expect(ctx.db.execute(sql`DELETE FROM ledger_entries`)).rejects.toThrow(/append-only/);
+    await expectRejectedAsAppendOnly(ctx.db.execute(sql`UPDATE ledger_entries SET amount = '999'`));
+    await expectRejectedAsAppendOnly(ctx.db.execute(sql`DELETE FROM ledger_entries`));
   });
 });
 
