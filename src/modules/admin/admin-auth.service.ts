@@ -63,7 +63,21 @@ export class AdminAuthService {
     await this.admins.update(admin.id, { refreshToken: refreshHash });
 
     this.setAdminCookies(res, accessToken, refreshToken, admin.id);
-    return { admin: await this.rbac.sanitize(admin), accessToken, refreshToken };
+    /*
+     * The tokens are NOT in the body, deliberately.
+     *
+     * They live in httpOnly cookies set on this response (R-3.2), and returning
+     * them here would hand JavaScript the very credential the cookie flag exists
+     * to keep away from it — where it lands in browser memory, the network tab,
+     * proxy logs and any error-reporting tool the page loads.
+     *
+     * It also had a concrete consequence: after the cookies became httpOnly, a
+     * frontend still running the old build kept reading these fields and writing
+     * its own JS-readable `admin_access_token` cookie from them. Cleaning the
+     * browser and logging in again reproduced it every time. Removing the fields
+     * makes that impossible rather than merely discouraged.
+     */
+    return { admin: await this.rbac.sanitize(admin) };
   }
   // ─── Admin Logout ──────────────────────────────────────────────────────────
   async logout(adminId: string, res: Response) {
@@ -256,6 +270,20 @@ export class AdminAuthService {
 
     this.setAdminCookies(res, accessToken, refreshToken, admin.id);
 
-    return { admin: await this.rbac.sanitize(admin), accessToken, refreshToken };
+    /*
+     * The tokens are NOT in the body, deliberately.
+     *
+     * They live in httpOnly cookies set on this response (R-3.2), and returning
+     * them here would hand JavaScript the very credential the cookie flag exists
+     * to keep away from it — where it lands in browser memory, the network tab,
+     * proxy logs and any error-reporting tool the page loads.
+     *
+     * It also had a concrete consequence: after the cookies became httpOnly, a
+     * frontend still running the old build kept reading these fields and writing
+     * its own JS-readable `admin_access_token` cookie from them. Cleaning the
+     * browser and logging in again reproduced it every time. Removing the fields
+     * makes that impossible rather than merely discouraged.
+     */
+    return { admin: await this.rbac.sanitize(admin) };
   }
 }

@@ -36,7 +36,18 @@ export class UserProfileDto {
 }
 
 /**
- * `POST /auth/login`, `/auth/register`, `/auth/refresh`.
+ * `POST /auth/login`, `/auth/refresh`.
+ *
+ * **No tokens in the body, deliberately.** The session is set as httpOnly
+ * cookies on the same response (PLATFORM-CONVENTIONS R-3.2); returning the
+ * tokens as well would hand JavaScript the exact credential that flag exists to
+ * keep away from it. While these fields existed, a portal running the previous
+ * build kept reading them and writing its own JS-readable `access_token` cookie,
+ * so clearing the browser and logging in again recreated the very exposure the
+ * migration removed.
+ *
+ * The name is now a slight misnomer — it carries no tokens — but renaming an
+ * exported DTO that both frontends alias is a separate, mechanical change.
  *
  * **snake_case, deliberately.** The portal endpoints answer `access_token` /
  * `refresh_token` while the admin API answers camelCase `accessToken` /
@@ -49,12 +60,6 @@ export class UserProfileDto {
  * New endpoints should use camelCase.
  */
 export class AuthTokensResponseDto {
-  @ApiProperty({ description: 'JWT. Also set as a readable cookie.' })
-  access_token: string;
-
-  @ApiProperty()
-  refresh_token: string;
-
   @ApiProperty({ type: UserProfileDto })
   user: UserProfileDto;
 

@@ -14,10 +14,23 @@ export class AdminProfileDto {
   @ApiProperty() createdAt: Date;
 }
 
+/**
+ * `POST /admin/auth/login`, `/admin/auth/refresh`, `/admin/invite/accept`.
+ *
+ * No tokens in the body, deliberately. The session is set as httpOnly cookies on
+ * the same response (PLATFORM-CONVENTIONS R-3.2); returning the tokens here as
+ * well would hand JavaScript the exact credential that flag exists to keep away
+ * from it, where it lands in browser memory, the network tab, proxy logs and any
+ * error-reporting tool the page loads.
+ *
+ * This is not hypothetical: while these fields existed, an admin app running the
+ * previous build kept reading them and writing its own JS-readable
+ * `admin_access_token` cookie — so clearing the browser and logging in again
+ * recreated the very exposure the migration removed. Removing the fields makes
+ * that impossible rather than merely discouraged.
+ */
 export class AdminLoginResponseDto {
   @ApiProperty({ type: AdminProfileDto }) admin: AdminProfileDto;
-  @ApiProperty() accessToken: string;
-  @ApiProperty() refreshToken: string;
 }
 
 export class KycUserDto {
