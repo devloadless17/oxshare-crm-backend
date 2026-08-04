@@ -4,6 +4,7 @@ import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { commissionAccruals, ledgerEntries, wallets } from '../../database/schema';
 import { money } from './money';
+import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 
 export interface WalletDiscrepancy {
   walletId: string;
@@ -173,6 +174,13 @@ export class ReconciliationService {
     }
 
     for (const d of report.walletDiscrepancies) {
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.RECONCILIATION_MISMATCH,
+        'page',
+        `Wallet ${d.walletId} balance disagrees with its ledger by ${d.difference}`,
+        { walletId: d.walletId, currency: d.currency, difference: d.difference },
+      );
       this.logger.error(
         `RECONCILIATION MISMATCH wallet ${d.walletId} (user ${d.userId}, ${d.currency}): ` +
           `balance ${d.balance} but ledger sums to ${d.ledgerSum} — difference ${d.difference}. ` +
@@ -182,6 +190,13 @@ export class ReconciliationService {
     }
 
     for (const a of report.unpaidConfirmedAccruals) {
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.UNPAID_CONFIRMED_ACCRUAL,
+        'page',
+        `Accrual ${a.accrualId} is confirmed but never credited`,
+        { accrualId: a.accrualId, amount: a.amount },
+      );
       this.logger.error(
         `RECONCILIATION MISMATCH accrual ${a.accrualId}: confirmed for IB ${a.ibUserId} at ` +
           `${a.amount} but no ledger entry credits it. This is commission earned and not paid.`,

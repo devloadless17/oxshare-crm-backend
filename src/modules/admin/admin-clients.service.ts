@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Admin } from '../../store/admins.store';
 import { UsersStore } from '../../store/users.store';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import { buildCursorPage, decodeCursor, pageSize } from '../../common/pagination';
 import { AdminAuditService } from './admin-audit.service';
 
 /**
@@ -22,13 +23,15 @@ export class AdminClientsService {
   async listClients(query: {
     page?: string;
     limit?: string;
+    cursor?: string;
+    withTotal?: string;
     q?: string;
     type?: string;
     status?: string;
     level?: string;
   }) {
     const page = Math.max(1, parseInt(query.page ?? '1', 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(query.limit ?? '25', 10) || 25));
+    const limit = pageSize(query.limit);
 
     // An unparseable ?level= used to become NaN and silently return nothing.
     let level: number | undefined;
@@ -40,15 +43,34 @@ export class AdminClientsService {
       level = parsed;
     }
 
-    const { items, total } = await this.users.findPage({
+    /*
+     * Cursor first, offset for one more release — R-2.4 / R-8.2.
+     *
+     * ADM-01 targets ~219,000 records, where offset paging is not merely slow
+     * but WRONG: a client registering while an admin reads page 3 shifts every
+     * later page, and one client is never seen — silently, since the reviewer
+     * believes they looked at everyone.
+     *
+     * `page` still works so both frontends can move at their own pace. It is the
+     * path to delete, not the one to extend.
+     */
+    const { rows, total } = await this.users.findPage({
       page,
       limit,
+      cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
+      // Counting is a full scan of the filtered set. Requested explicitly, or
+      // implied by the legacy offset caller, which renders a page count.
+      withTotal: query.withTotal === 'true' || (!query.cursor && query.page !== undefined),
       q: query.q?.trim() || undefined,
       type: query.type,
       status: query.status,
       level,
     });
-    return { items, total, page, limit };
+
+    const paged = buildCursorPage(rows, limit, total);
+    // `items` / `total` / `page` / `limit` stay for the existing callers;
+    // `nextCursor` is the additive half they migrate onto.
+    return { ...paged, page, limit, total: paged.total ?? rows.length };
   }
   // ─── Client suspension (users.suspend) ────────────────────────────────────
   async setClientStatus(userId: string, status: 'active' | 'suspended', actor: Admin) {

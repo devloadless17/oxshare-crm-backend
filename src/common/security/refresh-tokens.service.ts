@@ -4,6 +4,7 @@ import { and, eq, isNull, lt } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { refreshTokens } from '../../database/schema';
+import { ALERT_KINDS, raiseAlert } from '../logging/alerts';
 
 export type AuthSurface = 'admin' | 'portal';
 
@@ -109,6 +110,13 @@ export class RefreshTokensService {
       // REUSE. Burn the whole family down, including whatever the holder of the
       // newest token has.
       const revokedCount = await this.revokeFamily(row.familyId);
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.REFRESH_TOKEN_REUSE,
+        'page',
+        `A rotated refresh token was replayed on the ${params.surface} surface — a credential has left the browser it was issued to`,
+        { surface: params.surface, subjectId: row.subjectId, revokedCount },
+      );
       this.logger.warn(
         `Refresh token REUSE detected on the ${params.surface} surface for subject ` +
           `${row.subjectId}: a token rotated at ${row.usedAt.toISOString()} was presented again. ` +

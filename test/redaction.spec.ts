@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import type { Logger } from '@nestjs/common';
 import { REDACTED, redact, redactSecretsInText } from '../src/common/logging/redact';
+import { ALERT_KINDS, ALERT_THRESHOLDS, raiseAlert } from '../src/common/logging/alerts';
 
 /**
  * PLATFORM-CONVENTIONS R-6.3 — the never-log list, enforced at the sink.
@@ -111,5 +113,82 @@ describe('R-6.3 log redaction', () => {
   it('leaves ordinary prose and short ids alone', () => {
     const message = 'Withdrawal w-42 approved by admin 6d7a2682 for 250.00 USD';
     expect(redactSecretsInText(message)).toBe(message);
+  });
+});
+
+describe('§12.3 alert signals', () => {
+  /*
+   * ARCHITECTURE §9 says to set up alerting "before go-live, not after", and
+   * nothing existed. Choosing a paging provider is not an engineering decision,
+   * so this does the part that IS ours: make the signal unambiguous and
+   * machine-detectable, so wiring a provider later is a log-drain filter rather
+   * than archaeology.
+   */
+  it('emits one line carrying alert:true, a kind and a severity', () => {
+    const emitted: unknown[] = [];
+    const logger = { error: (payload: unknown) => emitted.push(payload) } as unknown as Logger;
+
+    raiseAlert(logger, ALERT_KINDS.RECONCILIATION_MISMATCH, 'page', 'wallet w-1 disagrees', {
+      walletId: 'w-1',
+    });
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      alert: true,
+      kind: 'reconciliation.mismatch',
+      severity: 'page',
+      context: { walletId: 'w-1' },
+    });
+  });
+
+  it('logs at error for BOTH severities', () => {
+    // A `page` buried at warn level is one filter mistake away from silence.
+    const levels: string[] = [];
+    const logger = {
+      error: () => levels.push('error'),
+      warn: () => levels.push('warn'),
+      log: () => levels.push('log'),
+    } as unknown as Logger;
+
+    raiseAlert(logger, ALERT_KINDS.REFRESH_TOKEN_REUSE, 'page', 'replayed');
+    raiseAlert(logger, ALERT_KINDS.WEBHOOK_SIGNATURE_FAILURE, 'notify', 'bad signature');
+
+    expect(levels).toEqual(['error', 'error']);
+  });
+
+  it('gives every kind a written threshold, so no alert routes on folklore', () => {
+    for (const kind of Object.values(ALERT_KINDS)) {
+      const threshold = ALERT_THRESHOLDS[kind];
+      expect(threshold, `${kind} has no threshold`).toBeDefined();
+      // A real sentence, not a placeholder — the rule is the decision.
+      expect(threshold.rule.length).toBeGreaterThan(40);
+      expect(['page', 'notify']).toContain(threshold.severity);
+    }
+  });
+
+  it('pages for anything that means money is wrong', () => {
+    // The judgement of what is worth a phone call belongs with the code that
+    // knows what the event means, not with whoever configures the drain.
+    for (const kind of [
+      ALERT_KINDS.RECONCILIATION_MISMATCH,
+      ALERT_KINDS.UNPAID_CONFIRMED_ACCRUAL,
+      ALERT_KINDS.COMMISSION_CEILING_BREACH,
+      ALERT_KINDS.REFRESH_TOKEN_REUSE,
+    ]) {
+      expect(ALERT_THRESHOLDS[kind].severity).toBe('page');
+    }
+  });
+
+  it('redacts an alert payload like anything else', () => {
+    // Alerts are logged, so they are subject to R-6.3. Nothing should ever put a
+    // token in `context`, but the sink must not depend on that being remembered.
+    const output = redact({
+      alert: true,
+      kind: ALERT_KINDS.REFRESH_TOKEN_REUSE,
+      context: { subjectId: 'u-1', token: 'leaked' },
+    }) as { context: Record<string, unknown> };
+
+    expect(output.context.token).toBe(REDACTED);
+    expect(output.context.subjectId).toBe('u-1');
   });
 });

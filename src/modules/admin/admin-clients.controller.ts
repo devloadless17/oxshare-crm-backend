@@ -34,6 +34,8 @@ export class AdminClientsController {
   listClients(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('withTotal') withTotal?: string,
     @Query('q') q?: string,
     @Query('type') type?: string,
     @Query('status') status?: string,
@@ -42,6 +44,8 @@ export class AdminClientsController {
     return this.clients.listClients({
       page,
       limit,
+      cursor,
+      withTotal,
       q,
       type,
       status,

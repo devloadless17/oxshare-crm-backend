@@ -14,6 +14,7 @@ import { IbNode, availableAt, calculate, resolveChain } from './commission';
 import Decimal from 'decimal.js';
 import { MoneyRuleError } from '../../common/errors/domain-errors';
 import { MoneyLimits } from '../../config/money-limits';
+import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 
@@ -135,6 +136,13 @@ export class CommissionService {
           'This is far more likely to be a wrong spread unit (DECISIONS D-11) or a ' +
           'misconfigured program than a genuine payout. Nothing has been accrued; the deal ' +
           'is re-ingestible once the configuration is corrected.';
+        raiseAlert(
+          this.logger,
+          ALERT_KINDS.COMMISSION_CEILING_BREACH,
+          'page',
+          `Accrual refused for deal ${deal.mt5Ticket}: ${accrual.amount} exceeds the ceiling`,
+          { mt5Ticket: deal.mt5Ticket, level: accrual.level, amount: accrual.amount },
+        );
         this.logger.error(message);
         throw new MoneyRuleError(message);
       }

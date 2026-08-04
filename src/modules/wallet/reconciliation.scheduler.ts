@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ReconciliationService } from './reconciliation.service';
+import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 
 /**
  * Runs reconciliation against live data, on a schedule.
@@ -35,6 +36,12 @@ export class ReconciliationScheduler {
        * read at 3am by someone who needs to know in one line whether money is
        * wrong or whether a query timed out.
        */
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.RECONCILIATION_UNAVAILABLE,
+        'notify',
+        'The reconciliation job could not run — the ledger is unchecked, not known-good',
+      );
       this.logger.error(
         'Reconciliation could not RUN (this is not itself a discrepancy — the ledger has not ' +
           `been checked, which is its own problem): ${

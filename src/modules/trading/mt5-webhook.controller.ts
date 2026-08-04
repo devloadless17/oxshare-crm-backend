@@ -13,6 +13,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { Request } from 'express';
 import { CommissionService } from '../partners/commission.service';
+import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 
 interface BridgeDeal {
   ticket: number | string;
@@ -144,6 +145,14 @@ export class Mt5WebhookController {
     const signedPayload = timestamp ? `${timestamp}.${raw.toString('utf8')}` : raw.toString('utf8');
     const expected = createHmac('sha256', secret).update(signedPayload).digest('hex');
     if (!constantTimeEquals(signature, expected)) {
+      // One is a misconfigured bridge; a burst is someone probing an endpoint
+      // that mints commission (§12.3).
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.WEBHOOK_SIGNATURE_FAILURE,
+        'notify',
+        'MT5 deal webhook signature verification failed',
+      );
       throw new UnauthorizedException('Bridge signature verification failed.');
     }
 
