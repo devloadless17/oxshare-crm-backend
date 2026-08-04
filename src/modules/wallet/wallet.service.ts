@@ -4,7 +4,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { getDb } from '../../database/db';
 import { ledgerEntries, wallets } from '../../database/schema';
 import { available, money, MoneyInput, toDecimal } from './money';
-import { MoneyRuleError, ValidationError } from '../../common/errors/domain-errors';
+import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { DRIZZLE_DB } from '../../database/database.module';
 
 /**
@@ -302,6 +302,11 @@ export class WalletService {
   async reconcile(walletId: string) {
     const db = this.db;
     const [wallet] = await db.select().from(wallets).where(eq(wallets.id, walletId)).limit(1);
+    // An unknown id used to reach `money(wallet.balance)` and throw a TypeError,
+    // which the filter answers as a 500 with a stack in the log — a caller's
+    // typo reported as a server fault. lockWallet() a few lines up already
+    // handles exactly this case correctly.
+    if (!wallet) throw new NotFoundError(`Wallet ${walletId} not found.`);
     const [{ total }] = await db
       .select({ total: sql<string>`coalesce(sum(${ledgerEntries.amount}), 0)::text` })
       .from(ledgerEntries)

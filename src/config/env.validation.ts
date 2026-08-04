@@ -46,6 +46,21 @@ const PROD_REQUIRED = [
   'ADMIN_JWT_SECRET',
   'JWT_ACCESS_SECRET',
   'JWT_REFRESH_SECRET',
+  // Mail was optional, and EmailService falls back to `smtp.example.com` with no
+  // auth — so a production deploy missing SMTP started cleanly and every
+  // verification link, KYC decision and withdrawal notification failed into a
+  // catch. CORE-08's withdrawal OTP will fail the same way when it lands. R-8.5's
+  // own principle is that config "does not warn, it does not degrade, it
+  // refuses"; this is the gap where it warned.
+  'SMTP_HOST',
+  'SMTP_USER',
+  'SMTP_PASS',
+  'SMTP_FROM',
+  // Absence already fails CLOSED — the MT5 webhook refuses every push without it
+  // (an unauthenticated deal feed can mint commission). But it fails at first
+  // use, and "no deals are arriving" is a silent revenue outage nobody is paged
+  // for. Fail at boot instead.
+  'MT5_BRIDGE_SECRET',
 ] as const;
 
 export function validateEnv(config: Record<string, unknown>): Record<string, unknown> {

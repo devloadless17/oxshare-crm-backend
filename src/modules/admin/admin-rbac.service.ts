@@ -12,6 +12,12 @@ import {
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 
+/** `config/permissions.json`, keyed by module. The single grantable vocabulary. */
+type PermissionCatalog = Record<
+  string,
+  { moduleName: string; description: string; permissions: { key: string; label: string }[] }
+>;
+
 /**
  * RBAC: the permission catalog, roles, admin users, and the anti-escalation
  * invariant that binds them.
@@ -31,14 +37,30 @@ export class AdminRbacService {
   ) {}
 
   // ─── RBAC: permission catalog ─────────────────────────────────────────────
-  getPermissionsCatalog() {
-    const file = path.join(__dirname, '../../config/permissions.json');
-    const fallback = path.join(process.cwd(), 'src/config/permissions.json');
-    const raw = fs.readFileSync(fs.existsSync(file) ? file : fallback, 'utf-8');
-    return JSON.parse(raw) as Record<
-      string,
-      { moduleName: string; description: string; permissions: { key: string; label: string }[] }
-    >;
+  /**
+   * The permission catalog, read from disk ONCE.
+   *
+   * This did a synchronous readFileSync + JSON.parse on every call, and
+   * `catalogKeys()` calls it again per invocation — so every `assertGrantable`,
+   * which is the anti-escalation check on every grant, did blocking file IO on
+   * the event loop. The file is a build artefact that cannot change while the
+   * process runs, so caching it is behaviour-identical.
+   *
+   * Cached at first use rather than in the constructor: the module resolution
+   * below depends on __dirname vs cwd, which differs between `nest start` and a
+   * compiled `dist` run, and resolving it lazily keeps that decision at the one
+   * moment both are known to be settled.
+   */
+  private static catalog: PermissionCatalog | null = null;
+
+  getPermissionsCatalog(): PermissionCatalog {
+    if (!AdminRbacService.catalog) {
+      const file = path.join(__dirname, '../../config/permissions.json');
+      const fallback = path.join(process.cwd(), 'src/config/permissions.json');
+      const raw = fs.readFileSync(fs.existsSync(file) ? file : fallback, 'utf-8');
+      AdminRbacService.catalog = JSON.parse(raw) as PermissionCatalog;
+    }
+    return AdminRbacService.catalog;
   }
   /** Every grantable key, from the catalog — the single vocabulary for roles. */
   private catalogKeys(): Set<string> {

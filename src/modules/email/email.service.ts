@@ -20,6 +20,23 @@ import * as nodemailer from 'nodemailer';
  * A failure logs the RECIPIENT and the REASON. Those are what make it
  * diagnosable; the token never was.
  */
+/**
+ * Escape a value before it goes into an email template.
+ *
+ * `firstName` comes from registration and `reason` from an admin, and both were
+ * interpolated raw into HTML. Mail clients block script, so this is not stored
+ * XSS — but a crafted name can forge the visual content of a "your withdrawal
+ * has been sent" message, which on a money system is the part that matters.
+ */
+function esc(value: string | undefined | null): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function failureReason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -123,15 +140,15 @@ export class EmailService {
         <h2 style="color: ${approved ? '#22c55e' : '#f87171'};">
           ${approved ? 'Your identity is verified' : 'Your KYC application needs correction'}
         </h2>
-        <p>Hello ${firstName || 'Valued Client'},</p>
+        <p>Hello ${esc(firstName) || 'Valued Client'},</p>
         ${
           approved
             ? `<p>Your KYC application has been approved. Your account has been upgraded to verification level 1 and all gated features are now unlocked.</p>`
             : `<p>Your KYC application has been reviewed and requires corrections before it can be approved.</p>
-             <p style="background: rgba(248,113,113,0.1); border: 1px solid rgba(248,113,113,0.3); border-radius: 8px; padding: 12px;"><strong>Reason:</strong> ${reason ?? ''}</p>
+             <p style="background: rgba(248,113,113,0.1); border: 1px solid rgba(248,113,113,0.3); border-radius: 8px; padding: 12px;"><strong>Reason:</strong> ${esc(reason)}</p>
              ${
                rejectedFields && rejectedFields.length > 0
-                 ? `<p><strong>Fields to correct:</strong> ${rejectedFields.join(', ')}</p>`
+                 ? `<p><strong>Fields to correct:</strong> ${rejectedFields.map(esc).join(', ')}</p>`
                  : ''
              }
              <p>Please log in, update the highlighted information, and resubmit.</p>`
@@ -180,9 +197,9 @@ export class EmailService {
         <h2 style="color: ${paid ? '#22c55e' : '#f87171'};">
           ${paid ? 'Your withdrawal has been sent' : 'Your withdrawal was declined'}
         </h2>
-        <p>Hello ${firstName || 'Valued Client'},</p>
-        <p>Withdrawal of <strong>${amount} ${currency}</strong> ${paid ? 'has been processed and sent to your nominated destination.' : 'could not be processed.'}</p>
-        ${!paid && reason ? `<p style="background: rgba(248,113,113,0.1); border: 1px solid rgba(248,113,113,0.3); border-radius: 8px; padding: 12px;"><strong>Reason:</strong> ${reason}</p><p>The reserved funds have been returned to your available balance and you may submit a new request.</p>` : ''}
+        <p>Hello ${esc(firstName) || 'Valued Client'},</p>
+        <p>Withdrawal of <strong>${esc(amount)} ${esc(currency)}</strong> ${paid ? 'has been processed and sent to your nominated destination.' : 'could not be processed.'}</p>
+        ${!paid && reason ? `<p style="background: rgba(248,113,113,0.1); border: 1px solid rgba(248,113,113,0.3); border-radius: 8px; padding: 12px;"><strong>Reason:</strong> ${esc(reason)}</p><p>The reserved funds have been returned to your available balance and you may submit a new request.</p>` : ''}
         <div style="margin: 30px 0;">
           <a href="${portalUrl}" style="background: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">Go to Portal</a>
         </div>
@@ -209,7 +226,7 @@ export class EmailService {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
         <h2 style="color: #3b82f6;">You're invited to OxShare Admin</h2>
-        <p>Hello ${name},</p>
+        <p>Hello ${esc(name)},</p>
         <p>You've been invited to join the OxShare back-office. Set your password to activate your account. The link expires in 48 hours.</p>
         <div style="margin: 30px 0;">
           <a href="${inviteUrl}" style="background: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">
