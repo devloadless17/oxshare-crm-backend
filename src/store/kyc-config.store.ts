@@ -15,6 +15,24 @@ export interface KycFieldConfig {
   hint?: string;
 }
 
+/**
+ * Steps the KYC flow cannot be configured without.
+ *
+ * FR-CORE-15 mandates the identity document, selfie and proof-of-address steps;
+ * FR-IND-03 mandates the profile step. The client portal submits by slug and the
+ * FSD's §14 acceptance criteria depend on all four existing and being enabled, so
+ * removing or disabling one silently breaks onboarding for every new client
+ * (DECISIONS D-29).
+ *
+ * The admin UI has always blocked this. The API did not — verified against a
+ * running server: `PUT /admin/kyc-config` accepted a config with `personal`
+ * disabled (200), and `DELETE /admin/kyc-config/steps/step-2` removed the identity
+ * document step (200). So the rule held only for users of one screen, and any
+ * script, integration or future admin client bypassed it. It is enforced in
+ * AdminComplianceService now, with this as the single definition.
+ */
+export const MANDATORY_KYC_SLUGS: readonly string[] = ['personal', 'document', 'selfie', 'address'];
+
 export interface KycStepConfig {
   id: string;
   stepNumber: number;

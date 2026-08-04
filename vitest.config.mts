@@ -37,10 +37,10 @@ export default defineConfig({
        * coverage across controllers and stores is a much weaker signal than those
        * four, so do not chase the percentage at their expense.
        */
-      // Raised after the request-validation spec landed. Measured 2026-08-04:
-      // statements 35.2, branches 18.9, functions 30.4, lines 36.0. Set a couple of
+      // Raised after the KYC-config rule spec landed. Measured 2026-08-04:
+      // statements 36.3, branches 20.5, functions 32.5, lines 37.0. Set a couple of
       // points under.
-      thresholds: { lines: 34, functions: 28, branches: 17, statements: 33 },
+      thresholds: { lines: 35, functions: 30, branches: 18, statements: 34 },
     },
   },
 });

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { KycConfigStore, KycStepConfig } from '../../store/kyc-config.store';
+import { KycConfigStore, KycStepConfig, MANDATORY_KYC_SLUGS } from '../../store/kyc-config.store';
 import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-reasons.store';
 import { KycService } from '../compliance/kyc.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
@@ -92,16 +92,69 @@ export class AdminComplianceService {
   getKycConfig() {
     return this.kycConfig.getSteps();
   }
-  updateKycConfig(steps: KycStepConfig[]) {
+  /**
+   * FR-CORE-15 / FR-IND-03, enforced here rather than only in the admin UI.
+   *
+   * `setSteps` replaces the whole configuration, so a payload that omits or
+   * disables a mandatory step silently removes it from onboarding — the portal
+   * filters /kyc/config to enabled steps. The admin screen has always blocked
+   * that; the API accepted it, which made the rule a property of one screen
+   * rather than of the system.
+   */
+  private assertMandatoryStepsIntact(steps: KycStepConfig[]): void {
+    const enabledSlugs = new Set(steps.filter((s) => s.enabled).map((s) => s.slug));
+    const missing = MANDATORY_KYC_SLUGS.filter((slug) => !enabledSlugs.has(slug));
+    if (missing.length > 0) {
+      throw new ValidationError(
+        `These KYC steps are required and must stay enabled: ${missing.join(', ')}. ` +
+          'They are mandated by FR-CORE-15/FR-IND-03 and the client portal submits by slug.',
+        { missing },
+      );
+    }
+  }
+
+  // `async` so this REJECTS rather than throwing synchronously. deleteKycStep and
+  // updateKycStep both await the current config before guarding, so they reject; a
+  // sibling that throws sync instead is a footgun for any caller that only handles
+  // one of the two.
+  async updateKycConfig(steps: KycStepConfig[]) {
+    this.assertMandatoryStepsIntact(steps);
     return this.kycConfig.setSteps(steps);
   }
   addKycStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>) {
     return this.kycConfig.addStep(stepData);
   }
-  updateKycStep(id: string, patch: Partial<KycStepConfig>) {
+  async updateKycStep(id: string, patch: Partial<KycStepConfig>) {
+    const steps = await this.kycConfig.getSteps();
+    const target = steps.find((s) => s.id === id);
+    if (target && MANDATORY_KYC_SLUGS.includes(target.slug)) {
+      // Disabling or re-slugging a mandatory step is the same removal by another
+      // route: the portal submits by slug and filters to enabled.
+      if (patch.enabled === false) {
+        throw new ValidationError(
+          `"${target.title}" is required by the KYC spec (FR-CORE-15) and cannot be disabled.`,
+          { slug: target.slug },
+        );
+      }
+      if (patch.slug !== undefined && patch.slug !== target.slug) {
+        throw new ValidationError(
+          `"${target.title}" is a required step and its slug cannot be changed — the client ` +
+            'portal submits by slug.',
+          { slug: target.slug },
+        );
+      }
+    }
     return this.kycConfig.updateStep(id, patch);
   }
-  deleteKycStep(id: string) {
+  async deleteKycStep(id: string) {
+    const steps = await this.kycConfig.getSteps();
+    const target = steps.find((s) => s.id === id);
+    if (target && MANDATORY_KYC_SLUGS.includes(target.slug)) {
+      throw new ValidationError(
+        `"${target.title}" is required by the KYC spec (FR-CORE-15) and cannot be deleted.`,
+        { slug: target.slug },
+      );
+    }
     return this.kycConfig.deleteStep(id);
   }
   resetKycConfig() {
