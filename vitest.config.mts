@@ -6,6 +6,21 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['src/**/*.spec.ts', 'test/**/*.spec.ts'],
+    /*
+     * One Postgres container for the run, not one per suite.
+     *
+     * Eleven suites each started and stopped their own: eleven image starts,
+     * eleven health-check waits. That is where the run-to-run variance came
+     * from — the same commit measured 61s and 191s, and the slow run failed
+     * with six tests skipped, which is a beforeAll giving up rather than an
+     * assertion breaking. A money suite that goes red under load is worse than
+     * a slow one: "just re-run it" is how a real failure gets waved through.
+     *
+     * Each suite still gets its own freshly-migrated DATABASE inside it — see
+     * test/money-setup.ts. Sharing the container is a performance decision;
+     * sharing a database would have been a correctness one.
+     */
+    globalSetup: ['test/global-setup.ts'],
     testTimeout: 120_000,
     hookTimeout: 180_000,
 

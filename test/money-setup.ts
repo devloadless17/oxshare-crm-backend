@@ -1,31 +1,88 @@
-import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { Pool } from 'pg';
+import { randomUUID } from 'crypto';
 import * as schema from '../src/database/schema';
 
-// Boots a throwaway Postgres 16 and runs the real committed migrations against
-// it — so the tests exercise the same DDL production will, including the
-// append-only ledger trigger.
+/**
+ * A freshly-migrated database, per suite, inside the run's shared container.
+ *
+ * The container is started once in test/global-setup.ts — see the reasoning
+ * there. What this file owns is the guarantee that mattered before and still
+ * does: every suite gets its own empty database, running the real committed
+ * migrations, including the append-only ledger and audit triggers.
+ *
+ * Per-suite isolation is not a nicety here. `money.spec.ts` asserts "every
+ * wallet in the database reconciles" as a CI invariant; if a neighbouring
+ * suite's fixtures were visible, that assertion would quietly be checking
+ * something else. Sharing a container is a performance decision. Sharing a
+ * database would have been a correctness one, and is not what this does.
+ */
 export interface MoneyTestContext {
-  container: StartedPostgreSqlContainer;
   pool: Pool;
   db: NodePgDatabase<typeof schema>;
+  /** The database this suite owns, dropped on teardown. */
+  databaseName: string;
+}
+
+/** The shared container's admin connection, from globalSetup. */
+function containerUri(): string {
+  const uri = process.env['TEST_PG_URI'];
+  if (!uri) {
+    // A clear failure beats eleven confusing ones: this means the suite was run
+    // in a way that skipped globalSetup (a bare `vitest` against a stale config,
+    // or a runner that does not honour it).
+    throw new Error(
+      'TEST_PG_URI is not set — test/global-setup.ts did not run. Run the suite through `npm test`.',
+    );
+  }
+  return uri;
 }
 
 export async function startMoneyTestDb(): Promise<MoneyTestContext> {
-  const container = await new PostgreSqlContainer('postgres:16-alpine').start();
-  const pool = new Pool({ connectionString: container.getConnectionUri() });
+  // A valid identifier, unique per suite. `randomUUID` has hyphens, which would
+  // need quoting everywhere; underscores keep it unquoted and greppable.
+  const databaseName = `money_${randomUUID().replace(/-/g, '')}`;
+
+  const admin = new Pool({ connectionString: containerUri() });
+  try {
+    // No parameter binding in DDL, hence the interpolation — safe because the
+    // name is generated here from a UUID, never from input.
+    await admin.query(`CREATE DATABASE ${databaseName}`);
+  } finally {
+    await admin.end();
+  }
+
+  const uri = new URL(containerUri());
+  uri.pathname = `/${databaseName}`;
+  const connectionString = uri.toString();
+
+  const pool = new Pool({ connectionString });
   const db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: './src/database/migrations' });
 
-  // The stores and WalletService resolve their connection from DATABASE_URL
-  // through the lazy singleton, so point that at the container.
-  process.env['DATABASE_URL'] = container.getConnectionUri();
-  return { container, pool, db };
+  // The stores and the money services resolve their connection from
+  // DATABASE_URL through the lazy singleton, so point that at this suite's
+  // database. Safe because vitest.config.mts sets fileParallelism: false —
+  // suites run one at a time in one process.
+  process.env['DATABASE_URL'] = connectionString;
+
+  return { pool, db, databaseName };
 }
 
 export async function stopMoneyTestDb(ctx: MoneyTestContext): Promise<void> {
   await ctx.pool.end();
-  await ctx.container.stop();
+
+  // Dropped rather than left behind: a long run would otherwise accumulate a
+  // database per suite inside the shared container, and the next suite's
+  // CREATE DATABASE competes with them for shared buffers.
+  const admin = new Pool({ connectionString: containerUri() });
+  try {
+    await admin.query(`DROP DATABASE IF EXISTS ${ctx.databaseName} WITH (FORCE)`);
+  } catch {
+    // Teardown failing must not fail a suite that passed. The container is
+    // discarded at the end of the run regardless.
+  } finally {
+    await admin.end();
+  }
 }
