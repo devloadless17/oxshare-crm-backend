@@ -1,7 +1,6 @@
 import { Logger, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import * as bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { UsersStore, User } from '../../store/users.store';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
@@ -13,7 +12,10 @@ import {
   ConflictError,
   ValidationError,
 } from '../../common/errors/domain-errors';
+import { randomUUID } from 'crypto';
 import { CsrfService } from '../../common/security/csrf.service';
+import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
+import { PasswordService } from '../../common/security/password.service';
 import {
   clearLegacySessionCookies,
   clearSessionCookie,
@@ -35,6 +37,8 @@ export class AuthService {
     private readonly email: EmailService,
     private readonly users: UsersStore,
     private readonly csrf: CsrfService,
+    private readonly refreshTokens: RefreshTokensService,
+    private readonly passwords: PasswordService,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -43,7 +47,7 @@ export class AuthService {
       throw new ConflictError('An account with this email already exists.');
     }
 
-    const passwordHash = await bcrypt.hash(dto.password, 12);
+    const passwordHash = await this.passwords.hash(dto.password);
     const verificationToken = uuidv4();
     const verificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
 
@@ -115,7 +119,20 @@ export class AuthService {
     const user = await this.users.findByEmail(dto.email);
     if (!user) throw new AuthenticationError('Invalid email or password.');
 
-    const passwordMatch = await bcrypt.compare(dto.password, user.passwordHash);
+    /*
+     * Dual-read: accepts a stored bcrypt hash, then quietly replaces it with
+     * argon2id (R-3.4). Nobody is forced to reset a password they already have,
+     * and the bcrypt population drains as people log in.
+     */
+    const { valid: passwordMatch, needsRehash } = await this.passwords.verify(
+      dto.password,
+      user.passwordHash,
+    );
+    if (passwordMatch && needsRehash) {
+      const upgraded = await this.passwords.hash(dto.password);
+      await this.users.update(user.id, { passwordHash: upgraded });
+      this.logger.log(`Upgraded password hash to argon2id for user ${user.id}`);
+    }
     if (!passwordMatch) throw new AuthenticationError('Invalid email or password.');
 
     // Checked only after the password matches, so a suspended-account message
@@ -125,8 +142,13 @@ export class AuthService {
     }
 
     const tokens = this.generateTokens(user);
-    const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
-    await this.users.update(user.id, { refreshToken: refreshHash });
+    await this.refreshTokens.record({
+      surface: 'portal',
+      subjectId: user.id,
+      jti: tokens.jti,
+      token: tokens.refreshToken,
+      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+    });
 
     this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken, user.id);
 
@@ -155,11 +177,13 @@ export class AuthService {
     if (!providedRefreshToken) throw new AuthenticationError('No refresh token provided.');
 
     let userId: string;
+    let jti: string | undefined;
     try {
-      const decoded = this.jwt.verify(providedRefreshToken, {
+      const decoded = this.jwt.verify<{ sub: string; jti?: string }>(providedRefreshToken, {
         secret: this.config.get('JWT_REFRESH_SECRET', 'oxshare-refresh-secret-dev'),
       });
       userId = decoded.sub;
+      jti = decoded.jti;
     } catch {
       throw new AuthenticationError('Invalid or expired refresh token.');
     }
@@ -170,23 +194,61 @@ export class AuthService {
     const user = await this.users.findById(userId);
     if (!user) throw new AuthenticationError('User account not found.');
 
-    // Same revocation check as the admin path — the stored hash was never
-    // compared, so logout did not actually end the session.
-    if (!user.refreshToken) {
+    // A token with no `jti` predates R-3.3 and has no row to judge. Refusing it
+    // logs those sessions out once, which is the correct migration cost for a
+    // credential that cannot be checked for replay.
+    if (!jti) {
       throw new AuthenticationError('Session has been revoked. Please log in again.');
     }
-    const tokenMatches = await bcrypt.compare(providedRefreshToken, user.refreshToken);
-    if (!tokenMatches) {
-      throw new AuthenticationError('Refresh token is no longer valid. Please log in again.');
+
+    /*
+     * The token's own row decides — R-3.3.
+     *
+     * This replaces comparing against a single stored hash, which could express
+     * "matches" or "does not match" and nothing else. A replayed token simply
+     * failed to match, so an attacker holding a stolen token used the newer one
+     * they had also captured, and nothing recorded that anything had leaked.
+     */
+    const verdict = await this.refreshTokens.verify({
+      surface: 'portal',
+      jti,
+      token: providedRefreshToken,
+    });
+
+    if (verdict.outcome === 'reused') {
+      // verify() has already revoked the family. The legitimate user and the
+      // attacker get the same message, because which one this is, is exactly
+      // what we cannot tell.
+      throw new AuthenticationError(
+        'This session has been ended for security reasons. Please log in again.',
+      );
+    }
+    if (verdict.outcome !== 'ok') {
+      throw new AuthenticationError('Session has been revoked. Please log in again.');
     }
 
     if (user.status === 'suspended') {
+      // Belt and braces: suspension also revokes every family, but a token
+      // minted before that must not survive on this path either.
+      await this.refreshTokens.revokeAllForSubject('portal', user.id);
       throw new AuthenticationError('Your account has been suspended.');
     }
 
     const tokens = this.generateTokens(user);
-    const refreshHash = await bcrypt.hash(tokens.refreshToken, 10);
-    await this.users.update(user.id, { refreshToken: refreshHash });
+    const rotated = await this.refreshTokens.rotate({
+      surface: 'portal',
+      jti,
+      familyId: verdict.familyId,
+      subjectId: user.id,
+      jtiNext: tokens.jti,
+      nextToken: tokens.refreshToken,
+      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+    });
+    // Lost a race with a concurrent refresh using the same token. Handing out a
+    // second live session is exactly what the conditional update prevents.
+    if (!rotated) {
+      throw new AuthenticationError('Session has been revoked. Please log in again.');
+    }
 
     this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken, user.id);
 
@@ -197,7 +259,9 @@ export class AuthService {
 
   // ─── Logout ───────────────────────────────────────────────────────────────────
   async logout(userId: string, res: Response) {
-    await this.users.update(userId, { refreshToken: undefined });
+    // Revokes EVERY family for this user, not just the one presenting a token:
+    // logging out on one device must not leave the others live (R-3.3).
+    await this.refreshTokens.revokeAllForSubject('portal', userId);
     clearSessionCookie(res, sessionCookieNames.clientAccess());
     clearSessionCookie(res, sessionCookieNames.clientRefresh());
     clearSessionCookie(res, sessionCookieNames.portalCsrf());
@@ -224,15 +288,19 @@ export class AuthService {
       expiresIn: '8h',
     });
 
+    // The refresh token carries a `jti` naming its row in refresh_tokens, which
+    // is how a presented token finds out whether it has already been rotated
+    // (R-3.3).
+    const jti = randomUUID();
     const refreshToken = this.jwt.sign(
-      { sub: user.id },
+      { sub: user.id, jti },
       {
         secret: this.config.get('JWT_REFRESH_SECRET', 'oxshare-refresh-secret-dev'),
         expiresIn: '30d',
       },
     );
 
-    return { accessToken, refreshToken };
+    return { accessToken, refreshToken, jti };
   }
 
   /**

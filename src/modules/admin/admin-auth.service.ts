@@ -1,7 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import * as bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { Request, Response } from 'express';
 import { Admin, AdminsStore, InvitesStore } from '../../store/admins.store';
@@ -15,7 +14,10 @@ import {
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { AdminRbacService } from './admin-rbac.service';
+import { randomUUID } from 'crypto';
 import { CsrfService } from '../../common/security/csrf.service';
+import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
+import { PasswordService } from '../../common/security/password.service';
 import {
   COOKIE_BASES,
   clearLegacySessionCookies,
@@ -38,6 +40,8 @@ const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  */
 @Injectable()
 export class AdminAuthService {
+  private readonly logger = new Logger(AdminAuthService.name);
+
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
@@ -48,6 +52,8 @@ export class AdminAuthService {
     private readonly audit: AdminAuditService,
     private readonly rbac: AdminRbacService,
     private readonly csrf: CsrfService,
+    private readonly refreshTokens: RefreshTokensService,
+    private readonly passwords: PasswordService,
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
@@ -55,12 +61,27 @@ export class AdminAuthService {
     const admin = await this.admins.findByEmail(email);
     if (!admin) throw new AuthenticationError('Invalid credentials.');
 
-    const valid = await bcrypt.compare(password, admin.passwordHash);
+    /*
+     * Dual-read: accepts a stored bcrypt hash, then quietly replaces it with
+     * argon2id (R-3.4). Nobody is forced to reset a password they already have,
+     * and the bcrypt population drains as people log in.
+     */
+    const { valid, needsRehash } = await this.passwords.verify(password, admin.passwordHash);
     if (!valid) throw new AuthenticationError('Invalid credentials.');
+    if (needsRehash) {
+      const upgraded = await this.passwords.hash(password);
+      await this.admins.update(admin.id, { passwordHash: upgraded });
+      this.logger.log(`Upgraded password hash to argon2id for admin ${admin.id}`);
+    }
 
-    const { accessToken, refreshToken } = this.generateAdminTokens(admin);
-    const refreshHash = await bcrypt.hash(refreshToken, 10);
-    await this.admins.update(admin.id, { refreshToken: refreshHash });
+    const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin);
+    await this.refreshTokens.record({
+      surface: 'admin',
+      subjectId: admin.id,
+      jti,
+      token: refreshToken,
+      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+    });
 
     this.setAdminCookies(res, accessToken, refreshToken, admin.id);
     /*
@@ -81,7 +102,9 @@ export class AdminAuthService {
   }
   // ─── Admin Logout ──────────────────────────────────────────────────────────
   async logout(adminId: string, res: Response) {
-    await this.admins.update(adminId, { refreshToken: undefined });
+    // Revokes EVERY family for this admin, not just the one presenting a token:
+    // logging out on one device must not leave the others live (R-3.3).
+    await this.refreshTokens.revokeAllForSubject('admin', adminId);
     clearSessionCookie(res, sessionCookieNames.adminAccess());
     clearSessionCookie(res, sessionCookieNames.adminRefresh());
     clearSessionCookie(res, sessionCookieNames.adminCsrf());
@@ -153,7 +176,7 @@ export class AdminAuthService {
     if (invite.accepted) throw new ValidationError('This invite has already been used.');
     if (invite.expiresAt < new Date()) throw new ValidationError('Invite has expired.');
 
-    const passwordHash = await bcrypt.hash(password, 12);
+    const passwordHash = await this.passwords.hash(password);
     const admin = await this.admins.create({
       email: invite.email,
       passwordHash,
@@ -165,9 +188,14 @@ export class AdminAuthService {
 
     await this.invites.markAccepted(token);
 
-    const { accessToken, refreshToken } = this.generateAdminTokens(admin);
-    const refreshHash = await bcrypt.hash(refreshToken, 10);
-    await this.admins.update(admin.id, { refreshToken: refreshHash });
+    const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin);
+    await this.refreshTokens.record({
+      surface: 'admin',
+      subjectId: admin.id,
+      jti,
+      token: refreshToken,
+      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+    });
     this.setAdminCookies(res, accessToken, refreshToken, admin.id);
 
     return { message: 'Account created. Welcome aboard!', admin: await this.rbac.sanitize(admin) };
@@ -187,8 +215,13 @@ export class AdminAuthService {
       { sub: admin.id, email: admin.email, role: admin.role },
       { secret, expiresIn: '8h' },
     );
-    const refreshToken = this.jwt.sign({ sub: admin.id }, { secret, expiresIn: '30d' });
-    return { accessToken, refreshToken };
+    // The refresh token carries a `jti` naming its row in refresh_tokens, which
+    // is how a presented token finds out whether it has already been rotated
+    // (R-3.3). Minted here so signing stays in one place; the row is written by
+    // the caller, which knows whether this starts a family or continues one.
+    const jti = randomUUID();
+    const refreshToken = this.jwt.sign({ sub: admin.id, jti }, { secret, expiresIn: '30d' });
+    return { accessToken, refreshToken, jti };
   }
   /**
    * Sets the session pair plus the anti-forgery token.
@@ -238,10 +271,12 @@ export class AdminAuthService {
     if (!providedToken) throw new AuthenticationError('No refresh token provided.');
 
     let adminId: string;
+    let jti: string | undefined;
     try {
       const secret = this.config.get('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev');
-      const decoded = this.jwt.verify(providedToken, { secret });
+      const decoded = this.jwt.verify<{ sub: string; jti?: string }>(providedToken, { secret });
       adminId = decoded.sub;
+      jti = decoded.jti;
     } catch {
       throw new AuthenticationError('Invalid or expired admin refresh token.');
     }
@@ -253,20 +288,55 @@ export class AdminAuthService {
     const admin = await this.admins.findById(adminId);
     if (!admin) throw new AuthenticationError('Admin account not found.');
 
-    // Compare against the stored hash. Without this the hash written at login
-    // was decorative: logout cleared it but never checked it, so a stolen
-    // 30-day refresh token stayed valid through logout and suspension.
-    if (!admin.refreshToken) {
+    /*
+     * The token's own row decides — R-3.3.
+     *
+     * This replaces comparing against a single stored hash, which could express
+     * "matches" or "does not match" and nothing else. A replayed token simply
+     * failed to match, so an attacker holding a stolen token just used the newer
+     * one they had also captured, and nothing recorded that anything had leaked.
+     */
+    // A token with no `jti` predates R-3.3 and has no row to judge. Refusing it
+    // logs those sessions out once, which is the correct migration cost for
+    // credentials that cannot be checked for replay.
+    if (!jti) {
       throw new AuthenticationError('Session has been revoked. Please log in again.');
     }
-    const tokenMatches = await bcrypt.compare(providedToken, admin.refreshToken);
-    if (!tokenMatches) {
-      throw new AuthenticationError('Refresh token is no longer valid. Please log in again.');
+
+    const verdict = await this.refreshTokens.verify({
+      surface: 'admin',
+      jti,
+      token: providedToken,
+    });
+
+    if (verdict.outcome === 'reused') {
+      // The family is already revoked by verify(). Say the same thing to the
+      // legitimate user and to the attacker: which one this is, is exactly what
+      // we cannot tell.
+      throw new AuthenticationError(
+        'This session has been ended for security reasons. Please log in again.',
+      );
+    }
+    if (verdict.outcome !== 'ok') {
+      throw new AuthenticationError('Session has been revoked. Please log in again.');
     }
 
-    const { accessToken, refreshToken } = this.generateAdminTokens(admin);
-    const refreshHash = await bcrypt.hash(refreshToken, 10);
-    await this.admins.update(admin.id, { refreshToken: refreshHash });
+    const { accessToken, refreshToken, jti: nextJti } = this.generateAdminTokens(admin);
+    const rotated = await this.refreshTokens.rotate({
+      surface: 'admin',
+      // Narrowed: verdict 'ok' is only reachable when `jti` was present.
+      jti,
+      familyId: verdict.familyId,
+      subjectId: admin.id,
+      jtiNext: nextJti,
+      nextToken: refreshToken,
+      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+    });
+    // Lost a race with a concurrent refresh using the same token. Handing out a
+    // second live session here is exactly what the conditional update prevents.
+    if (!rotated) {
+      throw new AuthenticationError('Session has been revoked. Please log in again.');
+    }
 
     this.setAdminCookies(res, accessToken, refreshToken, admin.id);
 

@@ -525,3 +525,60 @@ export const idempotencyKeys = pgTable(
     index('idempotency_keys_created_at_idx').on(t.createdAt),
   ],
 );
+
+/*
+ * ── Refresh token families (PLATFORM-CONVENTIONS R-3.3) ──────────────────────
+ *
+ * Rotation was already right: each refresh mints a new token and invalidates the
+ * one presented. What was missing is what happens when the OLD one shows up
+ * again.
+ *
+ * A rotated token is presented for exactly one reason — somebody kept a copy.
+ * Either the legitimate client raced itself, or the token was stolen and the
+ * thief is using it. Both look identical, and the previous behaviour treated
+ * both the same way: the stored hash no longer matched, so the request simply
+ * failed. The attacker just tried again with the newer token they had also
+ * captured, and nothing anywhere recorded that a credential had leaked.
+ *
+ * A family fixes that. Every refresh descends from one login, and replaying any
+ * already-used member revokes the WHOLE family — every descendant, including the
+ * one currently in the attacker's hands. The victim is logged out once and logs
+ * back in; the attacker is locked out permanently and the event is recorded.
+ *
+ * This replaces the single bcrypt hash that lived on `users.refresh_token` /
+ * `admins.refresh_token`: one column cannot express "used", "revoked", or
+ * "descended from".
+ */
+export const refreshTokens = pgTable(
+  'refresh_tokens',
+  {
+    /** The `jti` carried inside the JWT — how a presented token finds its row. */
+    id: uuid('id').primaryKey(),
+    /** Every token minted from one login shares this. Revocation is per family. */
+    familyId: uuid('family_id').notNull(),
+    /** 'admin' | 'portal'. The two surfaces are separate (R-3.1) and so are their tokens. */
+    surface: varchar('surface', { length: 16 }).notNull(),
+    subjectId: uuid('subject_id').notNull(),
+    /**
+     * SHA-256, not bcrypt.
+     *
+     * bcrypt's cost exists to slow down guessing a LOW-entropy secret. A signed
+     * JWT is not guessable, so the work bought nothing and was paid on every
+     * refresh. The hash is here so a database leak does not hand over live
+     * sessions, and SHA-256 does that.
+     */
+    tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+    /** Set at rotation. A token presented with this set is a REPLAY. */
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    /** Set by logout, by suspension, or by the reuse response killing the family. */
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('refresh_tokens_family_idx').on(t.familyId),
+    index('refresh_tokens_subject_idx').on(t.surface, t.subjectId),
+    /** Supports the sweep of expired rows. */
+    index('refresh_tokens_expires_at_idx').on(t.expiresAt),
+  ],
+);

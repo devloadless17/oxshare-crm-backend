@@ -1,5 +1,5 @@
-import * as bcrypt from 'bcryptjs';
 import { getDb } from './db';
+import { PasswordService } from '../common/security/password.service';
 import { admins, kycConfigSteps, rejectionReasons, roles, users } from './schema';
 import { DEFAULT_KYC_STEPS } from '../store/kyc-config.store';
 
@@ -8,6 +8,16 @@ import { DEFAULT_KYC_STEPS } from '../store/kyc-config.store';
 // never in check-then-insert.
 export async function runSeeds(): Promise<void> {
   const db = getDb();
+
+  // argon2id, the same as a real signup (R-3.4) — a fresh install should carry
+  // no legacy hashes at all. Constructed directly rather than injected: seeds
+  // run at bootstrap, outside the request lifecycle, and this service has no
+  // dependencies of its own.
+  const passwords = new PasswordService();
+  const [adminHash, clientHash] = await Promise.all([
+    passwords.hash('admin123'),
+    passwords.hash('client123'),
+  ]);
 
   await db
     .insert(roles)
@@ -23,7 +33,7 @@ export async function runSeeds(): Promise<void> {
     .insert(admins)
     .values({
       email: 'admin@oxshare.com',
-      passwordHash: bcrypt.hashSync('admin123', 10),
+      passwordHash: adminHash,
       name: 'Master Admin',
       role: 'master_admin',
       permissions: ['*'],
@@ -34,7 +44,7 @@ export async function runSeeds(): Promise<void> {
     .insert(users)
     .values({
       email: 'client@oxshare.com',
-      passwordHash: bcrypt.hashSync('client123', 10),
+      passwordHash: clientHash,
       firstName: 'John',
       lastName: 'Doe',
       type: 'individual',
