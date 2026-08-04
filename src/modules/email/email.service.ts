@@ -2,6 +2,28 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 
+/**
+ * Why no URL appears in any log line in this file — PLATFORM-CONVENTIONS R-6.3.
+ *
+ * The verification link, the password-reset link and the admin-invite link are
+ * each a BEARER CREDENTIAL in a query string. They used to be logged on every
+ * send, in every environment, and again on every failure. The invite link is the
+ * worst of the three: POST /admin/invite/accept turns it into a live admin
+ * account with the inviter's granted permissions, so read access to a log store
+ * — an aggregator, an error tracker, a support engineer's terminal — was enough
+ * to mint an admin on a system that approves withdrawals.
+ *
+ * `auth.service.ts` already carried the comment "It is emailed and never written
+ * to stdout"; that was true of the console.log removed there and false of the
+ * logger.log left here, which is exactly how this survived a fix.
+ *
+ * A failure logs the RECIPIENT and the REASON. Those are what make it
+ * diagnosable; the token never was.
+ */
+function failureReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -48,11 +70,8 @@ export class EmailService {
         });
       }
       this.logger.log(`Verification email sent to ${email}`);
-      this.logger.log(`🔗 VERIFICATION LINK: ${verificationUrl}`);
     } catch (error) {
-      this.logger.warn(
-        `Failed to send verification email (Logged verification URL: ${verificationUrl})`,
-      );
+      this.logger.error(`Failed to send verification email to ${email}: ${failureReason(error)}`);
     }
   }
 
@@ -83,9 +102,8 @@ export class EmailService {
         });
       }
       this.logger.log(`Password reset email sent to ${email}`);
-      this.logger.log(`🔗 PASSWORD RESET LINK: ${resetUrl}`);
     } catch (error) {
-      this.logger.warn(`Failed to send reset email (Logged reset URL: ${resetUrl})`);
+      this.logger.error(`Failed to send password reset email to ${email}: ${failureReason(error)}`);
     }
   }
 
@@ -139,7 +157,9 @@ export class EmailService {
       }
       this.logger.log(`KYC ${decision} email sent to ${email}`);
     } catch (error) {
-      this.logger.warn(`Failed to send KYC ${decision} email to ${email}`);
+      this.logger.error(
+        `Failed to send KYC ${decision} email to ${email}: ${failureReason(error)}`,
+      );
     }
   }
 
@@ -178,8 +198,10 @@ export class EmailService {
         });
       }
       this.logger.log(`Withdrawal ${decision} email sent to ${email}`);
-    } catch {
-      this.logger.warn(`Failed to send withdrawal ${decision} email to ${email}`);
+    } catch (error) {
+      this.logger.error(
+        `Failed to send withdrawal ${decision} email to ${email}: ${failureReason(error)}`,
+      );
     }
   }
 
@@ -208,9 +230,8 @@ export class EmailService {
         });
       }
       this.logger.log(`Admin invite email sent to ${email}`);
-      this.logger.log(`🔗 INVITE LINK: ${inviteUrl}`);
     } catch (error) {
-      this.logger.warn(`Failed to send invite email (Logged invite URL: ${inviteUrl})`);
+      this.logger.error(`Failed to send admin invite email to ${email}: ${failureReason(error)}`);
     }
   }
 }
