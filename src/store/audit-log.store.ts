@@ -1,7 +1,7 @@
 import { and, count, desc, eq, SQL } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
-import type { Db } from '../database/db';
+import type { Db, Executor } from '../database/db';
 import { auditLog } from '../database/schema';
 
 // D-21: admin action log — actor, action, subject, details, timestamp.
@@ -23,8 +23,19 @@ export interface AuditEntry {
 export class AuditLogStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
-  async record(data: Omit<AuditEntry, 'id' | 'createdAt'>): Promise<AuditEntry> {
-    const [row] = await this.db
+  /**
+   * Append one entry.
+   *
+   * `executor` lets a caller write the row inside THEIR transaction (R-6.5), so
+   * a money movement and the record of who authorised it commit together or not
+   * at all. Omitted, it writes on the pool, which is what every non-money caller
+   * wants. Same shape as the money services' `executor ?? this.db` (§6.2).
+   */
+  async record(
+    data: Omit<AuditEntry, 'id' | 'createdAt'>,
+    executor?: Executor,
+  ): Promise<AuditEntry> {
+    const [row] = await (executor ?? this.db)
       .insert(auditLog)
       .values({
         actorId: data.actorId,

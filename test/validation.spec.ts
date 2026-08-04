@@ -128,3 +128,64 @@ describe('error envelope', () => {
     expect(res.body).toHaveProperty('message');
   });
 });
+
+describe('R-2.2 the error envelope carries a field map', () => {
+  /*
+   * class-validator's default output is `message: string[]` — e.g.
+   * `["amount must be a number string"]`. A form cannot map that back to an
+   * input without string-matching English, which breaks the moment a validator
+   * is reworded and cannot work at all once the UI is translated (Rev 8 §10
+   * lists RTL Arabic as a requirement).
+   *
+   * These assert the structure, not the prose.
+   */
+  it('names the field that failed, not just what went wrong', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({ email: 'not-an-email', password: 'x' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION_FAILED');
+    expect(res.body.fields).toBeDefined();
+    expect(Object.keys(res.body.fields)).toContain('email');
+  });
+
+  it('keeps the sentence list, so nothing reading it today breaks', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({ email: 'not-an-email', password: 'x' });
+
+    expect(Array.isArray(res.body.message)).toBe(true);
+    expect(res.body.message.length).toBeGreaterThan(0);
+  });
+
+  it('gives one message per field, which is what a form renders', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({ email: 'not-an-email', password: 'x' });
+
+    for (const value of Object.values(res.body.fields as Record<string, unknown>)) {
+      expect(typeof value).toBe('string');
+    }
+  });
+
+  it('never answers with a humanized status name as the machine code', async () => {
+    // The old fallback was `body.error`, which for a 400 is the literal string
+    // "Bad Request" — prose that changes when Nest changes, and that cannot
+    // distinguish two different 400s from each other.
+    const res = await request(app.getHttpServer()).post('/auth/register').send({});
+
+    expect(res.body.code).not.toBe('Bad Request');
+    expect(res.body.code).toMatch(/^[A-Z_]+$/);
+  });
+
+  it('omits `fields` entirely when the failure is not a validation failure', async () => {
+    // A consumer checking `if (body.fields)` must not also have to check for an
+    // empty object.
+    const res = await request(app.getHttpServer()).get('/admin/clients');
+
+    expect(res.status).toBe(401);
+    expect(res.body.fields).toBeUndefined();
+    expect(res.body.code).toBe('UNAUTHENTICATED');
+  });
+});

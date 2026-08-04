@@ -1,4 +1,4 @@
-import { ValidationPipeOptions } from '@nestjs/common';
+import { BadRequestException, ValidationError, ValidationPipeOptions } from '@nestjs/common';
 
 /**
  * The global request-validation configuration, in one place.
@@ -23,4 +23,66 @@ export const VALIDATION_PIPE_OPTIONS: ValidationPipeOptions = {
   whitelist: true,
   forbidNonWhitelisted: true,
   transform: true,
+  /*
+   * A FIELD MAP, not a bag of English sentences — PLATFORM-CONVENTIONS R-2.2.
+   *
+   * class-validator's default output is `message: string[]`, e.g.
+   * `["amount must be a number string"]`. A form cannot map that back to an
+   * input without string-matching English — which breaks on a reworded
+   * validator, and cannot work at all once the UI is translated (Rev 8 §10 lists
+   * RTL Arabic as a requirement).
+   *
+   * So the field name, which class-validator already knows, is preserved
+   * structurally. The human sentences stay in `message` so nothing that reads
+   * them today breaks.
+   */
+  exceptionFactory: (errors: ValidationError[]) =>
+    new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: flattenMessages(errors),
+      fields: toFieldMap(errors),
+    }),
 };
+
+/**
+ * `{ amount: 'must be a number string', 'document.type': 'must be one of …' }`
+ *
+ * Nested DTOs are flattened with a dotted path rather than nested objects: a
+ * form knows its input by the same path it posted, and a nested shape would make
+ * every consumer write a walker.
+ */
+function toFieldMap(errors: ValidationError[], prefix = ''): Record<string, string> {
+  const fields: Record<string, string> = {};
+
+  for (const error of errors) {
+    const path = prefix ? `${prefix}.${error.property}` : error.property;
+
+    const constraints = Object.values(error.constraints ?? {});
+    if (constraints.length > 0) {
+      // One message per field: a form shows one message under one input, and the
+      // first constraint is the most specific thing wrong with it.
+      fields[path] = constraints[0];
+    }
+
+    if (error.children?.length) {
+      Object.assign(fields, toFieldMap(error.children, path));
+    }
+  }
+
+  return fields;
+}
+
+/** The flat sentence list, unchanged, so existing callers keep working. */
+function flattenMessages(errors: ValidationError[], prefix = ''): string[] {
+  const messages: string[] = [];
+
+  for (const error of errors) {
+    const path = prefix ? `${prefix}.${error.property}` : error.property;
+    messages.push(...Object.values(error.constraints ?? {}));
+    if (error.children?.length) {
+      messages.push(...flattenMessages(error.children, path));
+    }
+  }
+
+  return messages;
+}

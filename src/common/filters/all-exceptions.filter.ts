@@ -39,6 +39,24 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   [MoneyRuleError, HttpStatus.UNPROCESSABLE_ENTITY],
 ]);
 
+/**
+ * A code for an HttpException that declared none.
+ *
+ * Deliberately coarse: these exist so a frontend never has to branch on prose,
+ * not to enumerate every status. Anything that wants a specific code should
+ * throw a DomainError, which carries one.
+ */
+function httpCodeFor(status: number): string {
+  if (status === 400) return 'BAD_REQUEST';
+  if (status === 401) return 'UNAUTHENTICATED';
+  if (status === 403) return 'FORBIDDEN';
+  if (status === 404) return 'NOT_FOUND';
+  if (status === 409) return 'CONFLICT';
+  if (status === 413) return 'PAYLOAD_TOO_LARGE';
+  if (status === 429) return 'RATE_LIMITED';
+  return 'HTTP_ERROR';
+}
+
 /** Postgres error codes worth translating rather than leaking as a 500. */
 const PG_CONFLICT = '23505'; // unique_violation
 const PG_FK_VIOLATION = '23503'; // foreign_key_violation
@@ -77,7 +95,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const request = http.getRequest<Request & { id?: string }>();
     const requestId = request.id ?? 'unknown';
 
-    const { status, message, code } = this.classify(exception);
+    const { status, message, code, fields } = this.classify(exception);
 
     // The correlation id is attached by JsonLogger from the async-local
     // request context, so it does not need repeating in every message.
@@ -97,6 +115,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
       statusCode: status,
       code,
       message,
+      // Omitted entirely rather than sent as `null`: a consumer checking
+      // `if (body.fields)` should not have to also check for an empty object.
+      ...(fields && Object.keys(fields).length > 0 ? { fields } : {}),
       requestId,
       timestamp: new Date().toISOString(),
       path: request.url,
@@ -107,6 +128,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
     status: HttpStatus;
     message: string | string[];
     code: string;
+    /** Present only on validation failures: field path -> what is wrong with it. */
+    fields?: Record<string, string>;
   } {
     // 1. Domain errors — the layer services are supposed to throw from.
     if (exception instanceof DomainError) {
@@ -125,14 +148,33 @@ export class AllExceptionsFilter implements ExceptionFilter {
     // 2. Nest's own exceptions, including ValidationPipe's array messages.
     if (exception instanceof HttpException) {
       const body = exception.getResponse();
-      const message =
-        typeof body === 'string'
-          ? body
-          : ((body as { message?: string | string[] }).message ?? exception.message);
+      if (typeof body === 'string') {
+        return { status: exception.getStatus(), message: body, code: 'HTTP_ERROR' };
+      }
+
+      const shaped = body as {
+        message?: string | string[];
+        code?: string;
+        error?: string;
+        fields?: Record<string, string>;
+      };
+
+      /*
+       * The machine code comes from a CLOSED SET — R-2.2.
+       *
+       * This used to fall back to `body.error`, which for a validation failure
+       * is the literal string "Bad Request": a humanized status name, not a code.
+       * A frontend branching on it is branching on prose that changes when Nest
+       * changes, and cannot express two different 400s differently.
+       *
+       * Anything that has not declared a code gets HTTP_ERROR, which is at least
+       * honestly non-specific rather than falsely specific.
+       */
       return {
         status: exception.getStatus(),
-        message,
-        code: (body as { error?: string }).error ?? 'HTTP_ERROR',
+        message: shaped.message ?? exception.message,
+        code: shaped.code ?? httpCodeFor(exception.getStatus()),
+        fields: shaped.fields,
       };
     }
 

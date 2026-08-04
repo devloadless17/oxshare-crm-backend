@@ -38,13 +38,23 @@ export class AdminMoneyService {
       limit: parseInt(query.limit ?? '25', 10) || 25,
     });
   }
+  /*
+   * Every withdrawal transition below records its audit row INSIDE the
+   * transaction that moves the money — R-6.5.
+   *
+   * `audit.record()` is fire-and-forget, which is right for a role rename and
+   * wrong here: the money moves, the row is lost, and "who approved this payout"
+   * has only a log line that may have rotated. Now the two commit together, so a
+   * failure to record is a failure to act. A withdrawal that fails loudly can be
+   * retried; an unrecorded payout cannot be un-made.
+   */
   async approveWithdrawal(id: string, actor: Admin) {
-    const row = await this.transactions.approve(id, actor.id);
-    this.audit.record(actor.id, 'withdrawal.approve', 'transaction', id, {
-      amount: row.amount,
-      currency: row.currency,
-    });
-    return row;
+    return this.transactions.approve(id, actor.id, (tx, row) =>
+      this.audit.recordWithin(tx, actor.id, 'withdrawal.approve', 'transaction', id, {
+        amount: row.amount,
+        currency: row.currency,
+      }),
+    );
   }
   async rejectWithdrawal(id: string, actor: Admin, reason?: string, reasonId?: string) {
     // FR-ADM-03: the reason comes from the configurable list; free text is an
@@ -61,7 +71,13 @@ export class AdminMoneyService {
       throw new ValidationError('A rejection reason (reasonId or reason text) is required.');
     }
 
-    const row = await this.transactions.reject(id, actor.id, effectiveReason);
+    const row = await this.transactions.reject(id, actor.id, effectiveReason, (tx, rejected) =>
+      this.audit.recordWithin(tx, actor.id, 'withdrawal.reject', 'transaction', id, {
+        amount: rejected.amount,
+        currency: rejected.currency,
+        reason: effectiveReason,
+      }),
+    );
     const user = await this.users.findById(row.userId);
     if (user) {
       void this.email.sendWithdrawalDecisionEmail(
@@ -73,14 +89,16 @@ export class AdminMoneyService {
         effectiveReason,
       );
     }
-    this.audit.record(actor.id, 'withdrawal.reject', 'transaction', id, {
-      amount: row.amount,
-      reason: effectiveReason,
-    });
     return row;
   }
   async settleWithdrawal(id: string, actor: Admin, providerRef: string) {
-    const row = await this.transactions.settle(id, actor.id, providerRef);
+    const row = await this.transactions.settle(id, actor.id, providerRef, (tx, settled) =>
+      this.audit.recordWithin(tx, actor.id, 'withdrawal.settle', 'transaction', id, {
+        amount: settled.amount,
+        currency: settled.currency,
+        providerRef,
+      }),
+    );
     const user = await this.users.findById(row.userId);
     if (user) {
       void this.email.sendWithdrawalDecisionEmail(
@@ -91,11 +109,6 @@ export class AdminMoneyService {
         row.currency,
       );
     }
-    this.audit.record(actor.id, 'withdrawal.settle', 'transaction', id, {
-      amount: row.amount,
-      currency: row.currency,
-      providerRef,
-    });
     return row;
   }
   // ─── Ledger view (ADM-13) ─────────────────────────────────────────────────

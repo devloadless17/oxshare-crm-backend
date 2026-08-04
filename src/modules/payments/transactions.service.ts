@@ -32,6 +32,25 @@ import {
  *    hand. The callback path will reuse settle() unchanged — its idempotency
  *    already lives in UNIQUE(provider, provider_ref).
  */
+/**
+ * Work the CALLER needs performed inside a money method's transaction.
+ *
+ * R-6.5: the admin audit row for a money movement must commit with the movement
+ * or not at all — otherwise the withdrawal settles, the record of who authorised
+ * it is lost, and D-21's whole justification (this is the one record that cannot
+ * be reconstructed afterwards) stops holding for the actions that need it most.
+ *
+ * The handle is handed OUT rather than the audit service being imported in:
+ * `AdminAuditService` lives in the `admin` module and this one must not reach
+ * into it (ARCHITECTURE §4 — modules communicate through their own surfaces, not
+ * by importing each other's internals). This file keeps owning the transaction
+ * boundary, which is where §6.2 says it belongs.
+ */
+export type WithinTransaction = (
+  tx: Executor,
+  row: typeof transactions.$inferSelect,
+) => Promise<void>;
+
 @Injectable()
 export class TransactionsService {
   /**
@@ -252,22 +271,28 @@ export class TransactionsService {
     return row;
   }
 
-  async approve(id: string, adminId: string) {
-    const row = await this.transition(id, 'pending', {
-      state: 'approved',
-      reviewedBy: adminId,
-      reviewedAt: new Date(),
-    });
-    if (!row) {
-      const current = await this.getById(id);
-      throw new MoneyRuleError(
-        `Only a pending withdrawal can be approved; this one is ${current.state}.`,
+  async approve(id: string, adminId: string, withinTx?: WithinTransaction) {
+    // Wrapped in a transaction it did not previously need, so `withinTx` — the
+    // admin audit row — commits with the state change or not at all (R-6.5).
+    return this.db.transaction(async (dbTx) => {
+      const row = await this.transition(
+        id,
+        'pending',
+        { state: 'approved', reviewedBy: adminId, reviewedAt: new Date() },
+        dbTx,
       );
-    }
-    return row;
+      if (!row) {
+        const current = await this.getById(id);
+        throw new MoneyRuleError(
+          `Only a pending withdrawal can be approved; this one is ${current.state}.`,
+        );
+      }
+      await withinTx?.(dbTx, row);
+      return row;
+    });
   }
 
-  async reject(id: string, adminId: string, reason: string) {
+  async reject(id: string, adminId: string, reason: string, withinTx?: WithinTransaction) {
     // One transaction: the state change and the hold release commit together,
     // so a failure can never leave a rejected withdrawal with funds still
     // reserved — which was permanent, since 'rejected' is terminal.
@@ -285,12 +310,13 @@ export class TransactionsService {
         );
       }
       await this.wallets.release(row.userId, row.currency, row.amount, dbTx);
+      await withinTx?.(dbTx, row);
       return row;
     });
   }
 
   /** Provider confirmed: post the debit, clear the hold, close the transaction. */
-  async settle(id: string, adminId: string, providerRef: string) {
+  async settle(id: string, adminId: string, providerRef: string, withinTx?: WithinTransaction) {
     // One transaction for all three steps. Previously they were three separate
     // commits: a crash after the first left the row marked 'success' with no
     // debit posted (money duplicated, unrecoverable because the state guard
@@ -324,6 +350,7 @@ export class TransactionsService {
         dbTx,
       );
       await this.wallets.release(row.userId, row.currency, row.amount, dbTx);
+      await withinTx?.(dbTx, row);
       return row;
     });
   }

@@ -1,4 +1,5 @@
 import { and, count, desc, eq, ilike, or, sql, SQL } from 'drizzle-orm';
+import type { CursorPosition } from '../common/pagination';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
@@ -96,6 +97,10 @@ export class UsersStore {
     type?: string;
     status?: string;
     level?: number;
+    /** Keyset position — R-2.4. When present, `page` is ignored. */
+    cursor?: CursorPosition;
+    /** Counting is opt-in: it is a full scan of the filtered set. */
+    withTotal?: boolean;
   }) {
     const db = this.db;
     const conditions: SQL[] = [];
@@ -112,33 +117,70 @@ export class UsersStore {
         or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))!,
       );
     }
+    /*
+     * The keyset seek — R-2.4.
+     *
+     * `(created_at, id) < (cursor.created_at, cursor.id)` as a ROW comparison,
+     * not `created_at < x OR (created_at = x AND id < y)`. The row form is what
+     * Postgres can satisfy with a single index scan, and it is also the form
+     * that is obviously correct: it says "everything ordered after this row",
+     * which is exactly the question.
+     *
+     * The `id` tiebreak is load-bearing. Two clients registered in the same
+     * millisecond would otherwise sit either side of a page boundary in an order
+     * Postgres may change between queries — reintroducing the skipped row this
+     * replaces.
+     */
+    if (filter.cursor) {
+      conditions.push(
+        sql`(${users.createdAt}, ${users.id}) < (${filter.cursor.createdAt}::timestamptz, ${filter.cursor.id}::uuid)`,
+      );
+    }
+
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const [rows, [countRow]] = await Promise.all([
-      db
-        .select({
-          id: users.id,
-          email: users.email,
-          firstName: users.firstName,
-          lastName: users.lastName,
-          type: users.type,
-          status: users.status,
-          verificationLevel: users.verificationLevel,
-          country: users.country,
-          createdAt: users.createdAt,
-        })
-        .from(users)
-        .where(where)
-        .orderBy(desc(users.createdAt))
-        .limit(filter.limit)
-        .offset((filter.page - 1) * filter.limit),
-      db
+    const columns = {
+      id: users.id,
+      email: users.email,
+      firstName: users.firstName,
+      lastName: users.lastName,
+      type: users.type,
+      status: users.status,
+      verificationLevel: users.verificationLevel,
+      country: users.country,
+      createdAt: users.createdAt,
+    };
+
+    // OFFSET is kept for one release so both frontends can move at their own
+    // pace (R-8.2, additive-for-a-cycle). It is the path to delete, not to
+    // extend: a `page` deep into 219,000 rows makes Postgres walk and discard
+    // everything before it.
+    const usingCursor = Boolean(filter.cursor) || filter.page <= 1;
+
+    const rows = await db
+      .select(columns)
+      .from(users)
+      .where(where)
+      // Both keys DESC, matching the cursor comparison above.
+      .orderBy(desc(users.createdAt), desc(users.id))
+      // One extra row answers "is there a next page" with no second query and
+      // no count.
+      .limit(filter.limit + 1)
+      .offset(usingCursor ? 0 : (filter.page - 1) * filter.limit);
+
+    // Counted only on request: it is a full scan of the filtered set, run purely
+    // to render "of 219,000", while `nextCursor !== null` answers "is there
+    // more" for free.
+    let total: number | undefined;
+    if (filter.withTotal) {
+      const [countRow] = await db
         .select({ value: sql<number>`count(*)::int` })
         .from(users)
-        .where(where),
-    ]);
+        .where(where);
+      total = countRow.value;
+    }
 
-    return { items: rows, total: countRow.value };
+    return { rows, total };
   }
 
   async count(): Promise<number> {
