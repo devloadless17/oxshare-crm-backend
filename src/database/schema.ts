@@ -447,6 +447,9 @@ export const commissionAccruals = pgTable(
     /** §6.3 THE accrual idempotency guarantee. Re-running accrual is a no-op. */
     uniqueIndex('commission_accruals_deal_ib_level_uq').on(t.dealId, t.ibUserId, t.level),
     index('commission_accruals_status_available_idx').on(t.status, t.availableAt),
+    // Every IB earnings query (IB-11/IB-12) reads by ib_user_id. None exists
+    // yet, which is exactly when adding the index costs nothing.
+    index('commission_accruals_ib_user_idx').on(t.ibUserId),
   ],
 );
 
@@ -466,6 +469,11 @@ export const auditLog = pgTable(
   (t) => [
     index('audit_log_created_at_idx').on(t.createdAt),
     index('audit_log_action_idx').on(t.action),
+    // findAll() filters on all three. subject_type became the important one when
+    // KYC document reads started being audited (R-6.6) — those are now the
+    // highest-volume row type here.
+    index('audit_log_subject_type_idx').on(t.subjectType),
+    index('audit_log_actor_idx').on(t.actorId),
   ],
 );
 
