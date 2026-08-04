@@ -209,9 +209,22 @@ describe('R-4.2 every route declares how it is protected', () => {
     ) as string[];
 
     const scanned = new Set(routes().map((r) => r.signature));
-    // The fixture stores concrete paths ('GET /admin/kyc/{userId}'); reflection
-    // stores Express patterns ('GET /admin/kyc/:userId'). Normalise to compare.
-    const expected = fixture.map((route) => route.replace(/\{(\w+)\}/g, ':$1'));
+    /*
+     * Two normalisations before comparing.
+     *
+     * 1. The fixture stores concrete paths ('GET /admin/kyc/{userId}');
+     *    reflection stores Express patterns ('GET /admin/kyc/:userId').
+     * 2. The fixture is generated from the OpenAPI document, which is built
+     *    AFTER setGlobalPrefix, so every path carries `/v1` (R-2.1). This scan
+     *    reads controller decorators, which never see the prefix — it is applied
+     *    by the app, not declared on the class. Strip it here rather than
+     *    teaching the scanner about it: the prefix is a deployment concern and
+     *    what this test is about is whether each HANDLER declares its
+     *    protection.
+     */
+    const expected = fixture.map((route) =>
+      route.replace(/\{(\w+)\}/g, ':$1').replace(/ \/v1\//, ' /'),
+    );
 
     const missed = expected.filter((route) => !scanned.has(route));
     expect(

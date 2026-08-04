@@ -56,7 +56,7 @@
         ]
       }
     },
-    "/auth/register": {
+    "/v1/auth/register": {
       "post": {
         "operationId": "AuthController_register[0]",
         "parameters": [],
@@ -88,7 +88,7 @@
         ]
       }
     },
-    "/identity/register": {
+    "/v1/identity/register": {
       "post": {
         "operationId": "AuthController_register[1]",
         "parameters": [],
@@ -120,7 +120,7 @@
         ]
       }
     },
-    "/auth/verify-email": {
+    "/v1/auth/verify-email": {
       "get": {
         "operationId": "AuthController_verifyEmail[0]",
         "parameters": [
@@ -151,7 +151,7 @@
         ]
       }
     },
-    "/identity/verify-email": {
+    "/v1/identity/verify-email": {
       "get": {
         "operationId": "AuthController_verifyEmail[1]",
         "parameters": [
@@ -182,7 +182,7 @@
         ]
       }
     },
-    "/auth/resend-verification": {
+    "/v1/auth/resend-verification": {
       "post": {
         "operationId": "AuthController_resendVerification[0]",
         "parameters": [],
@@ -214,7 +214,7 @@
         ]
       }
     },
-    "/identity/resend-verification": {
+    "/v1/identity/resend-verification": {
       "post": {
         "operationId": "AuthController_resendVerification[1]",
         "parameters": [],
@@ -246,7 +246,7 @@
         ]
       }
     },
-    "/auth/login": {
+    "/v1/auth/login": {
       "post": {
         "operationId": "AuthController_login[0]",
         "parameters": [],
@@ -278,7 +278,7 @@
         ]
       }
     },
-    "/identity/login": {
+    "/v1/identity/login": {
       "post": {
         "operationId": "AuthController_login[1]",
         "parameters": [],
@@ -310,7 +310,7 @@
         ]
       }
     },
-    "/auth/refresh": {
+    "/v1/auth/refresh": {
       "post": {
         "operationId": "AuthController_refresh[0]",
         "parameters": [],
@@ -332,7 +332,7 @@
         ]
       }
     },
-    "/identity/refresh": {
+    "/v1/identity/refresh": {
       "post": {
         "operationId": "AuthController_refresh[1]",
         "parameters": [],
@@ -354,7 +354,7 @@
         ]
       }
     },
-    "/auth/logout": {
+    "/v1/auth/logout": {
       "post": {
         "operationId": "AuthController_logout[0]",
         "parameters": [],
@@ -381,7 +381,7 @@
         ]
       }
     },
-    "/identity/logout": {
+    "/v1/identity/logout": {
       "post": {
         "operationId": "AuthController_logout[1]",
         "parameters": [],
@@ -408,7 +408,7 @@
         ]
       }
     },
-    "/auth/me": {
+    "/v1/auth/me": {
       "get": {
         "operationId": "AuthController_me[0]",
         "parameters": [],
@@ -435,7 +435,7 @@
         ]
       }
     },
-    "/identity/me": {
+    "/v1/identity/me": {
       "get": {
         "operationId": "AuthController_me[1]",
         "parameters": [],
@@ -462,7 +462,7 @@
         ]
       }
     },
-    "/trading/ping": {
+    "/v1/trading/ping": {
       "get": {
         "operationId": "TradingController_ping",
         "parameters": [],
@@ -477,7 +477,7 @@
         ]
       }
     },
-    "/partners/ping": {
+    "/v1/partners/ping": {
       "get": {
         "operationId": "PartnersController_ping",
         "parameters": [],
@@ -492,7 +492,7 @@
         ]
       }
     },
-    "/wallet": {
+    "/v1/wallet": {
       "get": {
         "operationId": "WalletController_myWallets",
         "parameters": [],
@@ -522,7 +522,7 @@
         ]
       }
     },
-    "/wallet/ledger": {
+    "/v1/wallet/ledger": {
       "get": {
         "operationId": "WalletController_myLedger",
         "parameters": [],
@@ -549,7 +549,7 @@
         ]
       }
     },
-    "/payments/withdrawals": {
+    "/v1/payments/withdrawals": {
       "post": {
         "operationId": "PaymentsController_requestWithdrawal",
         "parameters": [
@@ -596,7 +596,7 @@
         ]
       }
     },
-    "/payments/transactions": {
+    "/v1/payments/transactions": {
       "get": {
         "operationId": "PaymentsController_myTransactions",
         "parameters": [],
@@ -626,7 +626,7 @@
         ]
       }
     },
-    "/kyc/config": {
+    "/v1/kyc/config": {
       "get": {
         "operationId": "KycController_getConfig",
         "parameters": [],
@@ -656,7 +656,7 @@
         ]
       }
     },
-    "/kyc/status": {
+    "/v1/kyc/status": {
       "get": {
         "operationId": "KycController_status",
         "parameters": [],
@@ -683,7 +683,7 @@
         ]
       }
     },
-    "/kyc/step": {
+    "/v1/kyc/step": {
       "post": {
         "operationId": "KycController_saveStep",
         "parameters": [],
@@ -713,7 +713,7 @@
         ]
       }
     },
-    "/kyc/upload": {
+    "/v1/kyc/upload": {
       "post": {
         "operationId": "KycController_uploadFile",
         "parameters": [],
@@ -757,7 +757,7 @@
         ]
       }
     },
-    "/kyc/submit": {
+    "/v1/kyc/submit": {
       "post": {
         "operationId": "KycController_submit",
         "parameters": [],
@@ -777,7 +777,7 @@
         ]
       }
     },
-    "/kyc/reset": {
+    "/v1/kyc/reset": {
       "post": {
         "operationId": "KycController_reset",
         "parameters": [],
@@ -797,7 +797,7 @@
         ]
       }
     },
-    "/uploads/kyc/{file}": {
+    "/v1/uploads/kyc/{file}": {
       "get": {
         "operationId": "UploadsController_serveKycFile",
         "parameters": [
@@ -826,7 +826,7 @@
         ]
       }
     },
-    "/admin/auth/login": {
+    "/v1/admin/auth/login": {
       "post": {
         "operationId": "AdminAuthController_login",
         "parameters": [],
@@ -858,7 +858,7 @@
         ]
       }
     },
-    "/admin/auth/refresh": {
+    "/v1/admin/auth/refresh": {
       "post": {
         "operationId": "AdminAuthController_refresh",
         "parameters": [],
@@ -880,7 +880,7 @@
         ]
       }
     },
-    "/admin/auth/logout": {
+    "/v1/admin/auth/logout": {
       "post": {
         "operationId": "AdminAuthController_logout",
         "parameters": [],
@@ -907,7 +907,7 @@
         ]
       }
     },
-    "/admin/auth/me": {
+    "/v1/admin/auth/me": {
       "get": {
         "operationId": "AdminAuthController_me",
         "parameters": [],
@@ -934,7 +934,7 @@
         ]
       }
     },
-    "/admin/invite": {
+    "/v1/admin/invite": {
       "post": {
         "operationId": "AdminAuthController_invite",
         "parameters": [],
@@ -971,7 +971,7 @@
         ]
       }
     },
-    "/admin/invite/validate": {
+    "/v1/admin/invite/validate": {
       "get": {
         "operationId": "AdminAuthController_validateInvite",
         "parameters": [
@@ -995,7 +995,7 @@
         ]
       }
     },
-    "/admin/invite/accept": {
+    "/v1/admin/invite/accept": {
       "post": {
         "operationId": "AdminAuthController_acceptInvite",
         "parameters": [],
@@ -1020,7 +1020,7 @@
         ]
       }
     },
-    "/admin/clients": {
+    "/v1/admin/clients": {
       "get": {
         "operationId": "AdminClientsController_listClients",
         "parameters": [
@@ -1112,7 +1112,7 @@
         ]
       }
     },
-    "/admin/clients/{id}/status": {
+    "/v1/admin/clients/{id}/status": {
       "patch": {
         "operationId": "AdminClientsController_setClientStatus",
         "parameters": [
@@ -1151,7 +1151,7 @@
         ]
       }
     },
-    "/admin/kyc": {
+    "/v1/admin/kyc": {
       "get": {
         "operationId": "AdminComplianceController_listKyc",
         "parameters": [
@@ -1211,7 +1211,7 @@
         ]
       }
     },
-    "/admin/kyc/{userId}": {
+    "/v1/admin/kyc/{userId}": {
       "get": {
         "operationId": "AdminComplianceController_getKyc",
         "parameters": [
@@ -1247,7 +1247,7 @@
         ]
       }
     },
-    "/admin/kyc/{userId}/claim": {
+    "/v1/admin/kyc/{userId}/claim": {
       "patch": {
         "operationId": "AdminComplianceController_claimKyc",
         "parameters": [
@@ -1283,7 +1283,7 @@
         ]
       }
     },
-    "/admin/kyc/{userId}/approve": {
+    "/v1/admin/kyc/{userId}/approve": {
       "patch": {
         "operationId": "AdminComplianceController_approveKyc",
         "parameters": [
@@ -1319,7 +1319,7 @@
         ]
       }
     },
-    "/admin/kyc/{userId}/reject": {
+    "/v1/admin/kyc/{userId}/reject": {
       "patch": {
         "operationId": "AdminComplianceController_rejectKyc",
         "parameters": [
@@ -1365,7 +1365,7 @@
         ]
       }
     },
-    "/admin/rejection-reasons": {
+    "/v1/admin/rejection-reasons": {
       "get": {
         "operationId": "AdminComplianceController_listRejectionReasons",
         "parameters": [
@@ -1439,7 +1439,7 @@
         ]
       }
     },
-    "/admin/rejection-reasons/{id}": {
+    "/v1/admin/rejection-reasons/{id}": {
       "put": {
         "operationId": "AdminComplianceController_updateRejectionReason",
         "parameters": [
@@ -1509,7 +1509,7 @@
         ]
       }
     },
-    "/admin/kyc-config": {
+    "/v1/admin/kyc-config": {
       "get": {
         "operationId": "AdminComplianceController_getKycConfig",
         "parameters": [],
@@ -1557,7 +1557,7 @@
         ]
       }
     },
-    "/admin/kyc-config/steps": {
+    "/v1/admin/kyc-config/steps": {
       "post": {
         "operationId": "AdminComplianceController_addKycStep",
         "parameters": [],
@@ -1587,7 +1587,7 @@
         ]
       }
     },
-    "/admin/kyc-config/steps/{id}": {
+    "/v1/admin/kyc-config/steps/{id}": {
       "put": {
         "operationId": "AdminComplianceController_updateKycStep",
         "parameters": [
@@ -1653,7 +1653,7 @@
         ]
       }
     },
-    "/admin/kyc-config/reset": {
+    "/v1/admin/kyc-config/reset": {
       "post": {
         "operationId": "AdminComplianceController_resetKycConfig",
         "parameters": [],
@@ -1673,7 +1673,7 @@
         ]
       }
     },
-    "/admin/withdrawals": {
+    "/v1/admin/withdrawals": {
       "get": {
         "operationId": "AdminMoneyController_listWithdrawals",
         "parameters": [
@@ -1733,7 +1733,7 @@
         ]
       }
     },
-    "/admin/withdrawals/{id}/approve": {
+    "/v1/admin/withdrawals/{id}/approve": {
       "patch": {
         "operationId": "AdminMoneyController_approveWithdrawal",
         "parameters": [
@@ -1769,7 +1769,7 @@
         ]
       }
     },
-    "/admin/withdrawals/{id}/reject": {
+    "/v1/admin/withdrawals/{id}/reject": {
       "patch": {
         "operationId": "AdminMoneyController_rejectWithdrawal",
         "parameters": [
@@ -1815,7 +1815,7 @@
         ]
       }
     },
-    "/admin/withdrawals/{id}/settle": {
+    "/v1/admin/withdrawals/{id}/settle": {
       "patch": {
         "operationId": "AdminMoneyController_settleWithdrawal",
         "parameters": [
@@ -1861,7 +1861,7 @@
         ]
       }
     },
-    "/admin/reconciliation": {
+    "/v1/admin/reconciliation": {
       "get": {
         "description": "The same check the hourly job runs: every wallet balance against the sum of its own ledger, and every confirmed accrual against the entry that should have credited it. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed.",
         "operationId": "AdminMoneyController_reconcile",
@@ -1882,7 +1882,7 @@
         ]
       }
     },
-    "/admin/ledger": {
+    "/v1/admin/ledger": {
       "get": {
         "operationId": "AdminMoneyController_listLedger",
         "parameters": [
@@ -1958,7 +1958,7 @@
         ]
       }
     },
-    "/admin/commission-plans": {
+    "/v1/admin/commission-plans": {
       "get": {
         "operationId": "AdminMoneyController_listPrograms",
         "parameters": [],
@@ -2023,7 +2023,7 @@
         ]
       }
     },
-    "/admin/commission-plans/{id}": {
+    "/v1/admin/commission-plans/{id}": {
       "put": {
         "operationId": "AdminMoneyController_updateProgram",
         "parameters": [
@@ -2069,7 +2069,7 @@
         ]
       }
     },
-    "/admin/commission-plans/{id}/active": {
+    "/v1/admin/commission-plans/{id}/active": {
       "patch": {
         "operationId": "AdminMoneyController_setProgramActive",
         "parameters": [
@@ -2115,7 +2115,7 @@
         ]
       }
     },
-    "/admin/permissions": {
+    "/v1/admin/permissions": {
       "get": {
         "operationId": "AdminRbacController_getPermissions",
         "parameters": [],
@@ -2145,7 +2145,7 @@
         ]
       }
     },
-    "/admin/roles": {
+    "/v1/admin/roles": {
       "get": {
         "operationId": "AdminRbacController_listRoles",
         "parameters": [],
@@ -2210,7 +2210,7 @@
         ]
       }
     },
-    "/admin/roles/{id}": {
+    "/v1/admin/roles/{id}": {
       "put": {
         "operationId": "AdminRbacController_updateRole",
         "parameters": [
@@ -2290,7 +2290,7 @@
         ]
       }
     },
-    "/admin/users": {
+    "/v1/admin/users": {
       "get": {
         "operationId": "AdminRbacController_listAdmins",
         "parameters": [],
@@ -2320,7 +2320,7 @@
         ]
       }
     },
-    "/admin/users/{id}": {
+    "/v1/admin/users/{id}": {
       "patch": {
         "operationId": "AdminRbacController_updateAdmin",
         "parameters": [
@@ -2366,7 +2366,7 @@
         ]
       }
     },
-    "/admin/audit-log": {
+    "/v1/admin/audit-log": {
       "get": {
         "operationId": "AdminAuditController_listAuditLog",
         "parameters": [

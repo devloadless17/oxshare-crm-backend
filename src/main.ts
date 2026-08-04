@@ -4,6 +4,7 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { VALIDATION_PIPE_OPTIONS } from './common/validation.config';
+import { applyApiPrefix } from './common/api-prefix';
 import { JsonLogger } from './common/logging/json.logger';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
@@ -66,6 +67,38 @@ async function bootstrap() {
     // So a caller can read the id back off a response it did not set one on.
     exposedHeaders: ['X-Request-Id'],
   });
+
+  /*
+   * Every route is versioned: /v1/... — PLATFORM-CONVENTIONS R-2.1.
+   *
+   * THE CONFLICT THIS RESOLVES, stated so nobody re-litigates it by accident:
+   *
+   *   R-2.1 requires a version prefix from day one. The root CLAUDE.md said
+   *   "Never reintroduce /v1 into a frontend base URL", and a test in
+   *   openapi-routes.spec.ts enforced the absence. That instruction came from a
+   *   real incident — the frontends called /api/v1/... against a backend serving
+   *   bare paths and every request 404'd — so it was a correct BUG FIX that had
+   *   hardened into an architectural position it was never meant to be.
+   *
+   * Both are satisfied here, because the disagreement was about WHERE the
+   * prefix lives. The frontends' axios `baseURL` stays `/api` and no application
+   * code changes; only each app's next.config.ts rewrite destination gains the
+   * segment. So "never in a frontend base URL" stays literally true, and the API
+   * gains the version.
+   *
+   * Doing it now is the whole point: an unversioned API has one shape forever or
+   * breaks its callers silently, and today there are exactly zero external
+   * consumers. The MT5 bridge does not exist, the payment providers have no
+   * credentials (§12.5), and no mobile client is built. The moment any of them
+   * holds a URL this stops being a rewrite rule and becomes a coordinated
+   * migration with third parties.
+   *
+   * /health is excluded. Load balancers and uptime checks should not have to
+   * track API versions to ask whether the process is alive, and a readiness
+   * probe that 404s during a version migration is an outage caused by the
+   * monitoring.
+   */
+  applyApiPrefix(app);
 
   // Swagger docs (available at /api/docs)
   const config = new DocumentBuilder()

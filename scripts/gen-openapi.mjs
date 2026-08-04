@@ -16,6 +16,7 @@ import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from '../dist/app.module.js';
+import { applyApiPrefix } from '../dist/common/api-prefix.js';
 
 const OUTPUT = 'openapi.json';
 
@@ -28,6 +29,11 @@ process.env.JWT_ACCESS_SECRET ??= 'openapi-generation-only-not-a-real-secret-val
 process.env.JWT_REFRESH_SECRET ??= 'openapi-generation-only-not-a-real-secret-value';
 
 const app = await NestFactory.create(AppModule, { logger: false });
+
+// The same call main.ts makes. Without it the document describes bare paths
+// while the server serves /v1/... — and the frontends would generate types for
+// an API that does not exist (R-2.1).
+applyApiPrefix(app);
 
 const config = new DocumentBuilder()
   .setTitle('OxShare CRM API')

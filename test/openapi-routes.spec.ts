@@ -5,6 +5,7 @@ import { Test } from '@nestjs/testing';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { INestApplication } from '@nestjs/common';
 import { AppModule } from '../src/app.module';
+import { applyApiPrefix } from '../src/common/api-prefix';
 
 /**
  * The route inventory is frozen against a committed fixture.
@@ -41,6 +42,10 @@ beforeAll(async () => {
 
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
   app = moduleRef.createNestApplication();
+  // The SAME call main.ts makes, from the same module — otherwise this snapshot
+  // describes a surface the server does not serve, and the frontends generate
+  // their types from a document that disagrees with reality.
+  applyApiPrefix(app);
   await app.init();
 }, 60_000);
 
@@ -85,11 +90,31 @@ describe('OpenAPI route inventory', () => {
     expect(actual).toEqual(expected);
   });
 
-  it('exposes no route under a /api or /v1 prefix', () => {
-    // main.ts calls neither setGlobalPrefix() nor enableVersioning(), so the
-    // `version: '1'` on a few controllers is inert. Both frontends strip /api in
-    // their rewrite and had to have a reintroduced /v1 removed once already.
-    const offenders = routeInventory().filter((r) => / \/(api|v1)\b/.test(r));
-    expect(offenders).toEqual([]);
+  it('serves EVERY route under /v1, except the health probes', () => {
+    /*
+     * The inverse of what this test asserted until R-2.1 landed.
+     *
+     * It used to enforce the absence of a version prefix, because the root
+     * CLAUDE.md said "never reintroduce /v1" after a real incident: the
+     * frontends called /api/v1/... against a backend serving bare paths and
+     * every request 404'd. That was a correct bug fix which had hardened into
+     * an architectural position it was never meant to be.
+     *
+     * The disagreement was about WHERE the prefix lives. It lives on the API;
+     * the frontends' axios baseURL is still `/api` and only their rewrite
+     * destination carries the segment, so the original instruction stays
+     * literally true.
+     */
+    const unversioned = routeInventory().filter((r) => !/ \/v1\//.test(r));
+    expect(unversioned.sort()).toEqual(['GET /health', 'GET /health/ready']);
+  });
+
+  it('serves the health probes UNVERSIONED', () => {
+    // A load balancer should not have to track API versions to ask whether the
+    // process is alive, and a readiness probe that 404s mid-migration is an
+    // outage caused by the monitoring.
+    const inventory = routeInventory();
+    expect(inventory).toContain('GET /health');
+    expect(inventory).toContain('GET /health/ready');
   });
 });
