@@ -70,8 +70,20 @@ export class AdminRbacService {
     }
     return keys;
   }
+  /**
+   * Permission keys are lower-case and dot-separated. One spelling, no shim.
+   *
+   * This used to rewrite `:` to `.` before checking the catalog, which meant
+   * `kyc:review` PASSED validation and was then stored verbatim — the system
+   * kept generating the very inconsistency the four normalisation shims existed
+   * to paper over. Migration 0009 converted what was stored; rejecting the other
+   * spelling here is what stops it coming back.
+   *
+   * Casing is still folded, because a key differing only in case is a typo
+   * rather than a second convention, and the catalog is the authority either way.
+   */
   static normalizeKey(key: string): string {
-    return key.replace(/:/g, '.').toLowerCase();
+    return key.toLowerCase();
   }
   /**
    * Anti-escalation invariant: nobody hands out access they don't hold.

@@ -64,6 +64,13 @@
       "when": 1785846090356,
       "tag": "0008_audit_log_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785846150356,
+      "tag": "0009_permission_keys_to_dots",
+      "breakpoints": true
     }
   ]
 }

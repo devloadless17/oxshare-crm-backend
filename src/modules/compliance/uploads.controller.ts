@@ -30,7 +30,7 @@ type Reader =
 
 // KYC documents are PII (ARCHITECTURE §8.5): never served anonymously.
 // Same URL shape the static server used, so existing document URLs keep working:
-//   - an admin holding kyc:review (or '*') may fetch any document
+//   - an admin holding kyc.review (or '*') may fetch any document
 //   - a client may fetch only files referenced by their own submission
 // Real signed URLs arrive with the S3 move; this closes the anonymous hole now.
 @ApiTags('compliance')
@@ -139,7 +139,8 @@ export class UploadsController {
         const admin = await this.admins.findById(payload.sub);
         if (admin) {
           const held = await this.roles.resolvePermissions(admin.roleId, admin.permissions);
-          const normalized = held.map((p) => p.replace(/:/g, '.').toLowerCase());
+          // One spelling — see migration 0009 and admin.guard.ts.
+          const normalized = held.map((p) => p.toLowerCase());
           if (held.includes('*') || normalized.includes('kyc.review')) {
             return { kind: 'admin', id: admin.id, email: admin.email };
           }

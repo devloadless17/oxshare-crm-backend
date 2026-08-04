@@ -267,10 +267,34 @@ describe('PermissionsGuard', () => {
     await expect(guard.canActivate(context)).resolves.toBe(true);
   });
 
-  it('matches colon-style and dot-style keys interchangeably', async () => {
-    const legacy = { ...SUB_ADMIN, permissions: ['KYC:Review'] };
-    const { guard, context } = buildGuard(legacy, ['kyc.review']);
+  it('matches regardless of case, because that is a typo and not a convention', async () => {
+    const { guard, context } = buildGuard({ ...SUB_ADMIN, permissions: ['KYC.Review'] }, [
+      'kyc.review',
+    ]);
     await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
+
+  it('does NOT accept the old colon spelling any more', async () => {
+    /*
+     * This test used to assert the opposite — "matches colon-style and dot-style
+     * keys interchangeably" — and it was pinning a shim rather than a contract.
+     *
+     * Four copies of `replace(/:/g, '.')` bridged two spellings of every
+     * permission key. They were generative, not merely redundant:
+     * `assertGrantable` normalised BEFORE checking the catalog, so `kyc:review`
+     * passed validation and was then stored verbatim, and the system kept
+     * producing the inconsistency it was compensating for.
+     *
+     * Migration 0009 converts the stored keys; removing the shims is what stops
+     * new ones appearing. A colon key reaching here now means either a grant
+     * that predates the migration in a database it never ran against, or a
+     * fifth spelling someone has just invented — and both should fail loudly
+     * rather than be quietly accepted.
+     */
+    const { guard, context } = buildGuard({ ...SUB_ADMIN, permissions: ['kyc:review'] }, [
+      'kyc.review',
+    ]);
+    await expect(guard.canActivate(context)).rejects.toThrow(/Missing permission/);
   });
 
   it('reads the metadata key the decorator writes', () => {

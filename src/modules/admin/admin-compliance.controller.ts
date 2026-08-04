@@ -54,7 +54,7 @@ import {
 export class AdminComplianceController {
   constructor(private readonly compliance: AdminComplianceService) {}
 
-  // ── KYC Review — requires the kyc:review permission (RBAC-02/03) ──────────
+  // ── KYC Review — requires the kyc.review permission (RBAC-02/03) ──────────
   @Get('kyc')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.review')

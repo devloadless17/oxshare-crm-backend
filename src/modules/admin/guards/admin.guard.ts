@@ -107,10 +107,11 @@ export const AnyAdmin = (reason: string) => SetMetadata(ANY_ADMIN_KEY, reason);
 export const RequirePermissions = (...permissions: string[]) =>
   SetMetadata(PERMISSIONS_KEY, permissions);
 
-// Historical inconsistency: issued tokens carry colon keys ('kyc:review') while
-// config/permissions.json uses dot keys ('kyc.review'). Normalize both sides so
-// either spelling works until the catalog is unified.
-const normalize = (key: string) => key.replace(/:/g, '.').toLowerCase();
+// One spelling: lower-case, dot-separated, exactly as config/permissions.json
+// declares it. The `:` → `.` rewrite this used to do was removed with migration
+// 0009, which converted the stored keys — a shim that accepts both spellings is
+// a standing invitation to a third.
+const normalize = (key: string) => key.toLowerCase();
 
 @Injectable()
 export class PermissionsGuard implements CanActivate {
