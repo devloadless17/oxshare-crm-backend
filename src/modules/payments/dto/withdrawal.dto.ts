@@ -50,13 +50,30 @@ export class TransactionDto {
   @ApiPropertyOptional({
     description:
       "The provider's own reference. Backs UNIQUE(provider, provider_ref), which is what makes settlement idempotent in the database (§6.3).",
+    type: String,
+    nullable: true,
   })
+  /*
+   * Every nullable field below states `type` EXPLICITLY.
+   *
+   * `@ApiPropertyOptional()` alone reflects the TypeScript type, and reflection
+   * cannot see through a union — `string | null` arrives as `Object`, Swagger
+   * emits an empty schema, and openapi-typescript generates
+   * `Record<string, never>`. The frontend then cannot read the field at all: the
+   * portal's transactions screen failed to compile on `tx.rejectionReason`,
+   * which is how this was found.
+   *
+   * `nullable: true` rather than just optional, because these genuinely arrive
+   * as null — a pending withdrawal has no providerRef and no settledAt — and a
+   * consumer that treats absent and null the same will eventually meet one of
+   * them it did not expect.
+   */
   providerRef?: string | null;
 
-  @ApiPropertyOptional() destination?: string | null;
-  @ApiPropertyOptional() rejectionReason?: string | null;
-  @ApiPropertyOptional() reviewedBy?: string | null;
-  @ApiPropertyOptional() reviewedAt?: Date | null;
-  @ApiPropertyOptional() settledAt?: Date | null;
+  @ApiPropertyOptional({ type: String, nullable: true }) destination?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true }) reviewedBy?: string | null;
+  @ApiPropertyOptional({ type: Date, nullable: true }) reviewedAt?: Date | null;
+  @ApiPropertyOptional({ type: Date, nullable: true }) settledAt?: Date | null;
   @ApiProperty() createdAt: Date;
 }

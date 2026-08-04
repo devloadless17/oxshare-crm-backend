@@ -3104,23 +3104,31 @@
             ]
           },
           "providerRef": {
-            "type": "object",
-            "description": "The provider's own reference. Backs UNIQUE(provider, provider_ref), which is what makes settlement idempotent in the database (§6.3)."
+            "type": "string",
+            "description": "The provider's own reference. Backs UNIQUE(provider, provider_ref), which is what makes settlement idempotent in the database (§6.3).",
+            "nullable": true
           },
           "destination": {
-            "type": "object"
+            "type": "string",
+            "nullable": true
           },
           "rejectionReason": {
-            "type": "object"
+            "type": "string",
+            "nullable": true
           },
           "reviewedBy": {
-            "type": "object"
+            "type": "string",
+            "nullable": true
           },
           "reviewedAt": {
-            "type": "object"
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
           },
           "settledAt": {
-            "type": "object"
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
           },
           "createdAt": {
             "format": "date-time",
