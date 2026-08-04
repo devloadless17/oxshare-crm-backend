@@ -381,27 +381,75 @@ export class CommissionService {
    * Audit every confirmed accrual against the ledger. Intended for a scheduled
    * integrity check and for CI — an unpaid "confirmed" accrual is a partner
    * who was silently short-paid.
+   *
+   * ## This method currently has no callers, and duplicates a live check
+   *
+   * `ReconciliationService.findUnpaidConfirmedAccruals()` asks the same question
+   * in one SQL statement, runs on the reconciliation schedule, and raises
+   * `UNPAID_CONFIRMED_ACCRUAL` on a hit. This one is reachable from nothing —
+   * not a controller, not the scheduler, not a spec.
+   *
+   * That is worth stating rather than quietly deleting. Two implementations of
+   * one money invariant is the setup for the version that is wrong being the one
+   * someone wires up later, and the docstring above ("intended for … CI")
+   * describes an intent that was never carried out. Whether it goes or gets
+   * wired is a call for whoever owns this module.
+   *
+   * Left correct in the meantime: a dead method that is also wrong is worse than
+   * a dead method, because the next person to reach for it inherits both
+   * problems at once.
    */
   async auditConfirmedAccruals(): Promise<{
     checked: number;
     unpaid: string[];
   }> {
-    const confirmed = await this.db
-      .select()
+    /*
+     * One LEFT JOIN, not a query per accrual.
+     *
+     * This ran a `SELECT` against `ledger_entries` for every confirmed accrual,
+     * which is fine on a seeded database and stops being fine at the volume the
+     * job exists to protect: at 100k accruals it is 100k round trips, and a
+     * check that takes long enough gets moved to "weekly", then to "when
+     * someone remembers". An integrity check that only runs on a small database
+     * is a check that is absent exactly when it matters.
+     *
+     * The join predicate is the same pair `findAccrualLedgerEntry` used, so a
+     * row matches here if and only if it matched there. That method is kept —
+     * `confirmMatured` calls it per accrual, where one lookup for one accrual is
+     * the right shape.
+     */
+    const rows = await this.db
+      .select({ id: commissionAccruals.id, ledgerEntryId: ledgerEntries.id })
       .from(commissionAccruals)
+      .leftJoin(
+        ledgerEntries,
+        and(
+          eq(ledgerEntries.referenceType, 'accrual'),
+          eq(ledgerEntries.referenceId, commissionAccruals.id),
+        ),
+      )
       .where(eq(commissionAccruals.status, 'confirmed'));
 
+    /*
+     * Counted from DISTINCT accrual ids rather than from `rows.length`. The join
+     * is one-to-many in principle — nothing in the schema forbids two ledger
+     * entries referencing one accrual — and a duplicate credit would inflate the
+     * row count. `checked` must mean "accruals examined", or the number it
+     * reports is quietly wrong in the one case worth noticing.
+     */
     const unpaid: string[] = [];
-    for (const accrual of confirmed) {
-      const entry = await this.findAccrualLedgerEntry(accrual.id);
-      if (!entry) unpaid.push(accrual.id);
+    const seen = new Set<string>();
+    for (const row of rows) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      if (!row.ledgerEntryId) unpaid.push(row.id);
     }
     if (unpaid.length > 0) {
       this.logger.error(
         `INTEGRITY: ${unpaid.length} accrual(s) marked confirmed with no ledger credit: ${unpaid.join(', ')}`,
       );
     }
-    return { checked: confirmed.length, unpaid };
+    return { checked: seen.size, unpaid };
   }
 
   /** Convenience for the ingest path: store the deal, then accrue if it is new. */
