@@ -38,12 +38,16 @@ import {
   WithdrawalRowDto,
 } from './dto/responses.dto';
 import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
+import { ReconciliationService } from '../wallet/reconciliation.service';
 
 /** Withdrawal lifecycle, the ADM-13 ledger view and IB commission plans. */
 @ApiTags('admin')
 @Controller('admin')
 export class AdminMoneyController {
-  constructor(private readonly money: AdminMoneyService) {}
+  constructor(
+    private readonly money: AdminMoneyService,
+    private readonly reconciliation: ReconciliationService,
+  ) {}
 
   // ── Withdrawals (ADM-03 · §8.4) ───────────────────────────────────────────
   @Get('withdrawals')
@@ -107,6 +111,22 @@ export class AdminMoneyController {
   }
 
   // ── Ledger (ADM-13) ───────────────────────────────────────────────────────
+  @Get('reconciliation')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ledger.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Run reconciliation now and return the report (§12.2)',
+    description:
+      'The same check the hourly job runs: every wallet balance against the sum of its own ' +
+      'ledger, and every confirmed accrual against the entry that should have credited it. ' +
+      'Read-only — a discrepancy is reported, never repaired, because an automatic correction ' +
+      'would write a compensating entry for a cause nobody has diagnosed.',
+  })
+  reconcile() {
+    return this.reconciliation.run();
+  }
+
   @Get('ledger')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('ledger.view')

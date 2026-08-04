@@ -12,6 +12,7 @@
   "GET /admin/kyc/{userId}",
   "GET /admin/ledger",
   "GET /admin/permissions",
+  "GET /admin/reconciliation",
   "GET /admin/rejection-reasons",
   "GET /admin/roles",
   "GET /admin/users",
