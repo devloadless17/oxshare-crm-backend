@@ -108,7 +108,19 @@ export class ClientRowDto {
 
 export class ClientListResponseDto {
   @ApiProperty({ type: [ClientRowDto] }) items: ClientRowDto[];
-  @ApiProperty() total: number;
+  /**
+   * Pass back as `?cursor=` for the next page; `null` on the last (R-2.4).
+   *
+   * This, not `total`, is what says whether there is more — counting is a full
+   * scan of the filtered set and is only performed on request.
+   */
+  @ApiProperty({ type: String, nullable: true })
+  nextCursor: string | null;
+
+  @ApiPropertyOptional({
+    description: 'Only when ?withTotal=true. Counting 219,000 rows is a full scan.',
+  })
+  total?: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
 }
@@ -161,6 +173,15 @@ export class AuditEntryDto {
 
 export class AuditListResponseDto {
   @ApiProperty({ type: [AuditEntryDto] }) items: AuditEntryDto[];
+  /**
+   * Pass back as `?cursor=` for the next page; `null` on the last (R-2.4).
+   *
+   * The audit log is append-only and only grows, so it reaches the depth where
+   * OFFSET hurts quickly — and a trail with a gap is worse than no trail,
+   * because it is believed.
+   */
+  @ApiProperty({ type: String, nullable: true })
+  nextCursor: string | null;
   @ApiProperty() total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
@@ -200,6 +221,15 @@ export class WithdrawalRowDto {
 
 export class WithdrawalListResponseDto {
   @ApiProperty({ type: [WithdrawalRowDto] }) items: WithdrawalRowDto[];
+  /**
+   * Pass back as `?cursor=` for the next page; `null` on the last (R-2.4).
+   *
+   * This, not `total`, is what says whether there is more — counting is a full
+   * scan of the filtered set and is only performed on request.
+   */
+  @ApiProperty({ type: String, nullable: true })
+  nextCursor: string | null;
+
   @ApiProperty() total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;

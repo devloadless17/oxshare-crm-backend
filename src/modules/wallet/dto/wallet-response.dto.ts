@@ -74,6 +74,17 @@ export class LedgerEntryDto {
  */
 export class LedgerListResponseDto {
   @ApiProperty({ type: [LedgerEntryDto] }) items: LedgerEntryDto[];
+  /**
+   * Pass back as `?cursor=` for the next page; `null` on the last (R-2.4).
+   *
+   * The ledger is append-only and never stops growing, so it reaches the depth
+   * where OFFSET hurts before any other list — and it is the one used FOR
+   * reconciliation, where a silently skipped entry means balancing against the
+   * wrong set of rows.
+   */
+  @ApiProperty({ type: String, nullable: true })
+  nextCursor: string | null;
+
   @ApiProperty({ description: 'Total matching entries, ignoring pagination.' }) total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
