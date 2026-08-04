@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { CsrfService } from './csrf.service';
 import { CsrfGuard } from './csrf.guard';
+import { IdempotencyInterceptor } from './idempotency.interceptor';
 
 /**
  * Global so that CsrfService is injectable wherever a session is established
@@ -15,7 +16,7 @@ import { CsrfGuard } from './csrf.guard';
 @Global()
 @Module({
   imports: [JwtModule.register({})],
-  providers: [CsrfService, CsrfGuard],
-  exports: [CsrfService, CsrfGuard],
+  providers: [CsrfService, CsrfGuard, IdempotencyInterceptor],
+  exports: [CsrfService, CsrfGuard, IdempotencyInterceptor],
 })
 export class SecurityModule {}

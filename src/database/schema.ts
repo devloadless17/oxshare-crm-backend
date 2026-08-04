@@ -468,3 +468,60 @@ export const auditLog = pgTable(
     index('audit_log_action_idx').on(t.action),
   ],
 );
+
+/*
+ * ── Idempotency keys (PLATFORM-CONVENTIONS R-5.2) ────────────────────────────
+ *
+ * ARCHITECTURE §6.3 puts idempotency in database constraints, and the existing
+ * ones cover replayed CAUSES: UNIQUE(mt5_ticket) for a redelivered deal,
+ * UNIQUE(provider, provider_ref) for a repeated payment callback,
+ * UNIQUE(deal_id, ib_user_id, level) for a re-run accrual.
+ *
+ * Nothing covered a replayed REQUEST. A double-clicked withdrawal button sends
+ * two requests that are genuinely distinct causes: both pass validation, both
+ * create a transaction row, and both place a hold — so the client's available
+ * balance drops twice for one intended withdrawal, and an admin sees two
+ * requests to approve. No constraint could have caught it, because nothing
+ * about the second request is a duplicate as far as the database is concerned.
+ *
+ * The caller supplies the identity instead: a client-generated `Idempotency-Key`
+ * header. The UNIQUE index below is what makes the replay a no-op — the same
+ * check-then-insert warning from §6.3 applies here, so the INSERT itself is the
+ * lock, never a preceding SELECT.
+ */
+export const idempotencyKeys = pgTable(
+  'idempotency_keys',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** The caller's key. Scoped per actor and endpoint, never global. */
+    key: varchar('key', { length: 255 }).notNull(),
+    /** `POST /payments/withdrawals` — so one key may be reused across endpoints. */
+    endpoint: varchar('endpoint', { length: 255 }).notNull(),
+    /** Whose key it is. Two users may pick the same key without colliding. */
+    actorId: uuid('actor_id').notNull(),
+    /**
+     * SHA-256 of the request body.
+     *
+     * Reusing a key with a DIFFERENT body is a client bug, and returning the
+     * first response for it would be silently wrong — the caller would believe
+     * the second, different request had succeeded. That case is a 422, which is
+     * only detectable because the fingerprint is stored.
+     */
+    requestHash: varchar('request_hash', { length: 64 }).notNull(),
+    /**
+     * The stored response, replayed verbatim on a retry.
+     *
+     * NULL while the first request is still in flight: a concurrent duplicate
+     * gets 409 rather than a half-written answer.
+     */
+    responseStatus: integer('response_status'),
+    responseBody: jsonb('response_body').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /** THE guarantee. Everything else in this table is bookkeeping. */
+    uniqueIndex('idempotency_keys_scope_uq').on(t.key, t.endpoint, t.actorId),
+    /** Supports the retention sweep — these rows are not kept forever. */
+    index('idempotency_keys_created_at_idx').on(t.createdAt),
+  ],
+);

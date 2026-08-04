@@ -1,11 +1,17 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import {
   ApiCookieAuth,
   ApiCreatedResponse,
+  ApiHeader,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
+import {
+  IDEMPOTENCY_HEADER,
+  Idempotent,
+  IdempotencyInterceptor,
+} from '../../common/security/idempotency.interceptor';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
@@ -15,11 +21,21 @@ import { RequestWithdrawalDto, TransactionDto } from './dto/withdrawal.dto';
 
 @ApiTags('payments')
 @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
+@UseInterceptors(IdempotencyInterceptor)
 @Controller('payments')
 export class PaymentsController {
   constructor(private readonly transactions: TransactionsService) {}
 
   @Post('withdrawals')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended withdrawal, reused only when retrying that same one. ' +
+      'Without it a double-clicked button creates two withdrawals and places two holds ' +
+      '(PLATFORM-CONVENTIONS R-5.2).',
+  })
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Request a withdrawal — requires KYC level 1; reserves the amount on hold',
