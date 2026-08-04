@@ -37,9 +37,10 @@ export default defineConfig({
        * coverage across controllers and stores is a much weaker signal than those
        * four, so do not chase the percentage at their expense.
        */
-      // Measured 2026-08-04: statements 33.7, branches 17.3, functions 28.9,
-      // lines 34.3. Set a couple of points under.
-      thresholds: { lines: 32, functions: 26, branches: 15, statements: 31 },
+      // Raised after the request-validation spec landed. Measured 2026-08-04:
+      // statements 35.2, branches 18.9, functions 30.4, lines 36.0. Set a couple of
+      // points under.
+      thresholds: { lines: 34, functions: 28, branches: 17, statements: 33 },
     },
   },
 });

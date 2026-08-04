@@ -3,6 +3,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { VALIDATION_PIPE_OPTIONS } from './common/validation.config';
 import { JsonLogger } from './common/logging/json.logger';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
@@ -39,26 +40,9 @@ async function bootstrap() {
 
   app.use(cookieParser());
 
-  // Global validation pipe.
-  //
-  // forbidNonWhitelisted turns a silent discard into a loud 400. With whitelist
-  // alone, an unexpected property was stripped and the request succeeded — so a
-  // caller sending `{ step, feilds }` got a 200 and a half-saved record. On a
-  // money system, "the caller and the contract disagree" must be an error.
-  //
-  // The MT5 bridge webhook needs no exemption from this: it reads `req.body`
-  // directly (the raw body is required for HMAC verification), so it never
-  // passes through this pipe. That matters — the bridge is a system we do not
-  // own, and per that controller's own note "a lost deal is an unpaid partner",
-  // so it must keep tolerating extra fields. It handles a malformed deal by
-  // logging and skipping that one deal, never by rejecting the batch.
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  );
+  // Global validation pipe. Options live in common/validation.config.ts so that
+  // test/validation.spec.ts asserts against the same source rather than its own copy.
+  app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
 
   // CORS — allow portal (3000) and admin (3002)
   app.enableCors({
