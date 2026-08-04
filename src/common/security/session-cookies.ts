@@ -23,7 +23,10 @@ import type { CookieOptions, Response } from 'express';
  *  - Generic names collide. `access_token` is exactly what another OxShare app
  *    would call its own cookie, and two apps under one domain sharing a name is
  *    silent session corruption that only reproduces for users who visited both.
- *    Hence the `oxshare_` product prefix and the per-app suffix.
+ *    Hence the full `oxshare_crm_<surface>_<kind>` shape: the product (`oxshare`),
+ *    the SYSTEM (`crm` — OxShare runs other websites, and none of them should
+ *    ever see or clash with a cookie belonging to this one), the surface
+ *    (`admin` or `portal`, which are separate sessions per R-3.1), and the kind.
  *
  * The names are computed here rather than written as literals anywhere, because
  * `__Host-` requires Secure and therefore cannot be used on plain-HTTP
@@ -52,12 +55,22 @@ function name(base: string): string {
 }
 
 export const sessionCookieNames = {
-  adminAccess: () => name('oxshare_admin_at'),
-  adminRefresh: () => name('oxshare_admin_rt'),
-  clientAccess: () => name('oxshare_portal_at'),
-  clientRefresh: () => name('oxshare_portal_rt'),
-  /** Readable by JS on purpose — it is an anti-forgery token, not a credential. */
-  csrf: () => name('oxshare_csrf'),
+  adminAccess: () => name('oxshare_crm_admin_at'),
+  adminRefresh: () => name('oxshare_crm_admin_rt'),
+  clientAccess: () => name('oxshare_crm_portal_at'),
+  clientRefresh: () => name('oxshare_crm_portal_rt'),
+  /**
+   * Readable by JS on purpose — an anti-forgery token, not a credential.
+   *
+   * ONE PER SURFACE, not one shared. Cookies are scoped by host and path and
+   * **ignore the port**, so in development `localhost:3000` and `localhost:3002`
+   * share a single cookie jar: a single `oxshare_csrf` meant logging into the
+   * portal silently overwrote the admin app's token and vice versa. Separate
+   * names also match R-3.1 — the two surfaces are meant to be entirely separate,
+   * and an anti-forgery token is part of a session, not a global.
+   */
+  adminCsrf: () => name('oxshare_crm_admin_csrf'),
+  portalCsrf: () => name('oxshare_crm_portal_csrf'),
 };
 
 /**
@@ -76,11 +89,12 @@ export function readSessionCookie(
 }
 
 export const COOKIE_BASES = {
-  adminAccess: 'oxshare_admin_at',
-  adminRefresh: 'oxshare_admin_rt',
-  clientAccess: 'oxshare_portal_at',
-  clientRefresh: 'oxshare_portal_rt',
-  csrf: 'oxshare_csrf',
+  adminAccess: 'oxshare_crm_admin_at',
+  adminRefresh: 'oxshare_crm_admin_rt',
+  clientAccess: 'oxshare_crm_portal_at',
+  clientRefresh: 'oxshare_crm_portal_rt',
+  adminCsrf: 'oxshare_crm_admin_csrf',
+  portalCsrf: 'oxshare_crm_portal_csrf',
 } as const;
 
 /**
@@ -115,6 +129,48 @@ export function sessionCookieOptions(maxAgeMs: number): CookieOptions {
  */
 export function csrfCookieOptions(maxAgeMs: number): CookieOptions {
   return { ...sessionCookieOptions(maxAgeMs), httpOnly: false };
+}
+
+/**
+ * Cookie names this system used BEFORE the R-3.2 migration.
+ *
+ * They must be actively deleted, not left to expire, and this is not cosmetic:
+ * they were set with `httpOnly: false` and they hold real JWTs — an 8-hour
+ * access token and a 30-day refresh token. Every browser that used the old build
+ * is still carrying them, readable by any script on the origin, for up to 30
+ * days after the deploy that was supposed to end exactly that exposure.
+ *
+ * Purging them on the next login or logout is what makes the migration actually
+ * take effect for existing users rather than only for new ones.
+ */
+export const LEGACY_COOKIE_NAMES = [
+  'access_token',
+  'refresh_token',
+  'admin_access_token',
+  'admin_refresh_token',
+  // Short-lived intermediate names from the first cut of this migration, before
+  // the CSRF cookie was split per surface and before `crm` entered the name.
+  'oxshare_csrf',
+  'oxshare_admin_at',
+  'oxshare_admin_rt',
+  'oxshare_admin_csrf',
+  'oxshare_portal_at',
+  'oxshare_portal_rt',
+  'oxshare_portal_csrf',
+] as const;
+
+/**
+ * Deletes every superseded cookie this system has ever set.
+ *
+ * Called on login and on logout — the two moments a browser is guaranteed to be
+ * talking to us and a stale credential is guaranteed to be worthless.
+ */
+export function clearLegacySessionCookies(res: Response): void {
+  for (const legacy of LEGACY_COOKIE_NAMES) {
+    // No attributes beyond path: these were written with varying flags, and a
+    // clear only matches on name/path/domain. Path '/' is what all of them used.
+    res.clearCookie(legacy, { path: '/' });
+  }
 }
 
 /** Clearing must use the same attributes the cookie was set with, or the

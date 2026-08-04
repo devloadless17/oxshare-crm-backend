@@ -79,13 +79,13 @@ export class CsrfGuard implements CanActivate {
     if (exemption) return true;
 
     const session = this.resolveSession(req);
-    // No session cookie means no ambient authority to abuse. Whatever else
-    // authenticates this request (an HMAC, nothing at all) is not something a
-    // browser attaches automatically, which is the entire premise of CSRF.
+    // No session cookie for THIS surface means no ambient authority to abuse.
+    // Whatever else authenticates the request (an HMAC, nothing at all) is not
+    // something a browser attaches automatically, which is the premise of CSRF.
     if (!session) return true;
 
     this.assertOriginAllowed(req);
-    this.assertTokenValid(req, session.subject);
+    this.assertTokenValid(req, session);
     return true;
   }
 
@@ -98,24 +98,47 @@ export class CsrfGuard implements CanActivate {
    * this stay global — and therefore default-on — instead of being one more
    * decorator to remember.
    */
-  private resolveSession(req: Request): { subject: string } | null {
+  private resolveSession(req: Request): { subject: string; csrfBase: string } | null {
     const cookies = req.cookies as Record<string, string | undefined> | undefined;
 
-    const admin = readSessionCookie(cookies, COOKIE_BASES.adminAccess);
-    if (admin) {
-      const sub = this.subjectOf(admin, 'ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev');
-      if (sub) return { subject: sub };
-    }
+    /*
+     * The SURFACE is chosen by the route, not by "whichever cookie happens to be
+     * present" — R-3.1 says these are two entirely separate surfaces, and the
+     * guard has to honour that or it draws conclusions from the wrong session.
+     *
+     * The bug that forced this: cookies are scoped by host and path and IGNORE
+     * the port, so on localhost the portal (:3000) and the admin app (:3002)
+     * share one cookie jar. A developer who logged into the portal and then
+     * opened the admin login page sent a PORTAL session cookie to
+     * `POST /admin/auth/login`. The guard read it as "this request is
+     * authenticated", demanded an anti-forgery token for a session that has
+     * nothing to do with the admin surface, and refused the login — locking the
+     * user out of the admin panel entirely, with a message about anti-forgery
+     * validation that pointed nowhere useful.
+     */
+    const isAdminSurface = req.path.startsWith('/admin');
 
-    const client = readSessionCookie(cookies, COOKIE_BASES.clientAccess);
-    if (client) {
-      const sub = this.subjectOf(client, 'JWT_ACCESS_SECRET', 'oxshare-access-secret-dev');
-      if (sub) return { subject: sub };
-    }
+    const [cookieBase, csrfBase, secretKey, devFallback] = isAdminSurface
+      ? [
+          COOKIE_BASES.adminAccess,
+          COOKIE_BASES.adminCsrf,
+          'ADMIN_JWT_SECRET',
+          'oxshare-admin-secret-dev',
+        ]
+      : [
+          COOKIE_BASES.clientAccess,
+          COOKIE_BASES.portalCsrf,
+          'JWT_ACCESS_SECRET',
+          'oxshare-access-secret-dev',
+        ];
 
+    const token = readSessionCookie(cookies, cookieBase);
+    if (!token) return null;
+
+    const subject = this.subjectOf(token, secretKey, devFallback);
     // A cookie that is present but unverifiable is not a session. The auth guard
     // will reject it with a 401, which is a clearer answer than a CSRF 403.
-    return null;
+    return subject ? { subject, csrfBase } : null;
   }
 
   private subjectOf(token: string, configKey: string, devFallback: string): string | null {
@@ -169,9 +192,9 @@ export class CsrfGuard implements CanActivate {
     this.reject(req, 'neither Origin nor Referer was present on a cookie-authenticated write');
   }
 
-  private assertTokenValid(req: Request, subject: string): void {
+  private assertTokenValid(req: Request, session: { subject: string; csrfBase: string }): void {
     const cookies = req.cookies as Record<string, string | undefined> | undefined;
-    const fromCookie = readSessionCookie(cookies, COOKIE_BASES.csrf);
+    const fromCookie = readSessionCookie(cookies, session.csrfBase);
     const header = req.get(CSRF_HEADER);
 
     if (!header) this.reject(req, `missing ${CSRF_HEADER} header`);
@@ -180,7 +203,7 @@ export class CsrfGuard implements CanActivate {
     if (!fromCookie || fromCookie !== header) this.reject(req, 'CSRF cookie and header differ');
     // And the token must prove it was minted for THIS session, which is what
     // survives a sibling host tossing us a cookie it chose (§3.0).
-    if (!this.csrf.verify(subject, header)) {
+    if (!this.csrf.verify(session.subject, header)) {
       this.reject(req, 'CSRF token was not issued for this session');
     }
   }

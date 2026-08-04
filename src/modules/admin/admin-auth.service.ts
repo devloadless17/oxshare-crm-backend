@@ -18,6 +18,7 @@ import { AdminRbacService } from './admin-rbac.service';
 import { CsrfService } from '../../common/security/csrf.service';
 import {
   COOKIE_BASES,
+  clearLegacySessionCookies,
   clearSessionCookie,
   csrfCookieOptions,
   readSessionCookie,
@@ -69,7 +70,8 @@ export class AdminAuthService {
     await this.admins.update(adminId, { refreshToken: undefined });
     clearSessionCookie(res, sessionCookieNames.adminAccess());
     clearSessionCookie(res, sessionCookieNames.adminRefresh());
-    clearSessionCookie(res, sessionCookieNames.csrf());
+    clearSessionCookie(res, sessionCookieNames.adminCsrf());
+    clearLegacySessionCookies(res);
     return { message: 'Logged out.' };
   }
   // ─── Admin Me ──────────────────────────────────────────────────────────────
@@ -191,6 +193,10 @@ export class AdminAuthService {
     refreshToken: string,
     adminId: string,
   ) {
+    // Delete every superseded name first. Those cookies were httpOnly:false and
+    // hold real JWTs, so a browser from the old build carries a JS-readable
+    // session for up to 30 more days unless we actively remove it here.
+    clearLegacySessionCookies(res);
     res.cookie(sessionCookieNames.adminAccess(), accessToken, sessionCookieOptions(ACCESS_TTL_MS));
     res.cookie(
       sessionCookieNames.adminRefresh(),
@@ -198,7 +204,7 @@ export class AdminAuthService {
       sessionCookieOptions(REFRESH_TTL_MS),
     );
     res.cookie(
-      sessionCookieNames.csrf(),
+      sessionCookieNames.adminCsrf(),
       this.csrf.issue(adminId),
       csrfCookieOptions(CsrfService.TTL_MS),
     );

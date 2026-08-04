@@ -37,6 +37,11 @@ import { NoCsrf } from '../../common/security/csrf.guard';
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
+  @NoCsrf(
+    'Establishing a session cannot be a forgery of one: there is nothing yet to ' +
+      'protect. Requiring a token here also creates a lockout — an expired or ' +
+      'absent token would make it impossible to log in and obtain a fresh one.',
+  )
   @Post('register')
   @Throttle({ default: { ttl: 3_600_000, limit: 10 } })
   @ApiOperation({ summary: 'Register a new portal user' })
@@ -64,6 +69,11 @@ export class AuthController {
     return this.auth.resendVerification(dto.email);
   }
 
+  @NoCsrf(
+    'Establishing a session cannot be a forgery of one: there is nothing yet to ' +
+      'protect. Requiring a token here also creates a lockout — an expired or ' +
+      'absent token would make it impossible to log in and obtain a fresh one.',
+  )
   @Post('login')
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)

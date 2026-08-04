@@ -15,6 +15,7 @@ import {
 } from '../../common/errors/domain-errors';
 import { CsrfService } from '../../common/security/csrf.service';
 import {
+  clearLegacySessionCookies,
   clearSessionCookie,
   csrfCookieOptions,
   sessionCookieNames,
@@ -189,7 +190,8 @@ export class AuthService {
     await this.users.update(userId, { refreshToken: undefined });
     clearSessionCookie(res, sessionCookieNames.clientAccess());
     clearSessionCookie(res, sessionCookieNames.clientRefresh());
-    clearSessionCookie(res, sessionCookieNames.csrf());
+    clearSessionCookie(res, sessionCookieNames.portalCsrf());
+    clearLegacySessionCookies(res);
     return { message: 'Logged out successfully.' };
   }
 
@@ -234,6 +236,10 @@ export class AuthService {
    * refresh token within reach of any script on the origin.
    */
   private setAuthCookies(res: Response, accessToken: string, refreshToken: string, userId: string) {
+    // Delete every superseded name first. Those cookies were httpOnly:false and
+    // hold real JWTs, so a browser from the old build carries a JS-readable
+    // session for up to 30 more days unless we actively remove it here.
+    clearLegacySessionCookies(res);
     res.cookie(sessionCookieNames.clientAccess(), accessToken, sessionCookieOptions(ACCESS_TTL_MS));
     res.cookie(
       sessionCookieNames.clientRefresh(),
@@ -241,7 +247,7 @@ export class AuthService {
       sessionCookieOptions(REFRESH_TTL_MS),
     );
     res.cookie(
-      sessionCookieNames.csrf(),
+      sessionCookieNames.portalCsrf(),
       this.csrf.issue(userId),
       csrfCookieOptions(CsrfService.TTL_MS),
     );

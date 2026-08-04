@@ -43,6 +43,11 @@ export class AdminAuthController {
   constructor(private readonly auth: AdminAuthService) {}
 
   // ── Auth ──────────────────────────────────────────────────────────────────
+  @NoCsrf(
+    'Establishing a session cannot be a forgery of one: there is nothing yet to ' +
+      'protect. Requiring a token here also creates a lockout — an expired or ' +
+      'absent token would make it impossible to log in and obtain a fresh one.',
+  )
   @Post('auth/login')
   // Master-admin credentials: 5 attempts per minute per IP. Unprotected before.
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
@@ -114,6 +119,11 @@ export class AdminAuthController {
     return this.auth.validateInviteToken(token);
   }
 
+  @NoCsrf(
+    'Establishing a session cannot be a forgery of one: there is nothing yet to ' +
+      'protect. Requiring a token here also creates a lockout — an expired or ' +
+      'absent token would make it impossible to log in and obtain a fresh one.',
+  )
   @Post('invite/accept')
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
