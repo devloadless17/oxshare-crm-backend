@@ -10,7 +10,19 @@ import tseslint from 'typescript-eslint';
 // The type-aware rules below are the ones that matter on a money system:
 // an unawaited guard is a security hole, not a style issue.
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'src/database/migrations/**'] },
+  {
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'coverage/**',
+      'src/database/migrations/**',
+      // Build tooling, deliberately outside the tsconfig project: the type-aware
+      // parser cannot place a file it has no program for, and adding these to
+      // tsconfig would put non-application code into the compiled output — the
+      // drizzle.config.ts trap that once moved dist/main.js and broke npm start.
+      'scripts/**',
+    ],
+  },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {
@@ -58,7 +70,11 @@ export default tseslint.config(
     // ── §6.1: monetary values are strings and decimals, never floats ────────
     // Verified 0 violations when this landed; the rule keeps it that way.
     // `money.ts` owns every arithmetic operation and uses decimal.js.
-    files: ['src/modules/wallet/**/*.ts', 'src/modules/partners/**/*.ts', 'src/modules/payments/**/*.ts'],
+    files: [
+      'src/modules/wallet/**/*.ts',
+      'src/modules/partners/**/*.ts',
+      'src/modules/payments/**/*.ts',
+    ],
     ignores: ['**/*.spec.ts'],
     rules: {
       'no-restricted-globals': [
@@ -153,7 +169,12 @@ export default tseslint.config(
     // is what actually prevents import cycles, and it does so without pulling in
     // eslint-plugin-import (whose no-cycle rule rebuilds the whole module graph
     // on every run). Measured: 0 cycles across src/ when this landed.
-    files: ['src/store/**/*.ts', 'src/common/**/*.ts', 'src/config/**/*.ts', 'src/database/**/*.ts'],
+    files: [
+      'src/store/**/*.ts',
+      'src/common/**/*.ts',
+      'src/config/**/*.ts',
+      'src/database/**/*.ts',
+    ],
     rules: {
       'no-restricted-imports': [
         'error',
