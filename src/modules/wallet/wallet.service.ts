@@ -254,7 +254,14 @@ export class WalletService {
     userId?: string;
     entryType?: LedgerEntryType;
     page?: number;
-    limit?: number;
+    /**
+     * Accepts the raw query string as well as a number: `pageSize()` already
+     * clamps either, so a caller that has a string has no reason to parse it
+     * first. Parsing at the edge is how a caller ends up writing
+     * `parseInt(x) || 50`, which turns a typo into a silently different page
+     * size instead of a clamped one.
+     */
+    limit?: string | number;
     /** Keyset position — R-2.4. When present, `page` is ignored. */
     cursor?: CursorPosition;
   }) {

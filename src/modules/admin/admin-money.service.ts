@@ -10,6 +10,8 @@ import { NotFoundError, ValidationError } from '../../common/errors/domain-error
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
 import { decodeCursor } from '../../common/pagination';
+import { enumQuery } from '../../common/query-params';
+import { ledgerEntryTypeEnum } from '../../database/schema';
 
 /**
  * The money desk: withdrawal review (§8.4), the append-only ledger view
@@ -134,7 +136,9 @@ export class AdminMoneyService {
     return this.wallets.listEntries({
       userId: query.userId,
       walletId: query.walletId,
-      entryType: query.entryType as undefined,
+      // Checked, not cast — the same `as` that made `?state=` a 500 on the
+      // withdrawals list. Missed on this call site when the rest were fixed.
+      entryType: enumQuery(query.entryType, ledgerEntryTypeEnum.enumValues, 'entryType'),
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '50', 10) || 50,
       cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
