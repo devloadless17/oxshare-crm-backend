@@ -127,12 +127,51 @@ export class Mt5WebhookController {
     if (!raw) {
       throw new UnauthorizedException('Raw body unavailable; cannot verify signature.');
     }
-    const expected = createHmac('sha256', secret).update(raw).digest('hex');
+    /*
+     * The timestamp is part of what is signed — PLATFORM-CONVENTIONS R-5.3.
+     *
+     * Without it, a captured signed body replays forever. That happens to be
+     * harmless for deals, because ingest is idempotent on `mt5_ticket` — but
+     * that is a property of the DOWNSTREAM handler, not of this endpoint, and
+     * the Whish and USDT callbacks will arrive at code that has no such
+     * guarantee. Making the window part of verification here means those
+     * integrations inherit it instead of re-deriving it.
+     *
+     * Signed as `timestamp.body` rather than just `body`, so an attacker cannot
+     * keep an old signature and simply attach a fresh timestamp.
+     */
+    const timestamp = req.header('X-Bridge-Timestamp');
+    const signedPayload = timestamp ? `${timestamp}.${raw.toString('utf8')}` : raw.toString('utf8');
+    const expected = createHmac('sha256', secret).update(signedPayload).digest('hex');
     if (!constantTimeEquals(signature, expected)) {
       throw new UnauthorizedException('Bridge signature verification failed.');
     }
+
+    if (timestamp) {
+      const sentAt = Date.parse(timestamp);
+      if (Number.isNaN(sentAt)) {
+        throw new UnauthorizedException('X-Bridge-Timestamp is not a valid ISO-8601 instant.');
+      }
+      // A window in BOTH directions: a future timestamp is as suspicious as an
+      // old one, and modest clock skew between our host and the Windows bridge
+      // is normal rather than an attack (§12.5 on clock discipline).
+      const skewMs = Math.abs(Date.now() - sentAt);
+      if (skewMs > REPLAY_WINDOW_MS) {
+        throw new UnauthorizedException(
+          `X-Bridge-Timestamp is outside the ${REPLAY_WINDOW_MS / 60_000}-minute replay window.`,
+        );
+      }
+    }
+    // A push with no timestamp is still accepted, for exactly one release: the
+    // bridge does not exist yet, and its stub must not be locked out before it
+    // is written. Make it REQUIRED the moment the real bridge sends one —
+    // BRIDGE-CONTRACT.md carries the same note.
   }
 }
+
+/** ±5 minutes. Wide enough for clock skew, narrow enough that a captured
+ *  request is worthless by the time anyone could reuse it. */
+export const REPLAY_WINDOW_MS = 5 * 60 * 1000;
 
 /** Constant-time comparison — a fast reject leaks the secret one byte at a time. */
 export function constantTimeEquals(a: string, b: string): boolean {

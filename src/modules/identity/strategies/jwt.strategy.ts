@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { COOKIE_BASES, readSessionCookie } from '../../../common/security/session-cookies';
+import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../../../common/security/token-audience';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { UsersStore } from '../../../store/users.store';
@@ -32,6 +33,10 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       ]),
       ignoreExpiration: false,
       secretOrKey: config.getOrThrow<string>('JWT_ACCESS_SECRET'),
+      // R-3.1: an admin token must be worthless here. The distinct secrets
+      // already ensure that; this survives them being mixed up in a deploy.
+      audience: TOKEN_AUDIENCE.portal,
+      issuer: TOKEN_ISSUER,
     });
   }
 

@@ -1,0 +1,125 @@
+/**
+ * Strips secrets and PII out of anything on its way to a log.
+ *
+ * PLATFORM-CONVENTIONS R-6.3. The never-log list was a list — a rule enforced by
+ * everyone remembering it on every `logger.log()` for the life of the project.
+ * One `logger.log(dto)` on a KYC submission puts a passport number into the log
+ * store permanently, including whatever aggregator or error tracker it ships to,
+ * and no code review catches that reliably.
+ *
+ * So it is enforced at the sink instead. Anything serialized by JsonLogger goes
+ * through here, whoever wrote the call and whenever they wrote it.
+ *
+ * Two rules, both deliberate:
+ *
+ *  - Redaction is by FIELD NAME, matched loosely (case-insensitive, substring).
+ *    A name-based rule catches `passwordHash`, `refresh_token` and
+ *    `X-OxShare-CSRF` without anyone enumerating them, and over-redacting a log
+ *    line costs nothing while under-redacting one cannot be undone.
+ *  - The value is replaced with a marker, never dropped. A log that says
+ *    `password: [REDACTED]` is debuggable — you can see the field was present
+ *    and populated. A log with the field silently missing looks like a bug in
+ *    the code that built it.
+ */
+
+/**
+ * Field names whose values never reach a log.
+ *
+ * Matched as case-insensitive substrings, so `token` covers `accessToken`,
+ * `refresh_token`, `emailVerificationToken` and `X-Bridge-Token` at once.
+ */
+const SENSITIVE_FIELDS = [
+  // Credentials.
+  'password',
+  'passwordhash',
+  'token',
+  'secret',
+  'authorization',
+  'cookie',
+  'csrf',
+  'otp',
+  'apikey',
+  'api_key',
+  // Identity documents and the PII around them (§8.5, R-6.3).
+  'documentnumber',
+  'document_number',
+  'idnumber',
+  'id_number',
+  'passport',
+  'nationalid',
+  'national_id',
+  'dateofbirth',
+  'date_of_birth',
+  'dob',
+  'address',
+  'phone',
+  'iban',
+  'accountnumber',
+  'account_number',
+  'cardnumber',
+  'card_number',
+] as const;
+
+export const REDACTED = '[REDACTED]';
+
+/** How deep to walk before giving up — cycles and huge payloads both end here. */
+const MAX_DEPTH = 6;
+
+function isSensitive(key: string): boolean {
+  const normalised = key.toLowerCase().replace(/[-_]/g, '');
+  return SENSITIVE_FIELDS.some((field) => normalised.includes(field.replace(/[-_]/g, '')));
+}
+
+/**
+ * Returns a copy safe to serialize.
+ *
+ * Never mutates its input: this runs on live domain objects on their way past,
+ * and a logger that quietly blanked a field on the object it was handed would
+ * be a spectacular source of bugs.
+ */
+export function redact(value: unknown, depth = 0): unknown {
+  if (depth > MAX_DEPTH) return '[TRUNCATED]';
+  if (value === null || value === undefined) return value;
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => redact(entry, depth + 1));
+  }
+
+  // An Error carries a message and a stack, both worth keeping, and neither is
+  // enumerable — a plain object spread would silently produce `{}`.
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack };
+  }
+
+  if (value instanceof Date) return value.toISOString();
+
+  if (typeof value === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      output[key] = isSensitive(key) ? REDACTED : redact(entry, depth + 1);
+    }
+    return output;
+  }
+
+  return value;
+}
+
+/**
+ * Whether a bare string looks like a credential.
+ *
+ * Structured objects are handled by field name, but plenty of logging is
+ * `logger.log(\`token: \${token}\`)`. This catches the shapes that are
+ * unmistakable — a JWT, a long hex or base64url run — without touching ordinary
+ * prose. Conservative on purpose: a false positive redacts a log line, and a
+ * false negative leaks a credential, so the thresholds sit where only
+ * machine-generated values reach them.
+ */
+export function redactSecretsInText(text: string): string {
+  return (
+    text
+      // JWTs: three base64url segments. Unambiguous, and the highest-value leak.
+      .replace(/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}\b/g, REDACTED)
+      // Long hex runs — HMAC signatures, sha256 hashes, raw secrets.
+      .replace(/\b[a-f0-9]{40,}\b/gi, REDACTED)
+  );
+}

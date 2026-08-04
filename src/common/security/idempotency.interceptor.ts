@@ -10,7 +10,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import type { Request, Response } from 'express';
 import { createHash } from 'crypto';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { Observable, from, of, switchMap } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { DRIZZLE_DB } from '../../database/database.module';
@@ -232,19 +232,5 @@ export class IdempotencyInterceptor implements NestInterceptor {
    */
   private actorOf(req: Request & { user?: { id: string }; admin?: { id: string } }): string {
     return req.user?.id ?? req.admin?.id ?? '00000000-0000-0000-0000-000000000000';
-  }
-
-  /**
-   * Deletes rows past the retention window.
-   *
-   * Called by a scheduled job. Without it this table grows forever, and its only
-   * purpose is to answer retries that stopped being plausible a day ago.
-   */
-  static sweepQuery(db: Db) {
-    return db
-      .delete(idempotencyKeys)
-      .where(
-        sql`${idempotencyKeys.createdAt} < now() - interval '${sql.raw(String(IDEMPOTENCY_RETENTION_HOURS))} hours'`,
-      );
   }
 }

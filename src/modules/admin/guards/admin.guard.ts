@@ -13,6 +13,7 @@ import { Admin, AdminsStore } from '../../../store/admins.store';
 import { RolesStore } from '../../../store/roles.store';
 import { Request } from 'express';
 import { COOKIE_BASES, readSessionCookie } from '../../../common/security/session-cookies';
+import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../../../common/security/token-audience';
 
 type AdminRequest = Request & { admin?: Admin };
 
@@ -42,6 +43,10 @@ export class AdminAuthenticator {
     try {
       const payload = this.jwt.verify<{ sub: string; role: string }>(token, {
         secret: this.config.getOrThrow<string>('ADMIN_JWT_SECRET'),
+        // R-3.1: a portal token must be worthless here, and vice versa. The
+        // distinct secrets already ensure that; this survives them being mixed up.
+        audience: TOKEN_AUDIENCE.admin,
+        issuer: TOKEN_ISSUER,
       });
       adminId = payload.sub;
     } catch {

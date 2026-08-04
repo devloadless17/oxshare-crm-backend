@@ -18,6 +18,7 @@ import { randomUUID } from 'crypto';
 import { CsrfService } from '../../common/security/csrf.service';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
+import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../../common/security/token-audience';
 import {
   COOKIE_BASES,
   clearLegacySessionCookies,
@@ -210,17 +211,23 @@ export class AdminAuthService {
   }
   // ─── Helpers ──────────────────────────────────────────────────────────────
   private generateAdminTokens(admin: Admin) {
-    const secret = this.config.get('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev');
+    const secret = this.config.get<string>('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev');
+    // aud/iss so a token minted for the admin surface cannot verify on the
+    // portal even if the two ever end up sharing a secret (R-3.1).
+    const claims = { audience: TOKEN_AUDIENCE.admin, issuer: TOKEN_ISSUER };
     const accessToken = this.jwt.sign(
       { sub: admin.id, email: admin.email, role: admin.role },
-      { secret, expiresIn: '8h' },
+      { secret, expiresIn: '8h', ...claims },
     );
     // The refresh token carries a `jti` naming its row in refresh_tokens, which
     // is how a presented token finds out whether it has already been rotated
     // (R-3.3). Minted here so signing stays in one place; the row is written by
     // the caller, which knows whether this starts a family or continues one.
     const jti = randomUUID();
-    const refreshToken = this.jwt.sign({ sub: admin.id, jti }, { secret, expiresIn: '30d' });
+    const refreshToken = this.jwt.sign(
+      { sub: admin.id, jti },
+      { secret, expiresIn: '30d', ...claims },
+    );
     return { accessToken, refreshToken, jti };
   }
   /**
@@ -273,8 +280,12 @@ export class AdminAuthService {
     let adminId: string;
     let jti: string | undefined;
     try {
-      const secret = this.config.get('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev');
-      const decoded = this.jwt.verify<{ sub: string; jti?: string }>(providedToken, { secret });
+      const secret = this.config.get<string>('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev');
+      const decoded = this.jwt.verify<{ sub: string; jti?: string }>(providedToken, {
+        secret,
+        audience: TOKEN_AUDIENCE.admin,
+        issuer: TOKEN_ISSUER,
+      });
       adminId = decoded.sub;
       jti = decoded.jti;
     } catch {

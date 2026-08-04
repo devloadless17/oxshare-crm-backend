@@ -10,9 +10,20 @@ import {
   tradingAccounts,
   users,
 } from '../src/database/schema';
+import { MoneyLimits } from '../src/config/money-limits';
 import { CommissionService } from '../src/modules/partners/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { money } from '../src/modules/wallet/money';
+
+/**
+ * Real limits, reading the documented defaults.
+ *
+ * Not a stub: the §12.4 ceilings are part of what accrual must satisfy, so a
+ * test that bypassed them would pass on numbers production would refuse.
+ */
+function moneyLimits(): MoneyLimits {
+  return new MoneyLimits({ get: () => undefined } as never);
+}
 
 // ARCHITECTURE §11 reconciliation, in its full form:
 // "Replay a fixture set of closed deals through the full pipeline and assert
@@ -47,7 +58,7 @@ beforeAll(async () => {
   ctx = await startMoneyTestDb();
   resetDb();
   wallets = new WalletService(getDb());
-  commission = new CommissionService(wallets, getDb());
+  commission = new CommissionService(wallets, getDb(), moneyLimits());
 
   // A two-level IB structure: client → L1 → L2
   l2UserId = await makeUser('l2@test.local');

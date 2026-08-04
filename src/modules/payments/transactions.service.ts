@@ -1,7 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ne, sql } from 'drizzle-orm';
 import { transactions, users } from '../../database/schema';
 import { money, toDecimal } from '../wallet/money';
+import { MoneyLimits } from '../../config/money-limits';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
@@ -45,6 +46,7 @@ export class TransactionsService {
   constructor(
     private readonly wallets: WalletService,
     @Inject(DRIZZLE_DB) private readonly db: Db,
+    private readonly limits: MoneyLimits,
   ) {}
 
   async requestWithdrawal(params: {
@@ -57,12 +59,62 @@ export class TransactionsService {
     const amount = toDecimal(params.amount);
     if (!amount.isPositive()) throw new ValidationError('Withdrawal amount must be positive.');
 
+    /*
+     * Absolute bounds — PLATFORM-CONVENTIONS R-5.1.
+     *
+     * Balance and KYC level were already checked below, and they are the RIGHT
+     * checks. What was missing is a ceiling that holds when something upstream
+     * is wrong: a mispriced wallet, a bad rate, a compromised session draining
+     * an account in one move. Limits live in config as documented assumptions,
+     * so confirming a real figure with the client is an env change.
+     */
+    const min = this.limits.minWithdrawal();
+    const max = this.limits.maxWithdrawal();
+    if (amount.lessThan(min)) {
+      throw new ValidationError(`The minimum withdrawal is ${min.toString()} ${params.currency}.`);
+    }
+    if (amount.greaterThan(max)) {
+      throw new ValidationError(
+        `The maximum single withdrawal is ${max.toString()} ${params.currency}. ` +
+          'Please split the request or contact support.',
+      );
+    }
+
     const db = this.db;
     const [user] = await db.select().from(users).where(eq(users.id, params.userId)).limit(1);
     if (!user) throw new NotFoundError('User not found.');
     // §8.4: funded features are gated on KYC level 1 (FR-CORE-15).
     if (user.verificationLevel < 1) {
       throw new AuthorizationError('Withdrawals require a verified account (KYC level 1).');
+    }
+
+    /*
+     * A rolling 24-hour cap, on top of the per-request one.
+     *
+     * A per-request limit alone is trivially defeated by making N requests, so
+     * it caps the paperwork rather than the exposure. Counted over everything
+     * not rejected — a pending withdrawal is money already on its way out.
+     */
+    const dayCap = this.limits.maxWithdrawalPerDay();
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const recent = await db
+      .select({ amount: transactions.amount })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, params.userId),
+          eq(transactions.direction, 'withdrawal'),
+          eq(transactions.currency, params.currency),
+          gte(transactions.createdAt, since),
+          ne(transactions.state, 'rejected'),
+        ),
+      );
+    const already = recent.reduce((sum, row) => sum.plus(toDecimal(row.amount)), toDecimal('0'));
+    if (already.plus(amount).greaterThan(dayCap)) {
+      throw new ValidationError(
+        `This would exceed the ${dayCap.toString()} ${params.currency} rolling 24-hour ` +
+          `withdrawal limit — ${already.toString()} has already been requested in that window.`,
+      );
     }
 
     // The hold and the transaction row commit together. Previously the hold

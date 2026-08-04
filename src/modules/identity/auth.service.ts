@@ -16,6 +16,7 @@ import { randomUUID } from 'crypto';
 import { CsrfService } from '../../common/security/csrf.service';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
+import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../../common/security/token-audience';
 import {
   clearLegacySessionCookies,
   clearSessionCookie,
@@ -180,7 +181,9 @@ export class AuthService {
     let jti: string | undefined;
     try {
       const decoded = this.jwt.verify<{ sub: string; jti?: string }>(providedRefreshToken, {
-        secret: this.config.get('JWT_REFRESH_SECRET', 'oxshare-refresh-secret-dev'),
+        secret: this.config.get<string>('JWT_REFRESH_SECRET', 'oxshare-refresh-secret-dev'),
+        audience: TOKEN_AUDIENCE.portal,
+        issuer: TOKEN_ISSUER,
       });
       userId = decoded.sub;
       jti = decoded.jti;
@@ -283,9 +286,13 @@ export class AuthService {
       type: user.type,
     };
 
+    // aud/iss so a portal token cannot verify on the admin surface even if the
+    // two ever end up sharing a secret (R-3.1).
+    const claims = { audience: TOKEN_AUDIENCE.portal, issuer: TOKEN_ISSUER };
     const accessToken = this.jwt.sign(payload, {
-      secret: this.config.get('JWT_ACCESS_SECRET', 'oxshare-access-secret-dev'),
+      secret: this.config.get<string>('JWT_ACCESS_SECRET', 'oxshare-access-secret-dev'),
       expiresIn: '8h',
+      ...claims,
     });
 
     // The refresh token carries a `jti` naming its row in refresh_tokens, which
@@ -295,8 +302,9 @@ export class AuthService {
     const refreshToken = this.jwt.sign(
       { sub: user.id, jti },
       {
-        secret: this.config.get('JWT_REFRESH_SECRET', 'oxshare-refresh-secret-dev'),
+        secret: this.config.get<string>('JWT_REFRESH_SECRET', 'oxshare-refresh-secret-dev'),
         expiresIn: '30d',
+        ...claims,
       },
     );
 

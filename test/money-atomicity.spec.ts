@@ -12,7 +12,18 @@ import {
 } from '../src/database/schema';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
+import { MoneyLimits } from '../src/config/money-limits';
 import { CommissionService } from '../src/modules/partners/commission.service';
+
+/**
+ * Real limits, reading the documented defaults.
+ *
+ * Not a stub: the §12.4 ceilings are part of what accrual must satisfy, so a
+ * test that bypassed them would pass on numbers production would refuse.
+ */
+function moneyLimits(): MoneyLimits {
+  return new MoneyLimits({ get: () => undefined } as never);
+}
 
 // FAULT-INJECTION TESTS.
 //
@@ -49,8 +60,8 @@ beforeAll(async () => {
   ctx = await startMoneyTestDb();
   resetDb();
   wallets = new WalletService(getDb());
-  txService = new TransactionsService(wallets, getDb());
-  commission = new CommissionService(wallets, getDb());
+  txService = new TransactionsService(wallets, getDb(), moneyLimits());
+  commission = new CommissionService(wallets, getDb(), moneyLimits());
 });
 
 afterAll(async () => {

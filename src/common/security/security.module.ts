@@ -5,10 +5,16 @@ import { CsrfGuard } from './csrf.guard';
 import { IdempotencyInterceptor } from './idempotency.interceptor';
 import { RefreshTokensService } from './refresh-tokens.service';
 import { PasswordService } from './password.service';
+import { MoneyLimits } from '../../config/money-limits';
+import { SecurityScheduler } from './security.scheduler';
 
 /**
- * Global so that CsrfService is injectable wherever a session is established
- * (both auth services) without either module importing the other.
+ * The cross-cutting security services, available everywhere.
+ *
+ * @Global so that CsrfService reaches both auth services, and MoneyLimits reaches
+ * the payments and partners modules, without any of them importing each other —
+ * these are policy, not domain, and a domain module should not have to know
+ * where policy lives.
  *
  * JwtModule is registered with no default secret on purpose: CsrfGuard passes an
  * explicit secret per call, because it may be verifying either an admin token or
@@ -24,7 +30,16 @@ import { PasswordService } from './password.service';
     IdempotencyInterceptor,
     RefreshTokensService,
     PasswordService,
+    MoneyLimits,
+    SecurityScheduler,
   ],
-  exports: [CsrfService, CsrfGuard, IdempotencyInterceptor, RefreshTokensService, PasswordService],
+  exports: [
+    CsrfService,
+    CsrfGuard,
+    IdempotencyInterceptor,
+    RefreshTokensService,
+    PasswordService,
+    MoneyLimits,
+  ],
 })
 export class SecurityModule {}

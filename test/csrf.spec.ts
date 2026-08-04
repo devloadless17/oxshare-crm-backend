@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter
 import type { Request } from 'express';
 import { CsrfService } from '../src/common/security/csrf.service';
 import { CsrfGuard, CSRF_HEADER } from '../src/common/security/csrf.guard';
+import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../src/common/security/token-audience';
 import type { Response } from 'express';
 import {
   LEGACY_COOKIE_NAMES,
@@ -47,8 +48,22 @@ function guard(exemption?: string) {
   return new CsrfGuard(reflectorWith(exemption), csrf, jwt, config);
 }
 
+/**
+ * A token as the real admin surface mints it — including `aud`/`iss` (R-3.1).
+ *
+ * Without the claims the guard correctly declines to recognise it as a session
+ * at all, so every "refuses X" assertion below would pass for the wrong reason.
+ */
 function adminToken(sub: string) {
-  return jwt.sign({ sub }, { secret: ADMIN_SECRET, expiresIn: '8h' });
+  return jwt.sign(
+    { sub },
+    {
+      secret: ADMIN_SECRET,
+      expiresIn: '8h',
+      audience: TOKEN_AUDIENCE.admin,
+      issuer: TOKEN_ISSUER,
+    },
+  );
 }
 
 /** Builds an ExecutionContext around a fake request. */
@@ -342,7 +357,14 @@ describe('surfaces do not interfere with each other (§3.0, R-3.1)', () => {
    * each login silently overwrote.
    */
   const portalToken = (sub: string) =>
-    jwt.sign({ sub }, { secret: 'test-only-access-secret-never-used-outside-vitest' });
+    jwt.sign(
+      { sub },
+      {
+        secret: 'test-only-access-secret-never-used-outside-vitest',
+        audience: TOKEN_AUDIENCE.portal,
+        issuer: TOKEN_ISSUER,
+      },
+    );
 
   it('lets an admin login through while a portal session is present', () => {
     const ctx = contextFor({
@@ -425,5 +447,53 @@ describe('legacy cookie purge (R-3.2 migration)', () => {
 
     clearLegacySessionCookies(res);
     expect(cleared).toEqual([...LEGACY_COOKIE_NAMES]);
+  });
+});
+
+describe('R-3.1 the two surfaces cannot be confused, even on a shared secret', () => {
+  /*
+   * The separation currently rests entirely on three environment variables
+   * staying distinct. The day someone reuses one — a deploy script, a staging
+   * shortcut, a rushed rotation — an admin token would silently verify on the
+   * portal, and nothing anywhere would notice.
+   *
+   * `aud` makes that mistake produce a failed login instead of a privilege
+   * escalation. These tests deliberately sign BOTH tokens with the SAME secret,
+   * which is precisely the misconfiguration being defended against: only the
+   * audience claim distinguishes them.
+   */
+  const SHARED = 'the-same-secret-on-both-surfaces-by-mistake';
+
+  const tokenFor = (audience: string) =>
+    jwt.sign({ sub: 'someone' }, { secret: SHARED, audience, issuer: TOKEN_ISSUER });
+
+  const verifyAs = (token: string, audience: string) => () => {
+    jwt.verify(token, { secret: SHARED, audience, issuer: TOKEN_ISSUER });
+  };
+
+  it('rejects an admin-audience token when the portal audience is required', () => {
+    expect(verifyAs(tokenFor(TOKEN_AUDIENCE.admin), TOKEN_AUDIENCE.portal)).toThrow();
+  });
+
+  it('rejects a portal-audience token when the admin audience is required', () => {
+    expect(verifyAs(tokenFor(TOKEN_AUDIENCE.portal), TOKEN_AUDIENCE.admin)).toThrow();
+  });
+
+  it('rejects a token minted by something else entirely', () => {
+    // Right audience, no issuer — a token from another system that happens to
+    // have picked the same audience string.
+    const foreign = jwt.sign(
+      { sub: 'someone' },
+      { secret: SHARED, audience: TOKEN_AUDIENCE.admin },
+    );
+    expect(verifyAs(foreign, TOKEN_AUDIENCE.admin)).toThrow();
+  });
+
+  it('accepts the matching pair, so the claims are not simply breaking everything', () => {
+    expect(verifyAs(tokenFor(TOKEN_AUDIENCE.admin), TOKEN_AUDIENCE.admin)).not.toThrow();
+  });
+
+  it('gives the two surfaces different audiences in the first place', () => {
+    expect(TOKEN_AUDIENCE.admin).not.toBe(TOKEN_AUDIENCE.portal);
   });
 });

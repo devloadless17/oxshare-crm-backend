@@ -1,5 +1,6 @@
 import { ConsoleLogger, LogLevel } from '@nestjs/common';
 import { currentRequestId } from './request-context';
+import { redact, redactSecretsInText } from './redact';
 
 /**
  * One JSON object per log line, with the correlation id attached.
@@ -22,12 +23,25 @@ export class JsonLogger extends ConsoleLogger {
     logLevel: LogLevel = 'log',
     writeStreamType?: 'stdout' | 'stderr',
   ): void {
+    /*
+     * Redaction runs in BOTH modes — R-6.3.
+     *
+     * It would be easy to skip it in development "because it is only a
+     * terminal". But a developer's terminal is scrolled through, screenshotted
+     * into tickets, and pasted into chat, and dev databases hold real-shaped
+     * test PII. More practically: a redaction bug that only appears in
+     * production is one nobody sees until it has already leaked.
+     */
+    const safe = messages.map((message) =>
+      typeof message === 'string' ? redactSecretsInText(message) : redact(message),
+    );
+
     if (!this.asJson) {
-      super.printMessages(messages, context, logLevel, writeStreamType);
+      super.printMessages(safe, context, logLevel, writeStreamType);
       return;
     }
 
-    for (const message of messages) {
+    for (const message of safe) {
       const line = JSON.stringify({
         level: logLevel,
         time: new Date().toISOString(),

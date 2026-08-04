@@ -11,6 +11,9 @@ import {
 } from '../../database/schema';
 import { WalletService } from '../wallet/wallet.service';
 import { IbNode, availableAt, calculate, resolveChain } from './commission';
+import Decimal from 'decimal.js';
+import { MoneyRuleError } from '../../common/errors/domain-errors';
+import { MoneyLimits } from '../../config/money-limits';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 
@@ -63,6 +66,7 @@ export class CommissionService {
   constructor(
     private readonly wallets: WalletService,
     @Inject(DRIZZLE_DB) private readonly db: Db,
+    private readonly limits: MoneyLimits,
   ) {}
 
   /** §6.3: re-delivering the same ticket is a no-op, not a duplicate deal. */
@@ -108,6 +112,45 @@ export class CommissionService {
    * Accrue commissions for one closed deal. Safe to run repeatedly — the
    * UNIQUE(deal_id, ib_user_id, level) constraint absorbs replays.
    */
+  /**
+   * Refuses an accrual set that cannot be arithmetically plausible.
+   *
+   * Two ceilings, because one alone scales badly: an absolute cap catches a
+   * unit error on a small deal, and a share-of-notional cap catches one on a
+   * large deal where the absolute number still looks unremarkable.
+   */
+  private assertWithinBounds(
+    deal: { id: string; mt5Ticket: string; volume: string; spread: string },
+    accruals: readonly { ibUserId: string; level: number; amount: string }[],
+  ): void {
+    const absoluteMax = this.limits.maxCommissionPerDeal();
+
+    for (const accrual of accruals) {
+      const amount = new Decimal(accrual.amount);
+
+      if (amount.greaterThan(absoluteMax)) {
+        const message =
+          `Refusing accrual for deal ${deal.mt5Ticket}: level ${accrual.level} commission ` +
+          `${accrual.amount} exceeds the absolute ceiling of ${absoluteMax.toString()}. ` +
+          'This is far more likely to be a wrong spread unit (DECISIONS D-11) or a ' +
+          'misconfigured program than a genuine payout. Nothing has been accrued; the deal ' +
+          'is re-ingestible once the configuration is corrected.';
+        this.logger.error(message);
+        throw new MoneyRuleError(message);
+      }
+
+      // A negative leg would mean the engine is charging the IB, which no
+      // program mode expresses. Cheap to assert, catastrophic to miss.
+      if (amount.isNegative()) {
+        const message =
+          `Refusing accrual for deal ${deal.mt5Ticket}: level ${accrual.level} commission ` +
+          `${accrual.amount} is negative. No program mode produces a negative leg.`;
+        this.logger.error(message);
+        throw new MoneyRuleError(message);
+      }
+    }
+  }
+
   async accrueForDeal(dealId: string) {
     const db = this.db;
     const [deal] = await db.select().from(deals).where(eq(deals.id, dealId)).limit(1);
@@ -177,6 +220,23 @@ export class CommissionService {
       },
       chain,
     );
+
+    /*
+     * The D-11 backstop — PLATFORM-CONVENTIONS R-5.1 / §12.4.
+     *
+     * Nobody has confirmed whether MT5's `spread` is points, pips or account
+     * currency (DECISIONS D-11), and D-40 records a second unverified assumption
+     * that spread_share multiplies by volume. If either is wrong by a factor of
+     * 100, every accrual is wrong by a factor of 100 — and Phase 1 has no
+     * clawback, so a wrong number that reaches `confirmed` is paid out.
+     *
+     * So a leg that exceeds the absolute ceiling REFUSES rather than clamping.
+     * Clamping would write a wrong number that looks deliberate and is
+     * indistinguishable in the ledger from a correct one. Refusing leaves the
+     * deal un-accrued and loud — a problem someone fixes, not a number someone
+     * trusts. The sweep re-ingests it once the configuration is corrected.
+     */
+    this.assertWithinBounds(deal, result.accruals);
 
     const matureAt = availableAt(deal.closedAt, program.settlementWindowHours);
     const written = [];
