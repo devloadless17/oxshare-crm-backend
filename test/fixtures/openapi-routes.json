@@ -19,6 +19,7 @@
   "GET /v1/admin/reconciliation",
   "GET /v1/admin/rejection-reasons",
   "GET /v1/admin/roles",
+  "GET /v1/admin/security-settings",
   "GET /v1/admin/users",
   "GET /v1/admin/withdrawals",
   "GET /v1/auth/me",
@@ -72,9 +73,11 @@
   "POST /v1/kyc/submit",
   "POST /v1/kyc/upload",
   "POST /v1/payments/withdrawals",
+  "POST /v1/payments/withdrawals/otp",
   "PUT /v1/admin/commission-plans/{id}",
   "PUT /v1/admin/kyc-config",
   "PUT /v1/admin/kyc-config/steps/{id}",
   "PUT /v1/admin/rejection-reasons/{id}",
-  "PUT /v1/admin/roles/{id}"
+  "PUT /v1/admin/roles/{id}",
+  "PUT /v1/admin/security-settings/{key}"
 ]

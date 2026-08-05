@@ -51,8 +51,8 @@ describe('migration 0009 — stored keys are converted before the shims are remo
       VALUES ('legacy@test.local', 'x', 'Legacy', '["KYC:Review"]'::jsonb)
     `);
     await ctx.db.execute(sql`
-      INSERT INTO admin_invites (email, name, token, invited_by, expires_at, permissions)
-      VALUES ('invitee@test.local', 'Invitee', 'tok-legacy',
+      INSERT INTO admin_invites (email, name, token_hash, invited_by, expires_at, permissions)
+      VALUES ('invitee@test.local', 'Invitee', '0000000000000000000000000000000000000000000000000000000000000001',
               '11111111-1111-1111-1111-111111111111', now() + interval '2 days',
               '["withdrawals:approve"]'::jsonb)
     `);
@@ -84,7 +84,7 @@ describe('migration 0009 — stored keys are converted before the shims are remo
     expect(admins.rows[0]).toEqual({ permissions: ['kyc.review'] });
 
     const invites = await ctx.db.execute(
-      sql`SELECT permissions FROM admin_invites WHERE token = 'tok-legacy'`,
+      sql`SELECT permissions FROM admin_invites WHERE token_hash = '0000000000000000000000000000000000000000000000000000000000000001'`,
     );
     // Invites matter: a pending one carries the permission set that becomes an
     // admin's on acceptance, so missing them reintroduces colon keys later.

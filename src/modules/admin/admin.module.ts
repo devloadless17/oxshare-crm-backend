@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AdminAuditController } from './admin-audit.controller';
+import { AdminSecuritySettingsController } from './admin-security-settings.controller';
+import { SecuritySettingsService } from './security-settings.service';
 import { AdminAuthController } from './admin-auth.controller';
 import { AdminClientsController } from './admin-clients.controller';
 import { AdminComplianceController } from './admin-compliance.controller';
@@ -24,6 +26,7 @@ const ADMIN_SERVICES = [
   AdminComplianceService,
   AdminClientsService,
   AdminMoneyService,
+  SecuritySettingsService,
 ];
 import { AdminAuthModule } from './admin-auth.module';
 import { ComplianceModule } from '../compliance/compliance.module';
@@ -43,6 +46,7 @@ import { PartnersModule } from '../partners/partners.module';
     AdminMoneyController,
     AdminRbacController,
     AdminAuditController,
+    AdminSecuritySettingsController,
     AdminIpAllowlistController,
   ],
   providers: [

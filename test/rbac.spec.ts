@@ -34,6 +34,7 @@ const MASTER: Admin = {
   name: 'Master Admin',
   passwordHash: 'x',
   role: 'master_admin',
+  status: 'active',
   permissions: ['*'],
   createdAt: new Date(),
 };
@@ -44,6 +45,7 @@ const SUB_ADMIN: Admin = {
   name: 'Sub Admin',
   passwordHash: 'x',
   role: 'sub_admin',
+  status: 'active',
   permissions: ['roles.manage', 'roles.view'],
   createdAt: new Date(),
 };
@@ -165,6 +167,7 @@ describe('AdminAuthenticator', () => {
       verify: vi.fn().mockReturnValue({
         sub: admin?.id ?? 'ghost',
         role: 'sub_admin',
+        status: 'active',
         typ: TOKEN_KIND.access,
       }),
     };

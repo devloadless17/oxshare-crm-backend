@@ -7,7 +7,7 @@ import type { ArgumentsHost, ExecutionContext } from '@nestjs/common';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
 import type { Request } from 'express';
 import { CsrfService } from '../src/common/security/csrf.service';
-import { CsrfGuard, CSRF_HEADER } from '../src/common/security/csrf.guard';
+import { CsrfGuard, CSRF_HEADER, NO_ORIGIN_CHECK_KEY } from '../src/common/security/csrf.guard';
 import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../src/common/security/token-audience';
 import { API_VERSION_PREFIX } from '../src/common/api-prefix';
 import type { Response } from 'express';
@@ -53,13 +53,29 @@ const config = {
 const jwt = new JwtService({});
 const csrf = new CsrfService(config);
 
-/** A reflector that reports no @NoCsrf, unless a reason is supplied. */
-function reflectorWith(exemption?: string) {
-  return { getAllAndOverride: () => exemption } as unknown as Reflector;
+/**
+ * A reflector that answers PER KEY, not one value for every question.
+ *
+ * It used to return the same reason for whatever it was asked, which was
+ * harmless while `@NoCsrf` was the only decorator the guard read. It stopped
+ * being harmless when `@NoOriginCheck` arrived: a stub that cannot tell the two
+ * apart cannot express "exempt from the token check but NOT from the origin
+ * check", which is exactly the distinction that closed login CSRF.
+ */
+function reflectorWith(exemptions: { noCsrf?: string; noOrigin?: string } = {}) {
+  return {
+    getAllAndOverride: (key: string) =>
+      key === NO_ORIGIN_CHECK_KEY ? exemptions.noOrigin : exemptions.noCsrf,
+  } as unknown as Reflector;
 }
 
-function guard(exemption?: string) {
-  return new CsrfGuard(reflectorWith(exemption), csrf, jwt, config);
+function guard(noCsrf?: string) {
+  return new CsrfGuard(reflectorWith({ noCsrf }), csrf, jwt, config);
+}
+
+/** A guard for a route that has opted out of origin checking too — the bridge. */
+function guardWithoutOriginCheck(reason: string) {
+  return new CsrfGuard(reflectorWith({ noOrigin: reason, noCsrf: reason }), csrf, jwt, config);
 }
 
 /**
@@ -161,20 +177,27 @@ describe('CsrfGuard — what it lets through', () => {
     expect(guard().canActivate(contextFor({ method: 'GET' }))).toBe(true);
   });
 
-  it('skips requests carrying no session cookie', () => {
-    // Login, register, password reset: nothing to forge, because the browser has
-    // no ambient authority to attach yet. This is what keeps the guard global
-    // without a list of exempt paths to maintain.
-    expect(guard().canActivate(contextFor({ cookies: {} }))).toBe(true);
+  it('skips the TOKEN check for requests carrying no session cookie', () => {
+    // Login, register, password reset: there is no anti-forgery token minted yet
+    // to compare against, so the double-submit half cannot apply. The ORIGIN
+    // half still does — see the login-CSRF block below — which is why this now
+    // sends one.
+    expect(guard().canActivate(contextFor({ cookies: {}, headers: { origin: ADMIN } }))).toBe(true);
   });
 
   it('skips the MT5 bridge, which has cookies from nobody and an HMAC of its own', () => {
+    // The bridge is a server: no Origin to send and no cookie to abuse. It says
+    // so explicitly with @NoOriginCheck rather than being skipped as a
+    // side-effect of having no session, which is what used to exempt it.
     const ctx = contextFor({
       originalUrl: '/webhooks/mt5/deals',
+      path: '/webhooks/mt5/deals',
       cookies: {},
       headers: { 'x-bridge-signature': 'abc' },
     });
-    expect(guard().canActivate(ctx)).toBe(true);
+    expect(guardWithoutOriginCheck('bridge authenticates with an HMAC').canActivate(ctx)).toBe(
+      true,
+    );
   });
 
   it('honours an explicit @NoCsrf exemption', () => {
@@ -188,6 +211,63 @@ describe('CsrfGuard — what it lets through', () => {
       cookies: { [sessionCookieNames.adminAccess()]: 'not-a-jwt' },
       headers: { origin: ADMIN },
     });
+    expect(guard().canActivate(ctx)).toBe(true);
+  });
+});
+
+describe('CsrfGuard — login CSRF: origin is checked before a session exists', () => {
+  /*
+   * The hole this closes.
+   *
+   * `assertOriginAllowed` used to run only AFTER a session cookie had been
+   * resolved, so every session-ESTABLISHING route was exempt by construction —
+   * they have no cookie yet by definition. `@NoCsrf` on top made it total.
+   *
+   * The consequence is not abstract on a broker. An attacker's page POSTs to
+   * `/auth/login` with THEIR credentials; the victim's browser is now signed
+   * into the attacker's account, and the passport, selfie and proof of address
+   * the victim uploads next land in the attacker's KYC submission — along with
+   * any deposit they make.
+   *
+   * These pin that the check no longer depends on holding a session.
+   */
+  const loginContext = (headers: Record<string, string>) =>
+    contextFor({
+      path: served('/admin/auth/login'),
+      originalUrl: served('/admin/auth/login'),
+      cookies: {},
+      headers,
+    });
+
+  it('refuses a login POST from an attacker origin', () => {
+    expect(() => guard().canActivate(loginContext({ origin: 'https://evil.example' }))).toThrow(
+      ForbiddenException,
+    );
+  });
+
+  it('refuses a login POST that sends no Origin and no Referer at all', () => {
+    expect(() => guard().canActivate(loginContext({}))).toThrow(ForbiddenException);
+  });
+
+  it('still admits a login POST from our own admin origin', () => {
+    expect(guard().canActivate(loginContext({ origin: ADMIN }))).toBe(true);
+  });
+
+  it('still admits a registration POST from the portal origin', () => {
+    const ctx = contextFor({
+      path: served('/auth/register'),
+      originalUrl: served('/auth/register'),
+      cookies: {},
+      headers: { origin: PORTAL },
+    });
+    expect(guard().canActivate(ctx)).toBe(true);
+  });
+
+  it('does not demand an anti-forgery TOKEN on login — there is none minted yet', () => {
+    // The distinction that makes this safe to ship: origin is enforced, the
+    // double-submit is not, so a first-time visitor with an empty cookie jar can
+    // still sign in.
+    const ctx = loginContext({ origin: ADMIN });
     expect(guard().canActivate(ctx)).toBe(true);
   });
 });

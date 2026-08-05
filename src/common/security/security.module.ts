@@ -5,6 +5,7 @@ import { CsrfGuard } from './csrf.guard';
 import { IdempotencyInterceptor } from './idempotency.interceptor';
 import { RefreshTokensService } from './refresh-tokens.service';
 import { PasswordService } from './password.service';
+import { LoginAttemptsService } from './login-attempts.service';
 import { MoneyLimits } from '../../config/money-limits';
 import { SecurityScheduler } from './security.scheduler';
 
@@ -29,6 +30,7 @@ import { SecurityScheduler } from './security.scheduler';
     CsrfGuard,
     IdempotencyInterceptor,
     RefreshTokensService,
+    LoginAttemptsService,
     PasswordService,
     MoneyLimits,
     SecurityScheduler,
@@ -38,6 +40,7 @@ import { SecurityScheduler } from './security.scheduler';
     CsrfGuard,
     IdempotencyInterceptor,
     RefreshTokensService,
+    LoginAttemptsService,
     PasswordService,
     MoneyLimits,
   ],

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { AdminsStore } from '../../store/admins.store';
+import { Admin, AdminsStore } from '../../store/admins.store';
+import { AuthorizationError } from '../../common/errors/domain-errors';
 import { AuditLogStore } from '../../store/audit-log.store';
 import type { Executor } from '../../database/db';
 import { decodeCursor } from '../../common/pagination';
@@ -91,13 +92,32 @@ export class AdminAuditService {
     );
   }
 
-  listAuditLog(query: {
-    page?: string;
-    limit?: string;
-    cursor?: string;
-    action?: string;
-    subjectType?: string;
-  }) {
+  /**
+   * Read the trail — master admin only, asserted HERE as well as in the guard.
+   *
+   * R-4.3. The route carries `MasterAdminGuard`, which is correct and was the
+   * only check: a guard runs on an HTTP request, and this method is what a
+   * report job or an export would call. The trail records who approved every
+   * payout and every permission grant, so "who may read it" is a privileged
+   * question in its own right — it names which admins acted on which clients.
+   *
+   * Deliberately not expressed as a permission key: master-only is not a grant
+   * anybody can be given, which is the whole point of the distinction, and
+   * inventing an `audit.view` key here would let a sub-admin be granted it.
+   */
+  listAuditLog(
+    actor: Admin,
+    query: {
+      page?: string;
+      limit?: string;
+      cursor?: string;
+      action?: string;
+      subjectType?: string;
+    },
+  ) {
+    if (actor.role !== 'master_admin') {
+      throw new AuthorizationError('Only the master admin can read the admin action log.');
+    }
     return this.auditLog.findAll({
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '25', 10) || 25,

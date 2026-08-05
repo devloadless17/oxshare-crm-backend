@@ -12,7 +12,7 @@ import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { CsrfService } from './csrf.service';
 import { COOKIE_BASES, readSessionCookie } from './session-cookies';
-import { TOKEN_AUDIENCE, TOKEN_ISSUER } from './token-audience';
+import { TOKEN_ALGORITHMS, TOKEN_AUDIENCE, TOKEN_ISSUER } from './token-audience';
 import { safeLogPath } from '../logging/redact';
 import { stripApiPrefix } from '../api-prefix';
 
@@ -21,6 +21,19 @@ import { stripApiPrefix } from '../api-prefix';
  */
 export const NO_CSRF_KEY = 'no_csrf';
 export const NoCsrf = (reason: string) => SetMetadata(NO_CSRF_KEY, reason);
+
+/**
+ * Opt a route out of ORIGIN checking as well — for non-browser callers only.
+ *
+ * Separate from `@NoCsrf` because the two exemptions answer different
+ * questions, and conflating them is what left login unprotected. `@NoCsrf`
+ * means "there is no session token to bind to yet"; this means "no browser is
+ * involved, so there is no Origin to expect". Almost nothing qualifies: a
+ * server-to-server caller authenticating with an HMAC does, and a route a
+ * person's browser reaches does not.
+ */
+export const NO_ORIGIN_CHECK_KEY = 'no_origin_check';
+export const NoOriginCheck = (reason: string) => SetMetadata(NO_ORIGIN_CHECK_KEY, reason);
 
 /** The header the frontends echo the CSRF cookie into. App-specific, so it
  *  cannot collide with a header another OxShare site already uses. */
@@ -75,6 +88,32 @@ export class CsrfGuard implements CanActivate {
     const req = context.switchToHttp().getRequest<Request>();
     if (!STATE_CHANGING.has(req.method)) return true;
 
+    /*
+     * ORIGIN IS CHECKED ON EVERY STATE CHANGE — session or not.
+     *
+     * It used to run only after a session cookie had been found, which left the
+     * session-ESTABLISHING routes with no origin check at all: login, register
+     * and admin login have no cookie yet by definition, so the guard returned
+     * early and `@NoCsrf` on top of that made the exemption total.
+     *
+     * That is login CSRF, and on this system it is not a curiosity. An attacker
+     * page can silently sign a victim's browser into an ACCOUNT THE ATTACKER
+     * CONTROLS; the victim then uploads their passport, selfie and proof of
+     * address into the attacker's KYC submission, and deposits land in the
+     * attacker's wallet. The forgery is not of a session the victim holds — it
+     * is of the act of establishing one, which is why "there is nothing yet to
+     * protect" was the wrong reading.
+     *
+     * The token check below still needs a session, and still cannot run without
+     * one. Only the origin check moved, because it never needed a session in the
+     * first place: it asks who sent this, not who they are signed in as.
+     */
+    const skipOrigin = this.reflector.getAllAndOverride<string>(NO_ORIGIN_CHECK_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (!skipOrigin) this.assertOriginAllowed(req);
+
     const exemption = this.reflector.getAllAndOverride<string>(NO_CSRF_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -82,12 +121,11 @@ export class CsrfGuard implements CanActivate {
     if (exemption) return true;
 
     const session = this.resolveSession(req);
-    // No session cookie for THIS surface means no ambient authority to abuse.
-    // Whatever else authenticates the request (an HMAC, nothing at all) is not
-    // something a browser attaches automatically, which is the premise of CSRF.
+    // No session cookie for THIS surface means no anti-forgery TOKEN to bind
+    // against — there is nothing minted yet to compare. The origin check above
+    // has already run, so this is no longer a way past every check.
     if (!session) return true;
 
-    this.assertOriginAllowed(req);
     this.assertTokenValid(req, session);
     return true;
   }
@@ -162,6 +200,8 @@ export class CsrfGuard implements CanActivate {
         secret: this.config.getOrThrow<string>(configKey),
         audience,
         issuer: TOKEN_ISSUER,
+        // Stated, never inherited from the key type — see token-audience.ts.
+        algorithms: TOKEN_ALGORITHMS,
       });
       return payload.sub ?? null;
     } catch {

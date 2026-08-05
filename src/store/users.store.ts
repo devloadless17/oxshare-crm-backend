@@ -17,7 +17,6 @@ export interface User {
   emailVerified: boolean;
   emailVerificationToken?: string;
   emailVerificationExpiry?: Date;
-  refreshToken?: string;
   /** SHA-256 of the emailed reset token — never the token itself. */
   passwordResetTokenHash?: string;
   passwordResetExpiry?: Date;
@@ -33,7 +32,6 @@ const toUser = (r: Row): User => ({
   verificationLevel: r.verificationLevel === 1 ? 1 : 0,
   emailVerificationToken: r.emailVerificationToken ?? undefined,
   emailVerificationExpiry: r.emailVerificationExpiry ?? undefined,
-  refreshToken: r.refreshToken ?? undefined,
   passwordResetTokenHash: r.passwordResetTokenHash ?? undefined,
   passwordResetExpiry: r.passwordResetExpiry ?? undefined,
   country: r.country ?? undefined,

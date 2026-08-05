@@ -6,6 +6,7 @@ import { KycConfigStore } from './kyc-config.store';
 import { KycStore } from './kyc.store';
 import { RejectionReasonsStore } from './rejection-reasons.store';
 import { RolesStore } from './roles.store';
+import { SecuritySettingsStore } from './security-settings.store';
 import { UsersStore } from './users.store';
 
 const STORES = [
@@ -17,6 +18,7 @@ const STORES = [
   KycStore,
   RejectionReasonsStore,
   RolesStore,
+  SecuritySettingsStore,
   UsersStore,
 ];
 

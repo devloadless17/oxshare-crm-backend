@@ -20,6 +20,25 @@ import { NONCE_REDIS, ReplayNonceStore, type NonceRedis } from './replay-nonce.s
  * a refused webhook, which is the failure we want, rather than a process that
  * will not start.
  */
+/**
+ * The commands the withdrawal OTP needs — FR-CORE-08, §8.4.
+ *
+ * A SECOND token over the SAME connection, not a second client: one Redis
+ * process, one socket, two narrowly-typed views of it. Declaring only the
+ * commands each use actually issues keeps a fake honest — a test double that has
+ * to implement `set/get/del/incr/pexpire` and nothing else cannot quietly
+ * diverge from the real client's behaviour on commands nobody calls.
+ */
+export interface OtpRedis {
+  set(key: string, value: string, mode: 'PX', ttlMs: number): Promise<string | null>;
+  get(key: string): Promise<string | null>;
+  del(...keys: string[]): Promise<number>;
+  incr(key: string): Promise<number>;
+  pexpire(key: string, ttlMs: number): Promise<number>;
+}
+
+export const OTP_REDIS = Symbol('OTP_REDIS');
+
 @Global()
 @Module({
   providers: [
@@ -54,8 +73,14 @@ import { NONCE_REDIS, ReplayNonceStore, type NonceRedis } from './replay-nonce.s
         return client;
       },
     },
+    {
+      // The SAME connection under a second token — see OtpRedis above.
+      provide: OTP_REDIS,
+      inject: [NONCE_REDIS],
+      useFactory: (client: NonceRedis | null): OtpRedis | null => client as OtpRedis | null,
+    },
     ReplayNonceStore,
   ],
-  exports: [ReplayNonceStore],
+  exports: [ReplayNonceStore, OTP_REDIS],
 })
 export class ReplayNonceModule {}

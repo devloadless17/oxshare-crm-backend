@@ -4,6 +4,7 @@ import { IpAllowlistGuard } from '../src/modules/admin/guards/ip-allowlist.guard
 import { AdminIpAllowlistService } from '../src/modules/admin/admin-ip-allowlist.service';
 import type { AdminIpAllowlistStore, AllowlistRule } from '../src/store/admin-ip-allowlist.store';
 import type { AdminAuditService } from '../src/modules/admin/admin-audit.service';
+import type { Admin } from '../src/store/admins.store';
 import { ConflictError, NotFoundError, ValidationError } from '../src/common/errors/domain-errors';
 
 /**
@@ -22,7 +23,19 @@ import { ConflictError, NotFoundError, ValidationError } from '../src/common/err
  * themselves, and losing the screen they would use to undo it.
  */
 
-const ADMIN = { id: 'admin-1' };
+// A full Admin, not `{ id }`: the service now asserts `roles.manage` on the
+// actor itself (R-4.3), not only in the guard, so the fixture has to be a
+// principal rather than a bare id.
+const ADMIN: Admin = {
+  id: 'admin-1',
+  email: 'admin@oxshare.com',
+  passwordHash: 'not-used-here',
+  name: 'Test Admin',
+  role: 'master_admin',
+  permissions: ['roles.manage'],
+  roleId: null,
+  createdAt: new Date(),
+} as unknown as Admin;
 
 function buildGuard(rules: string[]) {
   const store = { listCidrs: vi.fn().mockResolvedValue(rules) };

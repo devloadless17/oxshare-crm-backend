@@ -7,6 +7,7 @@ import { PasswordService } from '../src/common/security/password.service';
 import { CsrfService } from '../src/common/security/csrf.service';
 import type { EmailService } from '../src/modules/email/email.service';
 import type { RefreshTokensService } from '../src/common/security/refresh-tokens.service';
+import type { LoginAttemptsService } from '../src/common/security/login-attempts.service';
 import type { User, UsersStore } from '../src/store/users.store';
 import {
   AuthenticationError,
@@ -109,6 +110,13 @@ function build(overrides: { user?: User | undefined } = {}): Harness {
     record: vi.fn().mockResolvedValue(undefined),
     revokeAllForSubject: vi.fn().mockResolvedValue(undefined),
   };
+  // R-3.5 per-account lockout. Stubbed as "never locked, nothing to record":
+  // these cases are about the auth logic, and the lockout has its own spec.
+  const loginAttempts = {
+    lockedFor: vi.fn().mockResolvedValue(null),
+    recordFailure: vi.fn().mockResolvedValue(undefined),
+    recordSuccess: vi.fn().mockResolvedValue(undefined),
+  };
 
   const service = new AuthService(
     new JwtService({}),
@@ -118,6 +126,7 @@ function build(overrides: { user?: User | undefined } = {}): Harness {
     new CsrfService(config),
     refreshTokens as unknown as RefreshTokensService,
     passwords,
+    loginAttempts as unknown as LoginAttemptsService,
   );
 
   return { service, users, email, refreshTokens, passwords };

@@ -22,7 +22,13 @@ import { KycStore } from '../../store/kyc.store';
 import { UsersStore } from '../../store/users.store';
 import { AuditLogStore } from '../../store/audit-log.store';
 import { COOKIE_BASES, readSessionCookie } from '../../common/security/session-cookies';
-import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../../common/security/token-audience';
+import {
+  isTokenKind,
+  TOKEN_ALGORITHMS,
+  TOKEN_AUDIENCE,
+  TOKEN_ISSUER,
+  TOKEN_KIND,
+} from '../../common/security/token-audience';
 
 /** Who a request resolved to, and therefore what gets recorded about the read. */
 type Reader =
@@ -131,11 +137,20 @@ export class UploadsController {
     const adminToken = readSessionCookie(cookies, COOKIE_BASES.adminAccess);
     if (adminToken) {
       try {
-        const payload = this.jwt.verify<{ sub: string }>(adminToken, {
+        const payload = this.jwt.verify<{ sub: string; typ?: string }>(adminToken, {
           secret: this.config.getOrThrow<string>('ADMIN_JWT_SECRET'),
           audience: TOKEN_AUDIENCE.admin,
           issuer: TOKEN_ISSUER,
+          // Stated, never inherited from the key type — see token-audience.ts.
+          algorithms: TOKEN_ALGORITHMS,
         });
+        // `typ` checked here too, as it is at every other verification site.
+        // The separate refresh secret already makes a refresh token fail above,
+        // so this is defence against that separation being lost in a deploy —
+        // the same reason admin.guard.ts and jwt.strategy.ts check it.
+        if (!isTokenKind(payload, TOKEN_KIND.access)) {
+          throw new UnauthorizedException('Invalid or expired admin token.');
+        }
         const admin = await this.admins.findById(payload.sub);
         if (admin) {
           const held = await this.roles.resolvePermissions(admin.roleId, admin.permissions);
@@ -155,11 +170,16 @@ export class UploadsController {
     const clientToken = readSessionCookie(cookies, COOKIE_BASES.clientAccess);
     if (clientToken) {
       try {
-        const payload = this.jwt.verify<{ sub: string }>(clientToken, {
+        const payload = this.jwt.verify<{ sub: string; typ?: string }>(clientToken, {
           secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
           audience: TOKEN_AUDIENCE.portal,
           issuer: TOKEN_ISSUER,
+          // Stated, never inherited from the key type — see token-audience.ts.
+          algorithms: TOKEN_ALGORITHMS,
         });
+        if (!isTokenKind(payload, TOKEN_KIND.access)) {
+          throw new UnauthorizedException('Invalid or expired token.');
+        }
         if (await this.submissionReferencesFile(payload.sub, fileName)) {
           const owner = await this.users.findById(payload.sub);
           return { kind: 'client', id: payload.sub, email: owner?.email ?? 'unknown' };

@@ -16,8 +16,11 @@ import { createHash, randomUUID } from 'crypto';
 import { CsrfService } from '../../common/security/csrf.service';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
+import { LoginAttemptsService } from '../../common/security/login-attempts.service';
 import {
   isTokenKind,
+  TOKEN_ALGORITHM,
+  TOKEN_ALGORITHMS,
   TOKEN_AUDIENCE,
   TOKEN_ISSUER,
   TOKEN_KIND,
@@ -71,6 +74,7 @@ export class AuthService {
     private readonly csrf: CsrfService,
     private readonly refreshTokens: RefreshTokensService,
     private readonly passwords: PasswordService,
+    private readonly loginAttempts: LoginAttemptsService,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -222,7 +226,8 @@ export class AuthService {
       // moment it works, so a replay finds nothing.
       passwordResetTokenHash: undefined,
       passwordResetExpiry: undefined,
-      refreshToken: undefined,
+      // The dead `refresh_token` column is gone; revoking the FAMILIES below is
+      // what actually ends every session, and always was.
     });
 
     // Every refresh-token family for this user, not just the current one.
@@ -234,24 +239,46 @@ export class AuthService {
 
   // ─── Login ────────────────────────────────────────────────────────────────────
   async login(dto: LoginDto, res: Response) {
+    // Per-ACCOUNT lockout — R-3.5. The @Throttle on this route is keyed on the
+    // IP, which does nothing about a distributed run against one account.
+    // Checked first, so a locked account costs an attacker a round trip rather
+    // than an argon2 hash.
+    const lockedFor = await this.loginAttempts.lockedFor('portal', dto.email);
+    if (lockedFor !== null) {
+      throw new AuthenticationError(
+        `Too many failed sign-in attempts. Try again in ${Math.ceil(lockedFor / 60_000)} minute(s).`,
+      );
+    }
+
     const user = await this.users.findByEmail(dto.email);
-    if (!user) throw new AuthenticationError('Invalid email or password.');
 
     /*
      * Dual-read: accepts a stored bcrypt hash, then quietly replaces it with
      * argon2id (R-3.4). Nobody is forced to reset a password they already have,
      * and the bcrypt population drains as people log in.
+     *
+     * Note there is no early return for a missing account. Passing `undefined`
+     * makes PasswordService spend the same argon2 work and answer false, so a
+     * login for an unknown address is not distinguishable from a wrong password
+     * by TIMING — see password.service.ts. The identical message below was only
+     * ever half of that guarantee.
      */
     const { valid: passwordMatch, needsRehash } = await this.passwords.verify(
       dto.password,
-      user.passwordHash,
+      user?.passwordHash,
     );
-    if (passwordMatch && needsRehash) {
+    if (user && passwordMatch && needsRehash) {
       const upgraded = await this.passwords.hash(dto.password);
       await this.users.update(user.id, { passwordHash: upgraded });
       this.logger.log(`Upgraded password hash to argon2id for user ${user.id}`);
     }
-    if (!passwordMatch) throw new AuthenticationError('Invalid email or password.');
+    if (!user || !passwordMatch) {
+      // Recorded for addresses that do not exist too — counting only real
+      // accounts would make a lockout answer "is this a customer here?".
+      await this.loginAttempts.recordFailure('portal', dto.email);
+      throw new AuthenticationError('Invalid email or password.');
+    }
+    await this.loginAttempts.recordSuccess('portal', dto.email);
 
     // Checked only after the password matches, so a suspended-account message
     // never leaks whether credentials were valid.
@@ -303,6 +330,8 @@ export class AuthService {
           secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
           audience: TOKEN_AUDIENCE.portal,
           issuer: TOKEN_ISSUER,
+          // Stated, never inherited from the key type — see token-audience.ts.
+          algorithms: TOKEN_ALGORITHMS,
         },
       );
       // Belt and braces: the separate refresh secret already makes an access
@@ -412,8 +441,13 @@ export class AuthService {
     };
 
     // aud/iss so a portal token cannot verify on the admin surface even if the
-    // two ever end up sharing a secret (R-3.1).
-    const claims = { audience: TOKEN_AUDIENCE.portal, issuer: TOKEN_ISSUER };
+    // two ever end up sharing a secret (R-3.1). The algorithm is named on the
+    // way out as well as the way in, so signing and verification cannot drift.
+    const claims = {
+      audience: TOKEN_AUDIENCE.portal,
+      issuer: TOKEN_ISSUER,
+      algorithm: TOKEN_ALGORITHM,
+    };
     const accessToken = this.jwt.sign(
       { ...payload, typ: TOKEN_KIND.access },
       {

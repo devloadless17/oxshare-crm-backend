@@ -14,6 +14,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { Request } from 'express';
 import { CommissionService } from '../partners/commission.service';
 import { ReplayNonceStore } from '../../common/security/replay-nonce.store';
+import { NoOriginCheck } from '../../common/security/csrf.guard';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { DealShapeError, parseDeal, readDealsArray } from './deal-payload';
 
@@ -47,6 +48,13 @@ export class Mt5WebhookController {
     private readonly nonces: ReplayNonceStore,
   ) {}
 
+  @NoOriginCheck(
+    'The MT5 bridge is a server, not a browser: it has no Origin to send and no ambient ' +
+      'cookie to abuse. It authenticates with an HMAC over the raw body plus a timestamp and a ' +
+      'single-use nonce (assertAuthentic below), which is a stronger claim than an Origin header ' +
+      'and is checked before the body is parsed (R-5.3). Origin checking became unconditional on ' +
+      'state changes to close login CSRF, and this is the one caller that genuinely cannot supply one.',
+  )
   @Post('deals')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiExcludeEndpoint() // bridge-to-API only; never called by a browser

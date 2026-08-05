@@ -15,6 +15,7 @@ import { Request } from 'express';
 import { COOKIE_BASES, readSessionCookie } from '../../../common/security/session-cookies';
 import {
   isTokenKind,
+  TOKEN_ALGORITHMS,
   TOKEN_AUDIENCE,
   TOKEN_ISSUER,
   TOKEN_KIND,
@@ -53,6 +54,8 @@ export class AdminAuthenticator {
         // distinct secrets already ensure that; this survives them being mixed up.
         audience: TOKEN_AUDIENCE.admin,
         issuer: TOKEN_ISSUER,
+        // Stated, never inherited from the key type — see token-audience.ts.
+        algorithms: TOKEN_ALGORITHMS,
       });
       // The admin surface signs both kinds with ONE secret, so signature +
       // audience cannot tell them apart. Without this check a 30-day refresh
@@ -68,6 +71,21 @@ export class AdminAuthenticator {
 
     const admin = await this.admins.findById(adminId);
     if (!admin) throw new UnauthorizedException('Admin not found.');
+    /*
+     * Suspension takes effect on the NEXT REQUEST — a live token is no shield.
+     *
+     * This is what makes the 15-minute access token worth its round trips: the
+     * admin row is already loaded here to resolve permissions, so checking a
+     * status column costs nothing and turns "suspend this administrator" into
+     * something that happens now rather than whenever their token expires.
+     *
+     * Without it the only way to cut off an admin was to delete the row, which
+     * destroys the subject every audit entry points at. jwt.strategy.ts has done
+     * exactly this for portal users since it was written.
+     */
+    if (admin.status === 'suspended') {
+      throw new UnauthorizedException('This administrator account has been suspended.');
+    }
     // Role-derived permissions resolve live: editing a role takes effect on the
     // next request from every admin holding it — no re-login, no stale grants.
     return {

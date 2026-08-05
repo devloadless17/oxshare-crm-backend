@@ -33,6 +33,10 @@ export const ALERT_KINDS = {
   RECONCILIATION_UNAVAILABLE: 'reconciliation.unavailable',
   /** A correctly-signed deal batch that this API could not parse at all. */
   MT5_BATCH_REJECTED: 'bridge.batch_rejected',
+  /** An account hit the R-3.5 failure limit and was locked — someone is guessing. */
+  LOGIN_LOCKOUT: 'auth.login_lockout',
+  /** An operator-controlled security control is switched OFF. */
+  SECURITY_CONTROL_DISABLED: 'security.control_disabled',
 } as const;
 
 export type AlertKind = (typeof ALERT_KINDS)[keyof typeof ALERT_KINDS];
@@ -118,5 +122,13 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.RECONCILIATION_UNAVAILABLE]: {
     severity: 'notify',
     rule: 'Two consecutive failures. The ledger is not wrong — it is UNCHECKED, which is a different and quieter problem.',
+  },
+  [ALERT_KINDS.SECURITY_CONTROL_DISABLED]: {
+    severity: 'notify',
+    rule: 'Any occurrence at `page` severity — an admin has just turned a control off. The `notify` stream repeats for as long as it STAYS off, which is the point: a control disabled "for an afternoon" before go-live is the one that is still off two quarters later. Route the recurring form to a dashboard rather than a pager, and treat its DISAPPEARANCE as the resolution.',
+  },
+  [ALERT_KINDS.LOGIN_LOCKOUT]: {
+    severity: 'notify',
+    rule: 'One lockout on the ADMIN surface is worth a look; a burst across several admin addresses is a credential-stuffing run in progress against accounts that can approve payouts. On the portal, treat a burst rather than a single occurrence — clients forget passwords.',
   },
 };

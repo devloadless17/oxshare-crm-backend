@@ -9,7 +9,9 @@ import { CsrfService } from '../src/common/security/csrf.service';
 import type { EmailService } from '../src/modules/email/email.service';
 import type { RefreshTokensService } from '../src/common/security/refresh-tokens.service';
 import type { AdminAuditService } from '../src/modules/admin/admin-audit.service';
+import { hashInviteToken } from '../src/store/admins.store';
 import type { Admin, AdminInvite, AdminsStore, InvitesStore } from '../src/store/admins.store';
+import type { LoginAttemptsService } from '../src/common/security/login-attempts.service';
 import type { Role, RolesStore } from '../src/store/roles.store';
 import {
   AuthorizationError,
@@ -53,6 +55,7 @@ const MASTER: Admin = {
   name: 'Master',
   passwordHash: 'x',
   role: 'master_admin',
+  status: 'active',
   permissions: ['*'],
   createdAt: new Date(),
 };
@@ -78,7 +81,8 @@ function invite(overrides: Partial<AdminInvite> = {}): AdminInvite {
     id: 'invite-1',
     email: 'newcomer@oxshare.com',
     name: 'New Comer',
-    token: 'token-abc',
+    // Stored hashed now — the raw token never reaches the database.
+    tokenHash: hashInviteToken('token-abc'),
     role: 'sub_admin',
     permissions: ['kyc.review'],
     invitedBy: MASTER.id,
@@ -122,6 +126,12 @@ function build(
     revokeAllForSubject: vi.fn(),
   };
   const config = configWith(options.env);
+  // R-3.5 lockout — the invite paths do not touch it; never locked.
+  const loginAttempts = {
+    lockedFor: vi.fn().mockResolvedValue(null),
+    recordFailure: vi.fn().mockResolvedValue(undefined),
+    recordSuccess: vi.fn().mockResolvedValue(undefined),
+  };
 
   const rbac = new AdminRbacService(
     admins as unknown as AdminsStore,
@@ -142,6 +152,7 @@ function build(
     new CsrfService(config),
     refreshTokens as unknown as RefreshTokensService,
     new PasswordService(),
+    loginAttempts as unknown as LoginAttemptsService,
   );
 
   return { service, admins, invites, roles, email, audit, refreshTokens };

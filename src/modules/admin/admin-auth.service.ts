@@ -8,6 +8,7 @@ import { RolesStore } from '../../store/roles.store';
 import { EmailService } from '../email/email.service';
 import {
   AuthenticationError,
+  AuthorizationError,
   ConflictError,
   NotFoundError,
   ValidationError,
@@ -18,8 +19,11 @@ import { randomUUID } from 'crypto';
 import { CsrfService } from '../../common/security/csrf.service';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
+import { LoginAttemptsService } from '../../common/security/login-attempts.service';
 import {
   isTokenKind,
+  TOKEN_ALGORITHM,
+  TOKEN_ALGORITHMS,
   TOKEN_AUDIENCE,
   TOKEN_ISSUER,
   TOKEN_KIND,
@@ -73,20 +77,60 @@ export class AdminAuthService {
     private readonly csrf: CsrfService,
     private readonly refreshTokens: RefreshTokensService,
     private readonly passwords: PasswordService,
+    private readonly loginAttempts: LoginAttemptsService,
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
   async login(email: string, password: string, res: Response) {
+    /*
+     * Per-ACCOUNT lockout, checked before anything else — R-3.5.
+     *
+     * The @Throttle on this route is keyed on the IP, which bounds one attacker
+     * on one address and does nothing about a distributed run against a single
+     * admin account. This is the half that does. It is checked before the
+     * password work so a locked account costs an attacker a round trip rather
+     * than an argon2 hash.
+     */
+    const lockedFor = await this.loginAttempts.lockedFor('admin', email);
+    if (lockedFor !== null) {
+      throw new AuthenticationError(
+        `Too many failed sign-in attempts. Try again in ${Math.ceil(lockedFor / 60_000)} minute(s).`,
+      );
+    }
+
     const admin = await this.admins.findByEmail(email);
-    if (!admin) throw new AuthenticationError('Invalid credentials.');
 
     /*
      * Dual-read: accepts a stored bcrypt hash, then quietly replaces it with
      * argon2id (R-3.4). Nobody is forced to reset a password they already have,
      * and the bcrypt population drains as people log in.
+     *
+     * No early return for a missing admin: `undefined` makes PasswordService
+     * spend the same argon2 work and answer false, so an unknown address is not
+     * distinguishable from a wrong password by TIMING. That matters more here
+     * than on the portal — enumerating admin addresses is the first step of a
+     * credential-stuffing run against accounts that can approve payouts.
      */
-    const { valid, needsRehash } = await this.passwords.verify(password, admin.passwordHash);
-    if (!valid) throw new AuthenticationError('Invalid credentials.');
+    const { valid, needsRehash } = await this.passwords.verify(password, admin?.passwordHash);
+    if (!admin || !valid) {
+      // Recorded for identifiers that do not exist too — counting only real
+      // accounts would make a lockout answer "does this admin exist?".
+      await this.loginAttempts.recordFailure('admin', email);
+      throw new AuthenticationError('Invalid credentials.');
+    }
+
+    /*
+     * A suspended admin cannot sign in — the account-status half of R-3.3.
+     *
+     * Checked only AFTER the password matched, so this message never doubles as
+     * confirmation that a credential was valid. Same ordering, and the same
+     * reason, as the portal's suspension check in identity/auth.service.ts.
+     */
+    if (admin.status === 'suspended') {
+      throw new AuthorizationError('This administrator account has been suspended.');
+    }
+
+    await this.loginAttempts.recordSuccess('admin', email);
     if (needsRehash) {
       const upgraded = await this.passwords.hash(password);
       await this.admins.update(admin.id, { passwordHash: upgraded });
@@ -203,6 +247,7 @@ export class AdminAuthService {
       role: 'sub_admin',
       roleId: invite.roleId,
       permissions: invite.permissions ?? ['kyc.review', 'users.view'],
+      status: 'active',
     });
 
     await this.invites.markAccepted(token);
@@ -237,7 +282,13 @@ export class AdminAuthService {
     const refreshSecret = this.config.getOrThrow<string>('ADMIN_JWT_REFRESH_SECRET');
     // aud/iss so a token minted for the admin surface cannot verify on the
     // portal even if the two ever end up sharing a secret (R-3.1).
-    const claims = { audience: TOKEN_AUDIENCE.admin, issuer: TOKEN_ISSUER };
+    // The algorithm is named on the way out as well as the way in, so signing
+    // and verification cannot drift apart.
+    const claims = {
+      audience: TOKEN_AUDIENCE.admin,
+      issuer: TOKEN_ISSUER,
+      algorithm: TOKEN_ALGORITHM,
+    };
     // `typ` so the two KINDS cannot be confused either. Both are signed with
     // ADMIN_JWT_SECRET, so without this the 30-day refresh token below verifies
     // anywhere the 15-minute access token does — see token-audience.ts.
@@ -310,6 +361,8 @@ export class AdminAuthService {
         secret: this.config.getOrThrow<string>('ADMIN_JWT_REFRESH_SECRET'),
         audience: TOKEN_AUDIENCE.admin,
         issuer: TOKEN_ISSUER,
+        // Stated, never inherited from the key type — see token-audience.ts.
+        algorithms: TOKEN_ALGORITHMS,
       });
       // An ACCESS token must not buy a new session pair here either — the
       // confusion has to be refused in both directions to be worth anything.

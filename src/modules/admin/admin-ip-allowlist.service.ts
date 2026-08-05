@@ -3,6 +3,8 @@ import { AdminIpAllowlistStore, type AllowlistRule } from '../../store/admin-ip-
 import { canonicaliseRule, ipMatchesAny, isValidRule } from '../../common/security/ip-range';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
+import { Admin } from '../../store/admins.store';
+import { assertActorCan } from '../../common/security/actor';
 
 /**
  * RBAC-08 — managing the admin IP allowlist.
@@ -35,9 +37,14 @@ export class AdminIpAllowlistService {
    */
   async add(
     input: { cidr: string; label: string },
-    actor: { id: string },
+    actor: Admin,
     callerIp: string | undefined,
   ): Promise<AllowlistRule> {
+    // R-4.3: asserted here, not only in the guard. This list is the control that
+    // decides which networks may reach the admin API at all — a caller who can
+    // add a rule can decide who gets in.
+    assertActorCan(actor, 'roles.manage', 'change the admin IP allowlist');
+
     const cidr = input.cidr.trim();
     if (!isValidRule(cidr)) {
       throw new ValidationError(
@@ -84,7 +91,11 @@ export class AdminIpAllowlistService {
     return rule;
   }
 
-  async remove(id: string, actor: { id: string }, callerIp: string | undefined): Promise<void> {
+  async remove(id: string, actor: Admin, callerIp: string | undefined): Promise<void> {
+    // Removing the last rule turns RBAC-08 OFF entirely (see the guard), so this
+    // is at least as privileged as adding one.
+    assertActorCan(actor, 'roles.manage', 'change the admin IP allowlist');
+
     const rules = await this.store.findAll();
     const target = rules.find((r) => r.id === id);
     if (!target) throw new NotFoundError('That allowlist rule does not exist.');

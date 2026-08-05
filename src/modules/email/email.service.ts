@@ -222,6 +222,60 @@ export class EmailService {
     }
   }
 
+  /**
+   * The withdrawal confirmation code — FR-CORE-08 / FR-IND-05.
+   *
+   * The AMOUNT and CURRENCY are in the message on purpose, and they are the most
+   * important words in it. A code that says only "here is your confirmation
+   * code" trains people to relay six digits on request, which is precisely the
+   * attack the OTP exists to stop: an attacker with a live session triggers a
+   * send, the victim reads a plausible email, and the code buys a withdrawal the
+   * victim never intended. Stating what is being authorised gives them the one
+   * piece of information that makes the difference.
+   *
+   * The code is never logged (R-6.3) — the log line below records the recipient
+   * only, and `redact.ts` would strip it anyway.
+   */
+  async sendWithdrawalOtpEmail(
+    email: string,
+    amount: string,
+    currency: string,
+    code: string,
+  ): Promise<void> {
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
+        <h2 style="color: #3b82f6;">Confirm your withdrawal</h2>
+        <p>You asked to withdraw <strong style="color:#f8fafc;">${amount} ${currency}</strong>.</p>
+        <p>Enter this code to confirm it:</p>
+        <div style="margin: 24px 0; font-size: 32px; letter-spacing: 8px; font-weight: bold; color: #f8fafc;">
+          ${code}
+        </div>
+        <p style="font-size: 12px; color: #94a3b8;">This code expires in 5 minutes and can be used once.</p>
+        <p style="font-size: 12px; color: #fca5a5;">
+          If you did not request this withdrawal, do not enter the code — change your password and
+          contact support immediately.
+        </p>
+      </div>
+    `;
+
+    try {
+      if (this.configService.get('NODE_ENV') !== 'test') {
+        await this.transporter.sendMail({
+          from: this.configService.get('SMTP_FROM', '"OxShare Payments" <no-reply@oxshare.com>'),
+          to: email,
+          subject: `Confirm your ${amount} ${currency} withdrawal — OxShare`,
+          html,
+        });
+      }
+      // Recipient only. Never the code.
+      this.logger.log(`Withdrawal confirmation code sent to ${email}`);
+    } catch (error) {
+      this.logger.error(
+        `Failed to send withdrawal confirmation code to ${email}: ${failureReason(error)}`,
+      );
+    }
+  }
+
   async sendAdminInviteEmail(email: string, name: string, inviteUrl: string): Promise<void> {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">

@@ -100,7 +100,7 @@ export class AdminComplianceController {
   })
   @ApiOkResponse({ type: KycSubmissionDto })
   claimKyc(@Param('userId', UuidParam) userId: string, @Req() req: Request & { admin: Admin }) {
-    return this.compliance.claimKyc(userId, req.admin.id);
+    return this.compliance.claimKyc(userId, req.admin);
   }
 
   @Patch('kyc/:userId/approve')
@@ -112,7 +112,7 @@ export class AdminComplianceController {
   })
   @ApiOkResponse({ type: KycSubmissionDto })
   approveKyc(@Param('userId', UuidParam) userId: string, @Req() req: Request & { admin: Admin }) {
-    return this.compliance.approveKyc(userId, req.admin.id);
+    return this.compliance.approveKyc(userId, req.admin);
   }
 
   @Patch('kyc/:userId/reject')
@@ -131,7 +131,7 @@ export class AdminComplianceController {
   ) {
     return this.compliance.rejectKyc(
       userId,
-      req.admin.id,
+      req.admin,
       dto.reason,
       dto.rejectedFields,
       dto.reasonId,

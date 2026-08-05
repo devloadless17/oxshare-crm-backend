@@ -4,6 +4,8 @@ import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-r
 import { KycService } from '../compliance/kyc.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
+import { Admin } from '../../store/admins.store';
+import { assertActorCan } from '../../common/security/actor';
 
 /**
  * The admin side of compliance: the KYC review queue, the step configurator,
@@ -32,26 +34,42 @@ export class AdminComplianceService {
   getKyc(userId: string) {
     return this.kycService.getByUserId(userId);
   }
+  /*
+   * The three decisions below assert on the ACTOR, not only in the guard —
+   * R-4.3.
+   *
+   * A guard runs on an HTTP request. These methods are what a queued job would
+   * call, and BullMQ is coming (ARCHITECTURE §9) — the moment a KYC decision is
+   * queued rather than executed inline, a guard-only check stops running and
+   * nothing fails, which is what makes it dangerous. They were the last
+   * privilege-affecting admin methods still guarded only at the edge: approving
+   * KYC moves a client's verificationLevel to 1, and that is what unlocks
+   * withdrawals.
+   */
   // ─── KYC: approve ─────────────────────────────────────────────────────────
-  async approveKyc(userId: string, adminId: string) {
-    const result = this.kycService.approve(userId, adminId);
-    this.audit.record(adminId, 'kyc.approve', 'kyc_submission', userId, { verificationLevel: 1 });
+  async approveKyc(userId: string, actor: Admin) {
+    assertActorCan(actor, 'kyc.review', 'approve a KYC submission');
+    const result = this.kycService.approve(userId, actor.id);
+    this.audit.record(actor.id, 'kyc.approve', 'kyc_submission', userId, { verificationLevel: 1 });
     return result;
   }
   // ─── KYC: claim for review ────────────────────────────────────────────────
-  async claimKyc(userId: string, adminId: string) {
-    const result = this.kycService.claim(userId, adminId);
-    this.audit.record(adminId, 'kyc.claim', 'kyc_submission', userId);
+  async claimKyc(userId: string, actor: Admin) {
+    assertActorCan(actor, 'kyc.review', 'claim a KYC submission for review');
+    const result = this.kycService.claim(userId, actor.id);
+    this.audit.record(actor.id, 'kyc.claim', 'kyc_submission', userId);
     return result;
   }
   // ─── KYC: reject ──────────────────────────────────────────────────────────
   async rejectKyc(
     userId: string,
-    adminId: string,
+    actor: Admin,
     reason?: string,
     rejectedFields?: string[],
     reasonId?: string,
   ) {
+    assertActorCan(actor, 'kyc.review', 'reject a KYC submission');
+    const adminId = actor.id;
     let effectiveReason = reason?.trim();
     if (reasonId) {
       const configured = await this.rejectionReasons.findById(reasonId);

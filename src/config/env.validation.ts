@@ -33,6 +33,28 @@ const envSchema = z
     DATABASE_URL: z.string().url().optional(),
 
     /*
+     * How many reverse proxies WE operate in front of this process.
+     *
+     * Read by common/security/client-ip.ts, which is the trust boundary for
+     * every control that keys on an address: the rate limiter, RBAC-08's IP
+     * allowlist, and the audit trail. It was read straight from `process.env`
+     * and defaulted silently to 0 — which is correct for local development and
+     * wrong for every real deployment, where it means `req.ip` is the PROXY.
+     * The limiter then throttles the world as one caller and the allowlist
+     * matches the proxy, admitting everyone or no-one.
+     *
+     * Declared here so the value is validated at boot rather than at first use,
+     * and required in production below so somebody has to STATE it. Getting it
+     * wrong is a security bug in both directions, so it is not a thing to guess.
+     */
+    TRUSTED_PROXY_HOPS: z.coerce
+      .number()
+      .int('TRUSTED_PROXY_HOPS must be a whole number of proxies')
+      .min(0, 'TRUSTED_PROXY_HOPS cannot be negative')
+      .max(10, 'TRUSTED_PROXY_HOPS above 10 is almost certainly a mistake')
+      .optional(),
+
+    /*
      * The four signing secrets. REQUIRED IN EVERY ENVIRONMENT, not only
      * production, because the dev fallbacks they used to permit are gone: the
      * code reads all four with `getOrThrow`. A fallback here could only ever
@@ -227,6 +249,55 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
       throw new Error(
         `Refusing to start in production without: ${missing.join(', ')}. ` +
           'Development fallback secrets are not acceptable in production.',
+      );
+    }
+
+    /*
+     * Both frontend URLs must be HTTPS in production, because they are what
+     * decides whether SESSION COOKIES ARE SECURE.
+     *
+     * common/security/session-cookies.ts derives `secure` and the `__Host-`
+     * prefix from `isSecureContext()`, which is true only when BOTH of these
+     * start with https. Keying on "is this localhost" rather than NODE_ENV is
+     * the right instinct — a staging box on HTTPS with NODE_ENV=staging should
+     * still get Secure cookies — but nothing enforced the premise, so a single
+     * `ADMIN_URL=http://…` in a production env file silently shipped every
+     * session cookie without Secure AND without `__Host-`.
+     *
+     * That is not a degraded mode. `__Host-` is the only part of the cookie
+     * design the BROWSER enforces, and it is what stops another site on the
+     * oxshare.com registrable domain writing or shadowing this system's session
+     * cookies. Losing it silently is exactly the failure that file exists to
+     * prevent, so this refuses to start instead.
+     */
+    const insecureUrls = (['PORTAL_URL', 'ADMIN_URL'] as const).filter(
+      (key) => !env[key].startsWith('https://'),
+    );
+    if (insecureUrls.length > 0) {
+      throw new Error(
+        `Refusing to start in production with a non-HTTPS ${insecureUrls.join(' and ')}. ` +
+          'These two URLs decide whether session cookies are set Secure and `__Host-` prefixed ' +
+          '(common/security/session-cookies.ts). With either on http, every session cookie ships ' +
+          'without Secure and without the prefix that stops a sibling oxshare.com site ' +
+          'overwriting it — and nothing else would report the loss.',
+      );
+    }
+
+    /*
+     * And the proxy hop count must be stated, not defaulted.
+     *
+     * Checked explicitly rather than via PROD_REQUIRED because 0 is a LEGITIMATE
+     * value — a process exposed directly — and `!env[k]` would reject it as
+     * missing. The distinction that matters is "somebody chose 0" versus
+     * "nobody said", and only the first is safe.
+     */
+    if (env.TRUSTED_PROXY_HOPS === undefined) {
+      throw new Error(
+        'Refusing to start in production without TRUSTED_PROXY_HOPS. It is the number of reverse ' +
+          'proxies you operate in front of this API — 0 for none, 1 for a single nginx or load ' +
+          'balancer, 2 for nginx behind CloudFront. The rate limiter, RBAC-08 IP allowlist and ' +
+          'audit trail all key on the address it resolves: too low reads your own proxy, too high ' +
+          'lets callers choose their own IP. Set it deliberately (see common/security/client-ip.ts).',
       );
     }
   }

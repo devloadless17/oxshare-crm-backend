@@ -47,23 +47,49 @@ afterAll(async () => {
   await app?.close();
 });
 
+/*
+ * Every POST below goes through this, because Origin is now checked on EVERY
+ * state change — not only on ones carrying a session cookie (csrf.guard.ts).
+ *
+ * That closed login CSRF: `/admin/auth/login` and `/auth/register` have no
+ * cookie yet by definition, so the guard used to return before it ever looked
+ * at where the request came from. The consequence for this spec is that a POST
+ * with no Origin is now refused with 403 BEFORE the ValidationPipe sees the
+ * body — guards run ahead of pipes — so a request without one would assert
+ * against the wrong rejection entirely.
+ *
+ * Either configured origin is accepted for any route (the allowlist is the pair),
+ * but each call uses the one a real browser would send.
+ */
+const ADMIN_ORIGIN = process.env['ADMIN_URL'] ?? 'http://localhost:3002';
+const PORTAL_ORIGIN = process.env['PORTAL_URL'] ?? 'http://localhost:3000';
+
+const post = (path: string) =>
+  request(server)
+    .post(path)
+    .set('Origin', path.startsWith('/admin') ? ADMIN_ORIGIN : PORTAL_ORIGIN);
+
 /** The pipe answers before the guard for these bodies; 401/403 means the guard won. */
 const REJECTED = [400, 401, 403];
 
 describe('global ValidationPipe — unknown properties', () => {
   it('rejects an unknown property instead of silently dropping it', async () => {
-    const res = await request(server)
-      .post('/admin/auth/login')
-      .send({ email: 'admin@oxshare.com', password: 'admin123', isAdmin: true });
+    const res = await post('/admin/auth/login').send({
+      email: 'admin@oxshare.com',
+      password: 'admin123',
+      isAdmin: true,
+    });
 
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/should not exist/i);
   });
 
   it('names the offending property, so the caller can fix it', async () => {
-    const res = await request(server)
-      .post('/admin/auth/login')
-      .send({ email: 'a@b.com', password: 'x', passwrod: 'typo' });
+    const res = await post('/admin/auth/login').send({
+      email: 'a@b.com',
+      password: 'x',
+      passwrod: 'typo',
+    });
 
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/passwrod/);
@@ -72,21 +98,19 @@ describe('global ValidationPipe — unknown properties', () => {
 
 describe('global ValidationPipe — required and typed fields', () => {
   it('rejects a login with no body', async () => {
-    const res = await request(server).post('/admin/auth/login').send({});
+    const res = await post('/admin/auth/login').send({});
     expect(res.status).toBe(400);
   });
 
   it('rejects a non-email in an @IsEmail field', async () => {
-    const res = await request(server)
-      .post('/admin/auth/login')
-      .send({ email: 'not-an-email', password: 'x' });
+    const res = await post('/admin/auth/login').send({ email: 'not-an-email', password: 'x' });
 
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/email/i);
   });
 
   it('rejects a KYC step with no data — this used to reach the service as undefined', async () => {
-    const res = await request(server).post('/kyc/step').send({ step: 'personal' });
+    const res = await post('/kyc/step').send({ step: 'personal' });
 
     expect(REJECTED).toContain(res.status);
     if (res.status === 400) {
@@ -95,8 +119,7 @@ describe('global ValidationPipe — required and typed fields', () => {
   });
 
   it('rejects a withdrawal request with a numeric amount (§6.1 wants a string)', async () => {
-    const res = await request(server)
-      .post('/payments/withdrawals')
+    const res = await post('/payments/withdrawals')
       // 300 as a NUMBER. @IsNumberString exists precisely so this cannot pass:
       // a JS number cannot carry NUMERIC(28,8).
       .send({ amount: 300, currency: 'USD', destination: 'IBAN', provider: 'whish' });
@@ -105,9 +128,12 @@ describe('global ValidationPipe — required and typed fields', () => {
   });
 
   it('rejects an unknown currency on a withdrawal', async () => {
-    const res = await request(server)
-      .post('/payments/withdrawals')
-      .send({ amount: '300.00', currency: 'GBP', destination: 'IBAN', provider: 'whish' });
+    const res = await post('/payments/withdrawals').send({
+      amount: '300.00',
+      currency: 'GBP',
+      destination: 'IBAN',
+      provider: 'whish',
+    });
 
     expect(REJECTED).toContain(res.status);
   });
@@ -115,7 +141,7 @@ describe('global ValidationPipe — required and typed fields', () => {
 
 describe('error envelope', () => {
   it('answers a validation failure in the standard shape', async () => {
-    const res = await request(server).post('/admin/auth/login').send({});
+    const res = await post('/admin/auth/login').send({});
 
     // AllExceptionsFilter is the single mapping point, and every consumer reads
     // `message` through apiErrorMessage.
@@ -140,9 +166,7 @@ describe('R-2.2 the error envelope carries a field map', () => {
    * These assert the structure, not the prose.
    */
   it('names the field that failed, not just what went wrong', async () => {
-    const res = await request(server)
-      .post('/auth/register')
-      .send({ email: 'not-an-email', password: 'x' });
+    const res = await post('/auth/register').send({ email: 'not-an-email', password: 'x' });
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('VALIDATION_FAILED');
@@ -151,18 +175,14 @@ describe('R-2.2 the error envelope carries a field map', () => {
   });
 
   it('keeps the sentence list, so nothing reading it today breaks', async () => {
-    const res = await request(server)
-      .post('/auth/register')
-      .send({ email: 'not-an-email', password: 'x' });
+    const res = await post('/auth/register').send({ email: 'not-an-email', password: 'x' });
 
     expect(Array.isArray(res.body.message)).toBe(true);
     expect(res.body.message.length).toBeGreaterThan(0);
   });
 
   it('gives one message per field, which is what a form renders', async () => {
-    const res = await request(server)
-      .post('/auth/register')
-      .send({ email: 'not-an-email', password: 'x' });
+    const res = await post('/auth/register').send({ email: 'not-an-email', password: 'x' });
 
     for (const value of Object.values(res.body.fields as Record<string, unknown>)) {
       expect(typeof value).toBe('string');
@@ -173,7 +193,7 @@ describe('R-2.2 the error envelope carries a field map', () => {
     // The old fallback was `body.error`, which for a 400 is the literal string
     // "Bad Request" — prose that changes when Nest changes, and that cannot
     // distinguish two different 400s from each other.
-    const res = await request(server).post('/auth/register').send({});
+    const res = await post('/auth/register').send({});
 
     expect(res.body.code).not.toBe('Bad Request');
     expect(res.body.code).toMatch(/^[A-Z_]+$/);

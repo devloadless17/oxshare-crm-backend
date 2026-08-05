@@ -8,6 +8,7 @@ import { VALIDATION_PIPE_OPTIONS } from './common/validation.config';
 import { applyApiPrefix } from './common/api-prefix';
 import { JsonLogger } from './common/logging/json.logger';
 import { trustedProxyHops } from './common/security/client-ip';
+import { COOKIE_BASES } from './common/security/session-cookies';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { join } from 'path';
@@ -78,7 +79,11 @@ async function bootstrap() {
     // this list is stripped by the browser with no error anywhere — the request
     // simply arrives without it and fails the CSRF check for a reason nothing
     // logs.
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'X-OxShare-CSRF'],
+    // Authorization is deliberately NOT here: the session is a cookie on both
+    // surfaces and nothing reads a bearer token any more (R-3.1/R-3.2). Leaving
+    // it listed advertised a second credential channel that no longer exists.
+    // Idempotency-Key: R-5.2, required by the money-moving endpoints.
+    allowedHeaders: ['Content-Type', 'X-Request-Id', 'X-OxShare-CSRF', 'Idempotency-Key'],
     // So a caller can read the id back off a response it did not set one on.
     exposedHeaders: ['X-Request-Id'],
   });
@@ -115,28 +120,64 @@ async function bootstrap() {
    */
   applyApiPrefix(app);
 
-  // Swagger docs (available at /api/docs)
-  const config = new DocumentBuilder()
-    .setTitle('OxShare CRM API')
-    .setDescription('Forex/CFD Introducing-Broker CRM — Phase 1')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .addCookieAuth('access_token')
-    .addTag('identity', 'Users, registration, attribution')
-    .addTag('trading', 'MT5 accounts, groups, deal ingestion')
-    .addTag('wallet', 'Balances, ledger, transactions')
-    .addTag('payments', 'Deposits, withdrawals, Whish/USDT')
-    .addTag('partners', 'IB programs, commission engine, payouts')
-    .addTag('compliance', 'KYC documents, verification levels')
-    .addTag('admin', 'Back-office endpoints, RBAC')
-    .build();
-  // `extraModels` because no handler RETURNS this shape — AllExceptionsFilter
-  // emits it. Without it the envelope reaches no frontend's generated types, and
-  // both apps hand-write their own picture of it (R-1.1/R-2.2).
-  const document = SwaggerModule.createDocument(app, config, {
-    extraModels: [ErrorResponseDto],
-  });
-  SwaggerModule.setup('api/docs', app, document);
+  /*
+   * Swagger at /api/docs — NEVER in production.
+   *
+   * This was mounted unconditionally, so a production deploy published the
+   * complete route inventory, every DTO and every permission name to anyone who
+   * asked. That is not a vulnerability by itself; it hands an attacker the whole
+   * attack surface for free, including the admin routes, and there is no reason
+   * for it to be reachable from the internet.
+   *
+   * Gating it costs nothing operationally: both frontends generate their types
+   * from /api/docs-json against a LOCAL backend (`npm run gen:api-types`, see
+   * docs/API-CONTRACTS.md Part C), which is a development activity by
+   * definition. The seeds directly below have been gated this way all along —
+   * this is the same reasoning applied to the same kind of convenience.
+   */
+  if (process.env['NODE_ENV'] !== 'production') {
+    const config = new DocumentBuilder()
+      .setTitle('OxShare CRM API')
+      .setDescription('Forex/CFD Introducing-Broker CRM — Phase 1')
+      .setVersion('1.0')
+      // Cookie auth only. `.addBearerAuth()` advertised a scheme the API does
+      // not accept — the session is an httpOnly cookie on both surfaces (R-3.2)
+      // — and the cookie it named, `access_token`, is a LEGACY name this system
+      // now actively deletes (session-cookies.ts LEGACY_COOKIE_NAMES). Swagger's
+      // Authorize button therefore configured a credential that could not work.
+      .addCookieAuth(COOKIE_BASES.clientAccess, {
+        type: 'apiKey',
+        in: 'cookie',
+        name: COOKIE_BASES.clientAccess,
+        description: 'Portal session. Set by POST /v1/auth/login; httpOnly, so not settable here.',
+      })
+      .addCookieAuth(
+        COOKIE_BASES.adminAccess,
+        {
+          type: 'apiKey',
+          in: 'cookie',
+          name: COOKIE_BASES.adminAccess,
+          description:
+            'Admin session. Set by POST /v1/admin/auth/login; httpOnly, so not settable here.',
+        },
+        'admin',
+      )
+      .addTag('identity', 'Users, registration, attribution')
+      .addTag('trading', 'MT5 accounts, groups, deal ingestion')
+      .addTag('wallet', 'Balances, ledger, transactions')
+      .addTag('payments', 'Deposits, withdrawals, Whish/USDT')
+      .addTag('partners', 'IB programs, commission engine, payouts')
+      .addTag('compliance', 'KYC documents, verification levels')
+      .addTag('admin', 'Back-office endpoints, RBAC')
+      .build();
+    // `extraModels` because no handler RETURNS this shape — AllExceptionsFilter
+    // emits it. Without it the envelope reaches no frontend's generated types, and
+    // both apps hand-write their own picture of it (R-1.1/R-2.2).
+    const document = SwaggerModule.createDocument(app, config, {
+      extraModels: [ErrorResponseDto],
+    });
+    SwaggerModule.setup('api/docs', app, document);
+  }
 
   // Seeds create a known-password master admin. That is a development
   // convenience and a production compromise, so it never runs in production.
@@ -149,7 +190,9 @@ async function bootstrap() {
   await app.listen(port);
 
   console.log(`🚀 API running on        http://localhost:${port}`);
-  console.log(`📚 Swagger docs at       http://localhost:${port}/api/docs`);
+  if (process.env['NODE_ENV'] !== 'production') {
+    console.log(`📚 Swagger docs at       http://localhost:${port}/api/docs`);
+  }
   console.log(`❤️  Health check at      http://localhost:${port}/health`);
 }
 

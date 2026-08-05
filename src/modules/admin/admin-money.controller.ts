@@ -20,9 +20,14 @@ import {
   Query,
   Req,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { ApiCookieAuth, ApiHeader, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IDEMPOTENCY_HEADER, Idempotent } from '../../common/security/idempotency.interceptor';
+import {
+  IDEMPOTENCY_HEADER,
+  IdempotencyInterceptor,
+  Idempotent,
+} from '../../common/security/idempotency.interceptor';
 import { Request } from 'express';
 import { AdminMoneyService } from './admin-money.service';
 import { Admin } from '../../store/admins.store';
@@ -46,6 +51,22 @@ import { transactionStateEnum } from '../../database/schema';
 /** Withdrawal lifecycle, the ADM-13 ledger view and IB commission plans. */
 @ApiTags('admin')
 @Controller('admin')
+/*
+ * R-5.2. The three withdrawal transitions below carry `@Idempotent()`, and for
+ * as long as this line was missing that decorator did NOTHING: it sets metadata
+ * that only IdempotencyInterceptor reads, and the interceptor was registered on
+ * payments.controller.ts alone. A control that is declared but not wired is
+ * worse than one that is absent, because a reader — and a reviewer — sees the
+ * decorator and stops looking.
+ *
+ * The duplicate was still refused by the state machine underneath
+ * (transactions.service.ts transitions with `WHERE id = ? AND state = ?` and
+ * checks the rowcount), so this was never a double-payment. What was missing is
+ * the REPLAY half: a retried approve got an error about the wrong state instead
+ * of the original success, which is exactly the case the admin app generates a
+ * key for.
+ */
+@UseInterceptors(IdempotencyInterceptor)
 export class AdminMoneyController {
   constructor(
     private readonly money: AdminMoneyService,

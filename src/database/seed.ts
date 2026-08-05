@@ -1,6 +1,6 @@
 import { getDb } from './db';
 import { PasswordService } from '../common/security/password.service';
-import { admins, kycConfigSteps, rejectionReasons, roles, users } from './schema';
+import { admins, kycConfigSteps, rejectionReasons, roles, securitySettings, users } from './schema';
 import { DEFAULT_KYC_STEPS } from '../store/kyc-config.store';
 
 // Idempotent dev/bootstrap seeds — safe to run on every boot. Idempotency
@@ -95,5 +95,28 @@ export async function runSeeds(): Promise<void> {
     );
   }
 
+  /*
+   * The withdrawal OTP starts OFF in development, and ONLY in development.
+   *
+   * `runSeeds()` is called from main.ts exclusively when NODE_ENV is not
+   * production, so this cannot reach a live deployment: there, no row exists and
+   * `SecuritySettingsStore.isEnabled` answers TRUE, which is the safe default a
+   * fresh install must have.
+   *
+   * Why turn it off here at all: the OTP requires reading a real mailbox, so
+   * every local withdrawal and every end-to-end run would otherwise stall on a
+   * six-digit code from Ethereal. The operator flips it on from Settings →
+   * Security when they are ready, and that action is audited.
+   *
+   * `onConflictDoNothing` so a developer who turns it ON locally does not have
+   * it silently turned back off by the next reboot — a seed that overwrites a
+   * deliberate choice is worse than no seed.
+   */
+  await db
+    .insert(securitySettings)
+    .values({ key: 'withdrawal_otp', enabled: false })
+    .onConflictDoNothing({ target: securitySettings.key });
+
   console.log('🌱 Seeds applied (idempotent): master role/admin, demo client, rejection reasons');
+  console.log('   ⚠️  withdrawal OTP is OFF in development — Settings → Security to enable');
 }

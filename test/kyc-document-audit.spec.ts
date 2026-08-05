@@ -1,9 +1,14 @@
 import { describe, expect, it, beforeEach, afterAll } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
-import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { UploadsController } from '../src/modules/compliance/uploads.controller';
 import type { AuditEntry } from '../src/store/audit-log.store';
+import { TOKEN_KIND } from '../src/common/security/token-audience';
 
 /**
  * Reading a KYC document is an audited event — PLATFORM-CONVENTIONS R-6.6.
@@ -21,6 +26,8 @@ import type { AuditEntry } from '../src/store/audit-log.store';
 
 const ADMIN_TOKEN = 'admin-token';
 const CLIENT_TOKEN = 'client-token';
+/** An admin REFRESH token — verifies, but must not authenticate a document read. */
+const REFRESH_TOKEN = 'admin-refresh-token';
 const FILE = '11111111-2222-3333-4444-555555555555.png';
 
 interface Harness {
@@ -35,10 +42,19 @@ function makeController(options: {
 }): Harness {
   const recorded: Omit<AuditEntry, 'id' | 'createdAt'>[] = [];
 
+  /*
+   * Payloads carry `typ`, because real ones do.
+   *
+   * The controller now checks the token KIND as every other verification site
+   * does — a refresh token must not authenticate a document read. A stub that
+   * omitted `typ` was describing a token this system never mints, and it made
+   * the whole suite fail the moment the check arrived.
+   */
   const jwt = {
     verify: (token: string) => {
-      if (token === ADMIN_TOKEN) return { sub: 'admin-1' };
-      if (token === CLIENT_TOKEN) return { sub: 'client-1' };
+      if (token === ADMIN_TOKEN) return { sub: 'admin-1', typ: TOKEN_KIND.access };
+      if (token === CLIENT_TOKEN) return { sub: 'client-1', typ: TOKEN_KIND.access };
+      if (token === REFRESH_TOKEN) return { sub: 'admin-1', typ: TOKEN_KIND.refresh };
       throw new Error('bad token');
     },
   };
@@ -182,6 +198,26 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
         res as never,
       ),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    expect(recorded).toHaveLength(0);
+    expect(res.sent).toHaveLength(0);
+  });
+
+  it('refuses an admin REFRESH token, which is not an access credential', async () => {
+    // Every other verification site checks the token KIND; this one did not, so
+    // a 30-day refresh token was as good as a 15-minute access token for reading
+    // a passport. The separate refresh secret already made this fail — this
+    // keeps it failing if the two secrets are ever conflated in a deploy.
+    const { controller, recorded } = makeController({ adminPermissions: ['kyc.review'] });
+    const res = fakeResponse();
+
+    await expect(
+      controller.serveKycFile(
+        FILE,
+        requestWith({ oxshare_crm_admin_at: REFRESH_TOKEN }),
+        res as never,
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
 
     expect(recorded).toHaveLength(0);
     expect(res.sent).toHaveLength(0);

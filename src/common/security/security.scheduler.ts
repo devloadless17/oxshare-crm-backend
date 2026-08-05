@@ -6,6 +6,7 @@ import type { Db } from '../../database/db';
 import { idempotencyKeys } from '../../database/schema';
 import { IDEMPOTENCY_RETENTION_HOURS } from './idempotency.interceptor';
 import { RefreshTokensService } from './refresh-tokens.service';
+import { LoginAttemptsService } from './login-attempts.service';
 
 /**
  * Retention sweeps for the two tables this milestone added.
@@ -35,11 +36,29 @@ export class SecurityScheduler {
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly refreshTokens: RefreshTokensService,
+    private readonly loginAttempts: LoginAttemptsService,
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR, { name: 'security.sweep' })
   async sweep(): Promise<void> {
-    await Promise.all([this.sweepIdempotencyKeys(), this.sweepRefreshTokens()]);
+    await Promise.all([
+      this.sweepIdempotencyKeys(),
+      this.sweepRefreshTokens(),
+      this.sweepLoginAttempts(),
+    ]);
+  }
+
+  private async sweepLoginAttempts(): Promise<void> {
+    try {
+      const deleted = await this.loginAttempts.sweepExpired();
+      if (deleted > 0) {
+        this.logger.log(`Swept ${deleted} stale login-attempt counter(s)`);
+      }
+    } catch (error) {
+      this.logger.error(
+        `Login attempt sweep failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   private async sweepIdempotencyKeys(): Promise<void> {

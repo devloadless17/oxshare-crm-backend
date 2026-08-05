@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsNotEmpty, IsNumberString, IsString } from 'class-validator';
+import { IsIn, IsNotEmpty, IsNumberString, IsOptional, IsString, Matches } from 'class-validator';
 
 // Request + response DTOs for the client-facing payments surface.
 // Moved out of payments.controller.ts so the shapes reach /api/docs-json and the
@@ -9,6 +9,34 @@ const CURRENCIES = ['USD', 'USDT'] as const;
 const PROVIDERS = ['whish', 'usdt'] as const;
 const DIRECTIONS = ['deposit', 'withdrawal'] as const;
 const STATES = ['pending', 'approved', 'rejected', 'success', 'failed'] as const;
+
+/**
+ * The withdrawal a confirmation code is being requested FOR — FR-CORE-08.
+ *
+ * The same four money fields as the withdrawal itself, because the code is bound
+ * to all of them: `withdrawal-otp.service.ts` hashes them into the Redis key, so
+ * a code issued against this payload cannot authorise a withdrawal that differs
+ * in any of them. That is what stops a code obtained for a small transfer to the
+ * client's own account being spent on a large one to somebody else's.
+ */
+export class RequestWithdrawalOtpDto {
+  @ApiProperty({ type: 'string', example: '300.00000000' })
+  @IsNumberString()
+  amount: string;
+
+  @ApiProperty({ enum: CURRENCIES })
+  @IsIn(CURRENCIES)
+  currency: (typeof CURRENCIES)[number];
+
+  @ApiProperty({ description: 'Payout target, e.g. an IBAN or a USDT address.' })
+  @IsString()
+  @IsNotEmpty()
+  destination: string;
+
+  @ApiProperty({ enum: PROVIDERS })
+  @IsIn(PROVIDERS)
+  provider: (typeof PROVIDERS)[number];
+}
 
 export class RequestWithdrawalDto {
   /**
@@ -31,6 +59,24 @@ export class RequestWithdrawalDto {
   @ApiProperty({ enum: PROVIDERS })
   @IsIn(PROVIDERS)
   provider: (typeof PROVIDERS)[number];
+
+  /**
+   * The six-digit code from the confirmation email (FR-CORE-08).
+   *
+   * OPTIONAL in the DTO and REQUIRED by the handler when the control is on. It
+   * has to be optional here because the operator can switch the OTP off
+   * (security_settings), and a `@IsNotEmpty()` would then refuse every
+   * withdrawal for a control that is not in force. The handler decides, so there
+   * is exactly one place that knows whether a code is needed.
+   */
+  @ApiPropertyOptional({
+    description: 'Six-digit confirmation code. Required while the withdrawal OTP control is on.',
+    example: '482913',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{6}$/, { message: 'The confirmation code is six digits.' })
+  otp?: string;
 }
 
 export class TransactionDto {

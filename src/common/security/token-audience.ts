@@ -52,6 +52,27 @@ export const TOKEN_KIND = {
 export type TokenKind = (typeof TOKEN_KIND)[keyof typeof TOKEN_KIND];
 
 /**
+ * HOW each token is signed — and the only algorithm any verifier will accept.
+ *
+ * `jsonwebtoken` derives the permitted algorithms from the KEY when `algorithms`
+ * is omitted: a string secret restricts it to the HS family, so `alg: none` is
+ * already refused today and HS/RS confusion is not reachable. That safety is a
+ * property of the key type, not of anything written down — and it evaporates the
+ * moment a secret becomes a `KeyObject` or a PEM, which is exactly what an
+ * asymmetric migration or a KMS integration does.
+ *
+ * So the allow-list is stated rather than inherited. A verifier that names its
+ * algorithm cannot be talked into another one by a token that asks nicely, and
+ * the day someone introduces an RSA key the failure is a refused token instead
+ * of a signature check that trusts the attacker's choice of `alg`.
+ *
+ * One array, exported, because seven call sites verifying with seven local
+ * spellings is how six of them get updated and the seventh does not.
+ */
+export const TOKEN_ALGORITHM = 'HS256' as const;
+export const TOKEN_ALGORITHMS: [typeof TOKEN_ALGORITHM] = [TOKEN_ALGORITHM];
+
+/**
  * True when a verified payload is the kind of token the caller expected.
  *
  * Deliberately strict: a token with no `typ` at all is refused. Tokens minted

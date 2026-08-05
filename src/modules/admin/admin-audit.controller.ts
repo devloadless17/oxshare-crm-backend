@@ -9,8 +9,10 @@
 // @ApiTags('admin') is repeated on each class so Swagger still groups them as one
 // tag and the generated types.gen.ts is unchanged.
 
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Request } from 'express';
+import { Admin } from '../../store/admins.store';
 import { AdminAuditService } from './admin-audit.service';
 import { AuditListResponseDto } from './dto/responses.dto';
 import { MasterAdminGuard } from './guards/admin.guard';
@@ -28,6 +30,7 @@ export class AdminAuditController {
   @ApiOperation({ summary: 'Append-only admin action log (master admin only)' })
   @ApiOkResponse({ type: AuditListResponseDto })
   listAuditLog(
+    @Req() req: Request & { admin: Admin },
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
@@ -40,7 +43,7 @@ export class AdminAuditController {
      * Bounded to the column width: a term longer than the column cannot match
      * any row anyway, so accepting one only buys the database a pointless scan.
      */
-    return this.audit.listAuditLog({
+    return this.audit.listAuditLog(req.admin, {
       page,
       limit,
       cursor,

@@ -139,8 +139,12 @@ export class AuthController {
   @Post('login')
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
+  // The summary said "deliberately readable by JS, not httpOnly" — the exact
+  // opposite of what this does now, published straight into /api/docs-json,
+  // which is what both frontends generate their types and their understanding
+  // from (R-3.2).
   @ApiOperation({
-    summary: 'Login — also sets the JWT cookies (deliberately readable by JS, not httpOnly)',
+    summary: 'Login — sets the session as httpOnly cookies. No tokens in the response body.',
   })
   @ApiOkResponse({ type: AuthTokensResponseDto })
   login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {

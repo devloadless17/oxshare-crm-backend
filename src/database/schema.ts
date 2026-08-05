@@ -55,7 +55,16 @@ export const users = pgTable(
     emailVerificationExpiry: timestamp('email_verification_expiry', {
       withTimezone: true,
     }),
-    refreshToken: text('refresh_token'),
+    /*
+     * `refresh_token` is GONE — superseded by the `refresh_tokens` table below.
+     *
+     * It held a single token per user, which is why rotation could only ever
+     * answer "matches" or "does not match": a replayed token simply failed, so
+     * an attacker used the newer one they had also captured and nothing recorded
+     * that a credential had leaked. Token FAMILIES (R-3.3) replaced it, and this
+     * column stayed behind — still written on password reset, read by nothing,
+     * and looking to any reader like the live session store.
+     */
     /*
      * Password reset — a SHA-256 HASH of the token, never the token.
      *
@@ -99,7 +108,24 @@ export const admins = pgTable('admins', {
   role: adminRoleEnum('role').notNull().default('sub_admin'),
   permissions: jsonb('permissions').$type<string[]>().notNull().default([]),
   roleId: uuid('role_id').references(() => roles.id, { onDelete: 'restrict' }),
-  refreshToken: text('refresh_token'),
+  /*
+   * An admin can be SUSPENDED — R-3.3's revocation story, which stopped at the
+   * portal.
+   *
+   * `users` has had this from the start and `jwt.strategy.ts` enforces it on
+   * every request. Admins had nothing: `AdminAuthenticator` checked only that
+   * the row existed, so the sole way to cut off a compromised or departing
+   * administrator — an account that can approve AND settle payouts — was to
+   * DELETE it. That destroys the subject every audit row points at, and it is
+   * not reversible, so "suspend pending investigation" had no expression at all.
+   *
+   * Same enum as users deliberately: two spellings of "suspended" across two
+   * tables is the kind of divergence that ends with one of them not being
+   * checked.
+   */
+  status: userStatusEnum('status').notNull().default('active'),
+  // `refresh_token` removed here for the same reason as on `users` — superseded
+  // by the refresh_tokens family table, written by nothing, read by nothing.
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -107,7 +133,20 @@ export const adminInvites = pgTable('admin_invites', {
   id: uuid('id').defaultRandom().primaryKey(),
   email: varchar('email', { length: 255 }).notNull(),
   name: varchar('name', { length: 100 }).notNull(),
-  token: varchar('token', { length: 255 }).notNull().unique(),
+  /*
+   * A SHA-256 HASH of the invite token, never the token — matching how password
+   * reset has always stored its own (see `users.password_reset_token_hash`).
+   *
+   * This column held the token verbatim, which made a database dump, a leaked
+   * backup or a read-only SQL injection into a set of working links that CREATE
+   * ADMIN ACCOUNTS on a system that approves payouts. Reset tokens were hashed
+   * precisely because they can take over one account; an invite is strictly
+   * worse and was the one credential still stored in the clear.
+   *
+   * 64 chars because that is a hex SHA-256, and narrowing the column is what
+   * makes storing a raw uuid here fail loudly rather than silently fit.
+   */
+  tokenHash: varchar('token_hash', { length: 64 }).unique(),
   role: adminRoleEnum('role').notNull().default('sub_admin'),
   roleId: uuid('role_id').references(() => roles.id, { onDelete: 'set null' }),
   permissions: jsonb('permissions').$type<string[]>(),
@@ -177,6 +216,79 @@ export const rejectionReasons = pgTable(
  * only held single addresses gets worked around or switched off. See
  * common/security/ip-range.ts for the matcher and why it fails closed.
  */
+/*
+ * ── Operator-controlled security switches ────────────────────────────────────
+ *
+ * One row per switch, so adding the next one is an INSERT rather than a
+ * migration. Deliberately NOT a general-purpose key-value bag for arbitrary
+ * application config: everything here turns a SECURITY CONTROL on or off, and
+ * that is a category which earns master-admin-only writes, an audit row per
+ * change, and an alert for as long as a control is off.
+ *
+ * WHY THIS EXISTS AT ALL. The withdrawal OTP has to be switchable — it is
+ * unusable in automated testing and the operator wants it off until they go
+ * live. The risk in that is obvious and worth writing down: a switch that
+ * disables a money control is exactly the kind that gets turned off "for an
+ * afternoon" and found two quarters later. So the switch is real, and every
+ * property around it exists to make leaving it off VISIBLE:
+ *
+ *   - `enabled` defaults to TRUE, so a fresh deploy is protected and turning it
+ *     off is an act somebody performed.
+ *   - `updatedBy` / `updatedAt` are not decoration; "who turned this off" is the
+ *     first question afterwards.
+ *   - the service raises an alert on every read that finds it off, so it shows
+ *     up in monitoring rather than only in a settings screen nobody opens.
+ */
+export const securitySettings = pgTable('security_settings', {
+  /** A stable machine key, e.g. `withdrawal_otp`. Never renamed. */
+  key: varchar('key', { length: 64 }).primaryKey(),
+  enabled: boolean('enabled').notNull().default(true),
+  /** The admin who last changed it. Null only for the seeded initial row. */
+  updatedBy: uuid('updated_by'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/*
+ * Failed sign-ins, per ACCOUNT — PLATFORM-CONVENTIONS R-3.5.
+ *
+ * `@nestjs/throttler` keys on the IP, which bounds one attacker on one address
+ * and does nothing about the attack that actually matters here: a distributed
+ * credential-stuffing run against ONE admin account, from as many addresses as
+ * the attacker cares to rent. The per-route limits were real protection against
+ * the wrong threat.
+ *
+ * Two decisions worth not undoing:
+ *
+ *  1. **Keyed on the identifier the caller SUPPLIED, not on a user id.** Rows
+ *     are written for addresses that do not exist, and they must be: counting
+ *     only real accounts would make "did this lock out?" a membership oracle,
+ *     which is the same leak the timing fix in password.service.ts closes.
+ *  2. **The lock EXPIRES on its own.** A lockout needing an administrator to
+ *     clear it is a denial-of-service an attacker can trigger for free against
+ *     any address they can name — including every admin's. Fifteen minutes is
+ *     R-3.5's figure and it self-heals, so there is no unlock queue to build and
+ *     no support path to abuse.
+ */
+export const loginAttempts = pgTable(
+  'login_attempts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** 'admin' | 'portal' — the two surfaces are separate accounts (R-3.1). */
+    surface: varchar('surface', { length: 16 }).notNull(),
+    /** Lower-cased email as supplied. Not a foreign key, deliberately — see (1). */
+    identifier: varchar('identifier', { length: 255 }).notNull(),
+    failures: integer('failures').notNull().default(0),
+    lockedUntil: timestamp('locked_until', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // One row per identifier per surface, enforced by the DATABASE: two racing
+    // failed logins must not create two counters that each stay under the limit.
+    uniqueIndex('login_attempts_surface_identifier_idx').on(table.surface, table.identifier),
+    index('login_attempts_locked_until_idx').on(table.lockedUntil),
+  ],
+);
+
 export const adminIpAllowlist = pgTable(
   'admin_ip_allowlist',
   {
