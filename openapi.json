@@ -1164,6 +1164,73 @@
         ]
       }
     },
+    "/v1/admin/invites": {
+      "get": {
+        "operationId": "AdminAuthController_listInvites",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PendingInviteDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "List outstanding invites (requires users.view)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/invites/{id}": {
+      "delete": {
+        "description": "Kills the accept link immediately. Whoever may create an invite may cancel one — the undo for a mistyped address, on a 48-hour credential that creates an admin account.",
+        "operationId": "AdminAuthController_revokeInvite",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Revoke an outstanding invite (requires users.create)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/invite/validate": {
       "get": {
         "operationId": "AdminAuthController_validateInvite",
@@ -2587,6 +2654,53 @@
         ]
       }
     },
+    "/v1/admin/users/{id}/status": {
+      "patch": {
+        "description": "Suspension takes effect on the target’s NEXT request — AdminGuard re-reads status on every call — and blocks login. Refused on your own account and on the master admin.",
+        "operationId": "AdminRbacController_setAdminStatus",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminStatusDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminProfileDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Suspend or reactivate an administrator (requires users.suspend)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/audit-log": {
       "get": {
         "operationId": "AdminAuditController_listAuditLog",
@@ -3749,6 +3863,13 @@
           "roleId": {
             "type": "string"
           },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "suspended"
+            ]
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -3760,6 +3881,7 @@
           "name",
           "role",
           "permissions",
+          "status",
           "createdAt"
         ]
       },
@@ -3808,18 +3930,51 @@
           "message": {
             "type": "string"
           },
-          "token": {
-            "type": "string",
-            "description": "Dev only — removed in production"
-          },
           "inviteUrl": {
+            "type": "string",
+            "description": "The accept link, echoed OUTSIDE PRODUCTION ONLY to keep local development workable. Absent in production — read the link from the invite email."
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "PendingInviteDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "roleId": {
+            "type": "string"
+          },
+          "invitedBy": {
+            "type": "string",
+            "description": "Admin id of whoever sent it."
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "After this the link is dead; re-invite to replace it."
+          },
+          "createdAt": {
+            "format": "date-time",
             "type": "string"
           }
         },
         "required": [
-          "message",
-          "token",
-          "inviteUrl"
+          "id",
+          "email",
+          "name",
+          "invitedBy",
+          "expiresAt",
+          "createdAt"
         ]
       },
       "AcceptInviteDto": {
@@ -4755,6 +4910,21 @@
             }
           }
         }
+      },
+      "AdminStatusDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "suspended"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
       },
       "AuditEntryDto": {
         "type": "object",
