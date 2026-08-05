@@ -9,7 +9,6 @@ import { Response } from 'express';
 import {
   AuthenticationError,
   AuthorizationError,
-  ConflictError,
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { createHash, randomUUID } from 'crypto';
@@ -78,9 +77,45 @@ export class AuthService {
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
+  /**
+   * Create an account. ALWAYS answers the same, whether or not one exists.
+   *
+   * This used to throw `409 An account with this email already exists.`, which
+   * made registration a membership oracle: anyone could test an address list
+   * against it and learn who banks here. `requestPasswordReset` below goes to
+   * real lengths to avoid exactly that ("the honest-looking error is the
+   * vulnerability"), and registration quietly gave it back — throttled at 10 per
+   * hour per IP, which bounds the rate and not the leak.
+   *
+   * WHAT MAKES THIS SAFE TO CHANGE. Simply removing the 409 would be worse than
+   * the leak: the person who forgot they already had an account would get a
+   * cheerful success message, no email, and no way to discover why they cannot
+   * sign in. So the information still goes out — to the ONE mailbox entitled to
+   * it. The existing account holder is told somebody tried, and pointed at sign
+   * in and password reset; the caller is told nothing they did not already know.
+   *
+   * The cost is real and worth stating: a legitimate user who mistypes an
+   * address they already own no longer gets an immediate "you already have an
+   * account" on screen. They get it by email, one round trip later.
+   */
   async register(dto: RegisterDto) {
-    if (await this.users.findByEmail(dto.email)) {
-      throw new ConflictError('An account with this email already exists.');
+    const generic = {
+      message: 'Registration successful. Please check your email to verify your account.',
+    };
+
+    const existing = await this.users.findByEmail(dto.email);
+    if (existing) {
+      // Awaited, not fire-and-forget: this is the ONLY signal the legitimate
+      // owner gets, and losing it silently would turn a privacy improvement into
+      // a support ticket nobody can diagnose.
+      await this.email.sendAccountExistsEmail(existing.email);
+      this.logger.log(`Registration attempted for an existing address: ${existing.email}`);
+      /*
+       * No `userId`, because there is no new account and returning the existing
+       * one's id would hand back the very fact this is hiding. The portal reads
+       * `.message` only — see RegistrationResponseDto.
+       */
+      return generic;
     }
 
     const passwordHash = await this.passwords.hash(dto.password);
@@ -107,10 +142,7 @@ export class AuthService {
     await this.email.sendVerificationEmail(user.email, verificationToken);
     this.logger.log(`Verification email dispatched to ${user.email}`);
 
-    return {
-      message: 'Registration successful. Please check your email to verify your account.',
-      userId: user.id,
-    };
+    return { ...generic, userId: user.id };
   }
 
   // ─── Verify Email ─────────────────────────────────────────────────────────────
@@ -121,9 +153,22 @@ export class AuthService {
       throw new ValidationError('Verification token has expired. Please request a new one.');
     }
 
+    /*
+     * `verificationLevel: 0` used to be written here as well, and it is gone.
+     *
+     * Email verification has no business writing the KYC level. It only ever
+     * wrote 0, so it never did harm — but it made this a second writer of the
+     * column that gates withdrawals (FR-CORE-15), alongside registration and the
+     * two KYC decisions. A field whose value must be explainable in an audit is
+     * easier to reason about with three writers than four, and this was the one
+     * that had no reason to be there.
+     *
+     * Registration already sets it to 0, and nothing between registration and
+     * email verification can raise it — approval requires a submitted KYC, which
+     * requires a verified email.
+     */
     await this.users.update(user.id, {
       emailVerified: true,
-      verificationLevel: 0,
       emailVerificationToken: undefined,
       emailVerificationExpiry: undefined,
     });

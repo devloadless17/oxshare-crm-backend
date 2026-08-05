@@ -11,7 +11,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
-import { normalizePermissionKey } from '../../common/security/actor';
+import { assertActorCan, normalizePermissionKey } from '../../common/security/actor';
 
 /** `config/permissions.json`, keyed by module. The single grantable vocabulary. */
 type PermissionCatalog = Record<
@@ -227,6 +227,56 @@ export class AdminRbacService {
     return await this.sanitize(updated);
   }
 
+  // ─── Admin suspension (users.suspend) ─────────────────────────────────────
+  /**
+   * FR-RBAC-07's "manage" half — and the missing end of R-3.3's revocation story.
+   *
+   * `admins.status` has existed, and been ENFORCED, for a while: admin.guard.ts
+   * refuses a suspended admin on every request and admin-auth.service refuses
+   * them at login. Nothing ever WROTE it. The only write in the codebase set
+   * `'active'` on invite-accept, so cutting off a compromised or departing
+   * administrator meant direct SQL — or deleting the row, which destroys the
+   * subject every audit entry points at. That is the situation the column was
+   * added to fix, and it stayed half-built.
+   *
+   * Shaped after `admin-clients.service.ts` `setClientStatus()` rather than
+   * invented: same permission key, same already-in-state refusal, same audit
+   * payload. Two surfaces that both mean "suspend" should not disagree about
+   * what that involves.
+   */
+  async setAdminStatus(id: string, status: 'active' | 'suspended', actor: Admin) {
+    assertActorCan(actor, 'users.suspend', 'suspend or reactivate an administrator');
+
+    const admin = await this.admins.findById(id);
+    if (!admin) throw new NotFoundError('Admin not found.');
+
+    // Nobody suspends themselves. The same reasoning as updateAdmin's no-self-edit
+    // rule, plus a blunter one: suspension bites on the NEXT request, so this
+    // would be an administrator locking themselves out mid-session with no way
+    // back in — the account that could reverse it is the one just disabled.
+    if (actor.id === id) {
+      throw new AuthorizationError('You cannot change your own account status.');
+    }
+    // The master admin is the recovery path for everyone else. Suspending it
+    // can leave a deployment with no one able to reinstate anybody.
+    if (admin.role === 'master_admin') {
+      throw new ValidationError('The master admin’s account status cannot be changed.');
+    }
+    if (admin.status === status) {
+      throw new ValidationError(`Administrator is already ${status}.`);
+    }
+
+    const updated = (await this.admins.update(id, { status }))!;
+    this.audit.record(
+      actor.id,
+      status === 'suspended' ? 'admin.suspend' : 'admin.activate',
+      'admin',
+      id,
+      { email: admin.email, before: admin.status, after: status },
+    );
+    return await this.sanitize(updated);
+  }
+
   /**
    * The admin, as a client may see them, with the LIVE permission set
    * (role-derived when roleId is set) so the frontend's nav gating always
@@ -244,6 +294,7 @@ export class AdminRbacService {
       name: admin.name,
       role: admin.role,
       roleId: admin.roleId,
+      status: admin.status,
       createdAt: admin.createdAt,
       permissions: await this.roles.resolvePermissions(admin.roleId, admin.permissions),
     };

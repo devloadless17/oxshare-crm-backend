@@ -9,7 +9,8 @@ import {
   type Session,
 } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, kycSubmissions, roles, users } from '../src/database/schema';
+import { admins, kycConfigSteps, kycSubmissions, roles, users } from '../src/database/schema';
+import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
 
 /**
  * The KYC surface, over HTTP, through the real guard chain.
@@ -32,12 +33,51 @@ const CLIENT = { email: 'kyc-http-client@oxshare.com', password: 'client-passwor
 const OTHER = { email: 'kyc-http-other@oxshare.com', password: 'client-password-123' };
 const UNVERIFIED = { email: 'kyc-http-unverified@oxshare.com', password: 'client-password-123' };
 
+/**
+ * Every field the SEEDED profile step marks required — firstName, lastName,
+ * dateOfBirth, phone, nationality and country. `address` is deliberately absent:
+ * the seeded config has it `required: false`, and hardcoding a fuller set here
+ * would let this suite pass while the shipped configuration demanded something
+ * different.
+ */
+const COMPLETE_PROFILE = {
+  firstName: 'Kay',
+  lastName: 'Why-See',
+  dateOfBirth: '1990-01-01',
+  phone: '+971501234567',
+  nationality: 'Lebanon',
+  country: 'United Arab Emirates',
+};
+
 let ctx: HttpTestContext;
 let clientId: string;
 let otherId: string;
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
+
+  /*
+   * The onboarding step configuration, as the bootstrap seed writes it.
+   *
+   * `submit()` reads the required profile fields from here (FR-IND-03), so
+   * without it these tests ran against a service whose configuration was empty —
+   * which is a state the real application cannot be in, and which would have made
+   * every profile assertion vacuous. Seeding the REAL defaults rather than a
+   * hand-written subset is what keeps this a test of the shipped rules.
+   */
+  await ctx.db.db.insert(kycConfigSteps).values(
+    DEFAULT_KYC_STEPS.map((s) => ({
+      id: s.id,
+      stepNumber: s.stepNumber,
+      slug: s.slug,
+      title: s.title,
+      description: s.description,
+      icon: s.icon,
+      enabled: s.enabled,
+      fields: s.fields as unknown as Record<string, unknown>[],
+    })),
+  );
+
   const passwords = new PasswordService();
   const [adminHash, clientHash] = await Promise.all([
     passwords.hash(ADMIN.password),
@@ -144,11 +184,48 @@ describe('the client KYC routes', () => {
     expect(res.status).toBe(403);
   });
 
-  it('refuse a submit that is missing documents', async () => {
+  it('refuse a submit whose PROFILE is incomplete, before it looks at documents', async () => {
+    /*
+     * FR-IND-03, over HTTP. A fresh submission has no date of birth, and
+     * `submit()` now validates the profile against the configured required
+     * fields — so this is refused on the profile, not on the documents.
+     *
+     * The order is the wizard's order, and that is deliberate: the client fills
+     * the profile at step 1 and uploads at steps 2–4, so reporting the earliest
+     * incomplete step is what lets them fix things in one pass.
+     */
     const session = await actingAs(ctx, 'portal', OTHER);
     const res = await session.post('/v1/kyc/submit');
     expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/dateOfBirth/i);
+  });
+
+  it('refuse a submit that is missing documents, once the profile is complete', async () => {
+    // The original assertion, now reached deliberately rather than by accident:
+    // fill the profile first, so the documents are the only thing outstanding.
+    const session = await actingAs(ctx, 'portal', OTHER);
+    const saved = await session.post('/v1/kyc/step', { step: 'personal', data: COMPLETE_PROFILE });
+    expect(saved.status).toBeLessThan(400);
+
+    const res = await session.post('/v1/kyc/submit');
+    expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/document|selfie|address/i);
+  });
+
+  it('refuse a submit from a client under the minimum age', async () => {
+    // "Must be 18+" was a hint string in the seeded config and a check in the
+    // browser. This asserts it is now a rule on the server — and it runs against
+    // the REAL seeded field set, so it also proves the age check is reached only
+    // once everything else the configuration demands is present.
+    const session = await actingAs(ctx, 'portal', OTHER);
+    await session.post('/v1/kyc/step', {
+      step: 'personal',
+      data: { ...COMPLETE_PROFILE, dateOfBirth: '2015-01-01' },
+    });
+
+    const res = await session.post('/v1/kyc/submit');
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/at least 18 years old/i);
   });
 });
 

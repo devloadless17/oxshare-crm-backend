@@ -12,6 +12,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import {
   ApiTags,
   ApiOperation,
@@ -89,6 +90,25 @@ const multerStorage = diskStorage({
   },
 });
 
+/*
+ * The rejection message names the fix, because most uploads come from a phone.
+ *
+ * iPhones photograph in HEIC by default, and HEIC is not in the allow-list above
+ * — decoding it would mean adding an image codec, which is a decision nobody has
+ * taken. So an iPhone client can be refused for doing nothing wrong, and the old
+ * message ("Only JPG, PNG, WEBP images and PDF files are allowed") told them
+ * only that the thing they were holding was not a photo.
+ *
+ * The setting that resolves it is three levels into iOS Settings and is not
+ * something a client will guess. Naming it turns a dead end into an instruction.
+ * This does NOT decide the HEIC question — it makes the current answer usable
+ * while that decision is outstanding.
+ */
+const UNSUPPORTED_TYPE_MESSAGE =
+  'Only JPG, PNG, WEBP images and PDF files are allowed. ' +
+  'If you are on an iPhone, set Settings → Camera → Formats to "Most Compatible" and retake the ' +
+  'photo, or choose it from Photos so it is converted to JPG.';
+
 const fileFilter = (
   _req: Request,
   file: Express.Multer.File,
@@ -97,7 +117,7 @@ const fileFilter = (
   if (ALLOWED_UPLOAD_TYPES[file.mimetype.toLowerCase()]) {
     cb(null, true);
   } else {
-    cb(new BadRequestException('Only JPG, PNG, WEBP images and PDF files are allowed.'), false);
+    cb(new BadRequestException(UNSUPPORTED_TYPE_MESSAGE), false);
   }
 };
 
@@ -150,6 +170,24 @@ export class KycController {
       },
     },
   })
+  /*
+   * A per-route ceiling, because the global one is not a limit here.
+   *
+   * This route inherited only the app-wide 120 requests/minute. Against a 10 MB
+   * body that is 1.2 GB per minute, per authenticated client, written to the API
+   * host's LOCAL DISK — the same volume holding every identity document the
+   * business is required to keep (ARCHITECTURE §8.5's private-S3 move is still
+   * pending). There is no quota, no disk-space check, and nothing that removes a
+   * file once it is superseded, so the bytes stay. Ten clients fill a 100 GB
+   * volume in under nine minutes.
+   *
+   * The admin auth routes already tighten to 5–20/min; the route that writes
+   * megabytes was the loosest in the app.
+   *
+   * 10/min is generous for the real workload: a complete submission is three or
+   * four files, and a client correcting a rejection re-uploads one or two.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   // `limits` is what actually stops the bytes — see MAX_UPLOAD_BYTES above.
   // `files: 1` matters too: without it a client may post any number of parts
   // under the field name, each one its own 10 MB.
@@ -206,8 +244,12 @@ export class KycController {
 
     if (!signatureMatchesDeclared(header, file.mimetype)) {
       await unlink(file.path).catch(() => undefined);
+      // Same guidance as the filter's: a HEIC relabelled `image/jpeg` by the
+      // browser passes the filter and fails HERE, and "the content does not
+      // match its declared type" is meaningless to someone who just took a
+      // photo.
       throw new BadRequestException(
-        'The file content does not match its declared type. Upload a genuine JPG, PNG, WEBP or PDF.',
+        `The file content does not match its declared type. ${UNSUPPORTED_TYPE_MESSAGE}`,
       );
     }
 

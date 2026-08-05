@@ -83,6 +83,18 @@ export class RegistrationResponseDto {
   })
   message: string;
 
-  @ApiProperty({ description: 'The new user id. No session exists until the email is verified.' })
-  userId: string;
+  /**
+   * OPTIONAL, and that is the point.
+   *
+   * Registration answers identically whether or not an account already exists,
+   * so that it is not a membership oracle (auth.service.ts). When one does, no
+   * account is created and there is no id to return — returning the EXISTING
+   * user's id would hand back the exact fact the generic message hides.
+   */
+  @ApiPropertyOptional({
+    description:
+      'The new user id. Absent when no account was created — including when one already existed, ' +
+      'which this endpoint deliberately does not disclose. No session exists until the email is verified.',
+  })
+  userId?: string;
 }

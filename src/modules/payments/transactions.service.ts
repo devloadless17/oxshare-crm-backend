@@ -399,7 +399,10 @@ export class TransactionsService {
    * should say so.
    */
   async markFailed(id: string, reason: string, actor: Actor, withinTx?: WithinTransaction) {
-    assertActorCan(actor, 'withdrawals.approve', 'mark a withdrawal failed');
+    // Failing a withdrawal RELEASES the hold back to the client, so it belongs
+    // with settlement rather than with approval — it is the settle step's error
+    // path, and whoever may complete a payout may also unwind one (R-5.4).
+    assertActorCan(actor, 'withdrawals.settle', 'mark a withdrawal failed');
     return this.db.transaction(async (dbTx) => {
       const row = await this.transition(
         id,

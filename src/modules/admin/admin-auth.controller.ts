@@ -12,9 +12,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
   Query,
   Req,
@@ -32,9 +34,11 @@ import {
   AdminProfileDto,
   InviteResponseDto,
   MessageResponseDto,
+  PendingInviteDto,
 } from './dto/responses.dto';
 import { AnyAdmin, AdminGuard, PermissionsGuard, RequirePermissions } from './guards/admin.guard';
 import { NoCsrf } from '../../common/security/csrf.guard';
+import { UuidParam } from '../../common/query-params';
 
 /** Admin sign-in, session refresh and the invitation flow. */
 @ApiTags('admin')
@@ -118,6 +122,39 @@ export class AdminAuthController {
   @ApiOkResponse({ type: InviteResponseDto })
   invite(@Body() dto: InviteDto, @Req() req: Request & { admin: Admin }) {
     return this.auth.createInvite(dto.email, dto.name, req.admin, dto.roleId, dto.permissions);
+  }
+
+  /*
+   * Listed under users.VIEW, not users.create.
+   *
+   * Reading who is outstanding is the same class of act as reading the admin
+   * directory — it is the other half of "who can operate this system". Gating it
+   * on users.create would mean an operator who can see every administrator
+   * cannot see that three more are one click from existing.
+   */
+  @Get('invites')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('users.view')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'List outstanding invites (requires users.view)' })
+  @ApiOkResponse({ type: [PendingInviteDto] })
+  listInvites() {
+    return this.auth.listPendingInvites();
+  }
+
+  @Delete('invites/:id')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('users.create')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Revoke an outstanding invite (requires users.create)',
+    description:
+      'Kills the accept link immediately. Whoever may create an invite may cancel one — ' +
+      'the undo for a mistyped address, on a 48-hour credential that creates an admin account.',
+  })
+  @ApiOkResponse({ type: MessageResponseDto })
+  revokeInvite(@Param('id', UuidParam) id: string, @Req() req: Request & { admin: Admin }) {
+    return this.auth.revokeInvite(id, req.admin);
   }
 
   @Get('invite/validate')

@@ -180,14 +180,43 @@ export class AdminAuthService {
   }
   // ─── Create Invite ─────────────────────────────────────────────────────────
   async createInvite(
-    email: string,
+    rawEmail: string,
     name: string,
     actor: Admin,
     roleId?: string,
     permissions?: string[],
   ) {
+    /*
+     * One canonical spelling from here down.
+     *
+     * The duplicate checks below, the stored invite row, the address the link is
+     * emailed to and the account eventually created must all agree on the same
+     * string, or each guard protects a different key. AdminsStore normalises on
+     * write too — this normalises early so `findPendingByEmail` is not the one
+     * comparison left doing an exact match on whatever was typed.
+     */
+    const email = rawEmail.toLowerCase();
+
     if (await this.admins.findByEmail(email)) {
       throw new ConflictError('An admin with this email already exists.');
+    }
+    /*
+     * One live invite per address.
+     *
+     * `admin_invites.email` is not unique, so this used to be allowed. Both
+     * tokens validated, the first accept created the account, and the second —
+     * a real person following a real link they were sent — hit the unique
+     * constraint on `admins.email` and got a 500 at the final step.
+     *
+     * Refusing here rather than de-duplicating on accept keeps the failure with
+     * the administrator who can fix it, at the moment they can fix it. Revoke the
+     * outstanding invite to re-send.
+     */
+    const pending = await this.invites.findPendingByEmail(email);
+    if (pending) {
+      throw new ConflictError(
+        'An invite for this email is already outstanding. Revoke it before sending another.',
+      );
     }
 
     // RBAC-07: the inviting admin chooses the role; RBAC-02: a sub-admin
@@ -238,6 +267,19 @@ export class AdminAuthService {
     if (!invite) throw new NotFoundError('Invite not found or already used.');
     if (invite.accepted) throw new ValidationError('This invite has already been used.');
     if (invite.expiresAt < new Date()) throw new ValidationError('Invite has expired.');
+    /*
+     * Belt and braces against the unique constraint on `admins.email`.
+     *
+     * createInvite now refuses a second outstanding invite, so the ordinary
+     * route to this state is closed. It is still reachable — an invite sent,
+     * then the same person added by another path before they clicked — and the
+     * difference between a clean message and a 500 is what the invitee sees at
+     * the end of onboarding. A DB constraint is the right guard; it is not the
+     * right error message.
+     */
+    if (await this.admins.findByEmail(invite.email)) {
+      throw new ConflictError('An admin with this email already exists.');
+    }
 
     const passwordHash = await this.passwords.hash(password);
     const admin = await this.admins.create({
@@ -272,6 +314,59 @@ export class AdminAuthService {
     }
     return { email: invite.email, name: invite.name, role: invite.role };
   }
+
+  // ─── Outstanding invites ──────────────────────────────────────────────────
+  /**
+   * Who has been asked and has not yet arrived.
+   *
+   * Without this an invite vanished the moment it was sent: the directory lists
+   * accepted administrators only, so there was no way to tell whether someone
+   * had been invited, whether they had accepted, or when the link died. The
+   * honest answer to "did you invite Sam?" was to search your sent mail.
+   *
+   * Never returns the token or its hash — this is a list for deciding, not a
+   * second delivery channel for a credential that belongs in one mailbox.
+   */
+  async listPendingInvites() {
+    const invites = await this.invites.findAllPending();
+    return invites.map((invite) => ({
+      id: invite.id,
+      email: invite.email,
+      name: invite.name,
+      roleId: invite.roleId,
+      invitedBy: invite.invitedBy,
+      expiresAt: invite.expiresAt,
+      createdAt: invite.createdAt,
+    }));
+  }
+
+  /**
+   * Revoke an outstanding invite — the undo for a wrong address or a changed mind.
+   *
+   * An invite is a 48-hour bearer credential that CREATES AN ADMIN ACCOUNT on a
+   * system that approves payouts. Sending one to a mistyped address and having
+   * no way to cancel it is the gap this closes; the alternative was waiting out
+   * the expiry and hoping.
+   */
+  async revokeInvite(id: string, actor: Admin) {
+    const invite = await this.invites.findById(id);
+    if (!invite) throw new NotFoundError('Invite not found.');
+    if (invite.accepted) {
+      // The account exists; revoking the invite would change nothing and imply
+      // it had. Suspend the administrator instead.
+      throw new ValidationError(
+        'This invite has already been accepted. Suspend the administrator instead.',
+      );
+    }
+
+    await this.invites.deleteById(id);
+    this.audit.record(actor.id, 'admin.invite_revoke', 'admin_invite', id, {
+      email: invite.email,
+      roleId: invite.roleId,
+    });
+    return { message: `Invite for ${invite.email} revoked.` };
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────────────
   private generateAdminTokens(admin: Admin) {
     // Two keys, matching the portal. Signing both kinds with one key meant a

@@ -276,6 +276,58 @@ export class EmailService {
     }
   }
 
+  /**
+   * "Somebody tried to register with your address" — the other half of a
+   * registration endpoint that does not leak.
+   *
+   * `register` used to answer 409 "An account with this email already exists.",
+   * which let anyone test an address list against the API and learn who banks
+   * here. For a broker that is a membership oracle about people's finances, and
+   * it is the same leak `requestPasswordReset` goes to real lengths to avoid two
+   * methods above.
+   *
+   * Removing the 409 alone would have been worse than the leak: the legitimate
+   * person who forgot they had an account would get a success message, no email,
+   * and no way to find out why they cannot sign in. So the information still
+   * goes out — to the ONE mailbox entitled to it, rather than to the caller.
+   */
+  async sendAccountExistsEmail(email: string): Promise<void> {
+    const portalUrl = this.configService.get<string>('PORTAL_URL', 'http://localhost:3000');
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
+        <h2 style="color: #3b82f6;">You already have an OxShare account</h2>
+        <p>Someone just tried to create an account with this email address. You already have one, so we did not create a second.</p>
+        <p>If that was you, sign in instead — or reset your password if you have forgotten it.</p>
+        <div style="margin: 30px 0;">
+          <a href="${portalUrl}/auth/login" style="background: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">
+            Sign in
+          </a>
+        </div>
+        <p style="font-size: 12px; color: #94a3b8;">
+          If it was not you, no action is needed — nothing about your account has changed and no
+          new account was created.
+        </p>
+      </div>
+    `;
+
+    try {
+      if (this.configService.get('NODE_ENV') !== 'test') {
+        await this.transporter.sendMail({
+          from: this.configService.get('SMTP_FROM', '"OxShare System" <no-reply@oxshare.com>'),
+          to: email,
+          subject: 'You already have an OxShare account',
+          html,
+        });
+      }
+      this.logger.log(`Account-exists notice sent to ${email}`);
+    } catch (error) {
+      this.logger.error(
+        `Failed to send account-exists notice to ${email}: ${failureReason(error)}`,
+      );
+    }
+  }
+
   async sendAdminInviteEmail(email: string, name: string, inviteUrl: string): Promise<void> {
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">

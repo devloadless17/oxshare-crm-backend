@@ -7,6 +7,7 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { KycService } from '../src/modules/compliance/kyc.service';
 import { KycStore } from '../src/store/kyc.store';
+import { KycConfigStore } from '../src/store/kyc-config.store';
 import { UsersStore } from '../src/store/users.store';
 import { MoneyLimits } from '../src/config/money-limits';
 import type { EmailService } from '../src/modules/email/email.service';
@@ -87,7 +88,16 @@ beforeAll(async () => {
   ctx = await startMoneyTestDb();
   wallets = new WalletService(ctx.db);
   txService = new TransactionsService(wallets, ctx.db, limits());
-  kyc = new KycService(emailStub, new KycStore(ctx.db), new UsersStore(ctx.db));
+  // The real config store against the real (seeded) database — `submit()` reads
+  // the configured profile fields from it. This suite only calls approve/reject,
+  // which do not touch it, but constructing the service honestly is what keeps
+  // it a test of the real wiring rather than of a convenient subset.
+  kyc = new KycService(
+    emailStub,
+    new KycStore(ctx.db),
+    new UsersStore(ctx.db),
+    new KycConfigStore(ctx.db),
+  );
 }, 180_000);
 
 afterAll(async () => {

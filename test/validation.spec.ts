@@ -3,6 +3,8 @@ import { Test } from '@nestjs/testing';
 import { ValidationPipe, type INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import type { Server } from 'node:http';
+import { ThrottlerStorage } from '@nestjs/throttler';
+import type { ThrottlerStorageRecord } from '@nestjs/throttler/dist/throttler-storage-record.interface';
 import { AppModule } from '../src/app.module';
 import { VALIDATION_PIPE_OPTIONS } from '../src/common/validation.config';
 
@@ -33,7 +35,37 @@ let server: Server;
 
 beforeAll(async () => {
   process.env['NODE_ENV'] ??= 'test';
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  /*
+   * The rate limiter is NEUTRALISED here, and it did not used to need to be.
+   *
+   * Throttle counters moved from an in-memory Map to REDIS (R-3.5), so that "5
+   * login attempts per minute" survives a deploy and holds across replicas
+   * rather than being per-process. The same durability means the counters now
+   * survive between TEST RUNS: `/auth/register` is capped at 10 per hour per IP,
+   * and every suite runs from 127.0.0.1, so after a few `npm test` invocations
+   * these cases started answering 429 instead of the 400 they assert.
+   *
+   * That is the limiter working, not a bug — but it makes an assertion about the
+   * ValidationPipe depend on how many times somebody has run the suite today.
+   * `http-setup.ts` has swapped the storage for exactly this reason since it was
+   * written; this spec builds its own app and had no equivalent.
+   *
+   * What is replaced is the COUNTER, not the guard: `ThrottlerGuard` still runs,
+   * still resolves per-route limits, still builds its key. The limits themselves
+   * are asserted for real in `credential-route-throttling.spec.ts`.
+   */
+  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+    .overrideProvider(ThrottlerStorage)
+    .useValue({
+      increment: (): Promise<ThrottlerStorageRecord> =>
+        Promise.resolve({
+          totalHits: 1,
+          timeToExpire: 60,
+          isBlocked: false,
+          timeToBlockExpire: 0,
+        }),
+    })
+    .compile();
   app = moduleRef.createNestApplication();
   // The SAME options object main.ts uses — not a copy. Constructing a pipe here
   // with its own settings would mean this spec kept passing after someone turned

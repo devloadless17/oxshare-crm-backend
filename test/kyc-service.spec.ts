@@ -3,6 +3,7 @@ import { KycService } from '../src/modules/compliance/kyc.service';
 import type { KycStore, KycSubmission } from '../src/store/kyc.store';
 import type { User, UsersStore } from '../src/store/users.store';
 import type { EmailService } from '../src/modules/email/email.service';
+import type { KycConfigStore } from '../src/store/kyc-config.store';
 import {
   AuthorizationError,
   NotFoundError,
@@ -32,7 +33,10 @@ function submission(over: Partial<KycSubmission> = {}): KycSubmission {
 
 function completeSubmission(over: Partial<KycSubmission> = {}): KycSubmission {
   return submission({
-    personalInfo: { firstName: 'Jane', lastName: 'Doe' },
+    // `dateOfBirth` is not decoration here: `submit()` validates the profile
+    // against the configured required fields and enforces the minimum age
+    // (FR-IND-03), so a fixture without it is no longer a COMPLETE submission.
+    personalInfo: { firstName: 'Jane', lastName: 'Doe', dateOfBirth: '1990-01-01' },
     document: { docType: 'passport', frontFilePath: '/uploads/front.png' },
     selfie: { filePath: '/uploads/selfie.png' },
     addressProof: { docType: 'utility_bill', filePath: '/uploads/address.png' },
@@ -67,12 +71,39 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
   };
   const email = { sendKycDecisionEmail: vi.fn().mockResolvedValue(undefined) };
 
+  /*
+   * The real seeded profile step, trimmed to what these tests exercise.
+   *
+   * `submit()` now validates the stored profile against the CONFIGURED fields
+   * (FR-IND-03), so the service needs the config store. Supplying the real
+   * required set rather than an empty one matters: an empty config would make
+   * every completeness assertion below vacuously pass, which is the failure mode
+   * the validation was added to remove.
+   */
+  const kycConfig = {
+    getSteps: vi.fn().mockResolvedValue([
+      {
+        id: 'step-1',
+        stepNumber: 1,
+        slug: 'personal',
+        title: 'Personal Information',
+        enabled: true,
+        fields: [
+          { id: 'f-1', name: 'firstName', label: 'First Name', type: 'text', required: true },
+          { id: 'f-2', name: 'lastName', label: 'Last Name', type: 'text', required: true },
+          { id: 'f-3', name: 'dateOfBirth', label: 'Date of Birth', type: 'date', required: true },
+        ],
+      },
+    ]),
+  };
+
   const service = new KycService(
     email as unknown as EmailService,
     kycStore as unknown as KycStore,
     users as unknown as UsersStore,
+    kycConfig as unknown as KycConfigStore,
   );
-  return { service, kycStore, users, email };
+  return { service, kycStore, users, email, kycConfig };
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -150,6 +181,55 @@ describe('submit', () => {
       'user-1',
       expect.objectContaining({ status: 'submitted', submittedAt: expect.any(Date) }),
     );
+  });
+
+  it('REFUSES a profile that is present but empty', async () => {
+    /*
+     * The defect this closes. `submit()` tested `!finalSub.personalInfo` — the
+     * truthiness of an object — and `{}` is truthy. So `POST /kyc/step` with
+     * `{"data":{}}` followed by three genuine uploads reached the review queue
+     * with no name and no date of birth, and an admin approving it raised the
+     * account to level 1.
+     */
+    const h = build({
+      stored: completeSubmission({ personalInfo: {} as never }),
+      user: { ...USER, firstName: '' },
+    });
+    await expect(h.service.submit('user-1')).rejects.toThrow(/required before submitting/i);
+    expect(h.kycStore.update).not.toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ status: 'submitted' }),
+    );
+  });
+
+  it('REFUSES a client under the minimum age', async () => {
+    // "Must be 18+" was a hint string in the seeded config and a check in the
+    // browser. A broker onboarding a minor is a licensing matter, so the rule
+    // belongs on the server.
+    const under18 = new Date();
+    under18.setFullYear(under18.getFullYear() - 14);
+    const h = build({
+      stored: completeSubmission({
+        personalInfo: {
+          firstName: 'Jane',
+          lastName: 'Doe',
+          dateOfBirth: under18.toISOString().slice(0, 10),
+        },
+      }),
+    });
+    await expect(h.service.submit('user-1')).rejects.toThrow(/at least 18 years old/i);
+  });
+
+  it('names which profile fields are missing, so the client can fix them', async () => {
+    const h = build({
+      stored: completeSubmission({
+        personalInfo: { firstName: 'Jane' } as never,
+      }),
+      user: { ...USER, firstName: '' },
+    });
+    // Naming them is the difference between a form the client can complete and
+    // one that just says no.
+    await expect(h.service.submit('user-1')).rejects.toThrow(/lastName/);
   });
 
   it('CLEARS the previous rejection when resubmitting', async () => {

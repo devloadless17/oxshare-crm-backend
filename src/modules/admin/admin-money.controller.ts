@@ -156,10 +156,17 @@ export class AdminMoneyController {
       '(PLATFORM-CONVENTIONS R-5.2).',
   })
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('withdrawals.approve')
+  // R-5.4 — a DIFFERENT permission from approve, deliberately. Settlement is the
+  // step that releases the money; approval only says it may be released. While
+  // both required `withdrawals.approve`, "two people must be involved in a
+  // payout" could not be expressed at all.
+  @RequirePermissions('withdrawals.settle')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Mark an approved withdrawal paid — posts the debit and clears the hold',
+    description:
+      'Requires `withdrawals.settle`, which is separate from `withdrawals.approve` so the two ' +
+      'steps can be granted to different people (separation of duties, R-5.4).',
   })
   @ApiOkResponse({ type: WithdrawalRowDto })
   settleWithdrawal(

@@ -12,7 +12,6 @@ import type { User, UsersStore } from '../src/store/users.store';
 import {
   AuthenticationError,
   AuthorizationError,
-  ConflictError,
   ValidationError,
 } from '../src/common/errors/domain-errors';
 
@@ -88,7 +87,10 @@ interface Harness {
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
   };
-  email: { sendVerificationEmail: ReturnType<typeof vi.fn> };
+  email: {
+    sendVerificationEmail: ReturnType<typeof vi.fn>;
+    sendAccountExistsEmail: ReturnType<typeof vi.fn>;
+  };
   refreshTokens: {
     record: ReturnType<typeof vi.fn>;
     revokeAllForSubject: ReturnType<typeof vi.fn>;
@@ -105,7 +107,10 @@ function build(overrides: { user?: User | undefined } = {}): Harness {
     create: vi.fn((data: Partial<User>) => Promise.resolve({ id: 'new-user', ...data } as User)),
     update: vi.fn((_id: string, patch: Partial<User>) => Promise.resolve(makeUser(patch))),
   };
-  const email = { sendVerificationEmail: vi.fn().mockResolvedValue(undefined) };
+  const email = {
+    sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
+    sendAccountExistsEmail: vi.fn().mockResolvedValue(undefined),
+  };
   const refreshTokens = {
     record: vi.fn().mockResolvedValue(undefined),
     revokeAllForSubject: vi.fn().mockResolvedValue(undefined),
@@ -140,10 +145,41 @@ describe('register', () => {
     lastName: 'Person',
   };
 
-  it('refuses an email that already exists', async () => {
+  it('does not create a second account for an address that already has one', async () => {
     const h = build({ user: makeUser() });
-    await expect(h.service.register(dto)).rejects.toThrow(ConflictError);
+    await h.service.register(dto);
     expect(h.users.create).not.toHaveBeenCalled();
+  });
+
+  it('does NOT disclose that the address already has an account', async () => {
+    /*
+     * Registration used to answer 409 "An account with this email already
+     * exists.", which made it a membership oracle: anyone could test an address
+     * list and learn who banks here. `requestPasswordReset` avoids exactly that
+     * leak, and registration quietly gave it back.
+     *
+     * The response must be indistinguishable from a real signup — same message,
+     * and no `userId`, because returning the EXISTING user's id would hand back
+     * the fact being hidden.
+     */
+    const existing = build({ user: makeUser() });
+    const fresh = build();
+
+    const whenTaken = await existing.service.register(dto);
+    const whenNew = await fresh.service.register(dto);
+
+    expect(whenTaken.message).toBe(whenNew.message);
+    expect(whenTaken).not.toHaveProperty('userId');
+  });
+
+  it('tells the EXISTING account holder by email instead', async () => {
+    // Removing the 409 alone would be worse than the leak: the person who forgot
+    // they had an account gets a success message, no email, and no way to find
+    // out why they cannot sign in. The information still goes out — to the one
+    // mailbox entitled to it.
+    const h = build({ user: makeUser() });
+    await h.service.register(dto);
+    expect(h.email.sendAccountExistsEmail).toHaveBeenCalledWith('client@oxshare.com');
   });
 
   it('lowercases the email, so one address cannot become two accounts', async () => {

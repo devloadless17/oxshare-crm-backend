@@ -45,19 +45,54 @@ export class AdminComplianceService {
    * privilege-affecting admin methods still guarded only at the edge: approving
    * KYC moves a client's verificationLevel to 1, and that is what unlocks
    * withdrawals.
+   *
+   * ── The audit row is written AFTER the decision, and describes what happened
+   *
+   * Each of these used to read:
+   *
+   *     const result = this.kycService.approve(userId, actor.id);   // not awaited
+   *     this.audit.record(…, { verificationLevel: 1 });             // fire-and-forget
+   *     return result;
+   *
+   * `record()` dispatches a detached write and returns void, so the audit row
+   * was written BEFORE the decision resolved and REGARDLESS of whether it
+   * succeeded. Every refusal path still produced one: no such submission, a
+   * submission the client never submitted, one already approved, a failed store
+   * write. The details payload made it worse — `{ verificationLevel: 1 }` was a
+   * literal, so the row asserted a promotion the code had not performed and
+   * could not have performed.
+   *
+   * That is the opposite of what the log is for. D-21's justification is that
+   * this is the one record which cannot be reconstructed afterwards, FSD §10
+   * requires "attributable, reviewable records of administrative actions", and
+   * FSD §14 accepts requirements on the evidence of an audit-log entry. A log
+   * that reports approvals which did not happen is worse than no log, because it
+   * will be believed.
+   *
+   * So: await the decision, then record it, and record the OBSERVED outcome
+   * rather than the intended one. A throw now skips the write entirely, which is
+   * the correct behaviour — nothing happened, so nothing is recorded.
+   *
+   * Still fire-and-forget once it is reached, which remains the right trade
+   * here: the decision has already been persisted, and losing the audit row must
+   * not un-make it. Making the two atomic needs an Executor threaded through
+   * KycStore and UsersStore (see kyc.service.ts) — a separate, larger change.
    */
   // ─── KYC: approve ─────────────────────────────────────────────────────────
   async approveKyc(userId: string, actor: Admin) {
     assertActorCan(actor, 'kyc.review', 'approve a KYC submission');
-    const result = this.kycService.approve(userId, actor.id);
-    this.audit.record(actor.id, 'kyc.approve', 'kyc_submission', userId, { verificationLevel: 1 });
+    const result = await this.kycService.approve(userId, actor.id);
+    this.audit.record(actor.id, 'kyc.approve', 'kyc_submission', userId, {
+      status: result.status,
+      verificationLevel: result.user?.verificationLevel,
+    });
     return result;
   }
   // ─── KYC: claim for review ────────────────────────────────────────────────
   async claimKyc(userId: string, actor: Admin) {
     assertActorCan(actor, 'kyc.review', 'claim a KYC submission for review');
-    const result = this.kycService.claim(userId, actor.id);
-    this.audit.record(actor.id, 'kyc.claim', 'kyc_submission', userId);
+    const result = await this.kycService.claim(userId, actor.id);
+    this.audit.record(actor.id, 'kyc.claim', 'kyc_submission', userId, { status: result.status });
     return result;
   }
   // ─── KYC: reject ──────────────────────────────────────────────────────────
@@ -81,8 +116,10 @@ export class AdminComplianceService {
     if (!effectiveReason) {
       throw new ValidationError('A rejection reason (reasonId or reason text) is required.');
     }
-    const result = this.kycService.reject(userId, adminId, effectiveReason, rejectedFields);
+    const result = await this.kycService.reject(userId, adminId, effectiveReason, rejectedFields);
     this.audit.record(adminId, 'kyc.reject', 'kyc_submission', userId, {
+      status: result.status,
+      verificationLevel: result.user?.verificationLevel,
       reason: effectiveReason,
       rejectedFields,
     });

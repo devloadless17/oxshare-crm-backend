@@ -114,6 +114,12 @@ function build(
     findByToken: vi.fn().mockResolvedValue(options.stored),
     markAccepted: vi.fn().mockResolvedValue(undefined),
     findPendingByRoleId: vi.fn().mockResolvedValue([]),
+    // Default: no invite outstanding for this address. The one-live-invite-per-
+    // email rule is exercised explicitly in the suite below.
+    findPendingByEmail: vi.fn().mockResolvedValue(undefined),
+    findAllPending: vi.fn().mockResolvedValue([]),
+    findById: vi.fn().mockResolvedValue(options.stored),
+    deleteById: vi.fn().mockResolvedValue(undefined),
   };
   const roles = {
     findById: vi.fn().mockResolvedValue(REVIEWER_ROLE),

@@ -21,6 +21,7 @@ import { AdminModule } from './modules/admin/admin.module';
 import { HealthModule } from './modules/health/health.module';
 import { SecurityModule } from './common/security/security.module';
 import { CsrfGuard } from './common/security/csrf.guard';
+import { RedisThrottlerStorage } from './common/security/redis-throttler.storage';
 
 @Module({
   imports: [
@@ -37,7 +38,25 @@ import { CsrfGuard } from './common/security/csrf.guard';
     // credential stuffing and token guessing.
     // Named 'default' so per-route @Throttle({ default: ... }) overrides bind
     // to it — with custom names the overrides silently do nothing.
-    ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 120 }]),
+    /*
+     * Counters in REDIS, not process memory — R-3.5.
+     *
+     * The default in-memory storage resets on every deploy and is per-process,
+     * so with two replicas "5 login attempts per minute" is really ten. Neither
+     * property is visible in development, and both weaken exactly the limits
+     * that matter in production.
+     *
+     * `useExisting` so it is the same instance the DI container built (and the
+     * same Redis connection everything else uses); a second copy here would
+     * have its own back-off state and its own opinion about whether Redis is up.
+     */
+    ThrottlerModule.forRootAsync({
+      inject: [RedisThrottlerStorage],
+      useFactory: (storage: RedisThrottlerStorage) => ({
+        throttlers: [{ name: 'default', ttl: 60_000, limit: 120 }],
+        storage,
+      }),
+    }),
 
     // Infrastructure
     DatabaseModule,

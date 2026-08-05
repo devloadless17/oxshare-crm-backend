@@ -103,8 +103,24 @@ export class AdminMoneyService {
     return row;
   }
   async settleWithdrawal(id: string, actor: Admin, providerRef: string) {
-    // Settlement is the step that actually moves the money out.
-    assertActorCan(actor, 'withdrawals.approve', 'settle a withdrawal');
+    /*
+     * SEPARATION OF DUTIES — R-5.4.
+     *
+     * `withdrawals.settle`, NOT `withdrawals.approve`. Settlement is the step
+     * that actually releases the money; approval only says it may be released.
+     * While both required the same permission, "two people must be involved in
+     * a payout" was unexpressible — one compromised or dishonest admin could
+     * approve their own instruction and pay it out in the same minute, and the
+     * audit log would show one name on both rows.
+     *
+     * Splitting the KEY is what makes the control possible; whether the two are
+     * actually granted to different people is a decision for whoever builds the
+     * roles, and that is the right place for it. A master admin holds `*` and so
+     * can still do both — deliberately, because somebody has to be able to
+     * unblock a stuck payout at 2am, and that person is already the one the
+     * audit log is watching most closely.
+     */
+    assertActorCan(actor, 'withdrawals.settle', 'settle a withdrawal');
     const row = await this.transactions.settle(id, actor.id, providerRef, (tx, settled) =>
       this.audit.recordWithin(tx, actor.id, 'withdrawal.settle', 'transaction', id, {
         amount: settled.amount,

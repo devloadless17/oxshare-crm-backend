@@ -31,7 +31,7 @@ import {
 import { Request } from 'express';
 import { AdminRbacService } from './admin-rbac.service';
 import { Admin } from '../../store/admins.store';
-import { RoleDto, UpdateAdminDto, UpdateRoleDto } from './dto/requests/rbac.dto';
+import { AdminStatusDto, RoleDto, UpdateAdminDto, UpdateRoleDto } from './dto/requests/rbac.dto';
 import {
   AdminProfileDto,
   MessageResponseDto,
@@ -138,5 +138,30 @@ export class AdminRbacController {
     @Req() req: Request & { admin: Admin },
   ) {
     return this.rbac.updateAdmin(id, dto, req.admin);
+  }
+
+  /*
+   * Separate from PATCH users/:id on purpose: suspension needs users.SUSPEND,
+   * not users.edit. One endpoint whose required permission depends on which
+   * body keys arrive is a guard that silently widens the next time a field is
+   * added. See AdminStatusDto.
+   */
+  @Patch('users/:id/status')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('users.suspend')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Suspend or reactivate an administrator (requires users.suspend)',
+    description:
+      'Suspension takes effect on the target’s NEXT request — AdminGuard re-reads status ' +
+      'on every call — and blocks login. Refused on your own account and on the master admin.',
+  })
+  @ApiOkResponse({ type: AdminProfileDto })
+  setAdminStatus(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: AdminStatusDto,
+    @Req() req: Request & { admin: Admin },
+  ) {
+    return this.rbac.setAdminStatus(id, dto.status, req.admin);
   }
 }

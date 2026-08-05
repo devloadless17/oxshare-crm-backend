@@ -4,7 +4,7 @@ import {
   WithdrawalOtpService,
   type WithdrawalIntent,
 } from '../src/modules/payments/withdrawal-otp.service';
-import type { OtpRedis } from '../src/common/security/replay-nonce.module';
+import type { OtpRedis } from '../src/common/security/replay-nonce.store';
 
 /**
  * FR-CORE-08 / FR-IND-05 · ARCHITECTURE §8.4 · PLATFORM-CONVENTIONS R-3.7.

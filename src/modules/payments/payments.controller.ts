@@ -32,8 +32,8 @@ import {
   RequestWithdrawalDto,
   RequestWithdrawalOtpDto,
   TransactionDto,
+  WithdrawalOtpResponseDto,
 } from './dto/withdrawal.dto';
-import { MessageResponseDto } from '../../common/dto/message-response.dto';
 import { WithdrawalOtpService, type WithdrawalIntent } from './withdrawal-otp.service';
 import { SecuritySettingsService } from '../admin/security-settings.service';
 import { SECURITY_SWITCHES } from '../../store/security-settings.store';
@@ -117,7 +117,7 @@ export class PaymentsController {
       'Changing any of them before submitting makes the code invalid, which is what stops a code ' +
       'obtained for a small withdrawal from authorising a large one.',
   })
-  @ApiOkResponse({ type: MessageResponseDto })
+  @ApiOkResponse({ type: WithdrawalOtpResponseDto })
   async sendWithdrawalOtp(
     @Body() dto: RequestWithdrawalOtpDto,
     @Req() req: Request & { user: User },
@@ -125,7 +125,7 @@ export class PaymentsController {
     if (!(await this.securitySettings.isEnabled(SECURITY_SWITCHES.withdrawalOtp))) {
       // Answered rather than 404'd, so the portal's flow is identical whether or
       // not the control is on — the client simply is not asked for a code.
-      return { message: 'Withdrawal confirmation is not required.' };
+      return { message: 'Withdrawal confirmation is not required.', required: false };
     }
 
     const code = await this.otp.issue(this.intentOf(req.user.id, dto));
@@ -136,6 +136,7 @@ export class PaymentsController {
 
     return {
       message: 'A confirmation code has been sent to your email address. It expires in 5 minutes.',
+      required: true,
     };
   }
 

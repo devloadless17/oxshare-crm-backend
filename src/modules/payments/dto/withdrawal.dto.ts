@@ -79,6 +79,26 @@ export class RequestWithdrawalDto {
   otp?: string;
 }
 
+/**
+ * The answer to "send me a code for this withdrawal".
+ *
+ * `required` is a BOOLEAN rather than something the caller infers from the
+ * message, because the operator can switch the OTP control off and the portal
+ * has to know which of two things just happened. Reading it out of prose would
+ * make a copy edit break the withdrawal flow.
+ */
+export class WithdrawalOtpResponseDto {
+  @ApiProperty({ example: 'A confirmation code has been sent to your email address.' })
+  message: string;
+
+  @ApiProperty({
+    description:
+      'False when the operator has the withdrawal-OTP control switched off; the withdrawal may ' +
+      'then be submitted without a code.',
+  })
+  required: boolean;
+}
+
 export class TransactionDto {
   @ApiProperty() id: string;
   @ApiProperty() userId: string;

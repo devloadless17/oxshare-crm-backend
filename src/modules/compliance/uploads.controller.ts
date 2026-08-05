@@ -85,6 +85,21 @@ export class UploadsController {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Disposition', `inline; filename="${name}"`);
     res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    /*
+     * Do not let an identity document settle into a disk cache.
+     *
+     * `sendFile` sets ETag and Last-Modified and no Cache-Control, so a browser
+     * applies its own heuristic freshness and may write the file to disk. The
+     * account that reads these is the reviewer's, which opens every client's
+     * passport in the course of the working day — so the default leaves a
+     * growing pile of other people's identity documents in a cache directory
+     * that outlives the session and that nothing here can clear.
+     *
+     * It also matters for what comes next: when ARCHITECTURE §8.5's signed URLs
+     * arrive, a cached response is a credentialled response sitting on disk past
+     * its TTL.
+     */
+    res.setHeader('Cache-Control', 'no-store, private');
     return res.sendFile(fullPath);
   }
 

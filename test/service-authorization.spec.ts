@@ -171,3 +171,58 @@ describe('R-4.3 every money-moving service method asserts', () => {
     expect(asserted.length).toBeGreaterThanOrEqual(6);
   });
 });
+
+describe('R-5.4 — separation of duties on payouts', () => {
+  /*
+   * Approving a withdrawal and PAYING it are different permissions.
+   *
+   * They were the same (`withdrawals.approve`), which meant one admin could
+   * approve an instruction and release the money in the same minute, and the
+   * audit log would carry one name on both rows. "Two people must be involved in
+   * a payout" was not merely unenforced — it was unexpressible, because there was
+   * no second key to grant.
+   *
+   * Splitting the key does not by itself force two people; it makes the control
+   * BUILDABLE, and whether the two are granted separately is a decision for
+   * whoever defines the roles. That is the right place for it.
+   */
+  const approver: Actor = {
+    id: 'a1',
+    email: 'approver@oxshare.com',
+    permissions: ['withdrawals.view', 'withdrawals.approve'],
+  };
+  const settler: Actor = {
+    id: 'a2',
+    email: 'settler@oxshare.com',
+    permissions: ['withdrawals.view', 'withdrawals.settle'],
+  };
+
+  it('an approver cannot settle', () => {
+    expect(() => assertActorCan(approver, 'withdrawals.settle', 'settle a withdrawal')).toThrow(
+      AuthorizationError,
+    );
+  });
+
+  it('a settler cannot approve', () => {
+    expect(() => assertActorCan(settler, 'withdrawals.approve', 'approve a withdrawal')).toThrow(
+      AuthorizationError,
+    );
+  });
+
+  it('each can do their own step', () => {
+    expect(() =>
+      assertActorCan(approver, 'withdrawals.approve', 'approve a withdrawal'),
+    ).not.toThrow();
+    expect(() =>
+      assertActorCan(settler, 'withdrawals.settle', 'settle a withdrawal'),
+    ).not.toThrow();
+  });
+
+  it('the master admin can still do both', () => {
+    // Deliberate: somebody has to be able to unblock a stuck payout at 2am, and
+    // that person is already the one the audit log watches most closely.
+    const master: Actor = { id: 'm', email: 'master@oxshare.com', permissions: ['*'] };
+    expect(() => assertActorCan(master, 'withdrawals.approve', 'approve')).not.toThrow();
+    expect(() => assertActorCan(master, 'withdrawals.settle', 'settle')).not.toThrow();
+  });
+});

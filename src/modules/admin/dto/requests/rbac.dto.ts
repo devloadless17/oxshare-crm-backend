@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsIn, IsOptional, IsString } from 'class-validator';
 
 // Request DTOs for role and admin-user management.
 // See the note in ./auth.dto.ts for why these moved out of the controller.
@@ -61,4 +61,20 @@ export class UpdateAdminDto {
   @IsArray()
   @IsOptional()
   permissions?: string[];
+}
+
+/**
+ * Deliberately its OWN route and DTO rather than a `status` field on
+ * UpdateAdminDto.
+ *
+ * Suspension carries a different permission (`users.suspend`, not `users.edit`)
+ * and different invariants, and folding it into the general patch would mean one
+ * endpoint whose required permission depends on which keys the body happens to
+ * carry. That is the kind of guard that is correct on the day it is written and
+ * wrong after the next field is added.
+ */
+export class AdminStatusDto {
+  @ApiProperty({ enum: ['active', 'suspended'] })
+  @IsIn(['active', 'suspended'])
+  status: 'active' | 'suspended';
 }

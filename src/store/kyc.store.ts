@@ -205,9 +205,8 @@ export class KycStore {
     return rows.map(toSubmission);
   }
 
-  async clearAll(): Promise<void> {
-    await this.db.delete(kycSubmissions);
-  }
+  // REMOVED: `clearAll()` — an unguarded `DELETE FROM kyc_submissions` with no
+  // caller once `KycService.resetAllKyc()` was deleted. See the note there.
 
   async resetUser(userId: string): Promise<void> {
     await this.db.delete(kycSubmissions).where(eq(kycSubmissions.userId, userId));

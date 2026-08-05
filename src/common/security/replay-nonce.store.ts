@@ -42,6 +42,25 @@ export interface NonceRedis {
 
 export const NONCE_REDIS = Symbol('NONCE_REDIS');
 
+/**
+ * The commands the withdrawal OTP needs — FR-CORE-08, §8.4.
+ *
+ * A SECOND token over the SAME connection, not a second client: one Redis
+ * process, one socket, two narrowly-typed views of it. Declaring only the
+ * commands each use actually issues keeps a fake honest — a test double that has
+ * to implement `set/get/del/incr/pexpire` and nothing else cannot quietly
+ * diverge from the real client's behaviour on commands nobody calls.
+ */
+export interface OtpRedis {
+  set(key: string, value: string, mode: 'PX', ttlMs: number): Promise<string | null>;
+  get(key: string): Promise<string | null>;
+  del(...keys: string[]): Promise<number>;
+  incr(key: string): Promise<number>;
+  pexpire(key: string, ttlMs: number): Promise<number>;
+}
+
+export const OTP_REDIS = Symbol('OTP_REDIS');
+
 @Injectable()
 export class ReplayNonceStore {
   private readonly logger = new Logger(ReplayNonceStore.name);

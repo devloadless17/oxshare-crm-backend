@@ -86,6 +86,10 @@
       {
         "key": "withdrawals.approve",
         "label": "Approve / Reject Withdrawals"
+      },
+      {
+        "key": "withdrawals.settle",
+        "label": "Mark Withdrawals Paid (releases the money)"
       }
     ]
   },

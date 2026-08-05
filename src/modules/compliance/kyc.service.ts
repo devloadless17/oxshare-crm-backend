@@ -1,8 +1,9 @@
-import { existsSync, readdirSync, unlinkSync } from 'fs';
 import { Injectable, Logger } from '@nestjs/common';
 import { KycStore, KycStatus } from '../../store/kyc.store';
 import { User, UsersStore } from '../../store/users.store';
+import { KycConfigStore } from '../../store/kyc-config.store';
 import { EmailService } from '../email/email.service';
+import { findProfileProblem, type ProfileFieldRule } from './kyc-profile';
 import {
   AuthorizationError,
   NotFoundError,
@@ -45,7 +46,41 @@ export class KycService {
     private readonly email: EmailService,
     private readonly kycStore: KycStore,
     private readonly users: UsersStore,
+    private readonly kycConfig: KycConfigStore,
   ) {}
+
+  /**
+   * The profile rules for this deployment, read from the configured steps.
+   *
+   * Read rather than hardcoded because the admin KYC builder owns the field set
+   * (D-29). `AdminComplianceService.assertMandatoryStepsIntact` guarantees the
+   * `personal` step exists and is enabled, so an empty result means the config
+   * is genuinely unusable — and requiring nothing is the wrong way to fail on a
+   * compliance path, so submission is refused rather than waved through.
+   */
+  private async profileRules(): Promise<ProfileFieldRule[]> {
+    const steps = await this.kycConfig.getSteps();
+    const personal = steps.find((s) => s.slug === 'personal' && s.enabled);
+    if (!personal) {
+      /*
+       * A plain Error, so this surfaces as a 500 rather than a 400.
+       *
+       * The caller did nothing wrong — the deployment has no profile step, which
+       * `assertMandatoryStepsIntact` makes unreachable through the API and the
+       * bootstrap seed makes unreachable in practice. Telling the client their
+       * request was invalid would be a lie, and "please contact support" on a 400
+       * is the kind of message that gets triaged as a user error for a week.
+       *
+       * Failing closed rather than defaulting to "no fields are required": on a
+       * compliance path, an empty rule set is the one outcome that must never be
+       * reachable by accident.
+       */
+      throw new Error(
+        'KYC config has no enabled `personal` step; cannot determine the required profile fields.',
+      );
+    }
+    return personal.fields;
+  }
 
   // ─── Get status ────────────────────────────────────────────────────────────
   async getStatus(userId: string) {
@@ -142,6 +177,40 @@ export class KycService {
 
     if (!finalSub.personalInfo)
       throw new ValidationError('Personal information is required before submitting.');
+
+    /*
+     * The profile's CONTENTS, not just its presence — FR-IND-03.
+     *
+     * The check above tests an object for truthiness, and `{}` is truthy. So a
+     * caller could `POST /kyc/step {"step":"personal","data":{}}`, upload three
+     * genuine images, submit, and reach the review queue with no name, no date
+     * of birth and no address. Nothing else validated it: `SaveKycStepDto`
+     * declares `data` as an untyped object on purpose (the step set is
+     * configurable), and `saveStep` never consulted the configured `required`
+     * flags, so they were decoration.
+     *
+     * The age rule had the same shape and worse consequences. `Must be 18+` was
+     * a hint string in the seeded config, and the only check was in the client
+     * portal — enforced by a form, bypassed by curl. A broker onboarding a minor
+     * is a licensing matter.
+     *
+     * Enforced HERE rather than in `saveStep` deliberately: the steps are
+     * resumable and a client is expected to save a half-filled profile and come
+     * back to it. Submission is the point at which the profile is claimed to be
+     * complete, so it is the point at which completeness is a rule.
+     */
+    const problem = findProfileProblem(
+      // `PersonalInfo` declares named optional fields; the stored column is
+      // `jsonb` and also carries whatever a custom field was named. The cast
+      // widens to what is actually there rather than what the interface admits.
+      finalSub.personalInfo as unknown as Record<string, unknown>,
+      await this.profileRules(),
+      new Date(),
+    );
+    if (problem) {
+      throw new ValidationError(problem.message, { kind: problem.kind, fields: problem.fields });
+    }
+
     if (!finalSub.document?.frontFilePath)
       throw new ValidationError('ID document front is required.');
     if (!finalSub.selfie?.filePath) throw new ValidationError('Selfie is required.');
@@ -298,27 +367,21 @@ export class KycService {
     return { message: 'KYC data reset successfully.' };
   }
 
-  // ─── Reset All KYC Submissions ──────────────────────────────────────────────
-  async resetAllKyc() {
-    await this.kycStore.clearAll();
-    // Report what could not be removed instead of silently claiming success —
-    // a partial wipe on a compliance path must be visible.
-    const failures: string[] = [];
-    if (existsSync('./uploads/kyc')) {
-      for (const file of readdirSync('./uploads/kyc')) {
-        try {
-          unlinkSync(`./uploads/kyc/${file}`);
-        } catch (error) {
-          failures.push(file);
-          this.logger.error(`Failed to delete ${file}: ${(error as Error).message}`);
-        }
-      }
-    }
-    if (failures.length > 0) {
-      // A partial filesystem failure is an internal fault, not a rule the
-      // caller broke — let it surface as a 500 with the detail in the log only.
-      throw new Error(`KYC records cleared but ${failures.length} file(s) could not be deleted.`);
-    }
-    return { message: 'All KYC submissions and uploaded files cleared successfully.' };
-  }
+  /*
+   * REMOVED: `resetAllKyc()`.
+   *
+   * It deleted every KYC submission in the database and unlinked every file in
+   * ./uploads/kyc — system-wide, for every client — and nothing called it. Its
+   * only route, `POST /kyc/reset-all`, was taken off the client-facing
+   * controller when it was found to be reachable by any verified client
+   * (kyc.controller.ts records that), and the method was left behind.
+   *
+   * A destructive maintenance operation with no caller is not dormant, it is
+   * loaded: the next person who needs "clear the test data" finds a method that
+   * looks sanctioned and wires a route to it. Deleting it means that person has
+   * to write the operation deliberately, behind MasterAdminGuard and a
+   * non-production check, which is where it belonged in the first place.
+   *
+   * `KycStore.clearAll()` went with it for the same reason.
+   */
 }

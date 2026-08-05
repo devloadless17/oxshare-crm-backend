@@ -11,6 +11,16 @@ export class AdminProfileDto {
   @ApiProperty({ enum: ['master_admin', 'sub_admin'] }) role: 'master_admin' | 'sub_admin';
   @ApiProperty({ type: [String] }) permissions: string[];
   @ApiPropertyOptional() roleId?: string;
+  /*
+   * The admin directory rendered a hardcoded "Active" badge for every row,
+   * because this field did not exist and the screen showed something rather
+   * than nothing. A suspended administrator therefore displayed as active on
+   * the one screen an operator would check before trusting an account.
+   *
+   * Suspension has always been ENFORCED — admin.guard.ts refuses a suspended
+   * admin on every request — so the gap was purely in what the API admitted to.
+   */
+  @ApiProperty({ enum: ['active', 'suspended'] }) status: 'active' | 'suspended';
   @ApiProperty() createdAt: Date;
 }
 
@@ -154,9 +164,31 @@ export class PermissionModuleDto {
 
 export class InviteResponseDto {
   @ApiProperty() message: string;
-  @ApiProperty({ description: 'Dev only — removed in production' })
-  token: string;
-  @ApiProperty() inviteUrl: string;
+  /*
+   * `token` used to be declared here and is NOT returned by the service — the
+   * raw token goes to the invitee's mailbox and nowhere else, deliberately, so
+   * it cannot land in proxy logs or SPA memory. A response DTO that advertises
+   * a credential the API does not send is worse than noise: both frontends
+   * generate their types from this file, so it invited someone to read it.
+   */
+  @ApiPropertyOptional({
+    description:
+      'The accept link, echoed OUTSIDE PRODUCTION ONLY to keep local development ' +
+      'workable. Absent in production — read the link from the invite email.',
+  })
+  inviteUrl?: string;
+}
+
+/** An invite that has been sent and not yet accepted. Never carries the token. */
+export class PendingInviteDto {
+  @ApiProperty() id: string;
+  @ApiProperty() email: string;
+  @ApiProperty() name: string;
+  @ApiPropertyOptional() roleId?: string;
+  @ApiProperty({ description: 'Admin id of whoever sent it.' }) invitedBy: string;
+  @ApiProperty({ description: 'After this the link is dead; re-invite to replace it.' })
+  expiresAt: Date;
+  @ApiProperty() createdAt: Date;
 }
 
 export class AuditEntryDto {

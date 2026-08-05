@@ -1,4 +1,4 @@
-import { and, eq, gt } from 'drizzle-orm';
+import { and, desc, eq, gt } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -92,8 +92,27 @@ const toInvite = (r: InviteRow): AdminInvite => ({
 export class AdminsStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
+  /**
+   * Normalises the email on the way IN, because `findByEmail` normalises on the
+   * way out and `admins.email` is a case-sensitive varchar.
+   *
+   * The two halves disagreed. `findByEmail` lowercased its argument; nothing
+   * lowercased what was stored. An admin invited as "Sam@Oxshare.com" was
+   * written verbatim, and every later lookup searched for "sam@oxshare.com" and
+   * matched nothing — so they could never sign in, with the right password, on
+   * an account that plainly exists in the directory.
+   *
+   * The timing made it worse than a login bug: accepting an invite signs you in
+   * directly, so onboarding appeared to succeed. The failure arrived the next
+   * morning. The portal has always normalised on write (identity/auth.service
+   * register); this is the admin side of the same rule, placed in the store so
+   * no future caller has to remember it.
+   */
   async create(data: Omit<Admin, 'id' | 'createdAt'>): Promise<Admin> {
-    const [row] = await this.db.insert(admins).values(data).returning();
+    const [row] = await this.db
+      .insert(admins)
+      .values({ ...data, email: data.email.toLowerCase() })
+      .returning();
     return toAdmin(row);
   }
 
@@ -185,5 +204,56 @@ export class InvitesStore {
         ),
       );
     return rows.map(toInvite);
+  }
+
+  /**
+   * A live invite for this address — not accepted, not expired.
+   *
+   * `admins.email` is UNIQUE but `admin_invites.email` is not, so nothing stopped
+   * two live tokens for one address. Both validated; the first accept created the
+   * account and the second hit the unique constraint on `admins.email` — a raw
+   * 500 at the last step of onboarding, to a person who did nothing wrong.
+   */
+  async findPendingByEmail(email: string): Promise<AdminInvite | undefined> {
+    const [row] = await this.db
+      .select()
+      .from(adminInvites)
+      .where(
+        and(
+          eq(adminInvites.email, email),
+          eq(adminInvites.accepted, false),
+          gt(adminInvites.expiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+    return row ? toInvite(row) : undefined;
+  }
+
+  /** Every live invite, newest first — the "who has been asked but not arrived" list. */
+  async findAllPending(): Promise<AdminInvite[]> {
+    const rows = await this.db
+      .select()
+      .from(adminInvites)
+      .where(and(eq(adminInvites.accepted, false), gt(adminInvites.expiresAt, new Date())))
+      .orderBy(desc(adminInvites.createdAt));
+    return rows.map(toInvite);
+  }
+
+  async findById(id: string): Promise<AdminInvite | undefined> {
+    const [row] = await this.db.select().from(adminInvites).where(eq(adminInvites.id, id)).limit(1);
+    return row ? toInvite(row) : undefined;
+  }
+
+  /**
+   * Revoking DELETES the row rather than flagging it.
+   *
+   * An accepted invite is kept as the provenance of an existing administrator —
+   * `audit_log` records who invited whom. A revoked one never produced an
+   * account, so there is no subject to preserve, and leaving the row would mean
+   * `findPendingByEmail` had to learn a third state to avoid blocking a re-invite
+   * to a corrected address. The revocation itself is audited.
+   */
+  async deleteById(id: string): Promise<void> {
+    await this.db.delete(adminInvites).where(eq(adminInvites.id, id));
   }
 }

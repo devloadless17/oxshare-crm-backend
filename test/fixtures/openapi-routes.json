@@ -1,4 +1,5 @@
 [
+  "DELETE /v1/admin/invites/{id}",
   "DELETE /v1/admin/ip-allowlist/{id}",
   "DELETE /v1/admin/kyc-config/steps/{id}",
   "DELETE /v1/admin/rejection-reasons/{id}",
@@ -10,6 +11,7 @@
   "GET /v1/admin/clients",
   "GET /v1/admin/commission-plans",
   "GET /v1/admin/invite/validate",
+  "GET /v1/admin/invites",
   "GET /v1/admin/ip-allowlist",
   "GET /v1/admin/kyc",
   "GET /v1/admin/kyc-config",
@@ -38,6 +40,7 @@
   "PATCH /v1/admin/kyc/{userId}/claim",
   "PATCH /v1/admin/kyc/{userId}/reject",
   "PATCH /v1/admin/users/{id}",
+  "PATCH /v1/admin/users/{id}/status",
   "PATCH /v1/admin/withdrawals/{id}/approve",
   "PATCH /v1/admin/withdrawals/{id}/reject",
   "PATCH /v1/admin/withdrawals/{id}/settle",

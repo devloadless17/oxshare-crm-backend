@@ -1,7 +1,14 @@
 import { Global, Module, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
-import { NONCE_REDIS, ReplayNonceStore, type NonceRedis } from './replay-nonce.store';
+import {
+  NONCE_REDIS,
+  OTP_REDIS,
+  ReplayNonceStore,
+  type NonceRedis,
+  type OtpRedis,
+} from './replay-nonce.store';
+import { RedisThrottlerStorage } from './redis-throttler.storage';
 
 /**
  * The Redis connection behind single-use replay markers (§8.4, R-5.3).
@@ -20,25 +27,6 @@ import { NONCE_REDIS, ReplayNonceStore, type NonceRedis } from './replay-nonce.s
  * a refused webhook, which is the failure we want, rather than a process that
  * will not start.
  */
-/**
- * The commands the withdrawal OTP needs — FR-CORE-08, §8.4.
- *
- * A SECOND token over the SAME connection, not a second client: one Redis
- * process, one socket, two narrowly-typed views of it. Declaring only the
- * commands each use actually issues keeps a fake honest — a test double that has
- * to implement `set/get/del/incr/pexpire` and nothing else cannot quietly
- * diverge from the real client's behaviour on commands nobody calls.
- */
-export interface OtpRedis {
-  set(key: string, value: string, mode: 'PX', ttlMs: number): Promise<string | null>;
-  get(key: string): Promise<string | null>;
-  del(...keys: string[]): Promise<number>;
-  incr(key: string): Promise<number>;
-  pexpire(key: string, ttlMs: number): Promise<number>;
-}
-
-export const OTP_REDIS = Symbol('OTP_REDIS');
-
 @Global()
 @Module({
   providers: [
@@ -80,7 +68,8 @@ export const OTP_REDIS = Symbol('OTP_REDIS');
       useFactory: (client: NonceRedis | null): OtpRedis | null => client as OtpRedis | null,
     },
     ReplayNonceStore,
+    RedisThrottlerStorage,
   ],
-  exports: [ReplayNonceStore, OTP_REDIS],
+  exports: [ReplayNonceStore, OTP_REDIS, RedisThrottlerStorage],
 })
 export class ReplayNonceModule {}

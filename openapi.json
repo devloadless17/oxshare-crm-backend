@@ -402,7 +402,7 @@
             }
           }
         },
-        "summary": "Login — also sets the JWT cookies (deliberately readable by JS, not httpOnly)",
+        "summary": "Login — sets the session as httpOnly cookies. No tokens in the response body.",
         "tags": [
           "auth"
         ]
@@ -434,7 +434,7 @@
             }
           }
         },
-        "summary": "Login — also sets the JWT cookies (deliberately readable by JS, not httpOnly)",
+        "summary": "Login — sets the session as httpOnly cookies. No tokens in the response body.",
         "tags": [
           "auth"
         ]
@@ -746,6 +746,44 @@
           }
         ],
         "summary": "Request a withdrawal — requires KYC level 1; reserves the amount on hold",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/v1/payments/withdrawals/otp": {
+      "post": {
+        "description": "The code is bound to the exact amount, currency, destination and provider supplied here. Changing any of them before submitting makes the code invalid, which is what stops a code obtained for a small withdrawal from authorising a large one.",
+        "operationId": "PaymentsController_sendWithdrawalOtp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestWithdrawalOtpDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalOtpResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Send a confirmation code for one specific withdrawal (FR-CORE-08)",
         "tags": [
           "payments"
         ]
@@ -1990,6 +2028,7 @@
     },
     "/v1/admin/withdrawals/{id}/settle": {
       "patch": {
+        "description": "Requires `withdrawals.settle`, which is separate from `withdrawals.approve` so the two steps can be granted to different people (separation of duties, R-5.4).",
         "operationId": "AdminMoneyController_settleWithdrawal",
         "parameters": [
           {
@@ -2616,6 +2655,83 @@
         ]
       }
     },
+    "/v1/admin/security-settings": {
+      "get": {
+        "operationId": "AdminSecuritySettingsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SecuritySwitchDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Security controls and whether each is currently on (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/security-settings/{key}": {
+      "put": {
+        "description": "Every change is written to the admin action log with its before and after value, and turning a control OFF raises an alert — once at the moment of the change, and again on every request made while it stays off.",
+        "operationId": "AdminSecuritySettingsController_set",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSecuritySwitchDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecuritySwitchDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Turn a security control on or off (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ip-allowlist": {
       "get": {
         "operationId": "AdminIpAllowlistController_list",
@@ -2870,12 +2986,11 @@
           },
           "userId": {
             "type": "string",
-            "description": "The new user id. No session exists until the email is verified."
+            "description": "The new user id. Absent when no account was created — including when one already existed, which this endpoint deliberately does not disclose. No session exists until the email is verified."
           }
         },
         "required": [
-          "message",
-          "userId"
+          "message"
         ]
       },
       "VerifyEmailDto": {
@@ -3211,6 +3326,11 @@
               "whish",
               "usdt"
             ]
+          },
+          "otp": {
+            "type": "string",
+            "description": "Six-digit confirmation code. Required while the withdrawal OTP control is on.",
+            "example": "482913"
           }
         },
         "required": [
@@ -3309,6 +3429,56 @@
           "currency",
           "state",
           "createdAt"
+        ]
+      },
+      "RequestWithdrawalOtpDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "300.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "destination": {
+            "type": "string",
+            "description": "Payout target, e.g. an IBAN or a USDT address."
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "whish",
+              "usdt"
+            ]
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "destination",
+          "provider"
+        ]
+      },
+      "WithdrawalOtpResponseDto": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "A confirmation code has been sent to your email address."
+          },
+          "required": {
+            "type": "boolean",
+            "description": "False when the operator has the withdrawal-OTP control switched off; the withdrawal may then be submitted without a code."
+          }
+        },
+        "required": [
+          "message",
+          "required"
         ]
       },
       "KycFieldConfigDto": {
@@ -4655,6 +4825,51 @@
           "total",
           "page",
           "limit"
+        ]
+      },
+      "SecuritySwitchDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "withdrawal_otp",
+            "description": "Stable machine key. Never renamed."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string",
+            "example": "Email confirmation code on every client withdrawal"
+          },
+          "updatedBy": {
+            "type": "string",
+            "nullable": true,
+            "description": "The admin who last changed it. Null while it has never been changed."
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "enabled",
+          "label",
+          "updatedBy",
+          "updatedAt"
+        ]
+      },
+      "SetSecuritySwitchDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the control is in force. Turning one OFF is audited and alerted — see AdminSecuritySettingsController."
+          }
+        },
+        "required": [
+          "enabled"
         ]
       },
       "IpAllowlistRuleDto": {
