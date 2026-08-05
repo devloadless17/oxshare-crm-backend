@@ -23,7 +23,8 @@ import {
 import { diskStorage } from 'multer';
 import { Request } from 'express';
 import { randomUUID } from 'crypto';
-import { unlink } from 'fs/promises';
+import { open, unlink } from 'fs/promises';
+import { SIGNATURE_BYTES, signatureMatchesDeclared } from './file-signature';
 import { KycService } from './kyc.service';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
@@ -172,6 +173,44 @@ export class KycController {
     file: Express.Multer.File & { path: string; originalname: string },
     @Body() dto: UploadKycFileDto,
   ) {
+    /*
+     * What the bytes ARE, not what the client said they were.
+     *
+     * `fileFilter` and the stored extension were both decided from
+     * `file.mimetype` — the Content-Type the CLIENT wrote into the multipart
+     * header. multer cannot do better: a fileFilter runs before any bytes exist.
+     * So an authenticated client could upload an HTML document, declare it
+     * image/png and have it stored as <uuid>.png in the same directory as every
+     * identity document the business is required to keep.
+     *
+     * `uploads.controller.ts` sends X-Content-Type-Options: nosniff, which is
+     * what stops a reviewing admin's browser executing it. That single header
+     * being the whole defence is the reason to add this one: it is easy to lose
+     * in a proxy config, and the account it protects is the one that can read
+     * every client's documents.
+     *
+     * Checked here rather than in the filter because this is the first point at
+     * which the bytes exist. Rejection unlinks, using the same path as the
+     * failure below — an unreferenced identity document on disk is both a disk
+     * problem and a retention one.
+     */
+    const handle = await open(file.path, 'r');
+    let header: Buffer;
+    try {
+      const buffer = Buffer.alloc(SIGNATURE_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, SIGNATURE_BYTES, 0);
+      header = buffer.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+
+    if (!signatureMatchesDeclared(header, file.mimetype)) {
+      await unlink(file.path).catch(() => undefined);
+      throw new BadRequestException(
+        'The file content does not match its declared type. Upload a genuine JPG, PNG, WEBP or PDF.',
+      );
+    }
+
     try {
       return await this.kyc.attachFile(req.user.id, dto.field, file.path, file.originalname);
     } catch (error) {

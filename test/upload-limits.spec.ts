@@ -12,6 +12,28 @@ import { JwtAuthGuard } from '../src/modules/identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../src/modules/identity/guards/email-verified.guard';
 import { VALIDATION_PIPE_OPTIONS } from '../src/common/validation.config';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
+import { readdir } from 'fs/promises';
+
+const UPLOAD_DIR = './uploads/kyc';
+
+/**
+ * A buffer that really is a PNG.
+ *
+ * The uploads path now checks the file's leading bytes against its declared
+ * Content-Type, because `file.mimetype` is a claim by the CLIENT and multer
+ * cannot verify it — a `fileFilter` runs before any bytes exist. These fixtures
+ * used `Buffer.alloc(n, 1)`, which declared image/png and contained none, so
+ * they became the exact case the check rejects.
+ *
+ * Padded to the requested size rather than shrunk: these tests are about SIZE
+ * limits, and the signature has to sit in front of a body large enough to
+ * exercise them.
+ */
+function pngOfSize(bytes: number): Buffer {
+  const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const body = Buffer.alloc(Math.max(0, bytes - PNG_MAGIC.length), 1);
+  return Buffer.concat([PNG_MAGIC, body]);
+}
 
 /**
  * The KYC upload is bounded where the bytes are, not where the response is.
@@ -104,7 +126,7 @@ describe('KYC upload — size is bounded before anything is written', () => {
       await request(httpServer(app))
         .post('/kyc/upload')
         .field('field', 'doc_front')
-        .attach('file', Buffer.alloc(64 * 1024, 1), {
+        .attach('file', pngOfSize(64 * 1024), {
           filename: 'id.png',
           contentType: 'image/png',
         })
@@ -129,7 +151,7 @@ describe('KYC upload — size is bounded before anything is written', () => {
       await request(httpServer(app))
         .post('/kyc/upload')
         .field('field', 'doc_front')
-        .attach('file', Buffer.alloc(11 * MB, 1), {
+        .attach('file', pngOfSize(11 * MB), {
           filename: 'huge.png',
           contentType: 'image/png',
         })
@@ -154,6 +176,49 @@ describe('KYC upload — size is bounded before anything is written', () => {
        * other assertion in the file still passes.
        */
       expect(storedBytes(dir)).toBe(bytesBefore);
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * The declared type is a CLAIM, not an observation.
+   *
+   * The test above sends `text/html` honestly and is refused by the mimetype
+   * filter. This one lies: HTML content under `contentType: 'image/png'`. The
+   * filter waved it through, because a `fileFilter` runs before any bytes exist
+   * and has nothing but the client's word to go on — so it landed as
+   * `<uuid>.png` in the same directory as every identity document.
+   *
+   * `uploads.controller.ts` sends X-Content-Type-Options: nosniff, which is what
+   * stopped a reviewing admin's browser executing it. One header being the whole
+   * defence is why this check exists: headers get lost in proxy configs, and the
+   * account it protects can read every client's documents.
+   */
+  it('refuses HTML that CLAIMS to be a PNG, and leaves nothing on disk', async () => {
+    const recorded: Recorded = { attached: [], failNext: false };
+    const app = await makeApp(recorded);
+    const before = await readdir(UPLOAD_DIR).catch(() => [] as string[]);
+
+    try {
+      await request(httpServer(app))
+        .post('/kyc/upload')
+        .field('field', 'doc_front')
+        .attach('file', Buffer.from('<!DOCTYPE html><script>alert(document.cookie)</script>'), {
+          filename: 'id.png',
+          contentType: 'image/png',
+        })
+        .expect((res) => {
+          expect(res.status).toBe(400);
+        });
+
+      expect(recorded.attached).toHaveLength(0);
+
+      // Asserted on the DISK, not just the status code. The bytes are written
+      // before this check can run, so "rejected" has to mean the file was also
+      // removed — otherwise the payload is still sitting next to the documents.
+      const after = await readdir(UPLOAD_DIR).catch(() => [] as string[]);
+      expect(after.length).toBe(before.length);
     } finally {
       await app.close();
     }
@@ -191,7 +256,7 @@ describe('KYC upload — size is bounded before anything is written', () => {
       await request(httpServer(app))
         .post('/kyc/upload')
         .field('field', 'doc_front')
-        .attach('file', Buffer.alloc(1024, 1), {
+        .attach('file', pngOfSize(1024), {
           filename: 'id.png',
           contentType: 'image/png',
         })
