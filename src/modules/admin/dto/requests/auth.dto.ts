@@ -1,5 +1,24 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsArray, IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+
+/*
+ * Bounds, matching modules/identity/dto/auth.dto.ts rather than being decided
+ * again here. These DTOs were written separately from the portal's and capped
+ * nothing, so the same question had two answers depending on which door you
+ * came through, and both answers were wrong on this side.
+ *
+ * NAME_MAX mirrors the `varchar(100)` on `admins.name` and
+ * `admin_invites.name`. Without it an over-long name reached Postgres and came
+ * back as a driver error — a 500 on an admin's own invite form, where naming
+ * the offending field in a 400 is the entire purpose of having a DTO.
+ *
+ * PASSWORD_MAX matters because argon2's cost grows with input length and the
+ * endpoints that hash are deliberately UNAUTHENTICATED. The throttles bound how
+ * OFTEN a request arrives; nothing bounded how expensive one could be.
+ */
+const NAME_MAX = 100;
+const EMAIL_MAX = 255;
+const PASSWORD_MAX = 100;
 
 // Request DTOs for the admin auth + invite surface.
 //
@@ -19,18 +38,21 @@ export class AdminLoginDto {
   @IsEmail()
   email: string;
 
-  @ApiProperty({ example: 'admin123' })
+  @ApiProperty({ example: 'admin123', maxLength: PASSWORD_MAX })
   @IsString()
+  @MaxLength(PASSWORD_MAX)
   password: string;
 }
 
 export class InviteDto {
-  @ApiProperty({ example: 'new.admin@oxshare.com' })
+  @ApiProperty({ example: 'new.admin@oxshare.com', maxLength: EMAIL_MAX })
   @IsEmail()
+  @MaxLength(EMAIL_MAX)
   email: string;
 
-  @ApiProperty({ example: 'Jane Doe' })
+  @ApiProperty({ example: 'Jane Doe', maxLength: NAME_MAX })
   @IsString()
+  @MaxLength(NAME_MAX)
   name: string;
 
   /** Assign an existing role. Mutually exclusive in practice with `permissions`. */
@@ -53,8 +75,9 @@ export class AcceptInviteDto {
   @IsString()
   token: string;
 
-  @ApiProperty({ minLength: 8 })
+  @ApiProperty({ minLength: 8, maxLength: PASSWORD_MAX })
   @IsString()
   @MinLength(8)
+  @MaxLength(PASSWORD_MAX)
   password: string;
 }

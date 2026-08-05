@@ -38,8 +38,18 @@ export class LoginDto {
   @IsEmail()
   email: string;
 
-  @ApiProperty({ example: 'StrongPass123!' })
+  /*
+   * Capped like registration, which has always capped at 100.
+   *
+   * Login was the one password field with no upper bound, on an endpoint that is
+   * unauthenticated by definition and runs argon2 on whatever arrives. The
+   * throttle bounds how often that happens; it did not bound the cost of one
+   * request. No account can hold a longer password — register and reset both
+   * cap at 100 — so nothing legitimate is refused by this.
+   */
+  @ApiProperty({ example: 'StrongPass123!', maxLength: 100 })
   @IsString()
+  @MaxLength(100)
   password: string;
 
   @ApiPropertyOptional({ example: 'CLIENT' })

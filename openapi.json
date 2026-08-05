@@ -3222,7 +3222,8 @@
           },
           "password": {
             "type": "string",
-            "example": "StrongPass123!"
+            "example": "StrongPass123!",
+            "maxLength": 100
           },
           "role": {
             "type": "string",
@@ -3866,7 +3867,8 @@
           },
           "password": {
             "type": "string",
-            "example": "admin123"
+            "example": "admin123",
+            "maxLength": 100
           }
         },
         "required": [
@@ -3940,11 +3942,13 @@
         "properties": {
           "email": {
             "type": "string",
-            "example": "new.admin@oxshare.com"
+            "example": "new.admin@oxshare.com",
+            "maxLength": 255
           },
           "name": {
             "type": "string",
-            "example": "Jane Doe"
+            "example": "Jane Doe",
+            "maxLength": 100
           },
           "roleId": {
             "type": "string",
@@ -4025,7 +4029,8 @@
           },
           "password": {
             "type": "string",
-            "minLength": 8
+            "minLength": 8,
+            "maxLength": 100
           }
         },
         "required": [
