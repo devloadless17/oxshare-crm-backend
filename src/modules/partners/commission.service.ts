@@ -9,6 +9,7 @@ import {
   referralAttributions,
   tradingAccounts,
 } from '../../database/schema';
+import { LEDGER_REFERENCE } from '../../database/ledger-reference';
 import { WalletService } from '../wallet/wallet.service';
 import { IbNode, availableAt, calculate, resolveChain } from './commission';
 import Decimal from 'decimal.js';
@@ -320,7 +321,7 @@ export class CommissionService {
               currency: accrual.currency,
               amount: accrual.amount,
               entryType: 'commission',
-              referenceType: 'accrual',
+              referenceType: LEDGER_REFERENCE.accrual,
               referenceId: accrual.id,
             },
             tx,

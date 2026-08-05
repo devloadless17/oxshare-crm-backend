@@ -2,7 +2,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { closeDb, getDb, resetDb } from '../src/database/db';
-import { users, wallets } from '../src/database/schema';
+import {
+  commissionAccruals,
+  deals,
+  ibPrograms,
+  tradingAccounts,
+  users,
+  wallets,
+} from '../src/database/schema';
+import { LEDGER_REFERENCE } from '../src/database/ledger-reference';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { ReconciliationService } from '../src/modules/wallet/reconciliation.service';
 
@@ -61,6 +69,109 @@ async function makeFundedUser(amount: string) {
   const [wallet] = await wallets_.listWallets(user.id);
   return { userId: user.id, walletId: wallet.id };
 }
+
+/**
+ * The accrual half of the report.
+ *
+ * Every test above breaks the WALLET side, which is why none of them noticed
+ * that this side was querying a `reference_type` nothing writes: the checker
+ * looked for `'commission_accrual'` while the confirm step wrote `'accrual'`.
+ * From the first confirmed accrual, every accrual read as uncredited and the
+ * job answered `balanced: false` on every run — and an alert that fires hourly
+ * on a healthy system gets muted, taking the working wallet check with it.
+ *
+ * So these two pin the pair: a credited accrual is silent, an uncredited one is
+ * reported. The first would have failed against the old spelling.
+ */
+describe('§12.2 the accrual half of reconciliation', () => {
+  async function makeConfirmedAccrual(amount: string, credited: boolean) {
+    seq += 1;
+    const [user] = await ctx.db
+      .insert(users)
+      .values({
+        email: `accrual-${seq}@test.local`,
+        passwordHash: 'x',
+        firstName: 'A',
+        lastName: 'C',
+      })
+      .returning();
+
+    const [account] = await ctx.db
+      .insert(tradingAccounts)
+      .values({ userId: user.id, mt5Login: `9${seq}`.padStart(6, '0'), environment: 'live' })
+      .returning();
+
+    const [deal] = await ctx.db
+      .insert(deals)
+      .values({
+        mt5Ticket: `recon-ticket-${seq}`,
+        tradingAccountId: account.id,
+        symbol: 'EURUSD',
+        volume: '1.00',
+        spread: '2.00',
+        closedAt: new Date(),
+      })
+      .returning();
+
+    const [program] = await ctx.db
+      .insert(ibPrograms)
+      .values({ name: `recon-program-${seq}`, commissionValue: '30', l1Share: '100' })
+      .returning();
+
+    const [accrual] = await ctx.db
+      .insert(commissionAccruals)
+      .values({
+        dealId: deal.id,
+        ibUserId: user.id,
+        programId: program.id,
+        level: 1,
+        amount,
+        status: 'confirmed',
+        availableAt: new Date(),
+      })
+      .returning();
+
+    if (credited) {
+      // Exactly what the confirm step writes, through the same constant.
+      await wallets_.post({
+        userId: user.id,
+        currency: 'USD',
+        amount,
+        entryType: 'commission',
+        referenceType: LEDGER_REFERENCE.accrual,
+        referenceId: accrual.id,
+      });
+    }
+
+    return { accrualId: accrual.id, userId: user.id };
+  }
+
+  it('stays silent about an accrual that WAS credited', async () => {
+    // The regression. Against the old spelling this accrual looked uncredited,
+    // because no row anywhere carried the type the query asked for.
+    const { accrualId } = await makeConfirmedAccrual('25.00', true);
+    const report = await reconciliation.run();
+
+    expect(report.unpaidConfirmedAccruals.map((a) => a.accrualId)).not.toContain(accrualId);
+  });
+
+  it('reports an accrual confirmed but never credited', async () => {
+    // The failure it exists to catch: the promotion committed the status change
+    // and not the credit. The wallet check cannot see this — a credit that never
+    // happened leaves the wallet perfectly self-consistent, merely smaller.
+    const { accrualId } = await makeConfirmedAccrual('40.00', false);
+    const report = await reconciliation.run();
+
+    expect(report.unpaidConfirmedAccruals.map((a) => a.accrualId)).toContain(accrualId);
+    expect(report.balanced).toBe(false);
+
+    // `run()` reads the whole database, so a deliberately broken row left behind
+    // would make every later test that asserts `balanced: true` fail for a
+    // reason that has nothing to do with it. Break it, prove it is seen, undo it.
+    await ctx.db.delete(commissionAccruals).where(eq(commissionAccruals.id, accrualId));
+    expect((await reconciliation.run()).balanced).toBe(true);
+  });
+});
 
 describe('§12.2 reconciliation against live data', () => {
   it('reports balanced when every wallet agrees with its ledger', async () => {

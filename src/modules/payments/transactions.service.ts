@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, gte, ne, sql } from 'drizzle-orm';
 import { transactions, users } from '../../database/schema';
+import { LEDGER_REFERENCE } from '../../database/ledger-reference';
 import { money, toDecimal } from '../wallet/money';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
 import { MoneyLimits } from '../../config/money-limits';
@@ -372,7 +373,7 @@ export class TransactionsService {
           currency: row.currency,
           amount: toDecimal(row.amount).negated(),
           entryType: 'withdrawal',
-          referenceType: 'transaction',
+          referenceType: LEDGER_REFERENCE.transaction,
           referenceId: row.id,
         },
         dbTx,
@@ -452,7 +453,7 @@ export class TransactionsService {
       currency: params.currency,
       amount: params.amount,
       entryType: 'deposit',
-      referenceType: 'transaction',
+      referenceType: LEDGER_REFERENCE.transaction,
       referenceId: tx.id,
     });
     return { transaction: tx, replayed: false as const };

@@ -3,6 +3,7 @@ import { eq, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { commissionAccruals, ledgerEntries, wallets } from '../../database/schema';
+import { LEDGER_REFERENCE } from '../../database/ledger-reference';
 import { money } from './money';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 
@@ -124,11 +125,16 @@ export class ReconciliationService {
    * Confirmed accruals with no ledger entry naming them.
    *
    * The confirm step writes the ledger entry with
-   * `reference_type = 'commission_accrual'` and `reference_id = accrual.id`, so
-   * the absence of that row means the promotion committed the status change and
-   * not the credit. The wallet check cannot see this: a credit that never
+   * `reference_type = LEDGER_REFERENCE.accrual` and `reference_id = accrual.id`,
+   * so the absence of that row means the promotion committed the status change
+   * and not the credit. The wallet check cannot see this: a credit that never
    * happened leaves the wallet entirely self-consistent, just smaller than it
    * should be.
+   *
+   * The type comes from the shared constant, never a literal. This query used
+   * to look for `'commission_accrual'` while the writer wrote `'accrual'`, so
+   * every confirmed accrual read as uncredited and the job reported
+   * `balanced: false` on every run from the first accrual onwards.
    */
   private async findUnpaidConfirmedAccruals(): Promise<
     { accrualId: string; ibUserId: string; amount: string }[]
@@ -139,7 +145,7 @@ export class ReconciliationService {
        WHERE ca.status = 'confirmed'
          AND NOT EXISTS (
            SELECT 1 FROM ${ledgerEntries} le
-            WHERE le.reference_type = 'commission_accrual'
+            WHERE le.reference_type = ${LEDGER_REFERENCE.accrual}
               AND le.reference_id = ca.id::text
          )
     `);
