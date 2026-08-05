@@ -1,6 +1,6 @@
 {
-  "id": "9f78fa84-fc7a-4562-a632-d93674d7e6bd",
-  "prevId": "989e5080-43d0-4469-a060-7efea86fc869",
+  "id": "f982cd5f-b2f3-4e2a-938e-b354c0e32264",
+  "prevId": "cf6712ea-16f0-45c1-82cf-266aff24a024",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -289,6 +289,36 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "audit_log_subject_type_idx": {
+          "name": "audit_log_subject_type_idx",
+          "columns": [
+            {
+              "expression": "subject_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "audit_log_actor_idx": {
+          "name": "audit_log_actor_idx",
+          "columns": [
+            {
+              "expression": "actor_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -414,6 +444,21 @@
             },
             {
               "expression": "available_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "commission_accruals_ib_user_idx": {
+          "name": "commission_accruals_ib_user_idx",
+          "columns": [
+            {
+              "expression": "ib_user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2017,6 +2062,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "password_reset_token_hash": {
+          "name": "password_reset_token_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "password_reset_expiry": {
+          "name": "password_reset_expiry",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

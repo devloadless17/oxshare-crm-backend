@@ -1,6 +1,6 @@
 {
-  "id": "9f78fa84-fc7a-4562-a632-d93674d7e6bd",
-  "prevId": "989e5080-43d0-4469-a060-7efea86fc869",
+  "id": "cf6712ea-16f0-45c1-82cf-266aff24a024",
+  "prevId": "0acea07d-5149-4d6b-8b0c-a27a15c7f4dd",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -289,6 +289,36 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "audit_log_subject_type_idx": {
+          "name": "audit_log_subject_type_idx",
+          "columns": [
+            {
+              "expression": "subject_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "audit_log_actor_idx": {
+          "name": "audit_log_actor_idx",
+          "columns": [
+            {
+              "expression": "actor_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -414,6 +444,21 @@
             },
             {
               "expression": "available_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "commission_accruals_ib_user_idx": {
+          "name": "commission_accruals_ib_user_idx",
+          "columns": [
+            {
+              "expression": "ib_user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
