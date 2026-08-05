@@ -4,6 +4,7 @@ import type { KycStore, KycSubmission } from '../src/store/kyc.store';
 import type { User, UsersStore } from '../src/store/users.store';
 import type { EmailService } from '../src/modules/email/email.service';
 import type { KycConfigStore } from '../src/store/kyc-config.store';
+import type { Db } from '../src/database/db';
 import {
   AuthorizationError,
   NotFoundError,
@@ -63,13 +64,26 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
     ),
     findPageWithUsers: vi.fn().mockResolvedValue({ items: [], total: 0, counts: {} }),
     resetUser: vi.fn(),
-    clearAll: vi.fn(),
+    /*
+     * The conditional write approve/reject now use. The stub honours the `from`
+     * precondition rather than always succeeding — otherwise these tests would
+     * pass against a store that ignored it, which is the whole defect the real
+     * `transition()` closes.
+     */
+    transition: vi.fn((_id: string, from: string[], patch: Partial<KycSubmission>) =>
+      Promise.resolve(from.includes(stored.status) ? { ...stored, ...patch } : undefined),
+    ),
+    // A decision snapshots the attempt before the next one can overwrite it.
+    archiveAttempt: vi.fn().mockResolvedValue(undefined),
+    listAttempts: vi.fn().mockResolvedValue([]),
+    archivedDocumentPaths: vi.fn().mockResolvedValue([]),
   };
   const users = {
     findById: vi.fn().mockResolvedValue(options.user ?? USER),
     update: vi.fn().mockResolvedValue(options.user ?? USER),
   };
   const email = { sendKycDecisionEmail: vi.fn().mockResolvedValue(undefined) };
+  const db = { transaction: (fn: (tx: unknown) => unknown) => fn(db) };
 
   /*
    * The real seeded profile step, trimmed to what these tests exercise.
@@ -102,6 +116,16 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
     kycStore as unknown as KycStore,
     users as unknown as UsersStore,
     kycConfig as unknown as KycConfigStore,
+    /*
+     * A transaction stub that just runs the callback.
+     *
+     * approve/reject now wrap their writes in `db.transaction(...)` so the
+     * status, the archived attempt and the verification level land together.
+     * These are unit tests over stubbed stores — the atomicity itself is proven
+     * against real Postgres in test/kyc-gates-money.spec.ts — so here the
+     * transaction only has to be transparent.
+     */
+    db as unknown as Db,
   );
   return { service, kycStore, users, email, kycConfig };
 }
@@ -283,19 +307,29 @@ describe('approve', () => {
     // This is the line that unlocks withdrawals.
     const h = build({ stored: completeSubmission({ status: 'submitted' }) });
     await h.service.approve('user-1', 'admin-1');
-    expect(h.users.update).toHaveBeenCalledWith('user-1', { verificationLevel: 1 });
+    // The third argument is the transaction the decision runs in — the level and
+    // the status land together or not at all.
+    expect(h.users.update).toHaveBeenCalledWith(
+      'user-1',
+      { verificationLevel: 1 },
+      expect.anything(),
+    );
   });
 
   it('records who approved it and when', async () => {
     const h = build({ stored: completeSubmission({ status: 'submitted' }) });
     await h.service.approve('user-1', 'admin-1');
-    expect(h.kycStore.update).toHaveBeenCalledWith(
+    // `transition`, not `update`: the expected status goes into the WHERE, so
+    // two reviewers racing cannot both write.
+    expect(h.kycStore.transition).toHaveBeenCalledWith(
       'user-1',
+      ['submitted', 'under_review'],
       expect.objectContaining({
         status: 'approved',
         reviewedBy: 'admin-1',
         reviewedAt: expect.any(Date),
       }),
+      expect.anything(),
     );
   });
 
@@ -328,12 +362,37 @@ describe('approve', () => {
   });
 
   it('does not raise the verification level if recording the decision fails', async () => {
-    // Two writes, no transaction: if the status write fails after the level is
-    // raised, the client is verified with no approved submission behind it.
+    // If the status write fails, the level must not move — otherwise the client
+    // is verified with no approved submission behind them, which is the state
+    // that lets money leave on the strength of nothing.
+    //
+    // This used to rest on ORDERING (status first, level second) and a comment
+    // arguing the crash window was harmless. It now rests on a transaction, and
+    // this asserts the observable consequence either way.
     const h = build({ stored: completeSubmission({ status: 'submitted' }) });
-    h.kycStore.update.mockRejectedValue(new Error('db down'));
+    h.kycStore.transition.mockRejectedValue(new Error('db down'));
     await expect(h.service.approve('user-1', 'admin-1')).rejects.toThrow();
     expect(h.users.update).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES when another reviewer changed the submission first', async () => {
+    /*
+     * The race the conditional write closes.
+     *
+     * Two admins hitting approve and reject in the same tick both used to pass
+     * their check against the same `submitted` row and both write, last writer
+     * winning. Interleaved with the separate level write, that could land as
+     * `status: 'rejected'` + `verificationLevel: 1` — refused on paper, able to
+     * withdraw in fact.
+     *
+     * `transition()` returning undefined IS "somebody got there first".
+     */
+    const h = build({ stored: completeSubmission({ status: 'submitted' }) });
+    h.kycStore.transition.mockResolvedValue(undefined);
+
+    await expect(h.service.approve('user-1', 'admin-1')).rejects.toThrow(/another reviewer/i);
+    expect(h.users.update).not.toHaveBeenCalled();
+    expect(h.kycStore.archiveAttempt).not.toHaveBeenCalled();
   });
 });
 
@@ -341,13 +400,15 @@ describe('reject', () => {
   it('records the reason and the flagged fields', async () => {
     const h = build({ stored: completeSubmission({ status: 'under_review' }) });
     await h.service.reject('user-1', 'admin-1', 'Blurry document', ['doc_front']);
-    expect(h.kycStore.update).toHaveBeenCalledWith(
+    expect(h.kycStore.transition).toHaveBeenCalledWith(
       'user-1',
+      expect.arrayContaining(['submitted', 'under_review']),
       expect.objectContaining({
         status: 'rejected',
         rejectionReason: 'Blurry document',
         rejectedFields: ['doc_front'],
       }),
+      expect.anything(),
     );
   });
 
@@ -373,7 +434,11 @@ describe('reject', () => {
       user: { ...USER, verificationLevel: 1 },
     });
     await h.service.reject('user-1', 'admin-1', 'Approved in error', []);
-    expect(h.users.update).toHaveBeenCalledWith('user-1', { verificationLevel: 0 });
+    expect(h.users.update).toHaveBeenCalledWith(
+      'user-1',
+      { verificationLevel: 0 },
+      expect.anything(),
+    );
   });
 
   it('refuses when there is no submission', async () => {

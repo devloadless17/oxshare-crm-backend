@@ -1,14 +1,19 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { KycStore, KycStatus } from '../../store/kyc.store';
+import { unlink } from 'fs/promises';
+import { basename, join } from 'path';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { KycStore, type KycStatus, type KycSubmission } from '../../store/kyc.store';
 import { User, UsersStore } from '../../store/users.store';
 import { KycConfigStore } from '../../store/kyc-config.store';
 import { EmailService } from '../email/email.service';
 import { findProfileProblem, type ProfileFieldRule } from './kyc-profile';
 import {
   AuthorizationError,
+  ConflictError,
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain-errors';
+import { DRIZZLE_DB } from '../../database/database.module';
+import type { Db } from '../../database/db';
 
 /**
  * The user, as a REVIEWER may see them.
@@ -22,6 +27,24 @@ import {
  * Same shape of defect as the portal's `sanitize()`, in a different file: what
  * leaves the API is decided by listing it, not by remembering to remove things.
  */
+/**
+ * Every document path a submission references.
+ *
+ * One list, in one place, because three things need it and they must not drift:
+ * `resetKyc` deletes these files, `UploadsController.submissionReferencesFile`
+ * decides ownership from the same set, and a future retention job will want it.
+ * A path missed here is a document that outlives its record.
+ */
+function documentPathsOf(submission: KycSubmission): string[] {
+  return [
+    submission.document?.frontFilePath,
+    submission.document?.backFilePath,
+    submission.selfie?.filePath,
+    submission.addressProof?.filePath,
+    submission.addressProof?.page2FilePath,
+  ].filter((p): p is string => typeof p === 'string' && p.length > 0);
+}
+
 function reviewerView(user: User) {
   return {
     id: user.id,
@@ -47,6 +70,15 @@ export class KycService {
     private readonly kycStore: KycStore,
     private readonly users: UsersStore,
     private readonly kycConfig: KycConfigStore,
+    /*
+     * The db handle, for the two decisions that must be atomic.
+     *
+     * Injected rather than reached for via a module-level singleton, matching
+     * the four money services. It is used ONLY to open a transaction — every
+     * read and write still goes through a store, so this does not become a
+     * second data-access path.
+     */
+    @Inject(DRIZZLE_DB) private readonly db: Db,
   ) {}
 
   /**
@@ -270,27 +302,47 @@ export class KycService {
     }
 
     /*
-     * ORDER MATTERS, and it is the only thing making this safe without a
-     * transaction: the status is written FIRST, the verification level second.
-     * These are two stores and two writes, so a crash between them leaves one
-     * of two states — and this order picks the harmless one.
+     * ONE TRANSACTION, and a CONDITIONAL write.
      *
-     *   status approved, level 0  → the client looks verified but cannot
-     *                               withdraw. Re-approving fixes it.
-     *   level 1, status not approved → the client can move money with no
-     *                               approved submission behind them.
+     * This used to be two unconditional writes to two stores, with a comment
+     * arguing that ordering them status-first made the crash window harmless:
+     * `status approved, level 0` is recoverable, `level 1, status not approved`
+     * lets a client move money with no approved submission behind them. The
+     * argument was right and the ordering was right; it was still a window.
      *
-     * The second is the one that costs money, so it must be the one that cannot
-     * happen. Making this genuinely atomic needs an Executor threaded through
-     * KycStore and UsersStore — recorded as a follow-up rather than half-done.
+     * Two things close it now:
+     *
+     *  - `transition()` puts the expected status in the WHERE, so the check and
+     *    the write are one statement. Two admins racing approve against reject
+     *    can no longer both pass their check against the same row and both
+     *    write — the second one finds nothing to update and is refused.
+     *  - The transaction makes the status, the archived attempt and the
+     *    verification level a single atomic act, so there is no state where one
+     *    landed and another did not.
+     *
+     * The re-read above is now advisory only: it exists to produce a precise
+     * message ("already approved" vs "never submitted"), and the WHERE clause is
+     * what actually enforces it. If they disagree, the database wins.
      */
-    await this.kycStore.update(userId, {
-      status: 'approved',
-      reviewedBy: adminId,
-      reviewedAt: new Date(),
-    });
+    await this.db.transaction(async (tx) => {
+      const updated = await this.kycStore.transition(
+        userId,
+        ['submitted', 'under_review'],
+        { status: 'approved', reviewedBy: adminId, reviewedAt: new Date() },
+        tx,
+      );
+      if (!updated) {
+        // Lost a race with another reviewer between the read and this write.
+        throw new ConflictError(
+          'This submission was changed by another reviewer. Reload it and try again.',
+        );
+      }
 
-    await this.users.update(userId, { verificationLevel: 1 });
+      // Snapshot inside the transaction: the evidence and the decision are one
+      // fact, so a rolled-back approval must not leave an archived attempt.
+      await this.kycStore.archiveAttempt(updated, tx);
+      await this.users.update(userId, { verificationLevel: 1 }, tx);
+    });
 
     const user = await this.users.findById(userId);
     if (user) {
@@ -324,28 +376,46 @@ export class KycService {
     if (!submission) throw new NotFoundError('KYC submission not found.');
     const user = await this.users.findById(userId);
 
-    await this.kycStore.update(userId, {
-      status: 'rejected',
-      rejectionReason: reason,
-      rejectedFields: rejectedFields,
-      reviewedBy: adminId,
-      reviewedAt: new Date(),
-    });
-
     /*
-     * Take the verification level back.
+     * Same shape as `approve()`: one transaction, one conditional write.
      *
-     * `approve()` raises it to 1 and nothing lowered it, so an admin who
-     * approved by mistake and then rejected left the client REJECTED and still
-     * VERIFIED — the status said no while the money path said yes, and
-     * verification level is what gates withdrawals. Rejection is the statement
-     * that the evidence is not accepted, so the level it granted goes with it.
-     *
-     * Unconditional rather than conditional on the previous status: level 1 has
-     * exactly one source in Phase 1 — approval — so a rejected client should
-     * hold none of it, whichever path they arrived by.
+     * `from` is wider here than on approve — a rejection is also the correction
+     * for a mistaken approval, and taking the level back from an already-approved
+     * client is exactly what `test/kyc-gates-money.spec.ts` pins. What it will
+     * NOT do is reject a submission that was never submitted.
      */
-    await this.users.update(userId, { verificationLevel: 0 });
+    await this.db.transaction(async (tx) => {
+      const updated = await this.kycStore.transition(
+        userId,
+        ['submitted', 'under_review', 'approved', 'rejected'],
+        {
+          status: 'rejected',
+          rejectionReason: reason,
+          rejectedFields: rejectedFields,
+          reviewedBy: adminId,
+          reviewedAt: new Date(),
+        },
+        tx,
+      );
+      if (!updated) {
+        throw new ValidationError(
+          `Only a submitted KYC can be rejected; this one is ${submission.status}.`,
+        );
+      }
+      await this.kycStore.archiveAttempt(updated, tx);
+      /*
+       * Take the verification level back, in the SAME transaction.
+       *
+       * `approve()` raises it to 1 and nothing lowered it, so an admin who
+       * approved by mistake and then rejected left the client REJECTED and still
+       * VERIFIED — the status said no while the money path said yes.
+       *
+       * Unconditional rather than conditional on the previous status: level 1
+       * has exactly one source in Phase 1 — approval — so a rejected client
+       * should hold none of it, whichever path they arrived by.
+       */
+      await this.users.update(userId, { verificationLevel: 0 }, tx);
+    });
 
     if (user) {
       // Sent inline per FR-ADM-03 — the client is emailed the reason and can retry
@@ -361,10 +431,100 @@ export class KycService {
     return this.getByUserId(userId);
   }
 
-  // ─── Reset User KYC ────────────────────────────────────────────────────────
+  /**
+   * Discard an in-progress submission and start again.
+   *
+   * Reachable by the CLIENT (`POST /kyc/reset`), which is what makes the two
+   * guards below necessary rather than tidy.
+   *
+   * ## What this used to do
+   *
+   * `DELETE FROM kyc_submissions WHERE user_id = …`, unconditionally, touching
+   * neither `verificationLevel` nor the files. Two consequences, both bad:
+   *
+   *  1. **An APPROVED client could delete the evidence behind their own
+   *     verification and stay at level 1.** The submission row is the only
+   *     record of the documents an admin approved; the level is what opens
+   *     withdrawals. Resetting left the account verified with nothing behind it
+   *     — which is precisely the state `approve()`'s ordering comment calls the
+   *     one that costs money, reachable by a different route and by the client
+   *     themselves.
+   *  2. **Every referenced document was orphaned on disk.** The submission JSON
+   *     held the only reference to those UUID filenames, so once the row was
+   *     gone the files could never be served (`submissionReferencesFile` returns
+   *     false), never be reviewed, and never be cleaned up by anything. They
+   *     simply accumulated on the volume that holds every identity document.
+   *
+   * ## What it does now
+   *
+   * Refuses once the submission has left the client's hands, and takes the files
+   * with the row when it does delete. Deleting the row while an admin is mid-review
+   * is the same problem in a smaller form: the reviewer's screen empties and the
+   * queue entry vanishes under them.
+   */
   async resetKyc(userId: string) {
+    const submission = await this.kycStore.findByUserId(userId);
+    if (!submission) return { message: 'KYC data reset successfully.' };
+
+    if (submission.status === 'approved') {
+      throw new AuthorizationError(
+        'An approved verification cannot be reset. Contact support if your details have changed.',
+      );
+    }
+    if (submission.status === 'submitted' || submission.status === 'under_review') {
+      throw new AuthorizationError(
+        'Your submission is being reviewed and cannot be reset right now.',
+      );
+    }
+
+    /*
+     * Read the paths BEFORE the row goes — afterwards nothing knows them — and
+     * subtract anything an archived attempt still points at.
+     *
+     * A document that belongs to a decided attempt is EVIDENCE, not an orphan.
+     * Deleting it here would quietly destroy the record of a refusal while
+     * leaving the row that describes it, which is worse than the orphaning this
+     * deletion was added to fix.
+     */
+    const archived = new Set(
+      (await this.kycStore.archivedDocumentPaths(userId)).map((p) => basename(p)),
+    );
+    const deletable = documentPathsOf(submission).filter((p) => !archived.has(basename(p)));
+
     await this.kycStore.resetUser(userId);
+    await this.deleteDocuments(deletable);
+
     return { message: 'KYC data reset successfully.' };
+  }
+
+  /** A client's decided attempts, oldest first — the admin history view. */
+  async getHistory(userId: string) {
+    return this.kycStore.listAttempts(userId);
+  }
+
+  /**
+   * Best-effort unlink of documents whose owning record is already gone.
+   *
+   * Deliberately after the delete and deliberately not fatal: the row is the
+   * thing that matters, and a file that cannot be removed is a disk problem to
+   * be logged, not a reason to fail a request whose database work succeeded.
+   * The alternative — unlink first — risks deleting documents and then failing
+   * to delete the row, leaving a submission pointing at nothing.
+   */
+  private async deleteDocuments(paths: string[]): Promise<void> {
+    for (const filePath of paths) {
+      const name = basename(filePath);
+      if (!name) continue;
+      try {
+        await unlink(join(process.cwd(), 'uploads', 'kyc', name));
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        // ENOENT is normal — a replaced document is already gone.
+        if (!reason.includes('ENOENT')) {
+          this.logger.warn(`Could not delete KYC document ${name}: ${reason}`);
+        }
+      }
+    }
   }
 
   /*

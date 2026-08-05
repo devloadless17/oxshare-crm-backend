@@ -1507,6 +1507,45 @@
         ]
       }
     },
+    "/v1/admin/kyc/{userId}/history": {
+      "get": {
+        "operationId": "AdminComplianceController_getKycHistory",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/KycAttemptDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "A client's previously decided KYC attempts, oldest first",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/kyc/{userId}/claim": {
       "patch": {
         "operationId": "AdminComplianceController_claimKyc",
@@ -4163,6 +4202,42 @@
           },
           "lastName": {
             "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "individual",
+              "referral",
+              "partner"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "pending",
+              "suspended"
+            ]
+          },
+          "verificationLevel": {
+            "type": "number",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "emailVerified": {
+            "type": "boolean"
+          },
+          "country": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -4270,6 +4345,66 @@
           "page",
           "limit",
           "counts"
+        ]
+      },
+      "KycAttemptDto": {
+        "type": "object",
+        "properties": {
+          "attemptNo": {
+            "type": "number",
+            "description": "Dense from 1, per client."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "rejected"
+            ]
+          },
+          "submittedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reviewedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reviewedBy": {
+            "type": "string"
+          },
+          "rejectionReason": {
+            "type": "string"
+          },
+          "rejectedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "personalInfo": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "document": {
+            "$ref": "#/components/schemas/KycDocumentDto"
+          },
+          "selfie": {
+            "$ref": "#/components/schemas/KycSelfieDto"
+          },
+          "addressProof": {
+            "$ref": "#/components/schemas/KycAddressProofDto"
+          },
+          "archivedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attemptNo",
+          "status",
+          "archivedAt"
         ]
       },
       "RejectDto": {

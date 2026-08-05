@@ -43,11 +43,36 @@ export class AdminLoginResponseDto {
   @ApiProperty({ type: AdminProfileDto }) admin: AdminProfileDto;
 }
 
+/**
+ * The client, as a REVIEWER may see them.
+ *
+ * Mirrors `reviewerView()` in `kyc.service.ts`, which is an allow-list written
+ * after spreading the whole record sent every admin the client's password hash.
+ *
+ * The four required fields are what BOTH endpoints return. The optional ones are
+ * returned by `GET /admin/kyc/:userId` and not by the paginated list, which
+ * selects a narrower projection in SQL — so they are genuinely absent there
+ * rather than merely undocumented.
+ *
+ * They were missing from this DTO entirely, which meant the API sent them and
+ * the contract denied they existed: the admin app could not render "is this
+ * email verified" or "how old is this account" without a hand-written type,
+ * i.e. without giving up the one mechanism that turns backend drift into a
+ * compile error (R-1.1). Those are ordinary fraud signals on a review screen,
+ * and the reviewer was being asked to decide without them.
+ */
 export class KycUserDto {
   @ApiProperty() id: string;
   @ApiProperty() email: string;
   @ApiProperty() firstName: string;
   @ApiProperty() lastName: string;
+  @ApiPropertyOptional({ enum: ['individual', 'referral', 'partner'] }) type?: string;
+  @ApiPropertyOptional({ enum: ['active', 'pending', 'suspended'] }) status?: string;
+  @ApiPropertyOptional({ enum: [0, 1] }) verificationLevel?: number;
+  @ApiPropertyOptional() emailVerified?: boolean;
+  @ApiPropertyOptional() country?: string;
+  @ApiPropertyOptional() phone?: string;
+  @ApiPropertyOptional({ type: String, format: 'date-time' }) createdAt?: string;
 }
 
 export class KycDocumentDto {
@@ -93,6 +118,30 @@ export class KycSubmissionDto {
   addressProof?: KycAddressProofDto;
   @ApiPropertyOptional({ type: KycUserDto, nullable: true })
   user?: KycUserDto | null;
+}
+
+/**
+ * One previously DECIDED attempt, as it stood when the decision was made.
+ *
+ * Not a `KycSubmissionDto`: this is a historical record, so `status` is narrowed
+ * to the two terminal values it can actually hold, there is no `user` (the
+ * caller already knows whose history they asked for), and `attemptNo` is what
+ * makes "the third try" a thing the UI can say.
+ */
+export class KycAttemptDto {
+  @ApiProperty({ description: 'Dense from 1, per client.' }) attemptNo: number;
+  @ApiProperty({ enum: ['approved', 'rejected'] }) status: string;
+  @ApiPropertyOptional() submittedAt?: Date;
+  @ApiPropertyOptional() reviewedAt?: Date;
+  @ApiPropertyOptional() reviewedBy?: string;
+  @ApiPropertyOptional() rejectionReason?: string;
+  @ApiPropertyOptional({ type: [String] }) rejectedFields?: string[];
+  @ApiPropertyOptional({ type: 'object', additionalProperties: { type: 'string' } })
+  personalInfo?: Record<string, string>;
+  @ApiPropertyOptional({ type: KycDocumentDto }) document?: KycDocumentDto;
+  @ApiPropertyOptional({ type: KycSelfieDto }) selfie?: KycSelfieDto;
+  @ApiPropertyOptional({ type: KycAddressProofDto }) addressProof?: KycAddressProofDto;
+  @ApiProperty() archivedAt: Date;
 }
 
 export class KycListResponseDto {

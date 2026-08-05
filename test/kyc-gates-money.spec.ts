@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { closeDb, resetDb } from '../src/database/db';
-import { kycSubmissions, users } from '../src/database/schema';
+import { admins, kycSubmissions, users } from '../src/database/schema';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { KycService } from '../src/modules/compliance/kyc.service';
@@ -14,8 +14,17 @@ import type { EmailService } from '../src/modules/email/email.service';
 import { AuthorizationError } from '../src/common/errors/domain-errors';
 
 /** `reviewed_by` is a uuid column, so the reviewer needs a real one. */
-const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
-const OTHER_ADMIN_ID = '99999999-8888-7777-6666-555555555555';
+/*
+ * REAL admin rows, not fabricated UUIDs.
+ *
+ * `kyc_submissions.reviewed_by` now carries a foreign key to `admins`, so a
+ * well-formed UUID that belongs to nobody is rejected by the database. That is
+ * the point of the constraint — "who approved this" stopped being a string the
+ * application merely hoped was meaningful — and it means these tests have to
+ * approve as somebody who exists, which is what the production path does anyway.
+ */
+let ADMIN_ID: string;
+let OTHER_ADMIN_ID: string;
 
 /**
  * KYC gates the money path — the acceptance criterion, proven end to end.
@@ -97,7 +106,20 @@ beforeAll(async () => {
     new KycStore(ctx.db),
     new UsersStore(ctx.db),
     new KycConfigStore(ctx.db),
+    // The real db: approve/reject run in a transaction, and this suite exists to
+    // prove the gate against real Postgres rather than a stub of it.
+    ctx.db,
   );
+
+  const reviewers = await ctx.db
+    .insert(admins)
+    .values([
+      { email: 'kyc-gate-admin@oxshare.com', passwordHash: 'x', name: 'Reviewer One' },
+      { email: 'kyc-gate-admin2@oxshare.com', passwordHash: 'x', name: 'Reviewer Two' },
+    ])
+    .returning();
+  ADMIN_ID = reviewers[0].id;
+  OTHER_ADMIN_ID = reviewers[1].id;
 }, 180_000);
 
 afterAll(async () => {
@@ -154,6 +176,56 @@ describe('a funded feature is blocked until level 1, and blocked again after rej
 
     const [user] = await ctx.db.select().from(users).where(eq(users.id, userId));
     expect(user.verificationLevel).toBe(0);
+  });
+
+  it('KEEPS the refused attempt when the client resubmits and is approved', async () => {
+    /*
+     * The defect this closes, end to end against real Postgres.
+     *
+     * `kyc_submissions` is keyed on user_id, so a resubmission overwrote the
+     * original in place: `submit()` cleared the rejection reason, `attachFile`
+     * replaced the document path, and `approve()` overwrote reviewed_by. After
+     * approval the record read "approved", and the question "was this client
+     * ever rejected, and why" had no answer anywhere except an audit line.
+     *
+     * For a regulated broker, "we verified this person" is a claim that has to
+     * be evidenced years later.
+     */
+    const userId = await makeUnverifiedClient('kyc-history@oxshare.com');
+    await submitCompleteKyc(userId);
+
+    await kyc.reject(userId, ADMIN_ID, 'Passport expired', ['doc_front']);
+
+    // The client corrects and resubmits — which clears the live rejection data.
+    await ctx.db
+      .update(kycSubmissions)
+      .set({
+        status: 'submitted',
+        rejectionReason: null,
+        rejectedFields: null,
+        document: { docType: 'passport', frontFilePath: '/uploads/kyc/new-front.png' },
+      })
+      .where(eq(kycSubmissions.userId, userId));
+
+    await kyc.approve(userId, OTHER_ADMIN_ID);
+
+    const history = await kyc.getHistory(userId);
+    expect(history).toHaveLength(2);
+
+    // Attempt 1 still carries WHY it was refused and WHICH document it was about.
+    expect(history[0].attemptNo).toBe(1);
+    expect(history[0].status).toBe('rejected');
+    expect(history[0].rejectionReason).toBe('Passport expired');
+    expect(history[0].rejectedFields).toEqual(['doc_front']);
+    expect(history[0].document?.frontFilePath).toBe('/uploads/kyc/front.png');
+    expect(history[0].reviewedBy).toBe(ADMIN_ID);
+
+    // Attempt 2 is the approval, by a DIFFERENT reviewer and on a DIFFERENT
+    // document — both facts the single live row could not hold at once.
+    expect(history[1].attemptNo).toBe(2);
+    expect(history[1].status).toBe('approved');
+    expect(history[1].document?.frontFilePath).toBe('/uploads/kyc/new-front.png');
+    expect(history[1].reviewedBy).toBe(OTHER_ADMIN_ID);
   });
 
   it('leaves the level alone when a second approval is refused', async () => {

@@ -1,0 +1,3 @@
+ALTER TABLE "kyc_submissions" ADD CONSTRAINT "kyc_submissions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "kyc_submissions" ADD CONSTRAINT "kyc_submissions_reviewed_by_admins_id_fk" FOREIGN KEY ("reviewed_by") REFERENCES "public"."admins"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "kyc_submissions_submitted_at_idx" ON "kyc_submissions" USING btree ("submitted_at" DESC NULLS LAST);

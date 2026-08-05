@@ -160,7 +160,24 @@ export const adminInvites = pgTable('admin_invites', {
 export const kycSubmissions = pgTable(
   'kyc_submissions',
   {
-    userId: uuid('user_id').primaryKey(), // one submission per user (FSD lifecycle)
+    /*
+     * One submission per user (FSD lifecycle), and now actually tied to one.
+     *
+     * This was a bare `uuid` primary key with no reference, while every money
+     * table in this file uses `.references(… onDelete: 'restrict')`. So an
+     * orphan submission — a row whose user does not exist — was possible, and
+     * `getByUserId` handles it by returning `user: undefined`, which renders in
+     * the admin queue as a submission with no name.
+     *
+     * `restrict` rather than `cascade`, matching the money tables: a client's
+     * identity documents are the evidence behind their verification, and a
+     * `DELETE FROM users` should fail loudly rather than silently take the
+     * compliance record with it. Deleting a client is a deliberate act with a
+     * retention policy attached (PLATFORM-CONVENTIONS 12.9), not a side effect.
+     */
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'restrict' }),
     status: kycStatusEnum('status').notNull().default('not_started'),
     personalInfo: jsonb('personal_info').$type<Record<string, string>>(),
     document: jsonb('document').$type<Record<string, string>>(),
@@ -170,11 +187,100 @@ export const kycSubmissions = pgTable(
     rejectedFields: jsonb('rejected_fields').$type<string[]>(),
     submittedAt: timestamp('submitted_at', { withTimezone: true }),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
-    reviewedBy: uuid('reviewed_by'),
+    /*
+     * `set null` rather than `restrict`: an admin who leaves the company should
+     * be removable, and their departure must not be blocked by — or silently
+     * delete — the verifications they signed off. The authoritative "who
+     * approved this" is the append-only admin action log (D-21); this column is
+     * the convenience copy, so losing it is acceptable where losing the audit
+     * row would not be.
+     */
+    reviewedBy: uuid('reviewed_by').references(() => admins.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('kyc_submissions_status_idx').on(t.status)],
+  (t) => [
+    index('kyc_submissions_status_idx').on(t.status),
+    /*
+     * The review queue orders by `submitted_at DESC` on EVERY request
+     * (`kyc.store.ts` findPageWithUsers), unconditionally and for every filter
+     * tab. Without this the database sorts the whole table per page view; at
+     * the FSD §11 figure of ~219,000 clients that is the first query on this
+     * path to fall over.
+     *
+     * DESC to match the query's direction, and NULLS LAST because a submission
+     * that was never submitted has no date and belongs at the bottom rather
+     * than at the top of the newest-first queue.
+     */
+    index('kyc_submissions_submitted_at_idx').on(t.submittedAt.desc().nullsLast()),
+  ],
+);
+
+/**
+ * Every decided KYC attempt, kept.
+ *
+ * ## The problem this solves
+ *
+ * `kyc_submissions` is keyed on `user_id`, so there is exactly one row per
+ * client, forever, and every write is an in-place UPDATE. Take the ordinary
+ * case — a client is rejected for an expired passport and re-submits:
+ *
+ *  1. `attachFile` OVERWRITES `document.frontFilePath` with the new upload. The
+ *     old path is gone from the database, and the file it named becomes
+ *     unreferenced: unservable, un-auditable, and impossible to clean up.
+ *  2. `submit()` CLEARS `rejection_reason` and `rejected_fields`, deliberately,
+ *     so stale rejection text does not follow a fresh submission into the queue
+ *     (D-27.4).
+ *  3. `approve()` OVERWRITES `reviewed_by` and `reviewed_at`.
+ *
+ * After approval the record reads: approved, by admin B, at 14:32, one passport
+ * photo, no reason ever recorded. There is no way to answer "was this client
+ * ever rejected, and why", "how many attempts did this take", or "what did the
+ * document we refused actually look like".
+ *
+ * For a regulated broker, "we verified this person" is a claim that must be
+ * evidenced years later. The system could evidence the current state only.
+ *
+ * ## Why a separate table rather than re-keying `kyc_submissions`
+ *
+ * Re-keying would touch every query, every read path, both frontends' generated
+ * types and the FK just added — a large change to the live money-adjacent path
+ * for a benefit that is entirely about the PAST. This table is append-only in
+ * practice and additive in code: the live row keeps its shape, and a snapshot is
+ * written at the moment a decision is made, which is the moment the evidence
+ * would otherwise start being overwritten.
+ *
+ * `attempt_no` is per user and dense from 1, so "how many attempts" is a
+ * `max(attempt_no)` rather than a count that a future deletion could skew. The
+ * unique constraint is what makes two concurrent archives of the same attempt
+ * impossible rather than merely unlikely.
+ */
+export const kycSubmissionAttempts = pgTable(
+  'kyc_submission_attempts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    attemptNo: integer('attempt_no').notNull(),
+    /** The status this attempt ENDED in — `approved` or `rejected`. */
+    status: kycStatusEnum('status').notNull(),
+    personalInfo: jsonb('personal_info').$type<Record<string, string>>(),
+    document: jsonb('document').$type<Record<string, string>>(),
+    selfie: jsonb('selfie').$type<Record<string, string>>(),
+    addressProof: jsonb('address_proof').$type<Record<string, string>>(),
+    rejectionReason: text('rejection_reason'),
+    rejectedFields: jsonb('rejected_fields').$type<string[]>(),
+    submittedAt: timestamp('submitted_at', { withTimezone: true }),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+    reviewedBy: uuid('reviewed_by').references(() => admins.id, { onDelete: 'set null' }),
+    archivedAt: timestamp('archived_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Read as "this client's history, oldest first" — the only query shape.
+    index('kyc_attempts_user_idx').on(t.userId, t.attemptNo),
+    uniqueIndex('kyc_attempts_user_attempt_uq').on(t.userId, t.attemptNo),
+  ],
 );
 
 export const kycConfigSteps = pgTable('kyc_config_steps', {

@@ -1,8 +1,8 @@
-import { and, desc, eq, ilike, or, sql, SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, or, sql, SQL } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
-import type { Db } from '../database/db';
-import { kycSubmissions, users } from '../database/schema';
+import type { Db, Executor } from '../database/db';
+import { kycSubmissionAttempts, kycSubmissions, users } from '../database/schema';
 
 export type KycStatus =
   'not_started' | 'in_progress' | 'submitted' | 'under_review' | 'approved' | 'rejected';
@@ -36,6 +36,28 @@ export interface AddressInfo {
   fileName?: string;
   page2FilePath?: string;
   page2FileName?: string;
+}
+
+/**
+ * A decided attempt, as it stood when the decision was made.
+ *
+ * Deliberately NOT `KycSubmission & { attemptNo }`: this is a historical record,
+ * so it carries no `updatedAt` (nothing updates it) and no `userId` on the shape
+ * the caller sees (it is always read for one client at a time).
+ */
+export interface KycAttempt {
+  attemptNo: number;
+  status: KycStatus;
+  personalInfo?: PersonalInfo;
+  document?: DocumentInfo;
+  selfie?: SelfieInfo;
+  addressProof?: AddressInfo;
+  rejectionReason?: string;
+  rejectedFields?: string[];
+  submittedAt?: Date;
+  reviewedAt?: Date;
+  reviewedBy?: string;
+  archivedAt: Date;
 }
 
 export interface KycSubmission {
@@ -119,14 +141,61 @@ export class KycStore {
     return row ? toSubmission(row) : undefined;
   }
 
-  async update(userId: string, patch: Partial<KycSubmission>): Promise<KycSubmission> {
+  async update(
+    userId: string,
+    patch: Partial<KycSubmission>,
+    executor?: Executor,
+  ): Promise<KycSubmission> {
     await this.getOrCreate(userId);
-    const [row] = await this.db
+    const [row] = await (executor ?? this.db)
       .update(kycSubmissions)
       .set(toColumns(patch))
       .where(eq(kycSubmissions.userId, userId))
       .returning();
     return toSubmission(row);
+  }
+
+  /**
+   * Move a submission from one of `from` to a new state, or refuse.
+   *
+   * The expected status goes into the `WHERE`, so the check and the write are
+   * ONE statement and the database decides. `undefined` means the row was not in
+   * an acceptable state — either it never was, or another request changed it
+   * between this caller reading it and writing.
+   *
+   * ## Why this exists
+   *
+   * `approve`, `claim` and `reject` were all read-then-write:
+   *
+   *     const s = await findByUserId(userId);       // SELECT
+   *     if (s.status !== 'submitted') throw …       // check
+   *     await update(userId, { status: 'approved' })// UPDATE, unconditional
+   *
+   * `update()` matches on `user_id` alone and checks no rowcount, so two admins
+   * hitting approve and reject in the same tick both passed their check against
+   * the same `submitted` row and both wrote. Last writer won, and which one that
+   * was depended on scheduling. Because the status and the verification level
+   * are separate statements, the interleaving could land as
+   * `status: 'rejected'` + `verification_level: 1` — a client refused on paper
+   * and able to withdraw in fact, which is the exact state the reject-reversal
+   * fix exists to prevent, reached by another route.
+   *
+   * This is the same shape ARCHITECTURE §6 rule 3 mandates on the money path
+   * ("`UPDATE … WHERE state='approved'` with a rowcount check"). KYC is not
+   * `ledger_entries`, but it is what GATES `ledger_entries`.
+   */
+  async transition(
+    userId: string,
+    from: readonly KycStatus[],
+    patch: Partial<KycSubmission>,
+    executor?: Executor,
+  ): Promise<KycSubmission | undefined> {
+    const [row] = await (executor ?? this.db)
+      .update(kycSubmissions)
+      .set(toColumns(patch))
+      .where(and(eq(kycSubmissions.userId, userId), inArray(kycSubmissions.status, [...from])))
+      .returning();
+    return row ? toSubmission(row) : undefined;
   }
 
   async findAll(): Promise<KycSubmission[]> {
@@ -203,6 +272,88 @@ export class KycStore {
       .from(kycSubmissions)
       .where(eq(kycSubmissions.status, status));
     return rows.map(toSubmission);
+  }
+
+  /**
+   * Snapshot a decided attempt, so the next one cannot overwrite it.
+   *
+   * Called at the moment a decision lands, because that is the last instant the
+   * evidence is intact: the next `submit()` clears the rejection data and the
+   * next `attachFile()` overwrites the document paths.
+   *
+   * The attempt number is computed inside the INSERT rather than read first and
+   * written second — a read-then-write would let two concurrent decisions pick
+   * the same number, and the unique index would then reject one of them at
+   * random. `ON CONFLICT DO NOTHING` covers the remaining race: archiving the
+   * same attempt twice is a no-op, not an error, because losing a decision to a
+   * duplicate-key failure would be far worse than a missing duplicate.
+   */
+  async archiveAttempt(submission: KycSubmission, executor?: Executor): Promise<void> {
+    await (executor ?? this.db)
+      .insert(kycSubmissionAttempts)
+      .values({
+        userId: submission.userId,
+        attemptNo: sql<number>`(
+          SELECT COALESCE(MAX(${kycSubmissionAttempts.attemptNo}), 0) + 1
+          FROM ${kycSubmissionAttempts}
+          WHERE ${kycSubmissionAttempts.userId} = ${submission.userId}
+        )`,
+        status: submission.status,
+        personalInfo: submission.personalInfo as unknown as Record<string, string>,
+        document: submission.document as unknown as Record<string, string>,
+        selfie: submission.selfie as unknown as Record<string, string>,
+        addressProof: submission.addressProof as unknown as Record<string, string>,
+        rejectionReason: submission.rejectionReason ?? null,
+        rejectedFields: submission.rejectedFields ?? null,
+        submittedAt: submission.submittedAt ?? null,
+        reviewedAt: submission.reviewedAt ?? null,
+        reviewedBy: submission.reviewedBy ?? null,
+      })
+      .onConflictDoNothing();
+  }
+
+  /** This client's decided attempts, oldest first. */
+  async listAttempts(userId: string): Promise<KycAttempt[]> {
+    const rows = await this.db
+      .select()
+      .from(kycSubmissionAttempts)
+      .where(eq(kycSubmissionAttempts.userId, userId))
+      .orderBy(asc(kycSubmissionAttempts.attemptNo));
+    return rows.map((r) => ({
+      attemptNo: r.attemptNo,
+      status: r.status,
+      personalInfo: (r.personalInfo as unknown as PersonalInfo) ?? undefined,
+      document: (r.document as unknown as DocumentInfo) ?? undefined,
+      selfie: (r.selfie as unknown as SelfieInfo) ?? undefined,
+      addressProof: (r.addressProof as unknown as AddressInfo) ?? undefined,
+      rejectionReason: r.rejectionReason ?? undefined,
+      rejectedFields: r.rejectedFields ?? undefined,
+      submittedAt: r.submittedAt ?? undefined,
+      reviewedAt: r.reviewedAt ?? undefined,
+      reviewedBy: r.reviewedBy ?? undefined,
+      archivedAt: r.archivedAt,
+    }));
+  }
+
+  /**
+   * Every document path this client has ever had archived.
+   *
+   * Two callers need it and both would otherwise be wrong: `resetKyc` must not
+   * delete a file that an archived attempt still points at (it is evidence now,
+   * not an orphan), and the uploads controller must let a client fetch a
+   * document from their own history rather than 403 them on their own passport.
+   */
+  async archivedDocumentPaths(userId: string): Promise<string[]> {
+    const attempts = await this.listAttempts(userId);
+    return attempts.flatMap((a) =>
+      [
+        a.document?.frontFilePath,
+        a.document?.backFilePath,
+        a.selfie?.filePath,
+        a.addressProof?.filePath,
+        a.addressProof?.page2FilePath,
+      ].filter((p): p is string => typeof p === 'string' && p.length > 0),
+    );
   }
 
   // REMOVED: `clearAll()` — an unguarded `DELETE FROM kyc_submissions` with no

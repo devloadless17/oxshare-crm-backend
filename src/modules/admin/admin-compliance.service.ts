@@ -34,6 +34,16 @@ export class AdminComplianceService {
   getKyc(userId: string) {
     return this.kycService.getByUserId(userId);
   }
+  /**
+   * Previously decided attempts.
+   *
+   * A read, so it is not asserted on the actor here beyond the route guard —
+   * unlike the three decisions below, which change privilege and are asserted
+   * in both places (R-4.3).
+   */
+  getKycHistory(userId: string) {
+    return this.kycService.getHistory(userId);
+  }
   /*
    * The three decisions below assert on the ACTOR, not only in the guard —
    * R-4.3.

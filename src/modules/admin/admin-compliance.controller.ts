@@ -35,6 +35,7 @@ import {
   RejectionReasonDto,
 } from './dto/requests/compliance.dto';
 import {
+  KycAttemptDto,
   KycListResponseDto,
   KycSubmissionDto,
   MessageResponseDto,
@@ -89,6 +90,25 @@ export class AdminComplianceController {
   @ApiOkResponse({ type: KycSubmissionDto })
   getKyc(@Param('userId', UuidParam) userId: string) {
     return this.compliance.getKyc(userId);
+  }
+
+  /*
+   * The client's previous attempts — FSD §10's "attributable, reviewable
+   * records", for the question a reviewer could not previously ask.
+   *
+   * Same `kyc.review` permission as the submission itself: this is the same PII
+   * one decision older, so gating it differently would be arbitrary.
+   */
+  @Get('kyc/:userId/history')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.review')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "A client's previously decided KYC attempts, oldest first",
+  })
+  @ApiOkResponse({ type: [KycAttemptDto] })
+  getKycHistory(@Param('userId', UuidParam) userId: string) {
+    return this.compliance.getKycHistory(userId);
   }
 
   @Patch('kyc/:userId/claim')

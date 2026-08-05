@@ -2,7 +2,7 @@ import { and, count, desc, eq, sql, SQL } from 'drizzle-orm';
 import type { CursorPosition } from '../common/pagination';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
-import type { Db } from '../database/db';
+import type { Db, Executor } from '../database/db';
 import { users } from '../database/schema';
 
 export interface User {
@@ -100,7 +100,15 @@ export class UsersStore {
    * passing it as undefined (clear it) stay distinguishable — which is the
    * distinction Drizzle's own behaviour loses.
    */
-  async update(id: string, patch: Partial<User>): Promise<User | undefined> {
+  /**
+   * `executor` lets a caller write inside THEIR transaction, same shape as
+   * `AuditLogStore.record` and the money services' `executor ?? this.db`.
+   *
+   * Needed because raising `verification_level` and writing the KYC decision
+   * have to be one atomic act: they are what opens the withdrawal gate, and a
+   * crash between them used to leave one of two states.
+   */
+  async update(id: string, patch: Partial<User>, executor?: Executor): Promise<User | undefined> {
     const { id: _ignored, createdAt: _also, ...rest } = patch;
 
     const values: Record<string, unknown> = {};
@@ -110,7 +118,11 @@ export class UsersStore {
     }
     if (Object.keys(values).length === 0) return this.findById(id);
 
-    const [row] = await this.db.update(users).set(values).where(eq(users.id, id)).returning();
+    const [row] = await (executor ?? this.db)
+      .update(users)
+      .set(values)
+      .where(eq(users.id, id))
+      .returning();
     return row ? toUser(row) : undefined;
   }
 

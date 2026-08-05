@@ -16,6 +16,7 @@
   "GET /v1/admin/kyc",
   "GET /v1/admin/kyc-config",
   "GET /v1/admin/kyc/{userId}",
+  "GET /v1/admin/kyc/{userId}/history",
   "GET /v1/admin/ledger",
   "GET /v1/admin/permissions",
   "GET /v1/admin/reconciliation",

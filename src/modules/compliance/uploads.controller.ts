@@ -208,6 +208,19 @@ export class UploadsController {
     throw new UnauthorizedException('Authentication required to access documents.');
   }
 
+  /**
+   * Does this client own this document — now, or in a previous attempt?
+   *
+   * The history half matters: a decided attempt keeps the documents it was
+   * decided on (see `kycSubmissionAttempts`), so once a client is rejected and
+   * re-uploads, the refused document is still theirs. Checking only the LIVE
+   * submission would 403 a client on their own passport the moment they replaced
+   * it — and would do it silently, since the file is still on disk and still
+   * readable by any reviewing admin.
+   *
+   * The live row is checked first because it is one query and covers the
+   * overwhelmingly common case; the history is only consulted on a miss.
+   */
   private async submissionReferencesFile(userId: string, fileName: string): Promise<boolean> {
     const sub = await this.kyc.findByUserId(userId);
     if (!sub) return false;
@@ -218,6 +231,9 @@ export class UploadsController {
       sub.addressProof?.filePath,
       sub.addressProof?.page2FilePath,
     ];
-    return paths.some((p) => p && basename(p) === fileName);
+    if (paths.some((p) => p && basename(p) === fileName)) return true;
+
+    const archived = await this.kyc.archivedDocumentPaths(userId);
+    return archived.some((p) => basename(p) === fileName);
   }
 }

@@ -10,9 +10,12 @@ import {
   ParseFilePipe,
   MaxFileSizeValidator,
   BadRequestException,
+  UseFilters,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
+import { MAX_UPLOAD_BYTES } from './upload-limits';
+import { UploadSizeFilter } from './upload-size.filter';
 import {
   ApiTags,
   ApiOperation,
@@ -57,7 +60,7 @@ const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
 };
 
 /**
- * The size ceiling, declared once and enforced where it actually stops bytes.
+ * The size ceiling is enforced where it actually stops bytes.
  *
  * `MaxFileSizeValidator` is a ParseFilePipe, and a pipe runs AFTER multer has
  * already streamed the whole request body to disk. So the 10 MB limit this file
@@ -68,13 +71,16 @@ const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
  * That matters more here than it would elsewhere. KYC documents live on the API
  * host's LOCAL DISK (ARCHITECTURE §8.5's private-S3 move is still pending), so
  * the same volume holds every identity document the business is required to
- * keep — and nothing throttles this route beyond the global 120/min.
+ * keep.
  *
  * multer's own `limits` is the fix: it aborts the stream mid-flight, so the
  * bytes are never written. The pipe validator stays as the second line, because
- * it is what turns the abort into an honest 413 for the caller.
+ * it is what turns the abort into an honest 413 for the caller — and
+ * `UploadSizeFilter` is what makes that 413 say something useful.
+ *
+ * The constant itself lives in ./upload-limits.ts, because the filter needs it
+ * too and importing it from here would be a cycle.
  */
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 const multerStorage = diskStorage({
   destination: './uploads/kyc',
@@ -188,6 +194,8 @@ export class KycController {
    * four files, and a client correcting a rejection re-uploads one or two.
    */
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  // Route-scoped: only an upload's 413 is certainly about a document's size.
+  @UseFilters(UploadSizeFilter)
   // `limits` is what actually stops the bytes — see MAX_UPLOAD_BYTES above.
   // `files: 1` matters too: without it a client may post any number of parts
   // under the field name, each one its own 10 MB.
