@@ -9,6 +9,7 @@ import type { Request } from 'express';
 import { CsrfService } from '../src/common/security/csrf.service';
 import { CsrfGuard, CSRF_HEADER } from '../src/common/security/csrf.guard';
 import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../src/common/security/token-audience';
+import { API_VERSION_PREFIX } from '../src/common/api-prefix';
 import type { Response } from 'express';
 import {
   LEGACY_COOKIE_NAMES,
@@ -66,13 +67,25 @@ function adminToken(sub: string) {
   );
 }
 
+/**
+ * A route as the server actually SERVES it.
+ *
+ * Built from `API_VERSION_PREFIX` rather than written out, because this file
+ * previously hardcoded the pre-`/v1` paths. That made every case here exercise
+ * a URL shape the application no longer served: the guard's admin-surface test
+ * went false in production while these tests stayed green, and the CSRF check
+ * was disarmed on every admin write for as long as nobody looked. A test that
+ * writes its own copy of the thing it guards guards nothing.
+ */
+const served = (path: string) => `/${API_VERSION_PREFIX}${path}`;
+
 /** Builds an ExecutionContext around a fake request. */
 function contextFor(req: Partial<Request> & { headers?: Record<string, string> }) {
   const headers = req.headers ?? {};
   const full = {
     method: 'POST',
-    path: '/admin/withdrawals/w1/approve',
-    originalUrl: '/admin/withdrawals/w1/approve',
+    path: served('/admin/withdrawals/w1/approve'),
+    originalUrl: served('/admin/withdrawals/w1/approve'),
     cookies: {},
     headers,
     get: (name: string) => headers[name.toLowerCase()],
@@ -162,6 +175,55 @@ describe('CsrfGuard — what it lets through', () => {
       cookies: { [sessionCookieNames.adminAccess()]: 'not-a-jwt' },
       headers: { origin: ADMIN },
     });
+    expect(guard().canActivate(ctx)).toBe(true);
+  });
+});
+
+describe('CsrfGuard — the admin surface is recognised at the path actually served', () => {
+  /*
+   * The regression, pinned at the exact seam that failed.
+   *
+   * `canActivate` returns true both when a request is properly authorised and
+   * when there is nothing to protect, so "it returned true" proves nothing on
+   * its own. What distinguishes the bug is WHICH branch ran: with the prefix
+   * unaccounted for, an admin request was classified as portal traffic, no
+   * portal cookie was found, and the guard concluded there was no ambient
+   * authority to abuse — so a forged cross-origin approval sailed through.
+   *
+   * So the assertion is that a hostile origin on a real admin path is REFUSED.
+   * That can only happen if the guard resolved an admin session, which it can
+   * only do if it recognised the surface.
+   */
+  it('refuses a forged cross-origin admin write on the /v1 path', () => {
+    const ctx = validRequest('admin-1', {
+      path: served('/admin/withdrawals/w1/approve'),
+      originalUrl: served('/admin/withdrawals/w1/approve'),
+      headers: { origin: 'https://evil.example' },
+    });
+    expect(() => guard().canActivate(ctx)).toThrow(ForbiddenException);
+  });
+
+  it('still recognises the admin surface if the prefix is ever removed', () => {
+    // Not symmetry for its own sake: it keeps the guard correct through a
+    // prefix change in either direction, which is how this broke the first time.
+    const ctx = validRequest('admin-1', {
+      path: '/admin/withdrawals/w1/approve',
+      originalUrl: '/admin/withdrawals/w1/approve',
+      headers: { origin: 'https://evil.example' },
+    });
+    expect(() => guard().canActivate(ctx)).toThrow(ForbiddenException);
+  });
+
+  it('does not mistake a portal path for the admin surface', () => {
+    // The other half of the branch. A portal session on a portal path must be
+    // checked against the PORTAL cookie, not the admin one.
+    const ctx = contextFor({
+      path: served('/payments/withdrawals'),
+      originalUrl: served('/payments/withdrawals'),
+      cookies: { [sessionCookieNames.adminAccess()]: adminToken('admin-1') },
+      headers: { origin: ADMIN },
+    });
+    // No portal cookie, so nothing to forge on this surface.
     expect(guard().canActivate(ctx)).toBe(true);
   });
 });
@@ -368,8 +430,8 @@ describe('surfaces do not interfere with each other (§3.0, R-3.1)', () => {
 
   it('lets an admin login through while a portal session is present', () => {
     const ctx = contextFor({
-      path: '/admin/auth/login',
-      originalUrl: '/admin/auth/login',
+      path: served('/admin/auth/login'),
+      originalUrl: served('/admin/auth/login'),
       cookies: {
         [sessionCookieNames.clientAccess()]: portalToken('portal-user'),
         [sessionCookieNames.portalCsrf()]: csrf.issue('portal-user'),
@@ -381,7 +443,7 @@ describe('surfaces do not interfere with each other (§3.0, R-3.1)', () => {
 
   it('still protects an admin WRITE when an admin session is present', () => {
     const ctx = contextFor({
-      path: '/admin/withdrawals/w1/approve',
+      path: served('/admin/withdrawals/w1/approve'),
       cookies: { [sessionCookieNames.adminAccess()]: adminToken('admin-1') },
       headers: { origin: ADMIN },
     });
@@ -393,7 +455,7 @@ describe('surfaces do not interfere with each other (§3.0, R-3.1)', () => {
     // consulted here — let alone accepted.
     const token = csrf.issue('admin-1');
     const ctx = contextFor({
-      path: '/admin/withdrawals/w1/approve',
+      path: served('/admin/withdrawals/w1/approve'),
       cookies: {
         [sessionCookieNames.adminAccess()]: adminToken('admin-1'),
         [sessionCookieNames.portalCsrf()]: token,

@@ -14,6 +14,7 @@ import { CsrfService } from './csrf.service';
 import { COOKIE_BASES, readSessionCookie } from './session-cookies';
 import { TOKEN_AUDIENCE, TOKEN_ISSUER } from './token-audience';
 import { safeLogPath } from '../logging/redact';
+import { stripApiPrefix } from '../api-prefix';
 
 /**
  * Opt a route out of CSRF and Origin checking. Use sparingly and say why.
@@ -117,8 +118,16 @@ export class CsrfGuard implements CanActivate {
      * nothing to do with the admin surface, and refused the login — locking the
      * user out of the admin panel entirely, with a message about anti-forgery
      * validation that pointed nowhere useful.
+     *
+     * Matched against the route with the version prefix stripped, NEVER against
+     * a literal. This line read `req.path.startsWith('/admin')` until serving
+     * every route under `/v1` made it false for every admin request: the guard
+     * then took the portal branch, found no portal cookie, and concluded there
+     * was no ambient authority to protect — waving through every admin write,
+     * including approving and settling withdrawals. The check was disarmed by a
+     * change in a different file that never mentioned this one.
      */
-    const isAdminSurface = req.path.startsWith('/admin');
+    const isAdminSurface = stripApiPrefix(req.path).startsWith('/admin');
 
     const [cookieBase, csrfBase, secretKey, devFallback, audience] = isAdminSurface
       ? ([
