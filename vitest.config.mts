@@ -48,6 +48,25 @@ export default defineConfig({
     env: {
       NODE_ENV: 'test',
       ADMIN_JWT_SECRET: 'test-only-admin-secret-never-used-outside-vitest',
+      /*
+       * All FOUR signing secrets, and all four distinct.
+       *
+       * This one was missed when it became required, and the gap was invisible
+       * on any machine with a `.env` — which is every machine that had been
+       * working on the project. It surfaced only on a checkout without one:
+       * `ADMIN_JWT_REFRESH_SECRET: Required`, and every HTTP spec failed to boot
+       * before running a single assertion.
+       *
+       * CI never caught it because ci.yml sets the variable itself, so CI stayed
+       * green while a fresh clone did not — precisely the divergence this block
+       * exists to close. A promise that "it passed locally" and "it passed in CI"
+       * mean the same thing has to be re-checked whenever the required set grows.
+       *
+       * The values must differ from each other: env.validation refuses to start
+       * when two signing secrets share a value, so reusing one here would trade
+       * this failure for a more confusing one.
+       */
+      ADMIN_JWT_REFRESH_SECRET: 'test-only-admin-refresh-secret-never-used-outside-vitest',
       JWT_ACCESS_SECRET: 'test-only-access-secret-never-used-outside-vitest',
       JWT_REFRESH_SECRET: 'test-only-refresh-secret-never-used-outside-vitest',
       MT5_BRIDGE_SECRET: 'test-only-bridge-secret-never-used-outside-vitest',
@@ -97,7 +116,7 @@ export default defineConfig({
       // regression, not targets: they may only ever go up, and a floor set above
       // what the suite actually reaches is the kind that gets disabled the first
       // time it blocks someone.
-      thresholds: { lines: 76, functions: 71, branches: 66, statements: 75 },
+      thresholds: { lines: 78, functions: 73, branches: 69, statements: 77 },
     },
   },
 });
