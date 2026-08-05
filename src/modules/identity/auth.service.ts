@@ -467,10 +467,36 @@ export class AuthService {
     );
   }
 
+  /**
+   * The user, as the client may see them.
+   *
+   * An ALLOW-LIST, not a deny-list, and that is the whole point. This used to
+   * destructure four secrets out and return the rest — so when password reset
+   * added `password_reset_token_hash` and `password_reset_expiry`, both started
+   * leaking on login, refresh AND me, and nothing anywhere noticed. A deny-list
+   * silently exposes every column added after it was written.
+   *
+   * The reset hash is stored hashed precisely so a database leak does not yield
+   * working reset links (R-3.5); returning it over the API gave that away to
+   * anything reading the response — an XSS, a logging proxy, an error reporter.
+   *
+   * Adding a field here has to be a deliberate act. Forgetting to is now the
+   * safe direction.
+   */
   private sanitize(user: User) {
-    const { passwordHash, refreshToken, emailVerificationToken, emailVerificationExpiry, ...safe } =
-      user;
-    return safe;
+    return {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      type: user.type,
+      status: user.status,
+      verificationLevel: user.verificationLevel,
+      emailVerified: user.emailVerified,
+      country: user.country,
+      phone: user.phone,
+      createdAt: user.createdAt,
+    };
   }
 
   async findUserById(id: string): Promise<User | undefined> {

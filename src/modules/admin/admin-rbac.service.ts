@@ -228,14 +228,23 @@ export class AdminRbacService {
   }
 
   /**
-   * Strip secrets from an admin record and surface the LIVE permission set
-   * (role-derived when roleId is set), so the frontend's nav gating always
+   * The admin, as a client may see them, with the LIVE permission set
+   * (role-derived when roleId is set) so the frontend's nav gating always
    * matches what the guards will enforce.
+   *
+   * An ALLOW-LIST, not a deny-list. The portal's equivalent was a deny-list and
+   * silently started leaking `password_reset_token_hash` the moment that column
+   * existed, on three separate responses, with nothing to notice. Listing what
+   * may leave makes forgetting fail safe instead of fail open.
    */
   async sanitize(admin: Admin) {
-    const { passwordHash, refreshToken, ...safe } = admin;
     return {
-      ...safe,
+      id: admin.id,
+      email: admin.email,
+      name: admin.name,
+      role: admin.role,
+      roleId: admin.roleId,
+      createdAt: admin.createdAt,
       permissions: await this.roles.resolvePermissions(admin.roleId, admin.permissions),
     };
   }
