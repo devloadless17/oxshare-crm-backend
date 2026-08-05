@@ -1246,7 +1246,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteValidationDto"
+                }
+              }
+            }
           }
         },
         "summary": "Validate invite token — returns email and name for pre-fill",
@@ -1271,7 +1278,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptInviteResponseDto"
+                }
+              }
+            }
           }
         },
         "summary": "Accept invite and set password — logs admin in immediately",
@@ -4020,6 +4034,31 @@
           "createdAt"
         ]
       },
+      "InviteValidationDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The address the invite was sent to; the form shows it read-only."
+          },
+          "name": {
+            "type": "string",
+            "description": "Used only to greet the invitee by name."
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "sub_admin"
+            ],
+            "description": "Always sub_admin — an invite cannot mint a master."
+          }
+        },
+        "required": [
+          "email",
+          "name",
+          "role"
+        ]
+      },
       "AcceptInviteDto": {
         "type": "object",
         "properties": {
@@ -4036,6 +4075,22 @@
         "required": [
           "token",
           "password"
+        ]
+      },
+      "AcceptInviteResponseDto": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "Account created. Welcome aboard!"
+          },
+          "admin": {
+            "$ref": "#/components/schemas/AdminProfileDto"
+          }
+        },
+        "required": [
+          "message",
+          "admin"
         ]
       },
       "ClientRowDto": {

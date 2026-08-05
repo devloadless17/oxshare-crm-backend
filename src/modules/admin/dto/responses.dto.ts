@@ -228,6 +228,42 @@ export class InviteResponseDto {
   inviteUrl?: string;
 }
 
+/**
+ * `GET /admin/invite/validate` — what the accept screen may pre-fill.
+ *
+ * This route had no response DTO, so it generated into the OpenAPI document
+ * with no schema and the admin app hand-declared the shape it expected. That is
+ * the one mechanism protecting these two repos from drifting apart
+ * (API-CONTRACTS Part C), and this endpoint was outside it.
+ *
+ * Deliberately narrow: the invitee is UNAUTHENTICATED here — they hold a token
+ * and nothing else — so this returns only what the form needs to greet them. It
+ * must never grow to carry the permissions or role id the invite confers, which
+ * would hand the whole grant to anyone who guessed a token.
+ */
+export class InviteValidationDto {
+  @ApiProperty({ description: 'The address the invite was sent to; the form shows it read-only.' })
+  email: string;
+  @ApiProperty({ description: 'Used only to greet the invitee by name.' })
+  name: string;
+  @ApiProperty({
+    enum: ['sub_admin'],
+    description: 'Always sub_admin — an invite cannot mint a master.',
+  })
+  role: 'sub_admin';
+}
+
+/**
+ * `POST /admin/invite/accept` — the account it just created.
+ *
+ * No tokens in the body, like every other session-establishing response here:
+ * the cookies are set on the response and the admin app reads none of them.
+ */
+export class AcceptInviteResponseDto {
+  @ApiProperty({ example: 'Account created. Welcome aboard!' }) message: string;
+  @ApiProperty({ type: AdminProfileDto }) admin: AdminProfileDto;
+}
+
 /** An invite that has been sent and not yet accepted. Never carries the token. */
 export class PendingInviteDto {
   @ApiProperty() id: string;

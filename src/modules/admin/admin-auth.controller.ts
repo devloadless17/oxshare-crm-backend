@@ -31,8 +31,10 @@ import { Admin } from '../../store/admins.store';
 import { AcceptInviteDto, AdminLoginDto, InviteDto } from './dto/requests/auth.dto';
 import {
   AdminLoginResponseDto,
+  AcceptInviteResponseDto,
   AdminProfileDto,
   InviteResponseDto,
+  InviteValidationDto,
   MessageResponseDto,
   PendingInviteDto,
 } from './dto/responses.dto';
@@ -164,6 +166,7 @@ export class AdminAuthController {
   @ApiOperation({
     summary: 'Validate invite token — returns email and name for pre-fill',
   })
+  @ApiOkResponse({ type: InviteValidationDto })
   validateInvite(@Query('token') token: string) {
     return this.auth.validateInviteToken(token);
   }
@@ -179,6 +182,7 @@ export class AdminAuthController {
   @ApiOperation({
     summary: 'Accept invite and set password — logs admin in immediately',
   })
+  @ApiOkResponse({ type: AcceptInviteResponseDto })
   acceptInvite(@Body() dto: AcceptInviteDto, @Res({ passthrough: true }) res: Response) {
     return this.auth.acceptInvite(dto.token, dto.password, res);
   }
