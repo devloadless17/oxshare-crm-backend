@@ -88,8 +88,8 @@ export class AdminComplianceController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get full KYC submission for a user' })
   @ApiOkResponse({ type: KycSubmissionDto })
-  getKyc(@Param('userId', UuidParam) userId: string) {
-    return this.compliance.getKyc(userId);
+  getKyc(@Param('userId', UuidParam) userId: string, @Req() req: Request & { admin: Admin }) {
+    return this.compliance.getKyc(userId, req.admin);
   }
 
   /*

@@ -115,10 +115,20 @@ export class UploadsController {
       await this.auditLog.record({
         actorId: reader.id,
         actorEmail: reader.email,
-        action: reader.kind === 'admin' ? 'kyc.document.view' : 'kyc.document.view.own',
+        actorKind: reader.kind,
+        /*
+         * ONE action name for both principals now.
+         *
+         * This used to be `kyc.document.view` for an admin and
+         * `kyc.document.view.own` for a client, because the table had no column
+         * for WHO was acting and the action name was the only place to put it.
+         * That made "every read of this document" two queries instead of one,
+         * and it meant a new kind of reader would have needed a third action
+         * name. `actor_kind` is where that belongs.
+         */
+        action: 'kyc.document.view',
         subjectType: 'kyc_document',
         subjectId: fileName,
-        details: { readerKind: reader.kind },
       });
     } catch (error) {
       // Loud, and then fatal to the request. Serving PII that no record exists

@@ -127,6 +127,13 @@
       "when": 1785942893192,
       "tag": "0017_sweet_hawkeye",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785947163796,
+      "tag": "0018_curly_havok",
+      "breakpoints": true
     }
   ]
 }

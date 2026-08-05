@@ -30,9 +30,30 @@ export class AdminComplianceService {
       limit: parseInt(query.limit ?? '25', 10) || 25,
     });
   }
-  // ─── KYC: get one ─────────────────────────────────────────────────────────
-  getKyc(userId: string) {
-    return this.kycService.getByUserId(userId);
+  /**
+   * Open one submission — and record that its PII was read.
+   *
+   * FSD §10 requires "restricted PII access" and "attributable, reviewable
+   * records". Fetching a document BYTE was already audited and audited well
+   * (PLATFORM-CONVENTIONS R-6.6, `uploads.controller.ts`), but opening the
+   * submission itself recorded nothing — and this response carries the date of
+   * birth, the address, the nationality and the phone number. "Which admin
+   * looked at this client's details" was unanswerable while "which admin
+   * fetched this client's passport image" was answerable, which is an odd place
+   * for the line to fall.
+   *
+   * Fire-and-forget, unlike the document read. That one refuses to serve if it
+   * cannot be recorded, because it is the stronger of the two claims; failing a
+   * reviewer's page load over an audit write would be the wrong trade for a
+   * screen they open dozens of times an hour, and the row that matters most —
+   * the DECISION — is recorded separately either way.
+   */
+  async getKyc(userId: string, actor?: Admin) {
+    const submission = await this.kycService.getByUserId(userId);
+    if (actor) {
+      this.audit.record(actor.id, 'kyc.submission.view', 'kyc_submission', userId);
+    }
+    return submission;
   }
   /**
    * Previously decided attempts.

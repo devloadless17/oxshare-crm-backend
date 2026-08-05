@@ -719,12 +719,44 @@ export const commissionAccruals = pgTable(
 );
 
 // ── Audit log — APPEND ONLY (D-21). No UPDATE, no DELETE, ever. ──────────────
+/** Who — or what — performed an audited action. See `audit_log.actor_kind`. */
+export const auditActorKindEnum = pgEnum('audit_actor_kind', [
+  'admin',
+  'client',
+  'system',
+  'provider',
+]);
+
 export const auditLog = pgTable(
   'audit_log',
   {
     id: uuid('id').defaultRandom().primaryKey(),
     actorId: uuid('actor_id').notNull(),
     actorEmail: varchar('actor_email', { length: 255 }).notNull(),
+    /**
+     * WHAT KIND of principal acted.
+     *
+     * The table assumed an admin: `actorEmail` is resolved from `AdminsStore`
+     * and falls back to the string `'unknown'`. That fallback is the problem —
+     * it is indistinguishable from a deleted admin, and it is what a client or
+     * a system actor already produces.
+     *
+     * The codebase had already worked around the gap twice. `UploadsController`
+     * invented `kind: 'admin' | 'client'` and encoded it in the ACTION NAME
+     * (`kyc.document.view` vs `kyc.document.view.own`) for want of a column, so
+     * "every read of this document" is currently two queries rather than one.
+     * A workaround appearing twice is the signal that the column is missing.
+     *
+     * `system` and `provider` are here for the actors that already exist or
+     * shortly will: the reconciliation scheduler acts with no human behind it,
+     * and ARCHITECTURE's later-phase KYC provider decides verifications by
+     * webhook. Recording those as an admin with an `'unknown'` email would be a
+     * false statement in the one record that must not contain any.
+     *
+     * Defaulted to `admin` because every existing row is one, so the backfill is
+     * the default rather than a migration script.
+     */
+    actorKind: auditActorKindEnum('actor_kind').notNull().default('admin'),
     action: varchar('action', { length: 100 }).notNull(),
     subjectType: varchar('subject_type', { length: 100 }).notNull(),
     subjectId: varchar('subject_id', { length: 255 }).notNull(),

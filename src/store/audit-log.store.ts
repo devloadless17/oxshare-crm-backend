@@ -10,10 +10,20 @@ import { currentClientIp } from '../common/logging/request-context';
 // First Postgres-backed store: entries survive backend restarts. Append-only
 // by design — this store exposes no update and no delete, and none may ever
 // be added. History not recorded is history lost.
+/** Who — or what — acted. See `audit_log.actor_kind` in schema.ts. */
+export type AuditActorKind = 'admin' | 'client' | 'system' | 'provider';
+
 export interface AuditEntry {
   id: string;
   actorId: string;
   actorEmail: string;
+  /**
+   * Defaults to `admin` at the database level, because every row written before
+   * this column existed was one. A caller that is NOT an admin must say so —
+   * recording a client or a scheduled job as an admin with an `'unknown'` email
+   * is a false statement in the one record that must not contain any.
+   */
+  actorKind?: AuditActorKind;
   action: string;
   subjectType: string;
   subjectId: string;

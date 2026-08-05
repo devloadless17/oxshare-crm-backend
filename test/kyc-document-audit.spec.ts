@@ -153,6 +153,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
     expect(recorded[0]).toMatchObject({
       actorId: 'admin-1',
       actorEmail: 'admin@test.local',
+      actorKind: 'admin',
       action: 'kyc.document.view',
       subjectType: 'kyc_document',
       subjectId: FILE,
@@ -172,11 +173,20 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
     );
 
     expect(recorded).toHaveLength(1);
-    // A separate action, so a compliance query for "who else saw this" can
-    // exclude the subject themselves without parsing anything.
+    /*
+     * The KIND is a column, not a suffix on the action name.
+     *
+     * This used to be a separate action — `kyc.document.view.own` — because the
+     * audit table had nowhere to record who was acting, so the action name was
+     * the only place to put it. That made "every read of this document" two
+     * queries instead of one, and a third kind of reader would have needed a
+     * third action name. `actor_kind` is where it belongs, and a compliance
+     * query can now exclude the subject themselves by filtering a column.
+     */
     expect(recorded[0]).toMatchObject({
       actorId: 'client-1',
-      action: 'kyc.document.view.own',
+      actorKind: 'client',
+      action: 'kyc.document.view',
       subjectId: FILE,
     });
   });

@@ -1,0 +1,2 @@
+CREATE TYPE "public"."audit_actor_kind" AS ENUM('admin', 'client', 'system', 'provider');--> statement-breakpoint
+ALTER TABLE "audit_log" ADD COLUMN "actor_kind" "audit_actor_kind" DEFAULT 'admin' NOT NULL;
