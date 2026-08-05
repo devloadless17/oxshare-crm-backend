@@ -156,7 +156,20 @@ describe('KYC upload — size is bounded before anything is written', () => {
           contentType: 'image/png',
         })
         .expect((res) => {
-          expect(res.status).toBeGreaterThanOrEqual(400);
+          /*
+           * The exact response, pinned — not just "some 4xx".
+           *
+           * multer aborts the stream mid-flight, so the caller is answered by
+           * the abort rather than by `MaxFileSizeValidator`, and nothing
+           * asserted what that abort actually produces. On a phone this is the
+           * failure that arrives after a two-minute upload, so "some error"
+           * is not good enough: it has to be a 413, it has to carry the
+           * machine-readable code the portal branches on, and it has to name
+           * the limit so the client knows what would succeed.
+           */
+          expect(res.status).toBe(413);
+          expect(res.body.code).toBe('PAYLOAD_TOO_LARGE');
+          expect(res.body.message).toMatch(/10 ?MB/i);
         });
 
       expect(recorded.attached).toHaveLength(0);
@@ -237,6 +250,7 @@ describe('KYC upload — size is bounded before anything is written', () => {
           contentType: 'text/html',
         })
         .expect((res) => {
+          console.log('OVERSIZE RESPONSE:', res.status, JSON.stringify(res.body));
           expect(res.status).toBeGreaterThanOrEqual(400);
         });
 
