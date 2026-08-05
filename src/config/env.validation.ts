@@ -11,21 +11,31 @@ const envSchema = z
     PORTAL_URL: z.string().url().default('http://localhost:3000'),
     ADMIN_URL: z.string().url().default('http://localhost:3002'),
 
-    // Optional in development (code falls back to dev defaults); required in
-    // production — enforced below.
     DATABASE_URL: z.string().url().optional(),
-    ADMIN_JWT_SECRET: z
+
+    /*
+     * The four signing secrets. REQUIRED IN EVERY ENVIRONMENT, not only
+     * production, because the dev fallbacks they used to permit are gone: the
+     * code reads all four with `getOrThrow`. A fallback here could only ever
+     * mask a wiring mistake, and the last one did exactly that — a .env setting
+     * `JWT_SECRET` meant every token was signed with a constant published in
+     * this repository.
+     *
+     * FOUR, not three. The admin surface signed both its access and refresh
+     * tokens with ADMIN_JWT_SECRET while the portal used a separate key for
+     * each, and that asymmetry was a real hole: identical secret, identical
+     * `aud`, identical `iss` meant a 30-day admin refresh token verified
+     * anywhere a 15-minute access token did. The `typ` claim in
+     * common/security/token-audience.ts closes it; this makes the two kinds
+     * cryptographically distinct as well, so neither mechanism is load-bearing
+     * alone.
+     */
+    ADMIN_JWT_SECRET: z.string().min(32, 'ADMIN_JWT_SECRET must be at least 32 characters'),
+    ADMIN_JWT_REFRESH_SECRET: z
       .string()
-      .min(32, 'ADMIN_JWT_SECRET must be at least 32 characters')
-      .optional(),
-    JWT_ACCESS_SECRET: z
-      .string()
-      .min(32, 'JWT_ACCESS_SECRET must be at least 32 characters')
-      .optional(),
-    JWT_REFRESH_SECRET: z
-      .string()
-      .min(32, 'JWT_REFRESH_SECRET must be at least 32 characters')
-      .optional(),
+      .min(32, 'ADMIN_JWT_REFRESH_SECRET must be at least 32 characters'),
+    JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
+    JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
 
     SMTP_HOST: z.string().optional(),
     SMTP_PORT: z.coerce.number().int().optional(),
@@ -41,11 +51,16 @@ const envSchema = z
   })
   .passthrough(); // unknown keys pass through untouched
 
-const PROD_REQUIRED = [
-  'DATABASE_URL',
+/** Secrets that must never be equal to one another — see SIGNING_SECRETS below. */
+const SIGNING_SECRETS = [
   'ADMIN_JWT_SECRET',
+  'ADMIN_JWT_REFRESH_SECRET',
   'JWT_ACCESS_SECRET',
   'JWT_REFRESH_SECRET',
+] as const;
+
+const PROD_REQUIRED = [
+  'DATABASE_URL',
   // Mail was optional, and EmailService falls back to `smtp.example.com` with no
   // auth — so a production deploy missing SMTP started cleanly and every
   // verification link, KYC decision and withdrawal notification failed into a
@@ -83,6 +98,37 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
   }
 
   const env = parsed.data;
+
+  /*
+   * The four signing secrets must all differ.
+   *
+   * token-audience.ts names this exact risk and defends against it in the only
+   * way it can from inside a token — "the day someone reuses one, in a deploy
+   * script, a staging shortcut, a rushed rotation, an admin token silently
+   * becomes valid on the client portal and nothing anywhere notices". The `aud`
+   * claim turns that into a failed login instead of a privilege escalation,
+   * which is a good fallback and not a substitute for noticing.
+   *
+   * Nothing checked it. A `.env` with the same value pasted into all four
+   * validated cleanly, met the 32-character minimum, and started. This is the
+   * cheapest possible check for a mistake with no other symptom.
+   */
+  const seen = new Map<string, string>();
+  for (const key of SIGNING_SECRETS) {
+    const value = env[key];
+    const previous = seen.get(value);
+    if (previous) {
+      throw new Error(
+        `Refusing to start: ${key} and ${previous} are set to the same value. ` +
+          'Each signing secret separates one thing from another — the admin surface ' +
+          'from the portal, and an access token from a refresh token. Sharing one ' +
+          'silently removes that separation. Generate four distinct values ' +
+          '(openssl rand -base64 48).',
+      );
+    }
+    seen.set(value, key);
+  }
+
   if (env.NODE_ENV === 'production') {
     const missing = PROD_REQUIRED.filter((k) => !env[k]);
     if (missing.length > 0) {

@@ -13,7 +13,12 @@ import { Admin, AdminsStore } from '../../../store/admins.store';
 import { RolesStore } from '../../../store/roles.store';
 import { Request } from 'express';
 import { COOKIE_BASES, readSessionCookie } from '../../../common/security/session-cookies';
-import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../../../common/security/token-audience';
+import {
+  isTokenKind,
+  TOKEN_AUDIENCE,
+  TOKEN_ISSUER,
+  TOKEN_KIND,
+} from '../../../common/security/token-audience';
 import { normalizePermissionKey } from '../../../common/security/actor';
 
 type AdminRequest = Request & { admin?: Admin };
@@ -42,13 +47,20 @@ export class AdminAuthenticator {
 
     let adminId: string;
     try {
-      const payload = this.jwt.verify<{ sub: string; role: string }>(token, {
+      const payload = this.jwt.verify<{ sub: string; role: string; typ?: string }>(token, {
         secret: this.config.getOrThrow<string>('ADMIN_JWT_SECRET'),
         // R-3.1: a portal token must be worthless here, and vice versa. The
         // distinct secrets already ensure that; this survives them being mixed up.
         audience: TOKEN_AUDIENCE.admin,
         issuer: TOKEN_ISSUER,
       });
+      // The admin surface signs both kinds with ONE secret, so signature +
+      // audience cannot tell them apart. Without this check a 30-day refresh
+      // token authenticates here as a 15-minute access token, skipping rotation
+      // and reuse detection entirely (token-audience.ts).
+      if (!isTokenKind(payload, TOKEN_KIND.access)) {
+        throw new UnauthorizedException('Invalid or expired admin token.');
+      }
       adminId = payload.sub;
     } catch {
       throw new UnauthorizedException('Invalid or expired admin token.');

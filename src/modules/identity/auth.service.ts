@@ -16,7 +16,12 @@ import { createHash, randomUUID } from 'crypto';
 import { CsrfService } from '../../common/security/csrf.service';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
-import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../../common/security/token-audience';
+import {
+  isTokenKind,
+  TOKEN_AUDIENCE,
+  TOKEN_ISSUER,
+  TOKEN_KIND,
+} from '../../common/security/token-audience';
 import {
   clearLegacySessionCookies,
   clearSessionCookie,
@@ -292,11 +297,19 @@ export class AuthService {
     let userId: string;
     let jti: string | undefined;
     try {
-      const decoded = this.jwt.verify<{ sub: string; jti?: string }>(providedRefreshToken, {
-        secret: this.config.get<string>('JWT_REFRESH_SECRET', 'oxshare-refresh-secret-dev'),
-        audience: TOKEN_AUDIENCE.portal,
-        issuer: TOKEN_ISSUER,
-      });
+      const decoded = this.jwt.verify<{ sub: string; jti?: string; typ?: string }>(
+        providedRefreshToken,
+        {
+          secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
+          audience: TOKEN_AUDIENCE.portal,
+          issuer: TOKEN_ISSUER,
+        },
+      );
+      // Belt and braces: the separate refresh secret already makes an access
+      // token fail here, but that protection is one env-var typo from gone.
+      if (!isTokenKind(decoded, TOKEN_KIND.refresh)) {
+        throw new AuthenticationError('Invalid or expired refresh token.');
+      }
       userId = decoded.sub;
       jti = decoded.jti;
     } catch {
@@ -401,20 +414,23 @@ export class AuthService {
     // aud/iss so a portal token cannot verify on the admin surface even if the
     // two ever end up sharing a secret (R-3.1).
     const claims = { audience: TOKEN_AUDIENCE.portal, issuer: TOKEN_ISSUER };
-    const accessToken = this.jwt.sign(payload, {
-      secret: this.config.get<string>('JWT_ACCESS_SECRET', 'oxshare-access-secret-dev'),
-      expiresIn: '15m',
-      ...claims,
-    });
+    const accessToken = this.jwt.sign(
+      { ...payload, typ: TOKEN_KIND.access },
+      {
+        secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
+        expiresIn: '15m',
+        ...claims,
+      },
+    );
 
     // The refresh token carries a `jti` naming its row in refresh_tokens, which
     // is how a presented token finds out whether it has already been rotated
     // (R-3.3).
     const jti = randomUUID();
     const refreshToken = this.jwt.sign(
-      { sub: user.id, jti },
+      { sub: user.id, jti, typ: TOKEN_KIND.refresh },
       {
-        secret: this.config.get<string>('JWT_REFRESH_SECRET', 'oxshare-refresh-secret-dev'),
+        secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
         expiresIn: '30d',
         ...claims,
       },

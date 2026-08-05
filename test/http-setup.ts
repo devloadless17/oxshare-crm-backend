@@ -1,0 +1,228 @@
+import { ValidationPipe, type INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
+import request from 'supertest';
+import type { Server } from 'node:http';
+import { AppModule } from '../src/app.module';
+import { VALIDATION_PIPE_OPTIONS } from '../src/common/validation.config';
+import { applyApiPrefix } from '../src/common/api-prefix';
+import { CSRF_HEADER } from '../src/common/security/csrf.guard';
+import { COOKIE_BASES } from '../src/common/security/session-cookies';
+import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+
+/**
+ * An authenticated request, through the whole real stack.
+ *
+ * THE GAP THIS CLOSES. Guards were tested thoroughly but only ever in
+ * isolation — `rbac.spec.ts` and `csrf.spec.ts` drive them with hand-built
+ * `ExecutionContext` mocks, and `route-authorization.spec.ts` reads Nest
+ * metadata to prove a guard is ATTACHED. Nothing proved the assembled chain
+ * admits a legitimate request and refuses an illegitimate one. Parts that each
+ * behave correctly can still be wired together wrongly, and the wiring is
+ * exactly where the CSRF/`/v1` prefix bug landed (see `api-prefix.ts`: the
+ * guard matched a literal `/admin`, the prefix moved the path, and every admin
+ * write went through with no anti-forgery check at all).
+ *
+ * MIRRORS `main.ts`, importing the same option objects rather than copying
+ * them. A harness that constructs its own pipe, or its own prefix, keeps
+ * passing after someone weakens the real bootstrap — which is the failure mode
+ * `VALIDATION_PIPE_OPTIONS` and `applyApiPrefix()` were both extracted to
+ * prevent. Anything added to `main.ts` that affects request handling belongs
+ * here too.
+ *
+ * Deliberately NOT mirrored: Swagger (documents nothing at runtime), the
+ * uploads `mkdirSync` (suites that need it make their own), and `runSeeds()` —
+ * a suite states the identities it needs rather than inheriting a fixture it
+ * did not ask for.
+ */
+export interface HttpTestContext {
+  app: INestApplication;
+  server: Server;
+  db: MoneyTestContext;
+}
+
+export async function startHttpTestApp(): Promise<HttpTestContext> {
+  process.env['NODE_ENV'] ??= 'test';
+
+  // Must precede AppModule: the stores resolve DATABASE_URL through a lazy
+  // singleton on first use, and Nest instantiates providers during compile().
+  const db = await startMoneyTestDb();
+
+  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  const app = moduleRef.createNestApplication<NestExpressApplication>();
+
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: { defaultSrc: ["'self'"], frameAncestors: ["'none'"] },
+      },
+      crossOriginResourcePolicy: { policy: 'same-site' },
+    }),
+  );
+  app.use(cookieParser());
+  app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
+  applyApiPrefix(app);
+
+  await app.init();
+
+  return { app, server: app.getHttpServer(), db };
+}
+
+export async function stopHttpTestApp(ctx: HttpTestContext | undefined): Promise<void> {
+  await ctx?.app?.close();
+  if (ctx?.db) await stopMoneyTestDb(ctx.db);
+}
+
+/**
+ * The two surfaces, which are separate sessions by design (R-3.1).
+ *
+ * Naming them keeps a spec from asserting against the wrong cookie and passing
+ * for the wrong reason — the failure this harness exists to catch.
+ */
+export const SURFACES = {
+  admin: {
+    loginPath: '/v1/admin/auth/login',
+    accessCookie: COOKIE_BASES.adminAccess,
+    refreshCookie: COOKIE_BASES.adminRefresh,
+    csrfCookie: COOKIE_BASES.adminCsrf,
+    origin: process.env['ADMIN_URL'] ?? 'http://localhost:3002',
+  },
+  portal: {
+    loginPath: '/v1/auth/login',
+    accessCookie: COOKIE_BASES.clientAccess,
+    refreshCookie: COOKIE_BASES.clientRefresh,
+    csrfCookie: COOKIE_BASES.portalCsrf,
+    origin: process.env['PORTAL_URL'] ?? 'http://localhost:3000',
+  },
+} as const;
+
+export type SurfaceName = keyof typeof SURFACES;
+
+/** Cookie name → value, parsed from a response's Set-Cookie headers. */
+export function parseSetCookies(res: request.Response): Record<string, string> {
+  const raw: unknown = res.headers['set-cookie'];
+  const headers: string[] = Array.isArray(raw)
+    ? (raw as string[])
+    : typeof raw === 'string'
+      ? [raw]
+      : [];
+  const jar: Record<string, string> = {};
+  for (const header of headers) {
+    const [pair] = header.split(';');
+    const separator = pair.indexOf('=');
+    if (separator < 0) continue;
+    const name = pair.slice(0, separator).trim();
+    const value = pair.slice(separator + 1).trim();
+    // A cleared cookie comes back with an empty value; record it as absent so a
+    // spec can assert "logout removed this" without special-casing the shape.
+    if (value !== '') jar[name] = value;
+    else delete jar[name];
+  }
+  return jar;
+}
+
+/**
+ * A signed-in caller: cookies plus the anti-forgery token, attached the way a
+ * browser and the frontends actually attach them.
+ *
+ * `get`/`post`/`patch`/`put`/`del` send the session cookies. State-changing
+ * verbs also send the `Origin` header and echo the CSRF cookie into
+ * `X-OxShare-CSRF` — the double-submit the guard checks. Every part is
+ * overridable so a spec can prove the guard refuses a request missing one.
+ */
+export interface Session {
+  cookies: Record<string, string>;
+  csrfToken: string | undefined;
+  cookieHeader(): string;
+  get(path: string): request.Test;
+  post(path: string, body?: unknown, opts?: RequestOptions): request.Test;
+  patch(path: string, body?: unknown, opts?: RequestOptions): request.Test;
+  put(path: string, body?: unknown, opts?: RequestOptions): request.Test;
+  del(path: string, opts?: RequestOptions): request.Test;
+}
+
+export interface RequestOptions {
+  /** Omit the CSRF header, to prove the guard refuses the request. */
+  omitCsrf?: boolean;
+  /** Send a different CSRF token — a forged or stale one. */
+  csrfToken?: string;
+  /** Send a different Origin, or none at all with `null`. */
+  origin?: string | null;
+}
+
+function buildSession(
+  server: Server,
+  surface: (typeof SURFACES)[SurfaceName],
+  cookies: Record<string, string>,
+): Session {
+  const cookieHeader = () =>
+    Object.entries(cookies)
+      .map(([name, value]) => `${name}=${value}`)
+      .join('; ');
+
+  const csrfToken = cookies[surface.csrfCookie];
+
+  const mutate = (test: request.Test, body: unknown, opts: RequestOptions = {}) => {
+    test.set('Cookie', cookieHeader());
+    if (opts.origin !== null) test.set('Origin', opts.origin ?? surface.origin);
+    const token = opts.csrfToken ?? csrfToken;
+    if (!opts.omitCsrf && token !== undefined) test.set(CSRF_HEADER, token);
+    if (body !== undefined) test.send(body as object);
+    return test;
+  };
+
+  return {
+    cookies,
+    csrfToken,
+    cookieHeader,
+    get: (path) => request(server).get(path).set('Cookie', cookieHeader()),
+    post: (path, body, opts) => mutate(request(server).post(path), body, opts),
+    patch: (path, body, opts) => mutate(request(server).patch(path), body, opts),
+    put: (path, body, opts) => mutate(request(server).put(path), body, opts),
+    del: (path, opts) => mutate(request(server).delete(path), undefined, opts),
+  };
+}
+
+/**
+ * Log in over HTTP and return a Session carrying whatever the server set.
+ *
+ * Credentials go through the real login route, so a spec cannot accidentally
+ * mint itself a token the application would never have issued — the reason
+ * these tests are worth more than the guard unit tests they sit beside.
+ */
+export async function actingAs(
+  ctx: HttpTestContext,
+  surfaceName: SurfaceName,
+  credentials: { email: string; password: string },
+): Promise<Session> {
+  const surface = SURFACES[surfaceName];
+  const res = await request(ctx.server)
+    .post(surface.loginPath)
+    .set('Origin', surface.origin)
+    .send(credentials);
+
+  if (res.status !== 200 && res.status !== 201) {
+    throw new Error(
+      `actingAs(${surfaceName}) failed to log in as ${credentials.email}: ` +
+        `${res.status} ${JSON.stringify(res.body)}`,
+    );
+  }
+
+  return buildSession(ctx.server, surface, parseSetCookies(res));
+}
+
+/** A Session built from cookies you already hold — for asserting on rotation. */
+export function sessionFrom(
+  ctx: HttpTestContext,
+  surfaceName: SurfaceName,
+  cookies: Record<string, string>,
+): Session {
+  return buildSession(ctx.server, SURFACES[surfaceName], cookies);
+}
+
+/** An unauthenticated caller, for the "no cookie" half of every assertion. */
+export function anonymous(ctx: HttpTestContext) {
+  return request(ctx.server);
+}

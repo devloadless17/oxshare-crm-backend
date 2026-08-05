@@ -18,7 +18,12 @@ import { randomUUID } from 'crypto';
 import { CsrfService } from '../../common/security/csrf.service';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
-import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../../common/security/token-audience';
+import {
+  isTokenKind,
+  TOKEN_AUDIENCE,
+  TOKEN_ISSUER,
+  TOKEN_KIND,
+} from '../../common/security/token-audience';
 import {
   COOKIE_BASES,
   clearLegacySessionCookies,
@@ -224,13 +229,21 @@ export class AdminAuthService {
   }
   // ─── Helpers ──────────────────────────────────────────────────────────────
   private generateAdminTokens(admin: Admin) {
-    const secret = this.config.get<string>('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev');
+    // Two keys, matching the portal. Signing both kinds with one key meant a
+    // refresh token verified anywhere an access token did — see
+    // common/security/token-audience.ts. `typ` below closes that on its own;
+    // separate keys mean neither mechanism is load-bearing alone.
+    const accessSecret = this.config.getOrThrow<string>('ADMIN_JWT_SECRET');
+    const refreshSecret = this.config.getOrThrow<string>('ADMIN_JWT_REFRESH_SECRET');
     // aud/iss so a token minted for the admin surface cannot verify on the
     // portal even if the two ever end up sharing a secret (R-3.1).
     const claims = { audience: TOKEN_AUDIENCE.admin, issuer: TOKEN_ISSUER };
+    // `typ` so the two KINDS cannot be confused either. Both are signed with
+    // ADMIN_JWT_SECRET, so without this the 30-day refresh token below verifies
+    // anywhere the 15-minute access token does — see token-audience.ts.
     const accessToken = this.jwt.sign(
-      { sub: admin.id, email: admin.email, role: admin.role },
-      { secret, expiresIn: '15m', ...claims },
+      { sub: admin.id, email: admin.email, role: admin.role, typ: TOKEN_KIND.access },
+      { secret: accessSecret, expiresIn: '15m', ...claims },
     );
     // The refresh token carries a `jti` naming its row in refresh_tokens, which
     // is how a presented token finds out whether it has already been rotated
@@ -238,8 +251,8 @@ export class AdminAuthService {
     // the caller, which knows whether this starts a family or continues one.
     const jti = randomUUID();
     const refreshToken = this.jwt.sign(
-      { sub: admin.id, jti },
-      { secret, expiresIn: '30d', ...claims },
+      { sub: admin.id, jti, typ: TOKEN_KIND.refresh },
+      { secret: refreshSecret, expiresIn: '30d', ...claims },
     );
     return { accessToken, refreshToken, jti };
   }
@@ -293,12 +306,16 @@ export class AdminAuthService {
     let adminId: string;
     let jti: string | undefined;
     try {
-      const secret = this.config.get<string>('ADMIN_JWT_SECRET', 'oxshare-admin-secret-dev');
-      const decoded = this.jwt.verify<{ sub: string; jti?: string }>(providedToken, {
-        secret,
+      const decoded = this.jwt.verify<{ sub: string; jti?: string; typ?: string }>(providedToken, {
+        secret: this.config.getOrThrow<string>('ADMIN_JWT_REFRESH_SECRET'),
         audience: TOKEN_AUDIENCE.admin,
         issuer: TOKEN_ISSUER,
       });
+      // An ACCESS token must not buy a new session pair here either — the
+      // confusion has to be refused in both directions to be worth anything.
+      if (!isTokenKind(decoded, TOKEN_KIND.refresh)) {
+        throw new AuthenticationError('Invalid or expired admin refresh token.');
+      }
       adminId = decoded.sub;
       jti = decoded.jti;
     } catch {

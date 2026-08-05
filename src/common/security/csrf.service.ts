@@ -47,7 +47,7 @@ export class CsrfService {
    * ADMIN_JWT_SECRET and enforces a 32-character minimum, so this inherits both.
    */
   private key(): Buffer {
-    const root = this.config.get<string>('ADMIN_JWT_SECRET') ?? 'oxshare-admin-secret-dev';
+    const root = this.config.getOrThrow<string>('ADMIN_JWT_SECRET');
     return createHmac('sha256', root).update('oxshare.csrf.v1').digest();
   }
 

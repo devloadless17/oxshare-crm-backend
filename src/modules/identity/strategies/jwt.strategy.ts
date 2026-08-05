@@ -2,12 +2,19 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { COOKIE_BASES, readSessionCookie } from '../../../common/security/session-cookies';
-import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../../../common/security/token-audience';
+import {
+  isTokenKind,
+  TOKEN_AUDIENCE,
+  TOKEN_ISSUER,
+  TOKEN_KIND,
+} from '../../../common/security/token-audience';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { UsersStore } from '../../../store/users.store';
 
 export interface JwtPayload {
+  /** Which kind of token this is — see common/security/token-audience.ts. */
+  typ?: string;
   sub: string;
   email: string;
   emailVerified: boolean;
@@ -41,6 +48,12 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 
   async validate(payload: JwtPayload) {
+    // A portal refresh token is signed with a different secret and so cannot
+    // reach here — today. This keeps that true if the two secrets are ever
+    // conflated in a deploy, the way ADMIN_JWT_SECRET conflated both kinds.
+    if (!isTokenKind(payload, TOKEN_KIND.access)) {
+      throw new UnauthorizedException('Invalid or expired token.');
+    }
     // Identity comes from `sub` only. Falling back to the token's `email` claim
     // let a token naming one account resolve to another.
     const user = await this.users.findById(payload.sub);

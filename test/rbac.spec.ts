@@ -17,6 +17,7 @@ import { AdminsStore, type Admin } from '../src/store/admins.store';
 import { InvitesStore } from '../src/store/admins.store';
 import { RolesStore, type Role } from '../src/store/roles.store';
 import { sessionCookieNames } from '../src/common/security/session-cookies';
+import { TOKEN_KIND } from '../src/common/security/token-audience';
 
 // The RBAC surface had ZERO tests, which is how a missing `await` on the
 // anti-escalation guard shipped: the rejected promise was discarded and the
@@ -158,7 +159,14 @@ describe('AdminRbacService anti-escalation', () => {
 describe('AdminAuthenticator', () => {
   function build(admin: Admin | undefined, rolePermissions?: string[]) {
     const jwt = {
-      verify: vi.fn().mockReturnValue({ sub: admin?.id ?? 'ghost', role: 'sub_admin' }),
+      // `typ` is required now: access and refresh tokens are signed with the
+      // same ADMIN_JWT_SECRET, so this claim is the only thing distinguishing
+      // them. See test/token-kind.spec.ts for what happens without it.
+      verify: vi.fn().mockReturnValue({
+        sub: admin?.id ?? 'ghost',
+        role: 'sub_admin',
+        typ: TOKEN_KIND.access,
+      }),
     };
     const config = { getOrThrow: vi.fn().mockReturnValue('test-secret') };
     const admins = { findById: vi.fn().mockResolvedValue(admin) };

@@ -129,40 +129,37 @@ export class CsrfGuard implements CanActivate {
      */
     const isAdminSurface = stripApiPrefix(req.path).startsWith('/admin');
 
-    const [cookieBase, csrfBase, secretKey, devFallback, audience] = isAdminSurface
+    const [cookieBase, csrfBase, secretKey, audience] = isAdminSurface
       ? ([
           COOKIE_BASES.adminAccess,
           COOKIE_BASES.adminCsrf,
           'ADMIN_JWT_SECRET',
-          'oxshare-admin-secret-dev',
           TOKEN_AUDIENCE.admin,
         ] as const)
       : ([
           COOKIE_BASES.clientAccess,
           COOKIE_BASES.portalCsrf,
           'JWT_ACCESS_SECRET',
-          'oxshare-access-secret-dev',
           TOKEN_AUDIENCE.portal,
         ] as const);
 
     const token = readSessionCookie(cookies, cookieBase);
     if (!token) return null;
 
-    const subject = this.subjectOf(token, secretKey, devFallback, audience);
+    const subject = this.subjectOf(token, secretKey, audience);
     // A cookie that is present but unverifiable is not a session. The auth guard
     // will reject it with a 401, which is a clearer answer than a CSRF 403.
     return subject ? { subject, csrfBase } : null;
   }
 
-  private subjectOf(
-    token: string,
-    configKey: string,
-    devFallback: string,
-    audience: string,
-  ): string | null {
+  private subjectOf(token: string, configKey: string, audience: string): string | null {
     try {
+      // getOrThrow, not a dev fallback: env.validation.ts already refuses to
+      // boot without these keys, so a fallback can only ever mask a wiring
+      // mistake — and here it would mask one by treating a session as absent,
+      // which makes this guard wave the request through.
       const payload = this.jwt.verify<{ sub?: string }>(token, {
-        secret: this.config.get<string>(configKey) ?? devFallback,
+        secret: this.config.getOrThrow<string>(configKey),
         audience,
         issuer: TOKEN_ISSUER,
       });

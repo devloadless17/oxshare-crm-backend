@@ -32,9 +32,22 @@ const ADMIN_SECRET = 'test-only-admin-secret-never-used-outside-vitest';
 const PORTAL = 'http://localhost:3000';
 const ADMIN = 'http://localhost:3002';
 
+const ENV: Record<string, string> = {
+  ADMIN_JWT_SECRET: ADMIN_SECRET,
+  PORTAL_URL: PORTAL,
+  ADMIN_URL: ADMIN,
+};
+
 const config = {
-  get: (key: string) =>
-    ({ ADMIN_JWT_SECRET: ADMIN_SECRET, PORTAL_URL: PORTAL, ADMIN_URL: ADMIN })[key],
+  get: (key: string) => ENV[key],
+  // The production code reads secrets with getOrThrow — a fallback there could
+  // only ever mask a wiring mistake. A stub offering only `get` would make this
+  // spec fail for a reason that has nothing to do with what it tests.
+  getOrThrow: (key: string) => {
+    const value = ENV[key];
+    if (value === undefined) throw new Error(`missing config: ${key}`);
+    return value;
+  },
 } as unknown as ConfigService;
 
 const jwt = new JwtService({});

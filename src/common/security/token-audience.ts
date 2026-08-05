@@ -18,3 +18,48 @@ export const TOKEN_AUDIENCE = {
   admin: 'oxshare-crm-admin',
   portal: 'oxshare-crm-portal',
 } as const;
+
+/**
+ * WHAT each token is, as opposed to who it is for.
+ *
+ * The bug this closes, on the admin surface: access and refresh tokens were
+ * signed with the same `ADMIN_JWT_SECRET`, carried the same `aud` and `iss`, and
+ * both carried `sub`. `AdminAuthenticator` verified signature, audience, issuer
+ * and then read `sub` — so nothing anywhere distinguished the two kinds, and an
+ * admin **refresh** token was accepted as an **access** token.
+ *
+ * That matters because their lifetimes differ by three orders of magnitude: 15
+ * minutes against 30 days. A short access token exists so that leaking one is
+ * survivable, and a refresh token is meant to be usable only at `/refresh`,
+ * where rotation and the `jti` reuse-detection family (R-3.3) can notice a
+ * stolen one. Replayed straight at a protected route it bypassed all of that,
+ * for a month, leaving no trace.
+ *
+ * The portal was already immune — its refresh token is signed with a different
+ * key, so it fails signature verification against the access secret. That is
+ * the asymmetry that made this visible: two secrets on one surface, one on the
+ * other, for no stated reason.
+ *
+ * Checked on BOTH surfaces rather than only the broken one, for the same reason
+ * `aud` is: the portal's immunity rests entirely on two environment variables
+ * staying distinct, and this holds even if they stop being.
+ */
+export const TOKEN_KIND = {
+  access: 'access',
+  refresh: 'refresh',
+} as const;
+
+export type TokenKind = (typeof TOKEN_KIND)[keyof typeof TOKEN_KIND];
+
+/**
+ * True when a verified payload is the kind of token the caller expected.
+ *
+ * Deliberately strict: a token with no `typ` at all is refused. Tokens minted
+ * before this claim existed therefore stop working, which forces a re-login —
+ * correct here, because the alternative is accepting an unlabelled token
+ * forever and keeping the hole open for the full 30-day refresh lifetime. There
+ * are no production sessions to preserve; the system has not launched.
+ */
+export function isTokenKind(payload: { typ?: unknown }, expected: TokenKind): boolean {
+  return payload.typ === expected;
+}
