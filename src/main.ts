@@ -7,6 +7,7 @@ import { AppModule } from './app.module';
 import { VALIDATION_PIPE_OPTIONS } from './common/validation.config';
 import { applyApiPrefix } from './common/api-prefix';
 import { JsonLogger } from './common/logging/json.logger';
+import { trustedProxyHops } from './common/security/client-ip';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { join } from 'path';
@@ -39,6 +40,19 @@ async function bootstrap() {
       crossOriginResourcePolicy: { policy: 'same-site' },
     }),
   );
+
+  /*
+   * The trust boundary for every security control that reads an IP — the rate
+   * limiter, RBAC-08's allowlist, and the audit trail.
+   *
+   * Behind nginx or a load balancer an untuned `req.ip` is the PROXY's address,
+   * so the limiter throttles the world as one caller and the allowlist admits
+   * everyone or no-one. Trusting X-Forwarded-For blindly is worse: the caller
+   * then chooses their own address. TRUSTED_PROXY_HOPS says how many proxies WE
+   * operate, and Express counts that many entries in from the right — the ones
+   * our own infrastructure wrote. See common/security/client-ip.ts.
+   */
+  app.set('trust proxy', trustedProxyHops());
 
   app.use(cookieParser());
 
