@@ -69,6 +69,13 @@ const envSchema = z
       .optional(),
 
     /*
+     * Redis — single-use replay markers for signed webhooks (§8.4, R-5.3), and
+     * the future BullMQ backend. Optional in itself; REQUIRED wherever the
+     * bridge secret is set, enforced below.
+     */
+    REDIS_URL: z.string().url().optional(),
+
+    /*
      * The §12.4 money bounds — validated HERE, at boot.
      *
      * `money-limits.ts` says these are "also validated at boot in
@@ -88,6 +95,29 @@ const envSchema = z
   })
   .passthrough() // unknown keys pass through untouched
   .superRefine((env, ctx) => {
+    /*
+     * The deal feed cannot run without replay protection.
+     *
+     * MT5_BRIDGE_SECRET set means the webhook is live, and that endpoint mints
+     * commission — an accepted deal becomes an accrual, matures, confirms and
+     * pays, with no clawback. Its single-use check needs Redis.
+     *
+     * Refusing to START is the point. The alternative is a runtime fallback,
+     * and a check that disables itself when a dependency is missing is the
+     * exact shape of the defect this replaces: the timestamp used to be
+     * optional, so omitting a header switched replay protection off.
+     */
+    if (env.MT5_BRIDGE_SECRET && !env.REDIS_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['REDIS_URL'],
+        message:
+          'REDIS_URL is required when MT5_BRIDGE_SECRET is set: the deal webhook needs Redis for ' +
+          'single-use replay markers (§8.4, R-5.3), and refusing to start beats accepting ' +
+          'webhooks that cannot be checked.',
+      });
+    }
+
     // Ordering, because each bound is individually valid and collectively
     // nonsense in the two ways that matter: a min above a max refuses every
     // withdrawal, and a daily cap below the single-request cap refuses the

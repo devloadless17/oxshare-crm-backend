@@ -24,5 +24,21 @@ services:
       timeout: 3s
       retries: 10
 
+  # Single-use replay markers for signed webhooks (§8.4, R-5.3). Short-lived
+  # keys with a TTL — the one job Redis does natively and Postgres does badly.
+  # No volume: every key here is meant to expire in minutes, so persisting them
+  # across a restart would be worse than losing them.
+  redis:
+    image: redis:7-alpine
+    container_name: oxshare-redis
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   oxshare_pgdata:

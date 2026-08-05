@@ -51,6 +51,12 @@ export default defineConfig({
       JWT_ACCESS_SECRET: 'test-only-access-secret-never-used-outside-vitest',
       JWT_REFRESH_SECRET: 'test-only-refresh-secret-never-used-outside-vitest',
       MT5_BRIDGE_SECRET: 'test-only-bridge-secret-never-used-outside-vitest',
+      // Required alongside the bridge secret: env.validation refuses to start
+      // with a live deal webhook and no Redis for its single-use replay markers
+      // (§8.4, R-5.3). Nothing here CONNECTS — the client is lazy and every
+      // test injects a fake — this only satisfies the boot-time coupling, which
+      // is exactly the check that would otherwise be untested.
+      REDIS_URL: 'redis://localhost:6379',
     },
 
     // One container, shared connection: money tests must observe each other's

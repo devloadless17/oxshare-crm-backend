@@ -13,6 +13,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { Request } from 'express';
 import { CommissionService } from '../partners/commission.service';
+import { ReplayNonceStore } from '../../common/security/replay-nonce.store';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { DealShapeError, parseDeal, readDealsArray } from './deal-payload';
 
@@ -43,6 +44,7 @@ export class Mt5WebhookController {
   constructor(
     private readonly config: ConfigService,
     private readonly commission: CommissionService,
+    private readonly nonces: ReplayNonceStore,
   ) {}
 
   @Post('deals')
@@ -50,7 +52,10 @@ export class Mt5WebhookController {
   @ApiExcludeEndpoint() // bridge-to-API only; never called by a browser
   @ApiOperation({ summary: 'Closed deals pushed by the MT5 bridge' })
   async receiveDeals(@Req() req: Request & { rawBody?: Buffer }) {
-    this.assertAuthentic(req);
+    // AWAITED. It became async when the single-use nonce check landed, and a
+    // floating promise here would let the handler run while verification was
+    // still in flight — an authorization check that does not block is not one.
+    await this.assertAuthentic(req);
 
     /*
      * The batch envelope is the one thing worth refusing outright: if there is
@@ -128,7 +133,7 @@ export class Mt5WebhookController {
    * Verified against the RAW body — re-serializing the parsed object would
    * produce different bytes and break the signature.
    */
-  private assertAuthentic(req: Request & { rawBody?: Buffer }) {
+  private async assertAuthentic(req: Request & { rawBody?: Buffer }): Promise<void> {
     const secret = this.config.get<string>('MT5_BRIDGE_SECRET', '');
     if (!secret) {
       // Refusing is the safe failure: an unauthenticated deal feed can mint
@@ -192,6 +197,26 @@ export class Mt5WebhookController {
         `X-Bridge-Timestamp is outside the ${REPLAY_WINDOW_MS / 60_000}-minute replay window.`,
       );
     }
+
+    /*
+     * SINGLE USE, on top of the window — R-5.3, §8.4.
+     *
+     * The window bounds a replay; it does not stop one. Inside those minutes a
+     * captured request is still perfectly signed, and this endpoint mints
+     * commission. Deals survive it only because ingest is idempotent on
+     * `mt5_ticket`, which is a property of the handler rather than of this
+     * endpoint — and Whish and USDT will arrive at code with no such guarantee.
+     *
+     * The SIGNATURE is the nonce. It is already unique per (timestamp, body),
+     * so no new header is needed and no bridge change is required — and unlike a
+     * caller-supplied id it cannot be omitted, which is exactly how the
+     * timestamp check used to be defeated.
+     *
+     * The marker outlives the window on purpose: one timestamp is acceptable
+     * across a ten-minute span (±5), so a shorter TTL would let a replay arrive
+     * after its own marker expired and still pass every other check.
+     */
+    await this.nonces.claim(signature, REPLAY_WINDOW_MS * 2 + 60_000);
   }
 }
 

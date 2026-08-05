@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ReplayNonceModule } from './common/security/replay-nonce.module';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
@@ -23,6 +24,7 @@ import { CsrfGuard } from './common/security/csrf.guard';
 
 @Module({
   imports: [
+    ReplayNonceModule,
     // Global config — loads .env, validated at boot (refuses to start on invalid)
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
 
