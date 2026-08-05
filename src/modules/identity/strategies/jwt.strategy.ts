@@ -20,6 +20,8 @@ export interface JwtPayload {
   email: string;
   emailVerified: boolean;
   type: string;
+  /** Issued-at, in SECONDS. Compared against `users.passwordChangedAt`. */
+  iat?: number;
 }
 
 @Injectable()
@@ -83,6 +85,48 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     // Suspension takes effect on the next request — a live token is no shield.
     if (user.status === 'suspended') {
       throw new UnauthorizedException('Your account has been suspended.');
+    }
+    /*
+     * A password change takes effect on the next request too, for the same
+     * reason and by the same mechanism as suspension above.
+     *
+     * Revoking refresh-token families ends a session's ability to RENEW. It
+     * does not touch an access token that has already been issued, so without
+     * this a client who changes their password because somebody is in their
+     * account leaves that somebody up to fifteen more minutes of access.
+     * Measured, not assumed: a second device kept answering 200 on /auth/me
+     * immediately after a successful change.
+     *
+     * `iat` is in SECONDS; the column is a millisecond timestamp. That
+     * truncation is the whole subtlety, and getting it wrong logs out the one
+     * person who must not be.
+     *
+     * A token stamped `iat = S` was issued somewhere in the window [S, S+1).
+     * `changePassword` re-issues the caller a token immediately after writing
+     * the cutoff, so their new token can carry an `iat` whose SECOND began
+     * before the cutoff instant - `1000` against a cutoff of `1000.500`. A
+     * naive `iat * 1000 < cutoff` rejects it, and the client is signed out by
+     * the very request that was meant to keep them in.
+     *
+     * So the comparison asks whether the token's whole second ended before the
+     * change: reject only when `(iat + 1) * 1000 <= cutoff`. A token from ten
+     * minutes ago fails that easily; one minted in the same second as the
+     * change survives.
+     *
+     * It fails CLOSED at the boundary - a token issued in the final
+     * milliseconds before the cutoff is rejected. The only token that can be is
+     * the caller's own pre-change one, and they are being handed a new pair on
+     * this very response.
+     *
+     * A null `passwordChangedAt` means NO cutoff. Every account predating the
+     * column has one, and the migration that added it must not log them out.
+     */
+    if (
+      user.passwordChangedAt &&
+      payload.iat &&
+      (payload.iat + 1) * 1000 <= user.passwordChangedAt.getTime()
+    ) {
+      throw new UnauthorizedException('Your password was changed. Please sign in again.');
     }
     return user;
   }

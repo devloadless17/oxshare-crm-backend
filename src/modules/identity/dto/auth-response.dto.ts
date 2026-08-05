@@ -98,3 +98,55 @@ export class RegistrationResponseDto {
   })
   userId?: string;
 }
+
+/**
+ * One live session, as `GET /auth/sessions` returns it.
+ *
+ * A session is a refresh-token FAMILY, not a token row — one login starts a
+ * family and every fifteen-minute rotation appends to it, so a client signed in
+ * for a month on one laptop is thousands of rows and exactly one entry here.
+ *
+ * Published as a DTO rather than left implicit because the portal generates its
+ * types from this document (R-1.2). The two fields most likely to drift are
+ * `id` (a FAMILY id, which is what DELETE takes) and `current` (which the UI
+ * uses to refuse to revoke the session the client is sitting in).
+ */
+export class SessionDto {
+  @ApiProperty({ description: 'Refresh-token family id. Pass this to DELETE /auth/sessions/:id.' })
+  id: string;
+
+  @ApiProperty({ description: 'When this session signed in.', format: 'date-time' })
+  createdAt: string;
+
+  @ApiProperty({
+    description: 'Last time this session refreshed — how "active" is measured.',
+    format: 'date-time',
+  })
+  lastActiveAt: string;
+
+  @ApiProperty({ description: 'When it expires on its own if unused.', format: 'date-time' })
+  expiresAt: string;
+
+  @ApiPropertyOptional({
+    type: String,
+    description:
+      'Most recent User-Agent seen on this session. Null for sessions predating capture.',
+    nullable: true,
+    example: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+  })
+  userAgent: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    description: 'Most recent client address. Null for sessions predating capture.',
+    nullable: true,
+    example: '203.0.113.7',
+  })
+  ip: string | null;
+
+  @ApiProperty({
+    description:
+      'True for the session making this request. Resolved from the refresh cookie, not the access token.',
+  })
+  current: boolean;
+}

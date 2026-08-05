@@ -56,6 +56,30 @@ export const users = pgTable(
       withTimezone: true,
     }),
     /*
+     * When the password last changed - the cutoff that kills outstanding
+     * ACCESS tokens.
+     *
+     * Revoking refresh-token families ends a session's ability to RENEW, which
+     * is most of what "sign out every other device" means. It does not touch an
+     * access token that has already been issued: those are stateless and valid
+     * for their full fifteen minutes, so a client who changes their password
+     * because they believe somebody is in their account leaves that somebody
+     * with up to fifteen more minutes of access.
+     *
+     * For an ordinary logout that window is a fair trade for not hitting the
+     * database on every request. For a password change it is not: the whole
+     * reason to change a password under duress is to end access NOW.
+     *
+     * `jwt.strategy.ts` compares this against the token's `iat` on every
+     * request. It costs nothing extra - the strategy already loads the user to
+     * check for suspension.
+     *
+     * NULLABLE, and read as "no cutoff": every account that existed before this
+     * column did has never changed its password through a path that records
+     * one, and must not be logged out by the migration that added it.
+     */
+    passwordChangedAt: timestamp('password_changed_at', { withTimezone: true }),
+    /*
      * `refresh_token` is GONE — superseded by the `refresh_tokens` table below.
      *
      * It held a single token per user, which is why rotation could only ever
@@ -889,6 +913,29 @@ export const refreshTokens = pgTable(
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /*
+     * Who and where, so a client can recognise their own sessions.
+     *
+     * GET /auth/sessions exists to answer one question: "is one of these not
+     * me". Without these columns the honest answer it could give was "there
+     * are three sessions and they expire in 29 days", which nobody can act on.
+     * A browser, an address and a last-active time are what make an unfamiliar
+     * row recognisable as unfamiliar.
+     *
+     * Both are NULLABLE and both are copied forward on rotation. Nullable
+     * because rows written before this migration have neither, and because a
+     * request can genuinely arrive with no User-Agent -- the API must never
+     * refuse to refresh a session over a missing display string.
+     */
+    userAgent: varchar('user_agent', { length: 400 }),
+    /*
+     * Sized for IPv6 plus a scope, and stored whole.
+     *
+     * Truncating it -- the usual privacy instinct -- would defeat the feature:
+     * "someone in your country" is not a signal anyone can act on, and this is
+     * the client's own data shown back to the client, not third-party tracking.
+     */
+    ip: varchar('ip', { length: 64 }),
   },
   (t) => [
     index('refresh_tokens_family_idx').on(t.familyId),

@@ -9,11 +9,15 @@ import { Response } from 'express';
 import {
   AuthenticationError,
   AuthorizationError,
+  NotFoundError,
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { createHash, randomUUID } from 'crypto';
 import { CsrfService } from '../../common/security/csrf.service';
-import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
+import {
+  RefreshTokensService,
+  type DeviceFingerprint,
+} from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
 import { LoginAttemptsService } from '../../common/security/login-attempts.service';
 import {
@@ -267,6 +271,10 @@ export class AuthService {
 
     await this.users.update(user.id, {
       passwordHash: await this.passwords.hash(newPassword),
+      // Kills every access token issued before this instant - see the column's
+      // comment in schema.ts. Revoking the refresh families below ends the
+      // ability to RENEW; this ends the tokens already out there.
+      passwordChangedAt: new Date(),
       // Cleared in the same write as the new password: the token is spent the
       // moment it works, so a replay finds nothing.
       passwordResetTokenHash: undefined,
@@ -283,7 +291,7 @@ export class AuthService {
   }
 
   // ─── Login ────────────────────────────────────────────────────────────────────
-  async login(dto: LoginDto, res: Response) {
+  async login(dto: LoginDto, res: Response, device?: DeviceFingerprint) {
     // Per-ACCOUNT lockout — R-3.5. The @Throttle on this route is keyed on the
     // IP, which does nothing about a distributed run against one account.
     // Checked first, so a locked account costs an attacker a round trip rather
@@ -338,6 +346,7 @@ export class AuthService {
       jti: tokens.jti,
       token: tokens.refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+      device,
     });
 
     this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken, user.id);
@@ -363,7 +372,7 @@ export class AuthService {
   }
 
   // ─── Refresh ──────────────────────────────────────────────────────────────────
-  async refreshFromToken(providedRefreshToken: string, res: Response) {
+  async refreshFromToken(providedRefreshToken: string, res: Response, device?: DeviceFingerprint) {
     if (!providedRefreshToken) throw new AuthenticationError('No refresh token provided.');
 
     let userId: string;
@@ -445,6 +454,16 @@ export class AuthService {
       jtiNext: tokens.jti,
       nextToken: tokens.refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+      /*
+       * Re-captured on EVERY rotation, not just at login.
+       *
+       * The portal refreshes about every ten minutes for thirty days, so a
+       * fingerprint written only on the login row would make the session list
+       * report where the client signed in a month ago. "Last active an hour
+       * ago from an address you do not recognise" is the entire signal this
+       * feature exists to surface, and it only exists if this is here.
+       */
+      device,
     });
     // Lost a race with a concurrent refresh using the same token. Handing out a
     // second live session is exactly what the conditional update prevents.
@@ -580,5 +599,196 @@ export class AuthService {
 
   async findUserById(id: string): Promise<User | undefined> {
     return await this.users.findById(id);
+  }
+
+  // ─── Password change, and the sessions behind it ─────────────────────────────
+
+  /**
+   * Change a password from INSIDE a session — FR-CORE-09's other half.
+   *
+   * The portal had no way to do this. `resetPassword` above is not it: that
+   * consumes an e-mailed single-use token and exists for people who cannot sign
+   * in. Pointing a signed-in client at it means mailing them a link to prove an
+   * identity they have already proved, and it revokes every session including
+   * the one they are sitting in.
+   *
+   * Three things make this safe, and each is here for its own reason:
+   *
+   *  1. The CURRENT password is required. Without it, any XSS or borrowed
+   *     unlocked laptop is a permanent account takeover in one request — this
+   *     endpoint would hand over the credential that outlives every cookie.
+   *
+   *  2. `verify()` runs against the stored hash through PasswordService, which
+   *     equalises timing for a missing hash. A user always exists here, so that
+   *     matters less than at login, but the shared path is the point: a future
+   *     caller inherits the property rather than reimplementing it.
+   *
+   *  3. Every OTHER session dies. A password change is how someone responds to
+   *     "I think somebody is in my account", and it means nothing if the
+   *     attacker's thirty-day refresh token keeps working. The caller's own
+   *     session survives, because signing someone out for doing the right thing
+   *     teaches them not to.
+   */
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+    res: Response,
+    device?: DeviceFingerprint,
+  ) {
+    const user = await this.users.findById(userId);
+    // The guard already resolved this user, so absence means the account was
+    // deleted between the guard and here. Treated as an auth failure, not a 404.
+    if (!user) throw new AuthenticationError('Your session is no longer valid. Please sign in.');
+
+    const { valid } = await this.passwords.verify(currentPassword, user.passwordHash);
+    if (!valid) {
+      this.logger.warn(`Password change refused for ${user.email}: current password did not match`);
+      throw new ValidationError('Your current password is not correct.');
+    }
+
+    /*
+     * Refused rather than silently accepted.
+     *
+     * "Change" that changes nothing leaves the client believing they have
+     * rotated a credential they may have just told somebody, and it revokes
+     * their other sessions for no gain. Compared against the stored hash rather
+     * than against the submitted string, so it also catches the case where the
+     * two fields were filled from a password manager.
+     */
+    const { valid: unchanged } = await this.passwords.verify(newPassword, user.passwordHash);
+    if (unchanged) {
+      throw new ValidationError('Your new password must be different from your current one.');
+    }
+
+    await this.users.update(user.id, {
+      passwordHash: await this.passwords.hash(newPassword),
+      /*
+       * The cutoff that makes "every other session is signed out" true NOW.
+       *
+       * Without it, revoking the refresh families only stops those sessions
+       * RENEWING - each keeps working on its already-issued access token for up
+       * to fifteen more minutes. Measured, not assumed: before this line, a
+       * second device kept answering 200 on /auth/me straight after the change.
+       *
+       * Fifteen minutes of continued access is precisely what somebody
+       * changing their password under duress is trying to prevent.
+       */
+      passwordChangedAt: new Date(),
+      // A pending reset link is a live second key to the account. Someone
+      // changing their password because they fear compromise must not leave one
+      // sitting in an inbox the attacker may also hold.
+      passwordResetTokenHash: undefined,
+      passwordResetExpiry: undefined,
+    });
+
+    /*
+     * EVERY family, including the caller's own, and then a brand new session
+     * for them.
+     *
+     * The first cut kept the caller's family alive and revoked the rest. That
+     * was not enough once `passwordChangedAt` started invalidating outstanding
+     * ACCESS tokens: the cutoff does not know whose token it is looking at, so
+     * it signed the caller out of the device they had just proved their old
+     * password on. Measured, not assumed - /auth/me answered 401 for the owner
+     * immediately after a successful change.
+     *
+     * Trying to exempt the caller from the cutoff would mean the cutoff had an
+     * exception, and an exception is a hole: any token the check waves through
+     * is a token an attacker might be holding. So the cutoff stays absolute and
+     * the caller is re-issued instead. They keep working because they are given
+     * something NEW, not because something old was spared.
+     */
+    const revoked = await this.refreshTokens.revokeAllForSubject('portal', user.id);
+
+    const tokens = this.generateTokens(user);
+    await this.refreshTokens.record({
+      surface: 'portal',
+      subjectId: user.id,
+      jti: tokens.jti,
+      token: tokens.refreshToken,
+      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+      device,
+    });
+    // The rotated cookies ride back on this response and the browser installs
+    // them, exactly as at login. The portal reads no token from the body.
+    this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken, user.id);
+
+    // `revoked` counts the caller's old family too, so the number reported to
+    // them is one less than the rows touched. Saying "3 other sessions" when
+    // they had 3 other devices is the number they can check against reality.
+    const others = Math.max(0, revoked - 1);
+    this.logger.log(
+      `Password changed for ${user.email}; all ${revoked} session(s) revoked, caller re-issued`,
+    );
+
+    return {
+      message:
+        others > 0
+          ? `Your password has been updated. ${others} other session(s) were signed out.`
+          : 'Your password has been updated.',
+    };
+  }
+
+  /**
+   * Which family a refresh-token `jti` belongs to.
+   *
+   * A thin pass-through so the controller does not reach into
+   * `RefreshTokensService` directly. Everything the controller needs about
+   * sessions arrives through this service, which is what keeps the token table
+   * an implementation detail of it rather than a shared dependency.
+   */
+  familyIdForJti(jti: string): Promise<string | null> {
+    return this.refreshTokens.familyIdForJti('portal', jti);
+  }
+
+  /**
+   * The client's own live sessions, with the one they are using marked.
+   *
+   * `currentFamilyId` is resolved from the REFRESH cookie rather than the access
+   * token, because the access token carries no family. Getting it wrong only
+   * mislabels a row — see `familyIdForJti` — but getting it right is what lets
+   * the UI stop someone revoking the session they are sitting in by accident.
+   */
+  async listSessions(userId: string, currentFamilyId: string | null) {
+    const sessions = await this.refreshTokens.listSessions('portal', userId);
+    return sessions.map((s) => ({
+      id: s.id,
+      createdAt: s.createdAt.toISOString(),
+      lastActiveAt: s.lastActiveAt.toISOString(),
+      expiresAt: s.expiresAt.toISOString(),
+      userAgent: s.userAgent,
+      ip: s.ip,
+      current: s.id === currentFamilyId,
+    }));
+  }
+
+  /**
+   * Ends one session by family id.
+   *
+   * Ownership is enforced inside the UPDATE (see `revokeFamilyForSubject`), so
+   * a family belonging to somebody else matches nothing. That is reported as a
+   * 404 rather than a 403 on purpose: telling a caller "that session exists but
+   * is not yours" confirms the existence of another account's session id.
+   */
+  async revokeSession(userId: string, familyId: string, currentFamilyId: string | null) {
+    /*
+     * Revoking your CURRENT session through this endpoint is refused, and
+     * pointed at logout instead.
+     *
+     * It would otherwise half-work: the family dies, the httpOnly cookies stay
+     * in the browser, and the client sits on a rendered portal where the next
+     * request 401s. Logout is the operation that both revokes and clears the
+     * cookies, and it is one click away in the same menu.
+     */
+    if (currentFamilyId && familyId === currentFamilyId) {
+      throw new ValidationError('That is the session you are using now. Use Log out to end it.');
+    }
+
+    const revoked = await this.refreshTokens.revokeFamilyForSubject('portal', userId, familyId);
+    if (revoked === 0) throw new NotFoundError('That session no longer exists.');
+
+    this.logger.log(`Session ${familyId} revoked by its owner (${revoked} token(s))`);
+    return { message: 'That session has been signed out.' };
   }
 }

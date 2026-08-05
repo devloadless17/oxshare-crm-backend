@@ -99,3 +99,29 @@ export class ResetPasswordDto {
   @MaxLength(100)
   newPassword: string;
 }
+
+/**
+ * Changing a password from inside a live session.
+ *
+ * `currentPassword` is required and is the whole point: without it this
+ * endpoint turns any XSS, any borrowed unlocked laptop and any session cookie
+ * into a permanent account takeover, because a password outlives every cookie
+ * that could be revoked.
+ *
+ * The bounds match `RegisterDto` and `ResetPasswordDto` exactly. A different
+ * minimum here would mean a password this API accepts on one route and refuses
+ * on another, and the client finding that out only at the point of failure.
+ */
+export class ChangePasswordDto {
+  @ApiProperty({ example: 'CurrentPass123!', maxLength: 100 })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  currentPassword: string;
+
+  @ApiProperty({ example: 'NewStrongPass123!', minLength: 8, maxLength: 100 })
+  @IsString()
+  @MinLength(8)
+  @MaxLength(100)
+  newPassword: string;
+}

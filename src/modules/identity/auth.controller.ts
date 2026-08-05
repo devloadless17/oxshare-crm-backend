@@ -2,6 +2,9 @@ import {
   Controller,
   Post,
   Get,
+  Delete,
+  Param,
+  ParseUUIDPipe,
   Body,
   Req,
   Res,
@@ -19,11 +22,14 @@ import {
 import { Request, Response } from 'express';
 import { Throttle } from '@nestjs/throttler';
 import { COOKIE_BASES, readSessionCookie } from '../../common/security/session-cookies';
+import type { DeviceFingerprint } from '../../common/security/refresh-tokens.service';
+import { TOKEN_KIND } from '../../common/security/token-audience';
 import { AuthService } from './auth.service';
 import {
   AuthTokensResponseDto,
   MessageResponseDto,
   RegistrationResponseDto,
+  SessionDto,
   UserProfileDto,
 } from './dto/auth-response.dto';
 import {
@@ -33,6 +39,7 @@ import {
   VerifyEmailDto,
   ForgotPasswordDto,
   ResetPasswordDto,
+  ChangePasswordDto,
 } from './dto/auth.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { User } from '../../store/users.store';
@@ -147,8 +154,8 @@ export class AuthController {
     summary: 'Login — sets the session as httpOnly cookies. No tokens in the response body.',
   })
   @ApiOkResponse({ type: AuthTokensResponseDto })
-  login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
-    return this.auth.login(dto, res);
+  login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    return this.auth.login(dto, res, deviceOf(req));
   }
 
   @NoCsrf(
@@ -184,7 +191,7 @@ export class AuthController {
       req.cookies as Record<string, string | undefined> | undefined,
       COOKIE_BASES.clientRefresh,
     );
-    return this.auth.refreshFromToken(refreshToken ?? '', res);
+    return this.auth.refreshFromToken(refreshToken ?? '', res, deviceOf(req));
   }
 
   @NoCsrf(
@@ -212,5 +219,144 @@ export class AuthController {
   @ApiOkResponse({ type: UserProfileDto })
   me(@Req() req: Request & { user: User }) {
     return this.auth.me(req.user);
+  }
+
+  /**
+   * Change a password from inside a live session - the other half of R-3.5.
+   *
+   * `POST /auth/reset-password` above is NOT this. It consumes an e-mailed
+   * single-use token and exists for people who cannot sign in; using it for a
+   * signed-in client means mailing them a link to prove an identity they have
+   * already proved, and it ends every session including the one they are in.
+   *
+   * Throttled despite requiring a session, because the current password is
+   * checked here: without a limit this is an oracle for guessing the password
+   * of an account whose session has already been stolen, and every guess costs
+   * the process one argon2 verification.
+   */
+  @Post('change-password')
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { ttl: 900_000, limit: 5 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Change your password - requires the current one, and ends every OTHER session',
+  })
+  @ApiOkResponse({ type: MessageResponseDto })
+  changePassword(
+    @Req() req: Request & { user: User },
+    @Body() dto: ChangePasswordDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    // `res` because a successful change revokes EVERY session and issues the
+    // caller a fresh one - the new cookies ride back on this response. Sparing
+    // their old session instead would mean the access-token cutoff had an
+    // exception, and an exception is a hole. See AuthService.changePassword.
+    return this.auth.changePassword(
+      req.user.id,
+      dto.currentPassword,
+      dto.newPassword,
+      res,
+      deviceOf(req),
+    );
+  }
+
+  /**
+   * The client's own live sessions - FR-CORE-09, the "where am I signed in" half.
+   *
+   * One entry per LOGIN rather than per token row: a month-old session is
+   * thousands of rotations and one thing the client actually did.
+   */
+  @Get('sessions')
+  @UseGuards(JwtAuthGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'List your active sessions, most recently active first' })
+  @ApiOkResponse({ type: SessionDto, isArray: true })
+  async sessions(@Req() req: Request & { user: User }) {
+    return this.auth.listSessions(req.user.id, await this.currentFamilyId(req));
+  }
+
+  /**
+   * End one session by family id.
+   *
+   * `ParseUUIDPipe` rejects a malformed id with a 400 before it reaches a query.
+   * Ownership is enforced inside the UPDATE, not by a preceding SELECT, so
+   * there is no check-then-act window and a family belonging to somebody else
+   * matches nothing at all.
+   */
+  @Delete('sessions/:id')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Sign out one of your other sessions' })
+  @ApiOkResponse({ type: MessageResponseDto })
+  async revokeSession(
+    @Req() req: Request & { user: User },
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.auth.revokeSession(req.user.id, id, await this.currentFamilyId(req));
+  }
+
+  /**
+   * Which refresh-token family this request belongs to, or null.
+   *
+   * Read from the REFRESH cookie because the access token carries no family -
+   * it is signed from the user, not from the login. The jti is taken by
+   * DECODING rather than verifying, and that is safe here for a narrow reason:
+   * the caller is already authenticated by `JwtAuthGuard` against the access
+   * token, and this value only decides which row of a list already belonging to
+   * them is labelled "this device", plus which session a password change
+   * spares. A forged value mislabels a row and, at worst, spares a session the
+   * caller could have ended anyway. It grants nothing.
+   */
+  private async currentFamilyId(req: Request): Promise<string | null> {
+    const token = readSessionCookie(
+      req.cookies as Record<string, string | undefined> | undefined,
+      COOKIE_BASES.clientRefresh,
+    );
+    if (!token) return null;
+    const jti = decodeJti(token);
+    return jti ? this.auth.familyIdForJti(jti) : null;
+  }
+}
+
+/**
+ * What the request looked like, for the session list to show back.
+ *
+ * `req.ip` is Express's, which respects `trust proxy`, so behind a load
+ * balancer this is the client address rather than the balancer's.
+ *
+ * Truncated to the column width rather than rejected: refusing a login because
+ * somebody sent a 900-character User-Agent would be an availability bug wearing
+ * a validation costume.
+ */
+function deviceOf(req: Request): DeviceFingerprint {
+  const ua = req.get('user-agent');
+  return {
+    userAgent: ua ? ua.slice(0, 400) : null,
+    ip: req.ip ? req.ip.slice(0, 64) : null,
+  };
+}
+
+/**
+ * The `jti` inside a JWT, WITHOUT verifying it.
+ *
+ * Hand-decoded rather than run through JwtService because verification needs
+ * the refresh secret, and this value is not being trusted for anything - see
+ * `currentFamilyId`. Any malformed input answers null.
+ */
+function decodeJti(token: string): string | null {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const decoded: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (typeof decoded !== 'object' || decoded === null) return null;
+    const { jti, typ } = decoded as { jti?: unknown; typ?: unknown };
+    // A refresh token is the only kind that belongs to a family. Anything else
+    // presented here is not the cookie we asked for.
+    if (typ !== TOKEN_KIND.refresh) return null;
+    return typeof jti === 'string' ? jti : null;
+  } catch {
+    return null;
   }
 }

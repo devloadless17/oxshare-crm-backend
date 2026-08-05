@@ -20,6 +20,8 @@ export interface User {
   /** SHA-256 of the emailed reset token — never the token itself. */
   passwordResetTokenHash?: string;
   passwordResetExpiry?: Date;
+  /** Cutoff for outstanding access tokens - see jwt.strategy.ts. */
+  passwordChangedAt?: Date;
   country?: string;
   phone?: string;
   createdAt: Date;
@@ -34,6 +36,7 @@ const toUser = (r: Row): User => ({
   emailVerificationExpiry: r.emailVerificationExpiry ?? undefined,
   passwordResetTokenHash: r.passwordResetTokenHash ?? undefined,
   passwordResetExpiry: r.passwordResetExpiry ?? undefined,
+  passwordChangedAt: r.passwordChangedAt ?? undefined,
   country: r.country ?? undefined,
   phone: r.phone ?? undefined,
 });

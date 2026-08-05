@@ -134,6 +134,20 @@
       "when": 1785947163796,
       "tag": "0018_curly_havok",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1785963876309,
+      "tag": "0019_chilly_betty_brant",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785965905780,
+      "tag": "0020_outstanding_synch",
+      "breakpoints": true
     }
   ]
 }

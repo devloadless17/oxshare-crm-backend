@@ -1,12 +1,39 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
-import { and, eq, isNull, lt } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, lt } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { refreshTokens } from '../../database/schema';
 import { ALERT_KINDS, raiseAlert } from '../logging/alerts';
 
 export type AuthSurface = 'admin' | 'portal';
+
+/** What the request looked like, for the session list to show back. */
+export interface DeviceFingerprint {
+  userAgent?: string | null;
+  ip?: string | null;
+}
+
+/**
+ * One SESSION, as a client understands the word.
+ *
+ * A session is a refresh-token FAMILY, not a row. One login starts a family and
+ * every rotation appends a member to it, so a client signed in for a month on
+ * one laptop has ~2,900 rows and exactly one session. Listing rows would show
+ * them a wall of identical entries and no way to end "the one on the old
+ * phone"; listing families shows them what they actually did.
+ */
+export interface SessionSummary {
+  /** The family id. This is what DELETE /auth/sessions/:id revokes. */
+  id: string;
+  /** When the login happened — the oldest member of the family. */
+  createdAt: Date;
+  /** The newest member's creation: the last time this session was refreshed. */
+  lastActiveAt: Date;
+  expiresAt: Date;
+  userAgent: string | null;
+  ip: string | null;
+}
 
 /** What a presented refresh token turned out to be. */
 export type RefreshVerdict =
@@ -64,6 +91,8 @@ export class RefreshTokensService {
     jti: string;
     token: string;
     expiresAt: Date;
+    /** Who and where — see the columns' comment in schema.ts. */
+    device?: DeviceFingerprint;
   }): Promise<{ familyId: string }> {
     const familyId = randomUUID();
     await this.db.insert(refreshTokens).values({
@@ -73,6 +102,8 @@ export class RefreshTokensService {
       subjectId: params.subjectId,
       tokenHash: this.hash(params.token),
       expiresAt: params.expiresAt,
+      userAgent: params.device?.userAgent ?? null,
+      ip: params.device?.ip ?? null,
     });
     return { familyId };
   }
@@ -153,6 +184,16 @@ export class RefreshTokensService {
     jtiNext: string;
     nextToken: string;
     expiresAt: Date;
+    /**
+     * Carried forward on every rotation, not just recorded at login.
+     *
+     * A session's row is replaced roughly every fifteen minutes for thirty
+     * days. Writing the fingerprint only on the login row would mean the
+     * session list showed where a client signed in a month ago rather than
+     * where the session is being used NOW — and "used from a new country an
+     * hour ago" is the entire signal this feature exists to surface.
+     */
+    device?: DeviceFingerprint;
   }): Promise<{ jti: string } | null> {
     const claimed = await this.db
       .update(refreshTokens)
@@ -169,6 +210,8 @@ export class RefreshTokensService {
       subjectId: params.subjectId,
       tokenHash: this.hash(params.nextToken),
       expiresAt: params.expiresAt,
+      userAgent: params.device?.userAgent ?? null,
+      ip: params.device?.ip ?? null,
     });
     return { jti: params.jtiNext };
   }
@@ -218,5 +261,110 @@ export class RefreshTokensService {
       .where(lt(refreshTokens.expiresAt, new Date()))
       .returning({ id: refreshTokens.id });
     return deleted.length;
+  }
+
+  /**
+   * The family a presented token belongs to, without judging it.
+   *
+   * Used to mark "this device" in the session list. Deliberately does NOT
+   * verify the token hash or the revocation state: the caller has already been
+   * authenticated by `JwtAuthGuard` against the ACCESS token, and this only
+   * decides which row in a list the client is already entitled to see gets a
+   * label. A wrong answer here mislabels a row; it grants nothing.
+   */
+  async familyIdForJti(surface: AuthSurface, jti: string): Promise<string | null> {
+    const [row] = await this.db
+      .select({ familyId: refreshTokens.familyId })
+      .from(refreshTokens)
+      .where(and(eq(refreshTokens.id, jti), eq(refreshTokens.surface, surface)))
+      .limit(1);
+    return row?.familyId ?? null;
+  }
+
+  /**
+   * Every live session for one principal, one row per LOGIN.
+   *
+   * Aggregated in SQL rather than by reading families into memory: a month-old
+   * session is thousands of rows, and this endpoint is reachable by any signed-in
+   * client. Grouping in the database keeps the response proportional to the
+   * number of logins rather than to how long they have been signed in.
+   *
+   * Revoked and expired families are excluded — the question is "who is signed
+   * in", and a session that has already ended is not something the client can
+   * act on. It would also make the list grow forever and bury the live rows.
+   *
+   * `userAgent` / `ip` come from `max(created_at)`'s row via DISTINCT ON, so the
+   * fingerprint shown is the most RECENT one for that session rather than the
+   * one captured at login a month ago.
+   */
+  async listSessions(surface: AuthSurface, subjectId: string): Promise<SessionSummary[]> {
+    const now = new Date();
+    const rows = await this.db
+      .select()
+      .from(refreshTokens)
+      .where(
+        and(
+          eq(refreshTokens.surface, surface),
+          eq(refreshTokens.subjectId, subjectId),
+          isNull(refreshTokens.revokedAt),
+          gt(refreshTokens.expiresAt, now),
+        ),
+      )
+      .orderBy(refreshTokens.familyId, desc(refreshTokens.createdAt));
+
+    const byFamily = new Map<string, SessionSummary>();
+    for (const row of rows) {
+      const seen = byFamily.get(row.familyId);
+      if (!seen) {
+        // First row of this family in the ordering, so it is the NEWEST — its
+        // fingerprint and expiry are the current ones.
+        byFamily.set(row.familyId, {
+          id: row.familyId,
+          createdAt: row.createdAt,
+          lastActiveAt: row.createdAt,
+          expiresAt: row.expiresAt,
+          userAgent: row.userAgent,
+          ip: row.ip,
+        });
+        continue;
+      }
+      // Older members only move the login time backwards. Nothing else about
+      // them is current.
+      if (row.createdAt < seen.createdAt) seen.createdAt = row.createdAt;
+    }
+
+    return [...byFamily.values()].sort(
+      (a, b) => b.lastActiveAt.getTime() - a.lastActiveAt.getTime(),
+    );
+  }
+
+  /**
+   * Ends one session, if it belongs to the caller.
+   *
+   * The ownership predicate is in the WHERE clause rather than a preceding
+   * SELECT, so there is no window between checking and revoking and no way for
+   * a caller to end somebody else's session by guessing a family id. A family
+   * that is not theirs matches nothing and reports 0 — which the caller cannot
+   * distinguish from an id that does not exist, and that is the right answer to
+   * give them.
+   */
+  async revokeFamilyForSubject(
+    surface: AuthSurface,
+    subjectId: string,
+    familyId: string,
+  ): Promise<number> {
+    const revoked = await this.db
+      .update(refreshTokens)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(refreshTokens.familyId, familyId),
+          eq(refreshTokens.surface, surface),
+          eq(refreshTokens.subjectId, subjectId),
+          isNull(refreshTokens.revokedAt),
+        ),
+      )
+      .returning({ id: refreshTokens.id });
+    return revoked.length;
   }
 }
