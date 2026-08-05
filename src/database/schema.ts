@@ -79,6 +79,21 @@ export const users = pgTable(
      * one, and must not be logged out by the migration that added it.
      */
     passwordChangedAt: timestamp('password_changed_at', { withTimezone: true }),
+
+    /*
+     * The client's profile photo - the STORED FILENAME, not a URL.
+     *
+     * `<uuid>.<ext>` under ./uploads/avatars, written by StoredFilesService.
+     * A filename rather than a URL because the URL is a function of how the
+     * API is deployed: the §8.5 move to private S3 changes how the bytes are
+     * served and must not require rewriting a column. `GET /uploads/avatars/
+     * :file` composes the URL at read time.
+     *
+     * Never the client-supplied filename. The extension comes from the file's
+     * own magic bytes, which is what stops an HTML document declared
+     * `image/png` from being stored as something a browser will execute.
+     */
+    avatarFilename: varchar('avatar_filename', { length: 128 }),
     /*
      * `refresh_token` is GONE — superseded by the `refresh_tokens` table below.
      *

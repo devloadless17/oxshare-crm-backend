@@ -7,6 +7,7 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from './guards/email-verified.guard';
+import { StoredFilesService } from '../../common/uploads/stored-files.service';
 
 @Module({
   imports: [
@@ -20,7 +21,15 @@ import { EmailVerifiedGuard } from './guards/email-verified.guard';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, JwtAuthGuard, EmailVerifiedGuard],
-  exports: [AuthService, JwtAuthGuard, EmailVerifiedGuard],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    JwtAuthGuard,
+    EmailVerifiedGuard,
+    // Shared with the KYC upload path — one definition of what is safe
+    // to write to disk, rather than a second copy that drifts.
+    StoredFilesService,
+  ],
+  exports: [AuthService, JwtAuthGuard, EmailVerifiedGuard, StoredFilesService],
 })
 export class IdentityModule {}

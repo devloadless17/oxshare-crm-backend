@@ -33,6 +33,17 @@ export class UserProfileDto {
   @ApiPropertyOptional({ example: 'United Arab Emirates' }) country?: string;
   @ApiPropertyOptional({ example: '+971501234567' }) phone?: string;
   @ApiProperty() createdAt: Date;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'Path to the profile photo, or null when there is none. The portal renders initials for ' +
+      'null rather than a placeholder image or a gravatar - an invented image URL would be a ' +
+      "request to a third party leaking the client's e-mail hash.",
+    example: '/uploads/avatars/6f1c2b9e-....png',
+  })
+  avatarUrl: string | null;
 }
 
 /**
@@ -149,4 +160,17 @@ export class SessionDto {
       'True for the session making this request. Resolved from the refresh cookie, not the access token.',
   })
   current: boolean;
+}
+
+/** What the avatar routes answer: the new URL, or null once removed. */
+export class AvatarResponseDto {
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'Path to the stored photo, or null when there is none. Composed from the stored filename, ' +
+      'so the section 8.5 move to private object storage changes this line and no rows.',
+    example: '/uploads/avatars/6f1c...c2.png',
+  })
+  avatarUrl: string | null;
 }

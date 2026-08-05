@@ -3,6 +3,8 @@ import {
   Post,
   Get,
   Delete,
+  UploadedFile,
+  UseInterceptors,
   Param,
   ParseUUIDPipe,
   Body,
@@ -44,6 +46,12 @@ import {
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { User } from '../../store/users.store';
 import { NoCsrf } from '../../common/security/csrf.guard';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { ApiConsumes } from '@nestjs/swagger';
+import { ValidationError } from '../../common/errors/domain-errors';
+import { AVATAR_BUCKET } from '../../common/uploads/stored-files.service';
+import { AvatarResponseDto } from './dto/auth-response.dto';
 
 @ApiTags('auth')
 @Controller(['auth', 'identity'])
@@ -295,6 +303,57 @@ export class AuthController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.auth.revokeSession(req.user.id, id, await this.currentFamilyId(req));
+  }
+
+  /**
+   * Upload the client's profile photo.
+   *
+   * `memoryStorage`, not `diskStorage`, and that is the difference from the KYC
+   * path. Nothing untrusted reaches the filesystem until the bytes have been
+   * validated, so a rejected upload leaves nothing behind to clean up — KYC
+   * writes first and checks after, which needs a delete on every failure branch
+   * and leaks a file the first time somebody forgets one.
+   *
+   * `limits.fileSize` is what actually stops the bytes; the service checks the
+   * size again because a limit enforced in one place is a limit that moves when
+   * the interceptor is reconfigured.
+   *
+   * The accepted TYPES are decided from the file's own magic bytes inside
+   * `StoredFilesService`, never from the multipart `Content-Type` — that header
+   * is a claim by the uploader, and an HTML document declared `image/png` is
+   * how a stored file becomes stored XSS.
+   */
+  @Post('me/avatar')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: AVATAR_BUCKET.maxBytes, files: 1 },
+    }),
+  )
+  @Throttle({ default: { ttl: 3_600_000, limit: 20 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Upload or replace your profile photo (JPEG, PNG or WebP, max 2MB)' })
+  @ApiOkResponse({ type: AvatarResponseDto })
+  async uploadAvatar(
+    @Req() req: Request & { user: User },
+    @UploadedFile() file: Express.Multer.File | undefined,
+  ) {
+    if (!file) throw new ValidationError('No file was uploaded.');
+    return this.auth.setAvatar(req.user.id, file.buffer, file.mimetype);
+  }
+
+  /** Remove the photo. The portal falls back to initials, never a placeholder. */
+  @Delete('me/avatar')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Remove your profile photo' })
+  @ApiOkResponse({ type: AvatarResponseDto })
+  async removeAvatar(@Req() req: Request & { user: User }) {
+    return this.auth.removeAvatar(req.user.id);
   }
 
   /**

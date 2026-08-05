@@ -9,6 +9,7 @@ import {
   Res,
   ServiceUnavailableException,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtService } from '@nestjs/jwt';
@@ -22,6 +23,8 @@ import { KycStore } from '../../store/kyc.store';
 import { UsersStore } from '../../store/users.store';
 import { AuditLogStore } from '../../store/audit-log.store';
 import { COOKIE_BASES, readSessionCookie } from '../../common/security/session-cookies';
+import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
+import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import {
   isTokenKind,
   TOKEN_ALGORITHMS,
@@ -52,7 +55,56 @@ export class UploadsController {
     private readonly kyc: KycStore,
     private readonly users: UsersStore,
     private readonly auditLog: AuditLogStore,
+    private readonly files: StoredFilesService,
   ) {}
+
+  /**
+   * Serve a profile photo to the client it belongs to.
+   *
+   * Deliberately NOT public, even though an avatar is far less sensitive than a
+   * passport scan. The filename is a UUID, so an unauthenticated route would be
+   * "secure" only by being unguessable — and unguessable URLs leak through
+   * Referer headers, proxy logs and shared screenshots. There is no requirement
+   * anywhere for one client to see another's photo, so nothing is lost by
+   * requiring the session that already exists.
+   *
+   * OWNERSHIP is checked against the row rather than the filename: the caller
+   * gets their own `avatar_filename` and it must equal what they asked for.
+   * That is what makes a valid session unable to enumerate other people's
+   * photos by trying UUIDs.
+   *
+   * The security headers match the KYC path for the same reason: this origin
+   * holds the session cookies, so nothing served from it may ever be
+   * interpreted as active content.
+   */
+  @Get('avatars/:file')
+  @UseGuards(JwtAuthGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: "Serve a client's own profile photo" })
+  async serveAvatar(
+    @Param('file') file: string,
+    @Req() req: Request & { user: { id: string } },
+    @Res() res: Response,
+  ) {
+    const name = basename(file); // neutralise any traversal attempt
+
+    const owner = await this.users.findById(req.user.id);
+    if (!owner || owner.avatarFilename !== name) {
+      // 404, not 403: telling a caller "that photo exists but is not yours"
+      // confirms the existence of another account's file.
+      throw new NotFoundException('Photo not found.');
+    }
+
+    const found = this.files.read(AVATAR_BUCKET, name);
+    if (!found) throw new NotFoundException('Photo not found.');
+
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    // Private, because it is one client's photo, and short — an avatar the
+    // client has just replaced should not survive on their own screen.
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    found.stream.pipe(res);
+  }
 
   @Get('kyc/:file')
   @ApiCookieAuth()

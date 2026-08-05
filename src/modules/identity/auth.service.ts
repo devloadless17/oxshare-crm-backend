@@ -19,6 +19,7 @@ import {
   type DeviceFingerprint,
 } from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
+import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { LoginAttemptsService } from '../../common/security/login-attempts.service';
 import {
   isTokenKind,
@@ -78,6 +79,10 @@ export class AuthService {
     private readonly refreshTokens: RefreshTokensService,
     private readonly passwords: PasswordService,
     private readonly loginAttempts: LoginAttemptsService,
+    // Appended rather than slotted in beside `passwords`: these parameters are
+    // positional at every `new AuthService(...)` in the test suite, so inserting
+    // in the middle silently shifts two arguments into the wrong slots.
+    private readonly files: StoredFilesService,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -594,7 +599,67 @@ export class AuthService {
       country: user.country,
       phone: user.phone,
       createdAt: user.createdAt,
+      /*
+       * A URL, composed here, from a FILENAME stored in the column.
+       *
+       * The column holds `<uuid>.png` because a URL is a function of how the
+       * API is deployed, and §8.5's move to private S3 changes how the bytes
+       * are served. Composing at read time means that migration touches this
+       * line rather than every row.
+       *
+       * Null when there is no photo, never a placeholder or a gravatar: the
+       * portal renders initials, and an invented image URL would be a request
+       * to a third party that leaks the client's e-mail hash.
+       */
+      avatarUrl: user.avatarFilename ? `/uploads/avatars/${user.avatarFilename}` : null,
     };
+  }
+
+  /**
+   * Set the client's profile photo.
+   *
+   * The bytes are validated and written BEFORE the row is updated, so a
+   * rejected upload leaves nothing behind and a failed write cannot leave the
+   * column pointing at a file that does not exist.
+   *
+   * The previous photo is deleted after the row is updated, in that order: if
+   * the delete fails the client has a working new avatar and one orphaned file,
+   * which is a cleanup job. Deleting first and then failing to update would
+   * leave a row pointing at bytes that are gone, which is a broken image on
+   * every screen the client visits.
+   */
+  async setAvatar(userId: string, buffer: Buffer, declaredMime: string) {
+    const user = await this.users.findById(userId);
+    if (!user) throw new AuthenticationError('Your session is no longer valid. Please sign in.');
+
+    const stored = await this.files.write(AVATAR_BUCKET, buffer, declaredMime);
+    const previous = user.avatarFilename;
+
+    await this.users.update(userId, { avatarFilename: stored.filename });
+    await this.files.remove(AVATAR_BUCKET, previous);
+
+    this.logger.log(`Avatar updated for ${user.email} (${stored.mimeType}, ${stored.size} bytes)`);
+    return { avatarUrl: `/uploads/avatars/${stored.filename}` };
+  }
+
+  /**
+   * Remove it, and go back to initials.
+   *
+   * The row is cleared first here, which is the opposite order from `setAvatar`
+   * and correct for the same reason: the failure that matters is a row pointing
+   * at bytes that are gone. Clearing first means a failed delete leaves an
+   * orphaned file and a correct row.
+   */
+  async removeAvatar(userId: string) {
+    const user = await this.users.findById(userId);
+    if (!user) throw new AuthenticationError('Your session is no longer valid. Please sign in.');
+
+    // `undefined` is how this store clears a column - see the loop in
+    // users.store.update, which maps it to SQL NULL.
+    await this.users.update(userId, { avatarFilename: undefined });
+    await this.files.remove(AVATAR_BUCKET, user.avatarFilename);
+
+    return { avatarUrl: null };
   }
 
   async findUserById(id: string): Promise<User | undefined> {

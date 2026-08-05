@@ -8,6 +8,7 @@ import { UsersStore } from '../src/store/users.store';
 import { AuthService } from '../src/modules/identity/auth.service';
 import { PasswordService } from '../src/common/security/password.service';
 import { ValidationError } from '../src/common/errors/domain-errors';
+import { StoredFilesService } from '../src/common/uploads/stored-files.service';
 
 /**
  * Password reset — FR-CORE-09 · PLATFORM-CONVENTIONS R-3.5.
@@ -89,6 +90,7 @@ beforeAll(async () => {
     refreshTokens as never,
     new PasswordService(),
     loginAttempts as never,
+    new StoredFilesService(),
   );
 });
 

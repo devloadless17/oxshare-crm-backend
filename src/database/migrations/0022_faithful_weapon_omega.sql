@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "avatar_filename" varchar(128);

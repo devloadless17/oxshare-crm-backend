@@ -9,6 +9,7 @@ import {
 import { UploadsController } from '../src/modules/compliance/uploads.controller';
 import type { AuditEntry } from '../src/store/audit-log.store';
 import { TOKEN_KIND } from '../src/common/security/token-audience';
+import { StoredFilesService } from '../src/common/uploads/stored-files.service';
 
 /**
  * Reading a KYC document is an audited event — PLATFORM-CONVENTIONS R-6.6.
@@ -91,6 +92,7 @@ function makeController(options: {
     kyc as never,
     users as never,
     auditLog as never,
+    new StoredFilesService(),
   );
 
   return { controller, recorded };

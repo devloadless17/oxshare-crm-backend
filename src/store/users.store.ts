@@ -22,6 +22,8 @@ export interface User {
   passwordResetExpiry?: Date;
   /** Cutoff for outstanding access tokens - see jwt.strategy.ts. */
   passwordChangedAt?: Date;
+  /** Stored filename of the profile photo - see the column comment. */
+  avatarFilename?: string;
   country?: string;
   phone?: string;
   createdAt: Date;
@@ -37,6 +39,7 @@ const toUser = (r: Row): User => ({
   passwordResetTokenHash: r.passwordResetTokenHash ?? undefined,
   passwordResetExpiry: r.passwordResetExpiry ?? undefined,
   passwordChangedAt: r.passwordChangedAt ?? undefined,
+  avatarFilename: r.avatarFilename ?? undefined,
   country: r.country ?? undefined,
   phone: r.phone ?? undefined,
 });
