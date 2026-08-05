@@ -41,15 +41,34 @@ export const SYSTEM_ACTOR: Actor = {
   permissions: ['*'],
 };
 
-/** Same normalization as PermissionsGuard: 'kyc:review' ≡ 'kyc.review'. */
-function normalize(key: string): string {
-  return key.replace(/:/g, '.').toLowerCase();
+/**
+ * The one spelling of a permission key: lower-case, dot-separated, exactly as
+ * `config/permissions.json` declares it.
+ *
+ * Exported so that everything deciding an authorization question shares this
+ * definition rather than writing its own. That is not tidiness — it is the
+ * whole point. Two spellings (`kyc:review` and `kyc.review`) were alive since
+ * RBAC was built, bridged by four separate `replace(/:/g, '.')` shims, and the
+ * shims were generative: `assertGrantable` normalised BEFORE checking the
+ * catalog, so the colon form passed validation and was stored verbatim. The
+ * system kept manufacturing the inconsistency it was compensating for.
+ *
+ * Migration 0009 converted the stored keys and the shims came out — but this
+ * file was written afterwards and put one back, while its comment claimed to
+ * match `PermissionsGuard`. It did not: the guard compared `kyc:review` as
+ * itself and refused it, this function rewrote it to `kyc.review` and allowed
+ * it. An authorization answer that depends on which layer is asking is not an
+ * authorization answer. It is exactly the fifth spelling that spec warned was
+ * one copy-paste away.
+ */
+export function normalizePermissionKey(key: string): string {
+  return key.toLowerCase();
 }
 
 export function actorHasPermission(actor: Actor, permission: string): boolean {
   if (actor.permissions.includes('*')) return true;
-  const wanted = normalize(permission);
-  return actor.permissions.some((held) => normalize(held) === wanted);
+  const wanted = normalizePermissionKey(permission);
+  return actor.permissions.some((held) => normalizePermissionKey(held) === wanted);
 }
 
 /**

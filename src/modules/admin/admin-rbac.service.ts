@@ -11,6 +11,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
+import { normalizePermissionKey } from '../../common/security/actor';
 
 /** `config/permissions.json`, keyed by module. The single grantable vocabulary. */
 type PermissionCatalog = Record<
@@ -83,7 +84,11 @@ export class AdminRbacService {
    * rather than a second convention, and the catalog is the authority either way.
    */
   static normalizeKey(key: string): string {
-    return key.toLowerCase();
+    // Delegates rather than reimplements. Three copies of this rule existed —
+    // here, in PermissionsGuard, and in common/security/actor.ts — and the third
+    // still rewrote `:` to `.`, so the same stored key was refused by the guard
+    // and accepted by the service layer.
+    return normalizePermissionKey(key);
   }
   /**
    * Anti-escalation invariant: nobody hands out access they don't hold.

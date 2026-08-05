@@ -14,6 +14,7 @@ import { RolesStore } from '../../../store/roles.store';
 import { Request } from 'express';
 import { COOKIE_BASES, readSessionCookie } from '../../../common/security/session-cookies';
 import { TOKEN_AUDIENCE, TOKEN_ISSUER } from '../../../common/security/token-audience';
+import { normalizePermissionKey } from '../../../common/security/actor';
 
 type AdminRequest = Request & { admin?: Admin };
 
@@ -107,11 +108,10 @@ export const AnyAdmin = (reason: string) => SetMetadata(ANY_ADMIN_KEY, reason);
 export const RequirePermissions = (...permissions: string[]) =>
   SetMetadata(PERMISSIONS_KEY, permissions);
 
-// One spelling: lower-case, dot-separated, exactly as config/permissions.json
-// declares it. The `:` → `.` rewrite this used to do was removed with migration
-// 0009, which converted the stored keys — a shim that accepts both spellings is
-// a standing invitation to a third.
-const normalize = (key: string) => key.toLowerCase();
+// One spelling, from one definition — see normalizePermissionKey. This file
+// used to declare its own copy; common/security/actor.ts declared another that
+// still rewrote `:` to `.`, so the two disagreed and a stored `kyc:review` was
+// refused here and accepted at the service layer.
 
 @Injectable()
 export class PermissionsGuard implements CanActivate {
@@ -160,8 +160,8 @@ export class PermissionsGuard implements CanActivate {
     }
 
     if (admin.permissions.includes('*')) return true;
-    const held = new Set(admin.permissions.map(normalize));
-    if (required.some((p) => held.has(normalize(p)))) return true;
+    const held = new Set(admin.permissions.map(normalizePermissionKey));
+    if (required.some((p) => held.has(normalizePermissionKey(p)))) return true;
 
     throw new ForbiddenException(
       `Missing permission: this action requires ${required.join(' or ')}.`,

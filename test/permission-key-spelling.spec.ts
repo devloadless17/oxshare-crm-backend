@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { closeDb, resetDb } from '../src/database/db';
 import { AdminRbacService } from '../src/modules/admin/admin-rbac.service';
+import { actorHasPermission, normalizePermissionKey } from '../src/common/security/actor';
 
 /**
  * One spelling for a permission key — PLATFORM-CONVENTIONS R-4.5.
@@ -114,5 +115,54 @@ describe('normalizeKey — the shim is gone, the case fold is not', () => {
     // the system generating the inconsistency it was compensating for.
     expect(AdminRbacService.normalizeKey('kyc:review')).toBe('kyc:review');
     expect(AdminRbacService.normalizeKey('kyc:review')).not.toBe('kyc.review');
+  });
+});
+
+/**
+ * Every layer must answer an authorization question the same way.
+ *
+ * The spec above pinned ONE of the three normalisers. A fourth file —
+ * `common/security/actor.ts`, written after migration 0009 — declared its own
+ * with the `:` → `.` shim still in it, under a comment claiming it matched
+ * `PermissionsGuard`. It did not. A grant stored as `kyc:review` was refused by
+ * the guard, which compared it as itself, and accepted by `actorHasPermission`,
+ * which rewrote it first.
+ *
+ * That is worse than either behaviour on its own. Which answer you get depends
+ * on which layer happens to ask, so the route guard and the service-layer
+ * assertion — the two controls R-4.3 deliberately made independent — could
+ * disagree about the same admin.
+ */
+describe('R-4.1/R-4.3 the layers cannot disagree about a permission', () => {
+  const actorWith = (...permissions: string[]) => ({
+    id: 'a1',
+    email: 'a@test.local',
+    permissions,
+  });
+
+  it('gives the same answer as the guard for the colon form', () => {
+    // The guard holds `kyc.review` and is asked for `kyc:review`: no match,
+    // because they are different keys. The service layer must agree.
+    expect(actorHasPermission(actorWith('kyc.review'), 'kyc:review')).toBe(false);
+    expect(AdminRbacService.normalizeKey('kyc:review')).not.toBe(
+      AdminRbacService.normalizeKey('kyc.review'),
+    );
+  });
+
+  it('matches the canonical dot form, folding case', () => {
+    expect(actorHasPermission(actorWith('kyc.review'), 'KYC.Review')).toBe(true);
+    expect(actorHasPermission(actorWith('KYC.REVIEW'), 'kyc.review')).toBe(true);
+  });
+
+  it('still honours the master wildcard', () => {
+    expect(actorHasPermission(actorWith('*'), 'anything.at.all')).toBe(true);
+  });
+
+  it('uses one definition, so the three call sites cannot drift', () => {
+    // Not a tautology: it asserts the rbac service DELEGATES rather than
+    // reimplementing. A reintroduced local copy fails this the moment it differs.
+    for (const key of ['KYC.Review', 'kyc:review', 'Withdrawals.Approve', '*']) {
+      expect(AdminRbacService.normalizeKey(key)).toBe(normalizePermissionKey(key));
+    }
   });
 });
