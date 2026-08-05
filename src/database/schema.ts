@@ -369,6 +369,39 @@ export const rejectionReasons = pgTable(
  *   - the service raises an alert on every read that finds it off, so it shows
  *     up in monitoring rather than only in a settings screen nobody opens.
  */
+/*
+ * Where a client downloads the trading terminal - one row per platform.
+ *
+ * A TABLE rather than environment variables, because the operator changes these
+ * without a deploy: a new MT5 build, a TestFlight link that rotates, an Android
+ * APK moving to the Play Store. Env vars would mean a release for a URL change,
+ * and the person who needs to change it does not ship releases.
+ *
+ * Separate from `security_settings` deliberately. That table is `key + enabled`
+ * - booleans only - and widening it to carry strings would make one table mean
+ * two things and force every reader to know which. It is also master-admin-only
+ * for reasons that do not apply here: a download link is not a control standing
+ * between a stolen session and a balance.
+ *
+ * The URL is NULLABLE and that is the honest default. An unconfigured platform
+ * has no link, and the portal says "not available yet" rather than rendering a
+ * button that goes nowhere - the same rule as `BackendPending` on a screen with
+ * no endpoint.
+ */
+export const platformLinks = pgTable('platform_links', {
+  /** 'desktop' | 'ios' | 'android'. A stable machine key, never renamed. */
+  key: varchar('key', { length: 32 }).primaryKey(),
+  /*
+   * Sized for a real URL rather than 255. App Store and Play Store links carry
+   * campaign and locale parameters and routinely pass 255 characters; a column
+   * that truncates one produces a link that 404s, which is worse than no link.
+   */
+  url: varchar('url', { length: 2048 }),
+  /** The admin who last changed it. Null for the seeded, unconfigured rows. */
+  updatedBy: uuid('updated_by'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const securitySettings = pgTable('security_settings', {
   /** A stable machine key, e.g. `withdrawal_otp`. Never renamed. */
   key: varchar('key', { length: 64 }).primaryKey(),

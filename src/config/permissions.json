@@ -144,5 +144,19 @@
         "label": "Approve / Reject / Pay Payouts"
       }
     ]
+  },
+  "settings": {
+    "moduleName": "Settings",
+    "description": "Operational settings shown to clients, such as the trading terminal download links.",
+    "permissions": [
+      {
+        "key": "settings.view",
+        "label": "View settings"
+      },
+      {
+        "key": "settings.manage",
+        "label": "Change settings"
+      }
+    ]
   }
 }
