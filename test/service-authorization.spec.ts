@@ -63,13 +63,31 @@ describe('R-4.3 actor permission checks', () => {
     expect(() => assertActorCan(master, 'anything.at.all', 'do anything')).not.toThrow();
   });
 
-  it('matches colon and dot spellings interchangeably, like the guard', () => {
-    // Issued tokens carry `kyc:review`; the catalog uses `kyc.review`. Two
-    // spellings are alive, so a second normalization that disagreed with the
-    // guard's would let a route pass the edge and fail in the service.
+  it('normalizes exactly as the guard does, and no more', () => {
+    /*
+     * This test used to assert that `kyc:review` and `kyc.review` matched
+     * interchangeably "like the guard". The guard has done no such thing since
+     * migration 0009 converted the stored keys and the four `replace(/:/g, '.')`
+     * shims came out — it compares the colon form as itself and refuses it.
+     *
+     * The premise it was written on ("two spellings are alive") stopped being
+     * true, and nobody updated it, so it pinned the divergence in place: the
+     * guard refused a stored `kyc:review` while the service layer accepted it,
+     * and this test guarded the wrong side of exactly the mismatch its own
+     * comment warned about.
+     *
+     * The principle survives — a second normalization that disagreed with the
+     * guard's would let a route pass the edge and fail in the service, or worse,
+     * pass the service having failed the edge. So the assertion is AGREEMENT
+     * with the guard, not a fixed answer.
+     */
     const colonStyle: Actor = { id: 'a-2', email: 'x@y.z', permissions: ['kyc:review'] };
-    expect(actorHasPermission(colonStyle, 'kyc.review')).toBe(true);
-    expect(actorHasPermission(subAdmin, 'KYC:REVIEW')).toBe(true);
+    expect(actorHasPermission(colonStyle, 'kyc.review')).toBe(false);
+    expect(actorHasPermission(subAdmin, 'KYC:REVIEW')).toBe(false);
+
+    // Case IS folded, because a key differing only in case is a typo rather
+    // than a second convention.
+    expect(actorHasPermission(subAdmin, 'KYC.REVIEW')).toBe(true);
   });
 
   it('refuses an actor with no permissions at all', () => {
