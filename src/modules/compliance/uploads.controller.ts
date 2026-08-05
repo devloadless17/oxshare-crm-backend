@@ -181,10 +181,30 @@ export class UploadsController {
           const held = await this.roles.resolvePermissions(admin.roleId, admin.permissions);
           // One spelling — see migration 0009 and admin.guard.ts.
           const normalized = held.map((p) => p.toLowerCase());
-          if (held.includes('*') || normalized.includes('kyc.review')) {
+          /*
+           * READING a document and DECIDING an outcome are different powers.
+           *
+           * Both used to require `kyc.review`, so an auditor who needed to
+           * inspect submissions had to be granted the permission that also
+           * promotes accounts to verification level 1 — which is what opens the
+           * withdrawal gate. That is a large grant to make for a read.
+           *
+           * `kyc.documents.view` is the read on its own. `kyc.review` still
+           * implies it, deliberately: a reviewer who could not open the
+           * documents could not review anything, and requiring both keys would
+           * silently break every existing reviewer on deploy. So this widens who
+           * may look without changing who may decide.
+           */
+          const mayRead =
+            held.includes('*') ||
+            normalized.includes('kyc.documents.view') ||
+            normalized.includes('kyc.review');
+          if (mayRead) {
             return { kind: 'admin', id: admin.id, email: admin.email };
           }
-          throw new ForbiddenException('The kyc.review permission is required to view documents.');
+          throw new ForbiddenException(
+            'The kyc.documents.view or kyc.review permission is required to view documents.',
+          );
         }
       } catch (e) {
         if (e instanceof ForbiddenException) throw e;
