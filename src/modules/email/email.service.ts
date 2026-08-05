@@ -60,9 +60,41 @@ export class EmailService {
     });
   }
 
+  /**
+   * Print a credential to the log — LOCAL DEVELOPMENT ONLY, opt-in.
+   *
+   * The docblock at the top of this file explains why nothing here logs a URL by
+   * default, and that reasoning stands. What it did not account for is that a
+   * developer with no working SMTP server then has NO WAY to obtain a
+   * verification link, an invite link or an OTP: the mail goes to a mailbox that
+   * does not exist, the send fails, and the flow is untestable end to end.
+   *
+   * Two independent locks, because one is how this kind of thing escapes:
+   *
+   *   1. `MAIL_DEV_ECHO=true` — opt-in, so the flag is one you typed rather than
+   *      one you inherited;
+   *   2. NODE_ENV must not be production — and `env.validation.ts` REFUSES TO
+   *      BOOT if the flag is set there, so a copied .env fails loudly at deploy
+   *      instead of quietly streaming invite links into a log aggregator.
+   *
+   * `warn`, not `log`: this is an abnormal state that should look abnormal in
+   * the terminal, and it keeps the line out of a default `log`-level capture.
+   */
+  private echoForDevelopment(label: string, recipient: string, credential: string): void {
+    if (this.configService.get<string>('MAIL_DEV_ECHO') !== 'true') return;
+    if (this.configService.get<string>('NODE_ENV') === 'production') return;
+
+    this.logger.warn(
+      `[MAIL_DEV_ECHO] ${label} for ${recipient}: ${credential}\n` +
+        '           ^ development only — this is a live credential, and it is in your log ' +
+        'because MAIL_DEV_ECHO=true.',
+    );
+  }
+
   async sendVerificationEmail(email: string, token: string): Promise<void> {
     const portalUrl = this.configService.get<string>('PORTAL_URL', 'http://localhost:3000');
     const verificationUrl = `${portalUrl}/auth/verify-email?token=${token}`;
+    this.echoForDevelopment('Verification link', email, verificationUrl);
 
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
@@ -95,6 +127,7 @@ export class EmailService {
   async sendPasswordResetEmail(email: string, token: string): Promise<void> {
     const portalUrl = this.configService.get<string>('PORTAL_URL', 'http://localhost:3000');
     const resetUrl = `${portalUrl}/auth/reset-password?token=${token}`;
+    this.echoForDevelopment('Password reset link', email, resetUrl);
 
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
@@ -242,6 +275,7 @@ export class EmailService {
     currency: string,
     code: string,
   ): Promise<void> {
+    this.echoForDevelopment(`Withdrawal OTP (${amount} ${currency})`, email, code);
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
         <h2 style="color: #3b82f6;">Confirm your withdrawal</h2>
@@ -329,6 +363,7 @@ export class EmailService {
   }
 
   async sendAdminInviteEmail(email: string, name: string, inviteUrl: string): Promise<void> {
+    this.echoForDevelopment('Admin invite link', email, inviteUrl);
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
         <h2 style="color: #3b82f6;">You're invited to OxShare Admin</h2>
