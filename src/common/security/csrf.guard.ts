@@ -13,6 +13,7 @@ import type { Request } from 'express';
 import { CsrfService } from './csrf.service';
 import { COOKIE_BASES, readSessionCookie } from './session-cookies';
 import { TOKEN_AUDIENCE, TOKEN_ISSUER } from './token-audience';
+import { safeLogPath } from '../logging/redact';
 
 /**
  * Opt a route out of CSRF and Origin checking. Use sparingly and say why.
@@ -221,7 +222,7 @@ export class CsrfGuard implements CanActivate {
   private reject(req: Request, reason: string): never {
     // Logged with the reason, answered without it: telling a caller which of the
     // checks it failed is a free tutorial on the ones it passed.
-    this.logger.warn(`CSRF rejected ${req.method} ${req.originalUrl}: ${reason}`);
+    this.logger.warn(`CSRF rejected ${req.method} ${safeLogPath(req.originalUrl)}: ${reason}`);
     throw new ForbiddenException('Request rejected: failed anti-forgery validation.');
   }
 }

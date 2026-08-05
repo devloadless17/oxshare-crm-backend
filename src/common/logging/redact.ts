@@ -123,3 +123,43 @@ export function redactSecretsInText(text: string): string {
       .replace(/\b[a-f0-9]{40,}\b/gi, REDACTED)
   );
 }
+
+/**
+ * A request path safe to log — R-6.3.
+ *
+ * The query string is where credentials travel by URL, and this system puts two
+ * of them there: `GET /auth/verify-email?token=…` and the password-reset link.
+ * Both were being logged verbatim in four places, the worst of which is the
+ * request-id middleware — it stores the path in the async-local context, and
+ * `JsonLogger` stamps that on EVERY line of the request, so one reset request
+ * wrote its token into the log repeatedly.
+ *
+ * A log file is a different security boundary from a database: it is shipped to
+ * aggregators, read by more people, retained longer and rarely encrypted at
+ * rest. A single-use token sitting in it is a credential in the least protected
+ * place we have.
+ *
+ * Parameter NAMES are kept and only sensitive VALUES are replaced, rather than
+ * dropping the query string wholesale. `?page=3&status=pending` is exactly what
+ * makes a 500 diagnosable, and a log that omits it trades one problem for
+ * another — the next person just adds the URL back.
+ */
+export function safeLogPath(url: string): string {
+  const split = url.indexOf('?');
+  if (split === -1) return url;
+
+  const path = url.slice(0, split);
+  const params = new URLSearchParams(url.slice(split + 1));
+
+  /*
+   * Assembled by hand rather than through `URLSearchParams.toString()`, which
+   * would percent-encode the marker into `%5BREDACTED%5D`. This string is read
+   * by a human in a log, not parsed, so it should look like what it means.
+   */
+  const parts: string[] = [];
+  for (const [key, value] of params) {
+    parts.push(`${key}=${isSensitive(key) ? REDACTED : value}`);
+  }
+
+  return parts.length > 0 ? `${path}?${parts.join('&')}` : path;
+}

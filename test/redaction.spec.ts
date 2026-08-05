@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Logger } from '@nestjs/common';
-import { REDACTED, redact, redactSecretsInText } from '../src/common/logging/redact';
+import { REDACTED, redact, redactSecretsInText, safeLogPath } from '../src/common/logging/redact';
 import { ALERT_KINDS, ALERT_THRESHOLDS, raiseAlert } from '../src/common/logging/alerts';
 
 /**
@@ -190,5 +190,70 @@ describe('§12.3 alert signals', () => {
 
     expect(output.context.token).toBe(REDACTED);
     expect(output.context.subjectId).toBe('u-1');
+  });
+});
+
+/**
+ * Credentials travel in the query string on two routes in this system:
+ * `GET /auth/verify-email?token=…` and the password-reset link. Every place a
+ * URL was logged wrote them verbatim.
+ *
+ * The worst was `request-id.middleware`, which stores the path in the
+ * async-local context — `JsonLogger` stamps that on EVERY line of the request,
+ * so one reset wrote its token into the log repeatedly rather than once.
+ *
+ * A log file is a weaker boundary than the database: shipped to aggregators,
+ * read by more people, retained longer, rarely encrypted at rest. A single-use
+ * token sitting in one is a credential in the least protected place we have.
+ */
+describe('R-6.3 safe log paths', () => {
+  it('redacts the value of a token in the query string', () => {
+    const safe = safeLogPath('/auth/verify-email?token=eyJhbGciOiJIUzI1NiJ9.secret.value');
+
+    expect(safe).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+    expect(safe).not.toContain('secret.value');
+    expect(safe).toContain('/auth/verify-email');
+  });
+
+  it('keeps the parameter NAME, so the log still says what was asked for', () => {
+    // Dropping the query string wholesale trades one problem for another: the
+    // next person debugging a 500 just adds the raw URL back.
+    expect(safeLogPath('/auth/reset-password?token=abc123')).toContain('token=');
+  });
+
+  it('leaves ordinary parameters intact — they are what makes a 500 diagnosable', () => {
+    const safe = safeLogPath('/admin/clients?page=3&status=pending&limit=25');
+
+    expect(safe).toContain('page=3');
+    expect(safe).toContain('status=pending');
+    expect(safe).toContain('limit=25');
+  });
+
+  it('redacts every sensitive parameter in a mixed query, not just the first', () => {
+    const safe = safeLogPath('/x?page=2&token=aaa&sort=name&apiKey=bbb&csrf=ccc');
+
+    for (const secret of ['aaa', 'bbb', 'ccc']) {
+      expect(safe, secret).not.toContain(secret);
+    }
+    expect(safe).toContain('page=2');
+    expect(safe).toContain('sort=name');
+  });
+
+  it('uses the same field list as object redaction, so the two cannot drift', () => {
+    // `token` covers accessToken/refresh_token/emailVerificationToken already;
+    // a second hand-maintained list here would fall behind the first.
+    expect(safeLogPath('/x?refresh_token=v')).not.toContain('v');
+    expect(safeLogPath('/x?emailVerificationToken=v')).not.toContain('=v');
+    expect(safeLogPath('/x?password=v')).not.toContain('=v');
+  });
+
+  it('passes a path with no query through untouched', () => {
+    expect(safeLogPath('/health')).toBe('/health');
+    expect(safeLogPath('/admin/clients/9f1c')).toBe('/admin/clients/9f1c');
+  });
+
+  it('does not choke on an empty or malformed query', () => {
+    expect(safeLogPath('/x?')).toBe('/x');
+    expect(safeLogPath('/x?=&&')).not.toContain('undefined');
   });
 });

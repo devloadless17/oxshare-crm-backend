@@ -2,6 +2,7 @@ import { Injectable, NestMiddleware } from '@nestjs/common';
 import { NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { requestContext } from '../logging/request-context';
+import { safeLogPath } from '../logging/redact';
 
 /**
  * Correlation ID for every request.
@@ -24,6 +25,14 @@ export class RequestIdMiddleware implements NestMiddleware {
 
     // Everything downstream of here — including code that never sees `req` —
     // can reach this id through currentRequestId().
-    requestContext.run({ requestId: id, method: req.method, path: req.originalUrl }, next);
+    /*
+     * `safeLogPath`, not the raw URL: this path is stamped by JsonLogger onto
+     * EVERY line of the request, so a `?token=` in it was written to the log
+     * repeatedly rather than once (R-6.3).
+     */
+    requestContext.run(
+      { requestId: id, method: req.method, path: safeLogPath(req.originalUrl) },
+      next,
+    );
   }
 }

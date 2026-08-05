@@ -16,6 +16,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../errors/domain-errors';
+import { safeLogPath } from '../logging/redact';
 
 /**
  * The single place transport concerns meet domain errors.
@@ -96,19 +97,31 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const requestId = request.id ?? 'unknown';
 
     const { status, message, code, fields } = this.classify(exception);
+    /*
+     * Sensitive query VALUES redacted, parameter names kept — R-6.3. The
+     * verify-email and password-reset links both carry a single-use token in the
+     * query string, and a log file is a weaker boundary than the database: it is
+     * shipped to aggregators, read by more people, retained longer and rarely
+     * encrypted at rest.
+     *
+     * `?page=3&status=pending` survives, because that is what makes a 500
+     * diagnosable — dropping the query string wholesale just gets the raw URL
+     * added back by the next person who needs to debug something.
+     */
+    const path = safeLogPath(request.url);
 
     // The correlation id is attached by JsonLogger from the async-local
     // request context, so it does not need repeating in every message.
     // 5xx means we did not anticipate it — log everything we have.
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
-        `${request.method} ${request.url} → ${status}: ${
+        `${request.method} ${path} → ${status}: ${
           exception instanceof Error ? exception.message : String(exception)
         }`,
         exception instanceof Error ? exception.stack : undefined,
       );
     } else {
-      this.logger.warn(`${request.method} ${request.url} → ${status} ${code}`);
+      this.logger.warn(`${request.method} ${path} → ${status} ${code}`);
     }
 
     response.status(status).json({
@@ -120,7 +133,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       ...(fields && Object.keys(fields).length > 0 ? { fields } : {}),
       requestId,
       timestamp: new Date().toISOString(),
-      path: request.url,
+      path,
     });
   }
 
