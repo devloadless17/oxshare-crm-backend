@@ -191,6 +191,56 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
     });
   });
 
+  it('lets an auditor holding ONLY kyc.documents.view read a document', async () => {
+    /*
+     * The split this permission exists for.
+     *
+     * Reading a document and deciding an outcome used to be the same grant, so
+     * an auditor who needed to inspect submissions had to be given the key that
+     * also promotes accounts to verification level 1 — which is what opens the
+     * withdrawal gate. A large grant to make for a read.
+     */
+    const { controller, recorded } = makeController({ adminPermissions: ['kyc.documents.view'] });
+    const res = fakeResponse();
+
+    await controller.serveKycFile(
+      FILE,
+      requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }),
+      res as never,
+    );
+
+    expect(res.sent).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ actorKind: 'admin', action: 'kyc.document.view' });
+  });
+
+  it('still lets a reviewer read, without also needing the new key', async () => {
+    // kyc.review IMPLIES the read. Requiring both would have broken every
+    // existing reviewer on deploy, silently, at the moment they opened a
+    // submission.
+    const { controller } = makeController({ adminPermissions: ['kyc.review'] });
+    const res = fakeResponse();
+
+    await controller.serveKycFile(
+      FILE,
+      requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }),
+      res as never,
+    );
+
+    expect(res.sent).toHaveLength(1);
+  });
+
+  it('refuses an admin holding neither', async () => {
+    const { controller } = makeController({ adminPermissions: ['clients.read'] });
+
+    await expect(
+      controller.serveKycFile(
+        FILE,
+        requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }),
+        fakeResponse() as never,
+      ),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
   it('refuses to serve when the access record cannot be written', async () => {
     const { controller, recorded } = makeController({
       adminPermissions: ['kyc.review'],

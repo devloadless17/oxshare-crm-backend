@@ -20,6 +20,10 @@
         "label": "Delete Dynamic KYC Fields"
       },
       {
+        "key": "kyc.documents.view",
+        "label": "View Submitted Documents"
+      },
+      {
         "key": "kyc.review",
         "label": "Approve / Reject Submissions"
       }
