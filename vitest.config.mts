@@ -88,10 +88,16 @@ export default defineConfig({
        * coverage across controllers and stores is a much weaker signal than those
        * four, so do not chase the percentage at their expense.
        */
-      // Raised after the KYC-config rule spec landed. Measured 2026-08-04:
-      // statements 36.3, branches 20.5, functions 32.5, lines 37.0. Set a couple of
-      // points under.
-      thresholds: { lines: 35, functions: 30, branches: 18, statements: 34 },
+      // Raised after slice 1 (identity & access control). Measured 2026-08-05:
+      // statements 70.5, branches 61.0, functions 64.8, lines 71.4 — roughly double
+      // the previous pass, from the HTTP guard-chain suite, the AuthService and
+      // invite-lifecycle specs, and RBAC-08.
+      //
+      // Set a few points under the measurement. These are RATCHETS against
+      // regression, not targets: they may only ever go up, and a floor set above
+      // what the suite actually reaches is the kind that gets disabled the first
+      // time it blocks someone.
+      thresholds: { lines: 68, functions: 62, branches: 58, statements: 68 },
     },
   },
 });
