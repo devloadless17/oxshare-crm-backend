@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { ValidationPipe, type INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import type { Server } from 'node:http';
+import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 import { ThrottlerStorage } from '@nestjs/throttler';
 import type { ThrottlerStorageRecord } from '@nestjs/throttler/dist/throttler-storage-record.interface';
 import { AppModule } from '../src/app.module';
@@ -31,10 +32,33 @@ import { VALIDATION_PIPE_OPTIONS } from '../src/common/validation.config';
 let app: INestApplication;
 // app.getHttpServer() is typed `any`, so narrow it once here rather than taking an
 // unsafe argument at every call site below.
+let db: MoneyTestContext | undefined;
 let server: Server;
 
 beforeAll(async () => {
   process.env['NODE_ENV'] ??= 'test';
+  /*
+   * A REAL database, started before AppModule is built.
+   *
+   * This spec is about the ValidationPipe, so it looks like it should need no
+   * database — but it boots the whole `AppModule`, and the assembled guard chain
+   * queries one: `IpAllowlistGuard` reads `admin_ip_allowlist` on every admin
+   * request. With nothing to connect to, that query throws and the guard answers
+   * 500, so assertions expecting 400 or 401 fail for a reason unrelated to what
+   * they test.
+   *
+   * It passed locally because a developer machine has Postgres running from
+   * `docker compose up` and the store falls back to the default connection. CI
+   * has no such thing — only the suites that start Testcontainers get a
+   * database — so this spec has been failing there and passing everywhere else,
+   * which is the worst combination.
+   *
+   * Must precede the module build: the stores resolve DATABASE_URL through a
+   * lazy singleton, so anything constructed before this points at the wrong
+   * place. `http-setup.ts` does the same thing for the same reason.
+   */
+  db = await startMoneyTestDb();
+
   /*
    * The rate limiter is NEUTRALISED here, and it did not used to need to be.
    *
@@ -73,10 +97,11 @@ beforeAll(async () => {
   app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
   await app.init();
   server = app.getHttpServer() as Server;
-}, 60_000);
+}, 180_000);
 
 afterAll(async () => {
   await app?.close();
+  if (db) await stopMoneyTestDb(db);
 });
 
 /*
