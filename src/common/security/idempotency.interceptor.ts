@@ -10,9 +10,9 @@ import {
 import { Reflector } from '@nestjs/core';
 import type { Request, Response } from 'express';
 import { createHash } from 'crypto';
-import { and, eq } from 'drizzle-orm';
-import { Observable, from, of, switchMap } from 'rxjs';
-import { map } from 'rxjs/operators';
+import { and, eq, isNull } from 'drizzle-orm';
+import { Observable, from, of, switchMap, throwError } from 'rxjs';
+import { catchError, map } from 'rxjs/operators';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { idempotencyKeys } from '../../database/schema';
@@ -63,6 +63,8 @@ interface StoredResponse {
  *          half-written result would be worse than asking the caller to retry;
  *        - same key, DIFFERENT body → 422. Returning the first response would
  *          tell the caller their second, different request had succeeded.
+ *   4. Handler threw → release the claim. A request that failed produced no
+ *      operation, so it must leave no trace: see the note at the `catchError`.
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
@@ -118,15 +120,34 @@ export class IdempotencyInterceptor implements NestInterceptor {
           // withdrawal was still processing and then it wasn't there".
           // `unknown`, not the `any` that CallHandler.handle() hands back: the
           // body is opaque here and is only ever stored and re-emitted.
-          return next
-            .handle()
-            .pipe(
-              switchMap((body: unknown) =>
-                from(this.record(key, endpoint, actorId, res.statusCode, body)).pipe(
-                  map((): unknown => body),
-                ),
+          return next.handle().pipe(
+            switchMap((body: unknown) =>
+              from(this.record(key, endpoint, actorId, res.statusCode, body)).pipe(
+                map((): unknown => body),
               ),
-            );
+            ),
+            // A handler that THREW never produced an operation to be idempotent
+            // about, so the claim must not outlive it.
+            //
+            // Without this the row survives with responseStatus NULL forever,
+            // and the key is poisoned in both directions: resubmitting the same
+            // body 409s ("still being processed") for an operation that already
+            // finished failing, and resubmitting a CORRECTED body 422s on the
+            // hash mismatch. A client that holds one key per intent — which is
+            // what R-5.2 asks for, and what `newIdempotencyKey`'s contract
+            // describes — would strand the user on the first validation error:
+            // rejected for $5, unable to then ask for $50.
+            //
+            // Releasing restores the intended meaning. A retry of a failed
+            // attempt is a fresh claim, while the double-click this exists to
+            // stop is unaffected: that races two requests at a SUCCEEDING
+            // handler, where the row is held until the response is stored.
+            catchError((err: unknown) =>
+              from(this.release(key, endpoint, actorId)).pipe(
+                switchMap(() => throwError(() => err)),
+              ),
+            ),
+          );
         }
 
         if (existing.requestHash !== requestHash) {
@@ -217,6 +238,39 @@ export class IdempotencyInterceptor implements NestInterceptor {
       // strictly better than failing a withdrawal that already succeeded.
       this.logger.error(
         `Could not store the idempotent response for ${endpoint} key ${key}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Drops a claim whose handler threw, so the key can be claimed again.
+   *
+   * Deliberately narrow: it deletes only a row this request owns and that still
+   * has no stored response. The `responseStatus IS NULL` predicate is what makes
+   * it safe under a race — if a concurrent replay somehow recorded a response
+   * first, this leaves it alone rather than deleting an answer another caller
+   * may already have been given.
+   */
+  private async release(key: string, endpoint: string, actorId: string): Promise<void> {
+    try {
+      await this.db
+        .delete(idempotencyKeys)
+        .where(
+          and(
+            eq(idempotencyKeys.key, key),
+            eq(idempotencyKeys.endpoint, endpoint),
+            eq(idempotencyKeys.actorId, actorId),
+            isNull(idempotencyKeys.responseStatus),
+          ),
+        );
+    } catch (error) {
+      // Same rule as `record`: bookkeeping must not replace the error the caller
+      // actually needs to see. A claim left behind degrades to the old
+      // behaviour for that one key, which is a stuck retry, not a lost or
+      // duplicated payment.
+      this.logger.error(
+        `Could not release the idempotency claim for ${endpoint} key ${key}: ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }

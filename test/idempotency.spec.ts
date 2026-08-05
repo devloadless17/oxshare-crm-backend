@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Reflector } from '@nestjs/core';
 import type { CallHandler, ExecutionContext } from '@nestjs/common';
-import { firstValueFrom, of, timer } from 'rxjs';
+import { firstValueFrom, of, throwError, timer } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { eq } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
@@ -199,6 +199,92 @@ describe('R-5.2 idempotent money requests', () => {
     // Both ran: they are different people making different withdrawals that
     // happen to share a client-chosen string.
     expect(counter.runs).toBe(2);
+  });
+
+  /*
+   * The claim is taken BEFORE the handler runs, which is what makes the insert
+   * the lock. The consequence, until it was fixed, was that a handler which
+   * threw left the claim behind forever with no stored response — poisoning the
+   * key in both directions at once.
+   *
+   * This is not a theoretical state. R-5.2 asks the client to hold ONE key per
+   * intent and reuse it across attempts, which is what `newIdempotencyKey`'s
+   * contract describes. Under that contract the very first validation error —
+   * "below the minimum withdrawal" — would strand the user: refused for $5, and
+   * then unable to ask for $50 with the key their form is still holding.
+   */
+  describe('a handler that failed leaves no claim behind', () => {
+    /** Fails the way a service does: an observable error, not a sync throw. */
+    const handlerFailing = (counter: { runs: number }, error: unknown): CallHandler => ({
+      handle: () => {
+        counter.runs++;
+        return throwError(() => error);
+      },
+    });
+
+    it('lets the user correct a rejected amount and try again', async () => {
+      // The trap, end to end. $5 is refused; $50 with the same key must reach
+      // the handler rather than being refused for the wrong reason.
+      const counter = { runs: 0 };
+      const refuse = handlerFailing(counter, new ValidationError('Below the minimum withdrawal.'));
+
+      await expect(run('key-corrected', { amount: '5.00' }, refuse)).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+
+      const accept = handlerCounting(counter, { id: 'tx-corrected', amount: '50.00' });
+      await expect(run('key-corrected', { amount: '50.00' }, accept)).resolves.toEqual({
+        id: 'tx-corrected',
+        amount: '50.00',
+      });
+
+      expect(counter.runs).toBe(2);
+    });
+
+    it('lets an identical request be retried after a failure', async () => {
+      // Same body this time, so the hash matches and the old code answered 409
+      // "still being processed" — for an operation that had already finished
+      // failing and would never record a status.
+      const counter = { runs: 0 };
+      const body = { amount: '25.00' };
+
+      await expect(
+        run('key-retry', body, handlerFailing(counter, new Error('provider timed out'))),
+      ).rejects.toThrow('provider timed out');
+
+      await expect(
+        run('key-retry', body, handlerCounting(counter, { id: 'tx-retry' })),
+      ).resolves.toEqual({ id: 'tx-retry' });
+
+      expect(counter.runs).toBe(2);
+    });
+
+    it('deletes the row rather than storing a failure', async () => {
+      const counter = { runs: 0 };
+      await expect(
+        run('key-released', { amount: '1.00' }, handlerFailing(counter, new Error('nope'))),
+      ).rejects.toThrow('nope');
+
+      const rows = await ctx.db
+        .select()
+        .from(idempotencyKeys)
+        .where(eq(idempotencyKeys.key, 'key-released'));
+      expect(rows).toHaveLength(0);
+    });
+
+    it('still protects the double-click it exists for', async () => {
+      // The guarantee releasing must not weaken: a race at a SUCCEEDING handler
+      // holds its claim until the response is stored, so only one gets through.
+      const counter = { runs: 0 };
+      const body = { amount: '75.00' };
+      const handler = handlerCounting(counter, { id: 'tx-still-safe' }, 40);
+
+      await Promise.allSettled(
+        Array.from({ length: 20 }, () => run('key-still-safe', body, handler)),
+      );
+
+      expect(counter.runs).toBe(1);
+    });
   });
 
   it('lets a different operation reuse a key it already used elsewhere', async () => {
