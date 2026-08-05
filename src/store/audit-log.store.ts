@@ -4,6 +4,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { auditLog } from '../database/schema';
+import { currentClientIp } from '../common/logging/request-context';
 
 // D-21: admin action log — actor, action, subject, details, timestamp.
 // First Postgres-backed store: entries survive backend restarts. Append-only
@@ -17,6 +18,8 @@ export interface AuditEntry {
   subjectType: string;
   subjectId: string;
   details?: Record<string, unknown>;
+  /** Where the action came from; absent for non-request work. */
+  ipAddress?: string | null;
   createdAt: Date;
 }
 
@@ -45,9 +48,13 @@ export class AuditLogStore {
         subjectType: data.subjectType,
         subjectId: data.subjectId,
         details: data.details,
+        // Read from the request scope rather than passed in, so every existing
+        // call site records it without change. Null for anything not driven by
+        // a request — a scheduled job, a migration, a console.
+        ipAddress: data.ipAddress ?? currentClientIp() ?? null,
       })
       .returning();
-    return { ...row, details: row.details ?? undefined };
+    return { ...row, details: row.details ?? undefined, ipAddress: row.ipAddress };
   }
 
   async findAll(

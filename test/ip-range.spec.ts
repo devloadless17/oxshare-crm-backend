@@ -94,8 +94,6 @@ describe('ipMatchesRule — fails closed', () => {
     '10.0.0.1/-1',
     '10.0.0.1/abc',
     '10.0.0.1/24/24',
-    '::1',
-    '2001:db8::/32',
   ];
 
   it('refuses to match on a malformed rule rather than throwing or guessing', () => {
@@ -211,5 +209,58 @@ describe('trustedProxyHops', () => {
     for (const bad of ['-1', '1.5', 'one', 'true']) {
       expect(() => withEnv(bad, trustedProxyHops)).toThrow(/TRUSTED_PROXY_HOPS/);
     }
+  });
+});
+
+describe('IPv6', () => {
+  /*
+   * Added after running the feature rather than after reading about it: a
+   * browser on localhost arrives as `::1`, so an IPv4-only matcher meant nobody
+   * could add a first rule covering themselves — and, worse, rules added from an
+   * IPv4 office would lock out an administrator whose ISP hands them IPv6.
+   */
+  it('matches a full IPv6 address', () => {
+    expect(ipMatchesRule('2001:db8::1', '2001:db8::1')).toBe(true);
+    expect(ipMatchesRule('2001:db8::2', '2001:db8::1')).toBe(false);
+  });
+
+  it('matches inside an IPv6 range', () => {
+    expect(ipMatchesRule('2001:db8:0:0:0:0:0:99', '2001:db8::/32')).toBe(true);
+    expect(ipMatchesRule('2001:db9::1', '2001:db8::/32')).toBe(false);
+  });
+
+  it('handles loopback, the address localhost actually presents', () => {
+    expect(ipMatchesRule('::1', '::1')).toBe(true);
+    expect(ipMatchesRule('::1', '::/0')).toBe(true);
+  });
+
+  it('expands :: correctly wherever it appears', () => {
+    expect(ipMatchesRule('2001:db8::', '2001:db8:0:0:0:0:0:0')).toBe(true);
+    expect(ipMatchesRule('::ffff', '0:0:0:0:0:0:0:ffff')).toBe(true);
+  });
+
+  it('reads an IPv4-mapped address as IPv4, so one rule covers both spellings', () => {
+    expect(ipMatchesRule('::ffff:192.168.1.5', '192.168.1.0/24')).toBe(true);
+  });
+
+  it('keeps the families apart', () => {
+    // Without this, `0.0.0.0/0` would admit the entire IPv6 internet as well.
+    expect(ipMatchesRule('2001:db8::1', '0.0.0.0/0')).toBe(false);
+    expect(ipMatchesRule('8.8.8.8', '::/0')).toBe(false);
+  });
+
+  it('rejects malformed IPv6', () => {
+    for (const bad of ['2001:db8::1::2', 'gggg::1', '2001:db8::/129', '::1/-1']) {
+      expect(isValidRule(bad)).toBe(false);
+      expect(ipMatchesRule('::1', bad)).toBe(false);
+    }
+  });
+
+  it('ignores a zone index, which names an interface rather than a host', () => {
+    expect(ipMatchesRule('fe80::1%eth0', 'fe80::/10')).toBe(true);
+  });
+
+  it('canonicalises to /128 for a bare address', () => {
+    expect(canonicaliseRule('2001:db8::1')).toBe('2001:db8:0:0:0:0:0:1/128');
   });
 });

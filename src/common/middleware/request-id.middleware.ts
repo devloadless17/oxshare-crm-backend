@@ -2,6 +2,7 @@ import { Injectable, NestMiddleware } from '@nestjs/common';
 import { NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { requestContext } from '../logging/request-context';
+import { clientIp } from '../security/client-ip';
 import { safeLogPath } from '../logging/redact';
 
 /**
@@ -31,7 +32,14 @@ export class RequestIdMiddleware implements NestMiddleware {
      * repeatedly rather than once (R-6.3).
      */
     requestContext.run(
-      { requestId: id, method: req.method, path: safeLogPath(req.originalUrl) },
+      {
+        requestId: id,
+        method: req.method,
+        path: safeLogPath(req.originalUrl),
+        // Resolved once here, under the configured trust boundary, so every audit
+        // row and log line downstream agrees about who the caller was.
+        ip: clientIp(req),
+      },
       next,
     );
   }

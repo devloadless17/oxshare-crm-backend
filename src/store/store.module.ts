@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { AdminIpAllowlistStore } from './admin-ip-allowlist.store';
 import { AdminsStore, InvitesStore } from './admins.store';
 import { AuditLogStore } from './audit-log.store';
 import { KycConfigStore } from './kyc-config.store';
@@ -8,6 +9,7 @@ import { RolesStore } from './roles.store';
 import { UsersStore } from './users.store';
 
 const STORES = [
+  AdminIpAllowlistStore,
   AdminsStore,
   InvitesStore,
   AuditLogStore,

@@ -160,6 +160,41 @@ export const rejectionReasons = pgTable(
   (t) => [uniqueIndex('rejection_reasons_context_label_uq').on(t.context, t.label)],
 );
 
+/*
+ * ── RBAC-08 · admin IP allowlist ─────────────────────────────────────────────
+ *
+ * "List the IP to be whitelisted." The ADMIN surface only — the client portal is
+ * public by nature and an allowlist there would lock out the customers it exists
+ * to serve.
+ *
+ * AN EMPTY TABLE MEANS THE FEATURE IS OFF, and that is load-bearing rather than
+ * lazy: the deploy that creates this table must not lock every administrator out
+ * before anyone can add a rule (DECISIONS D-10 — "ship with an empty list and an
+ * admin UI to manage it"). Enforcement begins with the first row, added by
+ * someone who can still reach the screen.
+ *
+ * Rules are CIDR. An office is a range, not an address, and a whitelist that
+ * only held single addresses gets worked around or switched off. See
+ * common/security/ip-range.ts for the matcher and why it fails closed.
+ */
+export const adminIpAllowlist = pgTable(
+  'admin_ip_allowlist',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** Canonical CIDR — a bare address is stored as `/32`. */
+    cidr: varchar('cidr', { length: 43 }).notNull(),
+    /** Why this rule exists. A list of bare ranges becomes unmaintainable fast. */
+    label: varchar('label', { length: 200 }).notNull(),
+    createdBy: uuid('created_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Canonicalised before insert, so `10.0.0.5/24` and `10.0.0.0/24` cannot both
+    // exist and leave someone believing they removed a rule still in force.
+    uniqueIndex('admin_ip_allowlist_cidr_uq').on(t.cidr),
+  ],
+);
+
 // ═══ MONEY (ARCHITECTURE §6 — non-negotiable) ════════════════════════════════
 //
 // 1. NUMERIC(28,8) everywhere; node-postgres hands these to JS as STRINGS and
@@ -476,6 +511,16 @@ export const auditLog = pgTable(
     subjectType: varchar('subject_type', { length: 100 }).notNull(),
     subjectId: varchar('subject_id', { length: 255 }).notNull(),
     details: jsonb('details').$type<Record<string, unknown>>(),
+    /**
+     * Where the action came from.
+     *
+     * On a money system "who approved this withdrawal" is only half an answer.
+     * Nullable because it is genuinely unknown for anything not driven by a
+     * request — a scheduled confirm job, a migration, a console — and recording
+     * a placeholder there would be worse than a null, because it reads as an
+     * answer. 45 chars holds a full IPv6 address.
+     */
+    ipAddress: varchar('ip_address', { length: 45 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

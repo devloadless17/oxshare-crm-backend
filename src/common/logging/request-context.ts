@@ -4,6 +4,15 @@ export interface RequestContext {
   requestId: string;
   method?: string;
   path?: string;
+  /**
+   * The caller's address, resolved once under the configured trust boundary.
+   *
+   * Carried here rather than passed down so that every audit row records where
+   * an action came from without twenty call sites having to remember to thread
+   * a `req` through. On a money system "who approved this withdrawal" is only
+   * half an answer.
+   */
+  ip?: string;
 }
 
 /**
@@ -19,4 +28,9 @@ export const requestContext = new AsyncLocalStorage<RequestContext>();
 
 export function currentRequestId(): string | undefined {
   return requestContext.getStore()?.requestId;
+}
+
+/** The caller's address for the request in flight, if there is one. */
+export function currentClientIp(): string | undefined {
+  return requestContext.getStore()?.ip;
 }
