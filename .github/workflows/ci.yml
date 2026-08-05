@@ -13,6 +13,26 @@ jobs:
     name: Type-check, lint and the §11 money tests
     runs-on: ubuntu-latest
 
+    # ── Config the process REFUSES to boot without ───────────────────────────
+    #
+    # `env.validation.ts` rejects a missing or short JWT secret rather than
+    # starting with a weak one, which is correct and is why the HTTP specs stand
+    # up a real Nest app. It also means CI must supply them: locally they come
+    # from a gitignored `.env`, so the suite passed on every machine and failed
+    # here from the moment the fourth secret was added — for ten commits, with
+    # nobody looking, which is the failure mode a green-by-default pipeline has.
+    #
+    # These are NOT secrets. They are fixed throwaway strings long enough to
+    # satisfy the 32-character floor, used to sign tokens for a Postgres that
+    # Testcontainers creates and destroys inside the job. Putting real values in
+    # repository secrets would imply this build can reach something real; it
+    # cannot, and pretending otherwise is how a test key ends up in production.
+    env:
+      ADMIN_JWT_SECRET: ci-only-admin-access-secret-not-a-real-key
+      ADMIN_JWT_REFRESH_SECRET: ci-only-admin-refresh-secret-not-a-real-key
+      JWT_ACCESS_SECRET: ci-only-portal-access-secret-not-a-real-key
+      JWT_REFRESH_SECRET: ci-only-portal-refresh-secret-not-a-real-key
+
     steps:
       - uses: actions/checkout@v4
 
