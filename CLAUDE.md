@@ -5,8 +5,15 @@
 > specific to this repo. If the two disagree, `../CLAUDE.md` wins on facts about the system
 > and this file wins on conventions inside this directory.
 
-NestJS 11 API on **:3001**. Routes carry **no `/api` and no `/v1`** — `main.ts` calls neither
-`setGlobalPrefix()` nor `enableVersioning()`, so the `version: '1'` on a few controllers is inert.
+NestJS 11 API on **:3001**. Every route is served under **`/v1`** — `main.ts` calls
+`applyApiPrefix()` (`src/common/api-prefix.ts`), which sets the global prefix and excludes only
+the health probes. Routes still carry no `/api`; that prefix belongs to the frontends' own-origin
+rewrite, which now targets `http://localhost:3001/v1/:path*`.
+
+**Anything that decides something from `req.path` must strip the prefix with `stripApiPrefix()`,
+never match a literal.** `CsrfGuard` matched `'/admin'` directly, so introducing `/v1` silently
+disarmed anti-forgery checking on every admin write — the guard took the portal branch, found no
+portal cookie, and concluded there was nothing to protect.
 
 ## Layer map
 
@@ -78,7 +85,7 @@ says why.
 
 ## Tests
 
-`npm test` → Vitest, 75 tests. `vitest.config.mts` sets `fileParallelism: false`
+`npm test` → Vitest, 350 tests. `vitest.config.mts` sets `fileParallelism: false`
 **deliberately** — the money tests must observe each other's concurrency. Testcontainers starts
 a real Postgres 16 and runs the committed migrations; nothing is mocked.
 
