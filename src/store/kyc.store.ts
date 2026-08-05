@@ -220,9 +220,32 @@ export class KycStore {
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     const [rows, [countRow], statusCounts] = await Promise.all([
+      /*
+       * Only the columns the QUEUE renders — R-2.5 data minimisation.
+       *
+       * This used to select `kycSubmissions` whole, so every page of 25 rows
+       * carried each client's date of birth, address, nationality, phone and
+       * document paths to a screen that renders a name, an email, a status, a
+       * country and two dates. Not a hole — the caller already holds
+       * `kyc.review` — but it is the difference between a compromised or
+       * over-broad admin session leaking a page of names and leaking a page of
+       * full identity profiles, and it is the first question a compliance
+       * reviewer asks about a list endpoint.
+       *
+       * `country` is extracted from the jsonb rather than the blob being sent,
+       * because it is the one field of `personalInfo` the queue displays. The
+       * detail endpoint still returns everything; that is where a reviewer is
+       * meant to read it, and where reading it is an audited act.
+       */
       db
         .select({
-          submission: kycSubmissions,
+          userId: kycSubmissions.userId,
+          status: kycSubmissions.status,
+          submittedAt: kycSubmissions.submittedAt,
+          reviewedAt: kycSubmissions.reviewedAt,
+          createdAt: kycSubmissions.createdAt,
+          updatedAt: kycSubmissions.updatedAt,
+          country: sql<string | null>`${kycSubmissions.personalInfo}->>'country'`,
           user: {
             id: users.id,
             email: users.email,
@@ -258,7 +281,17 @@ export class KycStore {
     }
 
     return {
-      items: rows.map((r) => ({ ...toSubmission(r.submission), user: r.user })),
+      items: rows.map((r) => ({
+        userId: r.userId,
+        status: r.status,
+        submittedAt: r.submittedAt ?? undefined,
+        reviewedAt: r.reviewedAt ?? undefined,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        // The queue's country column, and nothing else from the profile.
+        personalInfo: r.country ? { country: r.country } : undefined,
+        user: r.user,
+      })),
       total: countRow.value,
       page: filter.page,
       limit: filter.limit,
