@@ -17,6 +17,18 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root" || exit 1
 
+# Claude Code hooks run in a non-login shell where nvm has never been sourced, so
+# `npx` below is absent and both calls fail. That set rc=1, and post-edit.sh then
+# blocked the edit with "Lint gate failed ... what remains needs a decision" — a
+# specific, confident, entirely false claim. See scripts/lib/node-path.sh.
+# shellcheck source=lib/node-path.sh
+. "$repo_root/scripts/lib/node-path.sh"
+if [ "$NODE_PATH_RESOLVED" -ne 1 ]; then
+  echo "gate-file.sh: node/npm not found on PATH — prettier and eslint did NOT run." >&2
+  echo "This is an environment problem, not a lint error. See scripts/lib/node-path.sh." >&2
+  exit 1
+fi
+
 files=()
 for f in "$@"; do
   case "$f" in

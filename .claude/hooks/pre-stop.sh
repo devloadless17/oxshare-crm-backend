@@ -28,7 +28,29 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   fi
 fi
 
-repo_name="$(node -p "require('./package.json').name" 2>/dev/null || echo unknown)"
+# This hook runs in a non-login shell, so nvm has never been sourced and npm is
+# absent. Every gate below then reported "npm: command not found" while the repo
+# was in fact green. See scripts/lib/node-path.sh.
+# shellcheck source=../../scripts/lib/node-path.sh
+. "$repo_root/scripts/lib/node-path.sh"
+if [ "$NODE_PATH_RESOLVED" -ne 1 ]; then
+  echo "pre-stop: node/npm not found on PATH — the gates did NOT run, so nothing is verified." >&2
+  echo "This is an environment problem, not a code failure. See scripts/lib/node-path.sh." >&2
+  exit 2
+fi
+
+# Deliberately not `node -p` alone. When node was missing this fell through to
+# "unknown", and the is_backend test below then read FALSE for the backend — so
+# the Stop hook ran the minutes-long Testcontainers suite it explicitly must not.
+# The basename fallback keeps that decision correct without a toolchain.
+repo_name="$(node -p "require('./package.json').name" 2>/dev/null || basename "$repo_root")"
+
+# Matches both the package name ("backend") and the directory
+# ("oxshare-crm-backend"), so either source of the name lands on the same answer.
+case "$repo_name" in
+  backend | *-backend) is_backend=1 ;;
+  *) is_backend=0 ;;
+esac
 
 report=""
 fail=0
@@ -50,7 +72,7 @@ run_gate format:check
 # Testcontainers with fileParallelism:false and takes minutes BY DESIGN — the money
 # tests must observe each other's concurrency. That belongs in CI, not in the path
 # of every "done".
-if [ "$repo_name" != "backend" ]; then
+if [ "$is_backend" -ne 1 ]; then
   run_gate test
 fi
 
@@ -60,7 +82,7 @@ fi
   echo "Not done yet — the $repo_name gate is red:"
   echo
   printf '%s\n' "$report"
-  if [ "$repo_name" = "backend" ]; then
+  if [ "$is_backend" -eq 1 ]; then
     echo "Note: the money test suite is not run here. Run 'npm test' before committing."
   fi
 } >&2

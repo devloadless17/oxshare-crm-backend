@@ -12,6 +12,18 @@ set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root" || exit 1
+
+# Claude Code hooks run in a non-login shell where nvm has never been sourced, so
+# `npx` is absent and this reported "npx: command not found" as a TYPECHECK
+# FAILURE. See scripts/lib/node-path.sh.
+# shellcheck source=lib/node-path.sh
+. "$repo_root/scripts/lib/node-path.sh"
+if [ "$NODE_PATH_RESOLVED" -ne 1 ]; then
+  echo "gate-project.sh: node/npm not found on PATH — the typecheck did NOT run." >&2
+  echo "This is an environment problem, not a type error. See scripts/lib/node-path.sh." >&2
+  exit 1
+fi
+
 mkdir -p node_modules/.cache
 
 run_tsc() {
