@@ -1,13 +1,41 @@
 import { existsSync, readdirSync, unlinkSync } from 'fs';
 import { Injectable, Logger } from '@nestjs/common';
 import { KycStore, KycStatus } from '../../store/kyc.store';
-import { UsersStore } from '../../store/users.store';
+import { User, UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
 import {
   AuthorizationError,
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain-errors';
+
+/**
+ * The user, as a REVIEWER may see them.
+ *
+ * An allow-list, and it exists because spreading the whole record here sent the
+ * client's `password_hash` to every admin opening a KYC submission — along with
+ * their refresh-token hash and their password-reset hash. A reviewer needs to
+ * know WHO they are looking at in order to match a name against a passport;
+ * they never need that person's credentials.
+ *
+ * Same shape of defect as the portal's `sanitize()`, in a different file: what
+ * leaves the API is decided by listing it, not by remembering to remove things.
+ */
+function reviewerView(user: User) {
+  return {
+    id: user.id,
+    email: user.email,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    type: user.type,
+    status: user.status,
+    verificationLevel: user.verificationLevel,
+    emailVerified: user.emailVerified,
+    country: user.country,
+    phone: user.phone,
+    createdAt: user.createdAt,
+  };
+}
 
 @Injectable()
 export class KycService {
@@ -148,7 +176,7 @@ export class KycService {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     const user = await this.users.findById(userId);
-    return { ...submission, user };
+    return { ...submission, user: user ? reviewerView(user) : undefined };
   }
 
   // ─── Admin: approve ────────────────────────────────────────────────────────

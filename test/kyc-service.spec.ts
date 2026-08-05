@@ -303,6 +303,43 @@ describe('reject', () => {
   });
 });
 
+describe('getByUserId — what a reviewer may see', () => {
+  /*
+   * REGRESSION. This returned `{ ...submission, user }` with the WHOLE user
+   * record, so every admin opening a KYC submission received that client's
+   * `password_hash` — plus their refresh-token hash and password-reset hash.
+   *
+   * A reviewer needs to know who they are looking at, to match a name against a
+   * passport. They never need that person's credentials. Same shape of defect as
+   * the portal's sanitize() deny-list, in a different file.
+   */
+  const LEAKY = {
+    ...USER,
+    passwordHash: 'argon2-hash-here',
+    refreshToken: 'refresh-hash',
+    passwordResetTokenHash: 'reset-hash',
+  } as User;
+
+  it('returns none of the client credentials', async () => {
+    const h = build({ stored: completeSubmission(), user: LEAKY });
+    const serialised = JSON.stringify(await h.service.getByUserId('user-1'));
+    for (const secret of ['argon2-hash-here', 'refresh-hash', 'reset-hash']) {
+      expect(serialised).not.toContain(secret);
+    }
+    expect(serialised).not.toMatch(/passwordHash/);
+  });
+
+  it('still returns what a reviewer needs to identify the person', async () => {
+    // An allow-list that is too tight breaks the review screen instead of
+    // leaking — the better failure, but still one.
+    const h = build({ stored: completeSubmission(), user: LEAKY });
+    const result = (await h.service.getByUserId('user-1')) as { user?: Record<string, unknown> };
+    for (const field of ['id', 'email', 'firstName', 'lastName', 'verificationLevel']) {
+      expect(result.user?.[field]).toBeDefined();
+    }
+  });
+});
+
 describe('listAll', () => {
   it('clamps the page size, so one request cannot ask for the whole table', async () => {
     const h = build();
