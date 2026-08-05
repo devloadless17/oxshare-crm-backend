@@ -1,5 +1,7 @@
 import { ValidationPipe, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { ThrottlerStorage } from '@nestjs/throttler';
+import type { ThrottlerStorageRecord } from '@nestjs/throttler/dist/throttler-storage-record.interface';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
@@ -36,6 +38,19 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  * uploads `mkdirSync` (suites that need it make their own), and `runSeeds()` —
  * a suite states the identities it needs rather than inheriting a fixture it
  * did not ask for.
+ *
+ * RATE LIMITING is neutralised by default, and that is the one deviation worth
+ * arguing about. Login allows 5 attempts per minute PER IP; a suite proving the
+ * guard chain signs in a dozen times from 127.0.0.1, so the limiter and the
+ * suite are fundamentally incompatible — and a suite that fails on request six
+ * is a suite that gets deleted.
+ *
+ * What is swapped is the COUNTER, not the guard: `ThrottlerGuard` still runs on
+ * every request, still resolves its per-route limits, still builds its key. Only
+ * the storage returns "one hit, never blocked". So a wiring mistake that stops
+ * the guard executing at all is still visible here, and the limits themselves
+ * are asserted for real in `test/throttling-http.spec.ts`, which opts in with
+ * `{ throttling: 'real' }`.
  */
 export interface HttpTestContext {
   app: INestApplication;
@@ -43,14 +58,31 @@ export interface HttpTestContext {
   db: MoneyTestContext;
 }
 
-export async function startHttpTestApp(): Promise<HttpTestContext> {
+export interface HttpTestOptions {
+  /** 'real' keeps the per-IP rate limiter in play. Default 'off' — see above. */
+  throttling?: 'real' | 'off';
+}
+
+export async function startHttpTestApp(options: HttpTestOptions = {}): Promise<HttpTestContext> {
   process.env['NODE_ENV'] ??= 'test';
 
   // Must precede AppModule: the stores resolve DATABASE_URL through a lazy
   // singleton on first use, and Nest instantiates providers during compile().
   const db = await startMoneyTestDb();
 
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  const builder = Test.createTestingModule({ imports: [AppModule] });
+  if (options.throttling !== 'real') {
+    builder.overrideProvider(ThrottlerStorage).useValue({
+      increment: (): Promise<ThrottlerStorageRecord> =>
+        Promise.resolve({
+          totalHits: 1,
+          timeToExpire: 60,
+          isBlocked: false,
+          timeToBlockExpire: 0,
+        }),
+    });
+  }
+  const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>();
 
   app.use(
