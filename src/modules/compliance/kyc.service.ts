@@ -156,6 +156,37 @@ export class KycService {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
 
+    /*
+     * Approval is a decision about EVIDENCE, and `not_started` / `in_progress`
+     * contain none. Without this an admin could raise an account with no
+     * documents at all to verification level 1 — which is what gates
+     * withdrawals, so it unlocks moving money on the strength of nothing.
+     * `submit()` is what puts a submission in a reviewable state, and it is
+     * where FR-CORE-15's four-document requirement is enforced.
+     */
+    if (submission.status !== 'submitted' && submission.status !== 'under_review') {
+      throw new ValidationError(
+        submission.status === 'approved'
+          ? 'This KYC submission is already approved.'
+          : `Only a submitted KYC can be approved; this one is ${submission.status}.`,
+      );
+    }
+
+    /*
+     * ORDER MATTERS, and it is the only thing making this safe without a
+     * transaction: the status is written FIRST, the verification level second.
+     * These are two stores and two writes, so a crash between them leaves one
+     * of two states — and this order picks the harmless one.
+     *
+     *   status approved, level 0  → the client looks verified but cannot
+     *                               withdraw. Re-approving fixes it.
+     *   level 1, status not approved → the client can move money with no
+     *                               approved submission behind them.
+     *
+     * The second is the one that costs money, so it must be the one that cannot
+     * happen. Making this genuinely atomic needs an Executor threaded through
+     * KycStore and UsersStore — recorded as a follow-up rather than half-done.
+     */
     await this.kycStore.update(userId, {
       status: 'approved',
       reviewedBy: adminId,
@@ -203,6 +234,21 @@ export class KycService {
       reviewedBy: adminId,
       reviewedAt: new Date(),
     });
+
+    /*
+     * Take the verification level back.
+     *
+     * `approve()` raises it to 1 and nothing lowered it, so an admin who
+     * approved by mistake and then rejected left the client REJECTED and still
+     * VERIFIED — the status said no while the money path said yes, and
+     * verification level is what gates withdrawals. Rejection is the statement
+     * that the evidence is not accepted, so the level it granted goes with it.
+     *
+     * Unconditional rather than conditional on the previous status: level 1 has
+     * exactly one source in Phase 1 — approval — so a rejected client should
+     * hold none of it, whichever path they arrived by.
+     */
+    await this.users.update(userId, { verificationLevel: 0 });
 
     if (user) {
       // Sent inline per FR-ADM-03 — the client is emailed the reason and can retry
