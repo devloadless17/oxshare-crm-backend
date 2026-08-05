@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { randomBytes } from 'crypto';
 import { and, desc, eq, gte, ne, sql } from 'drizzle-orm';
 import { transactions, users } from '../../database/schema';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
@@ -423,6 +424,88 @@ export class TransactionsService {
   }
 
   /**
+   * A client DECLARES a deposit they are about to send — CORE-06.
+   *
+   * This is not `creditDeposit` below and must never become it. Nothing is
+   * credited here: the row is `pending`, the wallet is untouched, and the money
+   * only lands when an operator confirms the transfer actually arrived.
+   *
+   * ## Why this exists when the payment providers do not
+   *
+   * The deposit screen said "waiting on backend endpoints" and named
+   * `POST /payments/deposits` and a provider webhook. Both were blocked on
+   * Whish/USDT credentials (§12.5, D-05) — but only the AUTOMATED flow was.
+   * The flow every broker runs regardless needs no third-party credential: the
+   * client says what they are sending, quotes a reference, and the operator
+   * reconciles it against the bank statement.
+   *
+   * So the endpoint the screen was waiting for is still unbuilt, and this is a
+   * different endpoint for a flow that was available all along.
+   *
+   * ## The reference
+   *
+   * The response's whole point. An operator working through a bank statement
+   * has an amount and a name, and both repeat across clients; the reference is
+   * what ties one incoming payment to one declared deposit without a phone
+   * call. It doubles as the row's `providerRef`, so the UNIQUE(provider,
+   * provider_ref) index that makes provider callbacks idempotent also
+   * guarantees no two declarations can ever share a reference.
+   */
+  async requestDeposit(params: {
+    userId: string;
+    amount: string;
+    currency: Currency;
+    method: string;
+  }) {
+    const amount = toDecimal(params.amount);
+    if (!amount.isPositive()) throw new ValidationError('Deposit amount must be positive.');
+
+    const min = this.limits.minDeposit();
+    const max = this.limits.maxDeposit();
+    if (amount.lessThan(min)) {
+      throw new ValidationError(`The minimum deposit is ${min.toString()} ${params.currency}.`);
+    }
+    if (amount.greaterThan(max)) {
+      throw new ValidationError(
+        `The maximum single deposit is ${max.toString()} ${params.currency}. ` +
+          'Please split the transfer or contact support.',
+      );
+    }
+
+    const wallet = await this.wallets.getOrCreateWallet(params.userId, params.currency);
+    const reference = depositReference();
+
+    const [tx] = await this.db
+      .insert(transactions)
+      .values({
+        userId: params.userId,
+        walletId: wallet.id,
+        direction: 'deposit',
+        amount: money(params.amount),
+        currency: params.currency,
+        // PENDING. The client has promised money, not sent it. Anything else
+        // here would credit a balance off an unverified claim.
+        state: 'pending',
+        // The METHOD, not a payment provider — there is no provider in this
+        // flow. `manual_` keeps it obviously distinct from `whish` or a USDT
+        // gateway row, so a later reconciliation job cannot confuse the two.
+        provider: `manual_${params.method}`,
+        providerRef: reference,
+      })
+      .returning();
+
+    return {
+      id: tx.id,
+      reference,
+      amount: tx.amount,
+      currency: tx.currency,
+      method: params.method,
+      state: tx.state,
+      createdAt: tx.createdAt.toISOString(),
+    };
+  }
+
+  /**
    * Deposit credit — the §8.3 callback path. Idempotent twice over: the
    * transaction row on UNIQUE(provider, provider_ref) and the ledger entry on
    * (wallet, reference). Used by the provider webhook when credentials land.
@@ -481,4 +564,27 @@ export class TransactionsService {
     // creditDepositAtomic() below for the transactional variant used by the
     // provider webhook once one exists.
   }
+}
+
+/**
+ * A short reference a human can read down a phone line and type into a bank
+ * form.
+ *
+ * Crockford's base32 — no I, L, O or U — because this string is transcribed by
+ * people: `0`/`O` and `1`/`I` are the transcription errors that turn a
+ * reconciled payment into a support ticket, and U is dropped so the alphabet
+ * cannot spell anything unfortunate.
+ *
+ * Six characters is ~1.07 billion values. It is NOT a secret and does not need
+ * to be — quoting somebody else's reference on your own transfer credits THEIR
+ * declaration with YOUR money, which is a strange attack to mount. Collisions
+ * are what matter, and the UNIQUE(provider, provider_ref) index turns one into
+ * a failed insert rather than two clients sharing a reference.
+ */
+function depositReference(): string {
+  const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  const bytes = randomBytes(6);
+  let out = '';
+  for (const byte of bytes) out += ALPHABET[byte % ALPHABET.length];
+  return `OX-${out}`;
 }

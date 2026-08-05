@@ -60,6 +60,31 @@ export class MoneyLimits {
   }
 
   /**
+   * Below this a manual deposit costs more in operator time than it moves.
+   *
+   * A declared deposit is not money yet — nothing is credited until somebody
+   * confirms the transfer arrived — so this bound is not protecting a balance.
+   * It is protecting the reconciliation queue: a stream of one-dollar
+   * declarations is a denial of service against the person working through it.
+   */
+  minDeposit(): Decimal {
+    return this.decimal('DEPOSIT_MIN', '10');
+  }
+
+  /**
+   * ASSUMPTION — pending client confirmation. Per single declared deposit.
+   *
+   * Deliberately generous compared to the withdrawal ceiling: a large INBOUND
+   * declaration is a compliance question for the operator to answer with the
+   * money in view, not something to refuse at the door. It exists so a typo
+   * ("500000" for "5000") is caught while the client is still looking at the
+   * form rather than after a wire arrives.
+   */
+  maxDeposit(): Decimal {
+    return this.decimal('DEPOSIT_MAX', '250000');
+  }
+
+  /**
    * The most any single closed deal may ever produce for one IB leg.
    *
    * This is the D-11 backstop. A plausible spread-based commission on a retail

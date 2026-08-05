@@ -39,6 +39,7 @@ import { SecuritySettingsService } from '../admin/security-settings.service';
 import { SECURITY_SWITCHES } from '../../store/security-settings.store';
 import { EmailService } from '../email/email.service';
 import { ValidationError } from '../../common/errors/domain-errors';
+import { DepositRequestDto, RequestDepositDto } from './dto/deposit.dto';
 
 @ApiTags('payments')
 @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
@@ -51,6 +52,50 @@ export class PaymentsController {
     private readonly securitySettings: SecuritySettingsService,
     private readonly email: EmailService,
   ) {}
+
+  /**
+   * Declare a deposit the client is about to send — CORE-06.
+   *
+   * NOTHING IS CREDITED HERE. The row is `pending` and the wallet is untouched
+   * until an operator confirms the transfer arrived. That is the honest shape
+   * of a deposit without a payment gateway, and it is why this endpoint could
+   * be built while the automated one still cannot: `POST /webhooks/payments/
+   * :provider` needs Whish/USDT credentials (§12.5, D-05), and this needs none.
+   *
+   * Idempotent for the same reason a withdrawal is. A double-clicked button
+   * would otherwise put two identical declarations into the reconciliation
+   * queue with two different references, and the operator would have to work
+   * out by hand which one the single incoming payment belongs to.
+   *
+   * Behind `EmailVerifiedGuard` with the rest of this controller. A client who
+   * has not confirmed their address should not be told where to send money.
+   */
+  @Post('deposits')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended deposit, reused only when retrying that same one. Without ' +
+      'it a double-clicked button files two declarations for one transfer, and the operator ' +
+      'reconciling the bank statement has to guess which is real (R-5.2).',
+  })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Declare an incoming deposit and get the reference to quote on the transfer',
+    description:
+      'Creates a PENDING deposit. No balance changes until the operator confirms the money ' +
+      'arrived. The returned reference is what reconciles the payment to this request.',
+  })
+  @ApiCreatedResponse({ type: DepositRequestDto })
+  async requestDeposit(@Body() dto: RequestDepositDto, @Req() req: Request & { user: User }) {
+    return await this.transactions.requestDeposit({
+      userId: req.user.id,
+      amount: dto.amount,
+      currency: dto.currency,
+      method: dto.method,
+    });
+  }
 
   @Post('withdrawals')
   @Idempotent()
