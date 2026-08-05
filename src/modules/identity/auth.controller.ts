@@ -132,6 +132,20 @@ export class AuthController {
       'access token — otherwise a returning user is locked out rather than renewed.',
   )
   @Post('refresh')
+  /*
+   * Rate-limited despite @NoCsrf and despite needing a cookie — R-3.5.
+   *
+   * This is the most expensive unauthenticated-looking route in the API: it
+   * hashes to find the token's family row on every call, and it is deliberately
+   * exempt from the CSRF check, so nothing else stands in front of it. At the
+   * global 120/min it was the cheapest way to make the process do real work.
+   *
+   * 20/min is far above what any real client reaches — the portal refreshes
+   * proactively every ten minutes, and a handful of open tabs stays well inside
+   * it — while putting a ceiling on both CPU burn and blind rotation attempts
+   * against a stolen token.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Refresh access token' })
   @ApiOkResponse({ type: AuthTokensResponseDto })

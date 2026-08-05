@@ -64,6 +64,10 @@ export class AdminAuthController {
       'access token — otherwise a returning user is locked out rather than renewed.',
   )
   @Post('auth/refresh')
+  // Same reasoning as the portal's refresh route (R-3.5): CSRF-exempt by
+  // design, hashes on every call, and was left at the global 120/min. 20/min is
+  // far above any real admin session and puts a ceiling on the cost.
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Admin refresh token' })
   @ApiOkResponse({ type: AdminLoginResponseDto })
