@@ -88,16 +88,16 @@ export default defineConfig({
        * coverage across controllers and stores is a much weaker signal than those
        * four, so do not chase the percentage at their expense.
        */
-      // Raised after slice 2 (KYC). Measured 2026-08-05: statements 74.5,
-      // branches 64.8, functions 69.1, lines 75.5 — from the KycService suite
-      // (that file had none), the KYC HTTP spec, and the compliance-to-money
-      // gate test.
+      // Raised after slice 3 (RBAC). Measured 2026-08-05: statements 76.9,
+      // branches 67.7, functions 73.1, lines 78.1 — from admin-users.spec.ts
+      // (`updateAdmin` had NO tests at all), the admin-suspension HTTP spec, and
+      // the invite-journey HTTP spec that caught the email-case login bug.
       //
       // Set a few points under the measurement. These are RATCHETS against
       // regression, not targets: they may only ever go up, and a floor set above
       // what the suite actually reaches is the kind that gets disabled the first
       // time it blocks someone.
-      thresholds: { lines: 72, functions: 66, branches: 62, statements: 71 },
+      thresholds: { lines: 76, functions: 71, branches: 66, statements: 75 },
     },
   },
 });
