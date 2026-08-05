@@ -153,55 +153,57 @@ export class AdminMoneyService {
   async createProgram(input: ProgramInput, actor: Admin) {
     // A plan decides what every future accrual pays.
     assertActorCan(actor, 'commissions.manage', 'create a commission plan');
-    const row = await this.programs.create(input);
-    this.audit.record(actor.id, 'program.create', 'ib_program', row.id, {
-      name: row.name,
-      mode: row.mode,
-      method: row.method,
-      commissionValue: row.commissionValue,
-      l1Share: row.l1Share,
-      l2Share: row.l2Share,
-      settlementWindowHours: row.settlementWindowHours,
-      rebateOnClose: row.rebateOnClose,
-    });
-    return row;
-  }
-  async updateProgram(id: string, input: ProgramInput, actor: Admin) {
-    assertActorCan(actor, 'commissions.manage', 'update a commission plan');
-    const before = await this.programs.findById(id);
-    const row = await this.programs.update(id, input);
-    this.audit.record(actor.id, 'program.update', 'ib_program', id, {
-      before: {
-        commissionValue: before.commissionValue,
-        rebateValue: before.rebateValue,
-        l1Share: before.l1Share,
-        l2Share: before.l2Share,
-        settlementWindowHours: before.settlementWindowHours,
-        rebateOnClose: before.rebateOnClose,
-      },
-      after: {
+    return this.programs.create(input, (tx, row) =>
+      this.audit.recordWithin(tx, actor.id, 'program.create', 'ib_program', row.id, {
+        name: row.name,
+        mode: row.mode,
+        method: row.method,
         commissionValue: row.commissionValue,
-        rebateValue: row.rebateValue,
         l1Share: row.l1Share,
         l2Share: row.l2Share,
         settlementWindowHours: row.settlementWindowHours,
         rebateOnClose: row.rebateOnClose,
-      },
-    });
-    return row;
+      }),
+    );
+  }
+  async updateProgram(id: string, input: ProgramInput, actor: Admin) {
+    assertActorCan(actor, 'commissions.manage', 'update a commission plan');
+    // Read before the write opens its transaction: the before/after pair is the
+    // whole value of this record, and a rate change is only reviewable if the
+    // previous rate is in the same row as the new one.
+    const before = await this.programs.findById(id);
+    return this.programs.update(id, input, (tx, row) =>
+      this.audit.recordWithin(tx, actor.id, 'program.update', 'ib_program', id, {
+        before: {
+          commissionValue: before.commissionValue,
+          rebateValue: before.rebateValue,
+          l1Share: before.l1Share,
+          l2Share: before.l2Share,
+          settlementWindowHours: before.settlementWindowHours,
+          rebateOnClose: before.rebateOnClose,
+        },
+        after: {
+          commissionValue: row.commissionValue,
+          rebateValue: row.rebateValue,
+          l1Share: row.l1Share,
+          l2Share: row.l2Share,
+          settlementWindowHours: row.settlementWindowHours,
+          rebateOnClose: row.rebateOnClose,
+        },
+      }),
+    );
   }
   async setProgramActive(id: string, active: boolean, actor: Admin) {
     assertActorCan(actor, 'commissions.manage', 'activate or deactivate a commission plan');
-    const row = await this.programs.setActive(id, active);
-    this.audit.record(
-      actor.id,
-      active ? 'program.activate' : 'program.deactivate',
-      'ib_program',
-      id,
-      {
-        name: row.name,
-      },
+    return this.programs.setActive(id, active, (tx, row) =>
+      this.audit.recordWithin(
+        tx,
+        actor.id,
+        active ? 'program.activate' : 'program.deactivate',
+        'ib_program',
+        id,
+        { name: row.name },
+      ),
     );
-    return row;
   }
 }

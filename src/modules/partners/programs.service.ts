@@ -5,7 +5,14 @@ import { ibPrograms } from '../../database/schema';
 import { money, toDecimal } from '../wallet/money';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { DRIZZLE_DB } from '../../database/database.module';
-import type { Db } from '../../database/db';
+import type { Db, Executor } from '../../database/db';
+
+/**
+ * Runs inside the writer's transaction, so the record and the change commit or
+ * fail together (R-6.5). `Executor` is the shared type that lets a caller join
+ * a transaction rather than opening its own.
+ */
+type AuditHook = (tx: Executor, row: typeof ibPrograms.$inferSelect) => Promise<void>;
 
 export type CommissionMode = 'commission' | 'rebate' | 'hybrid';
 export type CommissionMethod = 'spread_share' | 'per_lot' | 'fixed_per_deal';
@@ -130,42 +137,67 @@ export class ProgramsService {
     return row;
   }
 
-  async create(input: ProgramInput) {
+  /*
+   * Each writer takes an optional `audit` callback and runs it INSIDE its own
+   * transaction — R-6.5, and the same shape `TransactionsService.approve` uses.
+   *
+   * A commission plan is not itself a money movement, which is why these
+   * originally used the fire-and-forget `audit.record()`. But a plan decides
+   * what every future accrual pays: changing an L1 share silently re-prices
+   * commission for every deal that follows. If the write commits and the audit
+   * row is lost, "who changed the L1 share, and from what" has only a log line
+   * that may have rotated — and the accruals it produced are already correct
+   * with respect to a rule nobody can now attribute.
+   *
+   * §9 item 6 calls this the one item in the system that cannot be retrofitted
+   * at any price. It is true here in a weaker but real sense: the missing row
+   * cannot be reconstructed after the fact, only guessed at from the values.
+   */
+  async create(input: ProgramInput, audit?: AuditHook) {
     this.validate(input);
-    const existing = await this.db
-      .select()
-      .from(ibPrograms)
-      .where(eq(ibPrograms.name, input.name.trim()))
-      .limit(1);
-    if (existing.length > 0) {
-      throw new ConflictError('A program with this name already exists.');
-    }
-    const [row] = await this.db.insert(ibPrograms).values(this.toColumns(input)).returning();
-    return row;
+    return this.db.transaction(async (tx) => {
+      const existing = await tx
+        .select()
+        .from(ibPrograms)
+        .where(eq(ibPrograms.name, input.name.trim()))
+        .limit(1);
+      if (existing.length > 0) {
+        throw new ConflictError('A program with this name already exists.');
+      }
+      const [row] = await tx.insert(ibPrograms).values(this.toColumns(input)).returning();
+      await audit?.(tx, row);
+      return row;
+    });
   }
 
-  async update(id: string, input: ProgramInput) {
-    await this.findById(id);
+  async update(id: string, input: ProgramInput, audit?: AuditHook) {
     this.validate(input);
-    const [row] = await this.db
-      .update(ibPrograms)
-      .set(this.toColumns(input))
-      .where(eq(ibPrograms.id, id))
-      .returning();
-    return row;
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(ibPrograms)
+        .set(this.toColumns(input))
+        .where(eq(ibPrograms.id, id))
+        .returning();
+      if (!row) throw new NotFoundError('Program not found.');
+      await audit?.(tx, row);
+      return row;
+    });
   }
 
   /**
    * Programs are deactivated, never deleted: accruals reference the program
    * that produced them, and money history must stay explainable.
    */
-  async setActive(id: string, active: boolean) {
-    await this.findById(id);
-    const [row] = await this.db
-      .update(ibPrograms)
-      .set({ active, updatedAt: new Date() })
-      .where(eq(ibPrograms.id, id))
-      .returning();
-    return row;
+  async setActive(id: string, active: boolean, audit?: AuditHook) {
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(ibPrograms)
+        .set({ active, updatedAt: new Date() })
+        .where(eq(ibPrograms.id, id))
+        .returning();
+      if (!row) throw new NotFoundError('Program not found.');
+      await audit?.(tx, row);
+      return row;
+    });
   }
 }

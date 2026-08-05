@@ -2,10 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { closeDb, getDb, resetDb } from '../src/database/db';
-import { auditLog, transactions, users } from '../src/database/schema';
+import { auditLog, ibPrograms, transactions, users } from '../src/database/schema';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { MoneyLimits } from '../src/config/money-limits';
+import { ProgramsService } from '../src/modules/partners/programs.service';
+import { AdminAuditService } from '../src/modules/admin/admin-audit.service';
+import { AdminsStore } from '../src/store/admins.store';
+import { AuditLogStore } from '../src/store/audit-log.store';
 
 /**
  * The audit row for a money movement commits with the money — R-6.5.
@@ -29,6 +33,8 @@ import { MoneyLimits } from '../src/config/money-limits';
 let ctx: MoneyTestContext;
 let wallets: WalletService;
 let txService: TransactionsService;
+let programs: ProgramsService;
+let audit: AdminAuditService;
 
 const ADMIN_ID = '22222222-2222-2222-2222-222222222222';
 
@@ -81,6 +87,10 @@ beforeAll(async () => {
       get: () => undefined,
     } as never),
   );
+  programs = new ProgramsService(getDb());
+  // The real audit service against the real stores: the point of these tests is
+  // that the row lands in the same transaction, which a stub cannot demonstrate.
+  audit = new AdminAuditService(new AdminsStore(getDb()), new AuditLogStore(getDb()));
 });
 
 afterAll(async () => {
@@ -130,6 +140,89 @@ describe('R-6.5 — the audit row and the money movement commit together', () =>
     // the detached audit write failed silently afterwards, leaving an approved
     // withdrawal nobody is accountable for.
     expect(tx.state).toBe('pending');
+  });
+
+  /*
+   * Commission plans, which the first pass of this work left behind.
+   *
+   * A plan is not itself a money movement, which is why these kept the
+   * fire-and-forget `record()` while approve/reject/settle were moved. But a
+   * plan decides what every future accrual PAYS: changing an L1 share re-prices
+   * commission for every deal that follows. If the change commits and the record
+   * is lost, the accruals it produced are correct with respect to a rule nobody
+   * can attribute — and the before/after pair, which is the only thing that
+   * makes a rate change reviewable, cannot be reconstructed from the row.
+   */
+  describe('commission plan writes', () => {
+    const planInput = (name: string, l1Share: string) => ({
+      name,
+      mode: 'commission' as const,
+      method: 'spread_share' as const,
+      commissionValue: '30',
+      rebateValue: '0',
+      l1Share,
+      l2Share: '0',
+      settlementWindowHours: 24,
+      rebateOnClose: false,
+      position: 1,
+      selectable: true,
+    });
+
+    it('writes the audit row inside the creating transaction', async () => {
+      const row = await programs.create(planInput('Audited Plan', '70'), (tx, created) =>
+        audit.recordWithin(tx, ADMIN_ID, 'program.create', 'ib_program', created.id, {
+          l1Share: created.l1Share,
+        }),
+      );
+
+      const audits = await ctx.db.select().from(auditLog).where(eq(auditLog.subjectId, row.id));
+      expect(audits).toHaveLength(1);
+      expect(audits[0].action).toBe('program.create');
+    });
+
+    it('ROLLS BACK a plan whose audit row cannot be written', async () => {
+      await expect(
+        programs.create(planInput('Unaudited Plan', '70'), () =>
+          Promise.reject(new Error('audit store unavailable')),
+        ),
+      ).rejects.toThrow('audit store unavailable');
+
+      // THE assertion: no plan exists. Before this, the insert committed and the
+      // detached audit write failed silently afterwards.
+      const rows = await ctx.db
+        .select()
+        .from(ibPrograms)
+        .where(eq(ibPrograms.name, 'Unaudited Plan'));
+      expect(rows).toHaveLength(0);
+    });
+
+    it('ROLLS BACK a rate change whose audit row cannot be written', async () => {
+      // The one that costs the most: an unattributable change to what every
+      // future accrual pays.
+      const created = await programs.create(planInput('Rate Change Plan', '70'));
+
+      await expect(
+        programs.update(created.id, planInput('Rate Change Plan', '95'), () =>
+          Promise.reject(new Error('audit store unavailable')),
+        ),
+      ).rejects.toThrow('audit store unavailable');
+
+      const [row] = await ctx.db.select().from(ibPrograms).where(eq(ibPrograms.id, created.id));
+      expect(row.l1Share).toBe('70.00');
+    });
+
+    it('ROLLS BACK a deactivation whose audit row cannot be written', async () => {
+      const created = await programs.create(planInput('Deactivate Plan', '70'));
+
+      await expect(
+        programs.setActive(created.id, false, () =>
+          Promise.reject(new Error('audit store unavailable')),
+        ),
+      ).rejects.toThrow('audit store unavailable');
+
+      const [row] = await ctx.db.select().from(ibPrograms).where(eq(ibPrograms.id, created.id));
+      expect(row.active).toBe(true);
+    });
   });
 
   it('rolls back the settlement, the ledger debit AND the hold release together', async () => {
