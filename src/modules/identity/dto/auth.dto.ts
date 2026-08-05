@@ -1,4 +1,4 @@
-import { IsEmail, IsString, MinLength, MaxLength, IsOptional } from 'class-validator';
+import { IsEmail, IsString, IsNotEmpty, MinLength, MaxLength, IsOptional } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class RegisterDto {
@@ -46,6 +46,16 @@ export class LoginDto {
   @IsOptional()
   @IsString()
   role?: string;
+}
+
+export class VerifyEmailDto {
+  @ApiProperty({
+    example: 'a1b2c3d4e5f6',
+    description: 'The single-use token from the verification email link.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  token: string;
 }
 
 export class ResendVerificationDto {

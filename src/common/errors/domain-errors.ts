@@ -44,6 +44,23 @@ export class AuthorizationError extends DomainError {
   readonly code = 'FORBIDDEN';
 }
 
+/**
+ * Authenticated, but the email address is unverified. → 403
+ *
+ * A distinct subclass ONLY so it carries a distinct `code`. It is not a
+ * different kind of refusal — `FORBIDDEN` would be an accurate status — but the
+ * portal has to tell this one apart from every other 403 in order to offer the
+ * "resend verification" affordance, and the only thing it had to go on was the
+ * ENGLISH TEXT of the message (`login/page.tsx`: `.includes('verify your
+ * email')`). That breaks when the wording changes and again on the day Arabic
+ * ships, which FSD §10 / D-16 require.
+ *
+ * A client should never have to read prose to make a decision.
+ */
+export class EmailNotVerifiedError extends DomainError {
+  readonly code = 'EMAIL_NOT_VERIFIED';
+}
+
 /** The operation conflicts with existing state. → 409 */
 export class ConflictError extends DomainError {
   readonly code = 'CONFLICT';

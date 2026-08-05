@@ -87,9 +87,11 @@ const PUBLIC_ROUTES: Record<string, string> = {
 
   // Email-driven flows: the emailed token is the credential, and the recipient
   // has no session yet by definition.
-  'GET /auth/verify-email': 'The emailed token is the credential.',
-  'GET /identity/verify-email':
-    'Alias of GET /auth/verify-email — the same handler under both prefixes.',
+  // POST, not GET, since R-3.9: a mail gateway or link scanner following the
+  // emailed URL used to verify the address with nobody deciding to.
+  'POST /auth/verify-email': 'The emailed token is the credential.',
+  'POST /identity/verify-email':
+    'Alias of POST /auth/verify-email — the same handler under both prefixes.',
   'POST /auth/resend-verification': 'Pre-session by definition. Rate limited.',
   'POST /identity/resend-verification':
     'Alias of POST /auth/resend-verification — same handler, both prefixes.',

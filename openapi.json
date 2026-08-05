@@ -121,18 +121,19 @@
       }
     },
     "/v1/auth/verify-email": {
-      "get": {
+      "post": {
         "operationId": "AuthController_verifyEmail[0]",
-        "parameters": [
-          {
-            "name": "token",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailDto"
+              }
             }
           }
-        ],
+        },
         "responses": {
           "200": {
             "description": "",
@@ -145,25 +146,26 @@
             }
           }
         },
-        "summary": "Verify email via token from email link",
+        "summary": "Verify email with the token from the emailed link",
         "tags": [
           "auth"
         ]
       }
     },
     "/v1/identity/verify-email": {
-      "get": {
+      "post": {
         "operationId": "AuthController_verifyEmail[1]",
-        "parameters": [
-          {
-            "name": "token",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailDto"
+              }
             }
           }
-        ],
+        },
         "responses": {
           "200": {
             "description": "",
@@ -176,7 +178,7 @@
             }
           }
         },
-        "summary": "Verify email via token from email link",
+        "summary": "Verify email with the token from the emailed link",
         "tags": [
           "auth"
         ]
@@ -653,7 +655,32 @@
     "/v1/wallet/ledger": {
       "get": {
         "operationId": "WalletController_myLedger",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "entryType",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
@@ -1872,6 +1899,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action, reused only when retrying that same one. The state guards below make a REPLAYED CAUSE a no-op; this makes a replayed REQUEST one too (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1905,6 +1941,15 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action, reused only when retrying that same one. The state guards below make a REPLAYED CAUSE a no-op; this makes a replayed REQUEST one too (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
             "schema": {
               "type": "string"
             }
@@ -1951,6 +1996,15 @@
             "name": "id",
             "required": true,
             "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action, reused only when retrying that same one. The state guards below make a REPLAYED CAUSE a no-op; this makes a replayed REQUEST one too (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
             "schema": {
               "type": "string"
             }
@@ -2724,6 +2778,19 @@
         "required": [
           "message",
           "userId"
+        ]
+      },
+      "VerifyEmailDto": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "example": "a1b2c3d4e5f6",
+            "description": "The single-use token from the verification email link."
+          }
+        },
+        "required": [
+          "token"
         ]
       },
       "MessageResponseDto": {
@@ -4490,6 +4557,59 @@
           "total",
           "page",
           "limit"
+        ]
+      },
+      "ErrorResponseDto": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "example": 403,
+            "description": "HTTP status, repeated in the body for convenience."
+          },
+          "code": {
+            "type": "string",
+            "example": "EMAIL_NOT_VERIFIED",
+            "description": "Machine-readable cause, from a closed set. BRANCH ON THIS, never on `message` — the message is prose, is localised, and is reworded without notice."
+          },
+          "message": {
+            "type": "string",
+            "example": "Please verify your email address before accessing this resource.",
+            "description": "Human-readable and safe to display. Never parse it."
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": {
+              "amount": "must not be less than 10"
+            },
+            "description": "Present only on validation failures: field path → what is wrong with it. Dotted for nested DTOs, so a form can attach each message to the input that caused it."
+          },
+          "requestId": {
+            "type": "string",
+            "example": "req-lz4k2p-8f3a91c2",
+            "description": "The correlation id for this request (R-6.1). Stamped on every log line the API wrote while handling it, so quoting it in a support ticket is enough to find them."
+          },
+          "timestamp": {
+            "type": "string",
+            "example": "2026-08-05T13:45:12.000Z",
+            "description": "ISO-8601 UTC (R-2.7)."
+          },
+          "path": {
+            "type": "string",
+            "example": "/v1/payments/withdrawals",
+            "description": "The path as served, with query values redacted."
+          }
+        },
+        "required": [
+          "statusCode",
+          "code",
+          "message",
+          "requestId",
+          "timestamp",
+          "path"
         ]
       }
     }

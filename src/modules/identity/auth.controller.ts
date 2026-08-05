@@ -3,7 +3,6 @@ import {
   Post,
   Get,
   Body,
-  Query,
   Req,
   Res,
   UseGuards,
@@ -31,6 +30,7 @@ import {
   RegisterDto,
   LoginDto,
   ResendVerificationDto,
+  VerifyEmailDto,
   ForgotPasswordDto,
   ResetPasswordDto,
 } from './dto/auth.dto';
@@ -58,11 +58,32 @@ export class AuthController {
     return this.auth.register(dto);
   }
 
-  @Get('verify-email')
-  @ApiOperation({ summary: 'Verify email via token from email link' })
+  /*
+   * POST, not GET — R-3.9, "no state change behind GET".
+   *
+   * This marked the address verified, cleared the token and moved the
+   * verification level, all from a GET. The threat is not a browser: it is
+   * everything that follows a link WITHOUT a person deciding to. Corporate mail
+   * gateways and link scanners fetch every URL in an inbound message to check
+   * it, and a preview pane prefetches. Any of those verified the address
+   * silently, which is the one thing the email is supposed to prove.
+   *
+   * The emailed link still points at the PORTAL page — email.service.ts sends
+   * `${portalUrl}/auth/verify-email?token=…` — so nothing about the user's
+   * journey changes. That page now POSTs the token instead of the API doing the
+   * work on the GET, which keeps the click count at one while making the state
+   * change something a person triggered.
+   *
+   * Throttled: the token is single-use and unguessable, but nothing else here
+   * bounds how fast someone can try to guess one.
+   */
+  @Post('verify-email')
+  @Throttle({ default: { ttl: 900_000, limit: 10 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verify email with the token from the emailed link' })
   @ApiOkResponse({ type: MessageResponseDto })
-  verifyEmail(@Query('token') token: string) {
-    return this.auth.verifyEmail(token);
+  verifyEmail(@Body() dto: VerifyEmailDto) {
+    return this.auth.verifyEmail(dto.token);
   }
 
   @Post('resend-verification')

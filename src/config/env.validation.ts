@@ -4,6 +4,25 @@ import { z } from 'zod';
 // missing configuration instead of failing at 3am on first use (ARCHITECTURE §10,
 // working agreement "Configuration"). Wired via ConfigModule.forRoot({ validate }).
 
+/**
+ * An optional money bound: a positive, finite decimal STRING.
+ *
+ * A string rather than a coerced number, because these are monetary values and
+ * `money-limits.ts` reads them into decimal.js — coercing here would put the
+ * value through a float on the way to the thing that exists to avoid floats.
+ */
+const decimalLimit = (name: string) =>
+  z
+    .string()
+    .refine(
+      (raw) => {
+        const value = Number.parseFloat(raw);
+        return Number.isFinite(value) && value > 0 && /^\d*\.?\d+$/.test(raw.trim());
+      },
+      { message: `${name} must be a positive decimal number, e.g. "10" or "0.5"` },
+    )
+    .optional();
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -48,8 +67,51 @@ const envSchema = z
       .string()
       .min(16, 'MT5_BRIDGE_SECRET must be at least 16 characters')
       .optional(),
+
+    /*
+     * The §12.4 money bounds — validated HERE, at boot.
+     *
+     * `money-limits.ts` says these are "also validated at boot in
+     * env.validation.ts". They were not. Its own reader falls back to the
+     * documented default when a value is malformed, which is the safe reading at
+     * runtime but means a typo — a stray comma, a currency symbol, a swapped
+     * min and max — degrades silently to a number nobody chose, on the ceilings
+     * that exist precisely for when the commercial rules are WRONG.
+     *
+     * A positive finite decimal, or the process does not start.
+     */
+    WITHDRAWAL_MIN: decimalLimit('WITHDRAWAL_MIN'),
+    WITHDRAWAL_MAX: decimalLimit('WITHDRAWAL_MAX'),
+    WITHDRAWAL_DAILY_MAX: decimalLimit('WITHDRAWAL_DAILY_MAX'),
+    COMMISSION_MAX_PER_DEAL: decimalLimit('COMMISSION_MAX_PER_DEAL'),
+    COMMISSION_MAX_SHARE_OF_DEAL: decimalLimit('COMMISSION_MAX_SHARE_OF_DEAL'),
   })
-  .passthrough(); // unknown keys pass through untouched
+  .passthrough() // unknown keys pass through untouched
+  .superRefine((env, ctx) => {
+    // Ordering, because each bound is individually valid and collectively
+    // nonsense in the two ways that matter: a min above a max refuses every
+    // withdrawal, and a daily cap below the single-request cap refuses the
+    // second one for a reason the message will not explain.
+    const num = (v: unknown) => (typeof v === 'string' ? Number.parseFloat(v) : undefined);
+    const min = num(env.WITHDRAWAL_MIN);
+    const max = num(env.WITHDRAWAL_MAX);
+    const daily = num(env.WITHDRAWAL_DAILY_MAX);
+
+    if (min !== undefined && max !== undefined && min >= max) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['WITHDRAWAL_MIN'],
+        message: `WITHDRAWAL_MIN (${env.WITHDRAWAL_MIN}) must be below WITHDRAWAL_MAX (${env.WITHDRAWAL_MAX}); every withdrawal would be refused.`,
+      });
+    }
+    if (max !== undefined && daily !== undefined && daily < max) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['WITHDRAWAL_DAILY_MAX'],
+        message: `WITHDRAWAL_DAILY_MAX (${env.WITHDRAWAL_DAILY_MAX}) is below WITHDRAWAL_MAX (${env.WITHDRAWAL_MAX}); the per-request cap could never be reached.`,
+      });
+    }
+  });
 
 /** Secrets that must never be equal to one another — see SIGNING_SECRETS below. */
 const SIGNING_SECRETS = [

@@ -21,7 +21,8 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiCookieAuth, ApiHeader, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { IDEMPOTENCY_HEADER, Idempotent } from '../../common/security/idempotency.interceptor';
 import { Request } from 'express';
 import { AdminMoneyService } from './admin-money.service';
 import { Admin } from '../../store/admins.store';
@@ -78,6 +79,15 @@ export class AdminMoneyController {
   }
 
   @Patch('withdrawals/:id/approve')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended action, reused only when retrying that same one. The state ' +
+      'guards below make a REPLAYED CAUSE a no-op; this makes a replayed REQUEST one too ' +
+      '(PLATFORM-CONVENTIONS R-5.2).',
+  })
   @UseGuards(PermissionsGuard)
   @RequirePermissions('withdrawals.approve')
   @ApiCookieAuth()
@@ -90,6 +100,15 @@ export class AdminMoneyController {
   }
 
   @Patch('withdrawals/:id/reject')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended action, reused only when retrying that same one. The state ' +
+      'guards below make a REPLAYED CAUSE a no-op; this makes a replayed REQUEST one too ' +
+      '(PLATFORM-CONVENTIONS R-5.2).',
+  })
   @UseGuards(PermissionsGuard)
   @RequirePermissions('withdrawals.approve')
   @ApiCookieAuth()
@@ -106,6 +125,15 @@ export class AdminMoneyController {
   }
 
   @Patch('withdrawals/:id/settle')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended action, reused only when retrying that same one. The state ' +
+      'guards below make a REPLAYED CAUSE a no-op; this makes a replayed REQUEST one too ' +
+      '(PLATFORM-CONVENTIONS R-5.2).',
+  })
   @UseGuards(PermissionsGuard)
   @RequirePermissions('withdrawals.approve')
   @ApiCookieAuth()

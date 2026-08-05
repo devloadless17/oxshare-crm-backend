@@ -17,6 +17,7 @@ import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from '../dist/app.module.js';
 import { applyApiPrefix } from '../dist/common/api-prefix.js';
+import { ErrorResponseDto } from '../dist/common/dto/error-response.dto.js';
 
 const OUTPUT = 'openapi.json';
 
@@ -43,7 +44,11 @@ const config = new DocumentBuilder()
   .addCookieAuth('access_token')
   .build();
 
-const document = SwaggerModule.createDocument(app, config);
+// extraModels: the error envelope is emitted by AllExceptionsFilter, not
+// returned by any handler, so nothing else puts it in the document.
+const document = SwaggerModule.createDocument(app, config, {
+  extraModels: [ErrorResponseDto],
+});
 await app.close();
 
 const serialized = `${JSON.stringify(document, null, 2)}\n`;

@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { ErrorResponseDto } from './common/dto/error-response.dto';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { VALIDATION_PIPE_OPTIONS } from './common/validation.config';
@@ -115,7 +116,12 @@ async function bootstrap() {
     .addTag('compliance', 'KYC documents, verification levels')
     .addTag('admin', 'Back-office endpoints, RBAC')
     .build();
-  const document = SwaggerModule.createDocument(app, config);
+  // `extraModels` because no handler RETURNS this shape — AllExceptionsFilter
+  // emits it. Without it the envelope reaches no frontend's generated types, and
+  // both apps hand-write their own picture of it (R-1.1/R-2.2).
+  const document = SwaggerModule.createDocument(app, config, {
+    extraModels: [ErrorResponseDto],
+  });
   SwaggerModule.setup('api/docs', app, document);
 
   // Seeds create a known-password master admin. That is a development

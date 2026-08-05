@@ -10,6 +10,7 @@ import { Request, Response } from 'express';
 import {
   AuthenticationError,
   AuthorizationError,
+  EmailNotVerifiedError,
   ConflictError,
   DomainError,
   MoneyRuleError,
@@ -36,6 +37,7 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   [ValidationError, HttpStatus.BAD_REQUEST],
   [AuthenticationError, HttpStatus.UNAUTHORIZED],
   [AuthorizationError, HttpStatus.FORBIDDEN],
+  [EmailNotVerifiedError, HttpStatus.FORBIDDEN],
   [ConflictError, HttpStatus.CONFLICT],
   [MoneyRuleError, HttpStatus.UNPROCESSABLE_ENTITY],
 ]);

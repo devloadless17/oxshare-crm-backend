@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, gte, ne, sql } from 'drizzle-orm';
 import { transactions, users } from '../../database/schema';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
+import { assertActorCan, type Actor } from '../../common/security/actor';
 import { money, toDecimal } from '../wallet/money';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
 import { MoneyLimits } from '../../config/money-limits';
@@ -384,8 +385,21 @@ export class TransactionsService {
     });
   }
 
-  /** Provider failed after approval: release the hold, no balance change. */
-  async markFailed(id: string, reason: string) {
+  /**
+   * Provider failed after approval: release the hold, no balance change.
+   *
+   * Takes an `actor` and an audit hook for the same reason approve/reject/settle
+   * do — R-4.3 and R-6.5. This had neither: no actor, no assertion, no audit
+   * row, and no callers, which is exactly the shape a provider-callback job will
+   * reach for once the Whish and USDT integrations land. A money state change
+   * nobody is accountable for is easier to prevent now than to explain later.
+   *
+   * Background work passes SYSTEM_ACTOR, which is a named principal rather than
+   * an implicit bypass — a callback IS the system acting, and the audit row
+   * should say so.
+   */
+  async markFailed(id: string, reason: string, actor: Actor, withinTx?: WithinTransaction) {
+    assertActorCan(actor, 'withdrawals.approve', 'mark a withdrawal failed');
     return this.db.transaction(async (dbTx) => {
       const row = await this.transition(
         id,
@@ -400,6 +414,7 @@ export class TransactionsService {
         );
       }
       await this.wallets.release(row.userId, row.currency, row.amount, dbTx);
+      await withinTx?.(dbTx, row);
       return row;
     });
   }
