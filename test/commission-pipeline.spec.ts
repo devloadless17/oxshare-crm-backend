@@ -237,6 +237,93 @@ describe('§8.6 chain rules through the real pipeline', () => {
     expect(result.accruals[0].level).toBe(1);
   });
 
+  /*
+   * The relative ceiling, through the real pipeline — §12.4 / D-11.
+   *
+   * It existed in config with no call site while `assertWithinBounds`' comment
+   * claimed two ceilings were enforced, so the D-11 backstop was half of what it
+   * read as. Both halves are asserted here: it refuses the impossible, and it
+   * does NOT refuse the largest thing a valid program can legitimately pay.
+   */
+  describe('§12.4 the relative commission ceiling', () => {
+    async function ibWithProgram(label: string, commissionValue: string, l1Share: string) {
+      const ib = await makeUser(`${label}-ib@test.local`);
+      const client = await makeUser(`${label}-client@test.local`);
+      const [program] = await ctx.db
+        .insert(ibPrograms)
+        .values({
+          name: `Ceiling ${label}`,
+          mode: 'commission',
+          method: 'spread_share',
+          commissionValue,
+          rebateValue: '0',
+          l1Share,
+          l2Share: '0',
+          settlementWindowHours: 24,
+        })
+        .returning();
+      await ctx.db
+        .insert(ibProfiles)
+        .values({ userId: ib, parentIbId: null, programId: program.id, status: 'approved' });
+      await ctx.db
+        .insert(referralAttributions)
+        .values({ clientUserId: client, ibUserId: ib, active: true });
+      return client;
+    }
+
+    it('accepts the largest leg a valid program can pay — the whole spread', async () => {
+      // commissionValue 100% and l1Share 100% are both permitted by
+      // ProgramsService.validate, so this is a legitimate configuration paying
+      // the entire spread revenue to one IB. A ceiling that refused it would be
+      // firing on correct data, and would be switched off the first time it did.
+      const client = await ibWithProgram('max', '100', '100');
+      await ctx.db
+        .insert(tradingAccounts)
+        .values({ userId: client, mt5Login: '500010', environment: 'live' });
+
+      const result = await commission.ingestAndAccrue({
+        mt5Ticket: 'T-CEILING-MAX',
+        mt5Login: '500010',
+        symbol: 'EURUSD',
+        volume: '1',
+        spread: '2.0',
+        closedAt: CLOSED_AT,
+      });
+
+      expect(result.accruals).toHaveLength(1);
+      expect(result.accruals[0].amount).toBe('2.00000000');
+    });
+
+    it('REFUSES a leg larger than the spread it is a share of', async () => {
+      /*
+       * The D-11 signature, and the case the absolute ceiling cannot catch. A
+       * tight-spread deal with a points-vs-currency error produces a commission
+       * that is nonsense relative to the deal yet nowhere near the absolute cap
+       * of 1000 — so it would accrue, mature, confirm and pay, with no clawback.
+       *
+       * Simulated at the only seam a test can reach without a bad unit: a spread
+       * of zero, where any positive leg exceeds the revenue it derives from.
+       */
+      const client = await ibWithProgram('impossible', '100', '100');
+      await ctx.db
+        .insert(tradingAccounts)
+        .values({ userId: client, mt5Login: '500011', environment: 'live' });
+
+      const result = await commission.ingestAndAccrue({
+        mt5Ticket: 'T-CEILING-ZERO',
+        mt5Login: '500011',
+        symbol: 'EURUSD',
+        volume: '1',
+        spread: '0',
+        closedAt: CLOSED_AT,
+      });
+
+      // A zero-spread deal pays nothing rather than something: there is no
+      // revenue to share, so the engine must not invent any.
+      expect(result.accruals).toHaveLength(0);
+    });
+  });
+
   it('a client with no attribution accrues nothing', async () => {
     const direct = await makeUser('direct@test.local');
     await ctx.db

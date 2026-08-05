@@ -12,6 +12,7 @@ import {
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
 import { WalletService } from '../wallet/wallet.service';
 import { IbNode, availableAt, calculate, resolveChain } from './commission';
+import type { CommissionMethod } from './programs.service';
 import Decimal from 'decimal.js';
 import { MoneyRuleError } from '../../common/errors/domain-errors';
 import { MoneyLimits } from '../../config/money-limits';
@@ -118,17 +119,61 @@ export class CommissionService {
    * Refuses an accrual set that cannot be arithmetically plausible.
    *
    * Two ceilings, because one alone scales badly: an absolute cap catches a
-   * unit error on a small deal, and a share-of-notional cap catches one on a
-   * large deal where the absolute number still looks unremarkable.
+   * unit error on a small deal, and a relative one catches it on a large deal
+   * where the absolute number still looks unremarkable.
    */
   private assertWithinBounds(
     deal: { id: string; mt5Ticket: string; volume: string; spread: string },
     accruals: readonly { ibUserId: string; level: number; amount: string }[],
+    method: CommissionMethod,
   ): void {
     const absoluteMax = this.limits.maxCommissionPerDeal();
 
+    /*
+     * The relative ceiling, as a multiple of the deal's own spread revenue.
+     *
+     * Only for `spread_share`: it is the one method whose output is derived from
+     * the spread, so it is the one where a ratio to spread revenue means
+     * anything. `per_lot` scales with volume and `fixed_per_deal` is flat — on a
+     * tight-spread deal either can legitimately exceed any such ratio, and
+     * refusing those would be a backstop firing on correct data. The absolute
+     * ceiling above covers both.
+     *
+     * This existed as a config value with no call site while the comment here
+     * claimed two ceilings were enforced, so the D-11 backstop was half of what
+     * it read as.
+     */
+    const spreadRevenue = new Decimal(deal.spread).times(deal.volume);
+    const relativeMax =
+      method === 'spread_share'
+        ? spreadRevenue.times(this.limits.maxCommissionShareOfDeal())
+        : null;
+
     for (const accrual of accruals) {
       const amount = new Decimal(accrual.amount);
+
+      if (relativeMax !== null && spreadRevenue.isPositive() && amount.greaterThan(relativeMax)) {
+        const message =
+          `Refusing accrual for deal ${deal.mt5Ticket}: level ${accrual.level} commission ` +
+          `${accrual.amount} exceeds ${relativeMax.toString()}, the whole spread revenue of ` +
+          `the deal (${deal.spread} × ${deal.volume}). A spread-share leg cannot exceed the ` +
+          'spread it is a share OF, so this is a unit error (DECISIONS D-11) rather than a ' +
+          'large trade. Nothing has been accrued; the deal is re-ingestible once corrected.';
+        raiseAlert(
+          this.logger,
+          ALERT_KINDS.COMMISSION_CEILING_BREACH,
+          'page',
+          `Accrual refused for deal ${deal.mt5Ticket}: ${accrual.amount} exceeds spread revenue`,
+          {
+            mt5Ticket: deal.mt5Ticket,
+            level: accrual.level,
+            amount: accrual.amount,
+            spreadRevenue: spreadRevenue.toString(),
+          },
+        );
+        this.logger.error(message);
+        throw new MoneyRuleError(message);
+      }
 
       if (amount.greaterThan(absoluteMax)) {
         const message =
@@ -239,13 +284,13 @@ export class CommissionService {
      * 100, every accrual is wrong by a factor of 100 — and Phase 1 has no
      * clawback, so a wrong number that reaches `confirmed` is paid out.
      *
-     * So a leg that exceeds the absolute ceiling REFUSES rather than clamping.
+     * So a leg that exceeds either ceiling REFUSES rather than clamping.
      * Clamping would write a wrong number that looks deliberate and is
      * indistinguishable in the ledger from a correct one. Refusing leaves the
      * deal un-accrued and loud — a problem someone fixes, not a number someone
      * trusts. The sweep re-ingests it once the configuration is corrected.
      */
-    this.assertWithinBounds(deal, result.accruals);
+    this.assertWithinBounds(deal, result.accruals, program.method);
 
     const matureAt = availableAt(deal.closedAt, program.settlementWindowHours);
     const written = [];

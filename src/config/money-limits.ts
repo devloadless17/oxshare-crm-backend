@@ -71,13 +71,29 @@ export class MoneyLimits {
   }
 
   /**
-   * And a relative ceiling, because an absolute one alone scales badly.
+   * A relative ceiling, because an absolute one alone scales badly: it catches a
+   * unit error on a small deal but not on a large one, where 100× wrong can
+   * still look unremarkable next to a fixed cap.
    *
-   * Commission is a share of the spread, which is a small fraction of notional.
-   * A leg worth more than this share of the deal's own volume-derived value is
-   * arithmetically impossible under any sane program.
+   * Expressed as a multiple of the deal's SPREAD REVENUE (`spread × volume`),
+   * and applied only to the `spread_share` method — the only one where the
+   * commission is derived from the spread at all. `per_lot` multiplies by volume
+   * and `fixed_per_deal` is a flat amount; for those, "a share of the deal" has
+   * no meaning, and a small-spread deal would breach any such ratio while being
+   * perfectly correct. The absolute ceiling covers them.
+   *
+   * The default is 1, not a fraction, and that is deliberate. `ProgramsService`
+   * permits `commissionValue` up to 100% for spread_share and `l1Share + l2Share`
+   * up to 100%, so the largest LEGITIMATE leg is exactly the whole spread
+   * revenue. Anything above that is not an aggressive commercial deal, it is
+   * arithmetically impossible — which is precisely the D-11 signature, where a
+   * points-vs-currency mix-up inflates the result by orders of magnitude.
+   *
+   * A tighter default would refuse configurations the validator explicitly
+   * allows, and a backstop that fires on correct data is one somebody switches
+   * off.
    */
   maxCommissionShareOfDeal(): Decimal {
-    return this.decimal('COMMISSION_MAX_SHARE_OF_DEAL', '0.5');
+    return this.decimal('COMMISSION_MAX_SHARE_OF_DEAL', '1');
   }
 }

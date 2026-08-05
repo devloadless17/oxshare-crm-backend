@@ -298,4 +298,42 @@ describe('R-5.1 / §12.4 money bounds', () => {
     expect(plausible.lessThan(limits.maxCommissionPerDeal())).toBe(true);
     expect(hundredFold.greaterThan(limits.maxCommissionPerDeal())).toBe(true);
   });
+
+  /*
+   * The RELATIVE ceiling, which existed as a config value with no call site
+   * while the comment beside it claimed two ceilings were enforced.
+   *
+   * Its default is 1 — the whole spread revenue — rather than a fraction, and
+   * that is the load-bearing decision. `ProgramsService.validate` permits
+   * `commissionValue` up to 100% on a spread-share program and `l1Share + l2Share`
+   * up to 100%, so the largest LEGITIMATE leg is exactly `spread × volume`. A
+   * tighter default would refuse configurations the validator explicitly allows,
+   * and a backstop that fires on correct data is one somebody switches off.
+   */
+  it('sits exactly at the largest leg a valid program can produce', () => {
+    // spread 2.0 × volume 1.0 = 2.0 of spread revenue. The maximum a program may
+    // pay one leg is all of it: commissionValue 100%, l1Share 100%.
+    const spreadRevenue = new Decimal('2.0').times('1.0');
+    const largestLegal = spreadRevenue.times(1);
+    const ceiling = spreadRevenue.times(limits.maxCommissionShareOfDeal());
+
+    expect(largestLegal.greaterThan(ceiling)).toBe(false);
+  });
+
+  it('catches a spread-unit error that the absolute ceiling would miss', () => {
+    // The gap the relative ceiling exists to close: on a small deal a 100x error
+    // stays under the absolute cap of 1000 and would accrue, confirm and pay.
+    const spreadRevenue = new Decimal('0.02').times('1.0');
+    const hundredFold = spreadRevenue.times(0.3).times(100);
+
+    expect(hundredFold.lessThan(limits.maxCommissionPerDeal())).toBe(true);
+    expect(hundredFold.greaterThan(spreadRevenue.times(limits.maxCommissionShareOfDeal()))).toBe(
+      true,
+    );
+  });
+
+  it('is a positive, finite multiple like every other bound', () => {
+    const value = limits.maxCommissionShareOfDeal();
+    expect(value.isFinite() && value.isPositive()).toBe(true);
+  });
 });
