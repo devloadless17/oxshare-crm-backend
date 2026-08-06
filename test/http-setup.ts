@@ -224,6 +224,14 @@ function buildSession(
  * mint itself a token the application would never have issued — the reason
  * these tests are worth more than the guard unit tests they sit beside.
  */
+/**
+ * What these specs look like from the server's side.
+ *
+ * Recognisable on purpose: a `user_agent` column full of this string in a real
+ * database means seed or test traffic reached it.
+ */
+export const TEST_USER_AGENT = 'oxshare-e2e-suite/1.0 (supertest)';
+
 export async function actingAs(
   ctx: HttpTestContext,
   surfaceName: SurfaceName,
@@ -233,6 +241,20 @@ export async function actingAs(
   const res = await request(ctx.server)
     .post(surface.loginPath)
     .set('Origin', surface.origin)
+    /*
+     * A browser always sends one; supertest never does.
+     *
+     * The session list stores whatever the login request carried, so with no
+     * header there is nothing to store and `user_agent` is honestly null — which
+     * made "captures what the request looked like" fail against a feature that
+     * works. The gap was in the harness, not the code: every session these specs
+     * create was unlike every session a real client creates.
+     *
+     * Set here rather than per spec because it is a property of being a client
+     * at all, and the next spec to assert on device fingerprints should not have
+     * to rediscover this.
+     */
+    .set('User-Agent', TEST_USER_AGENT)
     .send(credentials);
 
   if (res.status !== 200 && res.status !== 201) {
