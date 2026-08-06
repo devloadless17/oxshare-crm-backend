@@ -9,6 +9,8 @@ export interface Role {
   name: string;
   description?: string;
   permissions: string[];
+  /** RBAC-03: client fields holders of this role may not see. See schema.ts. */
+  maskedFields: string[];
   isSystem: boolean;
   createdAt: Date;
 }
@@ -49,7 +51,7 @@ export class RolesStore {
 
   async update(
     id: string,
-    patch: Partial<Pick<Role, 'name' | 'description' | 'permissions'>>,
+    patch: Partial<Pick<Role, 'name' | 'description' | 'permissions' | 'maskedFields'>>,
   ): Promise<Role | undefined> {
     const [row] = await this.db.update(roles).set(patch).where(eq(roles.id, id)).returning();
     return row ? toRole(row) : undefined;
@@ -78,5 +80,38 @@ export class RolesStore {
       if (role) return role.permissions;
     }
     return snapshot;
+  }
+
+  /**
+   * The client fields an admin may NOT see right now — RBAC-03.
+   *
+   * A deliberate sibling of `resolvePermissions`, in the same file, resolving
+   * live for the same reason: adding `client.phone` to the support role must
+   * blind every support agent on their next request, with no re-login. Two
+   * methods side by side cannot drift; two mechanisms in two files will.
+   *
+   * The OVERRIDE semantics differ from permissions above, and the difference is
+   * the point. `override` is `admins.masked_fields`, which is NULLABLE:
+   *
+   *   - `undefined` → inherit the role. The common case, and why the column is
+   *     not `NOT NULL DEFAULT '[]'`.
+   *   - an array (including `[]`) → this person's own answer, pinned.
+   *
+   * Permissions use `roleId` XOR `permissions`, so a per-person permission
+   * grant detaches the admin from their role entirely. Copying that here would
+   * mean un-masking ONE field for ONE person silently stops them receiving role
+   * permission updates — a security regression performed for a UI convenience.
+   * Inherit-by-default keeps the two concerns independent.
+   */
+  async resolveMaskedFields(
+    roleId: string | undefined,
+    override: string[] | undefined,
+  ): Promise<string[]> {
+    if (override !== undefined) return override;
+    if (roleId) {
+      const role = await this.findById(roleId);
+      if (role) return role.maskedFields;
+    }
+    return [];
   }
 }

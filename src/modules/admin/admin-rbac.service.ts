@@ -12,6 +12,10 @@ import {
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan, normalizePermissionKey } from '../../common/security/actor';
+import { ClientFieldsService } from './client-fields.service';
+import { ClientTagsStore } from '../../store/client-tags.store';
+import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
+import type { AuthenticatedAdmin } from './guards/admin.guard';
 
 /** `config/permissions.json`, keyed by module. The single grantable vocabulary. */
 type PermissionCatalog = Record<
@@ -35,6 +39,9 @@ export class AdminRbacService {
     private readonly invites: InvitesStore,
     private readonly roles: RolesStore,
     private readonly audit: AdminAuditService,
+    private readonly clientFields: ClientFieldsService,
+    private readonly clientTags: ClientTagsStore,
+    private readonly scopes: AdminClientScopesStore,
   ) {}
 
   // ─── RBAC: permission catalog ─────────────────────────────────────────────
@@ -128,6 +135,89 @@ export class AdminRbacService {
       );
     }
   }
+
+  /**
+   * The anti-escalation rule for FIELD MASKS — `assertGrantable`'s mirror.
+   *
+   * Permissions are a GRANT list, so the rule there is "you cannot give what
+   * you do not hold": a subset check. A mask is a RESTRICTION list, so the same
+   * principle inverts into a SUPERSET check — you cannot give somebody
+   * VISIBILITY you do not have yourself.
+   *
+   * Concretely: an administrator who cannot see `client.phone` must not be able
+   * to create a role that can. Without this, masking is trivially defeated —
+   * make a role that hides nothing, assign yourself to it, and read the column
+   * you were denied. The escalation is one screen and needs no exploit.
+   *
+   * A master admin holds an empty mask, so the loop below is vacuous for them
+   * and they may configure anything. That is FR-RBAC-01's "without exception".
+   *
+   * Synchronous, unlike `assertGrantable` — but every caller still treats the
+   * two the same way, so if this ever needs a lookup, make it async and let the
+   * compiler find the call sites rather than adding a lookup inside a sync
+   * function. A missing `await` on `assertGrantable` once shipped a privilege
+   * escalation; that lesson applies here whether or not the signature has.
+   */
+  assertMaskAllowed(actor: Admin & { fieldMask?: readonly string[] }, maskedFields: string[]) {
+    // Rejects unknown keys and keys the catalog marks unmaskable, each with its
+    // own message — a typo and "you cannot hide the status column" call for
+    // different fixes.
+    this.clientFields.assertMaskable(maskedFields);
+
+    const actorMask = actor.fieldMask ?? [];
+    if (actorMask.length === 0) return;
+
+    const proposed = new Set(this.clientFields.expand(maskedFields));
+    const wouldReveal = actorMask.filter((key) => !proposed.has(key));
+    if (wouldReveal.length > 0) {
+      throw new AuthorizationError(
+        `You cannot un-hide fields that are hidden from you: ${wouldReveal.join(', ')}.`,
+      );
+    }
+  }
+
+  /**
+   * The anti-escalation rule for TERRITORY.
+   *
+   * A subset check, like permissions and unlike masks: a scope is a grant of
+   * visibility, so "you cannot give what you do not hold" applies directly. An
+   * administrator restricted to the Levant desk must not be able to put someone
+   * else on the EMEA desk — that would be granting a view of clients they
+   * cannot see themselves, and a second-hand one is no different from a direct
+   * one.
+   *
+   * The EMPTY case is the one worth reading twice. `[]` means UNRESTRICTED, so
+   * a scoped actor handing somebody an empty scope is granting access to every
+   * client in the system — the largest possible widening, expressed as the
+   * smallest possible value. It is refused explicitly rather than falling
+   * through the subset check, which `[] ⊆ anything` would pass.
+   */
+  async assertScopable(actor: AuthenticatedAdmin, tagIds: string[]) {
+    const existing = await this.clientTags.findByIds(tagIds);
+    const known = new Set(existing.map((t) => t.id));
+    const unknown = tagIds.filter((id) => !known.has(id));
+    if (unknown.length > 0) {
+      throw new ValidationError(`Unknown client tag(s): ${unknown.join(', ')}.`);
+    }
+
+    if (actor.clientScope.unrestricted) return;
+
+    if (tagIds.length === 0) {
+      throw new AuthorizationError(
+        'You cannot give an administrator an empty client scope, because an empty scope ' +
+          'means UNRESTRICTED — every client in the system, including those outside your own.',
+      );
+    }
+
+    const held = new Set(actor.clientScope.tagIds);
+    const beyond = tagIds.filter((id) => !held.has(id));
+    if (beyond.length > 0) {
+      const labels = existing.filter((t) => beyond.includes(t.id)).map((t) => t.label);
+      throw new AuthorizationError(
+        `You cannot grant client scope you do not hold yourself: ${labels.join(', ')}.`,
+      );
+    }
+  }
   // ─── RBAC: roles ──────────────────────────────────────────────────────────
   async listRoles() {
     return await this.roles.findAll();
@@ -137,18 +227,29 @@ export class AdminRbacService {
     description: string | undefined,
     permissions: string[],
     actor: Admin,
+    maskedFields: string[] = [],
   ) {
     if (await this.roles.findByName(name)) {
       throw new ConflictError('A role with this name already exists.');
     }
     await this.assertGrantable(actor, permissions);
-    const role = await this.roles.create({ name, description, permissions });
-    this.audit.record(actor.id, 'role.create', 'role', role.id, { name, permissions });
+    this.assertMaskAllowed(actor, maskedFields);
+    const role = await this.roles.create({ name, description, permissions, maskedFields });
+    this.audit.record(actor.id, 'role.create', 'role', role.id, {
+      name,
+      permissions,
+      maskedFields,
+    });
     return role;
   }
   async updateRole(
     id: string,
-    patch: { name?: string; description?: string; permissions?: string[] },
+    patch: {
+      name?: string;
+      description?: string;
+      permissions?: string[];
+      maskedFields?: string[];
+    },
     actor: Admin,
   ) {
     const role = await this.roles.findById(id);
@@ -158,10 +259,16 @@ export class AdminRbacService {
       throw new ConflictError('A role with this name already exists.');
     }
     if (patch.permissions) await this.assertGrantable(actor, patch.permissions);
+    if (patch.maskedFields) this.assertMaskAllowed(actor, patch.maskedFields);
     const updated = await this.roles.update(id, patch);
     this.audit.record(actor.id, 'role.update', 'role', id, {
       before: role.permissions,
       after: updated?.permissions,
+      // Recorded separately because a mask change and a permission change are
+      // different events and answering "who could see phone numbers in March"
+      // from a diff of `permissions` is impossible.
+      maskBefore: role.maskedFields,
+      maskAfter: updated?.maskedFields,
     });
     return updated;
   }
@@ -194,18 +301,57 @@ export class AdminRbacService {
   }
   async updateAdmin(
     id: string,
-    patch: { name?: string; roleId?: string; permissions?: string[] },
-    actor: Admin,
+    patch: {
+      name?: string;
+      roleId?: string;
+      permissions?: string[];
+      /** RBAC-03 per-person override. `null` clears it — back to inheriting the role. */
+      maskedFields?: string[] | null;
+      /** RBAC-03 territory. An empty array means unrestricted. */
+      scopedTagIds?: string[];
+    },
+    actor: AuthenticatedAdmin,
   ) {
     const admin = await this.admins.findById(id);
     if (!admin) throw new NotFoundError('Admin not found.');
-    if (admin.role === 'master_admin' && (patch.roleId || patch.permissions)) {
+
+    /*
+     * VISIBILITY is access, so it lives under the same three guards as
+     * permissions rather than beside them.
+     *
+     * Which clients an administrator can see, and which of their fields, decide
+     * what that administrator can do just as directly as a permission key does.
+     * Leaving these three checks to cover `roleId`/`permissions` only would
+     * mean the master admin's territory is editable, and — far worse — that
+     * anyone could widen their OWN by editing themselves, which is a one-request
+     * privilege escalation with no permission change to notice in the audit log.
+     */
+    const touchesAccess = Boolean(
+      patch.roleId ||
+      patch.permissions ||
+      patch.maskedFields !== undefined ||
+      patch.scopedTagIds !== undefined,
+    );
+
+    if (admin.role === 'master_admin' && touchesAccess) {
       throw new ValidationError('The master admin’s permissions cannot be changed.');
     }
     // Nobody rewrites their own access — not even a harmless-looking subset;
     // it keeps every permission change attributable to someone else's decision.
-    if (actor.id === id && (patch.roleId || patch.permissions)) {
-      throw new AuthorizationError('You cannot change your own role or permissions.');
+    if (actor.id === id && touchesAccess) {
+      throw new AuthorizationError('You cannot change your own role, permissions or visibility.');
+    }
+
+    /*
+     * A SEPARATE permission from `users.edit`, deliberately.
+     *
+     * Reusing `users.edit` would mean anyone who can rename an administrator can
+     * also widen that administrator's view of the entire client base. Those are
+     * not the same size of act, and the permission matrix should not imply they
+     * are.
+     */
+    if (patch.maskedFields !== undefined || patch.scopedTagIds !== undefined) {
+      assertActorCan(actor, 'users.scope', "change an administrator's client visibility");
     }
 
     let update: Partial<Admin> = { name: patch.name ?? admin.name };
@@ -219,10 +365,35 @@ export class AdminRbacService {
       update = { ...update, roleId: undefined, permissions: patch.permissions };
     }
 
+    if (patch.maskedFields !== undefined) {
+      // `null` clears the override; an array pins this person's own answer.
+      if (patch.maskedFields !== null) this.assertMaskAllowed(actor, patch.maskedFields);
+      update = { ...update, maskedFields: patch.maskedFields ?? undefined };
+    }
+
+    if (patch.scopedTagIds !== undefined) {
+      await this.assertScopable(actor, patch.scopedTagIds);
+    }
+
     const updated = (await this.admins.update(id, update))!;
+
+    // After the admin row, so a rejected mask or permission change does not
+    // leave a territory applied to an admin whose update failed.
+    if (patch.scopedTagIds !== undefined) {
+      await this.scopes.replace(id, patch.scopedTagIds, actor.id);
+    }
+
     this.audit.record(actor.id, 'admin.update', 'admin', id, {
-      before: { permissions: admin.permissions, roleId: admin.roleId },
-      after: { permissions: updated.permissions, roleId: updated.roleId },
+      before: { permissions: admin.permissions, roleId: admin.roleId, mask: admin.maskedFields },
+      after: {
+        permissions: updated.permissions,
+        roleId: updated.roleId,
+        mask: updated.maskedFields,
+      },
+      // Recorded separately from permissions: "who could see which clients in
+      // March" is not answerable from a permission diff, and it is exactly the
+      // question a compliance review asks after an incident.
+      ...(patch.scopedTagIds === undefined ? {} : { scopedTagIds: patch.scopedTagIds }),
     });
     return await this.sanitize(updated);
   }
@@ -288,6 +459,22 @@ export class AdminRbacService {
    * may leave makes forgetting fail safe instead of fail open.
    */
   async sanitize(admin: Admin) {
+    const isMaster = admin.role === 'master_admin';
+
+    const [permissions, maskedFields, scopedTags] = await Promise.all([
+      this.roles.resolvePermissions(admin.roleId, admin.permissions),
+      /*
+       * The RESOLVED mask — what this administrator actually cannot see right
+       * now, role and override combined. The directory needs the effective
+       * answer, not the raw column, or a row would read "nothing hidden" for
+       * someone whose role hides four fields.
+       */
+      isMaster
+        ? Promise.resolve([])
+        : this.roles.resolveMaskedFields(admin.roleId, admin.maskedFields),
+      isMaster ? Promise.resolve([]) : this.scopes.describeFor(admin.id),
+    ]);
+
     return {
       id: admin.id,
       email: admin.email,
@@ -296,7 +483,16 @@ export class AdminRbacService {
       roleId: admin.roleId,
       status: admin.status,
       createdAt: admin.createdAt,
-      permissions: await this.roles.resolvePermissions(admin.roleId, admin.permissions),
+      permissions,
+      maskedFields,
+      /*
+       * `null` vs an array is the difference between "follows the role" and
+       * "has its own answer", and the edit screen cannot offer "put them back
+       * on their role" without knowing which. `maskedFields` above is the
+       * resolved view; this is the stored one.
+       */
+      maskedFieldsOverride: isMaster ? null : (admin.maskedFields ?? null),
+      scopedTags,
     };
   }
 }

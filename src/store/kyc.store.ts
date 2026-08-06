@@ -3,6 +3,11 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { kycSubmissionAttempts, kycSubmissions, users } from '../database/schema';
+import {
+  clientScopePredicate,
+  UNRESTRICTED,
+  type ClientScope,
+} from '../common/security/client-scope';
 
 export type KycStatus =
   'not_started' | 'in_progress' | 'submitted' | 'under_review' | 'approved' | 'rejected';
@@ -207,10 +212,23 @@ export class KycStore {
    * Admin queue: submissions joined to their user, filtered and paginated in
    * SQL, with per-status counts computed by the database in one grouped query.
    */
-  async findPageWithUsers(filter: { status?: KycStatus; q?: string; page: number; limit: number }) {
+  async findPageWithUsers(filter: {
+    status?: KycStatus;
+    q?: string;
+    page: number;
+    limit: number;
+    /** Row-level visibility. Defaults to unrestricted; admin callers pass the actor's. */
+    scope?: ClientScope;
+  }) {
     const db = this.db;
     const conditions: SQL[] = [];
     if (filter.status) conditions.push(eq(kycSubmissions.status, filter.status));
+
+    // In the WHERE clause, so an out-of-scope submission never enters the
+    // result set — and therefore cannot be missed by a later projection, count
+    // or export that forgot to filter. See common/security/client-scope.ts.
+    const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, kycSubmissions.userId);
+    if (scoped) conditions.push(scoped);
     if (filter.q) {
       const term = `%${filter.q}%`;
       conditions.push(
@@ -366,6 +384,57 @@ export class KycStore {
       reviewedBy: r.reviewedBy ?? undefined,
       archivedAt: r.archivedAt,
     }));
+  }
+
+  /**
+   * The client a KYC document belongs to, live submission or archived attempt.
+   *
+   * Exists so the uploads controller can apply the CLIENT SCOPE to an admin's
+   * document read. That route takes a filename, not a client id, so there was
+   * nothing to scope against: a scoped administrator who held a filename from a
+   * screenshot, a stale tab or a shared ticket could fetch the passport of a
+   * client they are not allowed to see, and the read would even be audited as
+   * legitimate.
+   *
+   * Matched with a jsonb containment test rather than by loading submissions and
+   * comparing in JavaScript — the filename is caller-supplied and the answer
+   * decides whether PII is served, so the comparison belongs in the query where
+   * a later code path cannot skip it.
+   *
+   * Both tables are searched, and the second is not optional: an archived
+   * attempt keeps the documents it was decided on, so a rejected-and-replaced
+   * passport is still that client's. Checking only the live row would make an
+   * out-of-scope admin's read of a superseded document fall through to
+   * "unowned" and be allowed.
+   */
+  async ownerOfDocument(fileName: string): Promise<string | undefined> {
+    const needle = `%${fileName}%`;
+
+    const [live] = await this.db
+      .select({ userId: kycSubmissions.userId })
+      .from(kycSubmissions)
+      .where(
+        or(
+          sql`${kycSubmissions.document}::text ILIKE ${needle}`,
+          sql`${kycSubmissions.selfie}::text ILIKE ${needle}`,
+          sql`${kycSubmissions.addressProof}::text ILIKE ${needle}`,
+        ),
+      )
+      .limit(1);
+    if (live) return live.userId;
+
+    const [archived] = await this.db
+      .select({ userId: kycSubmissionAttempts.userId })
+      .from(kycSubmissionAttempts)
+      .where(
+        or(
+          sql`${kycSubmissionAttempts.document}::text ILIKE ${needle}`,
+          sql`${kycSubmissionAttempts.selfie}::text ILIKE ${needle}`,
+          sql`${kycSubmissionAttempts.addressProof}::text ILIKE ${needle}`,
+        ),
+      )
+      .limit(1);
+    return archived?.userId;
   }
 
   /**

@@ -21,14 +21,55 @@ import {
   TOKEN_KIND,
 } from '../../../common/security/token-audience';
 import { normalizePermissionKey } from '../../../common/security/actor';
-
-type AdminRequest = Request & { admin?: Admin };
+import { AdminClientScopesStore } from '../../../store/admin-client-scopes.store';
+import { RefreshTokensService } from '../../../common/security/refresh-tokens.service';
+import { ClientFieldsService } from '../client-fields.service';
+import { UNRESTRICTED, type ClientScope } from '../../../common/security/client-scope';
+import { EMPTY_MASK, type FieldMask } from '../../../common/security/field-mask';
 
 /**
- * Cookie → admin, with permissions resolved live.
+ * Whether this admin is exempt from scoping and masking entirely.
+ *
+ * Checks BOTH the role column and the `*` wildcard. They agree today, and the
+ * check is cheap; if they ever diverge, the safe reading of "is this the
+ * unrestricted account" is the permissive one, because the alternative is a
+ * master admin locked out of the client base by a stale scope row.
+ */
+function isMaster(admin: Admin, permissions: readonly string[]): boolean {
+  return admin.role === 'master_admin' || permissions.includes('*');
+}
+
+/**
+ * An admin as every downstream service should see them: identity plus the
+ * three things that decide what they may do and see, all resolved LIVE on this
+ * request.
+ *
+ * The type exists to make forgetting impossible rather than merely unlikely.
+ * A service method that filters by client scope, or strips masked fields,
+ * declares `actor: AuthenticatedAdmin` — and TypeScript then refuses a call
+ * site that hands it a bare `Admin` from a store. The plumbing is enforced by
+ * the compiler; the coverage tests enforce that the plumbing is used.
+ */
+export interface AuthenticatedAdmin extends Admin {
+  /** Live from the role — editing a role takes effect on the next request. */
+  permissions: string[];
+  /** Which clients this admin may see at all. Empty scope = unrestricted. */
+  clientScope: ClientScope;
+  /** Client fields this admin may not see, already expanded with aliases. */
+  fieldMask: FieldMask;
+}
+
+type AdminRequest = Request & { admin?: AuthenticatedAdmin };
+
+/**
+ * Cookie → admin, with permissions, client scope and field mask resolved live.
  *
  * Shared by all three guards below; a service so the stores arrive by
  * injection rather than being reached for from a module-level singleton.
+ *
+ * All three resolve HERE, in one place, on the request that will use them.
+ * Resolving them per call site would mean a new endpoint could reasonably
+ * resolve two of the three and look complete.
  */
 @Injectable()
 export class AdminAuthenticator {
@@ -37,9 +78,12 @@ export class AdminAuthenticator {
     private readonly config: ConfigService,
     private readonly admins: AdminsStore,
     private readonly roles: RolesStore,
+    private readonly scopes: AdminClientScopesStore,
+    private readonly clientFields: ClientFieldsService,
+    private readonly refreshTokens: RefreshTokensService,
   ) {}
 
-  async authenticate(req: AdminRequest): Promise<Admin> {
+  async authenticate(req: AdminRequest): Promise<AuthenticatedAdmin> {
     const token = readSessionCookie(
       req.cookies as Record<string, string | undefined> | undefined,
       COOKIE_BASES.adminAccess,
@@ -47,8 +91,14 @@ export class AdminAuthenticator {
     if (!token) throw new UnauthorizedException('Admin authentication required.');
 
     let adminId: string;
+    let familyId: string | undefined;
     try {
-      const payload = this.jwt.verify<{ sub: string; role: string; typ?: string }>(token, {
+      const payload = this.jwt.verify<{
+        sub: string;
+        role: string;
+        typ?: string;
+        fam?: string;
+      }>(token, {
         secret: this.config.getOrThrow<string>('ADMIN_JWT_SECRET'),
         // R-3.1: a portal token must be worthless here, and vice versa. The
         // distinct secrets already ensure that; this survives them being mixed up.
@@ -65,8 +115,21 @@ export class AdminAuthenticator {
         throw new UnauthorizedException('Invalid or expired admin token.');
       }
       adminId = payload.sub;
-    } catch {
-      throw new UnauthorizedException('Invalid or expired admin token.');
+      familyId = payload.fam;
+    } catch (error) {
+      /*
+       * An EXPIRED token is not an invalid one, and the difference is the whole
+       * reason the client can tell "renew" from "sign out" (R-2.3 / the
+       * `TOKEN_EXPIRED` code). Every 401 used to look identical here, so the
+       * admin console had to guess, and guessed wrong in both directions.
+       *
+       * `jsonwebtoken` names the expiry case, and only that case.
+       */
+      const expired = error instanceof Error && error.name === 'TokenExpiredError';
+      throw new UnauthorizedException({
+        message: expired ? 'Admin session has expired.' : 'Invalid or expired admin token.',
+        code: expired ? 'TOKEN_EXPIRED' : 'SESSION_REVOKED',
+      });
     }
 
     const admin = await this.admins.findById(adminId);
@@ -84,13 +147,76 @@ export class AdminAuthenticator {
      * exactly this for portal users since it was written.
      */
     if (admin.status === 'suspended') {
-      throw new UnauthorizedException('This administrator account has been suspended.');
+      throw new UnauthorizedException({
+        message: 'This administrator account has been suspended.',
+        code: 'SESSION_REVOKED',
+      });
+    }
+
+    /*
+     * Has this LOGIN been ended? — the check the `fam` claim exists for.
+     *
+     * Without it, revocation reached the refresh family and stopped there: the
+     * access token minted from a now-dead login went on authenticating every
+     * request until it expired on its own. So "sign out that device" was a
+     * promise kept fifteen minutes late, and refresh-token reuse detection —
+     * which exists precisely to lock an attacker out NOW — left the attacker's
+     * access token working for the rest of its life.
+     *
+     * The portal has done this since 6 Aug (`jwt.strategy.ts`). This surface can
+     * approve payouts and did not.
+     *
+     * A token with no `fam` predates this change and cannot be checked, so it is
+     * refused rather than trusted: failing open here would mean the control does
+     * not exist for exactly the sessions issued before it shipped.
+     */
+    if (!familyId) {
+      throw new UnauthorizedException({
+        message: 'Session has been revoked. Please log in again.',
+        code: 'SESSION_REVOKED',
+      });
+    }
+    if (await this.refreshTokens.familyIsRevoked('admin', familyId)) {
+      throw new UnauthorizedException({
+        message: 'Session has been revoked. Please log in again.',
+        code: 'SESSION_REVOKED',
+      });
     }
     // Role-derived permissions resolve live: editing a role takes effect on the
     // next request from every admin holding it — no re-login, no stale grants.
+    const permissions = await this.roles.resolvePermissions(admin.roleId, admin.permissions);
+
+    /*
+     * A master admin is unrestricted, and this branch is BEFORE the lookups
+     * rather than after them.
+     *
+     * FR-RBAC-01 is "the full set of administrative permissions, with access to
+     * every administration section and operation WITHOUT EXCEPTION". Reading a
+     * scope or a mask for them and then ignoring it would leave a stored value
+     * that looks meaningful, and the next person to add an enforcement point
+     * would reasonably honour it. There is nothing to honour, so there is
+     * nothing to read.
+     */
+    if (isMaster(admin, permissions)) {
+      return { ...admin, permissions, clientScope: UNRESTRICTED, fieldMask: EMPTY_MASK };
+    }
+
+    // Both resolve live, for the same reason permissions do: revoking a
+    // territory or hiding a field must take effect on the next request, not
+    // whenever a 15-minute token happens to expire.
+    const [clientScope, storedMask] = await Promise.all([
+      this.scopes.scopeFor(admin.id),
+      this.roles.resolveMaskedFields(admin.roleId, admin.maskedFields),
+    ]);
+
     return {
       ...admin,
-      permissions: await this.roles.resolvePermissions(admin.roleId, admin.permissions),
+      permissions,
+      clientScope,
+      // Expanded here, once, so no enforcement point has to remember that
+      // hiding `client.phone` must also hide `personalInfo.phone` on the KYC
+      // screen — the bypass that would otherwise be one tab away.
+      fieldMask: this.clientFields.expand(storedMask),
     };
   }
 }

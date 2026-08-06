@@ -14,6 +14,7 @@ import {
 } from '../../common/errors/domain-errors';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
+import type { ClientScope } from '../../common/security/client-scope';
 
 /**
  * The user, as a REVIEWER may see them.
@@ -260,7 +261,15 @@ export class KycService {
   }
 
   // ─── Admin: list all (paginated, searchable, with per-status counts) ───────
-  async listAll(filter: { status?: KycStatus; q?: string; page?: number; limit?: number } = {}) {
+  async listAll(
+    filter: {
+      status?: KycStatus;
+      q?: string;
+      page?: number;
+      limit?: number;
+      scope?: ClientScope;
+    } = {},
+  ) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
 
@@ -269,7 +278,13 @@ export class KycService {
     // this.users.findById per row inside Promise.all — 1+N, which at 50K rows
     // fires 50,001 queries in a burst and can exhaust the pool that
     // WalletService.post() needs for its FOR UPDATE lock.
-    return this.kycStore.findPageWithUsers({ status: filter.status, q: filter.q, page, limit });
+    return this.kycStore.findPageWithUsers({
+      status: filter.status,
+      q: filter.q,
+      page,
+      limit,
+      scope: filter.scope,
+    });
   }
 
   // ─── Admin: get one ────────────────────────────────────────────────────────

@@ -208,13 +208,20 @@ export class AuthController {
       'worse for them than the nuisance it prevents.',
   )
   @Post('logout')
-  @UseGuards(JwtAuthGuard)
+  /*
+   * NO JwtAuthGuard, deliberately — see `AuthService.logoutFromRequest`.
+   *
+   * Behind the guard, an expired access token meant 401 and no cookies cleared,
+   * so a client returning to a backgrounded phone could not sign out at all.
+   * Identity comes from the fully-verified refresh cookie instead, and the
+   * cookies are cleared either way. Origin validation still applies.
+   */
   @HttpCode(HttpStatus.OK)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Logout — clears JWT cookies' })
   @ApiOkResponse({ type: MessageResponseDto })
-  logout(@Req() req: Request & { user: User }, @Res({ passthrough: true }) res: Response) {
-    return this.auth.logout(req.user.id, res);
+  logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    return this.auth.logoutFromRequest(req, res);
   }
 
   @Get('me')

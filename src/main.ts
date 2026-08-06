@@ -5,7 +5,7 @@ import { ErrorResponseDto } from './common/dto/error-response.dto';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { VALIDATION_PIPE_OPTIONS } from './common/validation.config';
-import { applyApiPrefix } from './common/api-prefix';
+import { applyApiPrefix, createHttpAdapter } from './common/api-prefix';
 import { JsonLogger } from './common/logging/json.logger';
 import { trustedProxyHops } from './common/security/client-ip';
 import { COOKIE_BASES } from './common/security/session-cookies';
@@ -20,7 +20,11 @@ async function bootstrap() {
 
   // rawBody: the MT5 bridge webhook verifies an HMAC over the exact bytes
   // received — re-serializing the parsed body would change them.
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+  // createHttpAdapter(): case-sensitive routing, applied at instance creation
+  // because Express reads that setting when it lazily builds its router on the
+  // first `app.use()` — setting it below `helmet` is a silent no-op. See
+  // common/api-prefix.ts for the bypass this closes.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, createHttpAdapter(), {
     rawBody: true,
     // JSON lines carrying the correlation id in production; readable text in
     // development.

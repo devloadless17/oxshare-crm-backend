@@ -5,11 +5,14 @@ import { v4 as uuidv4 } from 'uuid';
 import { UsersStore, User } from '../../store/users.store';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { EmailService } from '../email/email.service';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import {
   AuthenticationError,
   AuthorizationError,
   NotFoundError,
+  SessionReplayedError,
+  SessionRevokedError,
+  SessionSupersededError,
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { createHash, randomUUID } from 'crypto';
@@ -30,9 +33,11 @@ import {
   TOKEN_KIND,
 } from '../../common/security/token-audience';
 import {
+  COOKIE_BASES,
   clearLegacySessionCookies,
   clearSessionCookie,
   csrfCookieOptions,
+  readSessionCookie,
   sessionCookieNames,
   sessionCookieOptions,
 } from '../../common/security/session-cookies';
@@ -380,7 +385,19 @@ export class AuthService {
 
   // ─── Refresh ──────────────────────────────────────────────────────────────────
   async refreshFromToken(providedRefreshToken: string, res: Response, device?: DeviceFingerprint) {
-    if (!providedRefreshToken) throw new AuthenticationError('No refresh token provided.');
+    /*
+     * Every failure below is `SESSION_REVOKED` rather than a bare
+     * `UNAUTHENTICATED`, and they are deliberately NOT distinguished from one
+     * another: no refresh cookie, a bad signature and a thirty-day expiry all
+     * mean the same thing to a client — this session cannot be renewed, sign in
+     * again — and telling an unauthenticated caller WHICH of those it hit is a
+     * free tutorial on the ones it passed.
+     *
+     * The distinction that matters is with `TOKEN_EXPIRED`, which the guards
+     * answer for a merely stale ACCESS token and which means "renew, do not sign
+     * the user out".
+     */
+    if (!providedRefreshToken) throw new SessionRevokedError('No refresh token provided.');
 
     let userId: string;
     let jti: string | undefined;
@@ -398,25 +415,25 @@ export class AuthService {
       // Belt and braces: the separate refresh secret already makes an access
       // token fail here, but that protection is one env-var typo from gone.
       if (!isTokenKind(decoded, TOKEN_KIND.refresh)) {
-        throw new AuthenticationError('Invalid or expired refresh token.');
+        throw new SessionRevokedError('Invalid or expired refresh token.');
       }
       userId = decoded.sub;
       jti = decoded.jti;
     } catch {
-      throw new AuthenticationError('Invalid or expired refresh token.');
+      throw new SessionRevokedError('Invalid or expired refresh token.');
     }
 
     // No fallback: an unknown subject is a failed authentication. The previous
     // fallback to the seeded demo client turned any signed token into that
     // account's session.
     const user = await this.users.findById(userId);
-    if (!user) throw new AuthenticationError('User account not found.');
+    if (!user) throw new SessionRevokedError('User account not found.');
 
     // A token with no `jti` predates R-3.3 and has no row to judge. Refusing it
     // logs those sessions out once, which is the correct migration cost for a
     // credential that cannot be checked for replay.
     if (!jti) {
-      throw new AuthenticationError('Session has been revoked. Please log in again.');
+      throw new SessionRevokedError('Session has been revoked. Please log in again.');
     }
 
     /*
@@ -437,20 +454,31 @@ export class AuthService {
       // verify() has already revoked the family. The legitimate user and the
       // attacker get the same message, because which one this is, is exactly
       // what we cannot tell.
-      throw new AuthenticationError(
+      throw new SessionReplayedError(
         'This session has been ended for security reasons. Please log in again.',
       );
     }
-    if (verdict.outcome !== 'ok') {
-      throw new AuthenticationError('Session has been revoked. Please log in again.');
+    if (verdict.outcome !== 'ok' && verdict.outcome !== 'retried') {
+      throw new SessionRevokedError('Session has been revoked. Please log in again.');
     }
 
     if (user.status === 'suspended') {
       // Belt and braces: suspension also revokes every family, but a token
       // minted before that must not survive on this path either.
       await this.refreshTokens.revokeAllForSubject('portal', user.id);
-      throw new AuthenticationError('Your account has been suspended.');
+      throw new SessionRevokedError('Your account has been suspended.');
     }
+
+    /*
+     * Which row this rotation consumes.
+     *
+     * Normally the token that was presented. On a `retried` verdict the
+     * presented token was already consumed by a rotation whose response never
+     * reached the client, so we consume its SUCCESSOR instead — the replacement
+     * nobody ever received — and hand out a fresh pair. See `verify()` for why
+     * that is a retry rather than theft.
+     */
+    const jtiToRotate = verdict.outcome === 'retried' ? verdict.successorJti : jti;
 
     // The SAME family — rotation continues one login rather than starting one,
     // so the new access token must carry the id the old one did or revoking that
@@ -458,7 +486,7 @@ export class AuthService {
     const tokens = this.generateTokens(user, verdict.familyId);
     const rotated = await this.refreshTokens.rotate({
       surface: 'portal',
-      jti,
+      jti: jtiToRotate,
       familyId: verdict.familyId,
       subjectId: user.id,
       jtiNext: tokens.jti,
@@ -475,10 +503,20 @@ export class AuthService {
        */
       device,
     });
-    // Lost a race with a concurrent refresh using the same token. Handing out a
-    // second live session is exactly what the conditional update prevents.
+    /*
+     * Lost a race with a concurrent refresh using the same token. Handing out a
+     * second live session is exactly what the conditional update prevents.
+     *
+     * **The session is alive** — the winner rotated it, and the winner's cookies
+     * are already in this browser's jar, because two tabs share one. So this is
+     * `SESSION_SUPERSEDED`, not `SESSION_REVOKED`: the client should retry and
+     * will succeed. Answering "revoked" here is how two tabs waking together
+     * ejected one of them from a perfectly good thirty-day session.
+     */
     if (!rotated) {
-      throw new AuthenticationError('Session has been revoked. Please log in again.');
+      throw new SessionSupersededError(
+        'This session was renewed by another request. Please retry.',
+      );
     }
 
     this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken, user.id);
@@ -489,15 +527,76 @@ export class AuthService {
   }
 
   // ─── Logout ───────────────────────────────────────────────────────────────────
+  /**
+   * Ends the session, and WORKS WHEN THE ACCESS TOKEN HAS ALREADY EXPIRED.
+   *
+   * It did not: behind `JwtAuthGuard`, a fifteen-minute-old access token meant
+   * 401 and no cookies cleared, leaving the client holding a live thirty-day
+   * refresh cookie with no server-side way to drop it. A phone backgrounded over
+   * lunch reproduces it every time.
+   *
+   * Identity comes from the fully-verified REFRESH cookie — the one that is
+   * still there in exactly that case — and the cookies are cleared whether or
+   * not anything verifies, because clearing a cookie is not a privileged act.
+   * Origin validation still runs (`@NoCsrf` waives the token, not the origin
+   * check), so no cross-site page can use this to sign a client out.
+   *
+   * The admin surface carries the identical fix; the two are deliberately the
+   * same shape.
+   */
+  async logoutFromRequest(req: Request, res: Response) {
+    const userId = this.subjectFromRefreshCookie(req);
+    if (userId) return this.logout(userId, res);
+
+    this.clearAuthCookies(res);
+    return { message: 'Logged out successfully.' };
+  }
+
+  /**
+   * The user a refresh cookie belongs to, or null if it proves nothing.
+   *
+   * Verified in full rather than decoded: an unverified `sub` would let anyone
+   * end anyone else's sessions by writing their own cookie.
+   */
+  private subjectFromRefreshCookie(req: Request): string | null {
+    const token = readSessionCookie(
+      req.cookies as Record<string, string | undefined> | undefined,
+      COOKIE_BASES.clientRefresh,
+    );
+    if (!token) return null;
+    try {
+      const decoded = this.jwt.verify<{ sub: string; typ?: string }>(token, {
+        secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
+        audience: TOKEN_AUDIENCE.portal,
+        issuer: TOKEN_ISSUER,
+        algorithms: TOKEN_ALGORITHMS,
+      });
+      return isTokenKind(decoded, TOKEN_KIND.refresh) ? decoded.sub : null;
+    } catch {
+      return null;
+    }
+  }
+
   async logout(userId: string, res: Response) {
     // Revokes EVERY family for this user, not just the one presenting a token:
     // logging out on one device must not leave the others live (R-3.3).
     await this.refreshTokens.revokeAllForSubject('portal', userId);
+    this.clearAuthCookies(res);
+    return { message: 'Logged out successfully.' };
+  }
+
+  /**
+   * Removes every session cookie this app has ever set.
+   *
+   * Extracted so `logoutFromRequest` can clear them for a caller it could not
+   * identify — the case that used to answer 401 and leave a live refresh cookie
+   * in the browser.
+   */
+  private clearAuthCookies(res: Response): void {
     clearSessionCookie(res, sessionCookieNames.clientAccess());
     clearSessionCookie(res, sessionCookieNames.clientRefresh());
     clearSessionCookie(res, sessionCookieNames.portalCsrf());
     clearLegacySessionCookies(res);
-    return { message: 'Logged out successfully.' };
   }
 
   // ─── Me ───────────────────────────────────────────────────────────────────────

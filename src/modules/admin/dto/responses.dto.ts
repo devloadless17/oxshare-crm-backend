@@ -4,6 +4,13 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 // Part C). Both frontends generate TypeScript types from the Swagger JSON —
 // keep these in sync with what the services actually return.
 
+/** A tag an administrator's client view is restricted to. */
+export class AdminScopeTagDto {
+  @ApiProperty() tagId: string;
+  @ApiProperty() slug: string;
+  @ApiProperty() label: string;
+}
+
 export class AdminProfileDto {
   @ApiProperty() id: string;
   @ApiProperty() email: string;
@@ -21,6 +28,36 @@ export class AdminProfileDto {
    * admin on every request — so the gap was purely in what the API admitted to.
    */
   @ApiProperty({ enum: ['active', 'suspended'] }) status: 'active' | 'suspended';
+
+  /**
+   * RBAC-03 — the client fields this administrator cannot see RIGHT NOW, role
+   * and per-person override already combined.
+   *
+   * The resolved answer rather than the raw column: a directory row showing
+   * "nothing hidden" for somebody whose ROLE hides four fields would be a
+   * confident lie, and the row is exactly where an operator checks before
+   * trusting an account.
+   */
+  @ApiProperty({ type: [String] }) maskedFields: string[];
+
+  /**
+   * The STORED override — `null` when this administrator follows their role.
+   *
+   * Distinct from `maskedFields` above, and the edit screen needs both: without
+   * this it cannot tell "inherits the role" from "has an identical override",
+   * and so could never offer to put somebody back on their role.
+   */
+  @ApiPropertyOptional({ type: [String], nullable: true })
+  maskedFieldsOverride?: string[] | null;
+
+  /**
+   * RBAC-03 territory — the client tags this administrator is restricted to.
+   *
+   * EMPTY MEANS UNRESTRICTED, not "sees nothing" (D-10). Any screen rendering
+   * this has to say so in words; it is not inferable from an empty array.
+   */
+  @ApiProperty({ type: [AdminScopeTagDto] }) scopedTags: AdminScopeTagDto[];
+
   @ApiProperty() createdAt: Date;
 }
 
@@ -153,20 +190,178 @@ export class KycListResponseDto {
   counts: Record<string, number>;
 }
 
+/** RBAC-03 — one maskable (or deliberately unmaskable) client field. */
+export class ClientFieldDto {
+  @ApiProperty({ description: 'Path-qualified, e.g. client.email or kyc.personalInfo.phone.' })
+  key: string;
+  @ApiProperty() label: string;
+  @ApiProperty({ description: 'False for fields the admin screens structurally need.' })
+  maskable: boolean;
+  @ApiPropertyOptional({ description: 'Why an unmaskable field cannot be hidden.' })
+  reason?: string;
+}
+
+export class ClientFieldGroupDto {
+  @ApiProperty() groupName: string;
+  @ApiProperty() description: string;
+  @ApiProperty({ type: [ClientFieldDto] }) fields: ClientFieldDto[];
+}
+
+/** ADM-14 — an arbitrary client label. */
+export class ClientTagDto {
+  @ApiProperty() id: string;
+  @ApiProperty({
+    description: 'Stable machine name. Filter with ?tag=<slug>; a rename does not change it.',
+  })
+  slug: string;
+  @ApiProperty() label: string;
+  @ApiPropertyOptional() color?: string;
+  @ApiPropertyOptional() description?: string;
+  @ApiProperty() createdAt: Date;
+}
+
+export class ClientTagWithCountDto extends ClientTagDto {
+  @ApiProperty({ description: 'How many clients carry this tag.' })
+  clientCount: number;
+}
+
+/**
+ * Every field below the id is OPTIONAL, and that is the RBAC-03 wire contract
+ * rather than laxity: a field the caller may not see is OMITTED, and the
+ * response's `maskedFields` says which. Null already means "no value on file",
+ * so overloading it would collapse "hidden from you" into "this client has
+ * none" — two answers an operator must be able to tell apart.
+ */
 export class ClientRowDto {
   @ApiProperty() id: string;
-  @ApiProperty() email: string;
-  @ApiProperty() firstName: string;
-  @ApiProperty() lastName: string;
+  @ApiPropertyOptional() email?: string;
+  @ApiPropertyOptional() firstName?: string;
+  @ApiPropertyOptional() lastName?: string;
   @ApiProperty({ enum: ['individual', 'referral', 'partner'] }) type: string;
   @ApiProperty({ enum: ['active', 'pending', 'suspended'] }) status: string;
   @ApiProperty({ enum: [0, 1] }) verificationLevel: number;
   @ApiPropertyOptional() country?: string;
+  @ApiPropertyOptional() createdAt?: Date;
+  @ApiPropertyOptional({ type: [ClientTagDto] }) tags?: ClientTagDto[];
+}
+
+export class ProfileTradingAccountDto {
+  @ApiProperty() id: string;
+  @ApiProperty() mt5Login: string;
+  @ApiPropertyOptional() mt5Group?: string;
+  @ApiProperty({ enum: ['live', 'demo'] }) environment: string;
+  @ApiPropertyOptional() tier?: string;
+  @ApiPropertyOptional() leverage?: number;
   @ApiProperty() createdAt: Date;
+}
+
+export class ProfileReferrerDto {
+  @ApiProperty() ibUserId: string;
+  @ApiProperty() email: string;
+  @ApiProperty() firstName: string;
+  @ApiProperty() lastName: string;
+  @ApiProperty({ description: 'False when the attribution was switched off.' })
+  active: boolean;
+  @ApiProperty() since: Date;
+}
+
+export class ProfileReferredClientDto {
+  @ApiProperty() clientUserId: string;
+  @ApiProperty() email: string;
+  @ApiProperty() firstName: string;
+  @ApiProperty() lastName: string;
+  @ApiProperty() active: boolean;
+  @ApiProperty() since: Date;
+}
+
+export class ProfileKycDto {
+  @ApiProperty({ enum: ['none', 'pending', 'in_review', 'approved', 'rejected'] })
+  status: string;
+  @ApiPropertyOptional() submittedAt?: Date;
+  @ApiPropertyOptional() reviewedAt?: Date;
+  @ApiPropertyOptional() rejectionReason?: string;
+  @ApiProperty({ description: 'How many documents the submission carries.' })
+  documentCount: number;
+}
+
+/**
+ * FR-ADM-01's full client profile.
+ *
+ * EVERY SECTION IS OPTIONAL, and absence is meaningful in two different ways
+ * the frontend must not collapse:
+ *
+ *   - the key is ABSENT because the caller lacks the permission that section
+ *     needs (`kyc.view`, `kyc.documents.view`, `trading.view`, `partners.view`);
+ *   - the key is PRESENT and empty because the client genuinely has none.
+ *
+ * A compliance reviewer shown no documents will conclude none were uploaded, so
+ * the screen has to be able to say "hidden by your permissions" instead — which
+ * it can only do if these two states arrive differently.
+ *
+ * `maskedFields` is the third kind of absence: a field the viewer may not see,
+ * omitted from the client object with its key listed here.
+ */
+export class ClientProfileDto {
+  @ApiProperty() id: string;
+  @ApiPropertyOptional() email?: string;
+  @ApiPropertyOptional() firstName?: string;
+  @ApiPropertyOptional() lastName?: string;
+  @ApiProperty({ enum: ['individual', 'referral', 'partner'] }) type: string;
+  @ApiProperty({ enum: ['active', 'pending', 'suspended'] }) status: string;
+  @ApiProperty({ enum: [0, 1] }) verificationLevel: number;
+  @ApiProperty() emailVerified: boolean;
+  @ApiPropertyOptional() country?: string;
+  @ApiPropertyOptional() phone?: string;
+  @ApiPropertyOptional() createdAt?: Date;
+
+  @ApiProperty({ type: [ClientTagDto] }) tags: ClientTagDto[];
+
+  @ApiPropertyOptional({ type: ProfileKycDto, description: 'Absent without kyc.view.' })
+  kyc?: ProfileKycDto;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Document filenames. Absent without kyc.documents.view.',
+  })
+  documents?: string[];
+
+  @ApiPropertyOptional({
+    type: [ProfileTradingAccountDto],
+    description: 'Absent without trading.view.',
+  })
+  tradingAccounts?: ProfileTradingAccountDto[];
+
+  @ApiPropertyOptional({ type: ProfileReferrerDto, description: 'Absent without partners.view.' })
+  referrer?: ProfileReferrerDto;
+
+  @ApiPropertyOptional({
+    type: [ProfileReferredClientDto],
+    description: 'Capped — see referredTotal. Absent without partners.view.',
+  })
+  referredClients?: ProfileReferredClientDto[];
+
+  @ApiPropertyOptional({
+    description: 'How many referredClients were returned; the list is capped for one screen.',
+  })
+  referredShown?: number;
+
+  @ApiProperty({ type: [String] }) maskedFields: string[];
 }
 
 export class ClientListResponseDto {
   @ApiProperty({ type: [ClientRowDto] }) items: ClientRowDto[];
+
+  /**
+   * The client fields THIS VIEWER cannot see — RBAC-03.
+   *
+   * A property of the viewer, not of a row: every item in the response carries
+   * the same set, so it is sent once here rather than repeated 25 times. The UI
+   * uses it to render "hidden by your permissions" instead of an em dash, which
+   * is the difference between "you are not allowed to see this" and "this
+   * client has not given us one".
+   */
+  @ApiProperty({ type: [String] })
+  maskedFields: string[];
   /**
    * Pass back as `?cursor=` for the next page; `null` on the last (R-2.4).
    *
@@ -280,6 +475,35 @@ export class AuditEntryDto {
   @ApiProperty() id: string;
   @ApiProperty() actorId: string;
   @ApiProperty() actorEmail: string;
+  /*
+   * WHO KIND of actor, and from WHERE. Both were stored, returned by the store,
+   * and absent from this contract — so the API sent them and the document
+   * denied they existed, which meant the admin screen could not render them
+   * without hand-writing a type and giving up the one mechanism that turns
+   * backend drift into a compile error (R-1.1).
+   *
+   * "Which address did this administrator approve the payout from" is a routine
+   * question after an incident on a money system, and `audit_log.ip_address`
+   * has been populated all along (`AuditLogStore.record` fills it from the
+   * request context). It was answerable in SQL and nowhere else.
+   */
+  @ApiProperty({
+    enum: ['admin', 'client', 'system', 'provider'],
+    description: 'A background job records as `system`, with a named identity — never anonymously.',
+  })
+  actorKind: string;
+  @ApiPropertyOptional({
+    // `type` is not decoration here: without it, `nullable: true` generates as
+    // `Record<string, never> | null` in the frontends' types — a shape nothing
+    // can render — so the contract would document the field and still be
+    // unusable, which is the state this whole change exists to fix.
+    type: String,
+    nullable: true,
+    description:
+      'The address the action came from. Null for an action with no request context, such as ' +
+      'a scheduled job.',
+  })
+  ipAddress?: string | null;
   @ApiProperty() action: string;
   @ApiProperty() subjectType: string;
   @ApiProperty() subjectId: string;

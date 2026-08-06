@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import { AdminAuthService } from '../src/modules/admin/admin-auth.service';
+import { ClientFieldsService } from '../src/modules/admin/client-fields.service';
 import { AdminRbacService } from '../src/modules/admin/admin-rbac.service';
 import { PasswordService } from '../src/common/security/password.service';
 import { CsrfService } from '../src/common/security/csrf.service';
@@ -72,6 +73,7 @@ const REVIEWER_ROLE: Role = {
   id: 'role-1',
   name: 'Reviewer',
   permissions: ['kyc.review'],
+  maskedFields: [],
   isSystem: false,
   createdAt: new Date(),
 };
@@ -122,6 +124,7 @@ function build(
     deleteById: vi.fn().mockResolvedValue(undefined),
   };
   const roles = {
+    resolveMaskedFields: vi.fn().mockResolvedValue([]),
     findById: vi.fn().mockResolvedValue(REVIEWER_ROLE),
     resolvePermissions: vi.fn((_r: unknown, snapshot: string[]) => Promise.resolve(snapshot)),
   };
@@ -144,6 +147,16 @@ function build(
     invites as unknown as InvitesStore,
     roles as unknown as RolesStore,
     audit as unknown as AdminAuditService,
+    new ClientFieldsService(),
+    // ClientTagsStore — the invite paths under test do not touch client tags.
+    {} as never,
+    /*
+     * AdminClientScopesStore. `describeFor` is reached because `sanitize` now
+     * reports each admin's territory, and acceptInvite returns a sanitized
+     * admin — so an empty object here fails on a path that has nothing to do
+     * with scoping.
+     */
+    { describeFor: vi.fn().mockResolvedValue([]) } as never,
   );
 
   const service = new AdminAuthService(

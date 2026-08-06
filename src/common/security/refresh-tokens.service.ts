@@ -41,8 +41,30 @@ export type RefreshVerdict =
   | { outcome: 'unknown' }
   | { outcome: 'revoked' }
   | { outcome: 'expired' }
+  /**
+   * An already-rotated token came back, but everything about it says the
+   * caller never received the replacement — see `RETRY_GRACE_MS`. Not theft:
+   * rotate `successorJti` and hand out a working session.
+   */
+  | { outcome: 'retried'; familyId: string; subjectId: string; successorJti: string }
   /** The one that matters: an already-rotated token came back. */
   | { outcome: 'reused'; familyId: string; subjectId: string; revokedCount: number };
+
+/**
+ * How long after a rotation a replay of the CONSUMED token is read as a retry
+ * rather than as theft.
+ *
+ * The problem it solves: rotation happens server-side, then the response is
+ * lost — a dropped connection, a closed tab, a mobile network handoff, a proxy
+ * timeout. The client still holds the old token, because it never received the
+ * new one, and its retry was being answered by destroying the entire session
+ * and paging somebody with a credential-theft alert.
+ *
+ * Thirty seconds is wide enough for a retry on a slow mobile network and for two
+ * tabs whose requests cross in flight. It is not the load-bearing part of the
+ * rule, though — the successor test below is. See `verify()`.
+ */
+const RETRY_GRACE_MS = 30_000;
 
 /**
  * Refresh-token families, and what to do when one is replayed.
@@ -147,6 +169,54 @@ export class RefreshTokensService {
     if (row.expiresAt.getTime() <= Date.now()) return { outcome: 'expired' };
 
     if (row.usedAt) {
+      /*
+       * Before concluding theft: is this a RETRY of a rotation whose response
+       * never arrived?
+       *
+       * Two conditions, and the second is the one that carries the weight:
+       *
+       *  1. It is recent (`RETRY_GRACE_MS`). A token replayed hours later is not
+       *     a retry of anything.
+       *
+       *  2. **The successor was never used.** This is the signature that
+       *     separates the two cases, and it does so in the attacker's direction
+       *     rather than ours. A lost response means nobody ever received the
+       *     replacement, so it sits unused. An attacker replaying a captured
+       *     token while the legitimate user carries on means the user HAS used
+       *     the replacement — so `usedAt` is set on it, this test fails, and the
+       *     family is destroyed exactly as before.
+       *
+       * The narrow case this admits is an attacker who captures a token and
+       * replays it inside thirty seconds, before the legitimate client has made
+       * its next request. That is a real narrowing of reuse detection and it is
+       * the price of not destroying a session every time a mobile connection
+       * drops mid-refresh. It is bounded by the successor test: the moment the
+       * real client refreshes again, the chain has two live branches, one of
+       * them gets replayed, and the family dies.
+       */
+      const successor = await this.successorOf(row.familyId, row.createdAt);
+      const withinGrace = Date.now() - row.usedAt.getTime() <= RETRY_GRACE_MS;
+      if (
+        withinGrace &&
+        successor &&
+        !successor.usedAt &&
+        !successor.revokedAt &&
+        successor.expiresAt.getTime() > Date.now()
+      ) {
+        this.logger.log(
+          `Refresh token retried on the ${params.surface} surface for subject ` +
+            `${row.subjectId}: the rotation at ${row.usedAt.toISOString()} evidently did not ` +
+            'reach the client, whose replacement is still unused. Rotating the successor ' +
+            'instead of destroying the session.',
+        );
+        return {
+          outcome: 'retried',
+          familyId: row.familyId,
+          subjectId: row.subjectId,
+          successorJti: successor.id,
+        };
+      }
+
       // REUSE. Burn the whole family down, including whatever the holder of the
       // newest token has.
       const revokedCount = await this.revokeFamily(row.familyId);
@@ -175,6 +245,37 @@ export class RefreshTokensService {
   }
 
   /**
+   * The row that replaced `after` in this family, if there is one.
+   *
+   * Found by creation order rather than by a `next_jti` column, because rotation
+   * only ever appends: within one family the next row created after a given
+   * member IS its successor. That avoids a schema change for a lookup used on
+   * one branch of one method.
+   */
+  private async successorOf(
+    familyId: string,
+    after: Date,
+  ): Promise<{
+    id: string;
+    usedAt: Date | null;
+    revokedAt: Date | null;
+    expiresAt: Date;
+  } | null> {
+    const [row] = await this.db
+      .select({
+        id: refreshTokens.id,
+        usedAt: refreshTokens.usedAt,
+        revokedAt: refreshTokens.revokedAt,
+        expiresAt: refreshTokens.expiresAt,
+      })
+      .from(refreshTokens)
+      .where(and(eq(refreshTokens.familyId, familyId), gt(refreshTokens.createdAt, after)))
+      .orderBy(refreshTokens.createdAt)
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
    * Marks the presented token used and records its replacement in the same
    * family.
    *
@@ -183,6 +284,13 @@ export class RefreshTokensService {
    * both read "unused", both rotate, and produce two live children of a token
    * that is meant to have exactly one. The loser is told it lost rather than
    * being handed a second valid session.
+   *
+   * **Both statements run in ONE transaction.** They did not, and the gap was a
+   * silent session killer: a crash, a connection reset or a pool eviction
+   * between the claim and the insert left the family with its current member
+   * consumed and no replacement — which `familyIsRevoked()` reads as a dead
+   * session, with nothing anywhere recording why. Rare, unreproducible, and
+   * indistinguishable from a revocation when it happened.
    */
   async rotate(params: {
     surface: AuthSurface;
@@ -204,25 +312,27 @@ export class RefreshTokensService {
      */
     device?: DeviceFingerprint;
   }): Promise<{ jti: string } | null> {
-    const claimed = await this.db
-      .update(refreshTokens)
-      .set({ usedAt: new Date() })
-      .where(and(eq(refreshTokens.id, params.jti), isNull(refreshTokens.usedAt)))
-      .returning({ id: refreshTokens.id });
+    return this.db.transaction(async (tx) => {
+      const claimed = await tx
+        .update(refreshTokens)
+        .set({ usedAt: new Date() })
+        .where(and(eq(refreshTokens.id, params.jti), isNull(refreshTokens.usedAt)))
+        .returning({ id: refreshTokens.id });
 
-    if (claimed.length === 0) return null;
+      if (claimed.length === 0) return null;
 
-    await this.db.insert(refreshTokens).values({
-      id: params.jtiNext,
-      familyId: params.familyId,
-      surface: params.surface,
-      subjectId: params.subjectId,
-      tokenHash: this.hash(params.nextToken),
-      expiresAt: params.expiresAt,
-      userAgent: params.device?.userAgent ?? null,
-      ip: params.device?.ip ?? null,
+      await tx.insert(refreshTokens).values({
+        id: params.jtiNext,
+        familyId: params.familyId,
+        surface: params.surface,
+        subjectId: params.subjectId,
+        tokenHash: this.hash(params.nextToken),
+        expiresAt: params.expiresAt,
+        userAgent: params.device?.userAgent ?? null,
+        ip: params.device?.ip ?? null,
+      });
+      return { jti: params.jtiNext };
     });
-    return { jti: params.jtiNext };
   }
 
   /** Ends one login. Used by the reuse response and by logout. */

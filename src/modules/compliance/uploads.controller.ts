@@ -11,17 +11,25 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+import {
+  NotClientScoped,
+  ScopedToClients,
+} from '../../modules/admin/guards/client-scope.decorator';
 import { ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
 import { existsSync } from 'fs';
 import { basename, join } from 'path';
-import { AdminsStore } from '../../store/admins.store';
+import { AdminsStore, type Admin } from '../../store/admins.store';
 import { RolesStore } from '../../store/roles.store';
 import { KycStore } from '../../store/kyc.store';
 import { UsersStore } from '../../store/users.store';
 import { AuditLogStore } from '../../store/audit-log.store';
+import { AdminIpAllowlistStore } from '../../store/admin-ip-allowlist.store';
+import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
+import { adminNetworkAdmits } from '../../common/security/admin-network';
+import { clientIp } from '../../common/security/client-ip';
 import { COOKIE_BASES, readSessionCookie } from '../../common/security/session-cookies';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
@@ -56,6 +64,8 @@ export class UploadsController {
     private readonly users: UsersStore,
     private readonly auditLog: AuditLogStore,
     private readonly files: StoredFilesService,
+    private readonly ipAllowlist: AdminIpAllowlistStore,
+    private readonly scopes: AdminClientScopesStore,
   ) {}
 
   /**
@@ -81,6 +91,9 @@ export class UploadsController {
   @UseGuards(JwtAuthGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: "Serve a client's own profile photo" })
+  @NotClientScoped(
+    'Serves the CALLING CLIENT their own photo — an ownership check on the portal surface, with no admin reader at all.',
+  )
   async serveAvatar(
     @Param('file') file: string,
     @Req() req: Request & { user: { id: string } },
@@ -111,6 +124,9 @@ export class UploadsController {
   @ApiOperation({
     summary: 'Serve a KYC document to its owner or a kyc.review admin',
   })
+  @ScopedToClients(
+    'The filename is resolved to its owning user_id in one scoped query; a miss is 404 and writes no audit row.',
+  )
   async serveKycFile(@Param('file') file: string, @Req() req: Request, @Res() res: Response) {
     const name = basename(file); // neutralize any traversal attempt
 
@@ -230,6 +246,39 @@ export class UploadsController {
         }
         const admin = await this.admins.findById(payload.sub);
         if (admin) {
+          /*
+           * RBAC-08 applies HERE, not at the guard.
+           *
+           * `IpAllowlistGuard` covers the admin surface by path, and this route
+           * is `/uploads/kyc/:file` — outside `/admin`. So every client's
+           * passport, national ID and proof of address was readable from any
+           * network on earth with a valid admin session, while the allowlist
+           * reported itself as enforcing. This is the most sensitive data the
+           * system holds; it was the one admin read the control did not cover.
+           *
+           * It cannot move to the guard, because this route serves BOTH
+           * surfaces: a client fetching their own document, and an admin
+           * fetching anyone's. A network restriction on the client path would
+           * lock customers out of their own files. Which principal is acting is
+           * only known here, after the token resolves — so the check lives here
+           * and the RULE lives in `adminNetworkAdmits` (R-4.3).
+           *
+           * Deliberately before the permission check: being on a permitted
+           * network is a precondition for exercising admin authority at all,
+           * not a second opinion about which admin you are.
+           */
+          const rules = await this.ipAllowlist.listCidrs();
+          const ip = clientIp(req);
+          if (!adminNetworkAdmits(rules, ip)) {
+            this.logger.warn(
+              `Admin ${admin.email} refused a KYC document read from ${ip ?? 'an unknown address'}: ` +
+                `not in the IP allowlist (${rules.length} rule(s) configured).`,
+            );
+            throw new ForbiddenException(
+              'Your network is not permitted to reach the administration API.',
+            );
+          }
+
           const held = await this.roles.resolvePermissions(admin.roleId, admin.permissions);
           // One spelling — see migration 0009 and admin.guard.ts.
           const normalized = held.map((p) => p.toLowerCase());
@@ -252,6 +301,21 @@ export class UploadsController {
             normalized.includes('kyc.documents.view') ||
             normalized.includes('kyc.review');
           if (mayRead) {
+            /*
+             * CLIENT SCOPE, on a route that takes a FILENAME rather than a
+             * client id.
+             *
+             * That is exactly why it was the sneakiest gap. A scoped admin who
+             * cannot open a client's profile can still hold one of their
+             * document filenames — from a screenshot, a stale tab, a shared
+             * ticket — and this route had nothing to check it against. The
+             * read would have been served AND audited as legitimate.
+             *
+             * Resolved to the owning client and checked, before any bytes and
+             * before the R-6.6 audit row, so a refused read leaves no trace
+             * claiming it happened.
+             */
+            await this.assertDocumentInScope(admin, fileName);
             return { kind: 'admin', id: admin.id, email: admin.email };
           }
           throw new ForbiddenException(
@@ -259,7 +323,24 @@ export class UploadsController {
           );
         }
       } catch (e) {
-        if (e instanceof ForbiddenException) throw e;
+        /*
+         * A DELIBERATE DECISION about this admin propagates; anything else
+         * falls through to the client branch.
+         *
+         * The list matters and is easy to get wrong. It held only
+         * `ForbiddenException`, so the `NotFoundException` raised by the client
+         * scope check below was swallowed and the request continued into the
+         * portal branch, ending as a 401 "authentication required" — to an
+         * administrator who was authenticated, about a document that exists.
+         * The read was still refused, so nothing leaked; the answer was simply
+         * a lie about why.
+         *
+         * Falling through is right only for "this is not an admin request after
+         * all" — an unverifiable cookie, a missing admin row. A refusal we
+         * reached ON PURPOSE is an answer, and answers are not retried as
+         * somebody else.
+         */
+        if (e instanceof ForbiddenException || e instanceof NotFoundException) throw e;
         // fall through to client auth
       }
     }
@@ -288,6 +369,24 @@ export class UploadsController {
     }
 
     throw new UnauthorizedException('Authentication required to access documents.');
+  }
+
+  /**
+   * A scoped administrator may only read documents belonging to clients inside
+   * their own territory.
+   *
+   * 404, not 403, and the wording matches the genuinely-missing case above
+   * exactly: distinguishing them would tell a scoped admin which filenames are
+   * real, which is the enumeration this route is most exposed to.
+   */
+  private async assertDocumentInScope(admin: Admin, fileName: string): Promise<void> {
+    const scope = await this.scopes.scopeFor(admin.id);
+    if (scope.unrestricted) return;
+
+    const owner = await this.kyc.ownerOfDocument(fileName);
+    if (!owner) throw new NotFoundException('Document not found.');
+    const client = await this.users.findForAdmin(owner, scope);
+    if (!client) throw new NotFoundException('Document not found.');
   }
 
   /**

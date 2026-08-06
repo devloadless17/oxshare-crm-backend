@@ -93,7 +93,7 @@ export class AuditLogStore {
      */
     if (filter.cursor) {
       conditions.push(
-        sql`(${auditLog.createdAt}, ${auditLog.id}) < (${filter.cursor.createdAt}::timestamptz, ${filter.cursor.id}::uuid)`,
+        sql`(${auditLog.createdAt}, ${auditLog.id}) < (${filter.cursor.value}::timestamptz, ${filter.cursor.id}::uuid)`,
       );
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;

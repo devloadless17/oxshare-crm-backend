@@ -44,6 +44,7 @@
     "cookie-parser": "^1.4.7",
     "decimal.js": "10.4.3",
     "drizzle-orm": "0.45.2",
+    "express": "5.2.1",
     "helmet": "^8.3.0",
     "ioredis": "^5.4.2",
     "multer": "^2.2.0",

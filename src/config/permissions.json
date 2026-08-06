@@ -48,6 +48,10 @@
       {
         "key": "users.suspend",
         "label": "Suspend / Activate Accounts"
+      },
+      {
+        "key": "users.scope",
+        "label": "Set Client-Tag Scope & Field Masking for an Admin"
       }
     ]
   },
@@ -160,6 +164,24 @@
       {
         "key": "settings.manage",
         "label": "Change settings"
+      }
+    ]
+  },
+  "tags": {
+    "moduleName": "Client Tags & Segmentation",
+    "description": "Arbitrary client labels (ADM-14) and the tag filters on the client list",
+    "permissions": [
+      {
+        "key": "tags.view",
+        "label": "View Tags & Client Tag Assignments"
+      },
+      {
+        "key": "tags.manage",
+        "label": "Create, Rename & Delete Tags"
+      },
+      {
+        "key": "tags.assign",
+        "label": "Assign / Unassign Tags on a Client"
       }
     ]
   }

@@ -30,7 +30,6 @@ import {
 } from '@nestjs/swagger';
 import { Request } from 'express';
 import { AdminRbacService } from './admin-rbac.service';
-import { Admin } from '../../store/admins.store';
 import { AdminStatusDto, RoleDto, UpdateAdminDto, UpdateRoleDto } from './dto/requests/rbac.dto';
 import {
   AdminProfileDto,
@@ -38,15 +37,26 @@ import {
   PermissionModuleDto,
   RoleResponseDto,
 } from './dto/responses.dto';
-import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
+import {
+  PermissionsGuard,
+  RequirePermissions,
+  type AuthenticatedAdmin,
+} from './guards/admin.guard';
 import { UuidParam } from '../../common/query-params';
+import { NotClientScoped } from './guards/client-scope.decorator';
+import { ClientFieldsService } from './client-fields.service';
+import { ClientFieldGroupDto } from './dto/responses.dto';
+import { Audited } from './guards/audited.decorator';
 
 /** Permission catalog, roles and the admin directory (RBAC-02/07). */
 @ApiTags('admin')
 @ApiExtraModels(PermissionModuleDto)
 @Controller('admin')
 export class AdminRbacController {
-  constructor(private readonly rbac: AdminRbacService) {}
+  constructor(
+    private readonly rbac: AdminRbacService,
+    private readonly clientFields: ClientFieldsService,
+  ) {}
 
   // ── RBAC: permission catalog, roles, admin directory (RBAC-02/07) ─────────
   @Get('permissions')
@@ -64,8 +74,37 @@ export class AdminRbacController {
       },
     },
   })
+  @NotClientScoped('The permission catalog — a static vocabulary, not client data.')
   getPermissions() {
     return this.rbac.getPermissionsCatalog();
+  }
+
+  /**
+   * The RBAC-03 field catalog — which client fields exist, and which may be
+   * hidden.
+   *
+   * Served for the same reason `GET /admin/permissions` is (R-4.5): the
+   * frontend never invents a key. A mask key with no backend counterpart is not
+   * a cosmetic bug — it is a field an operator ticked a box for and believes
+   * they hid.
+   */
+  @Get('client-fields')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('roles.view', 'users.view')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Maskable client fields, grouped (requires roles.view or users.view)' })
+  @ApiOkResponse({
+    schema: {
+      type: 'object',
+      additionalProperties: { $ref: '#/components/schemas/ClientFieldGroupDto' },
+    },
+  })
+  @ApiExtraModels(ClientFieldGroupDto)
+  @NotClientScoped(
+    'The field VOCABULARY — a static catalog read from disk, containing no client data.',
+  )
+  listClientFields() {
+    return this.clientFields.getCatalog();
   }
 
   @Get('roles')
@@ -76,6 +115,7 @@ export class AdminRbacController {
     summary: 'List RBAC roles (requires roles.view or users.view)',
   })
   @ApiOkResponse({ type: [RoleResponseDto] })
+  @NotClientScoped('RBAC configuration; roles are not clients.')
   listRoles() {
     return this.rbac.listRoles();
   }
@@ -86,8 +126,16 @@ export class AdminRbacController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Create a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: RoleResponseDto })
-  createRole(@Body() dto: RoleDto, @Req() req: Request & { admin: Admin }) {
-    return this.rbac.createRole(dto.name, dto.description, dto.permissions, req.admin);
+  @NotClientScoped('RBAC configuration; roles are not clients.')
+  @Audited('role.create')
+  createRole(@Body() dto: RoleDto, @Req() req: Request & { admin: AuthenticatedAdmin }) {
+    return this.rbac.createRole(
+      dto.name,
+      dto.description,
+      dto.permissions,
+      req.admin,
+      dto.maskedFields,
+    );
   }
 
   @Put('roles/:id')
@@ -96,10 +144,12 @@ export class AdminRbacController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: RoleResponseDto })
+  @NotClientScoped('RBAC configuration; roles are not clients.')
+  @Audited('role.update')
   updateRole(
     @Param('id', UuidParam) id: string,
     @Body() dto: UpdateRoleDto,
-    @Req() req: Request & { admin: Admin },
+    @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.rbac.updateRole(id, dto, req.admin);
   }
@@ -110,7 +160,12 @@ export class AdminRbacController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: MessageResponseDto })
-  deleteRole(@Param('id', UuidParam) id: string, @Req() req: Request & { admin: Admin }) {
+  @NotClientScoped('RBAC configuration; roles are not clients.')
+  @Audited('role.delete')
+  deleteRole(
+    @Param('id', UuidParam) id: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
     return this.rbac.deleteRole(id, req.admin.id);
   }
 
@@ -120,6 +175,9 @@ export class AdminRbacController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'List admin accounts (requires users.view)' })
   @ApiOkResponse({ type: [AdminProfileDto] })
+  @NotClientScoped(
+    'The ADMINISTRATOR directory. Administrators are not clients and are never scoped by client tag.',
+  )
   listAdmins() {
     return this.rbac.listAdmins();
   }
@@ -132,10 +190,12 @@ export class AdminRbacController {
     summary: 'Update an admin’s name, role, or permissions (requires users.edit)',
   })
   @ApiOkResponse({ type: AdminProfileDto })
+  @NotClientScoped('Edits an administrator, not a client.')
+  @Audited('admin.update')
   updateAdmin(
     @Param('id', UuidParam) id: string,
     @Body() dto: UpdateAdminDto,
-    @Req() req: Request & { admin: Admin },
+    @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.rbac.updateAdmin(id, dto, req.admin);
   }
@@ -157,10 +217,12 @@ export class AdminRbacController {
       'on every call — and blocks login. Refused on your own account and on the master admin.',
   })
   @ApiOkResponse({ type: AdminProfileDto })
+  @NotClientScoped('Suspends an administrator, not a client.')
+  @Audited('admin.suspend')
   setAdminStatus(
     @Param('id', UuidParam) id: string,
     @Body() dto: AdminStatusDto,
-    @Req() req: Request & { admin: Admin },
+    @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.rbac.setAdminStatus(id, dto.status, req.admin);
   }

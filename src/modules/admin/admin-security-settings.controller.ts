@@ -8,6 +8,8 @@ import { Admin } from '../../store/admins.store';
 import { SecuritySettingsService } from './security-settings.service';
 import { MasterAdminGuard } from './guards/admin.guard';
 import { SecuritySwitchDto, SetSecuritySwitchDto } from './dto/requests/security-settings.dto';
+import { NotClientScoped } from './guards/client-scope.decorator';
+import { Audited } from './guards/audited.decorator';
 
 /**
  * The operator's switches for security controls — master admin only.
@@ -33,6 +35,7 @@ export class AdminSecuritySettingsController {
     summary: 'Security controls and whether each is currently on (master admin only)',
   })
   @ApiOkResponse({ type: [SecuritySwitchDto] })
+  @NotClientScoped('Operational security switches; contains no client data.')
   list() {
     return this.settings.list();
   }
@@ -48,6 +51,8 @@ export class AdminSecuritySettingsController {
       'every request made while it stays off.',
   })
   @ApiOkResponse({ type: SecuritySwitchDto })
+  @NotClientScoped('Operational security switches; contains no client data.')
+  @Audited('security.control.set')
   set(
     @Param('key') key: string,
     @Body() dto: SetSecuritySwitchDto,

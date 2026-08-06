@@ -3,28 +3,29 @@ import { AdminAuditController } from './admin-audit.controller';
 import { AdminSecuritySettingsController } from './admin-security-settings.controller';
 import { SecuritySettingsService } from './security-settings.service';
 import { AdminAuthController } from './admin-auth.controller';
+import { AdminTagsController } from './admin-tags.controller';
 import { AdminClientsController } from './admin-clients.controller';
 import { AdminComplianceController } from './admin-compliance.controller';
 import { AdminMoneyController } from './admin-money.controller';
 import { AdminRbacController } from './admin-rbac.controller';
 import { APP_GUARD } from '@nestjs/core';
-import { AdminAuditService } from './admin-audit.service';
 import { AdminIpAllowlistController } from './admin-ip-allowlist.controller';
 import { AdminIpAllowlistService } from './admin-ip-allowlist.service';
 import { IpAllowlistGuard } from './guards/ip-allowlist.guard';
 import { AdminAuthService } from './admin-auth.service';
+import { AdminTagsService } from './admin-tags.service';
 import { AdminClientsService } from './admin-clients.service';
 import { AdminComplianceService } from './admin-compliance.service';
 import { AdminMoneyService } from './admin-money.service';
 import { AdminRbacService } from './admin-rbac.service';
 
 const ADMIN_SERVICES = [
-  AdminAuditService,
   AdminIpAllowlistService,
   AdminAuthService,
   AdminRbacService,
   AdminComplianceService,
   AdminClientsService,
+  AdminTagsService,
   AdminMoneyService,
   SecuritySettingsService,
 ];
@@ -42,6 +43,7 @@ import { PartnersModule } from '../partners/partners.module';
   controllers: [
     AdminAuthController,
     AdminClientsController,
+    AdminTagsController,
     AdminComplianceController,
     AdminMoneyController,
     AdminRbacController,
@@ -56,6 +58,8 @@ import { PartnersModule } from '../partners/partners.module';
     // needed it. The guard itself is a no-op until the allowlist has a row.
     { provide: APP_GUARD, useClass: IpAllowlistGuard },
   ],
-  exports: ADMIN_SERVICES,
+  // Re-exported so importers keep reaching the audit writer through this
+  // module, as they did when it was provided here.
+  exports: [...ADMIN_SERVICES, AdminAuthModule],
 })
 export class AdminModule {}

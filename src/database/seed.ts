@@ -1,7 +1,10 @@
 import { getDb } from './db';
 import { PasswordService } from '../common/security/password.service';
 import {
+  adminClientTagScopes,
   admins,
+  clientTagAssignments,
+  clientTags,
   kycConfigSteps,
   kycSubmissions,
   rejectionReasons,
@@ -245,11 +248,241 @@ export async function runSeeds(): Promise<void> {
    * it silently turned back off by the next reboot — a seed that overwrites a
    * deliberate choice is worse than no seed.
    */
+
+  /*
+   * ── The ADMIN end-to-end cohort ─────────────────────────────────────────
+   *
+   * A fixed, deterministic set of clients on the `@oxshare-e2e.test` domain,
+   * for the Playwright suite in `oxshare-crm-admin`.
+   *
+   * SEEDED, NOT CREATED AT RUNTIME, and that is forced rather than chosen:
+   * `POST /auth/register` is capped at 10 per hour per IP and there is no admin
+   * endpoint that creates a client at all, so a suite that minted its own
+   * fixtures would rate-limit itself on the second run.
+   *
+   * The DOMAIN is the mechanism that makes a shared development database
+   * workable. Every list assertion first types `oxshare-e2e.test` into the
+   * search box, so it is about a set the suite owns entirely — a developer who
+   * registers forty clients tomorrow cannot break a single assertion. Nothing
+   * is ever deleted: half these tables refuse it, and a
+   * `DELETE ... WHERE email LIKE` on a shared database is one typo away from
+   * destroying somebody's afternoon.
+   *
+   * The SHAPE is chosen so every filter has both a match and a non-match:
+   * 3 types x 3 statuses x 2 levels x 3 countries. A filter that silently
+   * ignores its parameter — which is exactly what `?country=` did before this
+   * work — then produces a COUNT CHANGE the spec can catch, rather than a
+   * vacuous pass. The names run alpha..zulu so a sort assertion is "first is
+   * Alpha, last is Zulu", decidable without knowing the total.
+   */
+  const E2E_DOMAIN = 'oxshare-e2e.test';
+  const e2eClients = [
+    {
+      local: 'alpha',
+      firstName: 'Alpha',
+      lastName: 'Aardvark',
+      type: 'individual',
+      status: 'active',
+      level: 1,
+      country: 'Lebanon',
+    },
+    {
+      local: 'bravo',
+      firstName: 'Bravo',
+      lastName: 'Baker',
+      type: 'referral',
+      status: 'active',
+      level: 0,
+      country: 'United Arab Emirates',
+    },
+    {
+      local: 'charlie',
+      firstName: 'Charlie',
+      lastName: 'Croft',
+      type: 'partner',
+      status: 'active',
+      level: 1,
+      country: 'Cyprus',
+    },
+    {
+      local: 'delta',
+      firstName: 'Delta',
+      lastName: 'Dunn',
+      type: 'individual',
+      status: 'pending',
+      level: 0,
+      country: 'Lebanon',
+    },
+    {
+      local: 'zulu',
+      firstName: 'Zulu',
+      lastName: 'Zimmer',
+      type: 'individual',
+      status: 'active',
+      level: 1,
+      country: 'United Arab Emirates',
+    },
+    /*
+     * The ONLY row any spec writes to. Suspension is destructive and its own
+     * spec toggles it, so it must not be a client another assertion reads —
+     * a shared mutable fixture is how a suite starts failing in an order that
+     * depends on which test ran first.
+     */
+    {
+      local: 'suspend-target',
+      firstName: 'Sierra',
+      lastName: 'Target',
+      type: 'individual',
+      status: 'active',
+      level: 0,
+      country: 'Cyprus',
+    },
+  ] as const;
+
+  for (const client of e2eClients) {
+    await db
+      .insert(users)
+      .values({
+        email: `${client.local}@${E2E_DOMAIN}`,
+        passwordHash: clientHash,
+        firstName: client.firstName,
+        lastName: client.lastName,
+        type: client.type,
+        status: client.status,
+        emailVerified: true,
+        verificationLevel: client.level,
+        country: client.country,
+      })
+      .onConflictDoNothing({ target: users.email });
+  }
+
+  /*
+   * Two tags the suite owns, prefixed so they read as suite-owned in the tag
+   * picker and sort together away from an operator's real segments.
+   *
+   * `alpha` is assigned to one client and `beta` to none, which is what lets a
+   * scoping spec prove BOTH directions: a scoped admin sees the tagged client
+   * and does not see the untagged one.
+   */
+  const [e2eTagAlpha] = await db
+    .insert(clientTags)
+    .values({ slug: 'e2e-alpha', label: 'E2E Alpha', color: '#0369a1' })
+    .onConflictDoNothing({ target: clientTags.slug })
+    .returning();
+
+  await db
+    .insert(clientTags)
+    .values({ slug: 'e2e-beta', label: 'E2E Beta', color: '#b45309' })
+    .onConflictDoNothing({ target: clientTags.slug });
+
+  const alphaTagId =
+    e2eTagAlpha?.id ??
+    (await db.select().from(clientTags).where(eq(clientTags.slug, 'e2e-alpha')).limit(1))[0]?.id;
+
+  const [alphaClient] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, `alpha@${E2E_DOMAIN}`))
+    .limit(1);
+
+  if (alphaTagId && alphaClient) {
+    await db
+      .insert(clientTagAssignments)
+      .values({ userId: alphaClient.id, tagId: alphaTagId })
+      // The composite primary key IS the idempotency constraint (§6.3), so a
+      // reboot re-running the seeds is a no-op rather than a duplicate-key error.
+      .onConflictDoNothing();
+  }
+
+  /*
+   * ── The RESTRICTED end-to-end admin ─────────────────────────────────────
+   *
+   * The identity that makes FR-RBAC-03 assertable at all. Gating cannot be
+   * proved from the master's session — a spec that tried would pass while
+   * demonstrating nothing.
+   *
+   * SEEDED rather than created through the invite flow, and that is forced:
+   * there is no `DELETE /admin/users`, so an accepted invite is a PERMANENT
+   * administrator row. A suite that accepted one per run would add an account
+   * to the directory every time anybody ran it, and after a fortnight the
+   * screen under test would be mostly test data.
+   *
+   * Its grant set is chosen so one identity can prove every branch:
+   *
+   *   /dashboard    ✅ any admin — proves the fixture is a working admin
+   *   /clients      ✅ users.view — a positive case, so gating is not just "deny"
+   *   /kyc          ✅ kyc.review — a second positive, different module
+   *   /roles        ❌ roles.view — a denial
+   *   /settings     ❌ roles.manage — a denial on a manage-level key
+   *   /kyc/builder  ❌ kyc.edit — a NESTED route whose parent is allowed
+   *   /audit-log    ❌ masterOnly — which no grant can satisfy
+   *
+   * And free, without a second fixture: `users.view` WITHOUT `users.suspend`
+   * means the client list renders no Actions column and PATCH .../status 403s —
+   * per-action gating inside a permitted route, which is a stronger statement
+   * than per-route gating.
+   *
+   * The role also carries a MASK and the admin a SCOPE, so the two RBAC-03
+   * dimensions are exercised by the same identity.
+   */
+  const [e2eRestrictedRole] = await db
+    .insert(roles)
+    .values({
+      name: 'E2E Restricted',
+      description: 'Fixture for the admin end-to-end suite. Not for human use.',
+      permissions: ['users.view', 'kyc.review', 'tags.view'],
+      // Hidden from this identity, so a masking spec has something to assert
+      // is absent from the response BODY, not merely from the screen.
+      maskedFields: ['client.email'],
+    })
+    .onConflictDoNothing({ target: roles.name })
+    .returning();
+
+  const restrictedRoleId =
+    e2eRestrictedRole?.id ??
+    (await db.select().from(roles).where(eq(roles.name, 'E2E Restricted')).limit(1))[0]?.id;
+
+  if (restrictedRoleId) {
+    const [restrictedAdmin] = await db
+      .insert(admins)
+      .values({
+        email: 'e2e-restricted@oxshare.com',
+        passwordHash: adminHash,
+        name: 'E2E Restricted',
+        role: 'sub_admin',
+        roleId: restrictedRoleId,
+        permissions: [],
+      })
+      .onConflictDoNothing({ target: admins.email })
+      .returning();
+
+    const restrictedId =
+      restrictedAdmin?.id ??
+      (
+        await db
+          .select()
+          .from(admins)
+          .where(eq(admins.email, 'e2e-restricted@oxshare.com'))
+          .limit(1)
+      )[0]?.id;
+
+    // Scoped to the alpha tag only, so exactly one seeded client is visible and
+    // the rest are not — both directions provable from one fixture.
+    if (restrictedId && alphaTagId) {
+      await db
+        .insert(adminClientTagScopes)
+        .values({ adminId: restrictedId, tagId: alphaTagId, createdBy: restrictedId })
+        .onConflictDoNothing();
+    }
+  }
+
   await db
     .insert(securitySettings)
     .values({ key: 'withdrawal_otp', enabled: false })
     .onConflictDoNothing({ target: securitySettings.key });
 
-  console.log('🌱 Seeds applied (idempotent): master role/admin, demo client, rejection reasons');
+  console.log(
+    '🌱 Seeds applied (idempotent): master role/admin, demo client, rejection reasons, e2e cohort',
+  );
   console.log('   ⚠️  withdrawal OTP is OFF in development — Settings → Security to enable');
 }

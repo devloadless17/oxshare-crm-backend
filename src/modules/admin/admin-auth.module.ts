@@ -7,8 +7,35 @@ import {
   MasterAdminGuard,
   PermissionsGuard,
 } from './guards/admin.guard';
+import { ClientFieldsService } from './client-fields.service';
+import { AdminAuditService } from './admin-audit.service';
 
-const PROVIDERS = [AdminAuthenticator, AdminGuard, MasterAdminGuard, PermissionsGuard];
+/**
+ * `ClientFieldsService` sits here, not in AdminModule, because
+ * `AdminAuthenticator` resolves the field mask on every authenticated request
+ * and a guard's dependencies have to be resolvable from this leaf module. It
+ * has no dependencies of its own — a cached JSON file — so it introduces no
+ * cycle.
+ */
+const PROVIDERS = [
+  AdminAuthenticator,
+  AdminGuard,
+  MasterAdminGuard,
+  PermissionsGuard,
+  ClientFieldsService,
+  /*
+   * `AdminAuditService` is here for the same reason as the guards: this is the
+   * leaf module every other one can import without a cycle, and the audit
+   * writer is now needed OUTSIDE `AdminModule` — `PlatformsModule` records
+   * changes to the download links the portal serves to clients.
+   *
+   * It depends only on two @Global() stores, so it costs nothing to place here
+   * and avoids `PlatformsModule` importing `AdminModule`, which imports four
+   * feature modules and would make an audit line a reason for a dependency
+   * cycle.
+   */
+  AdminAuditService,
+];
 
 /**
  * The admin guards, on their own so any module can use them.

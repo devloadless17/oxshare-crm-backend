@@ -14,6 +14,7 @@ import {
   ConflictError,
   DomainError,
   MoneyRuleError,
+  ClientNotFoundError,
   NotFoundError,
   ValidationError,
 } from '../errors/domain-errors';
@@ -34,6 +35,8 @@ import { safeLogPath } from '../logging/redact';
  */
 const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>([
   [NotFoundError, HttpStatus.NOT_FOUND],
+  // Same status as NotFoundError; the point is the distinct `code` it carries.
+  [ClientNotFoundError, HttpStatus.NOT_FOUND],
   [ValidationError, HttpStatus.BAD_REQUEST],
   [AuthenticationError, HttpStatus.UNAUTHORIZED],
   [AuthorizationError, HttpStatus.FORBIDDEN],

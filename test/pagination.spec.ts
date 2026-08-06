@@ -9,6 +9,7 @@ import {
   decodeCursor,
   encodeCursor,
   pageSize,
+  type CursorPosition,
 } from '../src/common/pagination';
 import { ValidationError } from '../src/common/errors/domain-errors';
 
@@ -174,7 +175,7 @@ describe('R-2.4 keyset pagination', () => {
     if (all.rows.length <= MAX_PAGE_SIZE) expect(page.nextCursor).toBeNull();
   });
 
-  async function pageOf(limit: number, cursor?: { createdAt: string; id: string }) {
+  async function pageOf(limit: number, cursor?: CursorPosition) {
     const { rows } = await store.findPage({ page: 1, limit, cursor });
     return rows;
   }
@@ -182,8 +183,9 @@ describe('R-2.4 keyset pagination', () => {
 
 describe('R-2.4 cursor encoding', () => {
   it('round-trips a position', () => {
-    const position = {
-      createdAt: '2026-08-04T10:00:00.000Z',
+    const position: CursorPosition = {
+      sort: 'createdAt',
+      value: '2026-08-04T10:00:00.000Z',
       id: 'a3f1c2d4-0000-4000-8000-000000000001',
     };
     expect(decodeCursor(encodeCursor(position))).toEqual(position);
@@ -197,9 +199,75 @@ describe('R-2.4 cursor encoding', () => {
       'not-base64!!',
       Buffer.from('{}').toString('base64url'),
       Buffer.from('{"createdAt":"nope","id":"x"}').toString('base64url'),
+      Buffer.from('{"sort":"createdAt","value":"nope","id":"x"}').toString('base64url'),
     ]) {
       expect(() => decodeCursor(bad)).toThrow(ValidationError);
     }
+  });
+
+  /**
+   * A cursor is a POSITION IN AN ORDERING, so replaying one under a different
+   * ordering is meaningless — and the failure is silent, which is what makes it
+   * worth a hard refusal. The seek still runs, still returns `limit` rows, and
+   * they are simply the wrong ones. On a client index used for compliance
+   * review, "the wrong rows, confidently" is the failure mode that matters.
+   *
+   * R-2.5 makes the same point about sorting one page and calling it sorted:
+   * a silently wrong answer is worse than an error.
+   */
+  it('refuses a cursor minted for a DIFFERENT sort, naming both', () => {
+    const cursor = encodeCursor({ sort: 'createdAt', value: '2026-08-04T10:00:00.000Z', id: 'x' });
+
+    expect(() => decodeCursor(cursor, 'email')).toThrow(ValidationError);
+    expect(() => decodeCursor(cursor, 'email')).toThrow(/createdAt/);
+    expect(() => decodeCursor(cursor, 'email')).toThrow(/email/);
+  });
+
+  it('accepts a cursor for the sort it was minted for', () => {
+    const cursor = encodeCursor({ sort: 'email', value: 'zulu@example.com', id: 'x' });
+    expect(decodeCursor(cursor, 'email').value).toBe('zulu@example.com');
+  });
+
+  it('accepts the LEGACY { createdAt, id } shape, so an open page survives deploy', () => {
+    // An admin holding a pre-deploy cursor clicks Next. Rejecting it would be an
+    // error they cannot act on, caused by a release they did not see.
+    // Delete this, and the branch it covers, after one release.
+    const legacy = Buffer.from(
+      JSON.stringify({ createdAt: '2026-08-04T10:00:00.000Z', id: 'abc' }),
+    ).toString('base64url');
+
+    expect(decodeCursor(legacy)).toEqual({
+      sort: 'createdAt',
+      value: '2026-08-04T10:00:00.000Z',
+      id: 'abc',
+    });
+  });
+
+  it('stamps the sort key into the cursor it builds', () => {
+    // Otherwise the refusal above can never fire: a cursor that does not say
+    // which ordering it belongs to cannot be checked against one.
+    const rows = [
+      { id: 'a', createdAt: new Date('2026-01-01'), email: 'alpha@example.com' },
+      { id: 'b', createdAt: new Date('2026-01-02'), email: 'bravo@example.com' },
+    ];
+    const page = buildCursorPage(rows, 1, undefined, 'email');
+
+    expect(page.nextCursor).not.toBeNull();
+    const decoded = decodeCursor(page.nextCursor as string, 'email');
+    expect(decoded).toEqual({ sort: 'email', value: 'alpha@example.com', id: 'a' });
+  });
+
+  it('encodes a Date sort value as ISO-8601, not as a locale string', () => {
+    // `String(date)` is second-resolution and locale-dependent, so it does not
+    // round-trip through `timestamptz` — the seek would land on the wrong row
+    // whenever two rows share a second (R-2.7).
+    const rows = [
+      { id: 'a', createdAt: new Date('2026-01-01T10:00:00.123Z') },
+      { id: 'b', createdAt: new Date('2026-01-02T10:00:00.000Z') },
+    ];
+    const page = buildCursorPage(rows, 1);
+
+    expect(decodeCursor(page.nextCursor as string).value).toBe('2026-01-01T10:00:00.123Z');
   });
 
   it('clamps the page size so one caller cannot ask for the whole table', () => {

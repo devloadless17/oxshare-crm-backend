@@ -1,9 +1,74 @@
-import { and, count, desc, eq, sql, SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, sql, SQL, type SQLWrapper } from 'drizzle-orm';
 import type { CursorPosition } from '../common/pagination';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { users } from '../database/schema';
+import { clientTagAssignments, clientTags, users } from '../database/schema';
+import {
+  clientScopePredicate,
+  UNRESTRICTED,
+  type ClientScope,
+} from '../common/security/client-scope';
+import { ValidationError } from '../common/errors/domain-errors';
+
+/**
+ * The columns the client list may be ordered by — R-2.5's explicit allowlist.
+ *
+ * WHY AN ALLOWLIST AND NOT A COLUMN NAME FROM THE QUERY STRING: a sort
+ * parameter interpolated into SQL is an injection point, and drizzle 0.45's
+ * advisory (GHSA-gpj5-g38j-94v9) is specifically about improperly escaped
+ * identifiers — a class this repo was only safe from because no dynamic column
+ * name existed anywhere. This is the change that would have made it reachable,
+ * so the mapping from a caller's string to a column object is total and closed.
+ *
+ * WHY IT MAY NOT EXCEED THE INDEXES: every entry needs a `(col DESC, id DESC)`
+ * composite, or the seek degrades to a sort over 219,000 rows on every page.
+ * Migration 0024 creates exactly these, `test/client-list-indexes.spec.ts`
+ * asserts the query PLANS, and adding a key here without an index makes that
+ * spec fail rather than making the screen quietly slow.
+ *
+ * `country` maps to a COALESCE expression, not to the bare column. It is
+ * nullable, and `(country, id) < (?, ?)` is UNKNOWN — not false — for every
+ * null row, so those clients would silently vanish from the list rather than
+ * sorting to one end. On a compliance screen, rows disappearing without a word
+ * is the worst available outcome. Migration 0024's index matches this
+ * expression exactly; change one and the other stops being used.
+ */
+export const CLIENT_SORT_COLUMNS = {
+  createdAt: users.createdAt,
+  email: users.email,
+  firstName: users.firstName,
+  status: users.status,
+  type: users.type,
+  verificationLevel: users.verificationLevel,
+  country: sql`coalesce(${users.country}, '')`,
+} as const;
+
+export type ClientSortKey = keyof typeof CLIENT_SORT_COLUMNS;
+
+export const DEFAULT_CLIENT_SORT: ClientSortKey = 'createdAt';
+
+/**
+ * A caller's `?sort=` string, or a 400 naming what is allowed.
+ *
+ * NEVER a silent fallback to the default. R-2.5: "an unrecognised value is a
+ * 400, never a silent fallback — a silently ignored sort is a lie the UI
+ * tells." The admin clicks a header, the rows do not change, and there is
+ * nothing anywhere to explain why.
+ */
+export function clientSortKey(value: string | undefined): ClientSortKey {
+  if (value === undefined || value === '') return DEFAULT_CLIENT_SORT;
+  if (value in CLIENT_SORT_COLUMNS) return value as ClientSortKey;
+  throw new ValidationError(
+    `Cannot sort clients by "${value}". Allowed: ${Object.keys(CLIENT_SORT_COLUMNS).join(', ')}.`,
+  );
+}
+
+export function clientSortOrder(value: string | undefined): 'asc' | 'desc' {
+  if (value === undefined || value === '') return 'desc';
+  if (value === 'asc' || value === 'desc') return value;
+  throw new ValidationError(`Cannot order by "${value}". Allowed: asc, desc.`);
+}
 
 export interface User {
   id: string;
@@ -55,6 +120,33 @@ export class UsersStore {
 
   async findById(id: string): Promise<User | undefined> {
     const [row] = await this.db.select().from(users).where(eq(users.id, id)).limit(1);
+    return row ? toUser(row) : undefined;
+  }
+
+  /**
+   * A client, if this ADMINISTRATOR may see them — the scoped `findById`.
+   *
+   * DELIBERATELY A DIFFERENT NAME rather than an optional argument on
+   * `findById`. Every admin-facing by-id read has to go through a method whose
+   * name says it applied the scope, so a call site that forgot is visible as a
+   * different function rather than as a missing second argument nobody notices
+   * in review. `findById` remains correct for the portal, jobs and anything
+   * else that is not acting on behalf of an administrator.
+   *
+   * Returns undefined for an out-of-scope client, which is what makes the
+   * caller's existing `NotFoundError` fire — 404, never 403. A 403 would
+   * distinguish "no such client" from "not yours", and that difference is an
+   * oracle for enumerating the client base an admin was specifically denied.
+   */
+  async findForAdmin(id: string, scope: ClientScope): Promise<User | undefined> {
+    const scoped = clientScopePredicate(scope, users.id);
+    const [row] = await this.db
+      .select()
+      .from(users)
+      // In the WHERE clause, never a post-fetch comparison — the rule this
+      // whole feature rests on. See common/security/client-scope.ts.
+      .where(scoped ? and(eq(users.id, id), scoped) : eq(users.id, id))
+      .limit(1);
     return row ? toUser(row) : undefined;
   }
 
@@ -156,6 +248,20 @@ export class UsersStore {
     type?: string;
     status?: string;
     level?: number;
+    /** Exact match on `users.country` — the ADM-14 "country tag". */
+    country?: string;
+    /** ADM-14 label filter, by tag SLUG so a rename cannot break a saved link. */
+    tagSlug?: string;
+    /** R-2.5 server-side sort. Validated by `clientSortKey` before it gets here. */
+    sort?: ClientSortKey;
+    order?: 'asc' | 'desc';
+    /**
+     * Row-level visibility. Defaults to UNRESTRICTED so an existing caller that
+     * has not been updated keeps working — but every ADMIN caller must pass the
+     * actor's real scope, which is what `test/client-scope-coverage.spec.ts`
+     * enforces route by route.
+     */
+    scope?: ClientScope;
     /** Keyset position — R-2.4. When present, `page` is ignored. */
     cursor?: CursorPosition;
     /** Counting is opt-in: it is a full scan of the filtered set. */
@@ -163,12 +269,41 @@ export class UsersStore {
   }) {
     const db = this.db;
     const conditions: SQL[] = [];
+    const sortKey: ClientSortKey = filter.sort ?? DEFAULT_CLIENT_SORT;
+    const direction = filter.order ?? 'desc';
+    const sortColumn: SQLWrapper = CLIENT_SORT_COLUMNS[sortKey];
 
     if (filter.type) conditions.push(eq(users.type, filter.type as 'individual'));
     if (filter.status) conditions.push(eq(users.status, filter.status as 'active'));
     if (typeof filter.level === 'number' && !Number.isNaN(filter.level)) {
       conditions.push(eq(users.verificationLevel, filter.level));
     }
+    if (filter.country) conditions.push(eq(users.country, filter.country));
+
+    /*
+     * The tag filter, and the client scope, are both EXISTS — never a join.
+     *
+     * A join multiplies rows the moment a client carries two matching tags,
+     * which would duplicate them in the page AND corrupt the keyset seek (the
+     * "last row" is then ambiguous). EXISTS short-circuits on the first match
+     * and reads `client_tag_assignments_tag_idx` / the composite primary key
+     * directly.
+     */
+    if (filter.tagSlug) {
+      conditions.push(
+        sql`EXISTS (
+          SELECT 1 FROM ${clientTagAssignments} ta
+          JOIN ${clientTags} t ON t.id = ta.tag_id
+          WHERE ta.user_id = ${users.id} AND t.slug = ${filter.tagSlug}
+        )`,
+      );
+    }
+
+    // The row-level visibility predicate. In the WHERE clause, never after the
+    // fetch — see common/security/client-scope.ts for why that is the whole
+    // design. `undefined` for an unrestricted actor, and `and()` drops it.
+    const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, users.id);
+    if (scoped) conditions.push(scoped);
     if (filter.q) {
       /*
        * ONE predicate over the three searchable columns concatenated, matching
@@ -198,20 +333,44 @@ export class UsersStore {
     /*
      * The keyset seek — R-2.4.
      *
-     * `(created_at, id) < (cursor.created_at, cursor.id)` as a ROW comparison,
-     * not `created_at < x OR (created_at = x AND id < y)`. The row form is what
-     * Postgres can satisfy with a single index scan, and it is also the form
-     * that is obviously correct: it says "everything ordered after this row",
-     * which is exactly the question.
+     * `(sort_col, id) < (cursor.value, cursor.id)` as a ROW comparison, not
+     * `col < x OR (col = x AND id < y)`. The row form is what Postgres can
+     * satisfy with a single index scan, and it is also the form that is
+     * obviously correct: it says "everything ordered after this row", which is
+     * exactly the question.
      *
      * The `id` tiebreak is load-bearing. Two clients registered in the same
-     * millisecond would otherwise sit either side of a page boundary in an order
-     * Postgres may change between queries — reintroducing the skipped row this
-     * replaces.
+     * millisecond — or sharing a status, a country or a first name, which is
+     * far more common — would otherwise sit either side of a page boundary in
+     * an order Postgres may change between queries, reintroducing the skipped
+     * row this replaces.
+     *
+     * The COMPARATOR FOLLOWS THE SORT DIRECTION. Under `ORDER BY ... ASC`,
+     * "after this row" is `>`, and leaving it as `<` would page backwards
+     * through a forwards list: the first Next click would return rows the
+     * caller had already seen, silently.
+     *
+     * The cursor's value is cast to the sort column's own type rather than
+     * always to `timestamptz`. `::timestamptz` on an email address is a runtime
+     * error at the database, from a value that looked fine in the URL.
      */
     if (filter.cursor) {
+      const comparator = direction === 'asc' ? sql`>` : sql`<`;
+      const cast =
+        sortKey === 'createdAt'
+          ? sql`${filter.cursor.value}::timestamptz`
+          : sortKey === 'verificationLevel'
+            ? sql`${filter.cursor.value}::integer`
+            : sql`${filter.cursor.value}::text`;
+      // The enum columns compare as text; `status`/`type` cast cleanly because
+      // Postgres knows the enum's text representation.
+      const seekColumn =
+        sortKey === 'createdAt' || sortKey === 'verificationLevel'
+          ? sql`${sortColumn}`
+          : sql`${sortColumn}::text`;
+
       conditions.push(
-        sql`(${users.createdAt}, ${users.id}) < (${filter.cursor.createdAt}::timestamptz, ${filter.cursor.id}::uuid)`,
+        sql`(${seekColumn}, ${users.id}) ${comparator} (${cast}, ${filter.cursor.id}::uuid)`,
       );
     }
 
@@ -235,12 +394,22 @@ export class UsersStore {
     // everything before it.
     const usingCursor = Boolean(filter.cursor) || filter.page <= 1;
 
+    /*
+     * Both keys in the SAME direction, matching the seek and matching migration
+     * 0024's `(col DESC, id DESC)` indexes.
+     *
+     * A b-tree can be read backwards only when every column of the ORDER BY
+     * agrees, so `(col DESC, id DESC)` serves DESC forwards and ASC backwards
+     * with no sort node either way. A mixed `col DESC, id ASC` would serve
+     * neither and would silently reintroduce a sort over 219,000 rows.
+     */
+    const orderBy = direction === 'asc' ? asc : desc;
+
     const rows = await db
       .select(columns)
       .from(users)
       .where(where)
-      // Both keys DESC, matching the cursor comparison above.
-      .orderBy(desc(users.createdAt), desc(users.id))
+      .orderBy(orderBy(sortColumn), orderBy(users.id))
       // One extra row answers "is there a next page" with no second query and
       // no count.
       .limit(filter.limit + 1)

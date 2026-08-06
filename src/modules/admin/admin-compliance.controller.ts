@@ -25,7 +25,6 @@ import {
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { AdminComplianceService } from './admin-compliance.service';
-import { Admin } from '../../store/admins.store';
 import { KycStepConfig } from '../../store/kyc-config.store';
 import { RejectionContext } from '../../store/rejection-reasons.store';
 import {
@@ -47,9 +46,12 @@ import {
   MasterAdminGuard,
   PermissionsGuard,
   RequirePermissions,
+  type AuthenticatedAdmin,
 } from './guards/admin.guard';
 import { UuidParam, enumQuery, searchQuery } from '../../common/query-params';
 import { kycStatusEnum } from '../../database/schema';
+import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
+import { Audited } from './guards/audited.decorator';
 
 /** KYC review queue, configurable rejection reasons and the KYC step configurator. */
 @ApiTags('admin')
@@ -66,20 +68,25 @@ export class AdminComplianceController {
     summary: 'List all KYC submissions, optionally filtered by status',
   })
   @ApiOkResponse({ type: KycListResponseDto })
+  @ScopedToClients('KycStore.findPageWithUsers applies the predicate to kyc_submissions.user_id.')
   listKyc(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('status') status?: string,
     @Query('q') q?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.compliance.listKyc({
-      // `kyc_status` is a Postgres enum, so an unrecognised value errored in the
-      // database rather than at the edge.
-      status: enumQuery(status, kycStatusEnum.enumValues, 'status'),
-      q: searchQuery(q),
-      page,
-      limit,
-    });
+    return this.compliance.listKyc(
+      {
+        // `kyc_status` is a Postgres enum, so an unrecognised value errored in the
+        // database rather than at the edge.
+        status: enumQuery(status, kycStatusEnum.enumValues, 'status'),
+        q: searchQuery(q),
+        page,
+        limit,
+      },
+      req.admin,
+    );
   }
 
   @Get('kyc/:userId')
@@ -88,7 +95,11 @@ export class AdminComplianceController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get full KYC submission for a user' })
   @ApiOkResponse({ type: KycSubmissionDto })
-  getKyc(@Param('userId', UuidParam) userId: string, @Req() req: Request & { admin: Admin }) {
+  @ScopedToClients('Scoped by-id read — an out-of-scope submission 404s like a missing one.')
+  getKyc(
+    @Param('userId', UuidParam) userId: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
     return this.compliance.getKyc(userId, req.admin);
   }
 
@@ -107,8 +118,12 @@ export class AdminComplianceController {
     summary: "A client's previously decided KYC attempts, oldest first",
   })
   @ApiOkResponse({ type: [KycAttemptDto] })
-  getKycHistory(@Param('userId', UuidParam) userId: string) {
-    return this.compliance.getKycHistory(userId);
+  @ScopedToClients('Scoped by-id read over kyc_submission_attempts.')
+  getKycHistory(
+    @Param('userId', UuidParam) userId: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.compliance.getKycHistory(userId, req.admin);
   }
 
   @Patch('kyc/:userId/claim')
@@ -119,7 +134,14 @@ export class AdminComplianceController {
     summary: 'Claim a submitted KYC for review (sets under_review)',
   })
   @ApiOkResponse({ type: KycSubmissionDto })
-  claimKyc(@Param('userId', UuidParam) userId: string, @Req() req: Request & { admin: Admin }) {
+  @ScopedToClients(
+    "The predicate joins the transition's UPDATE ... WHERE, so check and write stay one statement.",
+  )
+  @Audited('kyc.claim')
+  claimKyc(
+    @Param('userId', UuidParam) userId: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
     return this.compliance.claimKyc(userId, req.admin);
   }
 
@@ -131,7 +153,14 @@ export class AdminComplianceController {
     summary: 'Approve KYC — bumps user verificationLevel to 1; returns the updated submission',
   })
   @ApiOkResponse({ type: KycSubmissionDto })
-  approveKyc(@Param('userId', UuidParam) userId: string, @Req() req: Request & { admin: Admin }) {
+  @ScopedToClients(
+    "Predicate inside the transition's UPDATE ... WHERE — rowcount 0 becomes the existing NotFound.",
+  )
+  @Audited('kyc.approve')
+  approveKyc(
+    @Param('userId', UuidParam) userId: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
     return this.compliance.approveKyc(userId, req.admin);
   }
 
@@ -144,10 +173,12 @@ export class AdminComplianceController {
       'Reject KYC with a reason (free text or a configured reasonId); returns the updated submission',
   })
   @ApiOkResponse({ type: KycSubmissionDto })
+  @ScopedToClients("Predicate inside the transition's UPDATE ... WHERE.")
+  @Audited('kyc.reject')
   rejectKyc(
     @Param('userId', UuidParam) userId: string,
     @Body() dto: RejectDto,
-    @Req() req: Request & { admin: Admin },
+    @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.rejectKyc(
       userId,
@@ -170,6 +201,7 @@ export class AdminComplianceController {
     summary: 'List configurable rejection reasons, optionally by context (kyc | withdrawal)',
   })
   @ApiOkResponse({ type: [RejectionReasonResponseDto] })
+  @NotClientScoped('Configuration vocabulary shared by every reviewer; contains no client data.')
   listRejectionReasons(@Query('context') context?: RejectionContext) {
     return this.compliance.listRejectionReasons(context);
   }
@@ -179,8 +211,13 @@ export class AdminComplianceController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Add a rejection reason (master admin only)' })
   @ApiOkResponse({ type: RejectionReasonResponseDto })
-  createRejectionReason(@Body() dto: RejectionReasonDto) {
-    return this.compliance.createRejectionReason(dto.context, dto.label);
+  @NotClientScoped('Configuration vocabulary; contains no client data.')
+  @Audited('rejection_reason.create')
+  createRejectionReason(
+    @Body() dto: RejectionReasonDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.compliance.createRejectionReason(dto.context, dto.label, req.admin);
   }
 
   @Put('rejection-reasons/:id')
@@ -188,8 +225,14 @@ export class AdminComplianceController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Rename a rejection reason (master admin only)' })
   @ApiOkResponse({ type: RejectionReasonResponseDto })
-  updateRejectionReason(@Param('id', UuidParam) id: string, @Body('label') label: string) {
-    return this.compliance.updateRejectionReason(id, label);
+  @NotClientScoped('Configuration vocabulary; contains no client data.')
+  @Audited('rejection_reason.update')
+  updateRejectionReason(
+    @Param('id', UuidParam) id: string,
+    @Body('label') label: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.compliance.updateRejectionReason(id, label, req.admin);
   }
 
   @Delete('rejection-reasons/:id')
@@ -197,8 +240,13 @@ export class AdminComplianceController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a rejection reason (master admin only)' })
   @ApiOkResponse({ type: MessageResponseDto })
-  deleteRejectionReason(@Param('id', UuidParam) id: string) {
-    return this.compliance.deleteRejectionReason(id);
+  @NotClientScoped('Configuration vocabulary; contains no client data.')
+  @Audited('rejection_reason.delete')
+  deleteRejectionReason(
+    @Param('id', UuidParam) id: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.compliance.deleteRejectionReason(id, req.admin);
   }
 
   // ── KYC Step Configurator ──────────────────────────────────────────────────
@@ -207,6 +255,7 @@ export class AdminComplianceController {
   @RequirePermissions('kyc.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get current KYC onboarding steps configuration' })
+  @NotClientScoped("The KYC form definition — a schema, not anybody's submission.")
   getKycConfig() {
     return this.compliance.getKycConfig();
   }
@@ -216,8 +265,10 @@ export class AdminComplianceController {
   @RequirePermissions('kyc.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update entire KYC onboarding steps configuration' })
-  updateKycConfig(@Body() dto: KycConfigDto) {
-    return this.compliance.updateKycConfig(dto.steps as unknown as KycStepConfig[]);
+  @NotClientScoped('The KYC form definition; contains no client data.')
+  @Audited('kyc_config.replace')
+  updateKycConfig(@Body() dto: KycConfigDto, @Req() req: Request & { admin: AuthenticatedAdmin }) {
+    return this.compliance.updateKycConfig(dto.steps as unknown as KycStepConfig[], req.admin);
   }
 
   @Post('kyc-config/steps')
@@ -225,8 +276,13 @@ export class AdminComplianceController {
   @RequirePermissions('kyc.create')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Add a new KYC step' })
-  addKycStep(@Body() dto: KycStepDto) {
-    return this.compliance.addKycStep(dto as unknown as Omit<KycStepConfig, 'id' | 'stepNumber'>);
+  @NotClientScoped('The KYC form definition; contains no client data.')
+  @Audited('kyc_config.step_add')
+  addKycStep(@Body() dto: KycStepDto, @Req() req: Request & { admin: AuthenticatedAdmin }) {
+    return this.compliance.addKycStep(
+      dto as unknown as Omit<KycStepConfig, 'id' | 'stepNumber'>,
+      req.admin,
+    );
   }
 
   @Put('kyc-config/steps/:id')
@@ -234,8 +290,14 @@ export class AdminComplianceController {
   @RequirePermissions('kyc.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update a specific KYC step' })
-  updateKycStep(@Param('id', UuidParam) id: string, @Body() dto: KycStepDto) {
-    return this.compliance.updateKycStep(id, dto);
+  @NotClientScoped('The KYC form definition; contains no client data.')
+  @Audited('kyc_config.step_update')
+  updateKycStep(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: KycStepDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.compliance.updateKycStep(id, dto, req.admin);
   }
 
   @Delete('kyc-config/steps/:id')
@@ -243,8 +305,13 @@ export class AdminComplianceController {
   @RequirePermissions('kyc.delete')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a KYC step' })
-  deleteKycStep(@Param('id', UuidParam) id: string) {
-    return this.compliance.deleteKycStep(id);
+  @NotClientScoped('The KYC form definition; contains no client data.')
+  @Audited('kyc_config.step_delete')
+  deleteKycStep(
+    @Param('id', UuidParam) id: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.compliance.deleteKycStep(id, req.admin);
   }
 
   @Post('kyc-config/reset')
@@ -252,7 +319,9 @@ export class AdminComplianceController {
   @RequirePermissions('kyc.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Reset KYC steps to default' })
-  resetKycConfig() {
-    return this.compliance.resetKycConfig();
+  @NotClientScoped('The KYC form definition; contains no client data.')
+  @Audited('kyc_config.reset')
+  resetKycConfig(@Req() req: Request & { admin: AuthenticatedAdmin }) {
+    return this.compliance.resetKycConfig(req.admin);
   }
 }

@@ -7,6 +7,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uuid,
@@ -135,6 +136,33 @@ export const roles = pgTable('roles', {
   name: varchar('name', { length: 100 }).notNull().unique(),
   description: text('description'),
   permissions: jsonb('permissions').$type<string[]>().notNull().default([]),
+  /*
+   * RBAC-03 — the client fields holders of this role may NOT see.
+   *
+   * On the ROLE because masking is a property of the job, not the person:
+   * "support agents do not see phone numbers" is the same kind of statement as
+   * "support agents cannot approve withdrawals", and it belongs beside it. It
+   * also resolves LIVE, exactly as `permissions` does, so adding a key here
+   * blinds every holder on their next request with no re-login — which is the
+   * behaviour you want the moment a field turns out to be more sensitive than
+   * anyone realised.
+   *
+   * A DENY-list, and that choice is forced by migration safety: `[]` is
+   * precisely today's behaviour, so this column cannot blind anybody on deploy.
+   * An allow-list would default to "see nothing" and blank every admin screen
+   * the moment the migration ran, and un-blanking them would need a data
+   * migration inventing values for rows that never expressed an opinion.
+   *
+   * The cost, stated rather than discovered: a NEW client field is visible to
+   * everyone until somebody adds it to `config/client-fields.json`. That is
+   * what the catalog-coverage test exists to catch.
+   *
+   * Keys are path-qualified (`client.email`, `kyc.personalInfo.phone`) because
+   * a flat `country` is ambiguous between `users.country` and the country
+   * inside a KYC submission's JSON — and a masking system that hides one while
+   * leaking the other is not a masking system.
+   */
+  maskedFields: jsonb('masked_fields').$type<string[]>().notNull().default([]),
   isSystem: boolean('is_system').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -163,6 +191,45 @@ export const admins = pgTable('admins', {
    * checked.
    */
   status: userStatusEnum('status').notNull().default('active'),
+  /*
+   * A per-person OVERRIDE of the role's mask. NULL means "inherit the role".
+   *
+   * Deliberately NOT the `role_id` XOR `permissions` shape used directly above,
+   * and the difference is the point. That exclusivity is right for permissions,
+   * but applying it to masking would mean un-masking a single field for a
+   * single person requires detaching them from their role entirely — after
+   * which they silently stop receiving role permission updates, which is a
+   * security regression performed in the name of a UI convenience.
+   *
+   * With null-inherit, "Sarah is a support agent but handles escalations, so
+   * she may see phone numbers" is one field on one row and nothing else moves.
+   *
+   * NULL and `[]` are different on purpose: null is "no opinion, follow the
+   * role", `[]` is "explicitly mask nothing for this person". A column that
+   * defaulted to `[]` could not express the first, which is the common case.
+   */
+  maskedFields: jsonb('masked_fields').$type<string[]>(),
+  /*
+   * Password recovery, INITIATED BY ANOTHER MASTER ADMIN — never self-service.
+   * See DECISIONS D-44.
+   *
+   * There was no recovery at all: an admin who forgot their password was locked
+   * out until somebody edited this table by hand, which is untraceable and needs
+   * production database access.
+   *
+   * Self-service by email was rejected deliberately. It would make an admin's
+   * mailbox the root of trust for an account that approves payouts, so a
+   * compromised inbox becomes a compromised payout queue. Requiring a second
+   * human who already holds the highest privilege keeps email out of the trust
+   * path entirely.
+   *
+   * The token is stored as a SHA-256 HASH and never verbatim — the same
+   * treatment `users.password_reset_token_hash` and `admin_invites.token_hash`
+   * already get, so a database dump yields no working links. 64 chars is a hex
+   * digest exactly.
+   */
+  passwordResetTokenHash: varchar('password_reset_token_hash', { length: 64 }),
+  passwordResetExpiry: timestamp('password_reset_expiry', { withTimezone: true }),
   // `refresh_token` removed here for the same reason as on `users` — superseded
   // by the refresh_tokens family table, written by nothing, read by nothing.
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -189,11 +256,139 @@ export const adminInvites = pgTable('admin_invites', {
   role: adminRoleEnum('role').notNull().default('sub_admin'),
   roleId: uuid('role_id').references(() => roles.id, { onDelete: 'set null' }),
   permissions: jsonb('permissions').$type<string[]>(),
+  /** Carried to `admins.masked_fields` on acceptance. NULL = inherit the role. */
+  maskedFields: jsonb('masked_fields').$type<string[]>(),
+  /*
+   * The client-tag territory this administrator will hold, chosen at INVITE
+   * time and copied to `admin_client_tag_scopes` when they accept.
+   *
+   * It has to be settable here, and that is a security requirement rather than
+   * a convenience. An EMPTY scope means unrestricted (see
+   * `adminClientTagScopes`), so if territory could only be assigned after
+   * acceptance, every newly-accepted sub-admin would see EVERY CLIENT IN THE
+   * SYSTEM for the window between them clicking the emailed link and a master
+   * admin remembering to configure them. Nobody would ever observe that window
+   * — it opens and closes silently, in a mailbox we do not watch.
+   *
+   * NULL means the inviter made no restriction, which the invite screen states
+   * in words rather than leaving to inference.
+   */
+  scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
   invitedBy: uuid('invited_by').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   accepted: boolean('accepted').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Client tagging & segmentation (ADM-14, DECISIONS D-15) ───────────────────
+
+/**
+ * Arbitrary client labels. The "country tag" half of ADM-14 is `users.country`,
+ * which already exists and is indexed; this is the "general tags/labels" half.
+ *
+ * A tag stopped being merely descriptive the moment `admin_client_tag_scopes`
+ * arrived: a tag now decides WHICH ADMINS CAN SEE A CLIENT. Treat every write
+ * here as privilege-adjacent — which is why `tags.assign` is a permission of
+ * its own, separate from `tags.manage`.
+ */
+export const clientTags = pgTable(
+  'client_tags',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /*
+     * The stable machine name. The API filters by SLUG, not by id, so a saved
+     * segment link (`/clients?tag=high-risk`) survives someone renaming the
+     * label — and a URL an operator pasted into a ticket last month still means
+     * what it meant.
+     */
+    slug: varchar('slug', { length: 64 }).notNull(),
+    label: varchar('label', { length: 100 }).notNull(),
+    /** Chip colour token for the admin UI. Presentation, hence nullable. */
+    color: varchar('color', { length: 32 }),
+    description: text('description'),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('client_tags_slug_uq').on(t.slug)],
+);
+
+export const clientTagAssignments = pgTable(
+  'client_tag_assignments',
+  {
+    // `restrict`, matching every other FK to `users` here: a client with
+    // history is never deleted out from under the rows that reference them.
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    // `cascade`, unlike the scope table below. A tag is a label; deleting it
+    // should take its assignments with it. Deleting a tag that is somebody's
+    // TERRITORY is a different question, and `admin_client_tag_scopes` answers
+    // it with `restrict`.
+    tagId: uuid('tag_id')
+      .notNull()
+      .references(() => clientTags.id, { onDelete: 'cascade' }),
+    assignedBy: uuid('assigned_by'),
+    assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /*
+     * THE idempotency constraint (ARCHITECTURE §6.3): assigning a tag twice is
+     * `ON CONFLICT DO NOTHING`, never check-then-insert, never a 409. Two
+     * admins tagging the same client at the same instant is an ordinary event.
+     *
+     * It also serves the scope predicate and the client profile, both of which
+     * ask "which tags does THIS client carry".
+     */
+    primaryKey({ columns: [t.userId, t.tagId] }),
+    // The other direction — "which clients carry this tag" — which is the
+    // segment query behind `?tag=` and behind every scoped admin's client list.
+    index('client_tag_assignments_tag_idx').on(t.tagId, t.userId),
+  ],
+);
+
+/**
+ * Row-level client visibility: the tags whose clients this administrator may
+ * see. Feature B of the RBAC-03 work.
+ *
+ * PER-ADMIN, not per-role, and deliberately asymmetric with `masked_fields`
+ * above. A role is a job description ("KYC reviewer"); a scope is a territory
+ * ("the Levant desk"). Two people routinely share the first and differ on the
+ * second, so folding territory into the role would force one role per desk and
+ * multiply the catalog for no gain. `resolvePermissions`' role-wins semantics
+ * are also simply wrong here — neither union nor intersection is the obvious
+ * answer for two overlapping territories.
+ *
+ * AN EMPTY SCOPE MEANS UNRESTRICTED. Same reasoning as RBAC-08's empty
+ * allowlist (DECISIONS D-10): the deploy that creates this table must not
+ * blind every existing sub-admin before anyone has had a chance to configure a
+ * territory. Master admins are unrestricted regardless of what is stored.
+ */
+export const adminClientTagScopes = pgTable(
+  'admin_client_tag_scopes',
+  {
+    adminId: uuid('admin_id')
+      .notNull()
+      .references(() => admins.id, { onDelete: 'cascade' }),
+    /*
+     * RESTRICT, and this one is load-bearing rather than stylistic.
+     *
+     * With CASCADE, deleting a tag would delete the last scope row of every
+     * admin restricted to it — and because an empty scope means UNRESTRICTED,
+     * those admins would be promoted to seeing every client in the system. That
+     * is privilege escalation performed by a DELETE on a label, with no audit
+     * trail that looks anything like a permission change.
+     *
+     * RESTRICT makes "you cannot delete a tag that is somebody's territory" a
+     * rule the database enforces rather than one a service has to remember.
+     */
+    tagId: uuid('tag_id')
+      .notNull()
+      .references(() => clientTags.id, { onDelete: 'restrict' }),
+    createdBy: uuid('created_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.adminId, t.tagId] })],
+);
 
 // ── Compliance / KYC ─────────────────────────────────────────────────────────
 export const kycSubmissions = pgTable(

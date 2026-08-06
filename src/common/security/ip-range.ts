@@ -193,6 +193,27 @@ export function ipMatchesAny(ip: string | undefined, rules: readonly IpRule[]): 
 }
 
 /**
+ * Whether a rule admits every address of its family — a `/0`.
+ *
+ * Worth its own predicate because such a rule is *valid*, *canonical*, and
+ * catastrophic: `0.0.0.0/0` on the allowlist means the list is non-empty, so
+ * `IpAllowlistGuard` reports the feature as enforcing and the admin panel shows
+ * a green "Enforced — 1 rule" shield, while every address on the internet is
+ * admitted. That is strictly worse than an empty list, which at least says
+ * plainly that the protection is off.
+ *
+ * It is also easy to reach by accident rather than by typo: `10.0.0.1/0` is a
+ * plausible thing to type when `/8` was meant, and it canonicalises to
+ * `0.0.0.0/0` — so the check must run on the CANONICAL form, not the input.
+ *
+ * Turning RBAC-08 off is a legitimate thing to want. The honest way is to
+ * remove every rule, which the panel labels as switching the protection off.
+ */
+export function matchesEverything(rule: IpRule): boolean {
+  return parseRule(rule)?.prefix === 0;
+}
+
+/**
  * The canonical spelling of a rule, for storage and comparison.
  * Returns null when the rule is invalid.
  */

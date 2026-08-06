@@ -1,10 +1,39 @@
 import { Injectable } from '@nestjs/common';
-import { Admin } from '../../store/admins.store';
-import { UsersStore } from '../../store/users.store';
-import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import { UsersStore, clientSortKey, clientSortOrder } from '../../store/users.store';
+import { ClientTagsStore } from '../../store/client-tags.store';
+import { ClientNotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { buildCursorPage, decodeCursor, pageSize } from '../../common/pagination';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
+import { applyMask, applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
+import { ClientProfileStore } from '../../store/client-profile.store';
+import { KycStore, type KycSubmission } from '../../store/kyc.store';
+import { actorHasPermission } from '../../common/security/actor';
+
+/**
+ * How many referred clients a PROFILE shows.
+ *
+ * A profile is not a client list. An IB with 4,000 referrals would otherwise
+ * turn one screen into an unpaginated dump of 4,000 names and emails, so the
+ * list is capped and the screen links to the filtered client index for the
+ * rest — which is the tool built for that question.
+ */
+const REFERRED_CLIENTS_ON_PROFILE = 25;
+
+/** Every document filename a submission references, in one place. */
+function documentFilenames(submission: KycSubmission | undefined): string[] {
+  if (!submission) return [];
+  return [
+    submission.document?.frontFilePath,
+    submission.document?.backFilePath,
+    submission.selfie?.filePath,
+    submission.addressProof?.filePath,
+    submission.addressProof?.page2FilePath,
+  ]
+    .filter((p): p is string => typeof p === 'string' && p.length > 0)
+    .map((p) => p.split('/').pop() as string);
+}
+import type { AuthenticatedAdmin } from './guards/admin.guard';
 
 /**
  * ADM-01 client directory and ADM-02 suspension.
@@ -17,20 +46,41 @@ import { assertActorCan } from '../../common/security/actor';
 export class AdminClientsService {
   constructor(
     private readonly users: UsersStore,
+    private readonly tags: ClientTagsStore,
+    private readonly profiles: ClientProfileStore,
+    private readonly kyc: KycStore,
     private readonly audit: AdminAuditService,
   ) {}
 
   // ─── Clients list (ADM-01 / ADM-14) ───────────────────────────────────────
-  async listClients(query: {
-    page?: string;
-    limit?: string;
-    cursor?: string;
-    withTotal?: string;
-    q?: string;
-    type?: string;
-    status?: string;
-    level?: string;
-  }) {
+  async listClients(
+    query: {
+      page?: string;
+      limit?: string;
+      cursor?: string;
+      withTotal?: string;
+      q?: string;
+      type?: string;
+      status?: string;
+      level?: string;
+      country?: string;
+      tag?: string;
+      sort?: string;
+      order?: string;
+    },
+    actor: AuthenticatedAdmin,
+  ) {
+    /*
+     * Asserted HERE as well as in the guard — R-4.3.
+     *
+     * This method now decides WHICH ROWS and WHICH FIELDS the caller gets, from
+     * the actor, so it is making an authorization decision rather than merely
+     * receiving one. The guard is a fast reject at the edge; a future export
+     * job or scheduled report calling this directly has no guard at all, and
+     * "trusted because internal" is how scoping quietly stops applying.
+     */
+    assertActorCan(actor, 'users.view', 'list clients');
+
     const page = Math.max(1, parseInt(query.page ?? '1', 10) || 1);
     const limit = pageSize(query.limit);
 
@@ -55,10 +105,37 @@ export class AdminClientsService {
      * `page` still works so both frontends can move at their own pace. It is the
      * path to delete, not the one to extend.
      */
+    /*
+     * The sort is validated BEFORE the cursor is decoded, and the order matters.
+     *
+     * `decodeCursor` refuses a cursor minted under a different ordering, and it
+     * needs the current sort key to say which. Decoding first would produce
+     * "this cursor is for createdAt but you asked for undefined", which is true
+     * and useless.
+     */
+    const sort = clientSortKey(query.sort);
+    const order = clientSortOrder(query.order);
+
+    /*
+     * An unknown tag slug is a 400, NOT an empty page.
+     *
+     * R-2.5: a silently ignored filter is a lie the UI tells. A typo'd segment
+     * returning zero clients reads as "nobody is in this segment", which is a
+     * statement about the client base rather than about the URL.
+     */
+    if (query.tag) {
+      const tag = await this.tags.findBySlug(query.tag);
+      if (!tag) {
+        throw new ValidationError(
+          `There is no client tag "${query.tag}". Check the tag list for the current names.`,
+        );
+      }
+    }
+
     const { rows, total } = await this.users.findPage({
       page,
       limit,
-      cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
+      cursor: query.cursor ? decodeCursor(query.cursor, sort) : undefined,
       // Counting is a full scan of the filtered set. Requested explicitly, or
       // implied by the legacy offset caller, which renders a page count.
       withTotal: query.withTotal === 'true' || (!query.cursor && query.page !== undefined),
@@ -66,19 +143,152 @@ export class AdminClientsService {
       type: query.type,
       status: query.status,
       level,
+      country: query.country?.trim() || undefined,
+      tagSlug: query.tag,
+      sort,
+      order,
+      // Row-level visibility, applied in the WHERE clause. An out-of-scope
+      // client is not filtered out of the result — it never enters it.
+      scope: actor.clientScope,
     });
 
-    const paged = buildCursorPage(rows, limit, total);
-    // `items` / `total` / `page` / `limit` stay for the existing callers;
-    // `nextCursor` is the additive half they migrate onto.
-    return { ...paged, page, limit, total: paged.total ?? rows.length };
+    const paged = buildCursorPage(rows, limit, total, sort);
+
+    // Tags for the whole page in ONE query — never per row. 25 extra round
+    // trips per keystroke of the search box is the N+1 ARCHITECTURE §5 names.
+    const tagsByClient = await this.tags.tagsForClients(paged.items.map((r) => r.id));
+    const withTags = paged.items.map((row) => ({
+      ...row,
+      tags: tagsByClient.get(row.id) ?? [],
+    }));
+
+    return {
+      ...paged,
+      /*
+       * Masking is applied HERE, at the last point before the rows become a
+       * response, and `maskedFields` travels beside them.
+       *
+       * The two halves are inseparable: stripping the values without saying so
+       * makes a hidden email indistinguishable from a client who has none, and
+       * saying so without stripping is a UI convention rather than access
+       * control (R-4.1 — the backend enforces, the frontend only hides).
+       */
+      items: applyMaskAll('client', withTags, actor.fieldMask),
+      maskedFields: maskedFieldsFor('client', actor.fieldMask),
+      page,
+      limit,
+      total: paged.total ?? rows.length,
+    };
   }
+  // ─── Client profile (ADM-01) ──────────────────────────────────────────────
+  /**
+   * FR-ADM-01's full client profile: KYC status, documents, trading accounts
+   * and referral relationships, on one screen.
+   *
+   * Rev 9 deferred this and DECISIONS D-20 recorded the deferral as resolved;
+   * it is built here on an explicit reversal, because the FSD's acceptance
+   * criterion for ADM-01 is literally "an administrator searches the client
+   * base and opens a full client profile". Noted rather than left to be
+   * rediscovered as an inconsistency.
+   *
+   * ── Every section is permission-gated INDIVIDUALLY ──────────────────────────
+   *
+   * And an omitted section is not the same as an empty one. A compliance
+   * reviewer shown no documents concludes none were uploaded; the response has
+   * to let the screen say "hidden by your permissions" instead, which it can
+   * only do if the two states arrive differently. So a section the caller may
+   * not see is ABSENT, and a section they may see with nothing in it is an
+   * empty array.
+   *
+   * The sections are fetched CONCURRENTLY rather than in sequence: they are
+   * independent reads on one screen, and doing them one after another turns a
+   * profile open into five round trips of latency for no benefit.
+   */
+  async getClientProfile(clientId: string, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'users.view', 'open a client profile');
+
+    // The scoped lookup, first. An out-of-scope client 404s exactly as a
+    // missing one does — a 403 here would confirm the id names a real client.
+    const client = await this.users.findForAdmin(clientId, actor.clientScope);
+    if (!client) throw new ClientNotFoundError();
+
+    const may = (permission: string) => actorHasPermission(actor, permission);
+
+    const [tags, kyc, tradingAccounts, referrer, referredClients] = await Promise.all([
+      this.tags.tagsForClient(clientId),
+      may('kyc.view') || may('kyc.review') ? this.kyc.findByUserId(clientId) : undefined,
+      may('trading.view') ? this.profiles.tradingAccountsFor(clientId) : undefined,
+      may('partners.view') ? this.profiles.referrerOf(clientId) : undefined,
+      may('partners.view')
+        ? this.profiles.referredBy(clientId, REFERRED_CLIENTS_ON_PROFILE)
+        : undefined,
+    ]);
+
+    const profile = {
+      id: client.id,
+      email: client.email,
+      firstName: client.firstName,
+      lastName: client.lastName,
+      type: client.type,
+      status: client.status,
+      verificationLevel: client.verificationLevel,
+      emailVerified: client.emailVerified,
+      country: client.country,
+      phone: client.phone,
+      createdAt: client.createdAt,
+      tags,
+      ...(kyc === undefined
+        ? {}
+        : {
+            kyc: {
+              status: kyc?.status ?? 'not_started',
+              submittedAt: kyc?.submittedAt,
+              reviewedAt: kyc?.reviewedAt,
+              rejectionReason: kyc?.rejectionReason,
+              documentCount: documentFilenames(kyc).length,
+            },
+          }),
+      /*
+       * Document FILENAMES, never bytes and never a signed link.
+       *
+       * Each one is fetched through `GET /uploads/kyc/:file`, which applies the
+       * client scope, checks the reader and writes the R-6.6 audit row. Putting
+       * the images in this response would route an audited PII read around its
+       * own audit — "which admin viewed this passport" would answer "nobody",
+       * because opening the profile is not viewing a document.
+       */
+      ...(may('kyc.documents.view') && kyc !== undefined
+        ? { documents: documentFilenames(kyc) }
+        : {}),
+      ...(tradingAccounts === undefined ? {} : { tradingAccounts }),
+      ...(referrer === undefined ? {} : { referrer }),
+      ...(referredClients === undefined
+        ? {}
+        : { referredClients, referredShown: referredClients.length }),
+    };
+
+    /*
+     * Masking last, over the assembled object.
+     *
+     * After the sections rather than before, so a masked field cannot survive
+     * inside one of them — `client.email` hides the top-level email AND, via
+     * its catalog aliases, the same value wherever else it was copied.
+     */
+    return {
+      ...applyMask('client', profile, actor.fieldMask),
+      maskedFields: maskedFieldsFor('client', actor.fieldMask),
+    };
+  }
+
   // ─── Client suspension (users.suspend) ────────────────────────────────────
-  async setClientStatus(userId: string, status: 'active' | 'suspended', actor: Admin) {
+  async setClientStatus(userId: string, status: 'active' | 'suspended', actor: AuthenticatedAdmin) {
     // Suspension kills live sessions and blocks login — a real privilege.
     assertActorCan(actor, 'users.suspend', 'suspend or reactivate a client');
-    const user = await this.users.findById(userId);
-    if (!user) throw new NotFoundError('Client not found.');
+    // Scoped lookup: an out-of-scope client is 404, never 403. A 403 here would
+    // confirm the id exists, turning this endpoint into an oracle for
+    // enumerating clients the actor was specifically denied.
+    const user = await this.users.findForAdmin(userId, actor.clientScope);
+    if (!user) throw new ClientNotFoundError();
     if (user.status === status) {
       throw new ValidationError(`Client is already ${status}.`);
     }

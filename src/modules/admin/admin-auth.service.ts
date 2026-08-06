@@ -11,6 +11,9 @@ import {
   AuthorizationError,
   ConflictError,
   NotFoundError,
+  SessionReplayedError,
+  SessionRevokedError,
+  SessionSupersededError,
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
@@ -137,13 +140,19 @@ export class AdminAuthService {
       this.logger.log(`Upgraded password hash to argon2id for admin ${admin.id}`);
     }
 
-    const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin);
+    /*
+     * The family id is minted HERE, before anything is signed, because the
+     * access token has to carry it as `fam` — see `generateAdminTokens`.
+     */
+    const familyId = randomUUID();
+    const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin, familyId);
     await this.refreshTokens.record({
       surface: 'admin',
       subjectId: admin.id,
       jti,
       token: refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+      familyId,
     });
 
     this.setAdminCookies(res, accessToken, refreshToken, admin.id);
@@ -164,15 +173,72 @@ export class AdminAuthService {
     return { admin: await this.rbac.sanitize(admin) };
   }
   // ─── Admin Logout ──────────────────────────────────────────────────────────
-  async logout(adminId: string, res: Response) {
-    // Revokes EVERY family for this admin, not just the one presenting a token:
-    // logging out on one device must not leave the others live (R-3.3).
-    await this.refreshTokens.revokeAllForSubject('admin', adminId);
+  /**
+   * Ends the session, and WORKS WHEN THE ACCESS TOKEN HAS ALREADY EXPIRED.
+   *
+   * It did not. This route sat behind `AdminGuard`, so a fifteen-minute-old
+   * access token meant 401 and **no cookies cleared** — the admin was left
+   * holding a live thirty-day refresh cookie with no server-side way to drop it.
+   *
+   * The path a person actually hits: a laptop sleeps past fifteen minutes, so
+   * the proactive timer never ran; the first thing they do on waking is click
+   * Log out; it 401s twice and the console says "could not sign out" — on the
+   * machine they are about to walk away from.
+   *
+   * Two decisions make this safe without the guard:
+   *
+   *  - **Identity comes from the REFRESH cookie**, which lives thirty days and
+   *    is therefore present in exactly the case the guard failed. It is fully
+   *    verified — signature, audience, issuer, algorithm and kind — so this
+   *    cannot be used to revoke somebody else's sessions.
+   *  - **Cookies are cleared unconditionally**, even when nothing verifies.
+   *    Clearing a cookie is not a privileged act, and refusing to do it for
+   *    someone whose credential is already worthless only leaves rubbish in
+   *    their browser.
+   *
+   * Origin validation still runs on this route — `@NoCsrf` waives the token, not
+   * the origin check (`csrf.guard.ts`) — so a cross-site page cannot use it to
+   * sign somebody out.
+   */
+  async logout(req: Request, res: Response) {
+    const adminId = this.subjectFromRefreshCookie(req);
+    if (adminId) {
+      // Revokes EVERY family for this admin, not just the one presenting a
+      // token: logging out on one device must not leave the others live (R-3.3).
+      await this.refreshTokens.revokeAllForSubject('admin', adminId);
+    }
     clearSessionCookie(res, sessionCookieNames.adminAccess());
     clearSessionCookie(res, sessionCookieNames.adminRefresh());
     clearSessionCookie(res, sessionCookieNames.adminCsrf());
     clearLegacySessionCookies(res);
     return { message: 'Logged out.' };
+  }
+
+  /**
+   * The admin a refresh cookie belongs to, or null if it proves nothing.
+   *
+   * Verified in full rather than decoded: an unverified `sub` would let anyone
+   * end anyone's sessions by writing their own cookie.
+   */
+  private subjectFromRefreshCookie(req: Request): string | null {
+    const token = readSessionCookie(
+      req.cookies as Record<string, string | undefined> | undefined,
+      COOKIE_BASES.adminRefresh,
+    );
+    if (!token) return null;
+    try {
+      const decoded = this.jwt.verify<{ sub: string; typ?: string }>(token, {
+        secret: this.config.getOrThrow<string>('ADMIN_JWT_REFRESH_SECRET'),
+        audience: TOKEN_AUDIENCE.admin,
+        issuer: TOKEN_ISSUER,
+        algorithms: TOKEN_ALGORITHMS,
+      });
+      return isTokenKind(decoded, TOKEN_KIND.refresh) ? decoded.sub : null;
+    } catch {
+      // Expired or forged. The cookies still get cleared by the caller — there
+      // is simply no session left to revoke server-side.
+      return null;
+    }
   }
   // ─── Admin Me ──────────────────────────────────────────────────────────────
   async me(admin: Admin) {
@@ -294,13 +360,38 @@ export class AdminAuthService {
 
     await this.invites.markAccepted(token);
 
-    const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin);
+    /*
+     * The moment an ADMINISTRATOR ACCOUNT COMES INTO EXISTENCE, and it was the
+     * one privileged event with no audit row at all.
+     *
+     * `admin.invite` recorded that somebody was asked; nothing recorded that
+     * they arrived. So "when did this administrator get access, and with what"
+     * was answerable only from `admins.created_at`, which says nothing about
+     * the permissions they were granted or who invited them.
+     *
+     * The actor is the NEW ADMIN — they performed this action, from their own
+     * address — and `invitedBy` names who authorised it. Recording the inviter
+     * as the actor would put somebody else's name and IP on an action they were
+     * not present for.
+     */
+    this.audit.record(admin.id, 'admin.invite_accept', 'admin', admin.id, {
+      email: admin.email,
+      invitedBy: invite.invitedBy,
+      roleId: invite.roleId,
+      permissions: admin.permissions,
+    });
+
+    // Minted before signing, so the access token can carry it as `fam` — the
+    // same reason as `login`.
+    const familyId = randomUUID();
+    const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin, familyId);
     await this.refreshTokens.record({
       surface: 'admin',
       subjectId: admin.id,
       jti,
       token: refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+      familyId,
     });
     this.setAdminCookies(res, accessToken, refreshToken, admin.id);
 
@@ -368,7 +459,7 @@ export class AdminAuthService {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
-  private generateAdminTokens(admin: Admin) {
+  private generateAdminTokens(admin: Admin, familyId: string) {
     // Two keys, matching the portal. Signing both kinds with one key meant a
     // refresh token verified anywhere an access token did — see
     // common/security/token-audience.ts. `typ` below closes that on its own;
@@ -387,10 +478,25 @@ export class AdminAuthService {
     // `typ` so the two KINDS cannot be confused either. Both are signed with
     // ADMIN_JWT_SECRET, so without this the 30-day refresh token below verifies
     // anywhere the 15-minute access token does — see token-audience.ts.
-    const accessToken = this.jwt.sign(
-      { sub: admin.id, email: admin.email, role: admin.role, typ: TOKEN_KIND.access },
-      { secret: accessSecret, expiresIn: '15m', ...claims },
-    );
+    //
+    // `fam` names the login. Without it, revoking a session reached the refresh
+    // family only, so "sign out that device" and reuse detection both left the
+    // other browser working for up to fifteen minutes — on the console that
+    // approves payouts. The portal has carried this since 6 Aug; this surface
+    // did not. Tokens minted before this change carry no `fam` and are refused,
+    // so every live admin session ends once, at deploy.
+    const accessPayload = {
+      sub: admin.id,
+      email: admin.email,
+      role: admin.role,
+      typ: TOKEN_KIND.access,
+      fam: familyId,
+    };
+    const accessToken = this.jwt.sign(accessPayload, {
+      secret: accessSecret,
+      expiresIn: '15m',
+      ...claims,
+    });
     // The refresh token carries a `jti` naming its row in refresh_tokens, which
     // is how a presented token finds out whether it has already been rotated
     // (R-3.3). Minted here so signing stays in one place; the row is written by
@@ -447,7 +553,13 @@ export class AdminAuthService {
         COOKIE_BASES.adminRefresh,
       );
 
-    if (!providedToken) throw new AuthenticationError('No refresh token provided.');
+    /*
+     * Every failure below is `SESSION_REVOKED`, and they are deliberately NOT
+     * told apart: no cookie, a bad signature and a thirty-day expiry all mean
+     * the same thing to a client — this cannot be renewed, sign in again — and
+     * saying WHICH to an unauthenticated caller is a tutorial on the rest.
+     */
+    if (!providedToken) throw new SessionRevokedError('No refresh token provided.');
 
     let adminId: string;
     let jti: string | undefined;
@@ -462,12 +574,12 @@ export class AdminAuthService {
       // An ACCESS token must not buy a new session pair here either — the
       // confusion has to be refused in both directions to be worth anything.
       if (!isTokenKind(decoded, TOKEN_KIND.refresh)) {
-        throw new AuthenticationError('Invalid or expired admin refresh token.');
+        throw new SessionRevokedError('Invalid or expired admin refresh token.');
       }
       adminId = decoded.sub;
       jti = decoded.jti;
     } catch {
-      throw new AuthenticationError('Invalid or expired admin refresh token.');
+      throw new SessionRevokedError('Invalid or expired admin refresh token.');
     }
 
     // An unknown subject is a failed authentication, never a reason to fall back
@@ -475,7 +587,7 @@ export class AdminAuthService {
     // any token with any `sub` became a master-admin session, and deleting a
     // compromised admin did not revoke them.
     const admin = await this.admins.findById(adminId);
-    if (!admin) throw new AuthenticationError('Admin account not found.');
+    if (!admin) throw new SessionRevokedError('Admin account not found.');
 
     /*
      * The token's own row decides — R-3.3.
@@ -489,7 +601,7 @@ export class AdminAuthService {
     // logs those sessions out once, which is the correct migration cost for
     // credentials that cannot be checked for replay.
     if (!jti) {
-      throw new AuthenticationError('Session has been revoked. Please log in again.');
+      throw new SessionRevokedError('Session has been revoked. Please log in again.');
     }
 
     const verdict = await this.refreshTokens.verify({
@@ -502,29 +614,69 @@ export class AdminAuthService {
       // The family is already revoked by verify(). Say the same thing to the
       // legitimate user and to the attacker: which one this is, is exactly what
       // we cannot tell.
-      throw new AuthenticationError(
+      throw new SessionReplayedError(
         'This session has been ended for security reasons. Please log in again.',
       );
     }
-    if (verdict.outcome !== 'ok') {
-      throw new AuthenticationError('Session has been revoked. Please log in again.');
+    if (verdict.outcome !== 'ok' && verdict.outcome !== 'retried') {
+      throw new SessionRevokedError('Session has been revoked. Please log in again.');
     }
 
-    const { accessToken, refreshToken, jti: nextJti } = this.generateAdminTokens(admin);
+    /*
+     * A suspended admin does not get a new session pair.
+     *
+     * The portal has checked this on refresh since it was written; this surface
+     * did not, so suspending an administrator stopped them at the guard on the
+     * next request and then handed them a fresh fifteen-minute token every time
+     * they refreshed — for thirty days. The account that can approve payouts was
+     * the one where revocation leaked.
+     *
+     * Belt and braces, exactly as the portal does it: revoke every family too,
+     * so a token minted before the suspension cannot survive on this path
+     * either.
+     */
+    if (admin.status === 'suspended') {
+      await this.refreshTokens.revokeAllForSubject('admin', admin.id);
+      throw new SessionRevokedError('This administrator account has been suspended.');
+    }
+
+    /*
+     * Which row this rotation consumes — see the portal's twin of this comment.
+     * On a `retried` verdict the presented token was consumed by a rotation the
+     * client never received, so we consume its successor instead.
+     */
+    const jtiToRotate = verdict.outcome === 'retried' ? verdict.successorJti : jti;
+
+    // The SAME family: rotation continues one login. The new access token has to
+    // carry the id the old one did, or revoking that session would stop reaching
+    // it after the next refresh.
+    const {
+      accessToken,
+      refreshToken,
+      jti: nextJti,
+    } = this.generateAdminTokens(admin, verdict.familyId);
     const rotated = await this.refreshTokens.rotate({
       surface: 'admin',
-      // Narrowed: verdict 'ok' is only reachable when `jti` was present.
-      jti,
+      jti: jtiToRotate,
       familyId: verdict.familyId,
       subjectId: admin.id,
       jtiNext: nextJti,
       nextToken: refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
     });
-    // Lost a race with a concurrent refresh using the same token. Handing out a
-    // second live session here is exactly what the conditional update prevents.
+    /*
+     * Lost a race with a concurrent refresh using the same token. Handing out a
+     * second live session here is exactly what the conditional update prevents.
+     *
+     * The session is ALIVE — the winner rotated it and its cookies are already
+     * in this browser's jar, because tabs share one. `SESSION_SUPERSEDED` tells
+     * the client to retry; answering "revoked" is how two tabs waking together
+     * ejected one of them from a valid thirty-day session.
+     */
     if (!rotated) {
-      throw new AuthenticationError('Session has been revoked. Please log in again.');
+      throw new SessionSupersededError(
+        'This session was renewed by another request. Please retry.',
+      );
     }
 
     this.setAdminCookies(res, accessToken, refreshToken, admin.id);

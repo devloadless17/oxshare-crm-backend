@@ -3,6 +3,7 @@ import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-set
 import { closeDb, getDb, resetDb } from '../src/database/db';
 import { users } from '../src/database/schema';
 import { WalletService } from '../src/modules/wallet/wallet.service';
+import { decodeCursor } from '../src/common/pagination';
 
 /**
  * A client must be able to reach every entry in their own ledger.
@@ -162,10 +163,13 @@ describe("a client's own ledger", () => {
   });
 });
 
-/** Local helper so the walk reads the way a caller would actually write it. */
-function decode(cursor: string) {
-  return JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as {
-    createdAt: string;
-    id: string;
-  };
-}
+/**
+ * The REAL decoder, not a local re-implementation.
+ *
+ * This used to `JSON.parse` the base64 itself and cast the result, which meant
+ * the walks below exercised a cursor format that only this file believed in —
+ * they would have kept passing through any change to the real one. Same lesson
+ * as `VALIDATION_PIPE_OPTIONS` and `applyApiPrefix`: a test that defines the
+ * thing it guards guards nothing.
+ */
+const decode = (cursor: string) => decodeCursor(cursor);

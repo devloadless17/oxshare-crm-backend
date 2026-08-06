@@ -13,7 +13,10 @@ import { ProgramsService } from '../src/modules/partners/programs.service';
 import { RejectionReasonsStore } from '../src/store/rejection-reasons.store';
 import { UsersStore } from '../src/store/users.store';
 import { EmailService } from '../src/modules/email/email.service';
-import type { Admin } from '../src/store/admins.store';
+import type { AuthenticatedAdmin } from '../src/modules/admin/guards/admin.guard';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
+import { EMPTY_MASK } from '../src/common/security/field-mask';
+import { ClientVisibilityService } from '../src/common/security/client-visibility.service';
 
 /**
  * The money desk — withdrawal review, the ledger view, and commission plans.
@@ -36,7 +39,14 @@ import type { Admin } from '../src/store/admins.store';
  *    (R-6.5), so a failure to record is a failure to act.
  */
 
-const MASTER: Admin = {
+/*
+ * `AuthenticatedAdmin`, not `Admin`, because that is what the guard puts on the
+ * request and what every scoped service method now demands. Both fixtures are
+ * UNRESTRICTED and unmasked — this file is about separation of duties on the
+ * money path, so the two new dimensions are held constant rather than left
+ * undefined.
+ */
+const MASTER: AuthenticatedAdmin = {
   id: 'master-1',
   email: 'admin@oxshare.com',
   name: 'Master',
@@ -44,11 +54,13 @@ const MASTER: Admin = {
   role: 'master_admin',
   status: 'active',
   permissions: ['*'],
+  clientScope: UNRESTRICTED,
+  fieldMask: EMPTY_MASK,
   createdAt: new Date(),
 };
 
 /** Can approve and reject, but must NOT be able to pay out. */
-const APPROVER: Admin = {
+const APPROVER: AuthenticatedAdmin = {
   ...MASTER,
   id: 'approver-1',
   email: 'approver@oxshare.com',
@@ -57,7 +69,7 @@ const APPROVER: Admin = {
 };
 
 /** Can pay out, but must NOT be able to approve. */
-const SETTLER: Admin = {
+const SETTLER: AuthenticatedAdmin = {
   ...MASTER,
   id: 'settler-1',
   email: 'settler@oxshare.com',
@@ -139,6 +151,13 @@ async function build() {
       { provide: UsersStore, useValue: users },
       { provide: EmailService, useValue: email },
       { provide: AdminAuditService, useValue: audit },
+      {
+        // Every actor in this file is unrestricted, so the gate is a no-op —
+        // stated as a fake rather than left out, so the DI graph matches the
+        // real one and a future scoped case has somewhere to hook in.
+        provide: ClientVisibilityService,
+        useValue: { assertVisible: vi.fn().mockResolvedValue(undefined) },
+      },
     ],
   }).compile();
 
@@ -393,13 +412,13 @@ describe('the ledger view — ADM-13', () => {
   it('refuses an unknown entry type rather than casting it into the query', async () => {
     // The `as` that made `?state=` a 500 on the withdrawals list. Same shape.
     const h = await build();
-    await expect(h.service.listLedger({ entryType: 'not-a-type' })).rejects.toThrow();
+    await expect(h.service.listLedger({ entryType: 'not-a-type' }, MASTER)).rejects.toThrow();
     expect(h.wallets.listEntries).not.toHaveBeenCalled();
   });
 
   it('passes a valid entry type through', async () => {
     const h = await build();
-    await h.service.listLedger({ entryType: 'deposit' });
+    await h.service.listLedger({ entryType: 'deposit' }, MASTER);
     expect(h.wallets.listEntries).toHaveBeenCalledWith(
       expect.objectContaining({ entryType: 'deposit' }),
     );
@@ -407,7 +426,7 @@ describe('the ledger view — ADM-13', () => {
 
   it('defaults the page size rather than trusting the querystring', async () => {
     const h = await build();
-    await h.service.listLedger({ limit: 'not-a-number' });
+    await h.service.listLedger({ limit: 'not-a-number' }, MASTER);
     expect(h.wallets.listEntries).toHaveBeenCalledWith(expect.objectContaining({ limit: 50 }));
   });
 });

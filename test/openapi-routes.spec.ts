@@ -3,9 +3,9 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { Test } from '@nestjs/testing';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import type { INestApplication } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from '../src/app.module';
-import { applyApiPrefix } from '../src/common/api-prefix';
+import { applyApiPrefix, createHttpAdapter } from '../src/common/api-prefix';
 
 /**
  * The route inventory is frozen against a committed fixture.
@@ -34,17 +34,20 @@ const FIXTURE = join(__dirname, 'fixtures', 'openapi-routes.json');
 
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'options', 'head'] as const;
 
-let app: INestApplication;
+let app: NestExpressApplication;
 
 beforeAll(async () => {
   // Match main.ts so the emitted document is the one the frontends generate from.
   process.env['NODE_ENV'] ??= 'test';
 
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
-  app = moduleRef.createNestApplication();
-  // The SAME call main.ts makes, from the same module — otherwise this snapshot
-  // describes a surface the server does not serve, and the frontends generate
-  // their types from a document that disagrees with reality.
+  // The SAME adapter and the SAME prefix call main.ts makes, from the same
+  // module — otherwise this snapshot describes a surface the server does not
+  // serve, and the frontends generate their types from a document that
+  // disagrees with reality. `createHttpAdapter()` carries the case-sensitive
+  // routing that makes `/v1/Admin/...` a 404 rather than a second, unguarded
+  // spelling of every admin route (common/api-prefix.ts).
+  app = moduleRef.createNestApplication<NestExpressApplication>(createHttpAdapter());
   applyApiPrefix(app);
   await app.init();
 }, 60_000);

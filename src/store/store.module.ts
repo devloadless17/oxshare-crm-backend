@@ -1,5 +1,8 @@
 import { Global, Module } from '@nestjs/common';
+import { AdminClientScopesStore } from './admin-client-scopes.store';
 import { AdminIpAllowlistStore } from './admin-ip-allowlist.store';
+import { ClientProfileStore } from './client-profile.store';
+import { ClientTagsStore } from './client-tags.store';
 import { AdminsStore, InvitesStore } from './admins.store';
 import { AuditLogStore } from './audit-log.store';
 import { KycConfigStore } from './kyc-config.store';
@@ -8,10 +11,14 @@ import { RejectionReasonsStore } from './rejection-reasons.store';
 import { RolesStore } from './roles.store';
 import { SecuritySettingsStore } from './security-settings.store';
 import { UsersStore } from './users.store';
+import { ClientVisibilityService } from '../common/security/client-visibility.service';
 
 const STORES = [
+  AdminClientScopesStore,
   AdminIpAllowlistStore,
   AdminsStore,
+  ClientProfileStore,
+  ClientTagsStore,
   InvitesStore,
   AuditLogStore,
   KycConfigStore,
@@ -20,6 +27,14 @@ const STORES = [
   RolesStore,
   SecuritySettingsStore,
   UsersStore,
+  /*
+   * Not a store, but it belongs in this @Global() module for the same reason
+   * the stores do: it is a thin scope-aware wrapper over UsersStore that FOUR
+   * modules need (admin clients, tags, compliance, money), and giving each of
+   * them its own copy is how the 404-not-403 rule ends up implemented four
+   * slightly different ways.
+   */
+  ClientVisibilityService,
 ];
 
 /**

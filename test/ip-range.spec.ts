@@ -4,6 +4,7 @@ import {
   ipMatchesAny,
   ipMatchesRule,
   isValidRule,
+  matchesEverything,
 } from '../src/common/security/ip-range';
 import { normalizeIp, trustedProxyHops } from '../src/common/security/client-ip';
 
@@ -55,9 +56,40 @@ describe('ipMatchesRule — ranges', () => {
   });
 
   it('handles /0, which admits everything', () => {
-    // Correct, and deliberately expressible — but it means "no restriction",
-    // so the UI should say so rather than let someone add it by accident.
+    // Correct, and deliberately expressible at THIS layer — the matcher's job is
+    // arithmetic, not policy. `matchesEverything` below is how the layer with a
+    // policy opinion recognises it; `AdminIpAllowlistService.add` refuses it.
     expect(ipMatchesRule('8.8.8.8', '0.0.0.0/0')).toBe(true);
+  });
+
+  describe('matchesEverything', () => {
+    it('recognises a /0 in both families', () => {
+      expect(matchesEverything('0.0.0.0/0')).toBe(true);
+      expect(matchesEverything('::/0')).toBe(true);
+    });
+
+    it('recognises a /0 written with host bits set', () => {
+      // The reason this reads the CANONICAL form rather than the input string:
+      // `10.0.0.1/0` is a believable slip for `/8`, and it means `0.0.0.0/0`.
+      expect(matchesEverything('10.0.0.1/0')).toBe(true);
+      expect(matchesEverything('2001:db8::1/0')).toBe(true);
+    });
+
+    it('does not flag a merely broad rule', () => {
+      // A corporate /8 is legitimate. Refusing breadth in general would be
+      // over-reach; only "matches literally everything" is the lie.
+      expect(matchesEverything('10.0.0.0/8')).toBe(false);
+      expect(matchesEverything('0.0.0.0/1')).toBe(false);
+      expect(matchesEverything('203.0.113.7')).toBe(false);
+    });
+
+    it('is false for anything unparseable, rather than throwing', () => {
+      // A caller uses this to decide whether to REFUSE. Throwing here would turn
+      // a validation path into a 500, and returning true would refuse valid input.
+      expect(matchesEverything('not-an-address')).toBe(false);
+      expect(matchesEverything('')).toBe(false);
+      expect(matchesEverything('1.2.3.4/33')).toBe(false);
+    });
   });
 
   it('handles a /8 without the sign bit going wrong', () => {

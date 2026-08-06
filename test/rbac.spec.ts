@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { AuthorizationError } from '../src/common/errors/domain-errors';
 import { Test } from '@nestjs/testing';
@@ -6,6 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { AdminAuditService } from '../src/modules/admin/admin-audit.service';
+import { ClientFieldsService } from '../src/modules/admin/client-fields.service';
 import { AdminRbacService } from '../src/modules/admin/admin-rbac.service';
 import {
   AdminAuthenticator,
@@ -18,6 +20,8 @@ import { InvitesStore } from '../src/store/admins.store';
 import { RolesStore, type Role } from '../src/store/roles.store';
 import { sessionCookieNames } from '../src/common/security/session-cookies';
 import { TOKEN_KIND } from '../src/common/security/token-audience';
+import { ClientTagsStore } from '../src/store/client-tags.store';
+import { AdminClientScopesStore } from '../src/store/admin-client-scopes.store';
 
 // The RBAC surface had ZERO tests, which is how a missing `await` on the
 // anti-escalation guard shipped: the rejected promise was discarded and the
@@ -54,6 +58,7 @@ const CUSTOM_ROLE: Role = {
   id: 'role-1',
   name: 'Reviewer',
   permissions: ['kyc.review'],
+  maskedFields: [],
   isSystem: false,
   createdAt: new Date(),
 };
@@ -74,12 +79,28 @@ async function buildRbacService(
     update: vi.fn((_id: string, patch: object) => Promise.resolve({ ...CUSTOM_ROLE, ...patch })),
     delete: vi.fn(),
     resolvePermissions: vi.fn(),
+    resolveMaskedFields: vi.fn().mockResolvedValue([]),
     ...overrides.roles,
   };
 
   const moduleRef = await Test.createTestingModule({
     providers: [
       AdminRbacService,
+      // Real, not a fake: it reads a committed JSON file and has no
+      // dependencies, so a fake here would only let mask keys the catalog
+      // rejects pass in tests and fail in production.
+      ClientFieldsService,
+      // The two visibility stores — see the ClientFieldsService note above.
+      { provide: ClientTagsStore, useValue: { findByIds: vi.fn().mockResolvedValue([]) } },
+      {
+        provide: AdminClientScopesStore,
+        useValue: {
+          replace: vi.fn().mockResolvedValue(undefined),
+          // `sanitize` now reports each admin's territory on the row, so the
+          // directory can show it without opening a modal.
+          describeFor: vi.fn().mockResolvedValue([]),
+        },
+      },
       {
         provide: AdminsStore,
         useValue: {
@@ -169,6 +190,10 @@ describe('AdminAuthenticator', () => {
         role: 'sub_admin',
         status: 'active',
         typ: TOKEN_KIND.access,
+        // `fam` names the login. The guard refuses a token without one, because
+        // a token it cannot check against a revoked family is one revocation
+        // cannot reach — see admin.guard.ts.
+        fam: 'family-1',
       }),
     };
     const config = { getOrThrow: vi.fn().mockReturnValue('test-secret') };
@@ -179,12 +204,21 @@ describe('AdminAuthenticator', () => {
         .mockImplementation((_roleId: string | undefined, snapshot: string[]) =>
           Promise.resolve(rolePermissions ?? snapshot),
         ),
+      resolveMaskedFields: vi.fn().mockResolvedValue([]),
     };
     return new AdminAuthenticator(
       jwt as unknown as JwtService,
       config as unknown as ConfigService,
       admins as unknown as AdminsStore,
       roles as unknown as RolesStore,
+      // Unrestricted: no scope rows and an empty mask. These specs are about
+      // authentication and permissions, so the two new dimensions are held
+      // constant rather than being silently absent.
+      { scopeFor: () => Promise.resolve(UNRESTRICTED) } as never,
+      { expand: (m: readonly string[]) => [...m] } as never,
+      // The `fam` revocation check, held alive: these specs are about
+      // permissions, not session lifetime.
+      { familyIsRevoked: () => Promise.resolve(false) } as never,
     );
   }
 

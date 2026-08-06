@@ -100,6 +100,35 @@ describe('IpAllowlistGuard', () => {
     );
   });
 
+  /**
+   * REGRESSION — the allowlist was defeated by one uppercase letter.
+   *
+   * Express matches routes case-INSENSITIVELY by default and Nest never changes
+   * that, while `req.path` hands the guard whatever casing the caller sent. So
+   * `GET /v1/Admin/clients` reached the admin controller and returned 200 while
+   * `stripApiPrefix(req.path).startsWith('/admin')` evaluated false and this
+   * guard returned early. Session cookies are `path: '/'`, so authentication
+   * still succeeded: an admin, or anyone holding a stolen admin cookie, got the
+   * entire admin surface back from a network this feature exists to deny.
+   *
+   * The test directly above — "the /v1 prefix cannot disarm it" — passed
+   * throughout, because it only ever tried the lowercase spelling. A test that
+   * names the bug class but exercises one spelling of it is worse than no test:
+   * it is a claim of coverage that is not there.
+   */
+  it.each(['/V1/ADMIN/clients', '/v1/Admin/clients', '/v1/ADMIN/withdrawals', '/V1/admin/clients'])(
+    'refuses an off-list caller on a case-varied admin path: %s',
+    async (path) => {
+      const { guard, store } = buildGuard(['203.0.113.0/24']);
+      await expect(guard.canActivate(contextFor('8.8.8.8', path))).rejects.toThrow(
+        ForbiddenException,
+      );
+      // Not merely "it threw" — it must have consulted the list, i.e. taken the
+      // admin branch rather than falling through some other early return.
+      expect(store.listCidrs).toHaveBeenCalled();
+    },
+  );
+
   it('ignores non-HTTP contexts', async () => {
     const { guard } = buildGuard(['203.0.113.0/24']);
     const rpc = { getType: () => 'rpc' } as never;
@@ -167,6 +196,36 @@ describe('AdminIpAllowlistService — adding', () => {
     await expect(
       service.add({ cidr: '192.168.1.99/24', label: 'Again' }, ADMIN, '192.168.1.5'),
     ).rejects.toThrow(ConflictError);
+  });
+
+  /**
+   * A `/0` is the rule that makes the whole feature lie about itself.
+   *
+   * It is valid, it canonicalises cleanly, and it passes the lockout check
+   * trivially — the author is inside it, because everyone is. But the list then
+   * becomes non-empty, so `IpAllowlistGuard` starts "enforcing" and the panel
+   * shows a green "Enforced — 1 rule" shield over a control that admits the
+   * entire internet. That is worse than an empty list, which says plainly that
+   * the protection is off.
+   */
+  it.each(['0.0.0.0/0', '10.0.0.1/0', '::/0'])(
+    'refuses %s — a rule that matches everything',
+    async (cidr) => {
+      const { service, store } = buildService([]);
+      await expect(service.add({ cidr, label: 'Everywhere' }, ADMIN, '8.8.8.8')).rejects.toThrow(
+        ValidationError,
+      );
+      expect(store.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still allows a merely BROAD rule', async () => {
+    // The refusal above must not become "no large ranges". A corporate /8 is a
+    // legitimate thing to allowlist, and refusing it would push people towards
+    // enumerating a hundred /32s that nobody maintains.
+    const { service, store } = buildService([]);
+    await service.add({ cidr: '10.0.0.0/8', label: 'Corporate' }, ADMIN, '10.4.5.6');
+    expect(store.create).toHaveBeenCalledWith(expect.objectContaining({ cidr: '10.0.0.0/8' }));
   });
 
   it('LOCKOUT: refuses a FIRST rule that excludes the person adding it', async () => {

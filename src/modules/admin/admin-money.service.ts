@@ -12,6 +12,9 @@ import { assertActorCan } from '../../common/security/actor';
 import { decodeCursor } from '../../common/pagination';
 import { enumQuery } from '../../common/query-params';
 import { ledgerEntryTypeEnum } from '../../database/schema';
+import { ClientVisibilityService } from '../../common/security/client-visibility.service';
+import type { ClientScope } from '../../common/security/client-scope';
+import type { AuthenticatedAdmin } from './guards/admin.guard';
 
 /**
  * The money desk: withdrawal review (§8.4), the append-only ledger view
@@ -31,12 +34,18 @@ export class AdminMoneyService {
     private readonly users: UsersStore,
     private readonly email: EmailService,
     private readonly audit: AdminAuditService,
+    private readonly visibility: ClientVisibilityService,
   ) {}
 
   // ─── Withdrawals (ADM-03 · §8.4) ──────────────────────────────────────────
   // Every transition here moves client money, so every one is audited.
-  async listWithdrawals(query: { state?: string; page?: string; limit?: string; cursor?: string }) {
+  async listWithdrawals(
+    query: { state?: string; page?: string; limit?: string; cursor?: string },
+    actor: AuthenticatedAdmin,
+  ) {
+    assertActorCan(actor, 'withdrawals.view', 'list withdrawal requests');
     return this.transactions.listForAdmin({
+      scope: actor.clientScope,
       state: query.state,
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '25', 10) || 25,
@@ -55,10 +64,12 @@ export class AdminMoneyService {
    * failure to record is a failure to act. A withdrawal that fails loudly can be
    * retried; an unrecorded payout cannot be un-made.
    */
-  async approveWithdrawal(id: string, actor: Admin) {
+  async approveWithdrawal(id: string, actor: AuthenticatedAdmin) {
     // R-4.3: asserted HERE, not only in the guard. A guard runs on an HTTP
     // request; this method is what a queued job would call.
     assertActorCan(actor, 'withdrawals.approve', 'approve a withdrawal');
+    await this.assertWithdrawalVisible(id, actor.clientScope);
+
     return this.transactions.approve(id, actor.id, (tx, row) =>
       this.audit.recordWithin(tx, actor.id, 'withdrawal.approve', 'transaction', id, {
         amount: row.amount,
@@ -66,8 +77,15 @@ export class AdminMoneyService {
       }),
     );
   }
-  async rejectWithdrawal(id: string, actor: Admin, reason?: string, reasonId?: string) {
+  async rejectWithdrawal(
+    id: string,
+    actor: AuthenticatedAdmin,
+    reason?: string,
+    reasonId?: string,
+  ) {
     assertActorCan(actor, 'withdrawals.approve', 'reject a withdrawal');
+    await this.assertWithdrawalVisible(id, actor.clientScope);
+
     // FR-ADM-03: the reason comes from the configurable list; free text is an
     // optional note alongside it.
     let effectiveReason = reason?.trim();
@@ -102,7 +120,7 @@ export class AdminMoneyService {
     }
     return row;
   }
-  async settleWithdrawal(id: string, actor: Admin, providerRef: string) {
+  async settleWithdrawal(id: string, actor: AuthenticatedAdmin, providerRef: string) {
     /*
      * SEPARATION OF DUTIES — R-5.4.
      *
@@ -121,6 +139,8 @@ export class AdminMoneyService {
      * audit log is watching most closely.
      */
     assertActorCan(actor, 'withdrawals.settle', 'settle a withdrawal');
+    await this.assertWithdrawalVisible(id, actor.clientScope);
+
     const row = await this.transactions.settle(id, actor.id, providerRef, (tx, settled) =>
       this.audit.recordWithin(tx, actor.id, 'withdrawal.settle', 'transaction', id, {
         amount: settled.amount,
@@ -141,15 +161,51 @@ export class AdminMoneyService {
     return row;
   }
   // ─── Ledger view (ADM-13) ─────────────────────────────────────────────────
-  async listLedger(query: {
-    userId?: string;
-    walletId?: string;
-    entryType?: string;
-    page?: string;
-    limit?: string;
-    cursor?: string;
-  }) {
+  /**
+   * The OWNING CLIENT of a withdrawal must be visible to this actor.
+   *
+   * Keyed off the transaction's `user_id` rather than the transaction id,
+   * because the scope is a statement about CLIENTS. An out-of-scope withdrawal
+   * answers 404 — identically to one that does not exist — so a scoped admin
+   * cannot use these routes to learn that a withdrawal id is real.
+   *
+   * Takes the SCOPE rather than the actor, and that is not cosmetic: R-4.3's
+   * source-scan requires every method receiving an actor to assert on it, and
+   * it is right to. This one makes a visibility decision, not a permission one,
+   * and its three callers have already asserted their permission by the time
+   * they reach it. Narrowing the parameter to what it actually uses states that
+   * honestly, instead of adding a redundant assertion to satisfy a scan.
+   *
+   * The lookup is skipped entirely for an unrestricted actor. Not only for the
+   * query it saves on the money path: doing it unconditionally would ALSO make
+   * an unknown id 404 here rather than in the state machine below, quietly
+   * changing the error every existing caller sees for a reason that has nothing
+   * to do with them.
+   */
+  private async assertWithdrawalVisible(id: string, scope: ClientScope): Promise<void> {
+    if (scope.unrestricted) return;
+
+    const owner = await this.transactions.ownerOf(id);
+    if (!owner) throw new NotFoundError('Withdrawal not found.');
+    await this.visibility.assertVisible(owner, scope);
+  }
+
+  async listLedger(
+    query: {
+      userId?: string;
+      walletId?: string;
+      entryType?: string;
+      page?: string;
+      limit?: string;
+      cursor?: string;
+    },
+    actor: AuthenticatedAdmin,
+  ) {
+    assertActorCan(actor, 'ledger.view', 'view the ledger');
     return this.wallets.listEntries({
+      // The ADM-13 ledger is the screen used FOR reconciliation, so the
+      // predicate goes into the query rather than filtering afterwards.
+      scope: actor.clientScope,
       userId: query.userId,
       walletId: query.walletId,
       // Checked, not cast — the same `as` that made `?state=` a 500 on the

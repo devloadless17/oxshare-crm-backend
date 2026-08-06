@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { closeDb, resetDb } from '../src/database/db';
+import { CLIENT_SORT_COLUMNS } from '../src/store/users.store';
 
 /**
  * ADM-01's client list reaches its indexes.
@@ -120,4 +121,76 @@ describe('the keyset seek can use the composite index', () => {
     // here would mean reading the whole filtered set before returning 26 rows.
     expect(p).not.toContain('Sort');
   });
+});
+
+/**
+ * R-2.5's other half: "every sortable column is indexed, and the allowlist may
+ * not exceed them."
+ *
+ * DERIVED FROM `CLIENT_SORT_COLUMNS`, not from a list written here. A hand-kept
+ * copy would need the same discipline it exists to replace — the failure mode
+ * is somebody adding a sort key and not thinking about the index, and they will
+ * not think about this file either. Reading the allowlist means a new key
+ * arrives in this test automatically and fails until migration 0024 gains its
+ * index.
+ *
+ * What a missing index costs is invisible in every other kind of test: the
+ * results are identical, and the query plan quietly becomes a sort over 219,000
+ * rows on every page of every filter. Verified to bite — pointing one of these
+ * at `phone`, which has no composite index, fails with "ORDER BY phone fell
+ * back to a sort".
+ */
+describe('every sortable column can be seeked and ordered by an index', () => {
+  /** The SQL expression each allowlist key maps to, mirroring users.store.ts. */
+  const EXPRESSIONS: Record<string, string> = {
+    createdAt: 'created_at',
+    email: 'email',
+    firstName: 'first_name',
+    status: 'status',
+    type: 'type',
+    verificationLevel: 'verification_level',
+    // Not the bare column: it is nullable, and `(country, id) < (?, ?)` is
+    // UNKNOWN rather than false for every null row, so those clients would
+    // silently vanish from the list. Migration 0024's index is built on this
+    // exact expression — change one and the other stops being used.
+    country: "coalesce(country, '')",
+  };
+
+  it('covers every key in the allowlist, so this cannot pass vacuously', () => {
+    expect(Object.keys(EXPRESSIONS).sort()).toEqual(Object.keys(CLIENT_SORT_COLUMNS).sort());
+  });
+
+  for (const [key, expression] of Object.entries(EXPRESSIONS)) {
+    it(`sorts by ${key} from an index, with no Sort node`, async () => {
+      const p = await plan(`
+        SELECT id FROM users
+        ORDER BY ${expression} DESC, id DESC
+        LIMIT 26
+      `);
+      expect(p, `ORDER BY ${expression} fell back to a sort`).not.toContain('Sort');
+      expect(p).toContain('Index');
+    });
+
+    it(`seeks past a cursor on ${key} using an index`, async () => {
+      // The keyset seek itself, in the shape `findPage` issues it. An index
+      // that serves the ORDER BY but not the row comparison would still make
+      // page two a scan.
+      const probe =
+        key === 'createdAt'
+          ? "(now(), '00000000-0000-0000-0000-000000000000'::uuid)"
+          : key === 'verificationLevel'
+            ? "(1, '00000000-0000-0000-0000-000000000000'::uuid)"
+            : "('zzz', '00000000-0000-0000-0000-000000000000'::uuid)";
+      const column =
+        key === 'createdAt' || key === 'verificationLevel' ? expression : `${expression}::text`;
+
+      const p = await plan(`
+        SELECT id FROM users
+        WHERE (${column}, id) < ${probe}
+        ORDER BY ${expression} DESC, id DESC
+        LIMIT 26
+      `);
+      expect(p).toContain('Index');
+    });
+  }
 });

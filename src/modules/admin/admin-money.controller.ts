@@ -30,7 +30,6 @@ import {
 } from '../../common/security/idempotency.interceptor';
 import { Request } from 'express';
 import { AdminMoneyService } from './admin-money.service';
-import { Admin } from '../../store/admins.store';
 import {
   ProgramActiveDto,
   ProgramDto,
@@ -43,10 +42,17 @@ import {
   WithdrawalListResponseDto,
   WithdrawalRowDto,
 } from './dto/responses.dto';
-import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
+import {
+  MasterAdminGuard,
+  PermissionsGuard,
+  RequirePermissions,
+  type AuthenticatedAdmin,
+} from './guards/admin.guard';
 import { ReconciliationService } from '../wallet/reconciliation.service';
 import { UuidParam, enumQuery } from '../../common/query-params';
 import { transactionStateEnum } from '../../database/schema';
+import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
+import { Audited } from './guards/audited.decorator';
 
 /** Withdrawal lifecycle, the ADM-13 ledger view and IB commission plans. */
 @ApiTags('admin')
@@ -82,21 +88,28 @@ export class AdminMoneyController {
     summary: 'Withdrawal requests with per-state counts (amounts are strings)',
   })
   @ApiOkResponse({ type: WithdrawalListResponseDto })
+  @ScopedToClients(
+    'TransactionsService.listForAdmin applies the predicate to transactions.user_id.',
+  )
   listWithdrawals(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('state') state?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
   ) {
-    return this.money.listWithdrawals({
-      // `transactions.service.ts` compared this against a Postgres enum column
-      // behind a cast, so an unrecognised value came back as a 500 carrying a
-      // database error. Checked against the schema's own value list instead.
-      state: enumQuery(state, transactionStateEnum.enumValues, 'state'),
-      page,
-      limit,
-      cursor,
-    });
+    return this.money.listWithdrawals(
+      {
+        // `transactions.service.ts` compared this against a Postgres enum column
+        // behind a cast, so an unrecognised value came back as a 500 carrying a
+        // database error. Checked against the schema's own value list instead.
+        state: enumQuery(state, transactionStateEnum.enumValues, 'state'),
+        page,
+        limit,
+        cursor,
+      },
+      req.admin,
+    );
   }
 
   @Patch('withdrawals/:id/approve')
@@ -116,7 +129,12 @@ export class AdminMoneyController {
     summary: 'Approve a pending withdrawal — funds stay on hold until settlement',
   })
   @ApiOkResponse({ type: WithdrawalRowDto })
-  approveWithdrawal(@Param('id', UuidParam) id: string, @Req() req: Request & { admin: Admin }) {
+  @ScopedToClients('Predicate joins the state-machine UPDATE ... WHERE id = ? AND state = ?.')
+  @Audited('withdrawal.approve')
+  approveWithdrawal(
+    @Param('id', UuidParam) id: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
     return this.money.approveWithdrawal(id, req.admin);
   }
 
@@ -137,10 +155,12 @@ export class AdminMoneyController {
     summary: 'Reject a pending withdrawal — releases the hold, emails the client',
   })
   @ApiOkResponse({ type: WithdrawalRowDto })
+  @ScopedToClients('Predicate joins the state-machine UPDATE.')
+  @Audited('withdrawal.reject')
   rejectWithdrawal(
     @Param('id', UuidParam) id: string,
     @Body() dto: WithdrawalRejectDto,
-    @Req() req: Request & { admin: Admin },
+    @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.money.rejectWithdrawal(id, req.admin, dto.reason, dto.reasonId);
   }
@@ -169,18 +189,38 @@ export class AdminMoneyController {
       'steps can be granted to different people (separation of duties, R-5.4).',
   })
   @ApiOkResponse({ type: WithdrawalRowDto })
+  @ScopedToClients('Predicate joins the state-machine UPDATE — the money-releasing step.')
+  @Audited('withdrawal.settle')
   settleWithdrawal(
     @Param('id', UuidParam) id: string,
     @Body() dto: SettleWithdrawalDto,
-    @Req() req: Request & { admin: Admin },
+    @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.money.settleWithdrawal(id, req.admin, dto.providerRef);
   }
 
   // ── Ledger (ADM-13) ───────────────────────────────────────────────────────
+  /*
+   * MASTER ADMIN ONLY — narrowed from `ledger.view` when client scoping landed.
+   *
+   * This report names clients (`WalletDiscrepancy.userId`) and there is no
+   * correct way to scope it. Restricting it to a sub-admin's territory would
+   * produce a reconciliation that reports "balanced" over a subset, which is
+   * the exact opposite of what a reconciliation is for — an operator would read
+   * a clean report and conclude the ledger agrees, having been shown a slice.
+   * Leaving it unscoped would hand a scoped sub-admin the ids of clients they
+   * were specifically denied.
+   *
+   * So it is neither scoped nor left open: it moves to the one role that is
+   * unrestricted by definition, and the answer stays whole.
+   *
+   * CONSEQUENCE, stated because it is a removal: any sub-admin who held
+   * `ledger.view` could reach this and no longer can. `GET /admin/ledger` is
+   * unaffected — that one IS scoped, and a filtered ledger is a coherent thing
+   * to look at in a way a filtered reconciliation is not.
+   */
   @Get('reconciliation')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions('ledger.view')
+  @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Run reconciliation now and return the report (§12.2)',
@@ -190,6 +230,9 @@ export class AdminMoneyController {
       'Read-only — a discrepancy is reported, never repaired, because an automatic correction ' +
       'would write a compensating entry for a cause nobody has diagnosed.',
   })
+  @NotClientScoped(
+    'MasterAdminGuard only, and a master admin is unrestricted by definition. Deliberately not narrowed: a reconciliation reporting "balanced" over a subset of clients is the opposite of what a reconciliation is for.',
+  )
   reconcile() {
     return this.reconciliation.run();
   }
@@ -202,7 +245,9 @@ export class AdminMoneyController {
     summary: 'Append-only ledger, filterable for reconciliation',
   })
   @ApiOkResponse({ type: LedgerListResponseDto })
+  @ScopedToClients('WalletService.listEntries applies the predicate to wallets.user_id.')
   listLedger(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('userId') userId?: string,
     @Query('walletId') walletId?: string,
     @Query('entryType') entryType?: string,
@@ -210,14 +255,17 @@ export class AdminMoneyController {
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
   ) {
-    return this.money.listLedger({
-      userId,
-      walletId,
-      entryType,
-      page,
-      limit,
-      cursor,
-    });
+    return this.money.listLedger(
+      {
+        userId,
+        walletId,
+        entryType,
+        page,
+        limit,
+        cursor,
+      },
+      req.admin,
+    );
   }
 
   // ── Commission plans (ADM-10 · IB-06) ─────────────────────────────────────
@@ -232,6 +280,7 @@ export class AdminMoneyController {
     summary: 'IB programs / commission plans, ordered by ladder position',
   })
   @ApiOkResponse({ type: [IbProgramDto] })
+  @NotClientScoped('Commission plan configuration; contains no client data.')
   listPrograms() {
     return this.money.listPrograms();
   }
@@ -244,7 +293,9 @@ export class AdminMoneyController {
     summary: 'Create a commission plan (validated: shares ≤ 100%, mode/value coherence)',
   })
   @ApiOkResponse({ type: IbProgramDto })
-  createProgram(@Body() dto: ProgramDto, @Req() req: Request & { admin: Admin }) {
+  @NotClientScoped('Commission plan configuration; contains no client data.')
+  @Audited('program.create')
+  createProgram(@Body() dto: ProgramDto, @Req() req: Request & { admin: AuthenticatedAdmin }) {
     return this.money.createProgram(dto, req.admin);
   }
 
@@ -256,10 +307,12 @@ export class AdminMoneyController {
     summary: 'Update a commission plan — audited with before/after values',
   })
   @ApiOkResponse({ type: IbProgramDto })
+  @NotClientScoped('Commission plan configuration; contains no client data.')
+  @Audited('program.update')
   updateProgram(
     @Param('id') id: string,
     @Body() dto: ProgramDto,
-    @Req() req: Request & { admin: Admin },
+    @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.money.updateProgram(id, dto, req.admin);
   }
@@ -272,10 +325,12 @@ export class AdminMoneyController {
     summary: 'Activate or deactivate a plan — plans are never deleted, accruals reference them',
   })
   @ApiOkResponse({ type: IbProgramDto })
+  @NotClientScoped('Commission plan configuration; contains no client data.')
+  @Audited('program.update')
   setProgramActive(
     @Param('id') id: string,
     @Body() dto: ProgramActiveDto,
-    @Req() req: Request & { admin: Admin },
+    @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.money.setProgramActive(id, dto.active, req.admin);
   }

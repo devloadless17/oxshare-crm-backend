@@ -10,6 +10,8 @@ import { IpAllowlistStatusDto, MessageResponseDto } from './dto/responses.dto';
 import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
 import { UuidParam } from '../../common/query-params';
 import { clientIp } from '../../common/security/client-ip';
+import { NotClientScoped } from './guards/client-scope.decorator';
+import { Audited } from './guards/audited.decorator';
 
 /**
  * RBAC-08 — the admin IP allowlist.
@@ -31,6 +33,7 @@ export class AdminIpAllowlistController {
     summary: 'The IP allowlist, whether it is being enforced, and your own address',
   })
   @ApiOkResponse({ type: IpAllowlistStatusDto })
+  @NotClientScoped('The RBAC-08 network allowlist; contains no client data.')
   async list(@Req() req: Request): Promise<IpAllowlistStatusDto> {
     const rules = await this.allowlist.list();
     return {
@@ -49,6 +52,8 @@ export class AdminIpAllowlistController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Add an address or range to the allowlist' })
   @ApiOkResponse({ type: IpAllowlistStatusDto })
+  @NotClientScoped('The RBAC-08 network allowlist; contains no client data.')
+  @Audited('ip_allowlist.add')
   async add(@Body() dto: AddIpAllowlistRuleDto, @Req() req: Request) {
     const actor = (req as Request & { admin: Admin }).admin;
     // The caller's own address, so a rule that would lock them out is refused
@@ -63,6 +68,8 @@ export class AdminIpAllowlistController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Remove a rule from the allowlist' })
   @ApiOkResponse({ type: MessageResponseDto })
+  @NotClientScoped('The RBAC-08 network allowlist; contains no client data.')
+  @Audited('ip_allowlist.remove')
   async remove(@Param('id', UuidParam) id: string, @Req() req: Request) {
     const actor = (req as Request & { admin: Admin }).admin;
     await this.allowlist.remove(id, actor, clientIp(req));

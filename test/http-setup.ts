@@ -9,7 +9,7 @@ import request from 'supertest';
 import type { Server } from 'node:http';
 import { AppModule } from '../src/app.module';
 import { VALIDATION_PIPE_OPTIONS } from '../src/common/validation.config';
-import { applyApiPrefix } from '../src/common/api-prefix';
+import { applyApiPrefix, createHttpAdapter } from '../src/common/api-prefix';
 import { CSRF_HEADER } from '../src/common/security/csrf.guard';
 import { COOKIE_BASES } from '../src/common/security/session-cookies';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
@@ -83,7 +83,10 @@ export async function startHttpTestApp(options: HttpTestOptions = {}): Promise<H
     });
   }
   const moduleRef = await builder.compile();
-  const app = moduleRef.createNestApplication<NestExpressApplication>();
+  // Same adapter as main.ts — the case-sensitive-routing setting is a security
+  // control (common/api-prefix.ts), and a harness serving requests through a
+  // differently-configured router would prove nothing about the real one.
+  const app = moduleRef.createNestApplication<NestExpressApplication>(createHttpAdapter());
 
   app.use(
     helmet({

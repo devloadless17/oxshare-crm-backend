@@ -8,8 +8,8 @@ import {
 import type { Request } from 'express';
 import { AdminIpAllowlistStore } from '../../../store/admin-ip-allowlist.store';
 import { clientIp } from '../../../common/security/client-ip';
-import { ipMatchesAny } from '../../../common/security/ip-range';
-import { stripApiPrefix } from '../../../common/api-prefix';
+import { adminNetworkAdmits } from '../../../common/security/admin-network';
+import { isAdminSurface } from '../../../common/api-prefix';
 
 /**
  * RBAC-08 — the admin surface answers only from allowlisted addresses.
@@ -48,16 +48,20 @@ export class IpAllowlistGuard implements CanActivate {
 
     const req = context.switchToHttp().getRequest<Request>();
 
-    // Match on the ROUTE, never on a literal path: the `/v1` prefix already
-    // turned one such comparison false and silently disarmed CSRF on every
-    // admin write (see common/api-prefix.ts).
-    if (!stripApiPrefix(req.path).startsWith('/admin')) return true;
+    // Match on the ROUTE, never on a literal path, and never case-sensitively:
+    // the `/v1` prefix already turned one such comparison false and silently
+    // disarmed CSRF on every admin write, and a single uppercase letter later
+    // did the same thing to THIS guard. `isAdminSurface` is the one definition
+    // both guards share — see common/api-prefix.ts.
+    if (!isAdminSurface(req.path)) return true;
 
     const rules = await this.allowlist.listCidrs();
-    if (rules.length === 0) return true; // not configured — see (1) above
-
     const ip = clientIp(req);
-    if (ipMatchesAny(ip, rules)) return true;
+    // The decision itself lives in `common/security/admin-network.ts`, because
+    // this guard is not the only caller: `GET /uploads/kyc/:file` serves client
+    // PII to admins from outside the `/admin` path and has to ask the same
+    // question after it knows which principal is acting.
+    if (adminNetworkAdmits(rules, ip)) return true;
 
     // Logged because a legitimate admin locked out by a bad rule needs to be
     // diagnosable, and because repeated denials are worth seeing. The address is

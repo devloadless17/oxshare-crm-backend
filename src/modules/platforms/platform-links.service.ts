@@ -5,6 +5,7 @@ import type { Db } from '../../database/db';
 import { platformLinks } from '../../database/schema';
 import { ValidationError } from '../../common/errors/domain-errors';
 import type { Admin } from '../../store/admins.store';
+import { AdminAuditService } from '../admin/admin-audit.service';
 
 /**
  * The download links for the trading terminal, and who may change them.
@@ -31,7 +32,10 @@ export interface PlatformLink {
 export class PlatformLinksService {
   private readonly logger = new Logger(PlatformLinksService.name);
 
-  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DRIZZLE_DB) private readonly db: Db,
+    private readonly audit: AdminAuditService,
+  ) {}
 
   /**
    * All three, always, in a fixed order — even the ones nobody has configured.
@@ -77,6 +81,8 @@ export class PlatformLinksService {
 
     if (value !== null) assertSafeDownloadUrl(value);
 
+    const previous = await this.get(key);
+
     const now = new Date();
     await this.db
       .insert(platformLinks)
@@ -93,6 +99,23 @@ export class PlatformLinksService {
         ? `Platform link '${key}' cleared by ${admin.email}`
         : `Platform link '${key}' set by ${admin.email}`,
     );
+
+    /*
+     * AUDITED, and this one is easy to underrate.
+     *
+     * These are the URLs the client portal offers as the trading terminal
+     * download. Repointing one sends every client who clicks it to whatever is
+     * at the new address, and a log line is not a record — it rotates, it is
+     * not queryable by an operator, and it does not appear on the audit screen
+     * where somebody investigating would look.
+     *
+     * `before` is captured because the current value answers nothing about a
+     * link that was wrong for six hours last Tuesday.
+     */
+    this.audit.record(admin.id, 'platform_link.set', 'platform_link', key, {
+      before: previous?.url ?? null,
+      after: value,
+    });
 
     return { key, url: value, updatedAt: now.toISOString() };
   }

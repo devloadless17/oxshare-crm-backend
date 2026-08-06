@@ -14,7 +14,7 @@ import { CsrfService } from './csrf.service';
 import { COOKIE_BASES, readSessionCookie } from './session-cookies';
 import { TOKEN_ALGORITHMS, TOKEN_AUDIENCE, TOKEN_ISSUER } from './token-audience';
 import { safeLogPath } from '../logging/redact';
-import { stripApiPrefix } from '../api-prefix';
+import { isAdminSurface } from '../api-prefix';
 
 /**
  * Opt a route out of CSRF and Origin checking. Use sparingly and say why.
@@ -164,10 +164,18 @@ export class CsrfGuard implements CanActivate {
      * was no ambient authority to protect — waving through every admin write,
      * including approving and settling withdrawals. The check was disarmed by a
      * change in a different file that never mentioned this one.
+     *
+     * It happened a SECOND time for a different reason. Express routes
+     * case-insensitively, so `/v1/Admin/...` reached the admin controller while
+     * a case-sensitive `startsWith('/admin')` went false — same portal branch,
+     * same silent pass. The comparison now lives in `isAdminSurface()`, shared
+     * with `IpAllowlistGuard` so the two cannot disagree about what "admin"
+     * means, and `main.ts` sets `case sensitive routing` so the varied path
+     * 404s before any of this runs.
      */
-    const isAdminSurface = stripApiPrefix(req.path).startsWith('/admin');
+    const onAdminSurface = isAdminSurface(req.path);
 
-    const [cookieBase, csrfBase, secretKey, audience] = isAdminSurface
+    const [cookieBase, csrfBase, secretKey, audience] = onAdminSurface
       ? ([
           COOKIE_BASES.adminAccess,
           COOKIE_BASES.adminCsrf,

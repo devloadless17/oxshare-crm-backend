@@ -162,6 +162,27 @@
       "when": 1785972216507,
       "tag": "0022_faithful_weapon_omega",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1786008078173,
+      "tag": "0023_client_tags_and_scoping",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786008078174,
+      "tag": "0024_client_sort_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1786014161099,
+      "tag": "0025_same_malice",
+      "breakpoints": true
     }
   ]
 }

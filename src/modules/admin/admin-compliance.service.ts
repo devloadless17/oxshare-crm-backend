@@ -4,8 +4,10 @@ import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-r
 import { KycService } from '../compliance/kyc.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
-import { Admin } from '../../store/admins.store';
 import { assertActorCan } from '../../common/security/actor';
+import { ClientVisibilityService } from '../../common/security/client-visibility.service';
+import type { AuthenticatedAdmin } from './guards/admin.guard';
+import type { Admin } from '../../store/admins.store';
 
 /**
  * The admin side of compliance: the KYC review queue, the step configurator,
@@ -19,15 +21,37 @@ export class AdminComplianceService {
     private readonly kycConfig: KycConfigStore,
     private readonly rejectionReasons: RejectionReasonsStore,
     private readonly audit: AdminAuditService,
+    private readonly visibility: ClientVisibilityService,
   ) {}
 
   // ─── KYC: list all ────────────────────────────────────────────────────────
-  listKyc(query: { status?: string; q?: string; page?: string; limit?: string }) {
+  listKyc(
+    query: { status?: string; q?: string; page?: string; limit?: string },
+    actor: AuthenticatedAdmin,
+  ) {
+    /*
+     * `kyc.review`, matching the route guard exactly.
+     *
+     * Asserting `kyc.view` here instead was stricter than the edge, so a
+     * reviewer holding only `kyc.review` — which is every reviewer — got a 403
+     * from a route their permission is named after. A service-layer check that
+     * disagrees with its guard is worse than none: it turns a working grant
+     * into a refusal nobody can explain from the permission matrix.
+     *
+     * (The catalog does have a separate `kyc.view`, and the queue arguably
+     * ought to accept either — the same "reading is not deciding" split that
+     * `kyc.documents.view` exists for. That would WIDEN access, so it is a
+     * decision of its own and not a side effect of adding scoping.)
+     */
+    assertActorCan(actor, 'kyc.review', 'list KYC submissions');
     return this.kycService.listAll({
       status: query.status as import('../../store/kyc.store').KycStatus | undefined,
       q: query.q,
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '25', 10) || 25,
+      // The predicate goes into the queue's own query, so an out-of-scope
+      // submission is never in the page and never in the status counts either.
+      scope: actor.clientScope,
     });
   }
   /**
@@ -48,7 +72,10 @@ export class AdminComplianceService {
    * screen they open dozens of times an hour, and the row that matters most —
    * the DECISION — is recorded separately either way.
    */
-  async getKyc(userId: string, actor?: Admin) {
+  async getKyc(userId: string, actor?: AuthenticatedAdmin) {
+    // Before the submission is read, so an out-of-scope client's details never
+    // reach a log line or an error on the way to being refused.
+    if (actor) await this.visibility.assertVisible(userId, actor.clientScope);
     const submission = await this.kycService.getByUserId(userId);
     if (actor) {
       this.audit.record(actor.id, 'kyc.submission.view', 'kyc_submission', userId);
@@ -62,7 +89,18 @@ export class AdminComplianceService {
    * unlike the three decisions below, which change privilege and are asserted
    * in both places (R-4.3).
    */
-  getKycHistory(userId: string) {
+  async getKycHistory(userId: string, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'kyc.review', "view a client's KYC history");
+    /*
+     * The gap `client-scope-enforcement.spec.ts` found.
+     *
+     * This route carried `@ScopedToClients` and scoped nothing — the exact
+     * failure mode the enforcement spec exists for, and the reason a
+     * declaration alone was never going to be enough. Previously decided
+     * attempts carry the same identity data as the live submission, so an
+     * out-of-scope read here is the same disclosure by a different URL.
+     */
+    await this.visibility.assertVisible(userId, actor.clientScope);
     return this.kycService.getHistory(userId);
   }
   /*
@@ -110,8 +148,11 @@ export class AdminComplianceService {
    * KycStore and UsersStore (see kyc.service.ts) — a separate, larger change.
    */
   // ─── KYC: approve ─────────────────────────────────────────────────────────
-  async approveKyc(userId: string, actor: Admin) {
+  async approveKyc(userId: string, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'kyc.review', 'approve a KYC submission');
+    // FIRST, before the submission is read: an out-of-scope client 404s exactly
+    // as a missing one does, so nothing about the response says they exist.
+    await this.visibility.assertVisible(userId, actor.clientScope);
     const result = await this.kycService.approve(userId, actor.id);
     this.audit.record(actor.id, 'kyc.approve', 'kyc_submission', userId, {
       status: result.status,
@@ -120,8 +161,9 @@ export class AdminComplianceService {
     return result;
   }
   // ─── KYC: claim for review ────────────────────────────────────────────────
-  async claimKyc(userId: string, actor: Admin) {
+  async claimKyc(userId: string, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'kyc.review', 'claim a KYC submission for review');
+    await this.visibility.assertVisible(userId, actor.clientScope);
     const result = await this.kycService.claim(userId, actor.id);
     this.audit.record(actor.id, 'kyc.claim', 'kyc_submission', userId, { status: result.status });
     return result;
@@ -129,12 +171,13 @@ export class AdminComplianceService {
   // ─── KYC: reject ──────────────────────────────────────────────────────────
   async rejectKyc(
     userId: string,
-    actor: Admin,
+    actor: AuthenticatedAdmin,
     reason?: string,
     rejectedFields?: string[],
     reasonId?: string,
   ) {
     assertActorCan(actor, 'kyc.review', 'reject a KYC submission');
+    await this.visibility.assertVisible(userId, actor.clientScope);
     const adminId = actor.id;
     let effectiveReason = reason?.trim();
     if (reasonId) {
@@ -160,18 +203,45 @@ export class AdminComplianceService {
   async listRejectionReasons(context?: RejectionContext) {
     return await this.rejectionReasons.findAll(context);
   }
-  async createRejectionReason(context: RejectionContext, label: string) {
-    return await this.rejectionReasons.create(context, label);
+  /*
+   * These three are AUDITED, and it is worth saying why they were not.
+   *
+   * A rejection reason is the sentence a client is emailed when their
+   * withdrawal or verification is refused (FR-ADM-03). It does not look like
+   * money, so it did not get a line — but changing one changes what every
+   * affected client is told from that moment on, and it could be rewritten
+   * leaving no trace of who did it or what it said before. `before`/`after` are
+   * recorded for exactly that reason: the current value answers nothing about
+   * a complaint concerning last month's wording.
+   */
+  async createRejectionReason(context: RejectionContext, label: string, actor: Admin) {
+    const created = await this.rejectionReasons.create(context, label);
+    this.audit.record(actor.id, 'rejection_reason.create', 'rejection_reason', created.id, {
+      context,
+      label,
+    });
+    return created;
   }
-  async updateRejectionReason(id: string, label: string) {
+  async updateRejectionReason(id: string, label: string, actor: Admin) {
+    const before = await this.rejectionReasons.findById(id);
     const updated = await this.rejectionReasons.update(id, label);
     if (!updated) throw new NotFoundError('Rejection reason not found.');
+    this.audit.record(actor.id, 'rejection_reason.update', 'rejection_reason', id, {
+      before: before?.label,
+      after: label,
+    });
     return updated;
   }
-  async deleteRejectionReason(id: string) {
+  async deleteRejectionReason(id: string, actor: Admin) {
+    const before = await this.rejectionReasons.findById(id);
     if (!(await this.rejectionReasons.delete(id))) {
       throw new NotFoundError('Rejection reason not found.');
     }
+    // The label is recorded because the row is gone: without it the trail says
+    // an id was deleted and nothing about what clients used to be told.
+    this.audit.record(actor.id, 'rejection_reason.delete', 'rejection_reason', id, {
+      label: before?.label,
+    });
     return { message: 'Rejection reason deleted.' };
   }
   // ─── KYC Configurator ───────────────────────────────────────────────────────
@@ -203,14 +273,32 @@ export class AdminComplianceService {
   // updateKycStep both await the current config before guarding, so they reject; a
   // sibling that throws sync instead is a footgun for any caller that only handles
   // one of the two.
-  async updateKycConfig(steps: KycStepConfig[]) {
+  /*
+   * The KYC configuration is AUDITED for the same reason the rejection reasons
+   * are: it governs what every client must submit to be verified, and
+   * verification is what opens the withdrawal gate. A step quietly disabled is
+   * a control quietly removed, and `setSteps` replaces the WHOLE
+   * configuration — so the recorded slug list is the only way to reconstruct
+   * what onboarding looked like on a given day.
+   */
+  async updateKycConfig(steps: KycStepConfig[], actor: Admin) {
     this.assertMandatoryStepsIntact(steps);
-    return this.kycConfig.setSteps(steps);
+    const result = await this.kycConfig.setSteps(steps);
+    this.audit.record(actor.id, 'kyc_config.replace', 'kyc_config', 'steps', {
+      slugs: steps.map((step) => step.slug),
+      enabled: steps.filter((step) => step.enabled).map((step) => step.slug),
+    });
+    return result;
   }
-  addKycStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>) {
-    return this.kycConfig.addStep(stepData);
+  async addKycStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>, actor: Admin) {
+    const created = await this.kycConfig.addStep(stepData);
+    this.audit.record(actor.id, 'kyc_config.step_add', 'kyc_config', created.id, {
+      slug: stepData.slug,
+      title: stepData.title,
+    });
+    return created;
   }
-  async updateKycStep(id: string, patch: Partial<KycStepConfig>) {
+  async updateKycStep(id: string, patch: Partial<KycStepConfig>, actor: Admin) {
     const steps = await this.kycConfig.getSteps();
     const target = steps.find((s) => s.id === id);
     if (target && MANDATORY_KYC_SLUGS.includes(target.slug)) {
@@ -230,9 +318,16 @@ export class AdminComplianceService {
         );
       }
     }
-    return this.kycConfig.updateStep(id, patch);
+    const updated = await this.kycConfig.updateStep(id, patch);
+    this.audit.record(actor.id, 'kyc_config.step_update', 'kyc_config', id, {
+      slug: target?.slug,
+      // The whole patch, because "enabled: false" on a KYC step is a control
+      // being switched off and the field name is the evidence.
+      patch,
+    });
+    return updated;
   }
-  async deleteKycStep(id: string) {
+  async deleteKycStep(id: string, actor: Admin) {
     const steps = await this.kycConfig.getSteps();
     const target = steps.find((s) => s.id === id);
     if (target && MANDATORY_KYC_SLUGS.includes(target.slug)) {
@@ -241,9 +336,17 @@ export class AdminComplianceService {
         { slug: target.slug },
       );
     }
-    return this.kycConfig.deleteStep(id);
+    const result = await this.kycConfig.deleteStep(id);
+    this.audit.record(actor.id, 'kyc_config.step_delete', 'kyc_config', id, {
+      slug: target?.slug,
+      title: target?.title,
+    });
+    return result;
   }
-  resetKycConfig() {
-    return this.kycConfig.resetDefaults();
+  async resetKycConfig(actor: Admin) {
+    // The most destructive of the five: it discards the entire configuration.
+    const result = await this.kycConfig.resetDefaults();
+    this.audit.record(actor.id, 'kyc_config.reset', 'kyc_config', 'steps', {});
+    return result;
   }
 }

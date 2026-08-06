@@ -1,0 +1,140 @@
+{
+  "$comment": [
+    "RBAC-03 field masking \u2014 the catalog of client fields a role may hide.",
+    "",
+    "Shaped deliberately like permissions.json, and served the same way (GET",
+    "/admin/client-fields), because R-4.5's rule applies identically: the",
+    "frontend never invents a key. A mask key with no backend counterpart is not",
+    "a cosmetic bug \u2014 it is a field an operator believes they hid.",
+    "",
+    "KEYS ARE PATH-QUALIFIED, NEVER FLAT. A bare 'country' is ambiguous between",
+    "users.country and the country inside a KYC submission's personal_info JSON.",
+    "Masking one while leaking the other is not masking, and a flat key makes",
+    "that the default outcome rather than a mistake someone has to make.",
+    "",
+    "'aliases' is what closes that gap in the other direction: applyMask strips",
+    "every alias of a masked key, so hiding client.phone also removes",
+    "personalInfo.phone from GET /admin/kyc/:userId. A test asserts every",
+    "identifying/contact client.* field either lists its kyc counterpart here or",
+    "carries its own entry \u2014 otherwise the KYC screen is a bypass for the whole",
+    "feature.",
+    "",
+    "'maskable: false' means the field is structurally required to render a row",
+    "at all. Offering it would let an operator configure a screen that cannot",
+    "work, and then file a bug about it."
+  ],
+  "identity": {
+    "groupName": "Identity",
+    "description": "Who the client is",
+    "fields": [
+      {
+        "key": "client.id",
+        "label": "Client ID",
+        "maskable": false,
+        "reason": "Every row and every link is addressed by it."
+      },
+      {
+        "key": "client.firstName",
+        "label": "First name",
+        "maskable": true,
+        "aliases": [
+          "kyc.personalInfo.firstName"
+        ]
+      },
+      {
+        "key": "client.lastName",
+        "label": "Last name",
+        "maskable": true,
+        "aliases": [
+          "kyc.personalInfo.lastName"
+        ]
+      }
+    ]
+  },
+  "contact": {
+    "groupName": "Contact",
+    "description": "How the client is reached \u2014 the most commonly restricted group",
+    "fields": [
+      {
+        "key": "client.email",
+        "label": "Email address",
+        "maskable": true,
+        "aliases": [
+          "kyc.personalInfo.email"
+        ]
+      },
+      {
+        "key": "client.phone",
+        "label": "Phone number",
+        "maskable": true,
+        "aliases": [
+          "kyc.personalInfo.phone"
+        ]
+      }
+    ]
+  },
+  "profile": {
+    "groupName": "Profile",
+    "description": "Account attributes the admin screens filter and sort on",
+    "fields": [
+      {
+        "key": "client.country",
+        "label": "Country",
+        "maskable": true,
+        "aliases": [
+          "kyc.personalInfo.country"
+        ]
+      },
+      {
+        "key": "client.type",
+        "label": "Client type",
+        "maskable": false,
+        "reason": "A filter and a column on every client screen; hiding it breaks the list."
+      },
+      {
+        "key": "client.status",
+        "label": "Account status",
+        "maskable": false,
+        "reason": "Suspend/reactivate decisions are made from it."
+      },
+      {
+        "key": "client.verificationLevel",
+        "label": "Verification level",
+        "maskable": false,
+        "reason": "Gates withdrawals; an admin acting without it would act blind."
+      },
+      {
+        "key": "client.createdAt",
+        "label": "Registered on",
+        "maskable": true
+      },
+      {
+        "key": "client.tags",
+        "label": "Client tags",
+        "maskable": true,
+        "$why": "Segmentation labels ('high risk', 'complaint pending') say more about how the business sees a client than most single fields do, and under tag scoping they also reveal which desks handle them."
+      }
+    ]
+  },
+  "kyc": {
+    "groupName": "KYC detail",
+    "description": "Fields that exist only inside a KYC submission",
+    "fields": [
+      {
+        "key": "kyc.personalInfo.dateOfBirth",
+        "label": "Date of birth",
+        "maskable": true
+      },
+      {
+        "key": "kyc.personalInfo.nationality",
+        "label": "Nationality",
+        "maskable": true
+      },
+      {
+        "key": "kyc.personalInfo.address",
+        "label": "Address",
+        "maskable": true
+      }
+    ]
+  }
+}

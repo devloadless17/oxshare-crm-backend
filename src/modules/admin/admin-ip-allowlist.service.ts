@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { AdminIpAllowlistStore, type AllowlistRule } from '../../store/admin-ip-allowlist.store';
-import { canonicaliseRule, ipMatchesAny, isValidRule } from '../../common/security/ip-range';
+import {
+  canonicaliseRule,
+  ipMatchesAny,
+  isValidRule,
+  matchesEverything,
+} from '../../common/security/ip-range';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { Admin } from '../../store/admins.store';
@@ -62,6 +67,28 @@ export class AdminIpAllowlistService {
     }
 
     const canonical = canonicaliseRule(cidr)!;
+
+    /*
+     * A `/0` is the one rule that makes this feature lie.
+     *
+     * It is valid and it canonicalises cleanly, so nothing else here objects —
+     * but it admits every address, while the list becomes non-empty and both the
+     * guard and the panel start reporting the protection as ENFORCED. An
+     * operator reading a green "Enforced — 1 rule" shield would have a control
+     * that is off and a UI that says it is on, which is worse than no control.
+     *
+     * Checked on the canonical form on purpose: `10.0.0.1/0` is a believable
+     * slip for `/8` and canonicalises to `0.0.0.0/0`, so checking the input
+     * string would miss it.
+     */
+    if (matchesEverything(canonical)) {
+      throw new ValidationError(
+        `Refusing: ${canonical} matches every address, so the allowlist would report ` +
+          'itself as enforcing while admitting anyone. If you want this protection ' +
+          'switched off, remove all the rules instead — that says so plainly.',
+      );
+    }
+
     const existing = await this.store.listCidrs();
     if (existing.includes(canonical)) {
       throw new ConflictError(`${canonical} is already on the allowlist.`);

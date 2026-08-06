@@ -1,10 +1,12 @@
 import { Body, Controller, Get, Param, Put, Req, UseGuards } from '@nestjs/common';
+import { NotClientScoped } from '../../modules/admin/guards/client-scope.decorator';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Admin } from '../../store/admins.store';
 import { AdminGuard, RequirePermissions } from '../admin/guards/admin.guard';
 import { PlatformLinksService } from './platform-links.service';
 import { PlatformLinkDto, SetPlatformLinkDto } from './dto/platform-link.dto';
+import { Audited } from '../admin/guards/audited.decorator';
 
 /**
  * The operator's control over the download links.
@@ -34,6 +36,7 @@ export class AdminPlatformLinksController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Download links for every platform, configured or not' })
   @ApiOkResponse({ type: PlatformLinkDto, isArray: true })
+  @NotClientScoped('Client-facing download links; configuration, not client data.')
   list() {
     return this.platforms.list();
   }
@@ -49,6 +52,8 @@ export class AdminPlatformLinksController {
       'yet. Only https is accepted: this link is how a client obtains an executable.',
   })
   @ApiOkResponse({ type: PlatformLinkDto })
+  @NotClientScoped('Client-facing download links; configuration, not client data.')
+  @Audited('platform_link.set')
   set(
     @Param('key') key: string,
     @Body() dto: SetPlatformLinkDto,

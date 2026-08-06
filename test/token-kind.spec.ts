@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { UnauthorizedException } from '@nestjs/common';
@@ -43,7 +44,12 @@ const jwt = new JwtService({});
 
 function adminToken(kind: 'access' | 'refresh' | 'unlabelled') {
   const payload: Record<string, unknown> = { sub: 'admin-1' };
-  if (kind === 'access') payload['typ'] = TOKEN_KIND.access;
+  if (kind === 'access') {
+    payload['typ'] = TOKEN_KIND.access;
+    // The guard refuses an access token carrying no `fam`: it names the login,
+    // and a token that cannot be tied to one is a token revocation cannot reach.
+    payload['fam'] = 'family-1';
+  }
   if (kind === 'refresh') {
     payload['jti'] = 'family-1';
     payload['typ'] = TOKEN_KIND.refresh;
@@ -84,6 +90,11 @@ function buildAuthenticator() {
     config as unknown as ConfigService,
     admins as unknown as AdminsStore,
     roles as unknown as RolesStore,
+    { scopeFor: () => Promise.resolve(UNRESTRICTED) } as never,
+    { expand: (m: readonly string[]) => [...m] } as never,
+    // The `fam` revocation check. These specs are about token KIND confusion, so
+    // the family is held alive rather than being silently absent.
+    { familyIsRevoked: () => Promise.resolve(false) } as never,
   );
 }
 

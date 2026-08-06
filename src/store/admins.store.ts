@@ -38,6 +38,14 @@ export interface Admin {
   roleId?: string;
   /** 'active' | 'suspended' — a suspended admin cannot sign in or use a session. */
   status: AdminStatus;
+  /**
+   * RBAC-03 per-person OVERRIDE of the role's field mask.
+   *
+   * `undefined` means "inherit the role", which is the common case and the
+   * reason the column is nullable. An array — including an empty one — is this
+   * person's own answer. See `RolesStore.resolveMaskedFields`.
+   */
+  maskedFields?: string[];
   createdAt: Date;
 }
 
@@ -64,6 +72,9 @@ const toAdmin = (r: AdminRow): Admin => ({
   ...r,
   roleId: r.roleId ?? undefined,
   status: r.status === 'suspended' ? 'suspended' : 'active',
+  // null → undefined, so "inherit the role" is one value throughout the code
+  // rather than two that every caller has to check for.
+  maskedFields: r.maskedFields ?? undefined,
 });
 
 const toInvite = (r: InviteRow): AdminInvite => ({
@@ -136,6 +147,11 @@ export class AdminsStore {
     const set = {
       ...rest,
       roleId: 'roleId' in rest ? (rest.roleId ?? null) : undefined,
+      // `maskedFields: undefined` in a patch means "clear the override, go back
+      // to inheriting the role" — so it must reach the column as NULL, not be
+      // dropped from the SET like an absent key. `'maskedFields' in rest` is
+      // what distinguishes "set it to inherit" from "do not touch it".
+      maskedFields: 'maskedFields' in rest ? (rest.maskedFields ?? null) : undefined,
       refreshToken: 'refreshToken' in rest ? (rest.refreshToken ?? null) : undefined,
     };
     const [row] = await this.db.update(admins).set(set).where(eq(admins.id, id)).returning();

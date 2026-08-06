@@ -27,6 +27,24 @@ export class RoleDto {
   })
   @IsArray()
   permissions: string[];
+
+  /**
+   * RBAC-03: client fields holders of this role may not see.
+   *
+   * On the ROLE because masking is a property of the JOB — "support agents do
+   * not see phone numbers" is the same kind of statement as "support agents
+   * cannot approve withdrawals", and belongs beside it. Per-person exceptions
+   * go on the admin (`UpdateAdminDto.maskedFields`), which inherits from here
+   * by default.
+   */
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['client.phone', 'client.email'],
+    description: 'Field keys from GET /admin/client-fields. Empty means nothing is hidden.',
+  })
+  @IsArray()
+  @IsOptional()
+  maskedFields?: string[];
 }
 
 export class UpdateRoleDto {
@@ -44,6 +62,15 @@ export class UpdateRoleDto {
   @IsArray()
   @IsOptional()
   permissions?: string[];
+
+  /** RBAC-03 — see `RoleDto.maskedFields`. */
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Field keys from GET /admin/client-fields. Empty means nothing is hidden.',
+  })
+  @IsArray()
+  @IsOptional()
+  maskedFields?: string[];
 }
 
 export class UpdateAdminDto {
@@ -61,6 +88,44 @@ export class UpdateAdminDto {
   @IsArray()
   @IsOptional()
   permissions?: string[];
+
+  /**
+   * RBAC-03 per-person mask OVERRIDE. Keys from `GET /admin/client-fields`.
+   *
+   * Three distinct values, and the difference matters:
+   *   - omitted → do not touch this admin's mask;
+   *   - `null`  → clear the override, go back to inheriting the role;
+   *   - `[]`    → explicitly mask nothing for this person, ignoring the role.
+   *
+   * Nullable rather than merely optional because "inherit the role" is the
+   * common case and has to be expressible, not just the initial state.
+   */
+  @ApiPropertyOptional({
+    type: [String],
+    nullable: true,
+    description:
+      'Client fields this administrator may not see. null clears the override and inherits ' +
+      'the role; [] explicitly masks nothing.',
+  })
+  @IsArray()
+  @IsOptional()
+  maskedFields?: string[] | null;
+
+  /**
+   * RBAC-03 territory: the client tags this administrator may see.
+   *
+   * An EMPTY ARRAY MEANS UNRESTRICTED, not "sees nothing" — the RBAC-08 / D-10
+   * precedent, so a deploy cannot blind every existing sub-admin. Any screen
+   * offering this control has to say so in words; it is not inferable.
+   */
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Client tag ids. An EMPTY ARRAY means unrestricted (every client), not none — see D-10.',
+  })
+  @IsArray()
+  @IsOptional()
+  scopedTagIds?: string[];
 }
 
 /**

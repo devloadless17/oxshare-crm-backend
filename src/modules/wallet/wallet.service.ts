@@ -7,6 +7,11 @@ import { available, money, MoneyInput, toDecimal } from './money';
 import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { DRIZZLE_DB } from '../../database/database.module';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
+import {
+  clientScopePredicate,
+  UNRESTRICTED,
+  type ClientScope,
+} from '../../common/security/client-scope';
 
 /**
  * A database handle: either the pool or an open transaction.
@@ -253,6 +258,8 @@ export class WalletService {
     walletId?: string;
     userId?: string;
     entryType?: LedgerEntryType;
+    /** Row-level visibility. Admin callers pass the actor's; defaults to open. */
+    scope?: ClientScope;
     page?: number;
     /**
      * Accepts the raw query string as well as a number: `pageSize()` already
@@ -273,6 +280,12 @@ export class WalletService {
     if (filter.walletId) conditions.push(eq(ledgerEntries.walletId, filter.walletId));
     if (filter.entryType) conditions.push(eq(ledgerEntries.entryType, filter.entryType));
     if (filter.userId) conditions.push(eq(wallets.userId, filter.userId));
+
+    // In the WHERE clause. The ADM-13 ledger is the screen used FOR
+    // reconciliation, so a row silently excluded after the fact would be worse
+    // here than almost anywhere — the predicate goes into the query itself.
+    const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, wallets.userId);
+    if (scoped) conditions.push(scoped);
     /*
      * Keyset seek — R-2.4. The ledger is append-only and never stops growing, so
      * it reaches OFFSET depth faster than any other list here. It is also the
@@ -282,7 +295,7 @@ export class WalletService {
      */
     if (filter.cursor) {
       conditions.push(
-        sql`(${ledgerEntries.createdAt}, ${ledgerEntries.id}) < (${filter.cursor.createdAt}::timestamptz, ${filter.cursor.id}::uuid)`,
+        sql`(${ledgerEntries.createdAt}, ${ledgerEntries.id}) < (${filter.cursor.value}::timestamptz, ${filter.cursor.id}::uuid)`,
       );
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;

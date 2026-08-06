@@ -6,9 +6,15 @@ import {
   ValidationError,
 } from '../src/common/errors/domain-errors';
 import { AdminAuditService } from '../src/modules/admin/admin-audit.service';
+import { ClientFieldsService } from '../src/modules/admin/client-fields.service';
 import { AdminRbacService } from '../src/modules/admin/admin-rbac.service';
 import { AdminsStore, InvitesStore, type Admin } from '../src/store/admins.store';
 import { RolesStore, type Role } from '../src/store/roles.store';
+import type { AuthenticatedAdmin } from '../src/modules/admin/guards/admin.guard';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
+import { EMPTY_MASK } from '../src/common/security/field-mask';
+import { ClientTagsStore } from '../src/store/client-tags.store';
+import { AdminClientScopesStore } from '../src/store/admin-client-scopes.store';
 
 /**
  * The admin DIRECTORY half of RBAC — `updateAdmin` and `setAdminStatus`.
@@ -32,7 +38,14 @@ import { RolesStore, type Role } from '../src/store/roles.store';
  *     `admins.status` exists, and why this service can never delete instead.
  */
 
-const MASTER: Admin = {
+/*
+ * `AuthenticatedAdmin`: what the guard puts on the request, and what every
+ * access-changing service method now demands. Unrestricted and unmasked here —
+ * these specs are about permissions and anti-escalation, so the two visibility
+ * dimensions are held constant rather than left undefined. The scope-specific
+ * cases state their own.
+ */
+const MASTER: AuthenticatedAdmin = {
   id: 'master-1',
   email: 'admin@oxshare.com',
   name: 'Master Admin',
@@ -40,11 +53,13 @@ const MASTER: Admin = {
   role: 'master_admin',
   status: 'active',
   permissions: ['*'],
+  clientScope: UNRESTRICTED,
+  fieldMask: EMPTY_MASK,
   createdAt: new Date(),
 };
 
 /** Holds users.edit + users.suspend, but deliberately NOT withdrawals.approve. */
-const OPERATOR: Admin = {
+const OPERATOR: AuthenticatedAdmin = {
   id: 'op-1',
   email: 'ops@oxshare.com',
   name: 'Ops Admin',
@@ -52,6 +67,8 @@ const OPERATOR: Admin = {
   role: 'sub_admin',
   status: 'active',
   permissions: ['users.edit', 'users.suspend', 'kyc.review'],
+  clientScope: UNRESTRICTED,
+  fieldMask: EMPTY_MASK,
   createdAt: new Date(),
 };
 
@@ -71,6 +88,7 @@ const CUSTOM_ROLE: Role = {
   id: 'role-1',
   name: 'Reviewer',
   permissions: ['kyc.review'],
+  maskedFields: [],
   isSystem: false,
   createdAt: new Date(),
 };
@@ -104,6 +122,7 @@ async function build(overrides: { admin?: Partial<Admin>; role?: Role | undefine
     update: vi.fn(),
     delete: vi.fn(),
     // sanitize() resolves the LIVE permission set; echo whatever it is handed.
+    resolveMaskedFields: vi.fn().mockResolvedValue([]),
     resolvePermissions: vi.fn((_roleId: string | undefined, direct: string[]) =>
       Promise.resolve(direct),
     ),
@@ -118,6 +137,22 @@ async function build(overrides: { admin?: Partial<Admin>; role?: Role | undefine
       { provide: InvitesStore, useValue: { findPendingByRoleId: vi.fn().mockResolvedValue([]) } },
       { provide: RolesStore, useValue: rolesFake },
       { provide: AdminAuditService, useValue: auditFake },
+      // Real, not a fake: it reads a committed JSON file and has no dependencies,
+      // so substituting it would only let a mask key that the catalog rejects
+      // pass here and fail in production.
+      ClientFieldsService,
+      // The two visibility stores. Fakes rather than omissions, so the DI graph
+      // matches the real one and the scope cases below have somewhere to hook in.
+      { provide: ClientTagsStore, useValue: { findByIds: vi.fn().mockResolvedValue([]) } },
+      {
+        provide: AdminClientScopesStore,
+        useValue: {
+          replace: vi.fn().mockResolvedValue(undefined),
+          // `sanitize` now reports each admin's territory on the row, so the
+          // directory can show it without opening a modal.
+          describeFor: vi.fn().mockResolvedValue([]),
+        },
+      },
     ],
   }).compile();
 
@@ -270,7 +305,7 @@ describe('setAdminStatus — cutting off an administrator', () => {
   it('refuses without users.suspend, even holding users.edit', async () => {
     // Editing someone's permissions and revoking their access are different
     // powers. An operator with only users.edit must not be able to do this.
-    const editorOnly: Admin = { ...OPERATOR, permissions: ['users.edit'] };
+    const editorOnly: AuthenticatedAdmin = { ...OPERATOR, permissions: ['users.edit'] };
     const { service, adminsFake } = await build();
 
     await expect(service.setAdminStatus(TARGET.id, 'suspended', editorOnly)).rejects.toThrow(

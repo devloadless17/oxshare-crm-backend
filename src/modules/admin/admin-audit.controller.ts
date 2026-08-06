@@ -17,6 +17,7 @@ import { AdminAuditService } from './admin-audit.service';
 import { AuditListResponseDto } from './dto/responses.dto';
 import { MasterAdminGuard } from './guards/admin.guard';
 import { searchQuery } from '../../common/query-params';
+import { NotClientScoped } from './guards/client-scope.decorator';
 
 /** Append-only admin action log (master admin only). */
 @ApiTags('admin')
@@ -29,6 +30,9 @@ export class AdminAuditController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Append-only admin action log (master admin only)' })
   @ApiOkResponse({ type: AuditListResponseDto })
+  @NotClientScoped(
+    'MasterAdminGuard only, and a master admin is unrestricted by definition. The coverage spec also asserts that guard is still attached, so opening this to sub-admins fails CI rather than silently serving unscoped subjects.',
+  )
   listAuditLog(
     @Req() req: Request & { admin: Admin },
     @Query('page') page?: string,

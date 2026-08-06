@@ -16,6 +16,11 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain-errors';
+import {
+  clientScopePredicate,
+  UNRESTRICTED,
+  type ClientScope,
+} from '../../common/security/client-scope';
 
 /**
  * Withdrawal lifecycle (§8.4 + FR-ADM-03).
@@ -162,18 +167,42 @@ export class TransactionsService {
     });
   }
 
+  /**
+   * The client a transaction belongs to, or undefined.
+   *
+   * Deliberately returns the OWNER rather than the row: every caller of this is
+   * asking a client-scope question, and handing back the transaction would
+   * invite one of them to read an amount or a state off a row they have not yet
+   * established the caller may see.
+   */
+  async ownerOf(id: string): Promise<string | undefined> {
+    const [row] = await this.db
+      .select({ userId: transactions.userId })
+      .from(transactions)
+      .where(eq(transactions.id, id))
+      .limit(1);
+    return row?.userId;
+  }
+
   async listForAdmin(filter: {
     state?: string;
     page?: number;
     limit?: number;
     /** Keyset position — R-2.4. When present, `page` is ignored. */
     cursor?: CursorPosition;
+    /** Row-level visibility. Admin callers pass the actor's; defaults to open. */
+    scope?: ClientScope;
   }) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = pageSize(filter.limit);
     const db = this.db;
 
     const conditions = [eq(transactions.direction, 'withdrawal')];
+
+    // In the WHERE clause: an out-of-scope withdrawal never enters the queue,
+    // so it also cannot appear in the per-state counts computed alongside it.
+    const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, transactions.userId);
+    if (scoped) conditions.push(scoped);
     if (filter.state) {
       conditions.push(eq(transactions.state, filter.state as 'pending'));
     }
@@ -185,7 +214,7 @@ export class TransactionsService {
      */
     if (filter.cursor) {
       conditions.push(
-        sql`(${transactions.createdAt}, ${transactions.id}) < (${filter.cursor.createdAt}::timestamptz, ${filter.cursor.id}::uuid)`,
+        sql`(${transactions.createdAt}, ${transactions.id}) < (${filter.cursor.value}::timestamptz, ${filter.cursor.id}::uuid)`,
       );
     }
     const where = and(...conditions);

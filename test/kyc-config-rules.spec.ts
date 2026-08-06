@@ -43,6 +43,9 @@ const updateStep = vi.fn();
 const deleteStep = vi.fn();
 const getSteps = vi.fn();
 
+/** These config routes are now audited, so they take an acting admin. */
+const ACTOR = { id: 'admin-1', email: 'admin@oxshare.com', permissions: ['*'] } as never;
+
 function makeService(steps: KycStepConfig[] = DEFAULT_STEPS) {
   getSteps.mockResolvedValue(steps);
   const kycConfig = { setSteps, updateStep, deleteStep, getSteps };
@@ -50,7 +53,11 @@ function makeService(steps: KycStepConfig[] = DEFAULT_STEPS) {
     {} as never, // KycService — unused on these paths
     kycConfig as never,
     {} as never, // RejectionReasonsStore
-    {} as never, // AdminAuditService
+    { record: () => undefined } as never, // AdminAuditService
+    // ClientVisibilityService — unused on these paths: the KYC form
+    // CONFIGURATION is a schema, not anybody's submission, so there is no
+    // client row to scope.
+    {} as never,
   );
 }
 
@@ -65,7 +72,7 @@ describe('replacing the whole KYC configuration', () => {
   it('accepts a config with every mandatory step enabled', async () => {
     const service = makeService();
 
-    await service.updateKycConfig(DEFAULT_STEPS);
+    await service.updateKycConfig(DEFAULT_STEPS, ACTOR);
 
     expect(setSteps).toHaveBeenCalledTimes(1);
   });
@@ -74,7 +81,7 @@ describe('replacing the whole KYC configuration', () => {
     const service = makeService();
     const steps = DEFAULT_STEPS.map((s) => (s.slug === 'personal' ? { ...s, enabled: false } : s));
 
-    await expect(service.updateKycConfig(steps)).rejects.toBeInstanceOf(ValidationError);
+    await expect(service.updateKycConfig(steps, ACTOR)).rejects.toBeInstanceOf(ValidationError);
     expect(setSteps).not.toHaveBeenCalled();
   });
 
@@ -82,7 +89,7 @@ describe('replacing the whole KYC configuration', () => {
     const service = makeService();
     const steps = DEFAULT_STEPS.filter((s) => s.slug !== 'document');
 
-    await expect(service.updateKycConfig(steps)).rejects.toBeInstanceOf(ValidationError);
+    await expect(service.updateKycConfig(steps, ACTOR)).rejects.toBeInstanceOf(ValidationError);
     expect(setSteps).not.toHaveBeenCalled();
   });
 
@@ -90,7 +97,7 @@ describe('replacing the whole KYC configuration', () => {
     const service = makeService();
     const steps = DEFAULT_STEPS.filter((s) => s.slug !== 'selfie' && s.slug !== 'address');
 
-    await expect(service.updateKycConfig(steps)).rejects.toThrow(
+    await expect(service.updateKycConfig(steps, ACTOR)).rejects.toThrow(
       /selfie.*address|address.*selfie/s,
     );
   });
@@ -99,7 +106,7 @@ describe('replacing the whole KYC configuration', () => {
     const service = makeService();
     const steps = DEFAULT_STEPS.filter((s) => s.slug !== 'review');
 
-    await service.updateKycConfig(steps);
+    await service.updateKycConfig(steps, ACTOR);
 
     // 'review' is configurable; the four mandated slugs are not.
     expect(setSteps).toHaveBeenCalledTimes(1);
@@ -109,7 +116,7 @@ describe('replacing the whole KYC configuration', () => {
     const service = makeService();
     const steps = DEFAULT_STEPS.filter((s) => s.slug !== slug);
 
-    await expect(service.updateKycConfig(steps)).rejects.toBeInstanceOf(ValidationError);
+    await expect(service.updateKycConfig(steps, ACTOR)).rejects.toBeInstanceOf(ValidationError);
   });
 });
 
@@ -117,14 +124,16 @@ describe('deleting a single step', () => {
   it('refuses to delete a mandatory step', async () => {
     const service = makeService();
 
-    await expect(service.deleteKycStep('step-document')).rejects.toBeInstanceOf(ValidationError);
+    await expect(service.deleteKycStep('step-document', ACTOR)).rejects.toBeInstanceOf(
+      ValidationError,
+    );
     expect(deleteStep).not.toHaveBeenCalled();
   });
 
   it('deletes a custom step', async () => {
     const service = makeService([...DEFAULT_STEPS, step('proof-of-income')]);
 
-    await service.deleteKycStep('step-proof-of-income');
+    await service.deleteKycStep('step-proof-of-income', ACTOR);
 
     expect(deleteStep).toHaveBeenCalledWith('step-proof-of-income');
   });
@@ -133,7 +142,7 @@ describe('deleting a single step', () => {
     const service = makeService();
     deleteStep.mockResolvedValue(false);
 
-    await expect(service.deleteKycStep('step-nope')).resolves.toBe(false);
+    await expect(service.deleteKycStep('step-nope', ACTOR)).resolves.toBe(false);
   });
 });
 
@@ -141,9 +150,9 @@ describe('patching a single step', () => {
   it('refuses to disable a mandatory step', async () => {
     const service = makeService();
 
-    await expect(service.updateKycStep('step-selfie', { enabled: false })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
+    await expect(
+      service.updateKycStep('step-selfie', { enabled: false }, ACTOR),
+    ).rejects.toBeInstanceOf(ValidationError);
     expect(updateStep).not.toHaveBeenCalled();
   });
 
@@ -152,7 +161,7 @@ describe('patching a single step', () => {
 
     // The portal submits by slug, so renaming one is removal by another route.
     await expect(
-      service.updateKycStep('step-personal', { slug: 'profile' }),
+      service.updateKycStep('step-personal', { slug: 'profile' }, ACTOR),
     ).rejects.toBeInstanceOf(ValidationError);
     expect(updateStep).not.toHaveBeenCalled();
   });
@@ -162,7 +171,7 @@ describe('patching a single step', () => {
 
     // Retitling or re-describing a required step is fine — only its existence,
     // enabled state and slug are fixed.
-    await service.updateKycStep('step-personal', { title: 'Your details' });
+    await service.updateKycStep('step-personal', { title: 'Your details' }, ACTOR);
 
     expect(updateStep).toHaveBeenCalledWith('step-personal', { title: 'Your details' });
   });
@@ -170,7 +179,7 @@ describe('patching a single step', () => {
   it('allows disabling a custom step', async () => {
     const service = makeService([...DEFAULT_STEPS, step('proof-of-income')]);
 
-    await service.updateKycStep('step-proof-of-income', { enabled: false });
+    await service.updateKycStep('step-proof-of-income', { enabled: false }, ACTOR);
 
     expect(updateStep).toHaveBeenCalledTimes(1);
   });
