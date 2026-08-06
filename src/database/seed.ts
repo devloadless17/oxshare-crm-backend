@@ -155,6 +155,41 @@ export async function runSeeds(): Promise<void> {
     .onConflictDoNothing({ target: users.email });
 
   /*
+   * A THIRD e2e client, whose only job is to be signed out.
+   *
+   * `logout` revokes EVERY family for a user, not just the one presenting a
+   * token (R-3.3 — signing out on one device must not leave the others live).
+   * That is correct, and it means a spec that drives a real sign-out on a shared
+   * fixture destroys the cached session every LATER spec replays. The symptom is
+   * a run where one logout test fails and eleven unrelated ones fail after it,
+   * each looking like its own auth bug.
+   *
+   * The portal's own suite hit exactly that, which is why the logout spec was
+   * `fixme`d rather than fixed for a while. So logout gets an identity nobody
+   * else signs in as — the same reasoning behind the admin suite's
+   * `e2e-suspend-target`, and behind `e2e@oxshare.com` not being a person's
+   * account.
+   *
+   * Approved and verified, so it can reach every private page before ending its
+   * session there.
+   */
+  await db
+    .insert(users)
+    .values({
+      email: 'e2e-logout@oxshare.com',
+      passwordHash: clientHash,
+      firstName: 'Leo',
+      lastName: 'Signout',
+      type: 'individual',
+      status: 'active',
+      emailVerified: true,
+      verificationLevel: 1,
+      country: 'United Arab Emirates',
+      phone: '+971500000002',
+    })
+    .onConflictDoNothing({ target: users.email });
+
+  /*
    * And an APPROVED submission for it, so `/kyc` reaches the terminal screen
    * directly rather than bouncing through a step on the way.
    *
