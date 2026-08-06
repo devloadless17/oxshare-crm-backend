@@ -1,5 +1,14 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsOptional, IsString, IsUUID, Length, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Length,
+  Min,
+  ValidateIf,
+} from 'class-validator';
 
 export const IB_APPLICATION_STATUSES = ['pending', 'approved', 'rejected'] as const;
 export type IbApplicationStatusDto = (typeof IB_APPLICATION_STATUSES)[number];
@@ -122,4 +131,39 @@ export class RejectIbApplicationDto {
   @IsString()
   @Length(1, 1000)
   note?: string;
+}
+
+export class ChangeIbLevelDto {
+  @ApiProperty({ minimum: 1, description: 'Must be an ENABLED level.' })
+  @IsInt()
+  @Min(1)
+  level: number;
+}
+
+/**
+ * `null` is a real value here, not an omission: it means "deals with the broker
+ * directly", which is the top of a chain. So the field is required and
+ * explicitly nullable rather than optional — omitting it would be
+ * indistinguishable from asking for no change, and this endpoint's entire
+ * purpose is to change it.
+ */
+export class ReassignIbParentDto {
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'The new parent partner, or null to make them a direct partner.',
+  })
+  @ValidateIf((_, value) => value !== null)
+  @IsUUID()
+  parentIbUserId: string | null;
+}
+
+export class SetIbActiveDto {
+  @ApiProperty({
+    description:
+      'False suspends: the referral code and the tree are kept, the earning stops. There is no ' +
+      'delete — removing the row would orphan every partner beneath them.',
+  })
+  @IsBoolean()
+  active: boolean;
 }

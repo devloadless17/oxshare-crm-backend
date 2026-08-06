@@ -1383,6 +1383,185 @@
         ]
       }
     },
+    "/v1/admin/ib/partners": {
+      "get": {
+        "description": "Joined to the person and their level, newest approval first.",
+        "operationId": "AdminIbController_listPartners",
+        "parameters": [
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The partner list",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib/partners/{userId}/level": {
+      "patch": {
+        "description": "The target level must be ENABLED — a disabled one takes no share, so placing somebody on it stops their earnings silently rather than demoting them visibly.",
+        "operationId": "AdminIbController_changeLevel",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeIbLevelDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Move a partner to a different level",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib/partners/{userId}/parent": {
+      "patch": {
+        "description": "Refuses a change that would put a partner beneath their own descendant. A self-FK cannot catch that — Postgres accepts A→B→A — and the payout walk climbs parents until it runs out, so a loop is a walk that never does.",
+        "operationId": "AdminIbController_reassignParent",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReassignIbParentDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Reassign a partner’s parent",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib/partners/{userId}/active": {
+      "patch": {
+        "description": "Suspension keeps the referral code and the tree and stops the earning. There is no delete: removing the row would orphan every client and partner attributed beneath them.",
+        "operationId": "AdminIbController_setActive",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetIbActiveDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Suspend or reactivate a partner",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ib-levels": {
       "get": {
         "description": "Includes disabled levels — managing them is the point of the screen. The number of ENABLED levels is the depth of the payout chain.",
@@ -4750,6 +4929,44 @@
             "description": "The reviewer's own words, appended to the label."
           }
         }
+      },
+      "ChangeIbLevelDto": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Must be an ENABLED level."
+          }
+        },
+        "required": [
+          "level"
+        ]
+      },
+      "ReassignIbParentDto": {
+        "type": "object",
+        "properties": {
+          "parentIbUserId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The new parent partner, or null to make them a direct partner."
+          }
+        },
+        "required": [
+          "parentIbUserId"
+        ]
+      },
+      "SetIbActiveDto": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "False suspends: the referral code and the tree are kept, the earning stops. There is no delete — removing the row would orphan every partner beneath them."
+          }
+        },
+        "required": [
+          "active"
+        ]
       },
       "IbLevelDto": {
         "type": "object",

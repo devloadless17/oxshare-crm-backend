@@ -322,6 +322,97 @@ export class IbApplicationsService {
     return updated;
   }
 
+  // ── managing partners after approval ───────────────────────────────────────
+
+  /** The partner list, scoped to what this admin may see. */
+  listPartners(filter: { page?: number; limit?: number }, scope: ClientScope) {
+    const page = Math.max(1, filter.page ?? 1);
+    const limit = Math.min(100, Math.max(1, filter.limit ?? 20));
+    return this.ib.findPartnersPage({ page, limit, scope });
+  }
+
+  /**
+   * Move a partner to a different rung.
+   *
+   * The level must be ENABLED: a disabled level takes no share, so placing
+   * somebody on one is a silent stop to their earnings rather than a demotion
+   * they could see.
+   */
+  async changeLevel(userId: string, level: number, scope: ClientScope): Promise<IbAccountRow> {
+    await this.visibility.assertVisible(userId, scope);
+
+    const account = await this.ib.findAccount(userId);
+    if (!account) throw new NotFoundError('That partner does not exist.');
+
+    const enabled = await this.levels.listEnabled();
+    if (!enabled.some((l) => l.level === level)) {
+      throw new ValidationError(
+        `Level ${level} is not an enabled partner level. Enabled levels: ${enabled
+          .map((l) => l.level)
+          .join(', ')}.`,
+      );
+    }
+
+    const updated = await this.ib.updateAccount(userId, { level });
+    if (!updated) throw new NotFoundError('That partner does not exist.');
+    return updated;
+  }
+
+  /**
+   * Reassign a partner's parent, or cut them loose to deal direct.
+   *
+   * ## The cycle check is the whole point of this method
+   *
+   * A self-referencing foreign key checks only that the target row exists, so
+   * Postgres accepts A→B→A — `test/ib-schema-constraints.spec.ts` asserts that
+   * gap deliberately. The payout walk climbs parents until it runs out, and a
+   * loop is a walk that never does. This is the only thing standing between an
+   * operator's drop-down and a hung commission calculation.
+   *
+   * `maxDirectPartners` is checked too, because a reassignment fills a slot on
+   * the new parent exactly as an approval would.
+   */
+  async reassignParent(
+    userId: string,
+    parentIbUserId: string | null,
+    scope: ClientScope,
+  ): Promise<IbAccountRow> {
+    await this.visibility.assertVisible(userId, scope);
+
+    const account = await this.ib.findAccount(userId);
+    if (!account) throw new NotFoundError('That partner does not exist.');
+
+    if (parentIbUserId) {
+      if (await this.wouldCreateCycle(userId, parentIbUserId)) {
+        throw new ValidationError(
+          'That partner already sits beneath this one, so the change would create a loop in the ' +
+            'payout chain.',
+        );
+      }
+      await this.assertParentHasRoom(parentIbUserId);
+    }
+
+    const updated = await this.ib.updateAccount(userId, { parentIbUserId });
+    if (!updated) throw new NotFoundError('That partner does not exist.');
+    return updated;
+  }
+
+  /**
+   * Suspend or reactivate.
+   *
+   * A suspended partner keeps their referral code and their tree — clients
+   * attributed to them stay attributed — and stops earning. Deleting the row
+   * instead would orphan everybody beneath them, which is why there is no
+   * "remove partner" here at all.
+   */
+  async setActive(userId: string, active: boolean, scope: ClientScope): Promise<IbAccountRow> {
+    await this.visibility.assertVisible(userId, scope);
+
+    const updated = await this.ib.updateAccount(userId, { active });
+    if (!updated) throw new NotFoundError('That partner does not exist.');
+    return updated;
+  }
+
   // ── placement rules ────────────────────────────────────────────────────────
 
   /**

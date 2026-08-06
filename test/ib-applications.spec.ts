@@ -407,3 +407,119 @@ describe('the decision email', () => {
     expect(sendPartnerDecisionEmail).not.toHaveBeenCalled();
   });
 });
+
+describe('managing a live partner', () => {
+  /** A → B, both real partners. Returns [parent, child]. */
+  async function makePair(): Promise<[string, string]> {
+    const parent = await makeClient('mgmt-parent@test.local');
+    const child = await makeClient('mgmt-child@test.local');
+    await store.createAccount({ userId: parent, level: 1, referralCode: 'MGMTPRNT' });
+    await store.createAccount({
+      userId: child,
+      level: 2,
+      parentIbUserId: parent,
+      referralCode: 'MGMTCHLD',
+    });
+    return [parent, child];
+  }
+
+  it('moves a partner to another enabled level', async () => {
+    const [parent] = await makePair();
+    const moved = await service.changeLevel(parent, 2, UNRESTRICTED);
+    expect(moved.level).toBe(2);
+  });
+
+  it('refuses a DISABLED level', async () => {
+    const [parent] = await makePair();
+    await ctx.db.execute(sql`UPDATE ib_levels SET enabled = false WHERE level = 2`);
+
+    // A disabled level takes no share, so this would stop their earnings
+    // silently rather than demote them visibly.
+    await expect(service.changeLevel(parent, 2, UNRESTRICTED)).rejects.toThrow(/not an enabled/i);
+  });
+
+  it('refuses a parent that would close a loop', async () => {
+    const [parent, child] = await makePair();
+
+    // Making the child the parent's parent completes A→B→A. Postgres would
+    // accept it; this is the only guard.
+    await expect(service.reassignParent(parent, child, UNRESTRICTED)).rejects.toThrow(/loop/i);
+  });
+
+  it('refuses a partner as their own parent', async () => {
+    const [parent] = await makePair();
+    await expect(service.reassignParent(parent, parent, UNRESTRICTED)).rejects.toThrow(/loop/i);
+  });
+
+  it('accepts an unrelated parent', async () => {
+    const [, child] = await makePair();
+    const outsider = await makeClient('mgmt-outsider@test.local');
+    await store.createAccount({ userId: outsider, level: 1, referralCode: 'MGMTOUTS' });
+
+    const moved = await service.reassignParent(child, outsider, UNRESTRICTED);
+    expect(moved.parentIbUserId).toBe(outsider);
+  });
+
+  it('cuts a partner loose to deal direct', async () => {
+    const [, child] = await makePair();
+    const freed = await service.reassignParent(child, null, UNRESTRICTED);
+    // null is a real value, not an omission — it means top of a chain.
+    expect(freed.parentIbUserId).toBeNull();
+  });
+
+  it('enforces maxDirectPartners on reassignment, not only on approval', async () => {
+    // The pair's child is what occupies the parent's single slot. It is never
+    // named again — that occupancy is the whole subject of the assertion below.
+    const [parent] = await makePair();
+    await ctx.db.execute(sql`UPDATE ib_levels SET max_direct_partners = 1 WHERE level = 1`);
+
+    const another = await makeClient('mgmt-another@test.local');
+    await store.createAccount({ userId: another, level: 2, referralCode: 'MGMTANOT' });
+
+    // `parent` already holds `child`. A reassignment fills a slot exactly as an
+    // approval does, so it has to be checked in both places.
+    await expect(service.reassignParent(another, parent, UNRESTRICTED)).rejects.toThrow(
+      /already holds 1 of their 1/i,
+    );
+  });
+
+  it('suspends without deleting the tree', async () => {
+    const [parent, child] = await makePair();
+
+    const suspended = await service.setActive(parent, false, UNRESTRICTED);
+    expect(suspended.active).toBe(false);
+    // The code and the tree survive: clients attributed to them stay
+    // attributed, and everybody beneath keeps their placement.
+    expect(suspended.referralCode).toBe('MGMTPRNT');
+    expect((await store.findAccount(child))?.parentIbUserId).toBe(parent);
+  });
+
+  it('reactivates', async () => {
+    const [parent] = await makePair();
+    await service.setActive(parent, false, UNRESTRICTED);
+    const back = await service.setActive(parent, true, UNRESTRICTED);
+    expect(back.active).toBe(true);
+  });
+
+  it('refuses a suspended partner as a new parent', async () => {
+    const [parent] = await makePair();
+    await service.setActive(parent, false, UNRESTRICTED);
+
+    const orphan = await makeClient('mgmt-orphan@test.local');
+    await store.createAccount({ userId: orphan, level: 2, referralCode: 'MGMTORPH' });
+
+    await expect(service.reassignParent(orphan, parent, UNRESTRICTED)).rejects.toThrow(
+      /suspended/i,
+    );
+  });
+
+  it('lists partners with their person and level name', async () => {
+    await makePair();
+    const page = await service.listPartners({}, UNRESTRICTED);
+
+    expect(page.total).toBe(2);
+    // A uuid is not a partner — the list has to carry who they are.
+    expect(page.rows[0].user.email).toBeTruthy();
+    expect(page.rows[0].levelName).toBeTruthy();
+  });
+});

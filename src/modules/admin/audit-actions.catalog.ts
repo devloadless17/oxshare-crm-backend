@@ -151,6 +151,14 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    */
   { action: 'ib.approve', label: 'Partner application approved', group: 'Compliance' },
   { action: 'ib.reject', label: 'Partner application rejected', group: 'Compliance' },
+  /*
+   * Changes to a LIVE partner, which is a different question from who was let
+   * in. "Who moved this partner to level 2, and when" is asked when a payout
+   * looks wrong, and the level is what decides the rate.
+   */
+  { action: 'ib.level_change', label: 'Partner level changed', group: 'Compliance' },
+  { action: 'ib.parent_change', label: 'Partner parent reassigned', group: 'Compliance' },
+  { action: 'ib.suspend', label: 'Partner suspended or reactivated', group: 'Compliance' },
 
   // ── Security controls ─────────────────────────────────────────────────────
   { action: 'ip_allowlist.add', label: 'Network rule added', group: 'Security' },

@@ -21,10 +21,13 @@ import { Audited } from '../admin/guards/audited.decorator';
 import { IbApplicationsService } from './ib-applications.service';
 import {
   ApproveIbApplicationDto,
+  ChangeIbLevelDto,
   IbAccountDto,
   IbApplicationDto,
   IB_APPLICATION_STATUSES,
+  ReassignIbParentDto,
   RejectIbApplicationDto,
+  SetIbActiveDto,
   type IbApplicationStatusDto,
 } from './dto/ib-application.dto';
 
@@ -127,6 +130,92 @@ export class AdminIbController {
     @Body() dto: RejectIbApplicationDto,
   ) {
     return this.applications.reject(id, req.admin.id, req.admin.clientScope, dto);
+  }
+
+  // ── partners, once they exist ──────────────────────────────────────────────
+
+  @Get('partners')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'The partner list',
+    description: 'Joined to the person and their level, newest approval first.',
+  })
+  @ScopedToClients('IbStore.findPartnersPage applies the predicate to ib_accounts.user_id.')
+  listPartners(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.applications.listPartners(
+      { page: parsePositive(page), limit: parsePositive(limit) },
+      req.admin.clientScope,
+    );
+  }
+
+  @Patch('partners/:userId/level')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.manage')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Move a partner to a different level',
+    description:
+      'The target level must be ENABLED — a disabled one takes no share, so placing somebody on ' +
+      'it stops their earnings silently rather than demoting them visibly.',
+  })
+  @ApiOkResponse({ type: IbAccountDto })
+  @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
+  @Audited('ib.level_change')
+  changeLevel(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: ChangeIbLevelDto,
+  ) {
+    return this.applications.changeLevel(userId, dto.level, req.admin.clientScope);
+  }
+
+  @Patch('partners/:userId/parent')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.manage')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Reassign a partner’s parent',
+    description:
+      'Refuses a change that would put a partner beneath their own descendant. A self-FK cannot ' +
+      'catch that — Postgres accepts A→B→A — and the payout walk climbs parents until it runs ' +
+      'out, so a loop is a walk that never does.',
+  })
+  @ApiOkResponse({ type: IbAccountDto })
+  @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
+  @Audited('ib.parent_change')
+  reassignParent(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: ReassignIbParentDto,
+  ) {
+    return this.applications.reassignParent(userId, dto.parentIbUserId, req.admin.clientScope);
+  }
+
+  @Patch('partners/:userId/active')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.manage')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Suspend or reactivate a partner',
+    description:
+      'Suspension keeps the referral code and the tree and stops the earning. There is no ' +
+      'delete: removing the row would orphan every client and partner attributed beneath them.',
+  })
+  @ApiOkResponse({ type: IbAccountDto })
+  @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
+  @Audited('ib.suspend')
+  setActive(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: SetIbActiveDto,
+  ) {
+    return this.applications.setActive(userId, dto.active, req.admin.clientScope);
   }
 }
 
