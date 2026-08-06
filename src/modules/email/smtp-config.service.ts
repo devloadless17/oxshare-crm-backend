@@ -74,7 +74,10 @@ export class SmtpConfigService {
       let password: string | null = null;
       if (row.passwordCiphertext) {
         try {
-          password = openSecret(row.passwordCiphertext, this.config.get<string>('APP_ENCRYPTION_KEY'));
+          password = openSecret(
+            row.passwordCiphertext,
+            this.config.get<string>('APP_ENCRYPTION_KEY'),
+          );
         } catch (error) {
           this.logger.error(
             'Stored SMTP password could not be decrypted; connecting without authentication. ' +

@@ -1,8 +1,17 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsNumberString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsIn, IsNumberString, IsOptional, IsString, IsUUID } from 'class-validator';
 
-/** The currencies a client can fund an account in. Mirrors `currencyEnum`. */
-export const DEPOSIT_CURRENCIES = ['USD', 'USDT'] as const;
+/*
+ * `DEPOSIT_CURRENCIES` is gone.
+ *
+ * It was `['USD','USDT'] as const`, mirroring the old `currencyEnum` by hand —
+ * so an operator adding EUR in the admin currencies screen would have created a
+ * currency clients could hold a wallet in but could not deposit into, with the
+ * refusal coming from an `@IsIn` in this file rather than from anything they
+ * could see or change. `currency` is a plain string now and
+ * `CurrenciesService.assertUsable` decides, which is the one place that knows
+ * what is enabled right now.
+ */
 
 /**
  * How the money is actually being sent.
@@ -30,9 +39,12 @@ export class RequestDepositDto {
   @IsNumberString()
   amount: string;
 
-  @ApiProperty({ enum: DEPOSIT_CURRENCIES })
-  @IsIn(DEPOSIT_CURRENCIES)
-  currency: (typeof DEPOSIT_CURRENCIES)[number];
+  @ApiProperty({
+    example: 'USD',
+    description: 'Must be an enabled currency — see GET /currencies.',
+  })
+  @IsString()
+  currency: string;
 
   @ApiProperty({
     enum: DEPOSIT_METHODS,
@@ -40,6 +52,28 @@ export class RequestDepositDto {
   })
   @IsIn(DEPOSIT_METHODS)
   method: DepositMethod;
+
+  /**
+   * Fund a TRADING ACCOUNT rather than leaving the money in the wallet.
+   *
+   * Omit it for an ordinary wallet deposit, which is the common case.
+   *
+   * The money lands in the wallet either way — the wallet is the CRM's ledger,
+   * and a deposit that skipped it would be money with no ledger row. What this
+   * does is record the client's intent, so that when the operator confirms the
+   * payment the deposit chains a transfer onto the named account. Two visible
+   * steps in the data rather than one ambiguous "deposit", which is also what
+   * makes the MT5 leg reconcilable later.
+   *
+   * Must be a LIVE account belonging to the caller; the service refuses demo
+   * accounts for the same reason the transfer path does.
+   */
+  @ApiPropertyOptional({
+    description: 'A live trading account of the caller, to fund once the deposit is confirmed.',
+  })
+  @IsOptional()
+  @IsUUID()
+  destinationTradingAccountId?: string;
 }
 
 /**
@@ -63,7 +97,7 @@ export class DepositRequestDto {
   @ApiProperty({ type: 'string', example: '500.00000000' })
   amount: string;
 
-  @ApiProperty({ enum: DEPOSIT_CURRENCIES })
+  @ApiProperty({ example: 'USD' })
   currency: string;
 
   @ApiProperty({ enum: DEPOSIT_METHODS })

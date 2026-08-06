@@ -38,7 +38,16 @@ export class TradingAccountDto {
   })
   mt5Login: string;
 
+  /*
+   * `type: 'string'` is spelled out on every nullable property below, and it is
+   * load-bearing rather than noise. `@ApiProperty({ nullable: true })` alone
+   * emits a schema with no `type`, which openapi-typescript renders as
+   * `Record<string, never> | null` — so the portal aliasing this DTO got an
+   * empty object where it expected a string, and only found out at the call
+   * site. Declaring the type keeps the generated alias honest.
+   */
   @ApiProperty({
+    type: 'string',
     nullable: true,
     example: 'real\\Standard',
     description: 'The MT5 group this account sits in. Null until the bridge reports one.',
@@ -53,10 +62,10 @@ export class TradingAccountDto {
   })
   environment: (typeof ENVIRONMENTS)[number];
 
-  @ApiProperty({ nullable: true, example: 'Standard' })
+  @ApiProperty({ type: 'string', nullable: true, example: 'Standard' })
   tier: string | null;
 
-  @ApiProperty({ nullable: true, example: 500, description: 'The 1:N in 1:500.' })
+  @ApiProperty({ type: 'number', nullable: true, example: 500, description: 'The 1:N in 1:500.' })
   leverage: number | null;
 
   @ApiProperty()

@@ -27,9 +27,38 @@ import {
 type Db = ReturnType<typeof getDb>;
 export type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
 
-export type Currency = 'USD' | 'USDT';
+/**
+ * A currency CODE — 'USD', 'USDT', or whatever the operator has added.
+ *
+ * This was the union `'USD' | 'USDT'`, and it stopped being one when currencies
+ * became operator data in a table (see `currencies` in schema.ts). A union
+ * cannot express a set the database owns at runtime, and pretending otherwise
+ * would mean every new currency needs a code change — which is the exact thing
+ * moving them into a table was meant to end.
+ *
+ * WHAT WAS LOST, stated plainly: the compiler no longer catches
+ * `getOrCreateWallet(id, 'USDD')`. That check has moved to runtime, where the
+ * answer actually lives — `CurrenciesService.assertUsable()` refuses an unknown
+ * or disabled code, and the `wallets_currency_currencies_code_fk` foreign key
+ * refuses it again at the database if a caller ever skips the service. Two
+ * runtime gates on the write path is a stronger guarantee than one compile-time
+ * gate over a hardcoded list that was wrong the day the operator added EUR.
+ *
+ * Aliased rather than written as bare `string` so the intent stays greppable
+ * and the signatures still read as money code.
+ */
+export type Currency = string;
 export type LedgerEntryType =
-  'deposit' | 'withdrawal' | 'commission' | 'rebate' | 'payout' | 'adjustment';
+  | 'deposit'
+  | 'withdrawal'
+  | 'commission'
+  | 'rebate'
+  | 'payout'
+  | 'adjustment'
+  // Wallet <-> MT5 trading account; see the `transfers` table. Its own type so
+  // reports that sum the ledger by type do not count an internal move as a
+  // deposit AND a withdrawal.
+  | 'transfer';
 
 export interface PostParams {
   userId: string;

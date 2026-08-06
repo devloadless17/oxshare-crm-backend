@@ -12,6 +12,7 @@ import {
 } from '../src/database/schema';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
+import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { MoneyLimits } from '../src/config/money-limits';
 import { CommissionService } from '../src/modules/partners/commission.service';
 
@@ -60,7 +61,12 @@ beforeAll(async () => {
   ctx = await startMoneyTestDb();
   resetDb();
   wallets = new WalletService(getDb());
-  txService = new TransactionsService(wallets, getDb(), moneyLimits());
+  txService = new TransactionsService(
+    wallets,
+    getDb(),
+    moneyLimits(),
+    new CurrenciesService(getDb()),
+  );
   commission = new CommissionService(wallets, getDb(), moneyLimits());
 });
 

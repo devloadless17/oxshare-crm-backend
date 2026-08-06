@@ -786,7 +786,70 @@ export const adminIpAllowlist = pgTable(
 // 4. ledger_entries is APPEND ONLY — enforced by a database trigger in the
 //    migration, not by convention. Corrections are compensating rows.
 
-export const currencyEnum = pgEnum('currency', ['USD', 'USDT']);
+/**
+ * The currencies this platform supports — operator data, not a code constant.
+ *
+ * This was `pgEnum('currency', ['USD','USDT'])`, which meant the set of money
+ * the platform could hold was a DEPLOY. An operator adding EUR needed a
+ * migration, a release and someone who writes SQL; in practice that means the
+ * set never changes and the product cannot follow the business. It is a table
+ * now, and `wallets`, `transactions` and `commission_accruals` reference it.
+ *
+ * ## `code` is the primary key, deliberately
+ *
+ * Not a surrogate uuid. The code IS the identity — 'USD' means one thing
+ * everywhere, it is what MT5, the payment providers and every human use, and a
+ * uuid would mean every money row needs a join before a person debugging a
+ * balance can read it. The FK column is `varchar(10)`, which is what the enum
+ * columns already stored on disk, so the migration converts them in place
+ * rather than rewriting the money tables.
+ *
+ * ## Why rows are disabled rather than deleted
+ *
+ * A currency with wallets behind it can never be removed — the balances are
+ * real and the ledger is append-only. `enabled` stops NEW wallets and new
+ * deposits while leaving every existing row readable, which is the only safe
+ * meaning "remove this currency" can have on a money system. The FKs are
+ * ON DELETE RESTRICT so the database refuses the unsafe reading even if an
+ * endpoint one day forgets to.
+ *
+ * `decimals` is DISPLAY only. Storage stays NUMERIC(28,8) for every currency
+ * (§6.1) — rounding to 2 for USD in the database would destroy the eighth
+ * decimal of a USDT balance the moment somebody reused the column.
+ */
+export const currencies = pgTable(
+  'currencies',
+  {
+    /** ISO-4217 where one exists ('USD'), the ticker where none does ('USDT'). */
+    code: varchar('code', { length: 10 }).primaryKey(),
+    name: varchar('name', { length: 80 }).notNull(),
+    /** '$', 'USDT'. Display only; `code` is what anything logical compares. */
+    symbol: varchar('symbol', { length: 8 }).notNull(),
+    /** Decimal places to SHOW. Storage is always NUMERIC(28,8) — see above. */
+    decimals: integer('decimals').notNull().default(2),
+    enabled: boolean('enabled').notNull().default(true),
+    /**
+     * The one currency a brand-new client's first wallet is opened in.
+     *
+     * At most one row may be true, enforced by `currencies_one_default_uq`
+     * below — a partial unique index over a constant, which is how Postgres
+     * expresses "at most one row satisfying this predicate". Registration reads
+     * it, so a platform with none opens no wallet; the migration seeds USD.
+     */
+    isDefault: boolean('is_default').notNull().default(false),
+    /** Presentation order, so the operator controls it rather than the alphabet. */
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('currencies_enabled_sort_idx').on(t.enabled, t.sortOrder),
+    uniqueIndex('currencies_one_default_uq')
+      .on(sql`(1)`)
+      .where(sql`${t.isDefault}`),
+  ],
+);
+
 export const ledgerEntryTypeEnum = pgEnum('ledger_entry_type', [
   'deposit',
   'withdrawal',
@@ -794,6 +857,11 @@ export const ledgerEntryTypeEnum = pgEnum('ledger_entry_type', [
   'rebate',
   'payout',
   'adjustment',
+  // Wallet <-> MT5 trading account. Its own type rather than reusing
+  // deposit/withdrawal: those mean money crossing the platform BOUNDARY through
+  // a provider, and counting an internal move as either would overstate both
+  // total deposits and total withdrawals in every report that sums by type.
+  'transfer',
 ]);
 
 export const wallets = pgTable(
@@ -803,7 +871,11 @@ export const wallets = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
-    currency: currencyEnum('currency').notNull(),
+    // RESTRICT, not CASCADE: deleting a currency that holds balances would take
+    // the balances with it. The operator disables instead — see `currencies`.
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
     balance: numeric('balance', { precision: 28, scale: 8 }).notNull().default('0'),
     onHold: numeric('on_hold', { precision: 28, scale: 8 }).notNull().default('0'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -878,7 +950,9 @@ export const transactions = pgTable(
       .references(() => wallets.id, { onDelete: 'restrict' }),
     direction: transactionDirectionEnum('direction').notNull(),
     amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
-    currency: currencyEnum('currency').notNull(),
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
     state: transactionStateEnum('state').notNull().default('pending'),
     provider: varchar('provider', { length: 50 }).notNull(),
     /** Provider's own reference. §6.3: UNIQUE(provider, provider_ref) is the
@@ -886,6 +960,19 @@ export const transactions = pgTable(
     providerRef: varchar('provider_ref', { length: 255 }),
     /** Withdrawal destination (bank/wallet address) as the client supplied it. */
     destination: varchar('destination', { length: 255 }),
+    /**
+     * Set when the client asked to fund a TRADING ACCOUNT rather than the wallet.
+     *
+     * The money still lands in the wallet first — the wallet is the CRM's ledger
+     * and every balance the platform owns passes through it, so a deposit that
+     * skipped it would be money with no ledger row. What this column records is
+     * the client's INTENT, and on settlement the deposit chains a `transfers`
+     * row to move it on. One ledger, one truth, and the two-step is visible in
+     * the data rather than hidden behind a single ambiguous "deposit".
+     *
+     * Null for an ordinary wallet deposit, which is the common case.
+     */
+    destinationTradingAccountId: uuid('destination_trading_account_id'),
     rejectionReason: text('rejection_reason'),
     reviewedBy: uuid('reviewed_by'),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
@@ -897,6 +984,87 @@ export const transactions = pgTable(
     index('transactions_state_idx').on(t.state),
     index('transactions_created_at_idx').on(t.createdAt),
     uniqueIndex('transactions_provider_ref_uq').on(t.provider, t.providerRef),
+  ],
+);
+
+// ── transfers · wallet <-> MT5 trading account ───────────────────────────────
+//
+// ## What a transfer is, and what it deliberately is not
+//
+// The CRM owns wallet balances. MT5 owns trading-account balances. There is no
+// bridge yet, and this table is shaped by refusing to paper over that.
+//
+// A transfer therefore has TWO legs and only one of them is ours:
+//
+//   wallet_to_account  the wallet leg is real and immediate — the funds are
+//                      HELD on request and debited on settlement, exactly as a
+//                      withdrawal behaves, because from the wallet's point of
+//                      view that is what this is. The MT5 leg is an intent.
+//
+//   account_to_wallet  nothing is credited on request. Money the CRM has not
+//                      received is money the CRM must not show, so the wallet
+//                      moves only when the bridge confirms the debit happened
+//                      on the MT5 side.
+//
+// The asymmetry is the point: in both directions the CRM changes a balance only
+// when it knows the money is on its side of the boundary. `trading_accounts`
+// stays balance-free (see its comment), so there is no CRM number that can
+// disagree with what the client sees in the terminal.
+//
+// ## Why not reuse `transactions`
+//
+// A transaction is a movement between the client and the OUTSIDE world through
+// a payment provider, and it carries provider, provider_ref, destination and an
+// admin approval step to prove it. A transfer is internal, has no provider,
+// needs no approval, and its counterparty is a trading account rather than a
+// bank. Overloading one table would mean a `provider` column that is null for
+// half the rows and an approval state machine that half the rows skip — and
+// `transactions_provider_ref_uq`, the §6.3 idempotency guarantee, would have to
+// become nullable-tolerant on a money table. Two shapes, two tables.
+export const transferDirectionEnum = pgEnum('transfer_direction', [
+  'wallet_to_account',
+  'account_to_wallet',
+]);
+
+/**
+ * pending → settled, or pending → failed. No approval state.
+ *
+ * `failed` releases the hold on a wallet_to_account transfer and credits
+ * nothing on an account_to_wallet one — in both cases returning to exactly the
+ * position before the request, which is what makes a failed transfer safe to
+ * retry.
+ */
+export const transferStateEnum = pgEnum('transfer_state', ['pending', 'settled', 'failed']);
+
+export const transfers = pgTable(
+  'transfers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    walletId: uuid('wallet_id')
+      .notNull()
+      .references(() => wallets.id, { onDelete: 'restrict' }),
+    tradingAccountId: uuid('trading_account_id')
+      .notNull()
+      .references(() => tradingAccounts.id, { onDelete: 'restrict' }),
+    direction: transferDirectionEnum('direction').notNull(),
+    amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
+    state: transferStateEnum('state').notNull().default('pending'),
+    /** Why the bridge refused. Null unless `state = 'failed'`. */
+    failureReason: text('failure_reason'),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('transfers_user_idx').on(t.userId),
+    index('transfers_state_idx').on(t.state),
+    index('transfers_created_at_idx').on(t.createdAt),
+    index('transfers_trading_account_idx').on(t.tradingAccountId),
   ],
 );
 
@@ -1064,7 +1232,10 @@ export const commissionAccruals = pgTable(
       onDelete: 'restrict',
     }),
     amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
-    currency: currencyEnum('currency').notNull().default('USD'),
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .default('USD')
+      .references(() => currencies.code, { onDelete: 'restrict' }),
     status: accrualStatusEnum('status').notNull().default('accrued'),
     /** closed_at + the program's settlement window (§8.6 confirm job). */
     availableAt: timestamp('available_at', { withTimezone: true }).notNull(),

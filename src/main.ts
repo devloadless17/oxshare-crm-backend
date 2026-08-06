@@ -158,6 +158,15 @@ async function bootstrap() {
   if (process.env['NODE_ENV'] !== 'production') {
     const { runSeeds } = await import('./database/seed');
     await runSeeds();
+
+    /*
+     * Separate from `runSeeds` because it writes MONEY, and money is only ever
+     * written through `WalletService` (§6.2) — which `database/` may not import,
+     * since modules depend on database and never the reverse. Called second
+     * because it needs the demo client `runSeeds` creates.
+     */
+    const { seedDemoTradingData } = await import('./modules/trading/demo-trading-seed');
+    await seedDemoTradingData();
   }
 
   const port = process.env['PORT'] ?? 3001;

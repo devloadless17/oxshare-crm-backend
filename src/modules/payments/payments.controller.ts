@@ -40,6 +40,8 @@ import { SECURITY_SWITCHES } from '../../store/security-settings.store';
 import { EmailService } from '../email/email.service';
 import { ValidationError } from '../../common/errors/domain-errors';
 import { DepositRequestDto, RequestDepositDto } from './dto/deposit.dto';
+import { TransfersService } from './transfers.service';
+import { RequestTransferDto, TransferDto } from './dto/transfer.dto';
 
 @ApiTags('payments')
 @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
@@ -51,6 +53,7 @@ export class PaymentsController {
     private readonly otp: WithdrawalOtpService,
     private readonly securitySettings: SecuritySettingsService,
     private readonly email: EmailService,
+    private readonly transfers: TransfersService,
   ) {}
 
   /**
@@ -94,6 +97,7 @@ export class PaymentsController {
       amount: dto.amount,
       currency: dto.currency,
       method: dto.method,
+      destinationTradingAccountId: dto.destinationTradingAccountId,
     });
   }
 
@@ -202,5 +206,52 @@ export class PaymentsController {
   @ApiOkResponse({ type: [TransactionDto] })
   myTransactions(@Req() req: Request & { user: User }) {
     return this.transactions.listForUser(req.user.id);
+  }
+
+  /**
+   * Move money between the client's wallet and one of their live MT5 accounts.
+   *
+   * Idempotent for the same reason the deposit and withdrawal paths are: a
+   * double-clicked button would otherwise place two holds and file two
+   * transfers for one intended movement (R-5.2).
+   *
+   * The response is `pending` in both directions, and that is not a
+   * placeholder. MT5 owns the account side and there is no bridge yet, so the
+   * CRM records what it knows and settles when it is told —
+   * `transfers.service.ts` explains why the two directions treat the wallet
+   * asymmetrically.
+   */
+  @Post('transfers')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description: 'A unique value per intended transfer, reused only when retrying that same one.',
+  })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Transfer between the wallet and a live trading account — requires KYC level 1',
+    description:
+      'wallet_to_account holds the amount immediately and debits it on settlement. ' +
+      'account_to_wallet credits nothing until the bridge confirms MT5 was debited — the CRM ' +
+      'never shows money it has not received. Demo accounts are refused.',
+  })
+  @ApiCreatedResponse({ type: TransferDto })
+  async requestTransfer(@Body() dto: RequestTransferDto, @Req() req: Request & { user: User }) {
+    return await this.transfers.request({
+      userId: req.user.id,
+      tradingAccountId: dto.tradingAccountId,
+      direction: dto.direction,
+      amount: dto.amount,
+      currency: dto.currency,
+    });
+  }
+
+  @Get('transfers')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: "The signed-in client's own wallet <-> trading-account transfers" })
+  @ApiOkResponse({ type: [TransferDto] })
+  myTransfers(@Req() req: Request & { user: User }) {
+    return this.transfers.listForUser(req.user.id);
   }
 }

@@ -5,6 +5,7 @@ import { closeDb, getDb, resetDb } from '../src/database/db';
 import { auditLog, ibPrograms, transactions, users } from '../src/database/schema';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
+import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { MoneyLimits } from '../src/config/money-limits';
 import { ProgramsService } from '../src/modules/partners/programs.service';
 import { AdminAuditService } from '../src/modules/admin/admin-audit.service';
@@ -86,6 +87,11 @@ beforeAll(async () => {
     new MoneyLimits({
       get: () => undefined,
     } as never),
+    // The real service against the real database. Currencies are rows now and
+    // the migration seeds USD and USDT, so a stub would only prove that a stub
+    // says yes — while the deposit path's job is to refuse a code that is not
+    // in the table, or is disabled.
+    new CurrenciesService(getDb()),
   );
   programs = new ProgramsService(getDb());
   // The real audit service against the real stores: the point of these tests is

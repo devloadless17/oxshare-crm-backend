@@ -114,6 +114,17 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'kyc_config.step_delete', label: 'KYC step deleted', group: 'Configuration' },
   { action: 'platform_link.set', label: 'Download link changed', group: 'Configuration' },
   { action: 'settings.general.update', label: 'General settings changed', group: 'Configuration' },
+  /*
+   * Currencies. Grouped as Configuration rather than Money, deliberately: these
+   * change what the platform OFFERS, not what any client holds — no balance
+   * moves. What they do change is platform-wide and quiet: disabling a currency
+   * stops every new wallet and deposit in it, and moving the default changes
+   * what every subsequent registration opens. Both need to be attributable
+   * months later, which is exactly what an unlabelled action prevents.
+   */
+  { action: 'currency.create', label: 'Currency added', group: 'Configuration' },
+  { action: 'currency.update', label: 'Currency changed', group: 'Configuration' },
+  { action: 'currency.delete', label: 'Currency removed', group: 'Configuration' },
 
   // ── Security controls ─────────────────────────────────────────────────────
   { action: 'ip_allowlist.add', label: 'Network rule added', group: 'Security' },

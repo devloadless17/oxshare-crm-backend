@@ -1,6 +1,6 @@
 import { unlink } from 'fs/promises';
 import { basename, join } from 'path';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { KycStore, type KycStatus, type KycSubmission } from '../../store/kyc.store';
 import { User, UsersStore } from '../../store/users.store';
 import { KycConfigStore } from '../../store/kyc-config.store';
@@ -13,6 +13,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { DRIZZLE_DB } from '../../database/database.module';
+import { WalletProvisioningService } from '../wallet/wallet-provisioning.service';
 import type { Db } from '../../database/db';
 import type { ClientScope } from '../../common/security/client-scope';
 
@@ -80,6 +81,15 @@ export class KycService {
      * second data-access path.
      */
     @Inject(DRIZZLE_DB) private readonly db: Db,
+    /*
+     * Opens the client's wallets on approval — one per enabled currency.
+     *
+     * Appended and OPTIONAL for the same reason as `AuthService`'s: this class
+     * is hand-constructed with positional arguments across the test suite, so a
+     * required parameter here would mean editing every one of those to test
+     * something unrelated to wallets.
+     */
+    @Optional() private readonly walletProvisioning?: WalletProvisioningService,
   ) {}
 
   /**
@@ -358,6 +368,22 @@ export class KycService {
       await this.kycStore.archiveAttempt(updated, tx);
       await this.users.update(userId, { verificationLevel: 1 }, tx);
     });
+
+    /*
+     * Approval is the moment a client is cleared to move money, so it is the
+     * moment their wallets exist — one per enabled currency.
+     *
+     * OUTSIDE the transaction above, and awaited. Outside because the approval
+     * is the fact being recorded, and it must not be rolled back by a wallet
+     * that failed to open. Awaited because the next thing the client does is
+     * open /wallet, and currencies that appear a moment later read as a bug.
+     *
+     * `openAllEnabledWallets` swallows and logs rather than throwing, which
+     * matters more here than at registration: the transaction has COMMITTED, so
+     * a throw would tell the reviewer their approval failed when it succeeded —
+     * and the natural response to that is to approve again.
+     */
+    await this.walletProvisioning?.openAllEnabledWallets(userId);
 
     const user = await this.users.findById(userId);
     if (user) {

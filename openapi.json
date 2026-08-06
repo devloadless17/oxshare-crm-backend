@@ -902,36 +902,6 @@
         ]
       }
     },
-    "/v1/trading/ping": {
-      "get": {
-        "operationId": "TradingController_ping",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "summary": "Health ping for trading module",
-        "tags": [
-          "trading"
-        ]
-      }
-    },
-    "/v1/partners/ping": {
-      "get": {
-        "operationId": "PartnersController_ping",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "summary": "Health ping for partners module",
-        "tags": [
-          "partners"
-        ]
-      }
-    },
     "/v1/wallet": {
       "get": {
         "operationId": "WalletController_myWallets",
@@ -1011,6 +981,233 @@
         "summary": "The signed-in client's own ledger entries",
         "tags": [
           "wallet"
+        ]
+      }
+    },
+    "/v1/currencies": {
+      "get": {
+        "operationId": "CurrenciesController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CurrencyDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "The currencies this platform supports, enabled only, in operator order",
+        "tags": [
+          "currencies"
+        ]
+      }
+    },
+    "/v1/admin/currencies": {
+      "get": {
+        "description": "Unlike the client-facing GET /currencies, this includes disabled currencies — managing them is the point of the screen.",
+        "operationId": "AdminCurrenciesController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CurrencyDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every currency, including disabled ones, in operator order",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "The code is normalised to upper case and must be unique. Marking it default moves the flag off whatever holds it, atomically.",
+        "operationId": "AdminCurrenciesController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCurrencyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrencyDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add a currency",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/currencies/{code}": {
+      "patch": {
+        "description": "PATCH, not PUT: the code is the primary key and is referenced by wallets, transactions and transfers, so it is not editable — a rename would be a data migration across four money tables. Everything else is optional and only supplied fields change.",
+        "operationId": "AdminCurrenciesController_update",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCurrencyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrencyDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update a currency",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "description": "Refuses with 409 if any wallet exists in it — balances and append-only ledger history depend on the row. Disable it instead: that stops new wallets while keeping the existing ones readable and spendable.",
+        "operationId": "AdminCurrenciesController_remove",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Delete a currency that nobody holds",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/trading/ping": {
+      "get": {
+        "operationId": "TradingController_ping",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Health ping for trading module",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/v1/trading/accounts": {
+      "get": {
+        "operationId": "TradingController_myAccounts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TradingAccountDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's MT5 trading accounts — live and demo, in one list",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/v1/partners/ping": {
+      "get": {
+        "operationId": "PartnersController_ping",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Health ping for partners module",
+        "tags": [
+          "partners"
         ]
       }
     },
@@ -1172,6 +1369,82 @@
           }
         ],
         "summary": "The signed-in client's own transactions",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/v1/payments/transfers": {
+      "post": {
+        "description": "wallet_to_account holds the amount immediately and debits it on settlement. account_to_wallet credits nothing until the bridge confirms MT5 was debited — the CRM never shows money it has not received. Demo accounts are refused.",
+        "operationId": "PaymentsController_requestTransfer",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended transfer, reused only when retrying that same one.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestTransferDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Transfer between the wallet and a live trading account — requires KYC level 1",
+        "tags": [
+          "payments"
+        ]
+      },
+      "get": {
+        "operationId": "PaymentsController_myTransfers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TransferDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's own wallet <-> trading-account transfers",
         "tags": [
           "payments"
         ]
@@ -4745,6 +5018,176 @@
           "limit"
         ]
       },
+      "CurrencyDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "USD"
+          },
+          "name": {
+            "type": "string",
+            "example": "US Dollar"
+          },
+          "symbol": {
+            "type": "string",
+            "example": "$"
+          },
+          "decimals": {
+            "type": "number",
+            "example": 2,
+            "description": "Display precision only; storage is always 8dp."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Disabled currencies keep their wallets but accept no new ones."
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "The currency a new client's first wallet opens in."
+          },
+          "sortOrder": {
+            "type": "number"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "symbol",
+          "decimals",
+          "enabled",
+          "isDefault",
+          "sortOrder",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "CreateCurrencyDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "EUR"
+          },
+          "name": {
+            "type": "string",
+            "example": "Euro"
+          },
+          "symbol": {
+            "type": "string",
+            "example": "€"
+          },
+          "decimals": {
+            "type": "number",
+            "default": 2,
+            "minimum": 0,
+            "maximum": 8
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "sortOrder": {
+            "type": "number",
+            "default": 0
+          },
+          "isDefault": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "symbol"
+        ]
+      },
+      "UpdateCurrencyDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Euro"
+          },
+          "symbol": {
+            "type": "string",
+            "example": "€"
+          },
+          "decimals": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 8
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "number"
+          },
+          "isDefault": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TradingAccountDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "mt5Login": {
+            "type": "string",
+            "example": "5001234",
+            "description": "The MT5 login. A string, not a number — it is an identifier that happens to be digits, and leading zeros are significant to the bridge."
+          },
+          "mt5Group": {
+            "type": "string",
+            "nullable": true,
+            "example": "real\\Standard",
+            "description": "The MT5 group this account sits in. Null until the bridge reports one."
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ],
+            "description": "Whether this is real money or a practice account. The client-facing distinction that matters most on this screen: a demo account must never be mistaken for a live one."
+          },
+          "tier": {
+            "type": "string",
+            "nullable": true,
+            "example": "Standard"
+          },
+          "leverage": {
+            "type": "number",
+            "nullable": true,
+            "example": 500,
+            "description": "The 1:N in 1:500."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "mt5Login",
+          "mt5Group",
+          "environment",
+          "tier",
+          "leverage",
+          "createdAt"
+        ]
+      },
       "RequestDepositDto": {
         "type": "object",
         "properties": {
@@ -4754,10 +5197,8 @@
           },
           "currency": {
             "type": "string",
-            "enum": [
-              "USD",
-              "USDT"
-            ]
+            "example": "USD",
+            "description": "Must be an enabled currency — see GET /currencies."
           },
           "method": {
             "type": "string",
@@ -4766,6 +5207,10 @@
               "usdt_trc20"
             ],
             "description": "How the client is sending the money. Decides which instructions they are shown."
+          },
+          "destinationTradingAccountId": {
+            "type": "string",
+            "description": "A live trading account of the caller, to fund once the deposit is confirmed."
           }
         },
         "required": [
@@ -4792,10 +5237,7 @@
           },
           "currency": {
             "type": "string",
-            "enum": [
-              "USD",
-              "USDT"
-            ]
+            "example": "USD"
           },
           "method": {
             "type": "string",
@@ -5001,6 +5443,103 @@
         "required": [
           "message",
           "required"
+        ]
+      },
+      "RequestTransferDto": {
+        "type": "object",
+        "properties": {
+          "tradingAccountId": {
+            "type": "string",
+            "description": "A live trading account belonging to the caller."
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "wallet_to_account",
+              "account_to_wallet"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "example": "250.00",
+            "description": "Decimal string, up to 8 places."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          }
+        },
+        "required": [
+          "tradingAccountId",
+          "direction",
+          "amount",
+          "currency"
+        ]
+      },
+      "TransferDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "walletId": {
+            "type": "string"
+          },
+          "tradingAccountId": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "wallet_to_account",
+              "account_to_wallet"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "example": "250.00000000",
+            "description": "Decimal string (§6.1)."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "settled",
+              "failed"
+            ],
+            "description": "pending until the MT5 bridge confirms. A wallet_to_account transfer holds the amount while pending; an account_to_wallet one credits nothing until it settles."
+          },
+          "failureReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "settledAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "walletId",
+          "tradingAccountId",
+          "direction",
+          "amount",
+          "currency",
+          "state",
+          "createdAt"
         ]
       },
       "PlatformLinkDto": {

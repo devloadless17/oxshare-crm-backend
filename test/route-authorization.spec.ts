@@ -145,6 +145,22 @@ const PUBLIC_ROUTES: Record<string, string> = {
   // Placeholders with no data and no side effects.
   'GET /trading/ping': 'Module liveness marker. Returns a constant.',
   'GET /partners/ping': 'Module liveness marker. Returns a constant.',
+
+  /*
+   * The operator's currency list — codes, names, symbols, display precision.
+   *
+   * Open because it is the same answer for everybody and for nobody in
+   * particular: no client data, no balances, nothing that varies by who asks.
+   * It is also needed BEFORE a session exists, since the registration screen
+   * names the currency a new client's wallet opens in, so requiring one would
+   * 401 the screen that most needs it.
+   *
+   * Disabled currencies never leave the service, so this cannot advertise
+   * something a client is unable to hold. Every WRITE, and the disabled rows,
+   * are on /admin/currencies behind settings.view / settings.manage.
+   */
+  'GET /currencies':
+    'Operator currency list. No client data, and the signed-out registration screen needs it.',
 };
 
 let app: INestApplication;

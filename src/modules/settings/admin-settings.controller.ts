@@ -3,7 +3,11 @@ import { Throttle } from '@nestjs/throttler';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Admin } from '../../store/admins.store';
-import { MasterAdminGuard, PermissionsGuard, RequirePermissions } from '../admin/guards/admin.guard';
+import {
+  MasterAdminGuard,
+  PermissionsGuard,
+  RequirePermissions,
+} from '../admin/guards/admin.guard';
 import { NotClientScoped } from '../admin/guards/client-scope.decorator';
 import { Audited, NotAudited } from '../admin/guards/audited.decorator';
 import { EmailService } from '../email/email.service';

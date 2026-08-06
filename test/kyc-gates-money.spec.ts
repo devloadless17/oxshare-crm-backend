@@ -5,6 +5,7 @@ import { closeDb, resetDb } from '../src/database/db';
 import { admins, kycSubmissions, users } from '../src/database/schema';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
+import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { KycService } from '../src/modules/compliance/kyc.service';
 import { KycStore } from '../src/store/kyc.store';
 import { KycConfigStore } from '../src/store/kyc-config.store';
@@ -96,7 +97,7 @@ beforeAll(async () => {
   resetDb();
   ctx = await startMoneyTestDb();
   wallets = new WalletService(ctx.db);
-  txService = new TransactionsService(wallets, ctx.db, limits());
+  txService = new TransactionsService(wallets, ctx.db, limits(), new CurrenciesService(ctx.db));
   // The real config store against the real (seeded) database — `submit()` reads
   // the configured profile fields from it. This suite only calls approve/reject,
   // which do not touch it, but constructing the service honestly is what keeps

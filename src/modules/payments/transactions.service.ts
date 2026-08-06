@@ -1,13 +1,14 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { and, desc, eq, gte, ne, sql } from 'drizzle-orm';
-import { transactions, users } from '../../database/schema';
+import { tradingAccounts, transactions, users } from '../../database/schema';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
 import { assertActorCan, type Actor } from '../../common/security/actor';
 import { money, toDecimal } from '../wallet/money';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
 import { MoneyLimits } from '../../config/money-limits';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
+import { CurrenciesService } from '../currencies/currencies.service';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
@@ -75,6 +76,14 @@ export class TransactionsService {
     private readonly wallets: WalletService,
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly limits: MoneyLimits,
+    /*
+     * Decides whether a currency code is one this platform accepts right now.
+     *
+     * Appended, and the reason is the same one `AuthService` records: this
+     * class is constructed positionally in the test suite, so inserting a
+     * parameter in the middle silently shifts the ones after it.
+     */
+    private readonly currencies: CurrenciesService,
   ) {}
 
   async requestWithdrawal(params: {
@@ -485,9 +494,16 @@ export class TransactionsService {
     amount: string;
     currency: Currency;
     method: string;
+    /** Set when the client chose to fund a trading account rather than the wallet. */
+    destinationTradingAccountId?: string;
   }) {
     const amount = toDecimal(params.amount);
     if (!amount.isPositive()) throw new ValidationError('Deposit amount must be positive.');
+
+    // Unknown or DISABLED currencies are refused here rather than by an @IsIn
+    // in the DTO — the enabled set is operator data and changes without a
+    // deploy. Returns the normalised (upper-cased) code.
+    const currency = await this.currencies.assertUsable(params.currency);
 
     const min = this.limits.minDeposit();
     const max = this.limits.maxDeposit();
@@ -501,7 +517,39 @@ export class TransactionsService {
       );
     }
 
-    const wallet = await this.wallets.getOrCreateWallet(params.userId, params.currency);
+    /*
+     * The chosen trading account, validated NOW rather than at settlement.
+     *
+     * The alternative — storing whatever id arrived and checking when the
+     * operator confirms the payment — means the client's money has already been
+     * received before anybody discovers the destination is a demo account, a
+     * deleted one, or somebody else's. At that point the deposit cannot be
+     * completed as declared and someone has to unpick it by hand.
+     *
+     * `userId` in the WHERE clause, so not-found and not-yours are the same
+     * answer: an equality check after the fetch is one refactor away from being
+     * dropped, and the consequence is funding a stranger's account.
+     */
+    if (params.destinationTradingAccountId) {
+      const [account] = await this.db
+        .select()
+        .from(tradingAccounts)
+        .where(
+          and(
+            eq(tradingAccounts.id, params.destinationTradingAccountId),
+            eq(tradingAccounts.userId, params.userId),
+          ),
+        )
+        .limit(1);
+      if (!account) throw new NotFoundError('Trading account not found.');
+      if (account.environment !== 'live') {
+        throw new ValidationError(
+          'Only live trading accounts can be funded. Demo accounts trade practice money and are not linked to your wallet.',
+        );
+      }
+    }
+
+    const wallet = await this.wallets.getOrCreateWallet(params.userId, currency);
     const reference = depositReference();
 
     const [tx] = await this.db
@@ -511,7 +559,11 @@ export class TransactionsService {
         walletId: wallet.id,
         direction: 'deposit',
         amount: money(params.amount),
-        currency: params.currency,
+        currency,
+        // What the client asked to FUND. The money still lands in the wallet —
+        // that is the CRM's ledger — and settlement chains a transfer to move
+        // it on. Null for an ordinary wallet deposit.
+        destinationTradingAccountId: params.destinationTradingAccountId ?? null,
         // PENDING. The client has promised money, not sent it. Anything else
         // here would credit a balance off an unverified claim.
         state: 'pending',

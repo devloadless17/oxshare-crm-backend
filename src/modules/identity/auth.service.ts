@@ -1,4 +1,4 @@
-import { Logger, Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
@@ -23,6 +23,7 @@ import {
 } from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
 import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
+import { WalletProvisioningService } from '../wallet/wallet-provisioning.service';
 import { LoginAttemptsService } from '../../common/security/login-attempts.service';
 import {
   isTokenKind,
@@ -89,6 +90,16 @@ export class AuthService {
     // positional at every `new AuthService(...)` in the test suite, so inserting
     // in the middle silently shifts two arguments into the wrong slots.
     private readonly files: StoredFilesService,
+    /*
+     * Opens the client's first wallet on registration. Appended for the reason
+     * directly above, and OPTIONAL for the same one: every hand-constructed
+     * `new AuthService(...)` in the suite passes the arguments positionally, so
+     * a required parameter here would mean editing each of them to test
+     * something unrelated to wallets. `?.` at the single call site.
+     */
+    @Optional()
+    @Inject(forwardRef(() => WalletProvisioningService))
+    private readonly walletProvisioning?: WalletProvisioningService,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -151,6 +162,22 @@ export class AuthService {
       country: dto.country,
       phone: dto.phone,
     });
+
+    /*
+     * The client's first wallet, in the platform's default currency.
+     *
+     * Awaited but never fatal — `openDefaultWallet` swallows and logs — and
+     * that asymmetry is the whole point. At this line the user row is already
+     * COMMITTED, so a throw would answer 500 for an account that exists: the
+     * client believes registration failed, cannot sign in, and cannot register
+     * again because the address is taken. That is the worst state this endpoint
+     * can produce. A missing wallet is the opposite — every money path calls
+     * `getOrCreateWallet`, so it repairs itself on first use.
+     *
+     * Only the DEFAULT currency here. The full set arrives on KYC approval,
+     * which is the moment the client is actually cleared to move money.
+     */
+    await this.walletProvisioning?.openDefaultWallet(user.id);
 
     // The verification link is a bearer credential. It is emailed and never
     // written to stdout — it used to be console.logged in every environment.
