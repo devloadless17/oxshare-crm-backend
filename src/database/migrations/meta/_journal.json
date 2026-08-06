@@ -218,6 +218,13 @@
       "when": 1786370755600,
       "tag": "0030_ib_accounts_and_wallets",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1786457155600,
+      "tag": "0031_ib_level_renumber_cascade",
+      "breakpoints": true
     }
   ]
 }

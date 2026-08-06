@@ -1,10 +1,11 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { IbApplicationsService } from '../src/modules/ib/ib-applications.service';
 import { IbLevelsService } from '../src/modules/ib/ib-levels.service';
 import { IbStore } from '../src/store/ib.store';
 import { UsersStore } from '../src/store/users.store';
 import { ClientVisibilityService } from '../src/common/security/client-visibility.service';
+import type { EmailService } from '../src/modules/email/email.service';
 import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -21,6 +22,17 @@ let service: IbApplicationsService;
 let store: IbStore;
 let users: UsersStore;
 
+/**
+ * A stand-in for EmailService, so the decision emails are OBSERVABLE.
+ *
+ * A real one would short-circuit under NODE_ENV=test and prove nothing. What
+ * matters here is not that mail was delivered — that is EmailService's own
+ * suite — but that the service asks for it, with the right recipient and the
+ * right payload, and only after the decision has actually landed.
+ */
+const sendPartnerDecisionEmail = vi.fn().mockResolvedValue(undefined);
+const email = { sendPartnerDecisionEmail } as unknown as EmailService;
+
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
   store = new IbStore(ctx.db);
@@ -31,6 +43,7 @@ beforeAll(async () => {
     users,
     new IbLevelsService(ctx.db),
     new ClientVisibilityService(users),
+    email,
   );
 }, 120_000);
 
@@ -52,6 +65,7 @@ async function makeClient(email: string, verificationLevel = 1): Promise<string>
 }
 
 beforeEach(async () => {
+  sendPartnerDecisionEmail.mockClear();
   await ctx.db.execute(sql`DELETE FROM ib_accounts`);
   await ctx.db.execute(sql`DELETE FROM ib_applications`);
   await ctx.db.execute(sql`DELETE FROM users`);
@@ -328,5 +342,68 @@ describe('the cycle guard', () => {
     await ctx.db.execute(sql`UPDATE ib_accounts SET parent_ib_user_id = ${c} WHERE user_id = ${a}`);
 
     await expect(store.ancestorsOf(c)).resolves.toBeInstanceOf(Array);
+  });
+});
+
+describe('the decision email', () => {
+  it('sends the referral code on approval', async () => {
+    const userId = await makeClient('approved-mail@test.local');
+    const application = await service.apply(userId, {});
+
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED);
+    // Fire-and-forget, so it is not awaited by the caller. One turn is enough
+    // for the promise chain the service kicked off.
+    await vi.waitFor(() => expect(sendPartnerDecisionEmail).toHaveBeenCalledTimes(1));
+
+    expect(sendPartnerDecisionEmail).toHaveBeenCalledWith(
+      'approved-mail@test.local',
+      'Test',
+      'approved',
+      { referralCode: account.referralCode },
+    );
+  });
+
+  it('sends the COMPOSED reason on rejection, not its parts', async () => {
+    const userId = await makeClient('rejected-mail@test.local');
+    const application = await service.apply(userId, {});
+
+    await service.reject(application.id, REVIEWER, UNRESTRICTED, {
+      reason: 'Application is incomplete or unclear',
+      note: 'No website given.',
+    });
+    await vi.waitFor(() => expect(sendPartnerDecisionEmail).toHaveBeenCalledTimes(1));
+
+    // The same sentence the portal renders. Two copies assembled differently
+    // is how an email and a screen end up disagreeing about why.
+    expect(sendPartnerDecisionEmail).toHaveBeenCalledWith(
+      'rejected-mail@test.local',
+      'Test',
+      'rejected',
+      { reason: 'Application is incomplete or unclear — No website given.' },
+    );
+  });
+
+  it('sends nothing when the decision was refused', async () => {
+    const userId = await makeClient('no-mail@test.local');
+    const application = await service.apply(userId, {});
+    await service.approve(application.id, REVIEWER, UNRESTRICTED);
+    /*
+     * Wait for the APPROVAL's email before clearing.
+     *
+     * It is fire-and-forget, so it lands a turn after `approve` resolves —
+     * clearing immediately would let it arrive afterwards and be counted as a
+     * rejection email that was never sent. This assertion is about the reject
+     * call below, so the earlier send has to be settled and cleared first.
+     */
+    await vi.waitFor(() => expect(sendPartnerDecisionEmail).toHaveBeenCalledTimes(1));
+    sendPartnerDecisionEmail.mockClear();
+
+    await expect(
+      service.reject(application.id, REVIEWER, UNRESTRICTED, { reason: 'Too late' }),
+    ).rejects.toThrow();
+
+    // A client told they were rejected after being approved is worse than no
+    // email at all.
+    expect(sendPartnerDecisionEmail).not.toHaveBeenCalled();
   });
 });

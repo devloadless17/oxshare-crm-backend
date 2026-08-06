@@ -53,6 +53,7 @@
   "GET /v1/uploads/kyc/{file}",
   "PATCH /v1/admin/clients/{id}/status",
   "PATCH /v1/admin/currencies/{code}",
+  "PATCH /v1/admin/ib-levels",
   "PATCH /v1/admin/ib-levels/{level}",
   "PATCH /v1/admin/ib/applications/{id}/approve",
   "PATCH /v1/admin/ib/applications/{id}/reject",

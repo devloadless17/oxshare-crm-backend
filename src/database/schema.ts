@@ -1273,9 +1273,23 @@ export const ibAccounts = pgTable(
     userId: uuid('user_id')
       .primaryKey()
       .references(() => users.id, { onDelete: 'restrict' }),
+    /*
+     * `onUpdate: 'cascade'`, and that is load-bearing rather than incidental.
+     *
+     * Reordering the ladder RENUMBERS these primary keys — level 2 becomes
+     * level 1 — and this column is checked immediately, not deferred. Without
+     * cascade there is no order that works: the level cannot move while a
+     * partner references it, and the partner cannot move to a level that does
+     * not exist yet. With it, Postgres carries the placements across in the
+     * same statement, so a partner stays on the rung they were put on.
+     *
+     * `onDelete` stays `restrict`. Renumbering a level is a reshuffle; deleting
+     * one out from under somebody standing on it is data loss, and those
+     * deserve opposite answers.
+     */
     level: integer('level')
       .notNull()
-      .references(() => ibLevels.level, { onDelete: 'restrict' }),
+      .references(() => ibLevels.level, { onDelete: 'restrict', onUpdate: 'cascade' }),
     /** NULL means they deal with the broker directly — the top of a chain. */
     parentIbUserId: uuid('parent_ib_user_id'),
     /**

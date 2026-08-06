@@ -140,6 +140,8 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'ib_level.create', label: 'IB level added', group: 'Configuration' },
   { action: 'ib_level.update', label: 'IB level changed', group: 'Configuration' },
   { action: 'ib_level.delete', label: 'IB level removed', group: 'Configuration' },
+  // Renumbering moves every partner's placement with it, so it is its own act.
+  { action: 'ib_level.reorder', label: 'IB ladder reordered', group: 'Configuration' },
 
   /*
    * A partner DECISION, not a configuration change — hence a different group

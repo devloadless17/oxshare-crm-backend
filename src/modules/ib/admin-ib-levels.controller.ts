@@ -14,7 +14,12 @@ import { PermissionsGuard, RequirePermissions } from '../admin/guards/admin.guar
 import { NotClientScoped } from '../admin/guards/client-scope.decorator';
 import { Audited } from '../admin/guards/audited.decorator';
 import { IbLevelsService } from './ib-levels.service';
-import { CreateIbLevelDto, IbLevelDto, UpdateIbLevelDto } from './dto/ib-level.dto';
+import {
+  CreateIbLevelDto,
+  IbLevelDto,
+  ReorderIbLevelsDto,
+  UpdateIbLevelDto,
+} from './dto/ib-level.dto';
 
 /**
  * The IB payout ladder — how deep partner earnings travel and what each level
@@ -89,6 +94,32 @@ export class AdminIbLevelsController {
   @Audited('ib_level.update')
   update(@Param('level', ParseIntPipe) level: number, @Body() dto: UpdateIbLevelDto) {
     return this.levels.update(level, dto);
+  }
+
+  /**
+   * Reorder the ladder.
+   *
+   * PATCH on the COLLECTION, not on a level: this renumbers every rung and
+   * remaps every partner standing on them, so it is one act on the ladder
+   * rather than a series of edits to individual levels. Sending it as several
+   * PATCH /:level calls would let a half-applied order become a real state.
+   */
+  @Patch()
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.manage')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Renumber the ladder',
+    description:
+      'Takes every existing level exactly once, in the order they should appear, and renumbers ' +
+      'them 1..n. Partner placements are remapped in the same transaction, so a partner keeps ' +
+      'the rung they were placed on.',
+  })
+  @ApiOkResponse({ type: IbLevelDto, isArray: true })
+  @NotClientScoped('Platform payout configuration; names no client and returns no client data.')
+  @Audited('ib_level.reorder')
+  reorder(@Body() dto: ReorderIbLevelsDto) {
+    return this.levels.reorder(dto.order);
   }
 
   @Delete(':level')

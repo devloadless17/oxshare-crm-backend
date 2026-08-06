@@ -133,6 +133,69 @@ export class IbLevelsService {
   }
 
   /**
+   * Reorder the ladder — the drag-and-drop on the admin screen.
+   *
+   * ## Why this is two phases rather than n UPDATEs
+   *
+   * `level` is the PRIMARY KEY, so "swap 1 and 2" renumbers keys rather than
+   * changing a sort column, and setting level 2 → 1 while level 1 still exists
+   * violates that key. So the rows are first parked in a range nothing else
+   * occupies (negatives — the column has no CHECK, and the DTO's `@Min(1)`
+   * keeps them unreachable through the API), then brought back down to their
+   * new numbers.
+   *
+   * Partners follow their rung automatically: `ib_accounts.level` is
+   * `ON UPDATE CASCADE` (migration 0031) precisely so this is possible. It was
+   * written here as an explicit remap first, and there is no statement order
+   * that works — the level cannot move while a partner references it, and the
+   * partner cannot move to a number that does not exist yet. The database is
+   * the only place that can do both at once.
+   *
+   * One transaction, because a half-applied renumber is a ladder whose rungs do
+   * not match the partners standing on them.
+   */
+  async reorder(order: number[]) {
+    const rows = await this.listAll();
+
+    if (order.length !== rows.length) {
+      throw new ValidationError(
+        `The new order must list every level exactly once — ${rows.length} exist, ${order.length} were given.`,
+      );
+    }
+    const existing = new Set(rows.map((r) => r.level));
+    const seen = new Set<number>();
+    for (const level of order) {
+      if (!existing.has(level)) throw new ValidationError(`Level ${level} does not exist.`);
+      if (seen.has(level)) throw new ValidationError(`Level ${level} was listed twice.`);
+      seen.add(level);
+    }
+
+    // Already in this order: nothing to write, and no reason to churn every
+    // partner's FK to produce the state we are in.
+    if (order.every((level, index) => level === index + 1)) return this.listAll();
+
+    return this.db.transaction(async (tx) => {
+      // Phase 1 — park every level out of the way, keeping its identity in the
+      // sign-flipped number so phase 2 can find it. Partner placements follow
+      // via ON UPDATE CASCADE; nothing here touches ib_accounts.
+      for (const level of order) {
+        await tx.update(ibLevels).set({ level: -level }).where(eq(ibLevels.level, level));
+      }
+
+      // Phase 2 — bring them down to their new positions, 1..n in the order
+      // given.
+      for (const [index, level] of order.entries()) {
+        await tx
+          .update(ibLevels)
+          .set({ level: index + 1, updatedAt: new Date() })
+          .where(eq(ibLevels.level, -level));
+      }
+
+      return tx.select().from(ibLevels).orderBy(asc(ibLevels.level));
+    });
+  }
+
+  /**
    * A rate must be positive and, under revenue_share, at most 100 on its own.
    *
    * Separate from the cross-level check below because the messages differ: "150%

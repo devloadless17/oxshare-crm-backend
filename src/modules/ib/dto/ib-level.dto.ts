@@ -1,5 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayNotEmpty,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -151,4 +153,27 @@ export class UpdateIbLevelDto {
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+}
+
+/**
+ * The ladder's new order, top rung first.
+ *
+ * Every existing level, exactly once — a partial list is rejected rather than
+ * interpreted, because "the ones I did not mention keep their numbers" has no
+ * consistent answer when the mentioned ones take those numbers.
+ *
+ * These are the levels' CURRENT numbers. The service renumbers them to 1..n in
+ * the sequence given, and remaps every partner in the same transaction.
+ */
+export class ReorderIbLevelsDto {
+  @ApiProperty({
+    type: [Number],
+    example: [2, 1],
+    description: 'Current level numbers, in the order they should now appear.',
+  })
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  order: number[];
 }

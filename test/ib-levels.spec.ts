@@ -27,6 +27,14 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  /*
+   * Children first. `ib_accounts.level` is a restrict FK onto `ib_levels`, so
+   * a partner left behind by the reorder suite makes the next DELETE fail —
+   * and it fails in `beforeEach`, which reports as every following test
+   * breaking rather than as the one that left the row.
+   */
+  await ctx.db.execute(sql`DELETE FROM ib_accounts`);
+  await ctx.db.execute(sql`DELETE FROM users`);
   // Back to the two the migration seeds, so each test starts from the shipped
   // ladder rather than from whatever the previous one left.
   await ctx.db.execute(sql`DELETE FROM ib_levels`);
@@ -145,5 +153,91 @@ describe('creating a level', () => {
     const one = await levels.findOne(1);
     expect(one?.rateValue).toBe('66.6600');
     expect(typeof one?.rateValue).toBe('string');
+  });
+});
+
+describe('reordering the ladder', () => {
+  /** A partner standing on `level`, so the remap can be observed. */
+  async function placePartner(email: string, level: number, code: string): Promise<string> {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO users (email, password_hash, first_name, last_name, verification_level)
+      VALUES (${email}, 'x', 'Test', 'Partner', 1)
+      RETURNING id
+    `);
+    const userId = rows[0].id;
+    await ctx.db.execute(sql`
+      INSERT INTO ib_accounts (user_id, level, referral_code) VALUES (${userId}, ${level}, ${code})
+    `);
+    return userId;
+  }
+
+  it('swaps two levels and renumbers them 1..n', async () => {
+    const reordered = await levels.reorder([2, 1]);
+
+    expect(reordered.map((l) => [l.level, l.name])).toEqual([
+      [1, 'Sub Partner'],
+      [2, 'Master Partner'],
+    ]);
+  });
+
+  it('carries the rate with the level, not with the number', async () => {
+    const reordered = await levels.reorder([2, 1]);
+
+    // Sub Partner keeps its 30% and simply sits higher now. A renumber that
+    // moved the NUMBER's rate would silently pay everyone differently.
+    expect(reordered.find((l) => l.name === 'Sub Partner')?.rateValue).toBe('30.0000');
+    expect(reordered.find((l) => l.name === 'Master Partner')?.rateValue).toBe('70.0000');
+  });
+
+  it('moves partners with their level', async () => {
+    const master = await placePartner('on-master@test.local', 1, 'ONMASTER');
+    const sub = await placePartner('on-sub@test.local', 2, 'ONSUB000');
+
+    await levels.reorder([2, 1]);
+
+    /*
+     * The partner placed on "Master Partner" is still on Master Partner — which
+     * is now numbered 2. Without the account remap this FK would point at a
+     * level whose meaning had changed underneath them.
+     */
+    const after = await ctx.db.execute<{ user_id: string; level: number }>(
+      sql`SELECT user_id, level FROM ib_accounts ORDER BY level`,
+    );
+    const placed = new Map(after.rows.map((r) => [r.user_id, r.level]));
+    expect(placed.get(sub)).toBe(1);
+    expect(placed.get(master)).toBe(2);
+  });
+
+  it('is a no-op when the order is already correct', async () => {
+    const unchanged = await levels.reorder([1, 2]);
+    expect(unchanged.map((l) => l.name)).toEqual(['Master Partner', 'Sub Partner']);
+  });
+
+  it('refuses a partial list rather than guessing the rest', async () => {
+    await expect(levels.reorder([1])).rejects.toThrow(/every level exactly once/i);
+  });
+
+  it('refuses a duplicate', async () => {
+    await expect(levels.reorder([1, 1])).rejects.toThrow(/listed twice/i);
+  });
+
+  it('refuses a level that does not exist', async () => {
+    await expect(levels.reorder([1, 99])).rejects.toThrow(/does not exist/i);
+  });
+
+  it('handles a three-level rotation, where a naive swap would collide', async () => {
+    await ctx.db.execute(sql`
+      INSERT INTO ib_levels (level, name, payout_model, rate_value, enabled)
+      VALUES (3, 'Third', 'per_lot', 2.5000, true)
+    `);
+
+    // 3 → 1, 1 → 2, 2 → 3. Every row moves, so any single-phase renumber hits
+    // the primary key on the way; this is what the parking phase exists for.
+    const reordered = await levels.reorder([3, 1, 2]);
+    expect(reordered.map((l) => [l.level, l.name])).toEqual([
+      [1, 'Third'],
+      [2, 'Master Partner'],
+      [3, 'Sub Partner'],
+    ]);
   });
 });

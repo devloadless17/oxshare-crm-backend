@@ -6,6 +6,7 @@ import { IbApplicationsService } from './ib-applications.service';
 import { IbLevelsService } from './ib-levels.service';
 import { AdminAuthModule } from '../admin/admin-auth.module';
 import { IdentityModule } from '../identity/identity.module';
+import { EmailModule } from '../email/email.module';
 
 /**
  * The introducing-broker programme.
@@ -22,7 +23,7 @@ import { IdentityModule } from '../identity/identity.module';
  * needs — this is the first module here to carry both surfaces.
  */
 @Module({
-  imports: [AdminAuthModule, IdentityModule],
+  imports: [AdminAuthModule, IdentityModule, EmailModule],
   controllers: [IbController, AdminIbController, AdminIbLevelsController],
   providers: [IbApplicationsService, IbLevelsService],
   exports: [IbApplicationsService, IbLevelsService],

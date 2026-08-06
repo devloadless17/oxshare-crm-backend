@@ -1,4 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { rejectionContextEnum } from '../../../database/schema';
+import type { RejectionContext } from '../../../store/rejection-reasons.store';
 
 // Response DTOs so /api/docs-json carries response schemas (API-CONTRACTS
 // Part C). Both frontends generate TypeScript types from the Swagger JSON —
@@ -399,7 +401,18 @@ export class RoleResponseDto {
 
 export class RejectionReasonResponseDto {
   @ApiProperty() id: string;
-  @ApiProperty({ enum: ['kyc', 'withdrawal'] }) context: string;
+  /*
+   * The enum comes from the SCHEMA, not from a list restated here.
+   *
+   * This was `['kyc', 'withdrawal']` written out by hand, and it went stale the
+   * moment 'partner' was added to `rejection_context` — so both frontends
+   * generated a union that could not hold a value the API was already
+   * returning, and the admin's own reject dialog would not compile against it.
+   * Reading `enumValues` off the column means the next context added is carried
+   * into openapi.json without anybody remembering to come here.
+   */
+  @ApiProperty({ enum: rejectionContextEnum.enumValues })
+  context: RejectionContext;
   @ApiProperty() label: string;
   @ApiProperty() createdAt: Date;
 }

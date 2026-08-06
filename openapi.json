@@ -1448,6 +1448,45 @@
         "tags": [
           "admin"
         ]
+      },
+      "patch": {
+        "description": "Takes every existing level exactly once, in the order they should appear, and renumbers them 1..n. Partner placements are remapped in the same transaction, so a partner keeps the rung they were placed on.",
+        "operationId": "AdminIbLevelsController_reorder",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderIbLevelsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IbLevelDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Renumber the ladder",
+        "tags": [
+          "admin"
+        ]
       }
     },
     "/v1/admin/ib-levels/{level}": {
@@ -4834,6 +4873,25 @@
           }
         }
       },
+      "ReorderIbLevelsDto": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "example": [
+              2,
+              1
+            ],
+            "description": "Current level numbers, in the order they should now appear.",
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "required": [
+          "order"
+        ]
+      },
       "KycFieldConfigDto": {
         "type": "object",
         "properties": {
@@ -6298,7 +6356,8 @@
             "type": "string",
             "enum": [
               "kyc",
-              "withdrawal"
+              "withdrawal",
+              "partner"
             ]
           },
           "label": {

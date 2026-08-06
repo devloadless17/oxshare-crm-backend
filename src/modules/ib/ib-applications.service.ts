@@ -11,6 +11,7 @@ import {
 import { UsersStore } from '../../store/users.store';
 import { IbLevelsService } from './ib-levels.service';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
+import { EmailService } from '../email/email.service';
 import type { ClientScope } from '../../common/security/client-scope';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 
@@ -54,6 +55,7 @@ export class IbApplicationsService {
     private readonly users: UsersStore,
     private readonly levels: IbLevelsService,
     private readonly visibility: ClientVisibilityService,
+    private readonly email: EmailService,
   ) {}
 
   // ── the client's side ──────────────────────────────────────────────────────
@@ -211,7 +213,7 @@ export class IbApplicationsService {
 
     const referralCode = await this.generateReferralCode();
 
-    return this.db.transaction(async (tx) => {
+    const account = await this.db.transaction(async (tx) => {
       const updated = await this.ib.transition(
         applicationId,
         ['pending'],
@@ -239,6 +241,40 @@ export class IbApplicationsService {
         tx,
       );
     });
+
+    /*
+     * AFTER the transaction, and fire-and-forget.
+     *
+     * Inside it, a slow SMTP server would hold a write lock on the application
+     * row for as long as the handshake took, and a mail failure would roll back
+     * an approval that was correct. Awaited, a client waits on delivery to see
+     * their referral code.
+     *
+     * The trade is that a bounced email leaves an approved partner who was not
+     * told. That is recoverable — the portal shows the same code the moment
+     * they look — where an approval lost to a mail outage is not.
+     * EmailService logs the failure with recipient and reason, never the code.
+     */
+    void this.notifyDecision(application.userId, 'approved', { referralCode });
+
+    return account;
+  }
+
+  /**
+   * The decision email, looked up and sent without ever failing the decision.
+   *
+   * Private and shared by both paths so approve and reject cannot drift into
+   * sending different things — and so the `void` is in exactly one place, which
+   * is where somebody reading this should have to think about it.
+   */
+  private async notifyDecision(
+    userId: string,
+    decision: 'approved' | 'rejected',
+    options: { referralCode?: string; reason?: string },
+  ): Promise<void> {
+    const user = await this.users.findById(userId);
+    if (!user) return;
+    await this.email.sendPartnerDecisionEmail(user.email, user.firstName, decision, options);
   }
 
   /**
@@ -278,6 +314,11 @@ export class IbApplicationsService {
         'This application was changed by another reviewer. Reload and try again.',
       );
     }
+
+    // The composed sentence, not the parts — the client reads the same text the
+    // portal shows them, so the two can never disagree.
+    void this.notifyDecision(application.userId, 'rejected', { reason });
+
     return updated;
   }
 
