@@ -55,8 +55,19 @@ pids
 ehthumbs.db
 Thumbs.db
 
-# KYC uploads — PII, must never be committed
-uploads/
+# KYC uploads — PII, must never be committed.
+#
+# ANCHORED with a leading slash, and it must stay that way. Unanchored,
+# `uploads/` matches a directory called `uploads` at ANY depth — so it also
+# swallowed `src/common/uploads/`, and `stored-files.service.ts` was silently
+# excluded from the commit that added it. Four files imported a module that was
+# never pushed, and the repo did not compile for anyone who cloned it.
+#
+# git ignores quietly by design: `git add` reports nothing, `git status` shows
+# nothing, and the gap only appears when the compiler looks for the file. A
+# leading slash confines this to the upload directory at the repo root, which is
+# the only one that ever holds PII.
+/uploads/
 
 # Claude Code: the shared harness (.claude/settings.json + hooks) IS committed,
 # so the same gates run on every machine. Personal overrides are not.

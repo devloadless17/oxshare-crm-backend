@@ -1,0 +1,184 @@
+import { createReadStream, existsSync, mkdirSync } from 'node:fs';
+import { unlink, writeFile } from 'node:fs/promises';
+import type { Readable } from 'node:stream';
+import { basename, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { Injectable, Logger } from '@nestjs/common';
+import { ValidationError } from '../errors/domain-errors';
+import { SIGNATURE_BYTES, signatureMatchesDeclared, sniffMimeType } from './file-signature';
+
+/**
+ * RECONSTRUCTED. Please review.
+ *
+ * This file was never committed: `.gitignore` carried an unanchored `uploads/`,
+ * which matches a directory of that name at any depth, so it silently swallowed
+ * `src/common/uploads/`. The commit that added the upload facility shipped
+ * `file-signature.ts` and four importers, but not this — and the repo stopped
+ * compiling. It is not in git history and not on disk, so it could not be
+ * recovered; what follows is rebuilt from its call sites and from the design its
+ * callers describe in their own comments. The gitignore pattern is now anchored.
+ *
+ * Where the original said something this does not, the original is right.
+ *
+ * ## What the callers require
+ *
+ *   write(bucket, buffer, declaredMime) -> { filename, mimeType, size }
+ *   remove(bucket, filename | undefined)
+ *   read(bucket, name) -> { stream } | null          (synchronous)
+ *
+ * ## The rules the callers state
+ *
+ * `auth.controller.ts`: "The accepted TYPES are decided from the file's own
+ * magic bytes inside StoredFilesService, never from the multipart Content-Type
+ * — that header is a claim by the uploader, and an HTML document declared
+ * image/png is how a stored file becomes stored XSS."
+ *
+ * And: "the service checks the size again because a limit enforced in one place
+ * is a limit that moves when the interceptor is reconfigured."
+ *
+ * Both are implemented below, and they are the reason this is a service rather
+ * than two calls to `fs`.
+ */
+
+export interface FileBucket {
+  /** Directory under ./uploads, e.g. `avatars`. */
+  dir: string;
+  /** Hard ceiling, enforced here as well as at the interceptor. */
+  maxBytes: number;
+  /** Content types this bucket accepts, decided by magic bytes. */
+  allowedMimeTypes: readonly string[];
+  /** Extension to store per accepted type — never taken from the filename. */
+  extensions: Readonly<Record<string, string>>;
+}
+
+/**
+ * Profile photos: JPEG, PNG or WebP, up to 2MB.
+ *
+ * No PDF, unlike the KYC bucket. An avatar is rendered inline on every screen,
+ * and the set of things a browser will render is exactly the set worth
+ * accepting.
+ */
+export const AVATAR_BUCKET: FileBucket = {
+  dir: 'avatars',
+  maxBytes: 2 * 1024 * 1024,
+  allowedMimeTypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'],
+  extensions: {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+  },
+};
+
+export interface StoredFile {
+  /** The generated name, `<uuid><ext>`. Never anything the client supplied. */
+  filename: string;
+  mimeType: string;
+  size: number;
+}
+
+@Injectable()
+export class StoredFilesService {
+  private readonly logger = new Logger(StoredFilesService.name);
+
+  /** Everything lives under ./uploads/<bucket.dir>, beside the KYC documents. */
+  private bucketPath(bucket: FileBucket): string {
+    return join(process.cwd(), 'uploads', bucket.dir);
+  }
+
+  /**
+   * Validate the bytes, then write them under a generated name.
+   *
+   * The name is a random UUID plus an extension taken from the SNIFFED type —
+   * never from the uploaded filename. A client-supplied name is how `..` and
+   * `payload.html` get into a directory, and a client-supplied extension is how
+   * an HTML document ends up served as active content from the origin holding
+   * the session cookies.
+   */
+  async write(bucket: FileBucket, buffer: Buffer, declaredMime: string): Promise<StoredFile> {
+    if (buffer.length === 0) throw new ValidationError('That file is empty.');
+
+    // Checked here as well as at the interceptor, deliberately — see the note
+    // above. Two enforcement points cost nothing and one of them moving is the
+    // failure this guards against.
+    if (buffer.length > bucket.maxBytes) {
+      const limitMb = Math.floor(bucket.maxBytes / (1024 * 1024));
+      throw new ValidationError(`That file is larger than the ${limitMb}MB limit.`);
+    }
+
+    /*
+     * What the bytes ARE, not what the upload said they were.
+     *
+     * Both halves must hold: the sniffed type has to be one this bucket accepts,
+     * AND it has to agree with what the client declared. Content alone would let
+     * a real JPEG be stored under a mismatched declaration; the declaration
+     * alone is the hole that lets HTML in.
+     */
+    const header = buffer.subarray(0, SIGNATURE_BYTES);
+    const actual = sniffMimeType(header);
+
+    if (!actual || !bucket.allowedMimeTypes.includes(actual)) {
+      throw new ValidationError('Only JPEG, PNG and WebP images are accepted.');
+    }
+    if (!signatureMatchesDeclared(header, declaredMime)) {
+      throw new ValidationError(
+        'The file content does not match its declared type. Upload a genuine JPEG, PNG or WebP.',
+      );
+    }
+
+    const filename = `${randomUUID()}${bucket.extensions[actual] ?? '.bin'}`;
+    const dir = this.bucketPath(bucket);
+    mkdirSync(dir, { recursive: true });
+    await writeFile(join(dir, filename), buffer);
+
+    return { filename, mimeType: actual, size: buffer.length };
+  }
+
+  /**
+   * Open a stored file for streaming, or `null` if it is not there.
+   *
+   * Synchronous, because the caller decides between 404 and streaming before it
+   * writes any headers.
+   *
+   * `basename` on the way in: the caller has already matched this name against a
+   * database column, but a path check that exists in one place is a path check
+   * somebody can route around. Traversal is neutralised where the path is built.
+   */
+  read(bucket: FileBucket, name: string): { stream: Readable; path: string } | null {
+    const safe = basename(name);
+    if (!safe || safe.startsWith('.')) return null;
+
+    const path = join(this.bucketPath(bucket), safe);
+    if (!existsSync(path)) return null;
+
+    return { stream: createReadStream(path), path };
+  }
+
+  /**
+   * Delete a stored file. Absent or unset is a no-op, not an error.
+   *
+   * Accepts `undefined` because both callers pass a nullable column straight in:
+   * a client removing a photo they never had, or replacing one where the
+   * previous value was null, is an ordinary case rather than a failure.
+   *
+   * Never throws. Both call sites delete AFTER the row has been updated,
+   * precisely so that a failed delete leaves an orphaned file and a correct
+   * row — the recoverable direction. Rethrowing here would turn that
+   * deliberate ordering into a failed request.
+   */
+  async remove(bucket: FileBucket, filename: string | null | undefined): Promise<void> {
+    if (!filename) return;
+    const safe = basename(filename);
+    if (!safe) return;
+
+    try {
+      await unlink(join(this.bucketPath(bucket), safe));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      // ENOENT is normal — the file may already be gone.
+      if (!reason.includes('ENOENT')) {
+        this.logger.warn(`Could not delete ${bucket.dir}/${safe}: ${reason}`);
+      }
+    }
+  }
+}

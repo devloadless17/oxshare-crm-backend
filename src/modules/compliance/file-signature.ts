@@ -10,4 +10,8 @@
  * Re-exported from here so `file-signature.spec.ts` and the KYC controller keep
  * their imports. Delete this file once those point at the new home.
  */
-export { SIGNATURE_BYTES, sniffMimeType, signatureMatchesDeclared } from '../../common/uploads/file-signature';
+export {
+  SIGNATURE_BYTES,
+  sniffMimeType,
+  signatureMatchesDeclared,
+} from '../../common/uploads/file-signature';
