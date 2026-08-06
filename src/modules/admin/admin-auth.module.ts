@@ -52,7 +52,10 @@ const PROVIDERS = [
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         secret: config.getOrThrow<string>('ADMIN_JWT_SECRET'),
-        signOptions: { expiresIn: '8h' },
+        // No signOptions default. Both auth services pass `expiresIn` explicitly, and
+        // the `8h` that used to sit here was a leftover from the pre-R-3.3 admin
+        // access token — inert today, and silently wrong for the next `jwt.sign()`
+        // anybody adds in this module.
       }),
     }),
   ],

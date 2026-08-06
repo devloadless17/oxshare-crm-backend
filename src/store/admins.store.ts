@@ -59,6 +59,16 @@ export interface AdminInvite {
   /** Role/permissions chosen by the inviting master admin (RBAC-07). */
   roleId?: string;
   permissions?: string[];
+  /*
+   * Territory and masking, chosen at invite time and applied on acceptance.
+   *
+   * Both columns existed and were written by nothing and read by nothing. An
+   * empty scope means UNRESTRICTED, so without these an invited sub-admin saw
+   * every client in the system between clicking the link and being configured —
+   * see the schema.ts comment on `scoped_tag_ids`.
+   */
+  maskedFields?: string[];
+  scopedTagIds?: string[];
   invitedBy: string;
   expiresAt: Date;
   accepted: boolean;
@@ -82,6 +92,8 @@ const toInvite = (r: InviteRow): AdminInvite => ({
   role: 'sub_admin',
   roleId: r.roleId ?? undefined,
   permissions: r.permissions ?? undefined,
+  maskedFields: r.maskedFields ?? undefined,
+  scopedTagIds: r.scopedTagIds ?? undefined,
   /*
    * The column is NULLABLE, and that is the migration strategy rather than an
    * oversight.
@@ -155,6 +167,58 @@ export class AdminsStore {
       refreshToken: 'refreshToken' in rest ? (rest.refreshToken ?? null) : undefined,
     };
     const [row] = await this.db.update(admins).set(set).where(eq(admins.id, id)).returning();
+    return row ? toAdmin(row) : undefined;
+  }
+
+  /**
+   * Arm a password reset. Overwrites any token already outstanding.
+   *
+   * Overwriting rather than refusing is deliberate: a second reset request
+   * means the first link did not reach the person, and leaving both live would
+   * widen the window for no benefit. The newest link is the only one that works.
+   */
+  async setResetToken(id: string, tokenHash: string, expiresAt: Date): Promise<void> {
+    await this.db
+      .update(admins)
+      .set({ passwordResetTokenHash: tokenHash, passwordResetExpiry: expiresAt })
+      .where(eq(admins.id, id));
+  }
+
+  /**
+   * Spend the token and set the new password — in ONE statement, on purpose.
+   *
+   * This is the whole single-use guarantee, and it lives in the WHERE clause
+   * rather than in a preceding SELECT. Check-then-write leaves a window in
+   * which two requests both read a valid token and both succeed, and the token
+   * that grants an administrator account on a system that approves payouts is
+   * exactly the wrong place to leave that window open. The same reasoning the
+   * money rules apply to `UPDATE … WHERE state='approved'` (ARCHITECTURE §6.3).
+   *
+   * Expiry is compared IN THE DATABASE for the same reason — a timestamp read
+   * out, compared in Node, and written back is three chances to race.
+   *
+   * Returns the admin whose password was set, or `undefined` when the token was
+   * already spent, expired, or never existed. The caller cannot tell those
+   * apart, and must not: distinguishing them tells an attacker which guess was
+   * closest.
+   */
+  async consumeResetToken(tokenHash: string, passwordHash: string): Promise<Admin | undefined> {
+    const [row] = await this.db
+      .update(admins)
+      .set({
+        passwordHash,
+        // Cleared in the same statement, so the token cannot be replayed even
+        // if the request that spent it is retried.
+        passwordResetTokenHash: null,
+        passwordResetExpiry: null,
+      })
+      .where(
+        and(
+          eq(admins.passwordResetTokenHash, tokenHash),
+          gt(admins.passwordResetExpiry, new Date()),
+        ),
+      )
+      .returning();
     return row ? toAdmin(row) : undefined;
   }
 

@@ -1,14 +1,14 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { SwaggerModule } from '@nestjs/swagger';
 import { ErrorResponseDto } from './common/dto/error-response.dto';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { VALIDATION_PIPE_OPTIONS } from './common/validation.config';
+import { buildSwaggerConfig } from './common/swagger-config';
 import { applyApiPrefix, createHttpAdapter } from './common/api-prefix';
 import { JsonLogger } from './common/logging/json.logger';
 import { trustedProxyHops } from './common/security/client-ip';
-import { COOKIE_BASES } from './common/security/session-cookies';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { join } from 'path';
@@ -140,40 +140,10 @@ async function bootstrap() {
    * this is the same reasoning applied to the same kind of convenience.
    */
   if (process.env['NODE_ENV'] !== 'production') {
-    const config = new DocumentBuilder()
-      .setTitle('OxShare CRM API')
-      .setDescription('Forex/CFD Introducing-Broker CRM — Phase 1')
-      .setVersion('1.0')
-      // Cookie auth only. `.addBearerAuth()` advertised a scheme the API does
-      // not accept — the session is an httpOnly cookie on both surfaces (R-3.2)
-      // — and the cookie it named, `access_token`, is a LEGACY name this system
-      // now actively deletes (session-cookies.ts LEGACY_COOKIE_NAMES). Swagger's
-      // Authorize button therefore configured a credential that could not work.
-      .addCookieAuth(COOKIE_BASES.clientAccess, {
-        type: 'apiKey',
-        in: 'cookie',
-        name: COOKIE_BASES.clientAccess,
-        description: 'Portal session. Set by POST /v1/auth/login; httpOnly, so not settable here.',
-      })
-      .addCookieAuth(
-        COOKIE_BASES.adminAccess,
-        {
-          type: 'apiKey',
-          in: 'cookie',
-          name: COOKIE_BASES.adminAccess,
-          description:
-            'Admin session. Set by POST /v1/admin/auth/login; httpOnly, so not settable here.',
-        },
-        'admin',
-      )
-      .addTag('identity', 'Users, registration, attribution')
-      .addTag('trading', 'MT5 accounts, groups, deal ingestion')
-      .addTag('wallet', 'Balances, ledger, transactions')
-      .addTag('payments', 'Deposits, withdrawals, Whish/USDT')
-      .addTag('partners', 'IB programs, commission engine, payouts')
-      .addTag('compliance', 'KYC documents, verification levels')
-      .addTag('admin', 'Back-office endpoints, RBAC')
-      .build();
+    // Built from common/swagger-config.ts, which the contract generator and the
+    // route-inventory test also read — so the served document and the committed
+    // openapi.json cannot describe different credentials again.
+    const config = buildSwaggerConfig();
     // `extraModels` because no handler RETURNS this shape — AllExceptionsFilter
     // emits it. Without it the envelope reaches no frontend's generated types, and
     // both apps hand-write their own picture of it (R-1.1/R-2.2).

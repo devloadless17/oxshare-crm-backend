@@ -28,6 +28,7 @@ import {
   isTokenKind,
   TOKEN_ALGORITHM,
   TOKEN_ALGORITHMS,
+  TOKEN_CLOCK_TOLERANCE_SECONDS,
   TOKEN_AUDIENCE,
   TOKEN_ISSUER,
   TOKEN_KIND,
@@ -164,6 +165,18 @@ export class AuthService {
     const user = await this.users.findByVerificationToken(token);
     if (!user) throw new ValidationError('Invalid or expired verification token.');
     if (user.emailVerificationExpiry && user.emailVerificationExpiry < new Date()) {
+      /*
+       * Clear the dead token before refusing, exactly as `resetPassword` does.
+       *
+       * It used to be left in place, so an expired token sat in the row
+       * indefinitely — the only one-time credential here that outlived its own
+       * expiry, and the only one stored in plaintext. Removing it on the way out
+       * means the row stops carrying a credential that can never be useful.
+       */
+      await this.users.update(user.id, {
+        emailVerificationToken: undefined,
+        emailVerificationExpiry: undefined,
+      });
       throw new ValidationError('Verification token has expired. Please request a new one.');
     }
 
@@ -410,6 +423,7 @@ export class AuthService {
           issuer: TOKEN_ISSUER,
           // Stated, never inherited from the key type — see token-audience.ts.
           algorithms: TOKEN_ALGORITHMS,
+          clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
         },
       );
       // Belt and braces: the separate refresh secret already makes an access
@@ -570,6 +584,7 @@ export class AuthService {
         audience: TOKEN_AUDIENCE.portal,
         issuer: TOKEN_ISSUER,
         algorithms: TOKEN_ALGORITHMS,
+        clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
       });
       return isTokenKind(decoded, TOKEN_KIND.refresh) ? decoded.sub : null;
     } catch {

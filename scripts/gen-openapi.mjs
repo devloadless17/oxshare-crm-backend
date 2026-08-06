@@ -14,10 +14,11 @@
  */
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { NestFactory } from '@nestjs/core';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from '../dist/app.module.js';
 import { applyApiPrefix } from '../dist/common/api-prefix.js';
 import { ErrorResponseDto } from '../dist/common/dto/error-response.dto.js';
+import { buildSwaggerConfig } from '../dist/common/swagger-config.js';
 
 const OUTPUT = 'openapi.json';
 
@@ -28,6 +29,10 @@ process.env.NODE_ENV ??= 'test';
 process.env.ADMIN_JWT_SECRET ??= 'openapi-generation-only-not-a-real-secret-value';
 process.env.JWT_ACCESS_SECRET ??= 'openapi-generation-only-not-a-real-secret-value';
 process.env.JWT_REFRESH_SECRET ??= 'openapi-generation-only-not-a-real-secret-value';
+// The fourth secret. env.validation.ts requires it in EVERY environment, so
+// without this line the generator could not boot on a clean checkout — and this
+// script is what R-1.3's contract-drift gate runs.
+process.env.ADMIN_JWT_REFRESH_SECRET ??= 'openapi-generation-only-not-a-real-secret-value';
 
 const app = await NestFactory.create(AppModule, { logger: false });
 
@@ -36,13 +41,11 @@ const app = await NestFactory.create(AppModule, { logger: false });
 // an API that does not exist (R-2.1).
 applyApiPrefix(app);
 
-const config = new DocumentBuilder()
-  .setTitle('OxShare CRM API')
-  .setDescription('Forex/CFD Introducing-Broker CRM — Phase 1')
-  .setVersion('1.0')
-  .addBearerAuth()
-  .addCookieAuth('access_token')
-  .build();
+// The SAME config main.ts serves. It used to be a second copy here, and the
+// copy still declared bearer auth and the legacy `access_token` cookie long
+// after main.ts stopped — so the contract both frontends generate from
+// described a credential this API deletes.
+const config = buildSwaggerConfig();
 
 // extraModels: the error envelope is emitted by AllExceptionsFilter, not
 // returned by any handler, so nothing else puts it in the document.

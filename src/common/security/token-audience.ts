@@ -73,6 +73,25 @@ export const TOKEN_ALGORITHM = 'HS256' as const;
 export const TOKEN_ALGORITHMS: [typeof TOKEN_ALGORITHM] = [TOKEN_ALGORITHM];
 
 /**
+ * Leeway, in seconds, on every `exp`/`iat` comparison.
+ *
+ * There was none, at any of the six verification sites. With a fifteen-minute
+ * access token that is not a rounding concern: clocks between two API replicas,
+ * or between a replica and the database host, drift by seconds routinely and by
+ * minutes when NTP is misconfigured — and the symptom is intermittent 401s that
+ * reproduce for nobody and look like a session bug.
+ *
+ * Thirty seconds is deliberately small. It widens every token's effective life
+ * by that much, which is the cost, and it is far below the fifteen minutes the
+ * access token lives anyway. Anything larger would start to matter for
+ * revocation; anything smaller does not cover real-world skew.
+ *
+ * Stated in ONE place so the six sites cannot drift apart — the same reason
+ * `TOKEN_ALGORITHMS` is here rather than written out per call.
+ */
+export const TOKEN_CLOCK_TOLERANCE_SECONDS = 30;
+
+/**
  * True when a verified payload is the kind of token the caller expected.
  *
  * Deliberately strict: a token with no `typ` at all is refused. Tokens minted

@@ -71,6 +71,41 @@ const PUBLIC_ROUTES: Record<string, string> = {
     'Completes a reset; the emailed token IS the authentication. Single use, 30-minute TTL, throttled 5/15min.',
   'POST /identity/reset-password':
     'Alias of POST /auth/reset-password — the same handler, registered under both prefixes.',
+  /*
+   * The ADMIN half of the same idea — D-44. Reachable without a session because
+   * the caller is an administrator who cannot sign in; that is the whole point.
+   *
+   * Unlike the portal's, this token is never self-requested: a second admin who
+   * already holds high privilege arms it, and `refuseReset` refuses anyone
+   * reaching above their own level. So the open route spends a credential that
+   * an authenticated, audited, escalation-checked call created.
+   */
+  'POST /admin/password-reset/complete':
+    'Spends an admin reset link; the emailed token IS the authentication. Single use ' +
+    '(enforced in the UPDATE), 1-hour TTL, throttled 3/min, and it revokes every session ' +
+    'for that admin. Arming it requires users.create plus the D-44 escalation guard.',
+
+  /*
+   * ENDING a session cannot require a live one either.
+   *
+   * These sat behind an auth guard, so an expired access token answered 401 and
+   * cleared no cookies — the user was left holding a live thirty-day refresh
+   * cookie with no server-side way to drop it. A laptop asleep past fifteen
+   * minutes reproduced it every time: the first click after waking was Log out,
+   * and it failed.
+   *
+   * Unguarded, not unauthenticated: identity comes from the FULLY VERIFIED
+   * refresh cookie, so nobody can end somebody else's sessions, and the cookies
+   * are cleared even when nothing verifies — clearing a cookie is not a
+   * privileged act. Origin validation still runs, so no cross-site page can use
+   * these to sign a user out.
+   */
+  'POST /auth/logout':
+    'Ends the caller’s own session. Identity from the verified refresh cookie, so an expired access token can still sign out; Origin-checked.',
+  'POST /identity/logout':
+    'Alias of POST /auth/logout — the same handler, registered under both prefixes.',
+  'POST /admin/auth/logout':
+    'Ends the calling admin’s own session. Identity from the verified refresh cookie, so a slept laptop can still sign out; Origin-checked.',
 
   // Establishing a session cannot require one.
   'POST /admin/auth/login': 'Establishes the admin session; credentials are the authentication.',
@@ -315,6 +350,41 @@ describe('R-4.2 every route declares how it is protected', () => {
       `Guarded admin routes with no declared permission:\n` +
         silent.map((s) => `  ${s}`).join('\n') +
         `\n\nAdd @RequirePermissions(...), or @AnyAdmin('reason') if any admin may do it.`,
+    ).toEqual([]);
+  });
+
+  it('never declares a permission that no guard on the route can read', () => {
+    /*
+     * The failure this catches, which the assertion above cannot see.
+     *
+     * `@RequirePermissions('settings.manage')` was paired with
+     * `@UseGuards(AdminGuard)` on both `/admin/platforms` routes. Only
+     * `PermissionsGuard` reads `PERMISSIONS_KEY`; `AdminGuard` authenticates and
+     * returns. So the decorator was decoration, and any authenticated admin
+     * could rewrite the executable download URL handed to every client.
+     *
+     * The route looked correct in review — the permission is right there in the
+     * diff — and the previous assertion passed, because it only asks whether a
+     * permission was DECLARED. This asks whether anything ENFORCES it.
+     *
+     * `MasterAdminGuard` is stricter than any named permission, so a route
+     * carrying it is answered whether or not the permission is also read.
+     */
+    const declaredButUnread = routes()
+      .filter(
+        (r) =>
+          (r.permissions?.length ?? 0) > 0 &&
+          !r.guards.includes('PermissionsGuard') &&
+          !r.guards.includes('MasterAdminGuard'),
+      )
+      .map((r) => `${r.signature}  [guards: ${r.guards.join(', ') || 'none'}]`);
+
+    expect(
+      declaredButUnread,
+      'These routes declare @RequirePermissions but carry no guard that reads it, ' +
+        'so the permission is not enforced:\n' +
+        declaredButUnread.map((s) => `  ${s}`).join('\n') +
+        '\n\nUse @UseGuards(PermissionsGuard).',
     ).toEqual([]);
   });
 

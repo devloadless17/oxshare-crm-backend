@@ -13,6 +13,7 @@ import type { AdminAuditService } from '../src/modules/admin/admin-audit.service
 import { hashInviteToken } from '../src/store/admins.store';
 import type { Admin, AdminInvite, AdminsStore, InvitesStore } from '../src/store/admins.store';
 import type { LoginAttemptsService } from '../src/common/security/login-attempts.service';
+import type { AdminClientScopesStore } from '../src/store/admin-client-scopes.store';
 import type { Role, RolesStore } from '../src/store/roles.store';
 import {
   AuthorizationError,
@@ -142,6 +143,8 @@ function build(
     recordSuccess: vi.fn().mockResolvedValue(undefined),
   };
 
+  const scopes = { replace: vi.fn().mockResolvedValue(undefined) };
+
   const rbac = new AdminRbacService(
     admins as unknown as AdminsStore,
     invites as unknown as InvitesStore,
@@ -172,9 +175,12 @@ function build(
     refreshTokens as unknown as RefreshTokensService,
     new PasswordService(),
     loginAttempts as unknown as LoginAttemptsService,
+    // AdminClientScopesStore — acceptInvite now applies the territory the
+    // inviter chose, before it mints the session.
+    scopes as unknown as AdminClientScopesStore,
   );
 
-  return { service, admins, invites, roles, email, audit, refreshTokens };
+  return { service, admins, invites, roles, email, audit, refreshTokens, scopes };
 }
 
 describe('createInvite', () => {

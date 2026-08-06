@@ -3,8 +3,9 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import { Request, Response } from 'express';
-import { Admin, AdminsStore, InvitesStore } from '../../store/admins.store';
+import { Admin, AdminsStore, hashInviteToken, InvitesStore } from '../../store/admins.store';
 import { RolesStore } from '../../store/roles.store';
+import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
 import { EmailService } from '../email/email.service';
 import {
   AuthenticationError,
@@ -19,6 +20,7 @@ import {
 import { AdminAuditService } from './admin-audit.service';
 import { AdminRbacService } from './admin-rbac.service';
 import { randomUUID } from 'crypto';
+import { refuseReset, RESET_TOKEN_TTL_MS } from './admin-reset';
 import { CsrfService } from '../../common/security/csrf.service';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
@@ -27,6 +29,7 @@ import {
   isTokenKind,
   TOKEN_ALGORITHM,
   TOKEN_ALGORITHMS,
+  TOKEN_CLOCK_TOLERANCE_SECONDS,
   TOKEN_AUDIENCE,
   TOKEN_ISSUER,
   TOKEN_KIND,
@@ -81,6 +84,10 @@ export class AdminAuthService {
     private readonly refreshTokens: RefreshTokensService,
     private readonly passwords: PasswordService,
     private readonly loginAttempts: LoginAttemptsService,
+    // Appended, not inserted: these parameters are positional at every
+    // `new AdminAuthService(...)` in the suite, and slotting one into the middle
+    // shifts every argument after it into the wrong slot.
+    private readonly scopes: AdminClientScopesStore,
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
@@ -232,6 +239,7 @@ export class AdminAuthService {
         audience: TOKEN_AUDIENCE.admin,
         issuer: TOKEN_ISSUER,
         algorithms: TOKEN_ALGORITHMS,
+        clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
       });
       return isTokenKind(decoded, TOKEN_KIND.refresh) ? decoded.sub : null;
     } catch {
@@ -251,6 +259,17 @@ export class AdminAuthService {
     actor: Admin,
     roleId?: string,
     permissions?: string[],
+    /*
+     * Territory and masking, carried from the invite to the account.
+     *
+     * Both columns already existed on `admin_invites` and were written by
+     * nothing and read by nothing, so the window schema.ts warns about was open:
+     * an empty scope means UNRESTRICTED, so a sub-admin invited with a territory
+     * in mind saw every client in the system from the moment they clicked the
+     * link until somebody remembered to configure them.
+     */
+    maskedFields?: string[],
+    scopedTagIds?: string[],
   ) {
     /*
      * One canonical spelling from here down.
@@ -305,6 +324,8 @@ export class AdminAuthService {
       role: 'sub_admin',
       roleId,
       permissions: grantedPermissions,
+      maskedFields,
+      scopedTagIds,
       invitedBy,
       expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h
     });
@@ -355,8 +376,27 @@ export class AdminAuthService {
       role: 'sub_admin',
       roleId: invite.roleId,
       permissions: invite.permissions ?? ['kyc.review', 'users.view'],
+      // Carried from the invite. Without it the mask was always the role's
+      // default and the inviter's choice was silently discarded.
+      maskedFields: invite.maskedFields,
       status: 'active',
     });
+
+    /*
+     * The territory the inviter chose, applied BEFORE the session below is
+     * minted.
+     *
+     * Ordering is the whole point: `acceptInvite` signs the new admin in on this
+     * very response, so a scope written afterwards would leave a real window —
+     * small, but the same kind of window this fixes, and harder to see.
+     *
+     * An empty or absent list means unrestricted, which is the store's own
+     * convention; writing nothing in that case keeps "no restriction" as the
+     * absence of rows rather than as an empty row set that reads as a mistake.
+     */
+    if (invite.scopedTagIds?.length) {
+      await this.scopes.replace(admin.id, invite.scopedTagIds, admin.id);
+    }
 
     await this.invites.markAccepted(token);
 
@@ -456,6 +496,115 @@ export class AdminAuthService {
       roleId: invite.roleId,
     });
     return { message: `Invite for ${invite.email} revoked.` };
+  }
+
+  /**
+   * Start a password reset for ANOTHER admin — D-44.
+   *
+   * There is no self-service equivalent, and that is the design rather than an
+   * omission: self-service would make an admin's mailbox the root of trust for
+   * an account that approves payouts, so a compromised inbox becomes a
+   * compromised payout queue. Requiring a second human who already holds high
+   * privilege keeps email off the trust path.
+   */
+  async initiatePasswordReset(actorId: string, targetId: string) {
+    const [actor, target] = await Promise.all([
+      this.admins.findById(actorId),
+      this.admins.findById(targetId),
+    ]);
+    if (!actor) throw new AuthenticationError('Your session is no longer valid.');
+    if (!target) throw new NotFoundError('That administrator does not exist.');
+
+    /*
+     * The escalation guard, and it is the whole security of this endpoint.
+     *
+     * A reset capability IS impersonation — whoever can reset an admin's
+     * password can become them. A permission check alone would let any
+     * sub-admin holding `admins.manage` reset a MASTER admin and take the
+     * console. `refuseReset` is pure and separately tested for that reason.
+     */
+    const refusal = refuseReset(actor, target);
+    if (refusal === 'self') {
+      throw new ValidationError(
+        'Use Change password for your own account — it verifies the password you already know.',
+      );
+    }
+    if (refusal) {
+      /*
+       * One message for every refusal, on purpose. Saying "that admin outranks
+       * you" confirms the target's privilege level to somebody probing for a
+       * way up, which is the reconnaissance step before the attack this guard
+       * exists to stop. The specific reason goes to the audit log, where the
+       * people entitled to it can read it.
+       */
+      this.logger.warn(`Password reset refused (${refusal}): ${actor.email} → ${target.email}`);
+      throw new AuthorizationError('You may not reset that administrator’s password.');
+    }
+
+    const token = randomUUID();
+    await this.admins.setResetToken(
+      target.id,
+      hashInviteToken(token),
+      new Date(Date.now() + RESET_TOKEN_TTL_MS),
+    );
+
+    const adminUrl = this.config.get<string>('ADMIN_URL', 'http://localhost:3002');
+    await this.email.sendAdminPasswordResetEmail(
+      target.email,
+      target.name,
+      `${adminUrl}/reset-password?token=${token}`,
+      actor.name,
+      Math.round(RESET_TOKEN_TTL_MS / 60_000),
+    );
+
+    // Who reset whose password is exactly the row an auditor asks for, and
+    // D-44 accepts master-can-reset-master ONLY because this exists.
+    this.audit.record(actor.id, 'admin.password_reset_initiate', 'admin', target.id, {
+      targetEmail: target.email,
+      targetRole: target.role,
+    });
+
+    this.logger.log(`Password reset initiated by ${actor.email} for ${target.email}`);
+    return { message: `A reset link has been sent to ${target.email}.` };
+  }
+
+  /**
+   * Spend a reset link and set the new password.
+   *
+   * UNAUTHENTICATED by necessity — the whole point is that the person cannot
+   * sign in. The token is the only credential, which is why it is single-use,
+   * short-lived, stored only as a hash, and consumed in one statement.
+   */
+  async completePasswordReset(token: string, newPassword: string) {
+    const passwordHash = await this.passwords.hash(newPassword);
+    const admin = await this.admins.consumeResetToken(hashInviteToken(token), passwordHash);
+
+    /*
+     * One message for expired, spent and never-existed alike. Distinguishing
+     * them tells someone grinding tokens which guess was closest, and none of
+     * the three is actionable differently by the person holding a dead link.
+     */
+    if (!admin) {
+      throw new ValidationError('That reset link is invalid or has expired. Ask for a new one.');
+    }
+
+    /*
+     * Every session for this admin dies, including any the person who arranged
+     * the reset might hold.
+     *
+     * This only became true on 6 Aug 2026: before the access token carried its
+     * family (`fam`), revocation reached the refresh family alone and the old
+     * access tokens kept working for up to fifteen minutes — precisely the
+     * window an attacker being locked out would use.
+     */
+    const revoked = await this.refreshTokens.revokeAllForSubject('admin', admin.id);
+
+    this.audit.record(admin.id, 'admin.password_reset_complete', 'admin', admin.id, {
+      sessionsRevoked: revoked,
+    });
+    this.logger.log(`Password reset completed for ${admin.email}; ${revoked} session(s) revoked`);
+
+    return { message: 'Your password has been set. Please sign in.' };
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -570,6 +719,7 @@ export class AdminAuthService {
         issuer: TOKEN_ISSUER,
         // Stated, never inherited from the key type — see token-audience.ts.
         algorithms: TOKEN_ALGORITHMS,
+        clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
       });
       // An ACCESS token must not buy a new session pair here either — the
       // confusion has to be refused in both directions to be worth anything.

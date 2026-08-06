@@ -29,6 +29,7 @@ import { TOKEN_KIND } from '../../common/security/token-audience';
 import { AuthService } from './auth.service';
 import {
   AuthTokensResponseDto,
+  RefreshResponseDto,
   MessageResponseDto,
   RegistrationResponseDto,
   SessionDto,
@@ -188,7 +189,7 @@ export class AuthController {
   @Throttle({ default: { ttl: 60_000, limit: 20 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Refresh access token' })
-  @ApiOkResponse({ type: AuthTokensResponseDto })
+  @ApiOkResponse({ type: RefreshResponseDto })
   refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     // Cookie ONLY. The body and Authorization fallbacks are gone: two credential
     // channels for one session means two threat models (PLATFORM-CONVENTIONS

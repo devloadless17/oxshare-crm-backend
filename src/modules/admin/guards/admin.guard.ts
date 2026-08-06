@@ -16,6 +16,7 @@ import { COOKIE_BASES, readSessionCookie } from '../../../common/security/sessio
 import {
   isTokenKind,
   TOKEN_ALGORITHMS,
+  TOKEN_CLOCK_TOLERANCE_SECONDS,
   TOKEN_AUDIENCE,
   TOKEN_ISSUER,
   TOKEN_KIND,
@@ -106,6 +107,7 @@ export class AdminAuthenticator {
         issuer: TOKEN_ISSUER,
         // Stated, never inherited from the key type — see token-audience.ts.
         algorithms: TOKEN_ALGORITHMS,
+        clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
       });
       // The admin surface signs both kinds with ONE secret, so signature +
       // audience cannot tell them apart. Without this check a 30-day refresh

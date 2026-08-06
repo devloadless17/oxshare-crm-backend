@@ -2,10 +2,11 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { Test } from '@nestjs/testing';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { SwaggerModule } from '@nestjs/swagger';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from '../src/app.module';
 import { applyApiPrefix, createHttpAdapter } from '../src/common/api-prefix';
+import { buildSwaggerConfig } from '../src/common/swagger-config';
 
 /**
  * The route inventory is frozen against a committed fixture.
@@ -57,12 +58,16 @@ afterAll(async () => {
 });
 
 function routeInventory(): string[] {
-  const config = new DocumentBuilder()
-    .setTitle('OxShare CRM API')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .addCookieAuth('access_token')
-    .build();
+  /*
+   * The SAME config main.ts and the contract generator use.
+   *
+   * This built its own copy, which meant it would have kept passing while the
+   * real Swagger config regressed — so the one test positioned to notice that
+   * the committed contract advertised bearer auth and a deleted cookie could
+   * not have noticed. That is the failure mode this file exists to prevent,
+   * reproduced inside it.
+   */
+  const config = buildSwaggerConfig();
 
   const document = SwaggerModule.createDocument(app, config);
 

@@ -194,9 +194,33 @@ describe('refresh, over the wire', () => {
   });
 
   it('kills the whole family when a rotated token is replayed', async () => {
+    /*
+     * UPDATED 6 Aug 2026, and the change is the point rather than an
+     * accommodation.
+     *
+     * This used to replay the original token IMMEDIATELY after one rotation and
+     * expect the family to die. That state is now read as a RETRY, because it is
+     * indistinguishable from one: the successor sits unused, which is exactly
+     * what a rotation whose response was lost in transit leaves behind — a
+     * dropped connection, a closed tab, a mobile handoff. Answering it by
+     * destroying the session and paging somebody was the defect
+     * (AUTH-CORRECTNESS B-C1).
+     *
+     * So the test now establishes the state that genuinely means theft: the
+     * legitimate client went on and CONSUMED the replacement, and only then does
+     * an older token come back. Nothing about the assertion is weaker — the
+     * family must still die, including the token the attacker holds.
+     */
     const session = await actingAs(ctx, 'admin', ADMIN);
     const first = await session.post('/v1/admin/auth/refresh').expect(200);
     const rotated = parseSetCookies(first);
+
+    // The legitimate client uses its replacement. From here on, the original
+    // token can only be a copy somebody kept.
+    const second = await sessionFrom(ctx, 'admin', rotated)
+      .post('/v1/admin/auth/refresh')
+      .expect(200);
+    const current = parseSetCookies(second);
 
     // Replaying the ORIGINAL refresh token is the signature of a stolen one:
     // either the thief or the victim is presenting a token already spent.
@@ -204,7 +228,7 @@ describe('refresh, over the wire', () => {
 
     // So the token that legitimately replaced it must die too — otherwise
     // detection is a log line rather than a defence.
-    await sessionFrom(ctx, 'admin', rotated).post('/v1/admin/auth/refresh').expect(401);
+    await sessionFrom(ctx, 'admin', current).post('/v1/admin/auth/refresh').expect(401);
   });
 });
 

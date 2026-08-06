@@ -79,6 +79,22 @@ export class AuthTokensResponseDto {
 }
 
 /**
+ * `POST /auth/refresh`.
+ *
+ * Its own type because refresh returns `{ user }` and NOTHING ELSE, while it was
+ * documented as returning `AuthTokensResponseDto` — whose `emailVerified` is
+ * required. So the generated portal type declared a field the endpoint never
+ * sends, on the one call that decides whether a client stays signed in.
+ *
+ * Transcribed from the live response rather than from the adjacent DTO, which is
+ * how the mismatch survived: the two endpoints look interchangeable and are not.
+ */
+export class RefreshResponseDto {
+  @ApiProperty({ type: UserProfileDto })
+  user: UserProfileDto;
+}
+
+/**
  * `POST /auth/register`.
  *
  * Registration does NOT return tokens — the account is unverified until the

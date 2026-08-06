@@ -392,4 +392,53 @@ export class EmailService {
       this.logger.error(`Failed to send admin invite email to ${email}: ${failureReason(error)}`);
     }
   }
+
+  /**
+   * "A colleague reset your password" — D-44.
+   *
+   * Says WHO did it, deliberately. This is the only signal the recipient gets
+   * that somebody with high privilege acted on their account, and an admin who
+   * did NOT ask for this needs to be able to tell instantly — a reset they did
+   * not request is either a mistake or somebody working towards their session.
+   * A generic "your password was reset" hides exactly the fact worth raising.
+   *
+   * Short expiry stated in the mail, because a link that dies silently reads as
+   * a broken product rather than a deliberate limit.
+   */
+  async sendAdminPasswordResetEmail(
+    email: string,
+    name: string,
+    resetUrl: string,
+    initiatedBy: string,
+    expiresInMinutes: number,
+  ): Promise<void> {
+    this.echoForDevelopment('Admin password reset link', email, resetUrl);
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
+        <h2 style="color: #3b82f6;">Set a new OxShare Admin password</h2>
+        <p>Hello ${esc(name)},</p>
+        <p><strong>${esc(initiatedBy)}</strong> started a password reset for your back-office account. Choose a new password using the link below. It expires in ${expiresInMinutes} minutes and can only be used once.</p>
+        <div style="margin: 30px 0;">
+          <a href="${resetUrl}" style="background: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">
+            Set a new password
+          </a>
+        </div>
+        <p style="font-size: 12px; color: #94a3b8;">Setting a new password signs you out everywhere else. If you did NOT ask for this, contact ${esc(initiatedBy)} immediately — someone with administrator access started it.</p>
+      </div>
+    `;
+
+    try {
+      if (this.configService.get('NODE_ENV') !== 'test') {
+        await this.transporter.sendMail({
+          from: this.configService.get('SMTP_FROM', '"OxShare System" <no-reply@oxshare.com>'),
+          to: email,
+          subject: 'Set a new admin password — OxShare',
+          html,
+        });
+      }
+      this.logger.log(`Admin password reset email sent to ${email}`);
+    } catch (error) {
+      this.logger.error(`Failed to send admin reset email to ${email}: ${failureReason(error)}`);
+    }
+  }
 }

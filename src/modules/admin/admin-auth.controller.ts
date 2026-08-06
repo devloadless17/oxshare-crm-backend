@@ -22,13 +22,19 @@ import {
   Req,
   Res,
   UseGuards,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request, Response } from 'express';
 import { AdminAuthService } from './admin-auth.service';
 import { Admin } from '../../store/admins.store';
-import { AcceptInviteDto, AdminLoginDto, InviteDto } from './dto/requests/auth.dto';
+import {
+  CompleteAdminResetDto,
+  AcceptInviteDto,
+  AdminLoginDto,
+  InviteDto,
+} from './dto/requests/auth.dto';
 import {
   AdminLoginResponseDto,
   AcceptInviteResponseDto,
@@ -150,7 +156,15 @@ export class AdminAuthController {
   @NotClientScoped('Creates an admin_invites row. Administrators are not clients.')
   @Audited('admin.invite')
   invite(@Body() dto: InviteDto, @Req() req: Request & { admin: Admin }) {
-    return this.auth.createInvite(dto.email, dto.name, req.admin, dto.roleId, dto.permissions);
+    return this.auth.createInvite(
+      dto.email,
+      dto.name,
+      req.admin,
+      dto.roleId,
+      dto.permissions,
+      dto.maskedFields,
+      dto.scopedTagIds,
+    );
   }
 
   /*
@@ -218,5 +232,52 @@ export class AdminAuthController {
   @Audited('admin.invite_accept')
   acceptInvite(@Body() dto: AcceptInviteDto, @Res({ passthrough: true }) res: Response) {
     return this.auth.acceptInvite(dto.token, dto.password, res);
+  }
+
+  /**
+   * Start a password reset for another administrator — D-44.
+   *
+   * `users.create` is the admin-management grant in this catalogue (it is what
+   * `POST /admin/invite` requires to create one). The permission is only half
+   * the control: `refuseReset` inside the service refuses anyone reaching a
+   * privilege level above their own, which is what stops a sub-admin holding
+   * this grant from resetting a master admin and taking the console.
+   */
+  @Post('users/:id/password-reset')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('users.create')
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Email another administrator a single-use password reset link' })
+  @ApiOkResponse({ type: MessageResponseDto })
+  @NotClientScoped('Acts on an administrator account; reads no client rows.')
+  @Audited('admin.password_reset_initiate')
+  initiatePasswordReset(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request & { admin: Admin },
+  ) {
+    return this.auth.initiatePasswordReset(req.admin.id, id);
+  }
+
+  @NoCsrf(
+    'The caller has no session by definition — that is why they are here. A CSRF ' +
+      'token is bound to a session, so requiring one would make the recovery path ' +
+      'reachable only by people who do not need it.',
+  )
+  @Post('password-reset/complete')
+  /*
+   * Tighter than the invite cap. An invite token is handed to one person who is
+   * expecting it; a reset token is the thing somebody grinding for an admin
+   * account would attack, and the legitimate user needs exactly one attempt.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: 3 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Spend a reset link and set a new password' })
+  @ApiOkResponse({ type: MessageResponseDto })
+  @NotClientScoped('Sets an administrator password from a token; reads no client rows.')
+  @Audited('admin.password_reset_complete')
+  completePasswordReset(@Body() dto: CompleteAdminResetDto) {
+    return this.auth.completePasswordReset(dto.token, dto.password);
   }
 }

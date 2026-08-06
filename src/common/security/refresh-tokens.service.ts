@@ -194,15 +194,9 @@ export class RefreshTokensService {
        * real client refreshes again, the chain has two live branches, one of
        * them gets replayed, and the family dies.
        */
-      const successor = await this.successorOf(row.familyId, row.createdAt);
+      const chain = await this.chainStateOf(row.familyId, { id: row.id, usedAt: row.usedAt });
       const withinGrace = Date.now() - row.usedAt.getTime() <= RETRY_GRACE_MS;
-      if (
-        withinGrace &&
-        successor &&
-        !successor.usedAt &&
-        !successor.revokedAt &&
-        successor.expiresAt.getTime() > Date.now()
-      ) {
+      if (withinGrace && chain.liveJti && !chain.consumedAfterPresented) {
         this.logger.log(
           `Refresh token retried on the ${params.surface} surface for subject ` +
             `${row.subjectId}: the rotation at ${row.usedAt.toISOString()} evidently did not ` +
@@ -213,7 +207,7 @@ export class RefreshTokensService {
           outcome: 'retried',
           familyId: row.familyId,
           subjectId: row.subjectId,
-          successorJti: successor.id,
+          successorJti: chain.liveJti,
         };
       }
 
@@ -245,23 +239,40 @@ export class RefreshTokensService {
   }
 
   /**
-   * The row that replaced `after` in this family, if there is one.
+   * The family's newest still-usable row, and whether anything was consumed
+   * after `presented` — the two facts the retry test needs.
    *
-   * Found by creation order rather than by a `next_jti` column, because rotation
-   * only ever appends: within one family the next row created after a given
-   * member IS its successor. That avoids a schema change for a lookup used on
-   * one branch of one method.
+   * ## Why it is asked this way
+   *
+   * Two earlier shapes were wrong, and both were wrong invisibly:
+   *
+   *  - **"the row created after this one"** — `created_at` defaults to `now()`,
+   *    which Postgres resolves to the TRANSACTION timestamp, so rows written
+   *    close together share a value and `>` finds nothing. The grace window
+   *    simply never applied.
+   *  - **"the family has any live row"** — always true of a healthy family, so
+   *    it graced genuine theft as readily as a retry, which is strictly worse
+   *    than not having built it.
+   *
+   * The exact question is whether the presented token is the LAST one that was
+   * consumed. A family is a chain: every rotation consumes one row and appends
+   * its replacement, so at any moment the first n-1 rows are used and the last
+   * is live.
+   *
+   *  - A retry presents the row that was consumed most recently — nothing came
+   *    after it, because the client never received the replacement it would have
+   *    gone on to use.
+   *  - A replay of a captured token presents a row from further back, and the
+   *    legitimate client has consumed rows after it.
+   *
+   * `used_at` is written by an explicit `new Date()` rather than by `now()`, so
+   * unlike `created_at` it carries real per-statement ordering.
    */
-  private async successorOf(
+  private async chainStateOf(
     familyId: string,
-    after: Date,
-  ): Promise<{
-    id: string;
-    usedAt: Date | null;
-    revokedAt: Date | null;
-    expiresAt: Date;
-  } | null> {
-    const [row] = await this.db
+    presented: { id: string; usedAt: Date },
+  ): Promise<{ liveJti: string | null; consumedAfterPresented: boolean }> {
+    const rows = await this.db
       .select({
         id: refreshTokens.id,
         usedAt: refreshTokens.usedAt,
@@ -269,10 +280,17 @@ export class RefreshTokensService {
         expiresAt: refreshTokens.expiresAt,
       })
       .from(refreshTokens)
-      .where(and(eq(refreshTokens.familyId, familyId), gt(refreshTokens.createdAt, after)))
-      .orderBy(refreshTokens.createdAt)
-      .limit(1);
-    return row ?? null;
+      .where(eq(refreshTokens.familyId, familyId));
+
+    const now = Date.now();
+    const live = rows.find(
+      (r) => !r.usedAt && !r.revokedAt && r.expiresAt.getTime() > now && r.id !== presented.id,
+    );
+    const consumedAfterPresented = rows.some(
+      (r) => r.id !== presented.id && r.usedAt !== null && r.usedAt > presented.usedAt,
+    );
+
+    return { liveJti: live?.id ?? null, consumedAfterPresented };
   }
 
   /**

@@ -69,6 +69,25 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     group: 'Administrators',
   },
   { action: 'admin.invite_revoke', label: 'Invite revoked', group: 'Administrators' },
+  /*
+   * Both halves of a password reset are listed, and both are filterable.
+   *
+   * D-44 accepts that a master admin can reset another master — which means one
+   * administrator can take another's account — ONLY because this trail exists.
+   * "Who reset whose password, and when" is the first question an auditor asks
+   * after an account does something its owner denies, and an action missing
+   * from this catalogue reads as "it never happened" on the audit screen.
+   */
+  {
+    action: 'admin.password_reset_initiate',
+    label: 'Password reset sent',
+    group: 'Administrators',
+  },
+  {
+    action: 'admin.password_reset_complete',
+    label: 'Password reset completed',
+    group: 'Administrators',
+  },
   { action: 'admin.update', label: 'Administrator changed', group: 'Administrators' },
   { action: 'admin.suspend', label: 'Administrator suspended', group: 'Administrators' },
   { action: 'admin.activate', label: 'Administrator reactivated', group: 'Administrators' },

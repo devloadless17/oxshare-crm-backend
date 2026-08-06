@@ -450,7 +450,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AuthTokensResponseDto"
+                  "$ref": "#/components/schemas/RefreshResponseDto"
                 }
               }
             }
@@ -472,7 +472,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AuthTokensResponseDto"
+                  "$ref": "#/components/schemas/RefreshResponseDto"
                 }
               }
             }
@@ -1789,21 +1789,90 @@
         ]
       }
     },
+    "/v1/admin/users/{id}/password-reset": {
+      "post": {
+        "operationId": "AdminAuthController_initiatePasswordReset",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Email another administrator a single-use password reset link",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/password-reset/complete": {
+      "post": {
+        "operationId": "AdminAuthController_completePasswordReset",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteAdminResetDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Spend a reset link and set a new password",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/clients": {
       "get": {
         "operationId": "AdminClientsController_listClients",
         "parameters": [
           {
             "name": "page",
-            "required": true,
+            "required": false,
             "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "limit",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
               "type": "string"
@@ -1811,49 +1880,113 @@
           },
           {
             "name": "cursor",
-            "required": true,
+            "required": false,
             "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "withTotal",
-            "required": true,
+            "required": false,
             "in": "query",
+            "description": "Counting is a full scan.",
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "q",
-            "required": true,
+            "required": false,
             "in": "query",
+            "description": "Search email and name.",
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "type",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
+              "enum": [
+                "individual",
+                "referral",
+                "partner"
+              ],
               "type": "string"
             }
           },
           {
             "name": "status",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
+              "enum": [
+                "active",
+                "pending",
+                "suspended"
+              ],
               "type": "string"
             }
           },
           {
             "name": "level",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
+              "enum": [
+                0,
+                1
+              ],
+              "type": "number"
+            }
+          },
+          {
+            "name": "country",
+            "required": false,
+            "in": "query",
+            "description": "Exact match on the country tag.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "required": false,
+            "in": "query",
+            "description": "Tag SLUG, not id (ADM-14).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "email",
+                "firstName",
+                "status",
+                "type",
+                "verificationLevel",
+                "country"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
               "type": "string"
             }
           }
@@ -1875,7 +2008,44 @@
             "cookie": []
           }
         ],
-        "summary": "Paginated, filterable client list",
+        "summary": "Paginated, filterable, sortable client list",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/clients/{id}": {
+      "get": {
+        "description": "Each section is gated on its own permission and is ABSENT when the caller lacks it — which is deliberately different from present-and-empty, so a screen can distinguish \"hidden from you\" from \"this client has none\".",
+        "operationId": "AdminClientsController_getClientProfile",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientProfileDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "A client's full profile — KYC, documents, trading accounts, referrals (FR-ADM-01)",
         "tags": [
           "admin"
         ]
@@ -1915,6 +2085,275 @@
           }
         ],
         "summary": "Suspend or reactivate a client account (requires users.suspend)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/tags": {
+      "get": {
+        "operationId": "AdminTagsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientTagWithCountDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Client tags, with how many clients carry each",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "AdminTagsController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateClientTagDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientTagDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Create a client tag",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/tags/{id}": {
+      "patch": {
+        "operationId": "AdminTagsController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateClientTagDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientTagDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Rename or restyle a client tag (the slug is fixed)",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "operationId": "AdminTagsController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Delete a client tag and every assignment of it",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/clients/{id}/tags": {
+      "get": {
+        "operationId": "AdminTagsController_forClient",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientTagDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "A client's tags",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/clients/{id}/tags/{tagId}": {
+      "post": {
+        "operationId": "AdminTagsController_assign",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tagId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientTagDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Attach a tag to a client",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "operationId": "AdminTagsController_unassign",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tagId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientTagDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Detach a tag from a client",
         "tags": [
           "admin"
         ]
@@ -2981,6 +3420,36 @@
         ]
       }
     },
+    "/v1/admin/client-fields": {
+      "get": {
+        "operationId": "AdminRbacController_listClientFields",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/ClientFieldGroupDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Maskable client fields, grouped (requires roles.view or users.view)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/roles": {
       "get": {
         "operationId": "AdminRbacController_listRoles",
@@ -3249,6 +3718,36 @@
         ]
       }
     },
+    "/v1/admin/audit-log/actions": {
+      "get": {
+        "operationId": "AdminAuditController_listAuditActions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuditActionDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every action the log can record (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/audit-log": {
       "get": {
         "operationId": "AdminAuditController_listAuditLog",
@@ -3499,19 +3998,50 @@
     "version": "1.0",
     "contact": {}
   },
-  "tags": [],
+  "tags": [
+    {
+      "name": "identity",
+      "description": "Users, registration, attribution"
+    },
+    {
+      "name": "trading",
+      "description": "MT5 accounts, groups, deal ingestion"
+    },
+    {
+      "name": "wallet",
+      "description": "Balances, ledger, transactions"
+    },
+    {
+      "name": "payments",
+      "description": "Deposits, withdrawals, Whish/USDT"
+    },
+    {
+      "name": "partners",
+      "description": "IB programs, commission engine, payouts"
+    },
+    {
+      "name": "compliance",
+      "description": "KYC documents, verification levels"
+    },
+    {
+      "name": "admin",
+      "description": "Back-office endpoints, RBAC"
+    }
+  ],
   "servers": [],
   "components": {
     "securitySchemes": {
-      "bearer": {
-        "scheme": "bearer",
-        "bearerFormat": "JWT",
-        "type": "http"
-      },
       "cookie": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "access_token"
+        "name": "oxshare_crm_portal_at",
+        "description": "Portal session. Set by POST /v1/auth/login; httpOnly, so not settable here."
+      },
+      "admin": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "oxshare_crm_admin_at",
+        "description": "Admin session. Set by POST /v1/admin/auth/login; httpOnly, so not settable here."
       }
     },
     "schemas": {
@@ -3829,6 +4359,17 @@
         "required": [
           "user",
           "emailVerified"
+        ]
+      },
+      "RefreshResponseDto": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/UserProfileDto"
+          }
+        },
+        "required": [
+          "user"
         ]
       },
       "ChangePasswordDto": {
@@ -4588,6 +5129,25 @@
           "password"
         ]
       },
+      "AdminScopeTagDto": {
+        "type": "object",
+        "properties": {
+          "tagId": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tagId",
+          "slug",
+          "label"
+        ]
+      },
       "AdminProfileDto": {
         "type": "object",
         "properties": {
@@ -4623,6 +5183,25 @@
               "suspended"
             ]
           },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maskedFieldsOverride": {
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopedTags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminScopeTagDto"
+            }
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -4635,6 +5214,8 @@
           "role",
           "permissions",
           "status",
+          "maskedFields",
+          "scopedTags",
           "createdAt"
         ]
       },
@@ -4668,6 +5249,20 @@
           },
           "permissions": {
             "description": "Explicit permission keys, when not assigning a role.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maskedFields": {
+            "description": "Client fields this admin may not see. Omit to inherit the role’s mask; [] means no mask.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopedTagIds": {
+            "description": "Client tags this admin is scoped to. Omit or [] means UNRESTRICTED — every client.",
             "type": "array",
             "items": {
               "type": "string"
@@ -4791,6 +5386,55 @@
           "admin"
         ]
       },
+      "CompleteAdminResetDto": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Single-use token from the password reset email."
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "token",
+          "password"
+        ]
+      },
+      "ClientTagDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Stable machine name. Filter with ?tag=<slug>; a rename does not change it."
+          },
+          "label": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "label",
+          "createdAt"
+        ]
+      },
       "ClientRowDto": {
         "type": "object",
         "properties": {
@@ -4835,17 +5479,19 @@
           "createdAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientTagDto"
+            }
           }
         },
         "required": [
           "id",
-          "email",
-          "firstName",
-          "lastName",
           "type",
           "status",
-          "verificationLevel",
-          "createdAt"
+          "verificationLevel"
         ]
       },
       "ClientListResponseDto": {
@@ -4855,6 +5501,12 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ClientRowDto"
+            }
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           },
           "nextCursor": {
@@ -4874,9 +5526,261 @@
         },
         "required": [
           "items",
+          "maskedFields",
           "nextCursor",
           "page",
           "limit"
+        ]
+      },
+      "ProfileKycDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "none",
+              "pending",
+              "in_review",
+              "approved",
+              "rejected"
+            ]
+          },
+          "submittedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reviewedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "rejectionReason": {
+            "type": "string"
+          },
+          "documentCount": {
+            "type": "number",
+            "description": "How many documents the submission carries."
+          }
+        },
+        "required": [
+          "status",
+          "documentCount"
+        ]
+      },
+      "ProfileTradingAccountDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "mt5Login": {
+            "type": "string"
+          },
+          "mt5Group": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ]
+          },
+          "tier": {
+            "type": "string"
+          },
+          "leverage": {
+            "type": "number"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "mt5Login",
+          "environment",
+          "createdAt"
+        ]
+      },
+      "ProfileReferrerDto": {
+        "type": "object",
+        "properties": {
+          "ibUserId": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean",
+            "description": "False when the attribution was switched off."
+          },
+          "since": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ibUserId",
+          "email",
+          "firstName",
+          "lastName",
+          "active",
+          "since"
+        ]
+      },
+      "ProfileReferredClientDto": {
+        "type": "object",
+        "properties": {
+          "clientUserId": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "since": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clientUserId",
+          "email",
+          "firstName",
+          "lastName",
+          "active",
+          "since"
+        ]
+      },
+      "ClientProfileDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "individual",
+              "referral",
+              "partner"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "pending",
+              "suspended"
+            ]
+          },
+          "verificationLevel": {
+            "type": "number",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "emailVerified": {
+            "type": "boolean"
+          },
+          "country": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientTagDto"
+            }
+          },
+          "kyc": {
+            "description": "Absent without kyc.view.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProfileKycDto"
+              }
+            ]
+          },
+          "documents": {
+            "description": "Document filenames. Absent without kyc.documents.view.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tradingAccounts": {
+            "description": "Absent without trading.view.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileTradingAccountDto"
+            }
+          },
+          "referrer": {
+            "description": "Absent without partners.view.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProfileReferrerDto"
+              }
+            ]
+          },
+          "referredClients": {
+            "description": "Capped — see referredTotal. Absent without partners.view.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileReferredClientDto"
+            }
+          },
+          "referredShown": {
+            "type": "number",
+            "description": "How many referredClients were returned; the list is capped for one screen."
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "status",
+          "verificationLevel",
+          "emailVerified",
+          "tags",
+          "maskedFields"
         ]
       },
       "ClientStatusDto": {
@@ -4894,6 +5798,80 @@
         "required": [
           "status"
         ]
+      },
+      "ClientTagWithCountDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Stable machine name. Filter with ?tag=<slug>; a rename does not change it."
+          },
+          "label": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "clientCount": {
+            "type": "number",
+            "description": "How many clients carry this tag."
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "label",
+          "createdAt",
+          "clientCount"
+        ]
+      },
+      "CreateClientTagDto": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "example": "High risk",
+            "maxLength": 100
+          },
+          "color": {
+            "type": "string",
+            "example": "#b45309"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "label"
+        ]
+      },
+      "UpdateClientTagDto": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "color": {
+            "type": "string",
+            "example": "#b45309"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500
+          }
+        }
       },
       "KycDocumentDto": {
         "type": "object",
@@ -5707,6 +6685,53 @@
           "permissions"
         ]
       },
+      "ClientFieldDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Path-qualified, e.g. client.email or kyc.personalInfo.phone."
+          },
+          "label": {
+            "type": "string"
+          },
+          "maskable": {
+            "type": "boolean",
+            "description": "False for fields the admin screens structurally need."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why an unmaskable field cannot be hidden."
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "maskable"
+        ]
+      },
+      "ClientFieldGroupDto": {
+        "type": "object",
+        "properties": {
+          "groupName": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientFieldDto"
+            }
+          }
+        },
+        "required": [
+          "groupName",
+          "description",
+          "fields"
+        ]
+      },
       "RoleResponseDto": {
         "type": "object",
         "properties": {
@@ -5725,6 +6750,12 @@
               "type": "string"
             }
           },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "isSystem": {
             "type": "boolean"
           },
@@ -5737,6 +6768,7 @@
           "id",
           "name",
           "permissions",
+          "maskedFields",
           "isSystem",
           "createdAt"
         ]
@@ -5757,6 +6789,17 @@
               "kyc.review"
             ],
             "description": "Permission keys from GET /admin/permissions.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maskedFields": {
+            "example": [
+              "client.phone",
+              "client.email"
+            ],
+            "description": "Field keys from GET /admin/client-fields. Empty means nothing is hidden.",
             "type": "array",
             "items": {
               "type": "string"
@@ -5782,6 +6825,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "maskedFields": {
+            "description": "Field keys from GET /admin/client-fields. Empty means nothing is hidden.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -5797,6 +6847,21 @@
           },
           "permissions": {
             "description": "Direct permission grants.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maskedFields": {
+            "nullable": true,
+            "description": "Client fields this administrator may not see. null clears the override and inherits the role; [] explicitly masks nothing.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopedTagIds": {
+            "description": "Client tag ids. An EMPTY ARRAY means unrestricted (every client), not none — see D-10.",
             "type": "array",
             "items": {
               "type": "string"
@@ -5819,6 +6884,26 @@
           "status"
         ]
       },
+      "AuditActionDto": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string",
+            "description": "Groups the filter, so 30+ entries stay readable."
+          }
+        },
+        "required": [
+          "action",
+          "label",
+          "group"
+        ]
+      },
       "AuditEntryDto": {
         "type": "object",
         "properties": {
@@ -5830,6 +6915,21 @@
           },
           "actorEmail": {
             "type": "string"
+          },
+          "actorKind": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "client",
+              "system",
+              "provider"
+            ],
+            "description": "A background job records as `system`, with a named identity — never anonymously."
+          },
+          "ipAddress": {
+            "type": "string",
+            "nullable": true,
+            "description": "The address the action came from. Null for an action with no request context, such as a scheduled job."
           },
           "action": {
             "type": "string"
@@ -5853,6 +6953,7 @@
           "id",
           "actorId",
           "actorEmail",
+          "actorKind",
           "action",
           "subjectType",
           "subjectId",

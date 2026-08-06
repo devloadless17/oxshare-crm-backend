@@ -3,7 +3,7 @@ import { NotClientScoped } from '../../modules/admin/guards/client-scope.decorat
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Admin } from '../../store/admins.store';
-import { AdminGuard, RequirePermissions } from '../admin/guards/admin.guard';
+import { PermissionsGuard, RequirePermissions } from '../admin/guards/admin.guard';
 import { PlatformLinksService } from './platform-links.service';
 import { PlatformLinkDto, SetPlatformLinkDto } from './dto/platform-link.dto';
 import { Audited } from '../admin/guards/audited.decorator';
@@ -31,7 +31,11 @@ export class AdminPlatformLinksController {
   constructor(private readonly platforms: PlatformLinksService) {}
 
   @Get('platforms')
-  @UseGuards(AdminGuard)
+  // PermissionsGuard, not AdminGuard: only PermissionsGuard reads
+  // PERMISSIONS_KEY, so the decorator below was inert and any authenticated
+  // admin could reach these routes — including the PUT, which sets the
+  // executable download URL every client is handed.
+  @UseGuards(PermissionsGuard)
   @RequirePermissions('settings.manage')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Download links for every platform, configured or not' })
@@ -42,7 +46,7 @@ export class AdminPlatformLinksController {
   }
 
   @Put('platforms/:key')
-  @UseGuards(AdminGuard)
+  @UseGuards(PermissionsGuard)
   @RequirePermissions('settings.manage')
   @ApiCookieAuth()
   @ApiOperation({

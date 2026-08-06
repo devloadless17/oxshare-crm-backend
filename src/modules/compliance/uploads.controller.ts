@@ -36,6 +36,7 @@ import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-f
 import {
   isTokenKind,
   TOKEN_ALGORITHMS,
+  TOKEN_CLOCK_TOLERANCE_SECONDS,
   TOKEN_AUDIENCE,
   TOKEN_ISSUER,
   TOKEN_KIND,
@@ -236,6 +237,7 @@ export class UploadsController {
           issuer: TOKEN_ISSUER,
           // Stated, never inherited from the key type — see token-audience.ts.
           algorithms: TOKEN_ALGORITHMS,
+          clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
         });
         // `typ` checked here too, as it is at every other verification site.
         // The separate refresh secret already makes a refresh token fail above,
@@ -354,6 +356,7 @@ export class UploadsController {
           issuer: TOKEN_ISSUER,
           // Stated, never inherited from the key type — see token-audience.ts.
           algorithms: TOKEN_ALGORITHMS,
+          clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
         });
         if (!isTokenKind(payload, TOKEN_KIND.access)) {
           throw new UnauthorizedException('Invalid or expired token.');

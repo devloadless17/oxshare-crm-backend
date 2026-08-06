@@ -68,10 +68,60 @@ export class InviteDto {
   @IsArray()
   @IsOptional()
   permissions?: string[];
+
+  /*
+   * Territory and masking, chosen HERE rather than after acceptance.
+   *
+   * `admin_invites` has carried both columns since the scoping work, with a
+   * comment in schema.ts stating exactly why they must be settable at invite
+   * time: an EMPTY scope means unrestricted, so assigning territory only after
+   * acceptance leaves every newly-accepted sub-admin able to see every client in
+   * the system for the window between them clicking the emailed link and a
+   * master admin remembering to configure them — a window nobody observes,
+   * because it opens and closes in a mailbox we do not watch.
+   *
+   * The columns existed; nothing wrote them and nothing read them, so the window
+   * described in that comment was open. These two fields close it.
+   */
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Client fields this admin may not see. Omit to inherit the role’s mask; [] means no mask.',
+  })
+  @IsArray()
+  @IsOptional()
+  maskedFields?: string[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Client tags this admin is scoped to. Omit or [] means UNRESTRICTED — every client.',
+  })
+  @IsArray()
+  @IsOptional()
+  scopedTagIds?: string[];
 }
 
 export class AcceptInviteDto {
   @ApiProperty({ description: 'Single-use token from the invitation email.' })
+  @IsString()
+  token: string;
+
+  @ApiProperty({ minLength: 8, maxLength: PASSWORD_MAX })
+  @IsString()
+  @MinLength(8)
+  @MaxLength(PASSWORD_MAX)
+  password: string;
+}
+
+/**
+ * The body for spending a reset link. Same shape as accepting an invite,
+ * deliberately kept a SEPARATE class rather than reused: the two carry
+ * different credentials with different lifetimes, and a shared DTO is how a
+ * later change to one silently loosens the other.
+ */
+export class CompleteAdminResetDto {
+  @ApiProperty({ description: 'Single-use token from the password reset email.' })
   @IsString()
   token: string;
 

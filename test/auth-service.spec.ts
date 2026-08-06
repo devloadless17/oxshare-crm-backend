@@ -238,13 +238,33 @@ describe('verifyEmail', () => {
     await expect(h.service.verifyEmail('nope')).rejects.toThrow(ValidationError);
   });
 
-  it('refuses an expired token', async () => {
+  it('refuses an expired token, and clears it on the way out', async () => {
+    /*
+     * UPDATED 6 Aug 2026. This asserted that NOTHING was written on the expiry
+     * path, which was true and was the defect: the dead token stayed in the row
+     * indefinitely — the only one-time credential here that outlived its own
+     * expiry, and the only one stored in plaintext rather than hashed.
+     *
+     * `resetPassword` has always cleared its token on the same path. This is now
+     * the same shape. What must NOT change is the refusal itself, so both halves
+     * are asserted.
+     */
     const h = build();
     h.users.findByVerificationToken.mockResolvedValue(
       makeUser({ emailVerified: false, emailVerificationExpiry: new Date(Date.now() - 1000) }),
     );
     await expect(h.service.verifyEmail('stale')).rejects.toThrow(/expired/i);
-    expect(h.users.update).not.toHaveBeenCalled();
+
+    expect(h.users.update).toHaveBeenCalledWith('user-1', {
+      emailVerificationToken: undefined,
+      emailVerificationExpiry: undefined,
+    });
+    // And emphatically NOT verified — clearing the token must not be mistaken
+    // for accepting it.
+    expect(h.users.update).not.toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ emailVerified: true }),
+    );
   });
 
   it('verifies and CLEARS the token, so a link cannot be used twice', async () => {

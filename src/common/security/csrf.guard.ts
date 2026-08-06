@@ -12,7 +12,12 @@ import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { CsrfService } from './csrf.service';
 import { COOKIE_BASES, readSessionCookie } from './session-cookies';
-import { TOKEN_ALGORITHMS, TOKEN_AUDIENCE, TOKEN_ISSUER } from './token-audience';
+import {
+  TOKEN_ALGORITHMS,
+  TOKEN_AUDIENCE,
+  TOKEN_CLOCK_TOLERANCE_SECONDS,
+  TOKEN_ISSUER,
+} from './token-audience';
 import { safeLogPath } from '../logging/redact';
 import { isAdminSurface } from '../api-prefix';
 
@@ -210,6 +215,7 @@ export class CsrfGuard implements CanActivate {
         issuer: TOKEN_ISSUER,
         // Stated, never inherited from the key type — see token-audience.ts.
         algorithms: TOKEN_ALGORITHMS,
+        clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
       });
       return payload.sub ?? null;
     } catch {

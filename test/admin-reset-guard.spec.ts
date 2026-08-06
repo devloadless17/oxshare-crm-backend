@@ -19,7 +19,7 @@ const otherMaster = { id: 'm2', role: 'master_admin' as const, permissions: ['*'
 const manager = {
   id: 's1',
   role: 'sub_admin' as const,
-  permissions: ['admins.manage', 'kyc.review'],
+  permissions: ['users.create', 'kyc.review'],
 };
 const peer = { id: 's2', role: 'sub_admin' as const, permissions: ['kyc.review'] };
 
@@ -40,7 +40,7 @@ describe('refuseReset', () => {
 
   it('REFUSES a sub-admin reaching a master, however well permissioned', () => {
     // The headline failure. A permission check alone would allow this, look
-    // correct in review, and hand the whole console to anyone with admins.manage.
+    // correct in review, and hand the whole console to anyone with users.create.
     expect(refuseReset(manager, master)).toBe('target-is-master');
   });
 
@@ -53,7 +53,7 @@ describe('refuseReset', () => {
     const higher = {
       id: 's3',
       role: 'sub_admin' as const,
-      permissions: ['kyc.review', 'payouts.approve'],
+      permissions: ['kyc.review', 'withdrawals.approve'],
     };
     expect(refuseReset(manager, higher)).toBe('target-outranks-actor');
   });
@@ -65,7 +65,7 @@ describe('refuseReset', () => {
     expect(refuseReset(manager, peer)).toBeNull();
   });
 
-  it('refuses a sub-admin with no admins.manage grant at all', () => {
+  it('refuses a sub-admin with no admin-management grant at all', () => {
     expect(refuseReset(peer, { ...peer, id: 'other' })).toBe('actor-not-permitted');
   });
 
