@@ -595,11 +595,6 @@ export class WithdrawalListResponseDto {
   counts: Record<string, number>;
 }
 
-// Ledger DTOs live in the wallet module, which owns the ledger domain; admin
-// already depends on wallet. Re-exported so the schema names the admin frontend
-// aliases from types.gen.ts stay exactly as they were.
-export { LedgerEntryDto, LedgerListResponseDto } from '../../wallet/dto/wallet-response.dto';
-
 export class IbProgramDto {
   @ApiProperty() id: string;
   @ApiProperty() name: string;

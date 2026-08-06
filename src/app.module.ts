@@ -12,13 +12,9 @@ import { DatabaseModule } from './database/database.module';
 import { StoreModule } from './store/store.module';
 import { EmailModule } from './modules/email/email.module';
 import { IdentityModule } from './modules/identity/identity.module';
-import { TradingModule } from './modules/trading/trading.module';
-import { WalletModule } from './modules/wallet/wallet.module';
-import { PaymentsModule } from './modules/payments/payments.module';
 import { PlatformsModule } from './modules/platforms/platforms.module';
 import { CurrenciesModule } from './modules/currencies/currencies.module';
 import { SettingsModule } from './modules/settings/settings.module';
-import { PartnersModule } from './modules/partners/partners.module';
 import { ComplianceModule } from './modules/compliance/compliance.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { HealthModule } from './modules/health/health.module';
@@ -70,12 +66,8 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
 
     // Domain modules
     IdentityModule,
-    TradingModule,
-    WalletModule,
-    PaymentsModule,
     PlatformsModule,
     CurrenciesModule,
-    PartnersModule,
     ComplianceModule,
     SettingsModule,
     AdminModule,

@@ -69,90 +69,6 @@
       }
     ]
   },
-  "trading": {
-    "moduleName": "Trading Accounts",
-    "description": "Trading account management, leverage, and balance adjustment",
-    "permissions": [
-      {
-        "key": "trading.view",
-        "label": "View Trading Accounts"
-      },
-      {
-        "key": "trading.edit",
-        "label": "Update Account Group / Leverage"
-      }
-    ]
-  },
-  "withdrawals": {
-    "moduleName": "Financial & Withdrawals",
-    "description": "Client deposit & withdrawal request processing",
-    "permissions": [
-      {
-        "key": "withdrawals.view",
-        "label": "View Withdrawal Requests"
-      },
-      {
-        "key": "withdrawals.approve",
-        "label": "Approve / Reject Withdrawals"
-      },
-      {
-        "key": "withdrawals.settle",
-        "label": "Mark Withdrawals Paid (releases the money)"
-      }
-    ]
-  },
-  "ledger": {
-    "moduleName": "Ledger & Reconciliation",
-    "description": "Append-only ledger view for reconciliation (read-only by design)",
-    "permissions": [
-      {
-        "key": "ledger.view",
-        "label": "View Ledger Entries"
-      }
-    ]
-  },
-  "commissions": {
-    "moduleName": "Commission Plans",
-    "description": "IB programs, rates, L1/L2 shares and settlement windows (ADM-10)",
-    "permissions": [
-      {
-        "key": "commissions.view",
-        "label": "View Commission Plans"
-      },
-      {
-        "key": "commissions.manage",
-        "label": "Create, Edit & Deactivate Plans"
-      }
-    ]
-  },
-  "partners": {
-    "moduleName": "Partners & IBs",
-    "description": "IB applications, approval and parent assignment (ADM-11)",
-    "permissions": [
-      {
-        "key": "partners.view",
-        "label": "View Partners & Applications"
-      },
-      {
-        "key": "partners.manage",
-        "label": "Approve / Reject / Assign Parent IB"
-      }
-    ]
-  },
-  "payouts": {
-    "moduleName": "IB Payouts",
-    "description": "Partner payout review and settlement (ADM-12)",
-    "permissions": [
-      {
-        "key": "payouts.view",
-        "label": "View Payout Requests"
-      },
-      {
-        "key": "payouts.review",
-        "label": "Approve / Reject / Pay Payouts"
-      }
-    ]
-  },
   "settings": {
     "moduleName": "Settings",
     "description": "Operational settings shown to clients, such as the trading terminal download links.",
@@ -182,6 +98,28 @@
       {
         "key": "tags.assign",
         "label": "Assign / Unassign Tags on a Client"
+      }
+    ]
+  },
+  "ib": {
+    "moduleName": "Partners & IB",
+    "description": "Introducing-broker levels, applications and the partner network",
+    "permissions": [
+      {
+        "key": "ib.view",
+        "label": "View Partners & Applications"
+      },
+      {
+        "key": "ib.manage",
+        "label": "Configure IB Levels & Partner Records"
+      },
+      {
+        "key": "ib.approve",
+        "label": "Approve Partner Applications"
+      },
+      {
+        "key": "ib.reject",
+        "label": "Reject Partner Applications"
       }
     ]
   }

@@ -6,7 +6,6 @@ import { buildCursorPage, decodeCursor, pageSize } from '../../common/pagination
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
 import { applyMask, applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
-import { ClientProfileStore } from '../../store/client-profile.store';
 import { KycStore, type KycSubmission } from '../../store/kyc.store';
 import { actorHasPermission } from '../../common/security/actor';
 
@@ -18,8 +17,6 @@ import { actorHasPermission } from '../../common/security/actor';
  * list is capped and the screen links to the filtered client index for the
  * rest — which is the tool built for that question.
  */
-const REFERRED_CLIENTS_ON_PROFILE = 25;
-
 /** Every document filename a submission references, in one place. */
 function documentFilenames(submission: KycSubmission | undefined): string[] {
   if (!submission) return [];
@@ -47,7 +44,6 @@ export class AdminClientsService {
   constructor(
     private readonly users: UsersStore,
     private readonly tags: ClientTagsStore,
-    private readonly profiles: ClientProfileStore,
     private readonly kyc: KycStore,
     private readonly audit: AdminAuditService,
   ) {}
@@ -214,14 +210,16 @@ export class AdminClientsService {
 
     const may = (permission: string) => actorHasPermission(actor, permission);
 
-    const [tags, kyc, tradingAccounts, referrer, referredClients] = await Promise.all([
+    /*
+     * Trading accounts and referral relationships were assembled here too, from
+     * `ClientProfileStore`. Both went with the teardown: trading accounts had no
+     * table left, and the referral pair belonged to the old IB model. The
+     * rebuilt IB feature will put the partner relationship back on this profile
+     * — deliberately, rather than by restoring the old shape.
+     */
+    const [tags, kyc] = await Promise.all([
       this.tags.tagsForClient(clientId),
       may('kyc.view') || may('kyc.review') ? this.kyc.findByUserId(clientId) : undefined,
-      may('trading.view') ? this.profiles.tradingAccountsFor(clientId) : undefined,
-      may('partners.view') ? this.profiles.referrerOf(clientId) : undefined,
-      may('partners.view')
-        ? this.profiles.referredBy(clientId, REFERRED_CLIENTS_ON_PROFILE)
-        : undefined,
     ]);
 
     const profile = {
@@ -260,11 +258,6 @@ export class AdminClientsService {
       ...(may('kyc.documents.view') && kyc !== undefined
         ? { documents: documentFilenames(kyc) }
         : {}),
-      ...(tradingAccounts === undefined ? {} : { tradingAccounts }),
-      ...(referrer === undefined ? {} : { referrer }),
-      ...(referredClients === undefined
-        ? {}
-        : { referredClients, referredShown: referredClients.length }),
     };
 
     /*

@@ -2,7 +2,6 @@ import { Global, Module } from '@nestjs/common';
 import { AdminClientScopesStore } from './admin-client-scopes.store';
 import { AdminIpAllowlistStore } from './admin-ip-allowlist.store';
 import { AppSettingsStore } from './app-settings.store';
-import { ClientProfileStore } from './client-profile.store';
 import { ClientTagsStore } from './client-tags.store';
 import { AdminsStore, InvitesStore } from './admins.store';
 import { AuditLogStore } from './audit-log.store';
@@ -19,7 +18,6 @@ const STORES = [
   AdminIpAllowlistStore,
   AdminsStore,
   AppSettingsStore,
-  ClientProfileStore,
   ClientTagsStore,
   InvitesStore,
   AuditLogStore,

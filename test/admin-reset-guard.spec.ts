@@ -53,7 +53,7 @@ describe('refuseReset', () => {
     const higher = {
       id: 's3',
       role: 'sub_admin' as const,
-      permissions: ['kyc.review', 'withdrawals.approve'],
+      permissions: ['kyc.review', 'ib.approve'],
     };
     expect(refuseReset(manager, higher)).toBe('target-outranks-actor');
   });

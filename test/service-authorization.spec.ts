@@ -40,7 +40,7 @@ describe('R-4.3 actor permission checks', () => {
     // Services never import HTTP types; AllExceptionsFilter maps this to 403 in
     // one place. That is also what lets a queued job call the same method and
     // get a meaningful failure instead of an HTTP exception with nowhere to go.
-    expect(() => assertActorCan(subAdmin, 'withdrawals.approve', 'approve a withdrawal')).toThrow(
+    expect(() => assertActorCan(subAdmin, 'ib.approve', 'approve a partner application')).toThrow(
       AuthorizationError,
     );
   });
@@ -49,13 +49,13 @@ describe('R-4.3 actor permission checks', () => {
     // The message is read in a log during an incident, where "forbidden" alone
     // answers nothing.
     try {
-      assertActorCan(subAdmin, 'withdrawals.approve', 'approve a withdrawal');
+      assertActorCan(subAdmin, 'ib.approve', 'approve a partner application');
       throw new Error('should have refused');
     } catch (error) {
       const message = (error as Error).message;
       expect(message).toContain('sub@oxshare.com');
-      expect(message).toContain('withdrawals.approve');
-      expect(message).toContain('approve a withdrawal');
+      expect(message).toContain('ib.approve');
+      expect(message).toContain('approve a partner application');
     }
   });
 
@@ -106,9 +106,7 @@ describe('R-4.3 actor permission checks', () => {
      */
     expect(SYSTEM_ACTOR.id).toMatch(/^0{8}-/);
     expect(SYSTEM_ACTOR.email).toContain('system@');
-    expect(() =>
-      assertActorCan(SYSTEM_ACTOR, 'withdrawals.approve', 'confirm accruals'),
-    ).not.toThrow();
+    expect(() => assertActorCan(SYSTEM_ACTOR, 'kyc.review', 'confirm accruals')).not.toThrow();
   });
 });
 
@@ -126,7 +124,12 @@ describe('R-4.3 every money-moving service method asserts', () => {
    * about permissions at all, and that failure is visible in the text.
    */
   const MONEY_SERVICES = [
-    'src/modules/admin/admin-money.service.ts',
+    // `admin-money.service.ts` was the other entry and went with the money
+    // teardown. The RULE outlives it: any service taking an `actor` must assert
+    // on it, because a method that quietly skips the check is invisible in
+    // exactly the way an unguarded route was before R-4.2. Put the money
+    // services back on this list when they return, and add the IB service when
+    // approving a partner becomes a privileged action.
     'src/modules/admin/admin-clients.service.ts',
   ];
 
@@ -168,61 +171,21 @@ describe('R-4.3 every money-moving service method asserts', () => {
     // health for everything it never looked at.
     const source = readFileSync(join(__dirname, '..', MONEY_SERVICES[0]), 'utf8');
     const asserted = source.match(/assertActorCan\(/g) ?? [];
-    expect(asserted.length).toBeGreaterThanOrEqual(6);
+    expect(asserted.length).toBeGreaterThanOrEqual(2);
   });
 });
 
-describe('R-5.4 — separation of duties on payouts', () => {
-  /*
-   * Approving a withdrawal and PAYING it are different permissions.
-   *
-   * They were the same (`withdrawals.approve`), which meant one admin could
-   * approve an instruction and release the money in the same minute, and the
-   * audit log would carry one name on both rows. "Two people must be involved in
-   * a payout" was not merely unenforced — it was unexpressible, because there was
-   * no second key to grant.
-   *
-   * Splitting the key does not by itself force two people; it makes the control
-   * BUILDABLE, and whether the two are granted separately is a decision for
-   * whoever defines the roles. That is the right place for it.
-   */
-  const approver: Actor = {
-    id: 'a1',
-    email: 'approver@oxshare.com',
-    permissions: ['withdrawals.view', 'withdrawals.approve'],
-  };
-  const settler: Actor = {
-    id: 'a2',
-    email: 'settler@oxshare.com',
-    permissions: ['withdrawals.view', 'withdrawals.settle'],
-  };
-
-  it('an approver cannot settle', () => {
-    expect(() => assertActorCan(approver, 'withdrawals.settle', 'settle a withdrawal')).toThrow(
-      AuthorizationError,
-    );
-  });
-
-  it('a settler cannot approve', () => {
-    expect(() => assertActorCan(settler, 'withdrawals.approve', 'approve a withdrawal')).toThrow(
-      AuthorizationError,
-    );
-  });
-
-  it('each can do their own step', () => {
-    expect(() =>
-      assertActorCan(approver, 'withdrawals.approve', 'approve a withdrawal'),
-    ).not.toThrow();
-    expect(() =>
-      assertActorCan(settler, 'withdrawals.settle', 'settle a withdrawal'),
-    ).not.toThrow();
-  });
-
-  it('the master admin can still do both', () => {
-    // Deliberate: somebody has to be able to unblock a stuck payout at 2am, and
-    // that person is already the one the audit log watches most closely.
-    const master: Actor = { id: 'm', email: 'master@oxshare.com', permissions: ['*'] };
-    expect(() => assertActorCan(master, 'withdrawals.approve', 'approve')).not.toThrow();
-    expect(() => assertActorCan(master, 'withdrawals.settle', 'settle')).not.toThrow();
-  });
-});
+/*
+ * The R-5.4 separation-of-duties suite lived here and is gone with the money
+ * routes it asserted on.
+ *
+ * Its point is worth keeping in view for the rebuild: approving a withdrawal
+ * and PAYING it were once the same permission, which meant one admin could
+ * authorise an instruction and release the funds in the same minute with one
+ * name on both audit rows. "Two people must be involved in a payout" was not
+ * merely unenforced, it was unexpressible — there was no second key to grant.
+ *
+ * Splitting the key does not by itself force two people; it makes the control
+ * BUILDABLE, and whether the two are granted separately belongs to whoever
+ * defines the roles. Rebuild the split, then restore this suite.
+ */

@@ -87,10 +87,10 @@ beforeAll(async () => {
         'tags.assign',
         'kyc.review',
         'kyc.documents.view',
-        'withdrawals.view',
-        'withdrawals.approve',
-        'withdrawals.settle',
-        'ledger.view',
+        'kyc.view',
+        'kyc.review',
+        'kyc.review',
+        'ib.view',
       ],
     })
     .returning();
@@ -148,11 +148,15 @@ afterAll(async () => {
 });
 
 describe('list routes omit out-of-scope clients', () => {
+  /*
+   * `withdrawals` and `ledger` were the other two entries and left with the
+   * money teardown. Every scoped LIST route belongs in this table — a route
+   * that omits itself is one whose scoping nobody proves — so add the IB
+   * application queue here when it lands, and the money lists when they return.
+   */
   const LISTS = [
     { name: 'clients', path: '/v1/admin/clients?q=oxshare-e2e.test' },
     { name: 'kyc queue', path: '/v1/admin/kyc' },
-    { name: 'withdrawals', path: '/v1/admin/withdrawals' },
-    { name: 'ledger', path: '/v1/admin/ledger' },
   ];
 
   for (const list of LISTS) {

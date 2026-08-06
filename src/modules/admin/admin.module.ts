@@ -6,7 +6,6 @@ import { AdminAuthController } from './admin-auth.controller';
 import { AdminTagsController } from './admin-tags.controller';
 import { AdminClientsController } from './admin-clients.controller';
 import { AdminComplianceController } from './admin-compliance.controller';
-import { AdminMoneyController } from './admin-money.controller';
 import { AdminRbacController } from './admin-rbac.controller';
 import { APP_GUARD } from '@nestjs/core';
 import { AdminIpAllowlistController } from './admin-ip-allowlist.controller';
@@ -16,7 +15,6 @@ import { AdminAuthService } from './admin-auth.service';
 import { AdminTagsService } from './admin-tags.service';
 import { AdminClientsService } from './admin-clients.service';
 import { AdminComplianceService } from './admin-compliance.service';
-import { AdminMoneyService } from './admin-money.service';
 import { AdminRbacService } from './admin-rbac.service';
 
 const ADMIN_SERVICES = [
@@ -26,17 +24,13 @@ const ADMIN_SERVICES = [
   AdminComplianceService,
   AdminClientsService,
   AdminTagsService,
-  AdminMoneyService,
   SecuritySettingsService,
 ];
 import { AdminAuthModule } from './admin-auth.module';
 import { ComplianceModule } from '../compliance/compliance.module';
-import { PaymentsModule } from '../payments/payments.module';
-import { WalletModule } from '../wallet/wallet.module';
-import { PartnersModule } from '../partners/partners.module';
 
 @Module({
-  imports: [ComplianceModule, PaymentsModule, WalletModule, PartnersModule, AdminAuthModule],
+  imports: [ComplianceModule, AdminAuthModule],
   // Seven controllers share the 'admin' prefix, one per concern, mirroring the
   // services. Express registers all of their routes; there are no path
   // collisions. Order is irrelevant — no two routes overlap.
@@ -45,7 +39,6 @@ import { PartnersModule } from '../partners/partners.module';
     AdminClientsController,
     AdminTagsController,
     AdminComplianceController,
-    AdminMoneyController,
     AdminRbacController,
     AdminAuditController,
     AdminSecuritySettingsController,

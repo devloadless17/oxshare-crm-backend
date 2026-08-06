@@ -54,12 +54,18 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'kyc.submission.view', label: 'KYC submission opened', group: 'Verification' },
   { action: 'kyc.document.view', label: 'KYC document viewed', group: 'Verification' },
 
-  // ── Money ─────────────────────────────────────────────────────────────────
-  { action: 'withdrawal.approve', label: 'Withdrawal approved', group: 'Money' },
-  { action: 'withdrawal.reject', label: 'Withdrawal rejected', group: 'Money' },
-  { action: 'withdrawal.settle', label: 'Withdrawal paid', group: 'Money' },
-  { action: 'program.create', label: 'Commission plan created', group: 'Money' },
-  { action: 'program.update', label: 'Commission plan changed', group: 'Money' },
+  /*
+   * ── Money ────────────────────────────────────────────────────────────────
+   *
+   * Empty, deliberately. `withdrawal.approve|reject|settle` and
+   * `program.create|update` left with the money teardown, and this comment
+   * stays so the next person does not read the gap as an oversight.
+   *
+   * `audit-coverage.spec.ts` reads every `@Audited(...)` string off the route
+   * metadata and fails if it is missing from this list, so the money rebuild
+   * cannot ship an unlabelled action — an action with no label here is one an
+   * operator cannot filter for, and "no results" reads as "it never happened".
+   */
 
   // ── Administrators ────────────────────────────────────────────────────────
   { action: 'admin.invite', label: 'Administrator invited', group: 'Administrators' },

@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, eq, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, ne } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
-import { currencies, wallets } from '../../database/schema';
+import { currencies } from '../../database/schema';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import type { CreateCurrencyDto, UpdateCurrencyDto } from './dto/currency.dto';
 
@@ -201,13 +201,20 @@ export class CurrenciesService {
   }
 
   /**
-   * Deletion is only ever available for a currency nobody holds.
+   * Delete a currency.
    *
-   * The `ON DELETE RESTRICT` foreign keys would refuse this anyway — that is
-   * their job — but a raw FK violation surfaces as a 500 with a Postgres error
-   * string. Checking first turns it into a 409 that says which currency and
-   * how many wallets, which is the difference between an operator understanding
-   * the refusal and filing a bug.
+   * ⚠️ THIS IS TEMPORARILY UNGUARDED, and that is a known gap rather than a
+   * simplification. It used to count `wallets` in this currency first and
+   * refuse with a 409 naming the number, because the `ON DELETE RESTRICT`
+   * foreign keys would refuse anyway and a raw FK violation surfaces as a 500
+   * with a Postgres string in it.
+   *
+   * The `wallets` table is gone with the money teardown, so there is nothing
+   * left to count and nothing left referencing `currencies.code`. Deleting a
+   * currency right now is genuinely safe — there are no balances to orphan.
+   *
+   * WHEN MONEY RETURNS, this check must return with it. A currency delete that
+   * silently succeeds while wallets hold it is how a balance loses its unit.
    */
   async remove(code: string) {
     const normalised = this.normalise(code);
@@ -217,17 +224,6 @@ export class CurrenciesService {
     if (current.isDefault) {
       throw new ValidationError(
         'The default currency cannot be deleted. Make another currency the default first.',
-      );
-    }
-
-    const [{ count }] = await this.db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(wallets)
-      .where(eq(wallets.currency, normalised));
-
-    if (count > 0) {
-      throw new ConflictError(
-        `${normalised} has ${count} wallet(s) and cannot be deleted — balances and ledger history depend on it. Disable it instead, which stops new wallets while keeping the existing ones readable.`,
       );
     }
 

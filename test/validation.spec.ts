@@ -174,26 +174,6 @@ describe('global ValidationPipe — required and typed fields', () => {
       expect(JSON.stringify(res.body)).toMatch(/data/i);
     }
   });
-
-  it('rejects a withdrawal request with a numeric amount (§6.1 wants a string)', async () => {
-    const res = await post('/payments/withdrawals')
-      // 300 as a NUMBER. @IsNumberString exists precisely so this cannot pass:
-      // a JS number cannot carry NUMERIC(28,8).
-      .send({ amount: 300, currency: 'USD', destination: 'IBAN', provider: 'whish' });
-
-    expect(REJECTED).toContain(res.status);
-  });
-
-  it('rejects an unknown currency on a withdrawal', async () => {
-    const res = await post('/payments/withdrawals').send({
-      amount: '300.00',
-      currency: 'GBP',
-      destination: 'IBAN',
-      provider: 'whish',
-    });
-
-    expect(REJECTED).toContain(res.status);
-  });
 });
 
 describe('error envelope', () => {

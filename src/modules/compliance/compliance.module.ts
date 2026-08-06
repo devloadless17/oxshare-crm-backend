@@ -5,16 +5,15 @@ import { UploadsController } from './uploads.controller';
 import { KycService } from './kyc.service';
 import { AdminAuthModule } from '../admin/admin-auth.module';
 import { IdentityModule } from '../identity/identity.module';
-import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
   // JwtModule registered here for UploadsController, which verifies both the
   // admin and client tokens itself (per-call secrets).
   //
-  // WalletModule for `WalletProvisioningService`: approving a KYC submission is
-  // what opens the client's wallets, one per enabled currency. No forwardRef
-  // needed here — nothing in the wallet module depends on compliance.
-  imports: [IdentityModule, JwtModule.register({}), AdminAuthModule, WalletModule],
+  // WalletModule used to be imported here so KYC approval could open a client's
+  // wallets. It went with the money teardown; approval no longer has a money
+  // side effect, and the rebuild will decide where wallet provisioning belongs.
+  imports: [IdentityModule, JwtModule.register({}), AdminAuthModule],
   controllers: [KycController, UploadsController],
   providers: [KycService],
   exports: [KycService],

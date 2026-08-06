@@ -141,7 +141,7 @@ describe('AdminRbacService anti-escalation', () => {
     const { service, rolesFake } = await buildRbacService();
 
     await expect(
-      service.updateRole('role-1', { permissions: ['withdrawals.approve'] }, SUB_ADMIN),
+      service.updateRole('role-1', { permissions: ['ib.approve'] }, SUB_ADMIN),
     ).rejects.toThrow(AuthorizationError);
     expect(rolesFake.update).not.toHaveBeenCalled();
   });
@@ -303,12 +303,12 @@ describe('PermissionsGuard', () => {
   });
 
   it('denies with 403, never 401 — a 401 would log the admin out (§8.8)', async () => {
-    const { guard, context } = buildGuard(SUB_ADMIN, ['withdrawals.approve']);
+    const { guard, context } = buildGuard(SUB_ADMIN, ['ib.approve']);
     await expect(guard.canActivate(context)).rejects.toThrow(ForbiddenException);
   });
 
   it('the wildcard satisfies anything', async () => {
-    const { guard, context } = buildGuard(MASTER, ['withdrawals.approve']);
+    const { guard, context } = buildGuard(MASTER, ['ib.approve']);
     await expect(guard.canActivate(context)).resolves.toBe(true);
   });
 

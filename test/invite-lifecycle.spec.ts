@@ -214,9 +214,7 @@ describe('createInvite', () => {
   it('ANTI-ESCALATION: a sub-admin cannot invite a permission they do not hold', async () => {
     const h = build();
     await expect(
-      h.service.createInvite('new@oxshare.com', 'New', SUB_ADMIN, undefined, [
-        'withdrawals.approve',
-      ]),
+      h.service.createInvite('new@oxshare.com', 'New', SUB_ADMIN, undefined, ['ib.approve']),
     ).rejects.toThrow(AuthorizationError);
     expect(h.invites.create).not.toHaveBeenCalled();
   });

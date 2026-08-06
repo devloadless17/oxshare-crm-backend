@@ -7,8 +7,6 @@ import { closeDb, resetDb } from '../src/database/db';
 import { refreshTokens, users } from '../src/database/schema';
 import { RefreshTokensService } from '../src/common/security/refresh-tokens.service';
 import { PasswordService } from '../src/common/security/password.service';
-import { MoneyLimits } from '../src/config/money-limits';
-import Decimal from 'decimal.js';
 
 /**
  * PLATFORM-CONVENTIONS R-3.3 and R-3.4.
@@ -241,99 +239,5 @@ describe('R-3.4 password hashing', () => {
     const base = 'x'.repeat(72);
     const hash = await passwords.hash(`${base}FIRST`);
     await expect(passwords.verify(`${base}SECOND`, hash)).resolves.toMatchObject({ valid: false });
-  });
-});
-
-describe('R-5.1 / §12.4 money bounds', () => {
-  const limits = new MoneyLimits({ get: () => undefined } as never);
-
-  it('documents its defaults as positive, finite decimals', () => {
-    for (const value of [
-      limits.minWithdrawal(),
-      limits.maxWithdrawal(),
-      limits.maxWithdrawalPerDay(),
-      limits.maxCommissionPerDeal(),
-    ]) {
-      expect(value.isFinite() && value.isPositive()).toBe(true);
-    }
-  });
-
-  it('orders the withdrawal limits sensibly', () => {
-    // A min above a max, or a daily cap below a single-request cap, would make
-    // every withdrawal fail — a config typo that is easy to make and hard to
-    // spot from the error message alone.
-    expect(limits.minWithdrawal().lessThan(limits.maxWithdrawal())).toBe(true);
-    expect(limits.maxWithdrawalPerDay().greaterThanOrEqualTo(limits.maxWithdrawal())).toBe(true);
-  });
-
-  it('falls back to the documented default rather than to "no limit"', () => {
-    // A malformed env value must never read as unlimited. That is the failure
-    // mode where a typo silently removes the ceiling entirely.
-    const broken = new MoneyLimits({ get: () => 'not-a-number' } as never);
-    expect(broken.maxWithdrawal().equals(limits.maxWithdrawal())).toBe(true);
-
-    const negative = new MoneyLimits({ get: () => '-5' } as never);
-    expect(negative.maxWithdrawal().isPositive()).toBe(true);
-  });
-
-  it('accepts a real configured override', () => {
-    const configured = new MoneyLimits({ get: () => '250.5' } as never);
-    expect(configured.maxWithdrawal().toString()).toBe('250.5');
-  });
-
-  it('would refuse a commission produced by a 100x spread-unit error', () => {
-    /*
-     * The scenario DECISIONS D-11 leaves open: MT5's `spread` is in points, and
-     * the engine treats it as account currency (or vice versa). Every accrual
-     * comes out ~100x too large, and Phase 1 has no clawback — so a wrong number
-     * that reaches `confirmed` is money that has left.
-     *
-     * A plausible retail commission is cents to a few dollars. The ceiling sits
-     * far above that and far below a unit error, which is exactly the gap it has
-     * to fit into.
-     */
-    const plausible = new Decimal('2.75');
-    const hundredFold = plausible.times(100).times(100);
-
-    expect(plausible.lessThan(limits.maxCommissionPerDeal())).toBe(true);
-    expect(hundredFold.greaterThan(limits.maxCommissionPerDeal())).toBe(true);
-  });
-
-  /*
-   * The RELATIVE ceiling, which existed as a config value with no call site
-   * while the comment beside it claimed two ceilings were enforced.
-   *
-   * Its default is 1 — the whole spread revenue — rather than a fraction, and
-   * that is the load-bearing decision. `ProgramsService.validate` permits
-   * `commissionValue` up to 100% on a spread-share program and `l1Share + l2Share`
-   * up to 100%, so the largest LEGITIMATE leg is exactly `spread × volume`. A
-   * tighter default would refuse configurations the validator explicitly allows,
-   * and a backstop that fires on correct data is one somebody switches off.
-   */
-  it('sits exactly at the largest leg a valid program can produce', () => {
-    // spread 2.0 × volume 1.0 = 2.0 of spread revenue. The maximum a program may
-    // pay one leg is all of it: commissionValue 100%, l1Share 100%.
-    const spreadRevenue = new Decimal('2.0').times('1.0');
-    const largestLegal = spreadRevenue.times(1);
-    const ceiling = spreadRevenue.times(limits.maxCommissionShareOfDeal());
-
-    expect(largestLegal.greaterThan(ceiling)).toBe(false);
-  });
-
-  it('catches a spread-unit error that the absolute ceiling would miss', () => {
-    // The gap the relative ceiling exists to close: on a small deal a 100x error
-    // stays under the absolute cap of 1000 and would accrue, confirm and pay.
-    const spreadRevenue = new Decimal('0.02').times('1.0');
-    const hundredFold = spreadRevenue.times(0.3).times(100);
-
-    expect(hundredFold.lessThan(limits.maxCommissionPerDeal())).toBe(true);
-    expect(hundredFold.greaterThan(spreadRevenue.times(limits.maxCommissionShareOfDeal()))).toBe(
-      true,
-    );
-  });
-
-  it('is a positive, finite multiple like every other bound', () => {
-    const value = limits.maxCommissionShareOfDeal();
-    expect(value.isFinite() && value.isPositive()).toBe(true);
   });
 });

@@ -222,7 +222,7 @@ describe('every admin route declares a client-scope stance', () => {
    * would still read as though it had been thought about.
    */
   it('keeps MasterAdminGuard on the routes whose exemption depends on it', () => {
-    const masterOnly = ['GET /admin/audit-log', 'GET /admin/reconciliation'];
+    const masterOnly = ['GET /admin/audit-log'];
     const facts = scopeFacts();
 
     for (const signature of masterOnly) {

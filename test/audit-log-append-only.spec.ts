@@ -143,15 +143,4 @@ describe('indexes the audit log is actually queried by', () => {
     expect(names).toContain('audit_log_actor_idx');
     expect(names).toContain('audit_log_action_idx');
   });
-
-  it('indexes commission accruals by the IB who earned them', async () => {
-    const rows = await ctx.db.execute(
-      sql`SELECT indexname FROM pg_indexes WHERE tablename = 'commission_accruals'`,
-    );
-    const names = rows.rows.map((r) => (r as { indexname: string }).indexname);
-
-    // Nothing reads this way yet — IB-11/IB-12 will. Adding it before the
-    // queries exist is the whole reason it costs nothing.
-    expect(names).toContain('commission_accruals_ib_user_idx');
-  });
 });

@@ -73,7 +73,7 @@ export async function runSeeds(): Promise<void> {
       {
         name: 'Support Agent',
         description: 'Answers client tickets. Reads client records; changes nothing.',
-        permissions: ['users.view', 'kyc.view', 'tags.view', 'withdrawals.view'],
+        permissions: ['users.view', 'kyc.view', 'tags.view'],
         // Answering a ticket does not need a phone number, and this is the role
         // most people hold — so it is the one worth masking by default.
         maskedFields: ['client.phone'],
@@ -99,7 +99,7 @@ export async function runSeeds(): Promise<void> {
       {
         name: 'Finance Officer',
         description: 'Settles approved withdrawals and reconciles them against the ledger.',
-        permissions: ['withdrawals.view', 'withdrawals.settle', 'ledger.view', 'users.view'],
+        permissions: ['users.view'],
         maskedFields: [],
       },
       {
@@ -108,13 +108,13 @@ export async function runSeeds(): Promise<void> {
         // Deliberately WITHOUT withdrawals.settle. Whoever approves a payment
         // should not also mark it settled; that separation of duties is the
         // only reason this and Finance Officer are two roles rather than one.
-        permissions: ['withdrawals.view', 'withdrawals.approve', 'users.view'],
+        permissions: ['users.view'],
         maskedFields: [],
       },
       {
         name: 'Compliance Officer',
         description: 'Reads everything client-facing for audit. Approves nothing.',
-        permissions: ['users.view', 'kyc.view', 'kyc.documents.view', 'withdrawals.view'],
+        permissions: ['users.view', 'kyc.view', 'kyc.documents.view'],
         maskedFields: [],
       },
       {
@@ -126,7 +126,7 @@ export async function runSeeds(): Promise<void> {
       {
         name: 'Risk Analyst',
         description: 'Watches trading activity and suspends accounts that need it.',
-        permissions: ['users.view', 'users.suspend', 'trading.view', 'withdrawals.view'],
+        permissions: ['users.view', 'users.suspend'],
         maskedFields: [],
       },
       {
@@ -585,7 +585,7 @@ export async function runSeeds(): Promise<void> {
         name: 'E2E Restricted',
         role: 'sub_admin',
         roleId: restrictedRoleId,
-        permissions: [],
+        permissions: ['users.view'],
       })
       .onConflictDoNothing({ target: admins.email })
       .returning();

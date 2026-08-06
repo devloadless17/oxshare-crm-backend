@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BadRequestException } from '@nestjs/common';
 import { MAX_SEARCH_LENGTH, enumQuery, searchQuery } from './query-params';
-import {
-  kycStatusEnum,
-  transactionStateEnum,
-  userStatusEnum,
-  userTypeEnum,
-} from '../database/schema';
+import { kycStatusEnum, userStatusEnum, userTypeEnum } from '../database/schema';
 
 /**
  * The global ValidationPipe covers `@Body()` because a DTO class exists for it
@@ -18,8 +13,8 @@ import {
 
 describe('enum query parameters', () => {
   it('accepts every value the schema enum declares', () => {
-    for (const value of transactionStateEnum.enumValues) {
-      expect(enumQuery(value, transactionStateEnum.enumValues, 'state')).toBe(value);
+    for (const value of kycStatusEnum.enumValues) {
+      expect(enumQuery(value, kycStatusEnum.enumValues, 'status')).toBe(value);
     }
   });
 
@@ -32,7 +27,7 @@ describe('enum query parameters', () => {
    * error for what is ordinarily a typo.
    */
   it('rejects a value the enum does not declare, at the edge rather than in the database', () => {
-    expect(() => enumQuery('nonsense', transactionStateEnum.enumValues, 'state')).toThrow(
+    expect(() => enumQuery('nonsense', kycStatusEnum.enumValues, 'status')).toThrow(
       BadRequestException,
     );
   });

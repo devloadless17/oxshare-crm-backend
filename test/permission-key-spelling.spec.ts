@@ -88,6 +88,12 @@ describe('migration 0009 — stored keys are converted before the shims are remo
     );
     // Invites matter: a pending one carries the permission set that becomes an
     // admin's on acceptance, so missing them reintroduces colon keys later.
+    //
+    // `withdrawals.approve` is not a live permission any more — the money
+    // teardown removed it. It stays here because this test is about the SHAPE
+    // of the fold (colon to dot, case folded), and the fixture is a record of a
+    // key that genuinely existed in the database when the migration ran.
+    // Rewriting it to a current key would quietly change what is being proved.
     expect(invites.rows[0]).toEqual({ permissions: ['withdrawals.approve'] });
   });
 

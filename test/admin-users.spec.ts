@@ -58,7 +58,7 @@ const MASTER: AuthenticatedAdmin = {
   createdAt: new Date(),
 };
 
-/** Holds users.edit + users.suspend, but deliberately NOT withdrawals.approve. */
+/** Holds users.edit + users.suspend, but deliberately NOT ib.approve. */
 const OPERATOR: AuthenticatedAdmin = {
   id: 'op-1',
   email: 'ops@oxshare.com',
@@ -202,11 +202,11 @@ describe('updateAdmin — changing what an administrator may do', () => {
     // The exclusivity rule. Leaving roleId set would mean the next edit of that
     // role silently overwrites the direct grants an operator just chose.
     const { service, adminsFake } = await build();
-    await service.updateAdmin(TARGET.id, { permissions: ['ledger.view'] }, MASTER);
+    await service.updateAdmin(TARGET.id, { permissions: ['ib.view'] }, MASTER);
 
     expect(adminsFake.update).toHaveBeenCalledWith(
       TARGET.id,
-      expect.objectContaining({ roleId: undefined, permissions: ['ledger.view'] }),
+      expect.objectContaining({ roleId: undefined, permissions: ['ib.view'] }),
     );
   });
 
@@ -214,7 +214,7 @@ describe('updateAdmin — changing what an administrator may do', () => {
     // The regression test/rbac.spec.ts exists for, on the path it did NOT cover:
     // routing an over-grant through a role rather than through permissions.
     const { service, adminsFake } = await build({
-      role: { ...CUSTOM_ROLE, permissions: ['withdrawals.approve'] },
+      role: { ...CUSTOM_ROLE, permissions: ['ib.approve'] },
     });
 
     await expect(service.updateAdmin(TARGET.id, { roleId: 'role-1' }, OPERATOR)).rejects.toThrow(
@@ -227,7 +227,7 @@ describe('updateAdmin — changing what an administrator may do', () => {
     const { service, adminsFake } = await build();
 
     await expect(
-      service.updateAdmin(TARGET.id, { permissions: ['withdrawals.approve'] }, OPERATOR),
+      service.updateAdmin(TARGET.id, { permissions: ['ib.approve'] }, OPERATOR),
     ).rejects.toThrow(AuthorizationError);
     expect(adminsFake.update).not.toHaveBeenCalled();
   });

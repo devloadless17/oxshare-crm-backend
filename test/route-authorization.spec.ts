@@ -138,8 +138,6 @@ const PUBLIC_ROUTES: Record<string, string> = {
   'GET /health/ready': 'Readiness. Dependency status only, never connection detail.',
 
   // Placeholders with no data and no side effects.
-  'GET /trading/ping': 'Module liveness marker. Returns a constant.',
-  'GET /partners/ping': 'Module liveness marker. Returns a constant.',
 
   /*
    * The operator's currency list — codes, names, symbols, display precision.
@@ -399,28 +397,20 @@ describe('R-4.2 every route declares how it is protected', () => {
     ).toEqual([]);
   });
 
-  it('keeps the money endpoints on named permissions, never @AnyAdmin', () => {
-    // Approving, rejecting or settling a withdrawal moves client funds. "Any
-    // authenticated admin" is never the right answer for those, so this is a
-    // separate, stricter assertion rather than a comment hoping someone reads it.
-    // Admin money routes only. The client's own POST /payments/withdrawals is
-    // authorised by ownership — the user id comes from their session, never from
-    // the request — which is a different question (R-4.4), not a missing one.
-    const moneyRoutes = routes().filter(
-      (r) =>
-        r.signature.includes(' /admin/') &&
-        /\/(withdrawals|payouts|ledger|commission-plans)/.test(r.signature),
-    );
-    expect(moneyRoutes.length).toBeGreaterThan(0);
-
-    for (const route of moneyRoutes) {
-      expect(route.anyAdmin, `${route.signature} must not be @AnyAdmin`).toBeUndefined();
-      expect(
-        route.permissions?.length ?? 0,
-        `${route.signature} needs a permission`,
-      ).toBeGreaterThan(0);
-    }
-  });
+  /*
+   * The money-endpoint assertion lived here and is gone with the money routes.
+   *
+   * It filtered admin routes matching withdrawals|payouts|ledger|commission-plans
+   * and required each to carry a named permission rather than @AnyAdmin, with
+   * `expect(moneyRoutes.length).toBeGreaterThan(0)` so it could never pass by
+   * matching nothing. That guard is why it is deleted rather than left in place:
+   * with no money routes it fails, and loosening it to tolerate zero would turn
+   * a real check into one that passes vacuously forever.
+   *
+   * RESTORE IT for `/admin/ib/applications/*` when partner approval lands, and
+   * again for the money rebuild. Approving a partner grants commission-earning
+   * rights; "any authenticated admin" is not the right answer there either.
+   */
 
   it('exempts nothing from CSRF that is not also public or a webhook', () => {
     // @NoCsrf is a real hole if it lands on an authenticated mutation. Keep it
