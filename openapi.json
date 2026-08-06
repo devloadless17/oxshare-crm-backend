@@ -1177,6 +1177,212 @@
         ]
       }
     },
+    "/v1/ib/status": {
+      "get": {
+        "description": "Returns the partner account if they have one AND their most recent application if they have made one. Both, because \"never applied\" and \"rejected, here is why\" are different states and a client shown a blank form after a refusal has been told nothing.",
+        "operationId": "IbController_status",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Where this client stands with the partner programme",
+        "tags": [
+          "ib"
+        ]
+      }
+    },
+    "/v1/ib/apply": {
+      "post": {
+        "description": "Requires a verified identity (KYC level 1). Refuses a second application while one is still awaiting review, and refuses outright if the client is already a partner.",
+        "operationId": "IbController_apply",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateIbApplicationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbApplicationDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Apply to become a partner",
+        "tags": [
+          "ib"
+        ]
+      }
+    },
+    "/v1/admin/ib/applications": {
+      "get": {
+        "description": "Paginated, newest first, with per-status counts for the tab labels. Both the rows and the counts respect the reviewing admin’s client scope.",
+        "operationId": "AdminIbController_list",
+        "parameters": [
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The partner application queue",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib/applications/{id}/approve": {
+      "patch": {
+        "description": "One transaction: the application moves out of pending and the account is created together, so there is no state where a client has been told they were accepted and has no referral code. Refuses if another reviewer already decided it.",
+        "operationId": "AdminIbController_approve",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveIbApplicationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Approve an application and create the partner account",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib/applications/{id}/reject": {
+      "patch": {
+        "description": "The reason is required and composed server-side from a configured label plus an optional note. It is stored already composed, because that is the sentence the client is shown.",
+        "operationId": "AdminIbController_reject",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectIbApplicationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbApplicationDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Reject an application, with a reason",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ib-levels": {
       "get": {
         "description": "Includes disabled levels — managing them is the point of the screen. The number of ENABLED levels is the depth of the payout chain.",
@@ -4325,6 +4531,184 @@
           },
           "isDefault": {
             "type": "boolean"
+          }
+        }
+      },
+      "IbAccountDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "level": {
+            "type": "number"
+          },
+          "parentIbUserId": {
+            "type": "string",
+            "nullable": true
+          },
+          "referralCode": {
+            "type": "string",
+            "description": "What a client types at registration to be attributed here."
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "approvedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userId",
+          "level",
+          "parentIbUserId",
+          "referralCode",
+          "active",
+          "approvedAt"
+        ]
+      },
+      "IbApplicationDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "motivation": {
+            "type": "string",
+            "nullable": true
+          },
+          "expectedVolume": {
+            "type": "string",
+            "nullable": true
+          },
+          "website": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected"
+            ]
+          },
+          "rejectionReason": {
+            "type": "string",
+            "nullable": true,
+            "description": "Already composed — this is the sentence the client is shown."
+          },
+          "reviewedBy": {
+            "type": "string",
+            "nullable": true
+          },
+          "reviewedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "submittedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "motivation",
+          "expectedVolume",
+          "website",
+          "status",
+          "rejectionReason",
+          "reviewedBy",
+          "reviewedAt",
+          "submittedAt"
+        ]
+      },
+      "IbStatusDto": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/IbAccountDto"
+              }
+            ]
+          },
+          "application": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/IbApplicationDto"
+              }
+            ]
+          },
+          "eligible": {
+            "type": "boolean"
+          },
+          "ineligibleReason": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "account",
+          "application",
+          "eligible",
+          "ineligibleReason"
+        ]
+      },
+      "CreateIbApplicationDto": {
+        "type": "object",
+        "properties": {
+          "motivation": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Why the client wants to introduce business. Shown to the reviewer verbatim."
+          },
+          "expectedVolume": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "Self-reported and unverified. Labelled as such on the review screen."
+          },
+          "website": {
+            "type": "string",
+            "maxLength": 2048
+          }
+        }
+      },
+      "ApproveIbApplicationDto": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Which rung to place them on. Omitted, the service derives it: the shallowest enabled level with no parent, one below the parent otherwise."
+          },
+          "parentIbUserId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The partner who introduced them. Omitted or null means they deal direct."
+          }
+        }
+      },
+      "RejectIbApplicationDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "A configured label from the `partner` rejection context."
+          },
+          "note": {
+            "type": "string",
+            "description": "The reviewer's own words, appended to the label."
           }
         }
       },

@@ -398,19 +398,41 @@ describe('R-4.2 every route declares how it is protected', () => {
   });
 
   /*
-   * The money-endpoint assertion lived here and is gone with the money routes.
+   * RESTORED for partner approval, as the note left here asked.
    *
-   * It filtered admin routes matching withdrawals|payouts|ledger|commission-plans
-   * and required each to carry a named permission rather than @AnyAdmin, with
-   * `expect(moneyRoutes.length).toBeGreaterThan(0)` so it could never pass by
-   * matching nothing. That guard is why it is deleted rather than left in place:
-   * with no money routes it fails, and loosening it to tolerate zero would turn
-   * a real check into one that passes vacuously forever.
+   * The original filtered withdrawals|payouts|ledger|commission-plans and went
+   * with those routes. It is back over the partner surface for the same reason:
+   * approving an application creates somebody the platform will PAY, so "any
+   * authenticated admin" is not an acceptable answer on these routes either.
    *
-   * RESTORE IT for `/admin/ib/applications/*` when partner approval lands, and
-   * again for the money rebuild. Approving a partner grants commission-earning
-   * rights; "any authenticated admin" is not the right answer there either.
+   * The `toBeGreaterThan(0)` guard comes back with it, and it is the important
+   * half. Without it, renaming the route prefix turns this into a test that
+   * matches nothing and passes forever — which is precisely how a check like
+   * this dies quietly.
+   *
+   * The money rebuild should add its own prefixes to this list rather than
+   * writing a second copy of this test.
    */
+  it('requires a named permission on every partner-decision route', () => {
+    const partnerRoutes = routes().filter((r) => /\/admin\/ib\//.test(r.signature));
+
+    expect(
+      partnerRoutes.length,
+      'No /admin/ib/ routes matched. If the prefix changed, update this filter — ' +
+        'do not leave an assertion that silently matches nothing.',
+    ).toBeGreaterThan(0);
+
+    const unnamed = partnerRoutes
+      .filter((r) => (r.permissions?.length ?? 0) === 0)
+      .map((r) => r.signature);
+
+    expect(
+      unnamed,
+      'These partner routes carry no named permission:\n' +
+        unnamed.map((s) => `  ${s}`).join('\n') +
+        '\n\nApproving a partner grants commission-earning rights; @AnyAdmin is not enough.',
+    ).toEqual([]);
+  });
 
   it('exempts nothing from CSRF that is not also public or a webhook', () => {
     // @NoCsrf is a real hole if it lands on an authenticated mutation. Keep it

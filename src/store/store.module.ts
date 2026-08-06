@@ -5,6 +5,7 @@ import { AppSettingsStore } from './app-settings.store';
 import { ClientTagsStore } from './client-tags.store';
 import { AdminsStore, InvitesStore } from './admins.store';
 import { AuditLogStore } from './audit-log.store';
+import { IbStore } from './ib.store';
 import { KycConfigStore } from './kyc-config.store';
 import { KycStore } from './kyc.store';
 import { RejectionReasonsStore } from './rejection-reasons.store';
@@ -21,6 +22,7 @@ const STORES = [
   ClientTagsStore,
   InvitesStore,
   AuditLogStore,
+  IbStore,
   KycConfigStore,
   KycStore,
   RejectionReasonsStore,

@@ -141,6 +141,15 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'ib_level.update', label: 'IB level changed', group: 'Configuration' },
   { action: 'ib_level.delete', label: 'IB level removed', group: 'Configuration' },
 
+  /*
+   * A partner DECISION, not a configuration change — hence a different group
+   * from the three above. Approving creates somebody who will be paid by the
+   * platform, and "who let this partner in, and when" is the first question
+   * asked when a payout is disputed.
+   */
+  { action: 'ib.approve', label: 'Partner application approved', group: 'Compliance' },
+  { action: 'ib.reject', label: 'Partner application rejected', group: 'Compliance' },
+
   // ── Security controls ─────────────────────────────────────────────────────
   { action: 'ip_allowlist.add', label: 'Network rule added', group: 'Security' },
   { action: 'ip_allowlist.remove', label: 'Network rule removed', group: 'Security' },
