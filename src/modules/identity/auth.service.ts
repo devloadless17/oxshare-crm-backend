@@ -344,10 +344,12 @@ export class AuthService {
       throw new AuthorizationError('Your account has been suspended. Please contact support.');
     }
 
-    const tokens = this.generateTokens(user);
+    const familyId = randomUUID();
+    const tokens = this.generateTokens(user, familyId);
     await this.refreshTokens.record({
       surface: 'portal',
       subjectId: user.id,
+      familyId,
       jti: tokens.jti,
       token: tokens.refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
@@ -450,7 +452,10 @@ export class AuthService {
       throw new AuthenticationError('Your account has been suspended.');
     }
 
-    const tokens = this.generateTokens(user);
+    // The SAME family — rotation continues one login rather than starting one,
+    // so the new access token must carry the id the old one did or revoking that
+    // session would stop reaching it after the next refresh.
+    const tokens = this.generateTokens(user, verdict.familyId);
     const rotated = await this.refreshTokens.rotate({
       surface: 'portal',
       jti,
@@ -501,12 +506,26 @@ export class AuthService {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────────
-  private generateTokens(user: User) {
+  private generateTokens(user: User, familyId: string) {
     const payload = {
       sub: user.id,
       email: user.email,
       emailVerified: user.emailVerified,
       type: user.type,
+      /*
+       * Which login this token belongs to.
+       *
+       * Without it the access token is anonymous as to session, so revoking a
+       * session could only kill the refresh family and the access token went on
+       * working for up to fifteen minutes. `JwtStrategy` checks this against
+       * `familyIsRevoked` on every request, which is what makes "sign out that
+       * device" and "changing my password ends other sessions" true NOW rather
+       * than at the next rotation.
+       *
+       * Minted here rather than inside `record()` because the token has to
+       * carry the id, so it must exist before anything is signed.
+       */
+      fam: familyId,
     };
 
     // aud/iss so a portal token cannot verify on the admin surface even if the
@@ -539,7 +558,7 @@ export class AuthService {
       },
     );
 
-    return { accessToken, refreshToken, jti };
+    return { accessToken, refreshToken, jti, familyId };
   }
 
   /**
@@ -766,10 +785,12 @@ export class AuthService {
      */
     const revoked = await this.refreshTokens.revokeAllForSubject('portal', user.id);
 
-    const tokens = this.generateTokens(user);
+    const familyId = randomUUID();
+    const tokens = this.generateTokens(user, familyId);
     await this.refreshTokens.record({
       surface: 'portal',
       subjectId: user.id,
+      familyId,
       jti: tokens.jti,
       token: tokens.refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),

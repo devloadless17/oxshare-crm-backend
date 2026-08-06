@@ -93,8 +93,17 @@ export class RefreshTokensService {
     expiresAt: Date;
     /** Who and where — see the columns' comment in schema.ts. */
     device?: DeviceFingerprint;
+    /**
+     * The family id, when the caller has already minted it.
+     *
+     * The access token carries this as its `fam` claim so revocation can reach
+     * it (see `familyIsRevoked`), which means the caller has to know the id
+     * BEFORE it signs anything. Optional so the surfaces that do not put `fam`
+     * in their tokens keep the old behaviour of having one generated here.
+     */
+    familyId?: string;
   }): Promise<{ familyId: string }> {
-    const familyId = randomUUID();
+    const familyId = params.familyId ?? randomUUID();
     await this.db.insert(refreshTokens).values({
       id: params.jti,
       familyId,
@@ -224,6 +233,41 @@ export class RefreshTokensService {
       .where(and(eq(refreshTokens.familyId, familyId), isNull(refreshTokens.revokedAt)))
       .returning({ id: refreshTokens.id });
     return revoked.length;
+  }
+
+  /**
+   * Has this login been ended? Asked of the ACCESS token, on every request.
+   *
+   * Revocation used to reach only the refresh family, which made "sign out that
+   * device" a promise the system kept fifteen minutes late: the family died, and
+   * the access token minted from it went on authenticating every request until
+   * it expired on its own. For an account that moves money, the fifteen minutes
+   * after you notice a session you do not recognise are the fifteen that matter.
+   * The same gap made a password change fail to cut an attacker off.
+   *
+   * A family is dead when it has no live row left. Asking it that way — rather
+   * than "is some row revoked" — is what makes rotation safe: every rotation
+   * revokes the row it consumed and inserts its successor under the same family,
+   * so a living session always has exactly one unrevoked row, and a revoked one
+   * has none.
+   *
+   * One indexed lookup per authenticated request, and only for tokens carrying a
+   * `fam` claim. That is a real cost, paid deliberately: the alternative is a
+   * revocation control that does not revoke.
+   */
+  async familyIsRevoked(surface: AuthSurface, familyId: string): Promise<boolean> {
+    const [live] = await this.db
+      .select({ id: refreshTokens.id })
+      .from(refreshTokens)
+      .where(
+        and(
+          eq(refreshTokens.surface, surface),
+          eq(refreshTokens.familyId, familyId),
+          isNull(refreshTokens.revokedAt),
+        ),
+      )
+      .limit(1);
+    return live === undefined;
   }
 
   /**

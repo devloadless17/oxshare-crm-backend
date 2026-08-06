@@ -12,6 +12,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { UsersStore } from '../../../store/users.store';
+import { RefreshTokensService } from '../../../common/security/refresh-tokens.service';
 
 export interface JwtPayload {
   /** Which kind of token this is — see common/security/token-audience.ts. */
@@ -22,6 +23,14 @@ export interface JwtPayload {
   type: string;
   /** Issued-at, in SECONDS. Compared against `users.passwordChangedAt`. */
   iat?: number;
+  /**
+   * The refresh family this token belongs to — which LOGIN it came from.
+   *
+   * Optional because tokens minted before this claim existed do not carry it.
+   * Those are treated as unrevokable and expire on their own within fifteen
+   * minutes; refusing them instead would sign out every live session on deploy.
+   */
+  fam?: string;
 }
 
 @Injectable()
@@ -29,6 +38,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor(
     config: ConfigService,
     private readonly users: UsersStore,
+    private readonly refreshTokens: RefreshTokensService,
   ) {
     super({
       /*
@@ -85,6 +95,29 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     // Suspension takes effect on the next request — a live token is no shield.
     if (user.status === 'suspended') {
       throw new UnauthorizedException('Your account has been suspended.');
+    }
+    /*
+     * Has this particular login been ended?
+     *
+     * Everything else here is a property of the ACCOUNT. This is the only check
+     * that can distinguish one of the client's sessions from another, and
+     * without it "sign out that device" reached the refresh family alone — the
+     * access token minted from it kept authenticating for up to fifteen more
+     * minutes. On an account that moves money, those are the fifteen minutes
+     * that matter: they begin the moment the client spots a session they do not
+     * recognise.
+     *
+     * It also carries the password change. `changePassword` revokes every family
+     * and starts a fresh one for the caller, so their new token is live and every
+     * other device is dead on its very next request rather than at its next
+     * rotation.
+     *
+     * Costs one indexed lookup per authenticated request, and only for tokens
+     * carrying the claim. Paid deliberately — the alternative is a revocation
+     * control that does not revoke.
+     */
+    if (payload.fam && (await this.refreshTokens.familyIsRevoked('portal', payload.fam))) {
+      throw new UnauthorizedException('That session has been signed out. Please log in again.');
     }
     /*
      * A password change takes effect on the next request too, for the same

@@ -6,6 +6,7 @@ import {
   sessionFrom,
   startHttpTestApp,
   stopHttpTestApp,
+  SURFACES,
   type HttpTestContext,
 } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -212,8 +213,21 @@ describe('POST /auth/change-password', () => {
   }
 
   it('refuses an anonymous caller', async () => {
+    /*
+     * `Origin` set, like every other anonymous call in this suite.
+     *
+     * Without it `CsrfGuard.assertOriginAllowed` refuses first with 403, and the
+     * request never reaches the authentication guard — so the spec passed
+     * through the wrong control and asserted the wrong refusal. That origin
+     * check runs BEFORE the session lookup deliberately (csrf.guard.ts:115): it
+     * used to run only once a session cookie had been found, which exempted
+     * every unauthenticated state-changing route.
+     *
+     * 401 is what this test is about — no session, not a bad origin.
+     */
     await anonymous(ctx)
       .post(CHANGE_PASSWORD)
+      .set('Origin', SURFACES.portal.origin)
       .send({
         currentPassword: 'anything',
         newPassword: 'whatever-123',
