@@ -13,6 +13,7 @@
   "GET /health",
   "GET /health/ready",
   "GET /v1/admin/audit-log",
+  "GET /v1/admin/audit-log/actions",
   "GET /v1/admin/auth/me",
   "GET /v1/admin/client-fields",
   "GET /v1/admin/clients",

@@ -14,8 +14,9 @@ import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swa
 import { Request } from 'express';
 import { Admin } from '../../store/admins.store';
 import { AdminAuditService } from './admin-audit.service';
-import { AuditListResponseDto } from './dto/responses.dto';
+import { AuditActionDto, AuditListResponseDto } from './dto/responses.dto';
 import { MasterAdminGuard } from './guards/admin.guard';
+import { AUDIT_ACTIONS } from './audit-actions.catalog';
 import { searchQuery } from '../../common/query-params';
 import { NotClientScoped } from './guards/client-scope.decorator';
 
@@ -24,6 +25,26 @@ import { NotClientScoped } from './guards/client-scope.decorator';
 @Controller('admin')
 export class AdminAuditController {
   constructor(private readonly audit: AdminAuditService) {}
+
+  /**
+   * The action vocabulary the filter is built from.
+   *
+   * Served rather than hardcoded in the frontend, for the same reason the
+   * permission and client-field catalogs are (R-4.5). The admin screen carried
+   * a list of EIGHT actions while the system recorded thirty-four, so
+   * everything added because it had previously gone unrecorded was also
+   * unfilterable — which is to say the actions somebody would actually come
+   * looking for.
+   */
+  @Get('audit-log/actions')
+  @UseGuards(MasterAdminGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Every action the log can record (master admin only)' })
+  @ApiOkResponse({ type: [AuditActionDto] })
+  @NotClientScoped('A static vocabulary of action names. Contains no client data of any kind.')
+  listAuditActions() {
+    return AUDIT_ACTIONS;
+  }
 
   @Get('audit-log')
   @UseGuards(MasterAdminGuard)

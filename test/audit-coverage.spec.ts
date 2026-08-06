@@ -8,6 +8,7 @@ import type { INestApplication } from '@nestjs/common';
 import { RequestMethod } from '@nestjs/common';
 import { AppModule } from '../src/app.module';
 import { AUDIT_KEY, type AuditStance } from '../src/modules/admin/guards/audited.decorator';
+import { AUDIT_ACTIONS, AUDIT_ACTION_KEYS } from '../src/modules/admin/audit-actions.catalog';
 
 /**
  * Every administrative action that CHANGES something is recorded.
@@ -172,5 +173,56 @@ describe('every mutating admin action declares whether it is recorded', () => {
   it('finds a meaningful number of audited routes, so it cannot pass vacuously', () => {
     const audited = auditFacts().filter((r) => r.stance?.stance === 'audited');
     expect(audited.length).toBeGreaterThanOrEqual(20);
+  });
+});
+
+/**
+ * The action FILTER offers every action the system can record.
+ *
+ * The admin screen hardcoded eight while the system recorded thirty-four, so
+ * everything added because it had previously gone unrecorded was ALSO
+ * unfilterable — which is to say precisely the actions somebody would come
+ * looking for: who reworded the rejection reason a client was emailed, who
+ * disabled a KYC step, who repointed a download link.
+ *
+ * A filter that silently offers a subset is the same defect as a silently
+ * ignored query parameter (R-2.5). An operator reads "no results for Rejection
+ * Reason Update" as "that never happened", when the truth is that they could
+ * not ask.
+ *
+ * This is the mechanism that stops it happening again: the catalog is derived
+ * from nothing, so it can only be kept honest by a test that reads the
+ * DECORATORS and demands every one of them be labelled.
+ */
+describe('the audit action catalog covers what the routes declare', () => {
+  it('labels every @Audited action', () => {
+    const declared = auditFacts()
+      .filter((r) => r.stance?.stance === 'audited')
+      .map((r) => r.stance?.note ?? '');
+
+    const missing = [...new Set(declared)].filter((action) => !AUDIT_ACTION_KEYS.has(action));
+
+    expect(
+      missing,
+      'These actions are recorded but absent from AUDIT_ACTIONS, so the audit screen ' +
+        'cannot filter for them — and an operator reads "no results" as "it never ' +
+        `happened":\n${missing.map((m) => `  ${m}`).join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('finds actions to check, so this cannot pass vacuously', () => {
+    const declared = auditFacts().filter((r) => r.stance?.stance === 'audited');
+    expect(declared.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it('has no duplicate keys', () => {
+    // A duplicate renders twice in the filter and reads as two different things.
+    const keys = AUDIT_ACTIONS.map((entry) => entry.action);
+    expect(keys.length).toBe(new Set(keys).size);
+  });
+
+  it('groups every entry, so a 30-item filter stays readable', () => {
+    const ungrouped = AUDIT_ACTIONS.filter((entry) => !entry.group).map((e) => e.action);
+    expect(ungrouped).toEqual([]);
   });
 });

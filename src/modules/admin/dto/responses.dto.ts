@@ -384,6 +384,15 @@ export class RoleResponseDto {
   @ApiProperty() name: string;
   @ApiPropertyOptional() description?: string;
   @ApiProperty({ type: [String] }) permissions: string[];
+  /**
+   * RBAC-03 — the client fields holders of this role may not see.
+   *
+   * On the response because the role editor has to PRE-FILL it: a form that
+   * could set a mask but never read one back would silently clear it on the
+   * next save of an unrelated field, which is the worst possible shape for a
+   * control over who sees client PII.
+   */
+  @ApiProperty({ type: [String] }) maskedFields: string[];
   @ApiProperty() isSystem: boolean;
   @ApiProperty() createdAt: Date;
 }
@@ -469,6 +478,14 @@ export class PendingInviteDto {
   @ApiProperty({ description: 'After this the link is dead; re-invite to replace it.' })
   expiresAt: Date;
   @ApiProperty() createdAt: Date;
+}
+
+/** One entry in the action-filter vocabulary — see audit-actions.catalog.ts. */
+export class AuditActionDto {
+  @ApiProperty() action: string;
+  @ApiProperty() label: string;
+  @ApiProperty({ description: 'Groups the filter, so 30+ entries stay readable.' })
+  group: string;
 }
 
 export class AuditEntryDto {
