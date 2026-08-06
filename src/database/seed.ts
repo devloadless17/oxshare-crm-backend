@@ -41,6 +41,105 @@ export async function runSeeds(): Promise<void> {
     })
     .onConflictDoNothing({ target: roles.name });
 
+  /*
+   * Ten ordinary roles, so /roles has something to be a list OF.
+   *
+   * The screen was built against one system role and one test fixture, which is
+   * the population at which every list looks fine: no scrolling, no reason to
+   * prefer a count over chips, no way to tell a sorted list from an unsorted
+   * one. Ten is past the point where the card's max-height engages.
+   *
+   * ── Every key below is from config/permissions.json ──────────────────────
+   *
+   * Not invented. A seeded role granting `reports.export` — a plausible string
+   * the backend does not define — renders as a role that grants nothing, and
+   * `assertPermissionKeysExist` would not catch it: that checks the frontend's
+   * ROUTE table, not seed data.
+   *
+   * The sets are realistic rather than arbitrary. These screens are read as
+   * "what can a support agent see", and a role called "Role 7" answers nothing
+   * — so each is a job someone actually does, and two of them differ only in
+   * the way that matters (see Finance below).
+   *
+   * `isSystem` is deliberately omitted: these are exactly the custom roles the
+   * page lists, and marking one system would hide it.
+   *
+   * `onConflictDoNothing` on the name, because seeds run at every bootstrap —
+   * an operator who edits a seeded role must not have that undone on restart.
+   */
+  await db
+    .insert(roles)
+    .values([
+      {
+        name: 'Support Agent',
+        description: 'Answers client tickets. Reads client records; changes nothing.',
+        permissions: ['users.view', 'kyc.view', 'tags.view', 'withdrawals.view'],
+        // Answering a ticket does not need a phone number, and this is the role
+        // most people hold — so it is the one worth masking by default.
+        maskedFields: ['client.phone'],
+      },
+      {
+        name: 'Senior Support',
+        description: 'Escalation point. May edit client records and assign tags.',
+        permissions: ['users.view', 'users.edit', 'kyc.view', 'tags.view', 'tags.assign'],
+        maskedFields: [],
+      },
+      {
+        name: 'KYC Reviewer',
+        description: 'Approves and rejects identity submissions, including documents.',
+        permissions: ['kyc.view', 'kyc.review', 'kyc.documents.view', 'users.view'],
+        maskedFields: [],
+      },
+      {
+        name: 'KYC Administrator',
+        description: 'Owns the KYC workflow itself — its steps, fields and requirements.',
+        permissions: ['kyc.view', 'kyc.review', 'kyc.edit', 'kyc.create', 'kyc.documents.view'],
+        maskedFields: [],
+      },
+      {
+        name: 'Finance Officer',
+        description: 'Settles approved withdrawals and reconciles them against the ledger.',
+        permissions: ['withdrawals.view', 'withdrawals.settle', 'ledger.view', 'users.view'],
+        maskedFields: [],
+      },
+      {
+        name: 'Finance Approver',
+        description: 'Approves withdrawals. Separated from settlement on purpose.',
+        // Deliberately WITHOUT withdrawals.settle. Whoever approves a payment
+        // should not also mark it settled; that separation of duties is the
+        // only reason this and Finance Officer are two roles rather than one.
+        permissions: ['withdrawals.view', 'withdrawals.approve', 'users.view'],
+        maskedFields: [],
+      },
+      {
+        name: 'Compliance Officer',
+        description: 'Reads everything client-facing for audit. Approves nothing.',
+        permissions: ['users.view', 'kyc.view', 'kyc.documents.view', 'withdrawals.view'],
+        maskedFields: [],
+      },
+      {
+        name: 'Onboarding Agent',
+        description: 'Creates client records and starts their verification.',
+        permissions: ['users.view', 'users.create', 'kyc.view', 'kyc.create'],
+        maskedFields: [],
+      },
+      {
+        name: 'Risk Analyst',
+        description: 'Watches trading activity and suspends accounts that need it.',
+        permissions: ['users.view', 'users.suspend', 'trading.view', 'withdrawals.view'],
+        maskedFields: [],
+      },
+      {
+        name: 'Platform Operator',
+        description: 'Maintains console configuration. No access to client records.',
+        // Holds no users.view at all, so this is the role that exercises a
+        // gated NAVIGATION rather than only a gated screen body.
+        permissions: ['settings.view', 'settings.manage', 'roles.view'],
+        maskedFields: [],
+      },
+    ])
+    .onConflictDoNothing({ target: roles.name });
+
   await db
     .insert(admins)
     .values({
