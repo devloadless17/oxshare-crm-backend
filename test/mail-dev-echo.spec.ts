@@ -141,7 +141,6 @@ describe('it cannot reach production', () => {
     ADMIN_JWT_REFRESH_SECRET: 'b'.repeat(40),
     JWT_ACCESS_SECRET: 'c'.repeat(40),
     JWT_REFRESH_SECRET: 'd'.repeat(40),
-    MT5_BRIDGE_SECRET: 'e'.repeat(40),
     REDIS_URL: 'redis://localhost:6379',
     PORTAL_URL: 'https://portal.example.com',
     ADMIN_URL: 'https://admin.example.com',

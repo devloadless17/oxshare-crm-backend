@@ -70,9 +70,9 @@ describe('R-6.4 readiness', () => {
   }, 10_000);
 
   it('reports unbuilt dependencies as not_configured, and stays ready', async () => {
-    // Redis and the bridge are later milestones. Reporting them as `down` would
-    // make every instance permanently unready; omitting them would let "ready"
-    // quietly mean "ready apart from the parts nobody checked".
+    // Redis is a later milestone. Reporting it as `down` would make every
+    // instance permanently unready; omitting it would let "ready" quietly mean
+    // "ready apart from the parts nobody checked".
     const report = await new HealthService(dbThat('succeeds'), configWith({})).readiness();
 
     expect(report.status).toBe('ready');
@@ -80,7 +80,10 @@ describe('R-6.4 readiness', () => {
       status: 'not_configured',
       required: false,
     });
-    expect(dependency(report, 'mt5-bridge')?.status).toBe('not_configured');
+    // The mt5-bridge entry is deliberately absent, not merely unconfigured:
+    // reporting a removed integration as `not_configured` forever would read as
+    // "someone still needs to set this up".
+    expect(dependency(report, 'mt5-bridge')).toBeUndefined();
   });
 
   it('shows a configured-but-unprobed dependency as up rather than missing', async () => {

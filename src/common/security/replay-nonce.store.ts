@@ -8,7 +8,7 @@ import { AuthenticationError } from '../errors/domain-errors';
  * Inside that window a captured request is still perfectly valid, and the deal
  * feed mints commission: a deal it accepts becomes an accrual, matures, confirms
  * and pays, with no clawback in Phase 1. Deals happen to survive it because
- * ingest is idempotent on `mt5_ticket` — but that is a property of the DOWNSTREAM
+ * deal ingest was idempotent on `mt5_ticket` — but that was a property of the DOWNSTREAM
  * handler, and the Whish and USDT callbacks will arrive at code with no
  * equivalent guarantee.
  *

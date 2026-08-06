@@ -18,7 +18,7 @@ async function bootstrap() {
   // Ensure uploads directory exists
   mkdirSync(join(process.cwd(), 'uploads', 'kyc'), { recursive: true });
 
-  // rawBody: the MT5 bridge webhook verifies an HMAC over the exact bytes
+  // rawBody: signed webhooks verify an HMAC over the exact bytes
   // received — re-serializing the parsed body would change them.
   // createHttpAdapter(): case-sensitive routing, applied at instance creation
   // because Express reads that setting when it lazily builds its router on the
@@ -112,7 +112,7 @@ async function bootstrap() {
    *
    * Doing it now is the whole point: an unversioned API has one shape forever or
    * breaks its callers silently, and today there are exactly zero external
-   * consumers. The MT5 bridge does not exist, the payment providers have no
+   * consumers. The payment providers have no
    * credentials (§12.5), and no mobile client is built. The moment any of them
    * holds a URL this stops being a rewrite rule and becomes a coordinated
    * migration with third parties.

@@ -85,7 +85,7 @@ export class CsrfService {
    *
    * `timingSafeEqual` throws on differing lengths, and branching on that would
    * itself be a timing signal, so both sides are hashed to a fixed width first —
-   * the same treatment the MT5 webhook gives its signature.
+   * the same treatment a signed webhook gives its signature.
    */
   private constantTimeEquals(a: string, b: string): boolean {
     const ha = createHmac('sha256', 'oxshare.compare').update(a).digest();

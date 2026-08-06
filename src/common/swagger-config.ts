@@ -57,7 +57,7 @@ export function buildSwaggerConfig() {
         'admin',
       )
       .addTag('identity', 'Users, registration, attribution')
-      .addTag('trading', 'MT5 accounts, groups, deal ingestion')
+      .addTag('trading', 'Trading accounts, groups, tiers')
       .addTag('wallet', 'Balances, ledger, transactions')
       .addTag('payments', 'Deposits, withdrawals, Whish/USDT')
       .addTag('partners', 'IB programs, commission engine, payouts')

@@ -47,15 +47,12 @@ export class HealthService {
     // promises — `await-thenable` catches that, and it is right to: a synchronous
     // check inside Promise.all reads as if something is being contacted.
     const probed = await Promise.all([this.checkPostgres()]);
-    const declared = [
-      this.checkOptional('redis', 'REDIS_URL'),
-      this.checkOptional('mt5-bridge', 'MT5_BRIDGE_URL'),
-    ];
+    const declared = [this.checkOptional('redis', 'REDIS_URL')];
     const dependencies = [...probed, ...declared];
 
-    // 'not_configured' is not a failure — the queues and the bridge are later
-    // milestones (ARCHITECTURE §9, §3.1). Only a REQUIRED dependency that is
-    // actually down makes the instance unready.
+    // 'not_configured' is not a failure — the queues are a later milestone
+    // (ARCHITECTURE §9). Only a REQUIRED dependency that is actually down makes
+    // the instance unready.
     const failed = dependencies.filter((d) => d.required && d.status === 'down');
 
     return {

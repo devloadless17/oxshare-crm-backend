@@ -13,7 +13,7 @@ import { BadRequestException, ValidationError, ValidationPipeOptions } from '@ne
  * caller sending a typo'd key got a 200 and a half-applied change. On a money
  * system, the caller and the contract disagreeing must be an error.
  *
- * The MT5 bridge webhook needs no exemption: it reads `req.body` directly, because
+ * A signed webhook needs no exemption: it reads `req.body` directly, because
  * the raw body is required for HMAC verification, so it never passes through this
  * pipe. That matters — the bridge is a system we do not own, and per that
  * controller's own note "a lost deal is an unpaid partner", so it must keep

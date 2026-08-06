@@ -38,7 +38,7 @@ import { RedisThrottlerStorage } from './redis-throttler.storage';
         if (!url) {
           new Logger('ReplayNonce').warn(
             'REDIS_URL is not set — signed webhooks will be REFUSED rather than accepted ' +
-              'unchecked. Legal only while MT5_BRIDGE_SECRET is also unset.',
+              'unchecked. Legal only while no signed webhook endpoint is live.',
           );
           return null;
         }

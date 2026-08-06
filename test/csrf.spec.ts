@@ -185,17 +185,21 @@ describe('CsrfGuard — what it lets through', () => {
     expect(guard().canActivate(contextFor({ cookies: {}, headers: { origin: ADMIN } }))).toBe(true);
   });
 
-  it('skips the MT5 bridge, which has cookies from nobody and an HMAC of its own', () => {
-    // The bridge is a server: no Origin to send and no cookie to abuse. It says
-    // so explicitly with @NoOriginCheck rather than being skipped as a
-    // side-effect of having no session, which is what used to exempt it.
+  it('skips a server-to-server webhook, which has cookies from nobody and an HMAC of its own', () => {
+    // A signed webhook caller is a server: no Origin to send and no cookie to
+    // abuse. It says so explicitly with @NoOriginCheck rather than being skipped
+    // as a side-effect of having no session, which is what used to exempt it.
+    //
+    // The MT5 bridge was the original holder of this exemption and is gone. The
+    // BRANCH is not: Whish and USDT arrive the same way, and a guard path with
+    // no test is how the /v1 prefix silently disarmed this guard once already.
     const ctx = contextFor({
-      originalUrl: '/webhooks/mt5/deals',
-      path: '/webhooks/mt5/deals',
+      originalUrl: '/webhooks/psp/callback',
+      path: '/webhooks/psp/callback',
       cookies: {},
-      headers: { 'x-bridge-signature': 'abc' },
+      headers: { 'x-signature': 'abc' },
     });
-    expect(guardWithoutOriginCheck('bridge authenticates with an HMAC').canActivate(ctx)).toBe(
+    expect(guardWithoutOriginCheck('caller authenticates with an HMAC').canActivate(ctx)).toBe(
       true,
     );
   });

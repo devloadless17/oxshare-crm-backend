@@ -27,12 +27,10 @@ export const ALERT_KINDS = {
   COMMISSION_CEILING_BREACH: 'money.commission_ceiling',
   /** A rotated refresh token was presented again: a credential has leaked. */
   REFRESH_TOKEN_REUSE: 'auth.refresh_reuse',
-  /** Someone is probing the deal feed, which mints commission. */
+  /** A signed webhook failed verification — someone is probing an integration endpoint. */
   WEBHOOK_SIGNATURE_FAILURE: 'bridge.signature_failure',
   /** The reconciliation job itself could not run — the ledger is UNCHECKED. */
   RECONCILIATION_UNAVAILABLE: 'reconciliation.unavailable',
-  /** A correctly-signed deal batch that this API could not parse at all. */
-  MT5_BATCH_REJECTED: 'bridge.batch_rejected',
   /** An account hit the R-3.5 failure limit and was locked — someone is guessing. */
   LOGIN_LOCKOUT: 'auth.login_lockout',
   /** An operator-controlled security control is switched OFF. */
@@ -111,13 +109,9 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
     severity: 'page',
     rule: 'Any occurrence. A refresh token was replayed, which means a credential left the browser it was issued to.',
   },
-  [ALERT_KINDS.MT5_BATCH_REJECTED]: {
-    severity: 'page',
-    rule: 'Any occurrence. The batch was correctly signed, so it IS our bridge — the two sides disagree about the payload shape. Nothing accrues while this holds, and the symptom is silence rather than errors: the bridge keeps posting, we keep answering 202, and partners go unpaid until somebody notices.',
-  },
   [ALERT_KINDS.WEBHOOK_SIGNATURE_FAILURE]: {
     severity: 'notify',
-    rule: 'More than 5 in 5 minutes. One is a misconfigured bridge; a burst is someone probing an endpoint that mints commission.',
+    rule: 'More than 5 in 5 minutes. One is a misconfigured caller; a burst is someone probing a signed endpoint.',
   },
   [ALERT_KINDS.RECONCILIATION_UNAVAILABLE]: {
     severity: 'notify',

@@ -137,11 +137,6 @@ const PUBLIC_ROUTES: Record<string, string> = {
   'GET /health': 'Liveness. A load balancer cannot authenticate, and it reveals nothing.',
   'GET /health/ready': 'Readiness. Dependency status only, never connection detail.',
 
-  // Authenticated by an HMAC over the raw body instead of a session — see
-  // BRIDGE-CONTRACT and mt5-webhook.controller.ts. A missing MT5_BRIDGE_SECRET
-  // refuses every push rather than failing open.
-  'POST /webhooks/mt5/deals': 'Shared-secret token + HMAC-SHA256 over the raw body, not a session.',
-
   // Placeholders with no data and no side effects.
   'GET /trading/ping': 'Module liveness marker. Returns a constant.',
   'GET /partners/ping': 'Module liveness marker. Returns a constant.',

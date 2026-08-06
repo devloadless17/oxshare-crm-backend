@@ -70,8 +70,8 @@
     ]
   },
   "trading": {
-    "moduleName": "Trading Accounts & MT5",
-    "description": "MT5 accounts sync, leverage management, and balance adjustment",
+    "moduleName": "Trading Accounts",
+    "description": "Trading account management, leverage, and balance adjustment",
     "permissions": [
       {
         "key": "trading.view",

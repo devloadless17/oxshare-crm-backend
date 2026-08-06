@@ -27,23 +27,17 @@ class AccrualAlreadyConfirmed extends Error {
   }
 }
 
-export interface IngestDealInput {
-  mt5Ticket: string;
-  mt5Login: string;
-  symbol: string;
-  volume: string;
-  spread: string;
-  profit?: string;
-  openedAt?: Date;
-  closedAt: Date;
-}
-
 /**
  * The commission pipeline (§8.6) — "the heart of the system".
  *
- *   ingestDeal      INSERT deals ON CONFLICT (mt5_ticket) DO NOTHING
  *   accrueForDeal   resolve chain → calculate → INSERT accruals ON CONFLICT
  *   confirmMatured  matured accruals → locked wallet credit, mark confirmed
+ *
+ * Deal INGESTION is gone with the MT5 bridge: nothing in this service creates
+ * `deals` rows any more, and `accrueForDeal` takes the id of a deal that is
+ * already persisted. Whatever feed replaces the bridge owns that INSERT and
+ * owes it the same idempotency the removed path had — UNIQUE(mt5_ticket) is
+ * still on the table and is still what makes re-delivery a no-op.
  *
  * These are called directly today and will be queue handlers when BullMQ
  * lands (§9). The logic is identical either way, which is the point: every
@@ -71,45 +65,6 @@ export class CommissionService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly limits: MoneyLimits,
   ) {}
-
-  /** §6.3: re-delivering the same ticket is a no-op, not a duplicate deal. */
-  async ingestDeal(input: IngestDealInput) {
-    const db = this.db;
-    const [account] = await db
-      .select()
-      .from(tradingAccounts)
-      .where(eq(tradingAccounts.mt5Login, input.mt5Login))
-      .limit(1);
-    if (!account) {
-      this.logger.warn(`Deal ${input.mt5Ticket} references unknown MT5 login ${input.mt5Login}`);
-      return { deal: null, created: false as const };
-    }
-
-    const [deal] = await db
-      .insert(deals)
-      .values({
-        mt5Ticket: input.mt5Ticket,
-        tradingAccountId: account.id,
-        symbol: input.symbol,
-        volume: input.volume,
-        spread: input.spread,
-        profit: input.profit ?? '0',
-        openedAt: input.openedAt,
-        closedAt: input.closedAt,
-      })
-      .onConflictDoNothing({ target: deals.mt5Ticket })
-      .returning();
-
-    if (!deal) {
-      const [existing] = await db
-        .select()
-        .from(deals)
-        .where(eq(deals.mt5Ticket, input.mt5Ticket))
-        .limit(1);
-      return { deal: existing, created: false as const };
-    }
-    return { deal, created: true as const };
-  }
 
   /**
    * Accrue commissions for one closed deal. Safe to run repeatedly — the
@@ -496,22 +451,5 @@ export class CommissionService {
       );
     }
     return { checked: seen.size, unpaid };
-  }
-
-  /** Convenience for the ingest path: store the deal, then accrue if it is new. */
-  async ingestAndAccrue(input: IngestDealInput) {
-    const { deal, created } = await this.ingestDeal(input);
-    if (!deal) return { deal: null, created: false, accruals: [] };
-    // Accrual is idempotent, so running it for a replayed deal is harmless —
-    // but skipping the work keeps re-delivery cheap.
-    const accrual = created
-      ? await this.accrueForDeal(deal.id)
-      : { accruals: [], reason: 'replayed' as const };
-    return {
-      deal,
-      created,
-      accruals: accrual.accruals,
-      reason: accrual.reason,
-    };
   }
 }

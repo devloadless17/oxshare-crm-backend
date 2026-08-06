@@ -61,8 +61,9 @@ const STATE_CHANGING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  *
  *   - Login, register, password reset — no session cookie yet, nothing to
  *     forge, skipped automatically.
- *   - The MT5 bridge webhook — no cookies at all; it authenticates with an HMAC
- *     over the raw body and would have no Origin header either. Skipped.
+ *   - Server-to-server webhooks — no cookies at all; they authenticate with an
+ *     HMAC over the raw body and would have no Origin header either. Skipped,
+ *     but only via an explicit @NoOriginCheck.
  *   - Every authenticated mutation — protected, including ones written after
  *     this file, by anyone who never reads it.
  *
