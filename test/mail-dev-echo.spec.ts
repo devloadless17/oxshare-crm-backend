@@ -82,16 +82,6 @@ describe('when a developer asks for it', () => {
     expect(echoed).toContain('kay@example.com');
   });
 
-  it('prints the withdrawal OTP', async () => {
-    const { lines, restore } = captureWarnings();
-    const service = emailServiceWith({ ...BASE_ENV, MAIL_DEV_ECHO: 'true' });
-
-    await service.sendWithdrawalOtpEmail('kay@example.com', '250.00000000', 'USD', '482913');
-    restore();
-
-    expect(lines.join('\n')).toContain('482913');
-  });
-
   it('prints the admin invite link — the one that creates an account', async () => {
     const { lines, restore } = captureWarnings();
     const service = emailServiceWith({ ...BASE_ENV, MAIL_DEV_ECHO: 'true' });
@@ -114,12 +104,15 @@ describe('when nobody asked', () => {
     const { lines, restore } = captureWarnings();
     const service = emailServiceWith(BASE_ENV);
 
+    // Two DIFFERENT credential shapes, deliberately: a token in a query string
+    // and an invite URL. The withdrawal OTP was the second case until that
+    // feature was removed, and one echo path passing does not prove the other.
     await service.sendVerificationEmail('kay@example.com', 'the-token-value');
-    await service.sendWithdrawalOtpEmail('kay@example.com', '1.00', 'USD', '482913');
+    await service.sendAdminInviteEmail('kay@example.com', 'Kay', 'https://x.test/?t=invite-secret');
     restore();
 
     expect(lines.join('\n')).not.toContain('the-token-value');
-    expect(lines.join('\n')).not.toContain('482913');
+    expect(lines.join('\n')).not.toContain('invite-secret');
   });
 
   it('prints nothing when the flag is any value other than true', async () => {

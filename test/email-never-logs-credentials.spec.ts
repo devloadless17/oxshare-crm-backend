@@ -153,7 +153,9 @@ describe('R-6.3 — no email credential ever reaches a log line', () => {
     await service.sendPasswordResetEmail('b@test.local', TOKEN);
     await service.sendAdminInviteEmail('c@test.local', 'C', `https://x.test/?token=${TOKEN}`);
     await service.sendKycDecisionEmail('d@test.local', 'D', 'rejected', 'Blurry document');
-    await service.sendWithdrawalDecisionEmail('e@test.local', 'E', 'paid', '100.00000000', 'USD');
+    await service.sendPartnerDecisionEmail('e@test.local', 'E', 'approved', {
+      referralCode: 'OX-E1',
+    });
 
     // Broader than the token check: a URL in a log line from this service is a
     // finding regardless of which parameter carries the secret.
@@ -165,7 +167,9 @@ describe('R-6.3 — no email credential ever reaches a log line', () => {
   it('reports the real reason for every failed send, not a bare "failed"', async () => {
     const service = makeService({ failing: true });
     await service.sendKycDecisionEmail('d@test.local', 'D', 'approved');
-    await service.sendWithdrawalDecisionEmail('e@test.local', 'E', 'paid', '100.00000000', 'USD');
+    await service.sendPartnerDecisionEmail('e@test.local', 'E', 'rejected', {
+      reason: 'Incomplete',
+    });
 
     // Both used to swallow the error entirely, so "the client never got the
     // email" was indistinguishable from auth failure, DNS, or a bad recipient.
