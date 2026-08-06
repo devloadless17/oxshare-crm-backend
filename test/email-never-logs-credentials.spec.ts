@@ -57,14 +57,44 @@ function makeService(options: { failing: boolean }): EmailService {
     },
   };
 
-  const service = new EmailService(config as never);
+  /*
+   * A stub resolver rather than the real one: this file is about what gets
+   * LOGGED, and the service now reads its SMTP settings through
+   * SmtpConfigService, which would otherwise need a database.
+   */
+  const smtpConfig = {
+    resolve: () =>
+      Promise.resolve({
+        host: 'smtp.example.test',
+        port: 587,
+        secure: false,
+        username: null,
+        password: null,
+        from: '"OxShare" <no-reply@example.test>',
+        source: 'environment' as const,
+        fingerprint: 'stub',
+      }),
+  };
+
+  const service = new EmailService(config as never, smtpConfig as never);
 
   if (options.failing) {
-    // Reaching into the private transporter is the point: it is the only way to
-    // drive the catch blocks without a network, and those are the branches that
-    // used to log the credential a second time.
-    (service as unknown as { transporter: { sendMail: () => Promise<never> } }).transporter = {
-      sendMail: () => Promise.reject(new Error('SMTP connection refused')),
+    /*
+     * Seeding the private transporter cache is the point: it is the only way to
+     * drive the catch blocks without a network, and those are the branches that
+     * used to log the credential a second time.
+     *
+     * The fingerprint must match what the stub resolver returns above, because
+     * `transporterFor` only reuses a cached transporter when they agree — a
+     * mismatch would build a real one and try to open a socket.
+     */
+    (
+      service as unknown as {
+        cached: { fingerprint: string; transporter: { sendMail: () => Promise<never> } };
+      }
+    ).cached = {
+      fingerprint: 'stub',
+      transporter: { sendMail: () => Promise.reject(new Error('SMTP connection refused')) },
     };
   }
 

@@ -1514,6 +1514,161 @@
         ]
       }
     },
+    "/v1/admin/settings/general": {
+      "get": {
+        "operationId": "AdminSettingsController_getGeneral",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneralSettingsDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Brand name, support contacts and the maintenance notice",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "Null or an empty string clears an optional field. The support URL must be https — it becomes a link in every client’s browser.",
+        "operationId": "AdminSettingsController_setGeneral",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateGeneralSettingsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneralSettingsDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update the general settings",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/settings/smtp": {
+      "get": {
+        "description": "The stored password is never returned — `passwordSet` reports only whether one exists. `source` is \"environment\" until the first save, and the values shown are then the server’s own boot configuration rather than a blank form.",
+        "operationId": "AdminSettingsController_getSmtp",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SmtpSettingsDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mail server configuration (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "Omit `password` or send null to keep the stored one, a string to replace it, or an empty string to remove it. The password is encrypted at rest and is never read back.",
+        "operationId": "AdminSettingsController_setSmtp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSmtpSettingsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SmtpSettingsDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update the mail server configuration (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/settings/smtp/test": {
+      "post": {
+        "description": "Always sent to the signed-in administrator’s own address. A delivery failure is returned as an error carrying the mail server’s own message, because reporting success for a send that failed would defeat the purpose of the endpoint.",
+        "operationId": "AdminSettingsController_testSmtp",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SmtpTestResultDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Send a test email to yourself using the saved settings (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/auth/login": {
       "post": {
         "operationId": "AdminAuthController_login",
@@ -5109,6 +5264,185 @@
         "required": [
           "step",
           "data"
+        ]
+      },
+      "GeneralSettingsDto": {
+        "type": "object",
+        "properties": {
+          "brandName": {
+            "type": "string",
+            "example": "OxShare",
+            "description": "Shown in the portal header."
+          },
+          "supportEmail": {
+            "type": "string",
+            "nullable": true,
+            "description": "Where clients are told to write. Null when unset.",
+            "example": "support@oxshare.com"
+          },
+          "supportUrl": {
+            "type": "string",
+            "nullable": true,
+            "description": "Help centre or ticket portal. Null when unset.",
+            "example": "https://help.oxshare.com"
+          },
+          "maintenanceNotice": {
+            "type": "string",
+            "nullable": true,
+            "description": "Shown to clients during planned downtime. Null shows nothing."
+          },
+          "updatedAt": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "brandName"
+        ]
+      },
+      "UpdateGeneralSettingsDto": {
+        "type": "object",
+        "properties": {
+          "brandName": {
+            "type": "string",
+            "example": "OxShare",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "supportEmail": {
+            "type": "string",
+            "nullable": true,
+            "example": "support@oxshare.com"
+          },
+          "supportUrl": {
+            "type": "string",
+            "nullable": true,
+            "example": "https://help.oxshare.com"
+          },
+          "maintenanceNotice": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "brandName"
+        ]
+      },
+      "SmtpSettingsDto": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string",
+            "example": "smtp.postmarkapp.com"
+          },
+          "port": {
+            "type": "number",
+            "example": 587
+          },
+          "username": {
+            "type": "string",
+            "nullable": true,
+            "example": "apikey"
+          },
+          "passwordSet": {
+            "type": "boolean",
+            "example": true,
+            "description": "Whether a password is stored. The password itself is never returned."
+          },
+          "fromAddress": {
+            "type": "string",
+            "example": "\"OxShare\" <no-reply@oxshare.com>"
+          },
+          "secure": {
+            "type": "boolean",
+            "example": false,
+            "description": "Implicit TLS on connect (SMTPS). False means STARTTLS."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "database",
+              "environment"
+            ],
+            "description": "Which configuration is actually in force. \"environment\" means nothing has been saved here yet and the server is using its boot configuration."
+          },
+          "updatedAt": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "host",
+          "port",
+          "passwordSet",
+          "fromAddress",
+          "secure",
+          "source"
+        ]
+      },
+      "UpdateSmtpSettingsDto": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string",
+            "example": "smtp.postmarkapp.com",
+            "maxLength": 255
+          },
+          "port": {
+            "type": "number",
+            "example": 587,
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "username": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null for a relay that takes no credentials."
+          },
+          "password": {
+            "type": "string",
+            "nullable": true,
+            "description": "Omit or null keeps the stored password. A string replaces it. An empty string removes it."
+          },
+          "fromAddress": {
+            "type": "string",
+            "example": "\"OxShare\" <no-reply@oxshare.com>",
+            "maxLength": 320
+          },
+          "secure": {
+            "type": "boolean",
+            "example": false
+          }
+        },
+        "required": [
+          "host",
+          "port",
+          "fromAddress",
+          "secure"
+        ]
+      },
+      "SmtpTestResultDto": {
+        "type": "object",
+        "properties": {
+          "sentTo": {
+            "type": "string",
+            "example": "admin@oxshare.com",
+            "description": "Always the acting admin."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "database",
+              "environment"
+            ],
+            "description": "Which configuration delivered the message."
+          }
+        },
+        "required": [
+          "sentTo",
+          "source"
         ]
       },
       "AdminLoginDto": {

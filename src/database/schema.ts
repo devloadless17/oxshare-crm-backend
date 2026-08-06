@@ -1,5 +1,7 @@
+import { sql } from 'drizzle-orm';
 import {
   boolean,
+  check,
   numeric,
   uniqueIndex,
   index,
@@ -620,6 +622,100 @@ export const securitySettings = pgTable('security_settings', {
   updatedBy: uuid('updated_by'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/*
+ * ── The two singleton settings rows ──────────────────────────────────────────
+ *
+ * `general_settings` and `smtp_settings` are each ONE ROW, forever, enforced by
+ * `id boolean PRIMARY KEY DEFAULT true CHECK (id)` — the only value that
+ * satisfies both the check and the uniqueness of a primary key is `true`, so a
+ * second row is a constraint violation rather than a convention somebody has to
+ * remember. `.$default(() => true)` keeps the column out of every insert in
+ * application code, which is what makes the upsert below a one-liner.
+ *
+ * TYPED COLUMNS, not the key-value bag `security_settings` deliberately is not.
+ * That table's own comment refuses to widen `key + enabled` into a general
+ * config store because "one table meaning two things forces every reader to know
+ * which". The same reasoning says an SMTP port is an integer, a from-address is
+ * a string, and neither belongs in a `text` column beside a boolean.
+ *
+ * TWO tables rather than one, for the reason the whole feature exists: the SMTP
+ * row holds a CREDENTIAL and the general row does not. Separating them means the
+ * encrypted column, its master-admin write guard, and its never-returned
+ * response shape are properties of a table rather than of particular columns
+ * within a table — so a future setting added to `general_settings` cannot
+ * accidentally inherit or erode them.
+ */
+export const generalSettings = pgTable(
+  'general_settings',
+  {
+    id: boolean('id')
+      .primaryKey()
+      .$default(() => true),
+    /** Shown in the portal header and used as the sender name fallback. */
+    brandName: varchar('brand_name', { length: 120 }).notNull().default('OxShare'),
+    /** Where a client is told to write. Not a sender — a destination. */
+    supportEmail: varchar('support_email', { length: 320 }),
+    /*
+     * Sized to match `platform_links.url` and for the same reason: these are real
+     * URLs that carry parameters, and a column that truncates one produces a link
+     * that 404s.
+     */
+    supportUrl: varchar('support_url', { length: 2048 }),
+    /** Free text shown to clients during planned downtime. Null = nothing shown. */
+    maintenanceNotice: text('maintenance_notice'),
+    updatedBy: uuid('updated_by'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check('general_settings_singleton', sql`${t.id}`)],
+);
+
+export const smtpSettings = pgTable(
+  'smtp_settings',
+  {
+    id: boolean('id')
+      .primaryKey()
+      .$default(() => true),
+    host: varchar('host', { length: 255 }).notNull(),
+    port: integer('port').notNull().default(587),
+    /*
+     * NULLABLE, and null is a real configuration rather than an unfinished one:
+     * an SMTP relay reached over a private network commonly takes no credentials
+     * at all, and `email.service.ts` already passes `auth: undefined` when the
+     * user is empty. A NOT NULL here would force a placeholder that reads as a
+     * configured account.
+     */
+    username: varchar('username', { length: 255 }),
+    /*
+     * AES-256-GCM ciphertext from `common/security/secret-box.ts`, never the
+     * password. Stored as `text` because the encoding is `v1.<iv>.<tag>.<ct>` and
+     * pinning a length here would be a guess about a format that is versioned
+     * precisely so it can change.
+     *
+     * This column is the reason the table is master-admin-write and why no
+     * response DTO in the codebase may include it: whoever controls the SMTP
+     * server receives every password-reset and admin-invite link this system
+     * sends, which is a full path to an administrator account on a system that
+     * approves withdrawals.
+     */
+    passwordCiphertext: text('password_ciphertext'),
+    /** The `From:` header, e.g. `"OxShare" <no-reply@oxshare.com>`. */
+    fromAddress: varchar('from_address', { length: 320 }).notNull(),
+    /*
+     * Implicit TLS on connect (SMTPS, normally port 465) as opposed to STARTTLS
+     * upgrading a plaintext connection (normally 587).
+     *
+     * Stored rather than derived from `port === 465`, which is what the code did
+     * before and is wrong on every relay that listens for SMTPS on another port.
+     * A guess that is right most of the time produces a connection failure the
+     * operator cannot fix from the screen that configures it.
+     */
+    secure: boolean('secure').notNull().default(false),
+    updatedBy: uuid('updated_by'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check('smtp_settings_singleton', sql`${t.id}`)],
+);
 
 /*
  * Failed sign-ins, per ACCOUNT — PLATFORM-CONVENTIONS R-3.5.

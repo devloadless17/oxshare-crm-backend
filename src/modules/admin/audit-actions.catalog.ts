@@ -113,11 +113,19 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'kyc_config.step_update', label: 'KYC step changed', group: 'Configuration' },
   { action: 'kyc_config.step_delete', label: 'KYC step deleted', group: 'Configuration' },
   { action: 'platform_link.set', label: 'Download link changed', group: 'Configuration' },
+  { action: 'settings.general.update', label: 'General settings changed', group: 'Configuration' },
 
   // ── Security controls ─────────────────────────────────────────────────────
   { action: 'ip_allowlist.add', label: 'Network rule added', group: 'Security' },
   { action: 'ip_allowlist.remove', label: 'Network rule removed', group: 'Security' },
   { action: 'security.control.set', label: 'Security control toggled', group: 'Security' },
+  /*
+   * Grouped under Security rather than Configuration, unlike the other settings
+   * writes. Repointing SMTP redirects every password-reset and admin-invite link
+   * this system sends, so it belongs beside the controls an auditor reviews for
+   * takeover attempts rather than beside the brand name.
+   */
+  { action: 'settings.smtp.update', label: 'Mail server configuration changed', group: 'Security' },
 ] as const;
 
 /** Every action key, for the coverage test and for validating `?action=`. */

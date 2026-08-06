@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import { SmtpConfigService, type EffectiveSmtpConfig } from './smtp-config.service';
 
 /**
  * Why no URL appears in any log line in this file — PLATFORM-CONVENTIONS R-6.3.
@@ -44,20 +45,69 @@ function failureReason(error: unknown): string {
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
-  private transporter: nodemailer.Transporter;
 
-  constructor(private readonly configService: ConfigService) {
-    const host = this.configService.get<string>('SMTP_HOST', 'smtp.example.com');
-    const port = this.configService.get<number>('SMTP_PORT', 587);
-    const user = this.configService.get<string>('SMTP_USER', '');
-    const pass = this.configService.get<string>('SMTP_PASS', '');
+  /**
+   * The transporter, and the configuration it was built from.
+   *
+   * Built LAZILY and rebuilt when the configuration changes, where it used to be
+   * built once in the constructor. That constructor read the environment at boot,
+   * which is the whole reason SMTP could not be edited without a deploy — the
+   * process would have gone on using the old relay until it restarted.
+   *
+   * The cache is keyed on `fingerprint` rather than on a timer, so a save in the
+   * settings screen takes effect on the very next send instead of after a TTL.
+   * `SmtpConfigService.resolve()` runs per send: it is one primary-key read
+   * against a one-row table, next to an SMTP round trip.
+   */
+  private cached: { fingerprint: string; transporter: nodemailer.Transporter } | null = null;
 
-    this.transporter = nodemailer.createTransport({
-      host,
-      port,
-      secure: port === 465,
-      auth: user ? { user, pass } : undefined,
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly smtpConfig: SmtpConfigService,
+  ) {}
+
+  private transporterFor(config: EffectiveSmtpConfig): nodemailer.Transporter {
+    if (this.cached?.fingerprint === config.fingerprint) return this.cached.transporter;
+
+    // Release the sockets the old configuration is holding. Without this an
+    // operator who edits SMTP a few times leaves a pool per edit alive until GC.
+    this.cached?.transporter.close();
+
+    const transporter = nodemailer.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      auth: config.username ? { user: config.username, pass: config.password ?? '' } : undefined,
     });
+
+    this.cached = { fingerprint: config.fingerprint, transporter };
+    return transporter;
+  }
+
+  /**
+   * Send one message through whatever SMTP configuration is currently in force.
+   *
+   * Every `send*` method below funnels through here. They each used to inline
+   * the same four lines — the NODE_ENV guard, the transporter, the `from`
+   * fallback and the try/catch — seven times, which is seven places for the
+   * next change to miss one.
+   *
+   * ONE `from` for all of them now. Each call site previously passed its own
+   * fallback display name ("OxShare Security", "OxShare Compliance", …), but
+   * those only ever applied when `SMTP_FROM` was unset; with it set — as it is
+   * required to be in production — every message already used the same sender.
+   * The configured value is now the sender in all cases, which is also what the
+   * settings screen shows.
+   *
+   * Failures are logged and swallowed, preserving the existing contract: no
+   * caller of this service treats "the mail did not go" as a reason to fail the
+   * operation that triggered it. `sendTestEmail` is the deliberate exception.
+   */
+  private async deliver(message: { to: string; subject: string; html: string }): Promise<void> {
+    if (this.configService.get('NODE_ENV') === 'test') return;
+
+    const config = await this.smtpConfig.resolve();
+    await this.transporterFor(config).sendMail({ from: config.from, ...message });
   }
 
   /**
@@ -110,14 +160,7 @@ export class EmailService {
     `;
 
     try {
-      if (this.configService.get('NODE_ENV') !== 'test') {
-        await this.transporter.sendMail({
-          from: this.configService.get('SMTP_FROM', '"OxShare System" <no-reply@oxshare.com>'),
-          to: email,
-          subject: 'Verify Your Email — OxShare Portal',
-          html,
-        });
-      }
+      await this.deliver({ to: email, subject: 'Verify Your Email — OxShare Portal', html });
       this.logger.log(`Verification email sent to ${email}`);
     } catch (error) {
       this.logger.error(`Failed to send verification email to ${email}: ${failureReason(error)}`);
@@ -143,14 +186,7 @@ export class EmailService {
     `;
 
     try {
-      if (this.configService.get('NODE_ENV') !== 'test') {
-        await this.transporter.sendMail({
-          from: this.configService.get('SMTP_FROM', '"OxShare Security" <no-reply@oxshare.com>'),
-          to: email,
-          subject: 'Reset Password Request — OxShare',
-          html,
-        });
-      }
+      await this.deliver({ to: email, subject: 'Reset Password Request — OxShare', html });
       this.logger.log(`Password reset email sent to ${email}`);
     } catch (error) {
       this.logger.error(`Failed to send password reset email to ${email}: ${failureReason(error)}`);
@@ -195,16 +231,13 @@ export class EmailService {
     `;
 
     try {
-      if (this.configService.get('NODE_ENV') !== 'test') {
-        await this.transporter.sendMail({
-          from: this.configService.get('SMTP_FROM', '"OxShare Compliance" <no-reply@oxshare.com>'),
-          to: email,
-          subject: approved
-            ? 'Identity Verified — OxShare'
-            : 'Action Required: Your KYC Application Needs Correction — OxShare',
-          html,
-        });
-      }
+      await this.deliver({
+        to: email,
+        subject: approved
+          ? 'Identity Verified — OxShare'
+          : 'Action Required: Your KYC Application Needs Correction — OxShare',
+        html,
+      });
       this.logger.log(`KYC ${decision} email sent to ${email}`);
     } catch (error) {
       this.logger.error(
@@ -239,14 +272,11 @@ export class EmailService {
       </div>
     `;
     try {
-      if (this.configService.get('NODE_ENV') !== 'test') {
-        await this.transporter.sendMail({
-          from: this.configService.get('SMTP_FROM', '"OxShare Payments" <no-reply@oxshare.com>'),
-          to: email,
-          subject: paid ? 'Withdrawal Sent — OxShare' : 'Withdrawal Declined — OxShare',
-          html,
-        });
-      }
+      await this.deliver({
+        to: email,
+        subject: paid ? 'Withdrawal Sent — OxShare' : 'Withdrawal Declined — OxShare',
+        html,
+      });
       this.logger.log(`Withdrawal ${decision} email sent to ${email}`);
     } catch (error) {
       this.logger.error(
@@ -293,14 +323,11 @@ export class EmailService {
     `;
 
     try {
-      if (this.configService.get('NODE_ENV') !== 'test') {
-        await this.transporter.sendMail({
-          from: this.configService.get('SMTP_FROM', '"OxShare Payments" <no-reply@oxshare.com>'),
-          to: email,
-          subject: `Confirm your ${amount} ${currency} withdrawal — OxShare`,
-          html,
-        });
-      }
+      await this.deliver({
+        to: email,
+        subject: `Confirm your ${amount} ${currency} withdrawal — OxShare`,
+        html,
+      });
       // Recipient only. Never the code.
       this.logger.log(`Withdrawal confirmation code sent to ${email}`);
     } catch (error) {
@@ -346,14 +373,7 @@ export class EmailService {
     `;
 
     try {
-      if (this.configService.get('NODE_ENV') !== 'test') {
-        await this.transporter.sendMail({
-          from: this.configService.get('SMTP_FROM', '"OxShare System" <no-reply@oxshare.com>'),
-          to: email,
-          subject: 'You already have an OxShare account',
-          html,
-        });
-      }
+      await this.deliver({ to: email, subject: 'You already have an OxShare account', html });
       this.logger.log(`Account-exists notice sent to ${email}`);
     } catch (error) {
       this.logger.error(
@@ -379,14 +399,7 @@ export class EmailService {
     `;
 
     try {
-      if (this.configService.get('NODE_ENV') !== 'test') {
-        await this.transporter.sendMail({
-          from: this.configService.get('SMTP_FROM', '"OxShare System" <no-reply@oxshare.com>'),
-          to: email,
-          subject: 'Admin Invitation — OxShare',
-          html,
-        });
-      }
+      await this.deliver({ to: email, subject: 'Admin Invitation — OxShare', html });
       this.logger.log(`Admin invite email sent to ${email}`);
     } catch (error) {
       this.logger.error(`Failed to send admin invite email to ${email}: ${failureReason(error)}`);
@@ -428,17 +441,59 @@ export class EmailService {
     `;
 
     try {
-      if (this.configService.get('NODE_ENV') !== 'test') {
-        await this.transporter.sendMail({
-          from: this.configService.get('SMTP_FROM', '"OxShare System" <no-reply@oxshare.com>'),
-          to: email,
-          subject: 'Set a new admin password — OxShare',
-          html,
-        });
-      }
+      await this.deliver({ to: email, subject: 'Set a new admin password — OxShare', html });
       this.logger.log(`Admin password reset email sent to ${email}`);
     } catch (error) {
       this.logger.error(`Failed to send admin reset email to ${email}: ${failureReason(error)}`);
     }
+  }
+
+  /**
+   * Prove the current SMTP configuration actually delivers — the one send in
+   * this class that is allowed to THROW.
+   *
+   * Every other method swallows its failure, which is right for them: a KYC
+   * approval must not roll back because a mail server was briefly down. It is
+   * exactly wrong here. The entire purpose of this send is to answer "does this
+   * configuration work", and a version that logs the failure and returns
+   * successfully answers "yes" every time.
+   *
+   * The caller passes no recipient — see the controller for why the acting
+   * admin's own address is the only one accepted.
+   *
+   * Returns the resolved source so the screen can say whether it just tested the
+   * saved row or the environment fallback, which is the difference between "my
+   * settings work" and "my settings were never saved".
+   */
+  async sendTestEmail(to: string): Promise<{ source: EffectiveSmtpConfig['source'] }> {
+    const config = await this.smtpConfig.resolve();
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #0f172a; color: #f8fafc; border-radius: 12px;">
+        <h2 style="color: #3b82f6;">Your SMTP settings work</h2>
+        <p>This is a test message from the OxShare admin console. If you are reading it, the
+        mail configuration currently saved can deliver.</p>
+        <p style="font-size: 12px; color: #94a3b8;">
+          Sent via ${esc(config.host)}:${config.port} using the
+          ${config.source === 'database' ? 'saved settings' : 'server environment configuration'}.
+        </p>
+      </div>
+    `;
+
+    /*
+     * NOT routed through `deliver()`, which returns early under NODE_ENV=test.
+     * That guard exists so the suite never opens a socket, and honouring it here
+     * would make the test-send silently succeed without sending — the precise
+     * failure this endpoint exists to detect. The controller is covered by an
+     * HTTP spec with a mocked EmailService instead.
+     */
+    await this.transporterFor(config).sendMail({
+      from: config.from,
+      to,
+      subject: 'SMTP test — OxShare Admin',
+      html,
+    });
+
+    this.logger.log(`SMTP test email sent to ${to} via ${config.source} configuration`);
+    return { source: config.source };
   }
 }

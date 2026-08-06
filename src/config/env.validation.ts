@@ -78,11 +78,41 @@ const envSchema = z
     JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
     JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
 
+    /*
+     * The SMTP env vars are now the BOOTSTRAP configuration, not the only one.
+     *
+     * `smtp_settings` (one row, admin-editable) overrides all five at runtime.
+     * These stay, and stay required in production below, because the override
+     * cannot exist before somebody signs in to create it: a fresh deployment
+     * must be able to send the admin-invite email that produces the first
+     * administrator, and an operator who mis-saves the SMTP form must not lock
+     * the system out of its own password-reset flow. Env is the floor.
+     */
     SMTP_HOST: z.string().optional(),
     SMTP_PORT: z.coerce.number().int().optional(),
     SMTP_USER: z.string().optional(),
     SMTP_PASS: z.string().optional(),
     SMTP_FROM: z.string().optional(),
+
+    /*
+     * Encrypts the secrets this system stores at rest — today the SMTP password
+     * in `smtp_settings.password_ciphertext`, via common/security/secret-box.ts.
+     *
+     * OPTIONAL here and required in production below, which is the same shape as
+     * DATABASE_URL and for the same reason: a developer who never opens the SMTP
+     * settings screen should not be blocked from booting, while a production
+     * deploy that stores a credential under a key nobody set should not start.
+     * `secret-box.ts` throws with an actionable message if a write is attempted
+     * without it, so the development path fails at the point of use rather than
+     * silently storing a password in the clear.
+     *
+     * 32 characters minimum. It is hashed to a 32-byte key rather than used
+     * raw, so the minimum is about entropy rather than about the cipher.
+     */
+    APP_ENCRYPTION_KEY: z
+      .string()
+      .min(32, 'APP_ENCRYPTION_KEY must be at least 32 characters')
+      .optional(),
 
     /*
      * Print verification links, reset links, invite links and withdrawal OTPs to
@@ -207,6 +237,10 @@ const PROD_REQUIRED = [
   'SMTP_USER',
   'SMTP_PASS',
   'SMTP_FROM',
+  // Without it the SMTP settings screen cannot store a password at all, and the
+  // failure would land on an operator mid-form rather than on the deploy that
+  // omitted it. Same principle as the entry above: refuse, do not degrade.
+  'APP_ENCRYPTION_KEY',
   // Absence already fails CLOSED — the MT5 webhook refuses every push without it
   // (an unauthenticated deal feed can mint commission). But it fails at first
   // use, and "no deals are arriving" is a silent revenue outage nobody is paged

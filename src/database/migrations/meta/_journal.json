@@ -183,6 +183,13 @@
       "when": 1786014161099,
       "tag": "0025_same_malice",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1786025155600,
+      "tag": "0026_settings_general_and_smtp",
+      "breakpoints": true
     }
   ]
 }

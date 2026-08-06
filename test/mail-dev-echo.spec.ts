@@ -22,7 +22,27 @@ function emailServiceWith(env: Record<string, string | undefined>) {
   const config = {
     get: <T>(key: string, fallback?: T) => (env[key] as unknown as T) ?? fallback,
   } as unknown as ConfigService;
-  return new EmailService(config);
+
+  /*
+   * A stub resolver. `echoForDevelopment` runs before any transport work and is
+   * the only thing under test here, but the service now takes SmtpConfigService
+   * as a constructor dependency and the real one would want a database.
+   */
+  const smtpConfig = {
+    resolve: () =>
+      Promise.resolve({
+        host: 'smtp.example.test',
+        port: 587,
+        secure: false,
+        username: null,
+        password: null,
+        from: '"OxShare" <no-reply@example.test>',
+        source: 'environment' as const,
+        fingerprint: 'stub',
+      }),
+  };
+
+  return new EmailService(config, smtpConfig as never);
 }
 
 /**
@@ -134,6 +154,11 @@ describe('it cannot reach production', () => {
     // Also required in production — the allowlist, rate limiter and audit trail
     // all read the client IP through it (D-13b).
     TRUSTED_PROXY_HOPS: '0',
+    // Encrypts the SMTP password the settings screen stores at rest. Required in
+    // production for the same reason as the mail config above: without it the
+    // screen cannot save a password, and the failure would land on an operator
+    // mid-form rather than on the deploy that omitted it.
+    APP_ENCRYPTION_KEY: 'f'.repeat(40),
   };
 
   it('REFUSES TO BOOT rather than silently ignoring the flag', () => {
