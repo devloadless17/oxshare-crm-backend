@@ -592,6 +592,316 @@
         ]
       }
     },
+    "/v1/auth/change-password": {
+      "post": {
+        "operationId": "AuthController_changePassword[0]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Change your password - requires the current one, and ends every OTHER session",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/identity/change-password": {
+      "post": {
+        "operationId": "AuthController_changePassword[1]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Change your password - requires the current one, and ends every OTHER session",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/sessions": {
+      "get": {
+        "operationId": "AuthController_sessions[0]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SessionDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "List your active sessions, most recently active first",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/identity/sessions": {
+      "get": {
+        "operationId": "AuthController_sessions[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SessionDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "List your active sessions, most recently active first",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/sessions/{id}": {
+      "delete": {
+        "operationId": "AuthController_revokeSession[0]",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Sign out one of your other sessions",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/identity/sessions/{id}": {
+      "delete": {
+        "operationId": "AuthController_revokeSession[1]",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Sign out one of your other sessions",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/me/avatar": {
+      "post": {
+        "operationId": "AuthController_uploadAvatar[0]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvatarResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Upload or replace your profile photo (JPEG, PNG or WebP, max 2MB)",
+        "tags": [
+          "auth"
+        ]
+      },
+      "delete": {
+        "operationId": "AuthController_removeAvatar[0]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvatarResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Remove your profile photo",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/identity/me/avatar": {
+      "post": {
+        "operationId": "AuthController_uploadAvatar[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvatarResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Upload or replace your profile photo (JPEG, PNG or WebP, max 2MB)",
+        "tags": [
+          "auth"
+        ]
+      },
+      "delete": {
+        "operationId": "AuthController_removeAvatar[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvatarResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Remove your profile photo",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/v1/trading/ping": {
       "get": {
         "operationId": "TradingController_ping",
@@ -701,6 +1011,54 @@
         "summary": "The signed-in client's own ledger entries",
         "tags": [
           "wallet"
+        ]
+      }
+    },
+    "/v1/payments/deposits": {
+      "post": {
+        "description": "Creates a PENDING deposit. No balance changes until the operator confirms the money arrived. The returned reference is what reconciles the payment to this request.",
+        "operationId": "PaymentsController_requestDeposit",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended deposit, reused only when retrying that same one. Without it a double-clicked button files two declarations for one transfer, and the operator reconciling the bank statement has to guess which is real (R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestDepositDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositRequestDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Declare an incoming deposit and get the reference to quote on the transfer",
+        "tags": [
+          "payments"
         ]
       }
     },
@@ -816,6 +1174,114 @@
         "summary": "The signed-in client's own transactions",
         "tags": [
           "payments"
+        ]
+      }
+    },
+    "/v1/platforms": {
+      "get": {
+        "description": "Always returns every platform the portal offers, in presentation order. A platform the operator has not configured has a null url — which the portal renders as \"not available yet\" rather than as a link that goes nowhere.",
+        "operationId": "PlatformsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PlatformLinkDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Download links for the trading terminal",
+        "tags": [
+          "platforms"
+        ]
+      }
+    },
+    "/v1/admin/platforms": {
+      "get": {
+        "operationId": "AdminPlatformLinksController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PlatformLinkDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Download links for every platform, configured or not",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/platforms/{key}": {
+      "put": {
+        "description": "An empty url clears the link, and the portal then shows that platform as not available yet. Only https is accepted: this link is how a client obtains an executable.",
+        "operationId": "AdminPlatformLinksController_set",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPlatformLinkDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformLinkDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Set or clear one download link",
+        "tags": [
+          "admin"
         ]
       }
     },
@@ -987,6 +1453,35 @@
         "summary": "Reset KYC submission for current user",
         "tags": [
           "kyc"
+        ]
+      }
+    },
+    "/v1/uploads/avatars/{file}": {
+      "get": {
+        "operationId": "UploadsController_serveAvatar",
+        "parameters": [
+          {
+            "name": "file",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Serve a client's own profile photo",
+        "tags": [
+          "compliance"
         ]
       }
     },
@@ -3300,6 +3795,12 @@
           "createdAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "avatarUrl": {
+            "type": "string",
+            "nullable": true,
+            "description": "Path to the profile photo, or null when there is none. The portal renders initials for null rather than a placeholder image or a gravatar - an invented image URL would be a request to a third party leaking the client's e-mail hash.",
+            "example": "/uploads/avatars/6f1c2b9e-....png"
           }
         },
         "required": [
@@ -3329,6 +3830,84 @@
           "user",
           "emailVerified"
         ]
+      },
+      "ChangePasswordDto": {
+        "type": "object",
+        "properties": {
+          "currentPassword": {
+            "type": "string",
+            "example": "CurrentPass123!",
+            "maxLength": 100
+          },
+          "newPassword": {
+            "type": "string",
+            "example": "NewStrongPass123!",
+            "minLength": 8,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "currentPassword",
+          "newPassword"
+        ]
+      },
+      "SessionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Refresh-token family id. Pass this to DELETE /auth/sessions/:id."
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "When this session signed in.",
+            "format": "date-time"
+          },
+          "lastActiveAt": {
+            "type": "string",
+            "description": "Last time this session refreshed — how \"active\" is measured.",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "description": "When it expires on its own if unused.",
+            "format": "date-time"
+          },
+          "userAgent": {
+            "type": "string",
+            "description": "Most recent User-Agent seen on this session. Null for sessions predating capture.",
+            "nullable": true,
+            "example": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+          },
+          "ip": {
+            "type": "string",
+            "description": "Most recent client address. Null for sessions predating capture.",
+            "nullable": true,
+            "example": "203.0.113.7"
+          },
+          "current": {
+            "type": "boolean",
+            "description": "True for the session making this request. Resolved from the refresh cookie, not the access token."
+          }
+        },
+        "required": [
+          "id",
+          "createdAt",
+          "lastActiveAt",
+          "expiresAt",
+          "current"
+        ]
+      },
+      "AvatarResponseDto": {
+        "type": "object",
+        "properties": {
+          "avatarUrl": {
+            "type": "string",
+            "nullable": true,
+            "description": "Path to the stored photo, or null when there is none. Composed from the stored filename, so the section 8.5 move to private object storage changes this line and no rows.",
+            "example": "/uploads/avatars/6f1c...c2.png"
+          }
+        }
       },
       "WalletDto": {
         "type": "object",
@@ -3468,6 +4047,85 @@
           "total",
           "page",
           "limit"
+        ]
+      },
+      "RequestDepositDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "500.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "bank_transfer",
+              "usdt_trc20"
+            ],
+            "description": "How the client is sending the money. Decides which instructions they are shown."
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "method"
+        ]
+      },
+      "DepositRequestDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The transaction id. Also shown on /transactions."
+          },
+          "reference": {
+            "type": "string",
+            "description": "Quote this on the transfer. It is what reconciles the payment to this request.",
+            "example": "OX-7F3A21"
+          },
+          "amount": {
+            "type": "string",
+            "example": "500.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "bank_transfer",
+              "usdt_trc20"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "Always `pending`. Nothing is credited until the operator confirms receipt.",
+            "example": "pending"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "reference",
+          "amount",
+          "currency",
+          "method",
+          "state",
+          "createdAt"
         ]
       },
       "RequestWithdrawalDto": {
@@ -3648,6 +4306,46 @@
           "message",
           "required"
         ]
+      },
+      "PlatformLinkDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "desktop",
+              "ios",
+              "android"
+            ],
+            "example": "desktop"
+          },
+          "url": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null when the operator has not configured this platform yet.",
+            "example": "https://downloads.oxshare.com/OXShare-Terminal.dmg"
+          },
+          "updatedAt": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time",
+            "description": "When an admin last changed it. Null while unconfigured."
+          }
+        },
+        "required": [
+          "key"
+        ]
+      },
+      "SetPlatformLinkDto": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The https URL, or an empty string to clear it.",
+            "example": "https://downloads.oxshare.com/OXShare-Terminal.dmg",
+            "maxLength": 2048
+          }
+        }
       },
       "KycFieldConfigDto": {
         "type": "object",
