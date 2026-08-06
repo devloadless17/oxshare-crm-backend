@@ -1,4 +1,4 @@
-import { and, desc, eq, gt } from 'drizzle-orm';
+import { and, desc, eq, gt, notExists, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -192,17 +192,37 @@ export class InvitesStore {
       .where(eq(adminInvites.tokenHash, hashInviteToken(token)));
   }
 
+  /**
+   * What "still live" means for an invite, in one place.
+   *
+   * Three conditions, and the third is the one that is easy to forget: an invite
+   * whose address ALREADY has an admin can never be accepted, because
+   * `acceptInvite` re-checks `findByEmail` and refuses. Such a row is a record
+   * that an invite was sent, not an outstanding one.
+   *
+   * Shared because the two callers answer questions where a false positive costs
+   * something real — one advertises a dead link to an operator, the other refuses
+   * to delete a role on behalf of a grant that can never happen. Both had the
+   * same gap for the same reason.
+   */
+  private liveInvite() {
+    return and(
+      eq(adminInvites.accepted, false),
+      gt(adminInvites.expiresAt, new Date()),
+      notExists(
+        this.db
+          .select({ one: sql`1` })
+          .from(admins)
+          .where(eq(admins.email, adminInvites.email)),
+      ),
+    );
+  }
+
   async findPendingByRoleId(roleId: string): Promise<AdminInvite[]> {
     const rows = await this.db
       .select()
       .from(adminInvites)
-      .where(
-        and(
-          eq(adminInvites.roleId, roleId),
-          eq(adminInvites.accepted, false),
-          gt(adminInvites.expiresAt, new Date()),
-        ),
-      );
+      .where(and(eq(adminInvites.roleId, roleId), this.liveInvite()));
     return rows.map(toInvite);
   }
 
@@ -229,12 +249,29 @@ export class InvitesStore {
     return row ? toInvite(row) : undefined;
   }
 
-  /** Every live invite, newest first — the "who has been asked but not arrived" list. */
+  /**
+   * Every live invite, newest first — the "who has been asked but not arrived" list.
+   *
+   * Unaccepted and unexpired is not sufficient — see `liveInvite`. Listing an
+   * invite whose address already has an admin advertises a link guaranteed to
+   * fail, under a heading that says "sent but not yet accepted".
+   *
+   * That state is reachable and was reached: before `createInvite` refused a
+   * duplicate, one address could be invited twice, and accepting either one left
+   * the other pending forever. The guards stop new ones; this stops the existing
+   * rows being presented as actionable. It also covers the paths that will never
+   * have those guards — an admin seeded or created directly while an invite was
+   * outstanding lands in exactly the same place.
+   *
+   * Filtered here rather than swept by a migration deliberately: the invite row
+   * is a true record that the invite was sent, and D-21's audit story is better
+   * served by keeping it and rendering it correctly than by deleting history.
+   */
   async findAllPending(): Promise<AdminInvite[]> {
     const rows = await this.db
       .select()
       .from(adminInvites)
-      .where(and(eq(adminInvites.accepted, false), gt(adminInvites.expiresAt, new Date())))
+      .where(this.liveInvite())
       .orderBy(desc(adminInvites.createdAt));
     return rows.map(toInvite);
   }

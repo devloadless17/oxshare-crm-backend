@@ -49,6 +49,35 @@ export async function runSeeds(): Promise<void> {
     })
     .onConflictDoNothing({ target: admins.email });
 
+  /*
+   * The admin the END-TO-END SUITE owns, for the same reason the e2e client
+   * below exists: a test fixture must not share an identity with a person.
+   *
+   * `admin@oxshare.com` is the account a developer is signed into while working,
+   * and the admin suite signs in, refreshes and rotates tokens on every run.
+   * Sharing it means two parties rotating one refresh family — which is exactly
+   * what reuse detection punishes — and test logins eating a rate limit a human
+   * is also trying to use.
+   *
+   * Master-level on purpose: the suite walks the whole console, and a fixture
+   * that 403s halfway would test the fixture rather than the app. Permission
+   * SPLITS are asserted against purpose-made roles inside the specs instead.
+   *
+   * Same protection as the rest of this file — `runSeeds()` is called from
+   * main.ts only when NODE_ENV is not production, so this cannot reach a live
+   * deployment.
+   */
+  await db
+    .insert(admins)
+    .values({
+      email: 'e2e-admin@oxshare.com',
+      passwordHash: adminHash,
+      name: 'E2E Admin',
+      role: 'master_admin',
+      permissions: ['*'],
+    })
+    .onConflictDoNothing({ target: admins.email });
+
   await db
     .insert(users)
     .values({

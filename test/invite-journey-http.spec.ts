@@ -8,7 +8,8 @@ import {
   type HttpTestContext,
 } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, roles } from '../src/database/schema';
+import { adminInvites, admins, roles } from '../src/database/schema';
+import { eq } from 'drizzle-orm';
 
 /**
  * The whole invite journey, over HTTP: invite with a role → accept → log in
@@ -227,6 +228,94 @@ describe('outstanding invites are visible and cancellable', () => {
       roleId: reviewerRoleId,
     });
     expect([200, 201]).toContain(again.status);
+  });
+
+  it('hides an invite whose address already has an admin', async () => {
+    /*
+     * Found in the live dev database: one address held TWO invite rows — one
+     * accepted, one not — plus the admin account. The unaccepted one sat under
+     * "Outstanding Invites" describing a link that can never be accepted, since
+     * `acceptInvite` re-checks `findByEmail` and refuses.
+     *
+     * `createInvite` now refuses the duplicate that created it, so this asserts
+     * the other half: the rows already in the table, and the paths that will
+     * never go through `createInvite` at all — an admin seeded or created
+     * directly while an invite was outstanding lands in the same state.
+     *
+     * The second row is inserted directly BECAUSE the service-level guard would
+     * refuse it. That is the point: this is about data the guard cannot reach.
+     */
+    const email = 'journey-orphan@oxshare.com';
+    const { token, master } = await invite(email, 'Journey Orphan', reviewerRoleId);
+
+    const [inviter] = await ctx.db.db.select().from(admins).where(eq(admins.email, MASTER.email));
+    await ctx.db.db.insert(adminInvites).values({
+      email,
+      name: 'Journey Orphan Duplicate',
+      tokenHash: 'orphaned-duplicate-invite-hash',
+      role: 'sub_admin',
+      roleId: reviewerRoleId,
+      invitedBy: inviter.id,
+      expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
+      accepted: false,
+    });
+
+    // Both rows are live and unaccepted at this point.
+    const before = await master.get('/v1/admin/invites').expect(200);
+    expect((before.body as Array<{ email: string }>).filter((r) => r.email === email)).toHaveLength(
+      2,
+    );
+
+    await acceptInvite(token, NEW_ADMIN_PASSWORD).expect(200);
+
+    // The duplicate is still unaccepted and still unexpired — and must not be
+    // offered as outstanding, because the account it would create exists.
+    const after = await master.get('/v1/admin/invites').expect(200);
+    expect((after.body as Array<{ email: string }>).filter((r) => r.email === email)).toEqual([]);
+  });
+
+  it('lets a role be deleted when only a dead invite still references it', async () => {
+    /*
+     * The second symptom of the same stale row.
+     *
+     * Role deletion refuses while a pending invite references the role, which is
+     * right — the invite would otherwise be accepted with its `role_id` nulled
+     * and no permissions at all. But an invite whose address already has an admin
+     * can never be accepted, so it is holding a role hostage on behalf of a grant
+     * that cannot happen, and the refusal even advises "wait for expiry".
+     */
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const created = await master.post('/v1/admin/roles', {
+      name: 'Journey Disposable',
+      permissions: ['users.view'],
+    });
+    const roleId = (created.body as { id: string }).id;
+
+    const email = 'journey-hostage@oxshare.com';
+    const { token } = await invite(email, 'Journey Hostage', roleId);
+
+    // Held, correctly, while the invite is genuinely outstanding.
+    await master.del(`/v1/admin/roles/${roleId}`).expect(409);
+
+    await acceptInvite(token, NEW_ADMIN_PASSWORD).expect(200);
+    // The new admin holds the role directly now, so clear that reference too —
+    // this test is about the INVITE, not about deleting a role in use.
+    const [holder] = await ctx.db.db.select().from(admins).where(eq(admins.email, email));
+    await ctx.db.db.update(admins).set({ roleId: null }).where(eq(admins.id, holder.id));
+
+    // Insert the orphan: unaccepted, unexpired, and unacceptable.
+    await ctx.db.db.insert(adminInvites).values({
+      email,
+      name: 'Journey Hostage Duplicate',
+      tokenHash: 'hostage-duplicate-invite-hash',
+      role: 'sub_admin',
+      roleId,
+      invitedBy: holder.id,
+      expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
+      accepted: false,
+    });
+
+    await master.del(`/v1/admin/roles/${roleId}`).expect(200);
   });
 
   it('refuses to revoke an invite that has already been accepted', async () => {
