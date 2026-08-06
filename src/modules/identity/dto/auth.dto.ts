@@ -31,6 +31,23 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   phone?: string;
+
+  /**
+   * A partner's referral code, from the `?ref=` on the link they shared.
+   *
+   * Optional, and an unknown or retired code does NOT refuse the registration —
+   * `AuthService` logs it and leaves the client unattributed. A referral link is
+   * marketing collateral that gets copied, truncated and retyped; refusing a
+   * signup because one arrived wrong would cost a real client to protect a
+   * bookkeeping detail.
+   *
+   * Length matches `ib_accounts.referral_code`.
+   */
+  @ApiPropertyOptional({ example: 'K7M2PQR9', maxLength: 50 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  referralCode?: string;
 }
 
 export class LoginDto {

@@ -128,6 +128,32 @@ export const users = pgTable(
     passwordResetExpiry: timestamp('password_reset_expiry', { withTimezone: true }),
     country: varchar('country', { length: 100 }),
     phone: varchar('phone', { length: 32 }),
+    /**
+     * The partner who introduced this client, captured at registration.
+     *
+     * ## A column, not the `referral_attributions` table it replaces
+     *
+     * Attribution is ONE partner per client and permanent — §6.3 lists
+     * `UNIQUE(client_user_id)` for exactly this — so a separate table is a join
+     * to reach a single fact about the client. The uniqueness that table
+     * enforced with an index is enforced here by there being one column.
+     *
+     * ## Permanent, and that is the point
+     *
+     * Written once at registration and never rewritten. A partner is paid on
+     * the activity of the clients attributed to them, so a mutable column is a
+     * route for one partner's earnings to move to another; nothing in the
+     * partner-management surface offers to change it.
+     *
+     * NULL means the client arrived directly. That is the common case and not a
+     * gap: a mistyped or retired referral code must never cost a signup, so
+     * `AuthService` logs an unresolvable code and leaves this null.
+     *
+     * The foreign key lands in migration 0032, not here — `ib_accounts` is
+     * declared far below this table and `.references()` would be a forward
+     * reference at module scope.
+     */
+    referredByIbUserId: uuid('referred_by_ib_user_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -136,6 +162,9 @@ export const users = pgTable(
     index('users_verification_level_idx').on(t.verificationLevel),
     index('users_created_at_idx').on(t.createdAt),
     index('users_country_idx').on(t.country),
+    /* "Which clients did this partner introduce?" — asked per partner by every
+       commission calculation the engine will eventually run. */
+    index('users_referred_by_idx').on(t.referredByIbUserId),
   ],
 );
 

@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import { UsersStore, User } from '../../store/users.store';
+import { IbStore } from '../../store/ib.store';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { EmailService } from '../email/email.service';
 import { Request, Response } from 'express';
@@ -90,12 +91,22 @@ export class AuthService {
     // in the middle silently shifts two arguments into the wrong slots.
     private readonly files: StoredFilesService,
     /*
-     * Opens the client's first wallet on registration. Appended for the reason
-     * directly above, and OPTIONAL for the same one: every hand-constructed
-     * `new AuthService(...)` in the suite passes the arguments positionally, so
-     * a required parameter here would mean editing each of them to test
-     * something unrelated to wallets. `?.` at the single call site.
+     * Resolves a referral code to the partner who owns it.
+     *
+     * The STORE rather than `IbApplicationsService`, and that is not laziness:
+     * `IbModule` imports `IdentityModule` for its guards, so depending on the
+     * service here would close a module cycle. `IbStore` lives in the @Global
+     * `StoreModule`, which nothing imports and everything can reach.
+     *
+     * OPTIONAL for the reason above: every hand-constructed
+     * `new AuthService(...)` in the suite passes its arguments positionally, so
+     * a required parameter would mean editing each of them to test something
+     * unrelated to referrals. `resolveReferral` returns undefined without it.
+     *
+     * The wallet-provisioning parameter that used to sit here went with the
+     * money teardown. When it returns it goes AFTER this one, same reasoning.
      */
+    private readonly ib?: IbStore,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -144,6 +155,8 @@ export class AuthService {
     const verificationToken = uuidv4();
     const verificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
 
+    const referredByIbUserId = await this.resolveReferral(dto.referralCode);
+
     const user = await this.users.create({
       email: dto.email.toLowerCase(),
       passwordHash,
@@ -157,6 +170,7 @@ export class AuthService {
       emailVerificationExpiry: verificationExpiry,
       country: dto.country,
       phone: dto.phone,
+      referredByIbUserId,
     });
 
     // The verification link is a bearer credential. It is emailed and never
@@ -165,6 +179,45 @@ export class AuthService {
     this.logger.log(`Verification email dispatched to ${user.email}`);
 
     return { ...generic, userId: user.id };
+  }
+
+  /**
+   * A referral code to the partner who owns it, or undefined.
+   *
+   * ## An unusable code NEVER refuses the registration
+   *
+   * It logs and returns undefined, so the client signs up unattributed. A
+   * referral link is marketing collateral: it gets shortened, truncated by chat
+   * apps, retyped from a screenshot and shared long after a partner is
+   * suspended. Refusing a signup over any of that trades a real client for a
+   * bookkeeping detail, and the client is the thing we cannot get back.
+   *
+   * ## A SUSPENDED partner still attributes
+   *
+   * Suspension stops them earning; it does not unmake the introduction, and
+   * they keep their code and their tree precisely so the clients beneath them
+   * stay put. A reactivated partner should not find the clients they introduced
+   * while suspended have been silently reassigned to nobody.
+   *
+   * Codes are compared upper-cased and trimmed. They are issued from an
+   * unambiguous upper-case alphabet, and a client typing one off a screenshot
+   * should not be defeated by their keyboard.
+   */
+  private async resolveReferral(code: string | undefined): Promise<string | undefined> {
+    const trimmed = code?.trim().toUpperCase();
+    if (!trimmed) return undefined;
+
+    // Absent only in hand-constructed test instances — see the constructor.
+    if (!this.ib) return undefined;
+
+    const account = await this.ib.findAccountByReferralCode(trimmed);
+    if (!account) {
+      // Logged, not thrown. An operator seeing a stream of these has a real
+      // signal that a published link is wrong.
+      this.logger.warn(`Registration used an unknown referral code: ${trimmed}`);
+      return undefined;
+    }
+    return account.userId;
   }
 
   // ─── Verify Email ─────────────────────────────────────────────────────────────

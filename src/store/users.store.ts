@@ -91,6 +91,14 @@ export interface User {
   avatarFilename?: string;
   country?: string;
   phone?: string;
+  /**
+   * The partner who introduced them, or undefined for a direct signup.
+   *
+   * Set once at registration. Nothing updates it — see the column comment: a
+   * mutable attribution is a route for one partner's earnings to move to
+   * another.
+   */
+  referredByIbUserId?: string;
   createdAt: Date;
 }
 
@@ -107,6 +115,7 @@ const toUser = (r: Row): User => ({
   avatarFilename: r.avatarFilename ?? undefined,
   country: r.country ?? undefined,
   phone: r.phone ?? undefined,
+  referredByIbUserId: r.referredByIbUserId ?? undefined,
 });
 
 @Injectable()

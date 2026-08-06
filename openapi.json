@@ -4303,6 +4303,11 @@
           "phone": {
             "type": "string",
             "example": "+1234567890"
+          },
+          "referralCode": {
+            "type": "string",
+            "example": "K7M2PQR9",
+            "maxLength": 50
           }
         },
         "required": [
