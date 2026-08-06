@@ -6,6 +6,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgEnum,
   pgTable,
   primaryKey,
@@ -1069,3 +1070,114 @@ export const refreshTokens = pgTable(
     index('refresh_tokens_expires_at_idx').on(t.expiresAt),
   ],
 );
+
+// ═══ IB / PARTNERS ═══════════════════════════════════════════════════════════
+//
+// The introducing-broker programme. Rebuilt from zero after the commission
+// engine was removed — see migration 0028 for what left and why.
+
+/**
+ * How a level is paid. Checked against several forex-CRM vendors: brokers run
+ * fixed per-lot rebates OR revenue-share percentages, and many run both across
+ * different programmes. A schema that assumed one of them would need a
+ * migration on a table partners reference the first time the business changed
+ * its mind, so the choice is a column from day one.
+ *
+ *   revenue_share  `rateValue` is a PERCENTAGE of the commission pool. The
+ *                  enabled levels must total <= 100 between them.
+ *   per_lot        `rateValue` is an AMOUNT per standard lot, in the platform's
+ *                  default currency. Levels do not compete for a pool, so there
+ *                  is no cross-level ceiling — the total is whatever the
+ *                  operator configured, and a per-lot ladder that costs more
+ *                  than the spread earns is a commercial mistake this table
+ *                  cannot detect.
+ *
+ * CPA (a one-off payment per funded client) is deliberately ABSENT. It is a
+ * third model, it is real, and it is not a per-level rate — it is a per-client
+ * event with its own qualification rules. Adding it as a third enum value would
+ * make `rateValue` mean three things and none of them clearly.
+ */
+export const ibPayoutModelEnum = pgEnum('ib_payout_model', ['revenue_share', 'per_lot']);
+
+/**
+ * The payout ladder: how many levels deep earnings travel, and what each takes.
+ * ## What a "level" means here
+ *
+ * An IB hierarchy is a chain. A LEVEL 1 partner deals with the broker directly;
+ * a LEVEL 2 partner was recruited by an L1, and so on. When a client an L2
+ * introduced generates revenue, the L2 earns, and the L1 above them earns a
+ * smaller override on top. Earnings flow UPWARD.
+ *
+ * So the number of rows in this table is the DEPTH OF THE PAYOUT CHAIN, not a
+ * cap on how many partners may exist. Two rows — the default this ships with —
+ * means a client's activity pays their direct partner and that partner's
+ * parent, and stops there. A third row would extend the chain one hop further,
+ * not permit a third partner.
+ *
+ * That distinction is the reason this is a table of levels rather than a column
+ * on the partner: "how far do earnings travel" is one platform-wide decision,
+ * and putting it on each partner would let two partners in one chain disagree
+ * about it.
+ *
+ * ## `rateValue` is NUMERIC, never a float
+ *
+ * It multiplies money. §6.1 applies to anything that TOUCHES an amount, not
+ * only to amounts themselves: a rate held as a float reintroduces the error the
+ * decimal columns exist to prevent, one multiplication later.
+ *
+ * Under `revenue_share` the enabled levels must not exceed 100 between them —
+ * the service enforces that, because a database CHECK cannot see the other
+ * rows. Under `per_lot` there is no such ceiling; see the enum above.
+ *
+ * ## Nothing consumes these rates yet, and that is deliberate
+ *
+ * The commission engine was removed with the MT5 bridge, so no deal arrives to
+ * be paid on. This table is the CONFIGURATION the engine will read, and it is
+ * built now because the approval flow already needs the hierarchy half of it —
+ * `maxDirectPartners` is enforced the day partners exist. What must NOT happen
+ * is a screen reporting earnings computed from these numbers before an engine
+ * exists to compute them; that was the "commission plans" screen this replaced.
+ *
+ * ## `level` is the primary key
+ *
+ * Not a surrogate uuid. The level number IS the identity — "level 2" means one
+ * thing platform-wide — and an ordering that lives in a separate column can
+ * disagree with the key. It also makes `ib_accounts.level` a plain integer FK
+ * that a person reading a row can interpret without a join.
+ */
+export const ibLevels = pgTable('ib_levels', {
+  /** 1 is the partner closest to the broker; higher numbers sit further down. */
+  level: integer('level').primaryKey(),
+  name: varchar('name', { length: 80 }).notNull(),
+  payoutModel: ibPayoutModelEnum('payout_model').notNull().default('revenue_share'),
+  /**
+   * The rate, whose UNIT depends on `payoutModel` — a percentage for
+   * revenue_share, an amount per lot for per_lot.
+   *
+   * One column rather than two nullable ones, because a level has exactly one
+   * rate and a pair where one is always null invites reading the wrong one.
+   * The model is what disambiguates, and it is NOT NULL.
+   *
+   * 12,4 rather than 5,2: it has to hold a percentage like 30.00 AND a per-lot
+   * amount, and per-lot rates are quoted in cents at the low end. Four decimals
+   * so a $2.5000 rebate and a 2.5% share both survive without rounding.
+   */
+  rateValue: numeric('rate_value', { precision: 12, scale: 4 }).notNull().default('0'),
+  /**
+   * How many partners this level may recruit directly. NULL means unlimited.
+   *
+   * Checked at approval, when a parent is assigned. Nullable rather than a
+   * sentinel like 0 or -1, because "no limit" is genuinely the absence of a
+   * limit and a magic number invites an off-by-one at every read.
+   */
+  maxDirectPartners: integer('max_direct_partners'),
+  /**
+   * A disabled level stops NEW partners being placed at it and takes no share.
+   * Existing partners at that level keep their placement — the same reasoning
+   * as a disabled currency, and for the same reason: the alternative is
+   * silently re-levelling people who did nothing wrong.
+   */
+  enabled: boolean('enabled').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

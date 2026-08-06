@@ -131,6 +131,15 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'currency.create', label: 'Currency added', group: 'Configuration' },
   { action: 'currency.update', label: 'Currency changed', group: 'Configuration' },
   { action: 'currency.delete', label: 'Currency removed', group: 'Configuration' },
+  /*
+   * The IB payout ladder. Configuration rather than Money for the same reason
+   * currencies are: no balance moves. What DOES move is what every partner
+   * earns from that point on, and a level's share changing is the kind of thing
+   * somebody asks about a quarter later.
+   */
+  { action: 'ib_level.create', label: 'IB level added', group: 'Configuration' },
+  { action: 'ib_level.update', label: 'IB level changed', group: 'Configuration' },
+  { action: 'ib_level.delete', label: 'IB level removed', group: 'Configuration' },
 
   // ── Security controls ─────────────────────────────────────────────────────
   { action: 'ip_allowlist.add', label: 'Network rule added', group: 'Security' },

@@ -1177,6 +1177,148 @@
         ]
       }
     },
+    "/v1/admin/ib-levels": {
+      "get": {
+        "description": "Includes disabled levels — managing them is the point of the screen. The number of ENABLED levels is the depth of the payout chain.",
+        "operationId": "AdminIbLevelsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IbLevelDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The payout ladder, shallowest level first",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "The level number is chosen, not auto-assigned. Under revenue_share the enabled levels must total at most 100% — the refusal names the current total and the room left.",
+        "operationId": "AdminIbLevelsController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateIbLevelDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbLevelDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add a level to the ladder",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib-levels/{level}": {
+      "patch": {
+        "description": "PATCH, and `level` itself is not editable: it is the primary key and partner records reference it, so renumbering is a data migration rather than an edit.",
+        "operationId": "AdminIbLevelsController_update",
+        "parameters": [
+          {
+            "name": "level",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateIbLevelDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbLevelDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update a level",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "description": "Refuses to empty the ladder: a platform with no levels can approve no partners. Once partner records exist this will also refuse a level anybody is placed at.",
+        "operationId": "AdminIbLevelsController_remove",
+        "parameters": [
+          {
+            "name": "level",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Remove a level",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/kyc/config": {
       "get": {
         "operationId": "KycController_getConfig",
@@ -4182,6 +4324,128 @@
             "type": "number"
           },
           "isDefault": {
+            "type": "boolean"
+          }
+        }
+      },
+      "IbLevelDto": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "number",
+            "example": 1,
+            "description": "1 is closest to the broker; higher sits further down."
+          },
+          "name": {
+            "type": "string",
+            "example": "Master Partner"
+          },
+          "payoutModel": {
+            "type": "string",
+            "enum": [
+              "revenue_share",
+              "per_lot"
+            ]
+          },
+          "rateValue": {
+            "type": "string",
+            "example": "70.0000",
+            "description": "A percentage of the pool under revenue_share, an amount per lot under per_lot. A decimal string, never a number (§6.1)."
+          },
+          "maxDirectPartners": {
+            "type": "number",
+            "nullable": true,
+            "example": null,
+            "description": "How many partners this level may recruit directly. Null means unlimited."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "A disabled level takes no share and accepts no new partners."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "level",
+          "name",
+          "payoutModel",
+          "rateValue",
+          "maxDirectPartners",
+          "enabled",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "CreateIbLevelDto": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "number",
+            "example": 3,
+            "minimum": 1,
+            "maximum": 10
+          },
+          "name": {
+            "type": "string",
+            "example": "Sub Partner"
+          },
+          "payoutModel": {
+            "type": "string",
+            "enum": [
+              "revenue_share",
+              "per_lot"
+            ],
+            "default": "revenue_share"
+          },
+          "rateValue": {
+            "type": "string",
+            "example": "30.0000"
+          },
+          "maxDirectPartners": {
+            "type": "number",
+            "nullable": true,
+            "description": "Omit or send null for unlimited."
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "level",
+          "name",
+          "rateValue"
+        ]
+      },
+      "UpdateIbLevelDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Sub Partner"
+          },
+          "payoutModel": {
+            "type": "string",
+            "enum": [
+              "revenue_share",
+              "per_lot"
+            ]
+          },
+          "rateValue": {
+            "type": "string",
+            "example": "30.0000"
+          },
+          "maxDirectPartners": {
+            "type": "number",
+            "nullable": true
+          },
+          "enabled": {
             "type": "boolean"
           }
         }
