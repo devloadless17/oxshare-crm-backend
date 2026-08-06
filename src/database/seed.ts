@@ -97,6 +97,32 @@ export async function runSeeds(): Promise<void> {
     .onConflictDoNothing({ target: users.email });
 
   /*
+   * A second e2e client, VERIFIED but with no KYC submission at all.
+   *
+   * The approved one above cannot exercise the onboarding wizard — there is
+   * nothing left for it to do — and a spec that submitted would leave the
+   * fixture in `submitted`, where `resetKyc` refuses, so the second run would
+   * find a different world than the first. A separate never-submitted client is
+   * what makes the wizard spec repeatable: it stops short of submitting, so the
+   * row stays `in_progress`, which `saveStep` accepts indefinitely.
+   */
+  await db
+    .insert(users)
+    .values({
+      email: 'e2e-kyc@oxshare.com',
+      passwordHash: clientHash,
+      firstName: 'Kaya',
+      lastName: 'Onboarding',
+      type: 'individual',
+      status: 'active',
+      emailVerified: true,
+      verificationLevel: 0,
+      country: 'United Arab Emirates',
+      phone: '+971500000001',
+    })
+    .onConflictDoNothing({ target: users.email });
+
+  /*
    * And an APPROVED submission for it, so `/kyc` reaches the terminal screen
    * directly rather than bouncing through a step on the way.
    *
