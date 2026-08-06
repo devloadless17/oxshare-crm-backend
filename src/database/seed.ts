@@ -342,9 +342,33 @@ export async function runSeeds(): Promise<void> {
     'Suspicious activity — additional verification required',
   ].map((label) => ({ context: 'withdrawal' as const, label }));
 
+  /*
+   * Seeded here rather than in a migration, and that placement is forced.
+   *
+   * `rejection_context` gained 'partner' in migration 0030, and Postgres will
+   * not let a new enum label be USED until the transaction that added it
+   * commits. Drizzle's migrator runs every pending migration inside ONE
+   * transaction, so an INSERT with context 'partner' fails even from a LATER
+   * migration file — splitting it out is not enough. Seeds run after migration
+   * has committed, which is the only place this insert is legal on a fresh
+   * database.
+   *
+   * `use-reject-options.ts` falls back to `[]` rather than blocking a decision,
+   * so an unseeded context does not break the review screen — it silently turns
+   * every refusal into free text and the reasons stop being comparable across
+   * reviewers. That is the failure this avoids, not a crash.
+   */
+  const partnerReasons = [
+    'Insufficient trading or introducing experience',
+    'Expected volume does not meet the programme minimum',
+    'Unable to verify the website or business details provided',
+    'Application is incomplete or unclear',
+    'Does not meet the eligibility criteria for this programme',
+  ].map((label) => ({ context: 'partner' as const, label }));
+
   await db
     .insert(rejectionReasons)
-    .values([...kycReasons, ...withdrawalReasons])
+    .values([...kycReasons, ...withdrawalReasons, ...partnerReasons])
     .onConflictDoNothing();
 
   // Default KYC onboarding steps — only when the config table is empty, so a

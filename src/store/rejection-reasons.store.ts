@@ -7,7 +7,17 @@ import { rejectionReasons } from '../database/schema';
 // FR-ADM-03: rejection of a withdrawal or verification request is accompanied
 // by "a reason from a configurable list". Defaults are seeded idempotently in
 // src/database/seed.ts (UNIQUE(context, label) makes re-seeding a no-op).
-export type RejectionContext = 'kyc' | 'withdrawal';
+/*
+ * DERIVED from the enum rather than restated.
+ *
+ * This was a hand-written union and it went stale the moment 'partner' was
+ * added to `rejection_context` — the store then returned rows the type said
+ * could not exist, and tsc pointed at the assignment rather than at the union.
+ * Reading it off the column means the next context added to the schema is a
+ * type error at every switch that does not handle it, which is where the
+ * mismatch is worth surfacing.
+ */
+export type RejectionContext = (typeof rejectionReasons.context.enumValues)[number];
 
 export interface RejectionReason {
   id: string;

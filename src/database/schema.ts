@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   boolean,
   check,
+  foreignKey,
   uniqueIndex,
   index,
   integer,
@@ -37,7 +38,13 @@ export const kycStatusEnum = pgEnum('kyc_status', [
   'rejected',
 ]);
 export const adminRoleEnum = pgEnum('admin_role', ['master_admin', 'sub_admin']);
-export const rejectionContextEnum = pgEnum('rejection_context', ['kyc', 'withdrawal']);
+/*
+ * 'withdrawal' outlived the withdrawal flow the teardown removed, deliberately:
+ * the label is still present in the database and rows referencing it may exist,
+ * and dropping a value from a PG enum means rewriting the type. It comes back
+ * with the money rebuild.
+ */
+export const rejectionContextEnum = pgEnum('rejection_context', ['kyc', 'withdrawal', 'partner']);
 
 // ── users (ARCHITECTURE §5; indexes per "Required indexes") ──────────────────
 export const users = pgTable(
@@ -1181,3 +1188,204 @@ export const ibLevels = pgTable('ib_levels', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/*
+ * ── IB applications and accounts ─────────────────────────────────────────────
+ *
+ * Two tables, not one with a status column.
+ *
+ * The application is a REQUEST; the account is the GRANT. Collapsing them means
+ * every read of "is this person a partner" has to also ask "and was their
+ * application approved", and the day somebody forgets the second half a
+ * rejected applicant is a partner. Here the question is `SELECT FROM
+ * ib_accounts` and there is no second half.
+ *
+ * It also makes re-application honest. A rejected applicant may apply again;
+ * that is a new row with its own reason and reviewer, and the old refusal stays
+ * readable instead of being overwritten by the next attempt.
+ */
+export const ibApplicationStatusEnum = pgEnum('ib_application_status', [
+  'pending',
+  'approved',
+  'rejected',
+]);
+
+export const ibApplications = pgTable(
+  'ib_applications',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** Why they want it, in their words. Free text; the reviewer reads it. */
+    motivation: text('motivation'),
+    /** Self-reported, unverified, and labelled as such on both screens. */
+    expectedVolume: varchar('expected_volume', { length: 120 }),
+    website: varchar('website', { length: 2048 }),
+    status: ibApplicationStatusEnum('status').notNull().default('pending'),
+    /**
+     * Composed the same way a KYC refusal is: a configured reason, optionally
+     * suffixed with the reviewer's note. Stored composed, because that is the
+     * sentence the client was shown and re-deriving it later from parts that
+     * may have been edited would show them a different one.
+     */
+    rejectionReason: text('rejection_reason'),
+    /** The admin who decided. No FK to admin_users — see `audit_log.actor_id`. */
+    reviewedBy: uuid('reviewed_by'),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+    submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /*
+     * At most one PENDING application per user, in the database rather than in
+     * a service check.
+     *
+     * A partial unique index, because the constraint is only on `pending`: a
+     * user may have any number of rejected applications behind them. Doing this
+     * with a read-then-insert loses to a double-submit — two clicks, two
+     * requests, both read zero, both insert — and the reviewer then sees the
+     * same person twice in the queue.
+     */
+    uniqueIndex('ib_applications_one_pending_uq')
+      .on(t.userId)
+      .where(sql`${t.status} = 'pending'`),
+    index('ib_applications_status_submitted_idx').on(t.status, t.submittedAt),
+  ],
+);
+
+/**
+ * A partner. One row per person, created only on approval.
+ *
+ * ## `parentIbUserId` is a REAL foreign key this time
+ *
+ * The deleted `ib_profiles.parent_ib_id` was a bare uuid with no constraint, so
+ * a parent could point at a row that had never existed or had gone. The chain
+ * this column describes is walked per commission calculation; a dangling link
+ * in it is a payout that silently stops halfway up.
+ *
+ * Postgres will not stop a CYCLE, though — a self-referencing FK only checks
+ * that the target exists. `wouldCreateCycle` in the service is what does, and
+ * it must run on every reassignment.
+ */
+export const ibAccounts = pgTable(
+  'ib_accounts',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    level: integer('level')
+      .notNull()
+      .references(() => ibLevels.level, { onDelete: 'restrict' }),
+    /** NULL means they deal with the broker directly — the top of a chain. */
+    parentIbUserId: uuid('parent_ib_user_id'),
+    /**
+     * What a client types at registration to be attributed to this partner.
+     *
+     * Unique platform-wide and never reissued: attribution is permanent per
+     * client, so a code that came back around would credit somebody else's
+     * introductions to whoever holds it now.
+     */
+    referralCode: varchar('referral_code', { length: 50 }).notNull().unique(),
+    /**
+     * A suspended partner keeps their code and their tree — clients attributed
+     * to them stay attributed — and stops earning. Deleting the row instead
+     * would orphan every client beneath them.
+     */
+    active: boolean('active').notNull().default(true),
+    /** The application this grant came from, so the decision stays traceable. */
+    applicationId: uuid('application_id').references(() => ibApplications.id, {
+      onDelete: 'restrict',
+    }),
+    approvedAt: timestamp('approved_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /*
+     * The self-reference, declared here rather than inline on the column.
+     * `.references(() => ibAccounts.userId)` on the column itself is a circular
+     * reference at module scope — the table is not bound yet. Inside the config
+     * callback it is, so this is where a self-FK goes.
+     */
+    foreignKey({
+      columns: [t.parentIbUserId],
+      foreignColumns: [t.userId],
+      name: 'ib_accounts_parent_fk',
+    }).onDelete('restrict'),
+    /* The hot read: "how many partners does this parent already hold?", asked
+       on every approval to enforce `ibLevels.maxDirectPartners`. */
+    index('ib_accounts_parent_idx').on(t.parentIbUserId),
+    index('ib_accounts_level_idx').on(t.level),
+  ],
+);
+
+/*
+ * ── wallets ──────────────────────────────────────────────────────────────────
+ *
+ * Rebuilt after the money teardown, deliberately smaller than what it replaced.
+ *
+ * This is a BALANCE HOLDER and nothing else. The old table came with
+ * `ledger_entries`, `transactions` and `transfers`, and it was that cluster —
+ * not the wallet — that the teardown removed. It is back on its own because the
+ * partner programme needs somewhere for a commission to land and registration
+ * needs a wallet to open, and because the portal was showing a hardcoded $0.00
+ * to clients while a real balance existed.
+ *
+ * ⚠️ WHAT THIS DOES NOT YET HAVE. The dropped `ledger_entries` carried
+ * `ON CONFLICT (wallet, reference_type, reference_id)`, which was the only
+ * database-level guard against a replayed deposit crediting a client twice.
+ * That guarantee left with it and has NOT been reintroduced here. Nothing
+ * writes to `balance` yet, so nothing is currently at risk — but the first code
+ * that credits this column must bring the ledger and its idempotency key back
+ * with it, per §6.2 and §6.3. A service-level "have I seen this reference?"
+ * check is not a substitute; that is what the constraint was protecting against.
+ *
+ * §6.1: NUMERIC(28,8), never a float, and it leaves this process as a string.
+ */
+export const wallets = pgTable(
+  'wallets',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * The currency, by code. A real FK, so a wallet cannot be opened in a
+     * currency the platform does not have — `currencies` is operator-editable
+     * and a free-text code here would drift from it silently.
+     */
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
+    /**
+     * 28,8 per §6.1. The precision is not negotiable and not "generous": eight
+     * decimal places is what a crypto balance needs, and a column that cannot
+     * hold one has to be migrated under a live balance later.
+     */
+    balance: numeric('balance', { precision: 28, scale: 8 }).notNull().default('0'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /*
+     * One wallet per user per currency.
+     *
+     * In the database, because "open a wallet if they have none" is a
+     * read-then-insert and two concurrent registrations of the same account —
+     * or a retried request — otherwise leave a client with two USD wallets and
+     * a balance split across them. The insert is written to expect this and
+     * treat the conflict as success.
+     */
+    uniqueIndex('wallets_user_currency_uq').on(t.userId, t.currency),
+    index('wallets_user_idx').on(t.userId),
+    /*
+     * A balance may not go negative.
+     *
+     * A CHECK rather than a service guard: this one IS expressible per-row, it
+     * costs nothing, and it is the last line between a bug in a debit path and
+     * a client owing the broker money silently. Credit lines are not a feature
+     * here; if they ever are, this constraint is where that decision surfaces.
+     */
+    check('wallets_balance_non_negative', sql`${t.balance} >= 0`),
+  ],
+);

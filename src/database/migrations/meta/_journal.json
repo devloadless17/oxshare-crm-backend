@@ -211,6 +211,13 @@
       "when": 1786284355600,
       "tag": "0029_ib_levels",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1786370755600,
+      "tag": "0030_ib_accounts_and_wallets",
+      "breakpoints": true
     }
   ]
 }
