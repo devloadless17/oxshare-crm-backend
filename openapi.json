@@ -1825,6 +1825,37 @@
         ]
       }
     },
+    "/v1/payments/methods": {
+      "get": {
+        "description": "Enabled methods with configured pay-to details, in the operator’s chosen order. A method the operator has not finished setting up is absent rather than shown as unusable.",
+        "operationId": "PaymentsController_listMethods",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PaymentMethodDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Deposit methods available to this client",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
     "/v1/payments/deposits": {
       "post": {
         "description": "Creates a PENDING deposit. No balance changes until the operator confirms the money arrived. The returned reference is what reconciles the payment to this request.",
@@ -2061,6 +2092,148 @@
         "summary": "The signed-in client's own wallet <-> trading-account transfers",
         "tags": [
           "payments"
+        ]
+      }
+    },
+    "/v1/admin/payment-methods": {
+      "get": {
+        "description": "Includes disabled methods and ones with no pay-to details — managing those is the point of the screen. Clients see a narrower list: GET /payments/methods returns only what is enabled AND configured.",
+        "operationId": "AdminPaymentMethodsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PaymentMethodDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every payment method, configured or not",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "A method with no `payTo` is created but never offered to clients — see the service. That is deliberate: an account number nobody has filled in cannot receive money, and inventing one is how money leaves and does not arrive.",
+        "operationId": "AdminPaymentMethodsController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePaymentMethodDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentMethodDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add a payment method",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-methods/{key}": {
+      "patch": {
+        "description": "PATCH, and `key` itself is not editable: it is the primary key and `transactions.method_key` references it, so renaming is a data migration rather than an edit.",
+        "operationId": "AdminPaymentMethodsController_update",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePaymentMethodDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentMethodDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update a payment method",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "description": "Refuses one that any deposit references — disabling is almost always what was meant, and it keeps the history readable while stopping new deposits.",
+        "operationId": "AdminPaymentMethodsController_remove",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Remove a payment method",
+        "tags": [
+          "admin"
         ]
       }
     },
@@ -4454,6 +4627,319 @@
           "admin"
         ]
       }
+    },
+    "/v1/admin/withdrawals": {
+      "get": {
+        "operationId": "AdminMoneyController_listWithdrawals",
+        "parameters": [
+          {
+            "name": "state",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Withdrawal requests with per-state counts (amounts are strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/withdrawals/{id}/approve": {
+      "patch": {
+        "operationId": "AdminMoneyController_approveWithdrawal",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action, reused only when retrying that same one. The state guards below make a REPLAYED CAUSE a no-op; this makes a replayed REQUEST one too (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalRowDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Approve a pending withdrawal — funds stay on hold until settlement",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/withdrawals/{id}/reject": {
+      "patch": {
+        "operationId": "AdminMoneyController_rejectWithdrawal",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action, reused only when retrying that same one. The state guards below make a REPLAYED CAUSE a no-op; this makes a replayed REQUEST one too (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WithdrawalRejectDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalRowDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Reject a pending withdrawal — releases the hold, emails the client",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/withdrawals/{id}/settle": {
+      "patch": {
+        "description": "Requires `withdrawals.settle`, which is separate from `withdrawals.approve` so the two steps can be granted to different people (separation of duties, R-5.4).",
+        "operationId": "AdminMoneyController_settleWithdrawal",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action, reused only when retrying that same one. The state guards below make a REPLAYED CAUSE a no-op; this makes a replayed REQUEST one too (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettleWithdrawalDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalRowDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark an approved withdrawal paid — posts the debit and clears the hold",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/reconciliation": {
+      "get": {
+        "description": "The same check the hourly job runs: every wallet balance against the sum of its own ledger, and every confirmed accrual against the entry that should have credited it. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed.",
+        "operationId": "AdminMoneyController_reconcile",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Run reconciliation now and return the report (§12.2)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ledger": {
+      "get": {
+        "operationId": "AdminMoneyController_listLedger",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "walletId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entryType",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Append-only ledger, filterable for reconciliation",
+        "tags": [
+          "admin"
+        ]
+      }
     }
   },
   "info": {
@@ -5575,6 +6061,74 @@
           "limit"
         ]
       },
+      "PaymentMethodDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "whish",
+            "description": "A stable machine key. Never renamed."
+          },
+          "name": {
+            "type": "string",
+            "example": "Whish Money"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "gateway",
+              "crypto"
+            ],
+            "description": "Decides the deposit FLOW, so a screen branches on this rather than on the key — a screen that checks `key === \"whish\"` needs editing every time a method is added."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "logoUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "instructions": {
+            "type": "string",
+            "nullable": true,
+            "description": "What the client must do, in the operator's words. Rendered verbatim."
+          },
+          "payTo": {
+            "type": "string",
+            "nullable": true,
+            "description": "The account the client sends to. A method with none is NOT offered — see PaymentMethodsService.listAvailable."
+          },
+          "minAmount": {
+            "type": "string",
+            "nullable": true
+          },
+          "maxAmount": {
+            "type": "string",
+            "nullable": true
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "kind",
+          "currency",
+          "logoUrl",
+          "instructions",
+          "payTo",
+          "minAmount",
+          "maxAmount",
+          "enabled",
+          "sortOrder"
+        ]
+      },
       "RequestDepositDto": {
         "type": "object",
         "properties": {
@@ -5589,10 +6143,7 @@
           },
           "method": {
             "type": "string",
-            "enum": [
-              "bank_transfer",
-              "usdt_trc20"
-            ],
+            "example": "whish",
             "description": "How the client is sending the money. Decides which instructions they are shown."
           },
           "destinationTradingAccountId": {
@@ -5628,10 +6179,8 @@
           },
           "method": {
             "type": "string",
-            "enum": [
-              "bank_transfer",
-              "usdt_trc20"
-            ]
+            "example": "whish",
+            "description": "The `payment_methods.key` used."
           },
           "state": {
             "type": "string",
@@ -5928,6 +6477,107 @@
           "state",
           "createdAt"
         ]
+      },
+      "CreatePaymentMethodDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "whish",
+            "maxLength": 40
+          },
+          "name": {
+            "type": "string",
+            "example": "Whish Money"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "gateway",
+              "crypto"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "logoUrl": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "instructions": {
+            "type": "string",
+            "description": "Shown verbatim on the deposit screen."
+          },
+          "payTo": {
+            "type": "string",
+            "description": "The Whish number, IBAN or wallet address."
+          },
+          "minAmount": {
+            "type": "string",
+            "example": "10.00"
+          },
+          "maxAmount": {
+            "type": "string",
+            "example": "5000.00"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "sortOrder": {
+            "type": "number",
+            "default": 0
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "kind",
+          "currency"
+        ]
+      },
+      "UpdatePaymentMethodDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "gateway",
+              "crypto"
+            ]
+          },
+          "currency": {
+            "type": "string"
+          },
+          "logoUrl": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "payTo": {
+            "type": "string"
+          },
+          "minAmount": {
+            "type": "string"
+          },
+          "maxAmount": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "number"
+          }
+        }
       },
       "KycFieldConfigDto": {
         "type": "object",
@@ -7997,6 +8647,162 @@
         "required": [
           "cidr",
           "label"
+        ]
+      },
+      "WithdrawalUserDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "firstName",
+          "lastName"
+        ]
+      },
+      "WithdrawalRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string",
+            "description": "Monetary value — always a string, never a number"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "success",
+              "failure",
+              "rejected"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "providerRef": {
+            "type": "string",
+            "nullable": true
+          },
+          "destination": {
+            "type": "string",
+            "nullable": true
+          },
+          "rejectionReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "requestedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reviewedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "settledAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "user": {
+            "$ref": "#/components/schemas/WithdrawalUserDto"
+          }
+        },
+        "required": [
+          "id",
+          "amount",
+          "currency",
+          "state",
+          "provider",
+          "requestedAt",
+          "user"
+        ]
+      },
+      "WithdrawalListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WithdrawalRowDto"
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "total",
+          "page",
+          "limit",
+          "counts"
+        ]
+      },
+      "WithdrawalRejectDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Free-text reason, when not using a configured reasonId."
+          },
+          "reasonId": {
+            "type": "string",
+            "description": "Id of a configured rejection reason."
+          }
+        }
+      },
+      "SettleWithdrawalDto": {
+        "type": "object",
+        "properties": {
+          "providerRef": {
+            "type": "string",
+            "example": "wise-tx-9f3a1c"
+          }
+        },
+        "required": [
+          "providerRef"
         ]
       },
       "ErrorResponseDto": {

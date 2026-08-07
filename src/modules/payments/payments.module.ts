@@ -1,7 +1,10 @@
 import { Module } from '@nestjs/common';
 import { PaymentsController } from './payments.controller';
+import { AdminPaymentMethodsController } from './admin-payment-methods.controller';
+import { AdminAuthModule } from '../admin/admin-auth.module';
 import { TransactionsService } from './transactions.service';
 import { TransfersService } from './transfers.service';
+import { PaymentMethodsService } from './payment-methods.service';
 import { WalletModule } from '../wallet/wallet.module';
 import { IdentityModule } from '../identity/identity.module';
 import { CurrenciesModule } from '../currencies/currencies.module';
@@ -14,8 +17,14 @@ import { AdminAuditService } from '../admin/admin-audit.service';
   // CurrenciesModule so the money paths can refuse an unknown or DISABLED
   // currency at runtime — the check that replaced the old `'USD' | 'USDT'`
   // union when currencies became operator data.
-  imports: [WalletModule, IdentityModule, CurrenciesModule],
-  controllers: [PaymentsController],
+  /*
+   * `AdminAuthModule` for `PermissionsGuard`, which the payment-methods admin
+   * controller needs. That is the SAME narrow import the settings, currencies
+   * and IB modules make — it carries the admin guards and not the back-office
+   * graph, which is the thing the note below is protecting against.
+   */
+  imports: [WalletModule, IdentityModule, CurrenciesModule, AdminAuthModule],
+  controllers: [PaymentsController, AdminPaymentMethodsController],
   /*
    * `SecuritySettingsService` and `AdminAuditService` are provided here rather
    * than imported from AdminModule, deliberately: importing the admin module
@@ -26,6 +35,7 @@ import { AdminAuditService } from '../admin/admin-audit.service';
    */
   providers: [
     TransactionsService,
+    PaymentMethodsService,
     TransfersService,
     WithdrawalOtpService,
     SecuritySettingsService,
@@ -37,6 +47,6 @@ import { AdminAuditService } from '../admin/admin-audit.service';
    * survived the module's whole life without gaining a method. The real work is
    * in the three services beside it.
    */
-  exports: [TransactionsService, TransfersService],
+  exports: [TransactionsService, TransfersService, PaymentMethodsService],
 })
 export class PaymentsModule {}

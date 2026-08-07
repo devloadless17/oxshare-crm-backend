@@ -5,6 +5,7 @@ import { TransactionsService } from '../src/modules/payments/transactions.servic
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { MoneyLimits } from '../src/config/money-limits';
+import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
 import { SYSTEM_ACTOR } from '../src/common/security/actor';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -27,11 +28,13 @@ const ADMIN = '00000000-0000-4000-8000-000000000001';
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
   wallets = new WalletService(ctx.db);
+  const currencies = new CurrenciesService(ctx.db);
   transactions = new TransactionsService(
     wallets,
     ctx.db,
     new MoneyLimits(new ConfigService()),
-    new CurrenciesService(ctx.db),
+    new PaymentMethodsService(ctx.db, currencies),
+    currencies,
   );
 }, 120_000);
 

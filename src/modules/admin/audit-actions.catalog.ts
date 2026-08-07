@@ -57,15 +57,23 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   /*
    * ── Money ────────────────────────────────────────────────────────────────
    *
-   * Empty, deliberately. `withdrawal.approve|reject|settle` and
-   * `program.create|update` left with the money teardown, and this comment
-   * stays so the next person does not read the gap as an oversight.
+   * `withdrawal.*` is back with the money rebuild. `program.create|update`
+   * is not — the commission engine returns with the MT5 bridge.
+   *
+   * These three commit INSIDE the money transaction (R-6.5), not beside it, so
+   * a payout that moved without a record of who authorised it is not a state
+   * this system can reach.
    *
    * `audit-coverage.spec.ts` reads every `@Audited(...)` string off the route
-   * metadata and fails if it is missing from this list, so the money rebuild
-   * cannot ship an unlabelled action — an action with no label here is one an
-   * operator cannot filter for, and "no results" reads as "it never happened".
+   * metadata and fails if it is missing from this list — an action with no
+   * label here is one an operator cannot filter for, and "no results" reads as
+   * "it never happened".
    */
+  { action: 'withdrawal.approve', label: 'Withdrawal approved', group: 'Compliance' },
+  { action: 'withdrawal.reject', label: 'Withdrawal rejected', group: 'Compliance' },
+  /* Settlement is the step that actually releases the money — a separate
+     permission from approval (R-5.4), and a separate line here. */
+  { action: 'withdrawal.settle', label: 'Withdrawal marked paid', group: 'Compliance' },
 
   // ── Administrators ────────────────────────────────────────────────────────
   { action: 'admin.invite', label: 'Administrator invited', group: 'Administrators' },
@@ -159,6 +167,15 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'ib.level_change', label: 'Partner level changed', group: 'Compliance' },
   { action: 'ib.parent_change', label: 'Partner parent reassigned', group: 'Compliance' },
   { action: 'ib.suspend', label: 'Partner suspended or reactivated', group: 'Compliance' },
+
+  /*
+   * Payment methods. A write here changes the account number every client is
+   * told to send money to — "who changed the Whish number, and when" is the
+   * first question asked when a deposit goes missing.
+   */
+  { action: 'payment_method.create', label: 'Payment method added', group: 'Configuration' },
+  { action: 'payment_method.update', label: 'Payment method changed', group: 'Configuration' },
+  { action: 'payment_method.delete', label: 'Payment method removed', group: 'Configuration' },
 
   // ── Security controls ─────────────────────────────────────────────────────
   { action: 'ip_allowlist.add', label: 'Network rule added', group: 'Security' },

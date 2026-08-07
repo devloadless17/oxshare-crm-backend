@@ -7,6 +7,7 @@ import { assertActorCan, type Actor } from '../../common/security/actor';
 import { money, toDecimal } from '../wallet/money';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
 import { MoneyLimits } from '../../config/money-limits';
+import { PaymentMethodsService } from './payment-methods.service';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { DRIZZLE_DB } from '../../database/database.module';
@@ -89,6 +90,12 @@ export class TransactionsService {
     private readonly wallets: WalletService,
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly limits: MoneyLimits,
+    /*
+     * Which deposit methods exist, and whether the chosen one can take money.
+     * Appended for the reason the parameter below records — the suite
+     * constructs this class positionally.
+     */
+    private readonly paymentMethods: PaymentMethodsService,
     /*
      * Decides whether a currency code is one this platform accepts right now.
      *
@@ -583,10 +590,34 @@ export class TransactionsService {
     const amount = toDecimal(params.amount);
     if (!amount.isPositive()) throw new ValidationError('Deposit amount must be positive.');
 
-    // Unknown or DISABLED currencies are refused here rather than by an @IsIn
-    // in the DTO — the enabled set is operator data and changes without a
-    // deploy. Returns the normalised (upper-cased) code.
-    const currency = await this.currencies.assertUsable(params.currency);
+    /*
+     * The METHOD decides the currency, and is checked before it.
+     *
+     * `assertUsable` refuses one that is unknown, disabled, or has no pay-to
+     * details configured — a client cannot deposit through an account nobody
+     * has set up. It returns the row, so the currency and the per-method bounds
+     * come back without a second read.
+     *
+     * This replaced an `@IsIn(DEPOSIT_METHODS)` over a hardcoded two-element
+     * union. Methods are operator data now: adding one is a row, and disabling
+     * one when a provider goes down does not need a deploy.
+     */
+    const paymentMethod = await this.paymentMethods.assertUsable(params.method);
+
+    /*
+     * The method's currency wins over whatever the client sent.
+     *
+     * A Whish deposit is a USD deposit — that is a property of the method, not
+     * a choice. Taking the caller's currency here would let a request name a
+     * method denominated in one currency and a wallet in another, and the money
+     * would land somewhere the operator never agreed to receive it.
+     */
+    const currency = await this.currencies.assertUsable(paymentMethod.currency);
+
+    // Per-method bounds AND the platform's own, because neither is derivable
+    // from the other — a provider may refuse under $20 while the platform's
+    // floor is $10.
+    this.paymentMethods.assertAmountWithin(paymentMethod, amount);
 
     const min = this.limits.minDeposit();
     const max = this.limits.maxDeposit();
@@ -650,10 +681,18 @@ export class TransactionsService {
         // PENDING. The client has promised money, not sent it. Anything else
         // here would credit a balance off an unverified claim.
         state: 'pending',
-        // The METHOD, not a payment provider — there is no provider in this
-        // flow. `manual_` keeps it obviously distinct from `whish` or a USDT
-        // gateway row, so a later reconciliation job cannot confuse the two.
-        provider: `manual_${params.method}`,
+        /*
+         * The method the client chose, as a real foreign key.
+         *
+         * `provider` keeps the `manual_` prefix beside it: it is what
+         * UNIQUE(provider, provider_ref) is scoped on, and keeping manual
+         * declarations obviously distinct from a future gateway's rows means a
+         * reconciliation job cannot confuse the two. When Whish becomes a
+         * `gateway` method its rows will carry `whish` there instead, and the
+         * two eras stay tellable apart.
+         */
+        methodKey: paymentMethod.key,
+        provider: `manual_${paymentMethod.key}`,
         providerRef: reference,
       })
       .returning();
@@ -663,7 +702,7 @@ export class TransactionsService {
       reference,
       amount: tx.amount,
       currency: tx.currency,
-      method: params.method,
+      method: paymentMethod.key,
       state: tx.state,
       createdAt: tx.createdAt.toISOString(),
     };

@@ -16,6 +16,23 @@ import { AdminTagsService } from './admin-tags.service';
 import { AdminClientsService } from './admin-clients.service';
 import { AdminComplianceService } from './admin-compliance.service';
 import { AdminRbacService } from './admin-rbac.service';
+import { AdminMoneyService } from './admin-money.service';
+import { AdminMoneyController } from './admin-money.controller';
+import { PaymentsModule } from '../payments/payments.module';
+import { WalletModule } from '../wallet/wallet.module';
+import { AdminAuthModule } from './admin-auth.module';
+import { ComplianceModule } from '../compliance/compliance.module';
+
+/*
+ * Every import above this array, including the ones that used to sit below it.
+ *
+ * `AdminMoneyService` is a MEMBER of it, and a class imported after the
+ * `const` that references it is a temporal dead zone the moment tsc emits
+ * CommonJS: `ReferenceError: Cannot access 'admin_money_service_1' before
+ * initialization`, at boot, from a file that typechecks and that vitest's ESM
+ * transform runs happily. The trailing imports predate this change and were
+ * harmless only because nothing in the array named them.
+ */
 
 const ADMIN_SERVICES = [
   AdminIpAllowlistService,
@@ -25,13 +42,19 @@ const ADMIN_SERVICES = [
   AdminClientsService,
   AdminTagsService,
   SecuritySettingsService,
+  AdminMoneyService,
 ];
-import { AdminAuthModule } from './admin-auth.module';
-import { ComplianceModule } from '../compliance/compliance.module';
 
 @Module({
-  imports: [ComplianceModule, AdminAuthModule],
-  // Seven controllers share the 'admin' prefix, one per concern, mirroring the
+  /*
+   * `PaymentsModule` and `WalletModule` for the withdrawal desk —
+   * `AdminMoneyService` drives the same `TransactionsService` state machine the
+   * client-facing routes do, rather than a second copy of it. The dependency
+   * runs one way: payments imports `AdminAuthModule` for its guards, never this
+   * module, so the back-office graph stays out of the portal's routes.
+   */
+  imports: [ComplianceModule, AdminAuthModule, PaymentsModule, WalletModule],
+  // Eight controllers share the 'admin' prefix, one per concern, mirroring the
   // services. Express registers all of their routes; there are no path
   // collisions. Order is irrelevant — no two routes overlap.
   controllers: [
@@ -43,6 +66,7 @@ import { ComplianceModule } from '../compliance/compliance.module';
     AdminAuditController,
     AdminSecuritySettingsController,
     AdminIpAllowlistController,
+    AdminMoneyController,
   ],
   providers: [
     ...ADMIN_SERVICES,

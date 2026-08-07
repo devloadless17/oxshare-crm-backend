@@ -122,5 +122,37 @@
         "label": "Reject Partner Applications"
       }
     ]
+  },
+  "withdrawals": {
+    "moduleName": "Withdrawals & Payouts",
+    "description": "Reviewing and paying out client withdrawal requests. Approve and settle are SEPARATE keys on purpose (R-5.4): approval says a payout may be released, settlement releases it. While both required the same permission, 'two people must be involved in a payout' was unexpressible — one admin could authorise their own instruction and pay it out in the same minute, with the audit log showing one name on both rows.",
+    "permissions": [
+      {
+        "key": "withdrawals.view",
+        "label": "View Withdrawal Requests"
+      },
+      {
+        "key": "withdrawals.approve",
+        "label": "Approve / Reject Withdrawals"
+      },
+      {
+        "key": "withdrawals.settle",
+        "label": "Mark Withdrawals Paid"
+      }
+    ]
+  },
+  "payments": {
+    "moduleName": "Payment Methods",
+    "description": "How clients can put money in — the methods offered on the deposit screen, their instructions, and the account details money is sent to.",
+    "permissions": [
+      {
+        "key": "payments.view",
+        "label": "View Payment Methods"
+      },
+      {
+        "key": "payments.manage",
+        "label": "Add / Edit Payment Methods"
+      }
+    ]
   }
 }

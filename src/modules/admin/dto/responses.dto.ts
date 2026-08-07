@@ -668,3 +668,13 @@ export class IpAllowlistStatusDto {
   @ApiProperty({ type: [IpAllowlistRuleDto] })
   rules: IpAllowlistRuleDto[];
 }
+
+/*
+ * Re-exported rather than redeclared.
+ *
+ * `LedgerEntryDto` was briefly declared in TWO places, and Swagger keys schemas
+ * by class name — so one definition silently overwrote the other and whichever
+ * lost produced a wrong type in both generated frontends. One declaration, in
+ * the module that owns the ledger, surfaced here for the admin routes.
+ */
+export { LedgerEntryDto, LedgerListResponseDto } from '../../wallet/dto/wallet-response.dto';

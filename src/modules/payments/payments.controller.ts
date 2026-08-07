@@ -42,6 +42,8 @@ import { EmailService } from '../email/email.service';
 import { ValidationError } from '../../common/errors/domain-errors';
 import { DepositRequestDto, RequestDepositDto } from './dto/deposit.dto';
 import { TransfersService } from './transfers.service';
+import { PaymentMethodsService } from './payment-methods.service';
+import { PaymentMethodDto } from './dto/payment-method.dto';
 import { RequestTransferDto, TransferDto } from './dto/transfer.dto';
 
 /*
@@ -67,6 +69,7 @@ import { RequestTransferDto, TransferDto } from './dto/transfer.dto';
 export class PaymentsController {
   constructor(
     private readonly transactions: TransactionsService,
+    private readonly paymentMethods: PaymentMethodsService,
     private readonly otp: WithdrawalOtpService,
     private readonly securitySettings: SecuritySettingsService,
     private readonly email: EmailService,
@@ -90,6 +93,30 @@ export class PaymentsController {
    * Behind `EmailVerifiedGuard` with the rest of this controller. A client who
    * has not confirmed their address should not be told where to send money.
    */
+  /**
+   * The deposit methods this client can actually use.
+   *
+   * NOT behind `KycVerifiedGuard`, like the other two reads: a client deciding
+   * whether to verify their identity should be able to see what payment options
+   * exist first. Nothing here is theirs — it is the platform's configuration.
+   *
+   * Only ENABLED and CONFIGURED methods are returned. A method whose pay-to
+   * details nobody has filled in cannot receive money, so offering it is
+   * offering a dead end — see `PaymentMethodsService.listAvailable`.
+   */
+  @Get('methods')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Deposit methods available to this client',
+    description:
+      'Enabled methods with configured pay-to details, in the operator’s chosen order. A method ' +
+      'the operator has not finished setting up is absent rather than shown as unusable.',
+  })
+  @ApiOkResponse({ type: PaymentMethodDto, isArray: true })
+  listMethods() {
+    return this.paymentMethods.listAvailable();
+  }
+
   @Post('deposits')
   @UseGuards(KycVerifiedGuard)
   @Idempotent()

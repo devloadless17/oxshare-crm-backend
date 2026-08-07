@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsNumberString, IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsNumberString, IsOptional, IsString, IsUUID, Length } from 'class-validator';
 
 /*
  * `DEPOSIT_CURRENCIES` is gone.
@@ -27,8 +27,18 @@ import { IsIn, IsNumberString, IsOptional, IsString, IsUUID } from 'class-valida
  * was waiting for was the automated one, and this is a different endpoint for a
  * flow that was always available.
  */
-export const DEPOSIT_METHODS = ['bank_transfer', 'usdt_trc20'] as const;
-export type DepositMethod = (typeof DEPOSIT_METHODS)[number];
+/*
+ * The hardcoded `DEPOSIT_METHODS = ['bank_transfer', 'usdt_trc20']` union was
+ * HERE, and is gone for the same reason the currency union went before it: the
+ * set is operator data now, held in `payment_methods`, and a compile-time list
+ * cannot express something the database owns at runtime.
+ *
+ * What was lost, stated plainly: the compiler no longer catches
+ * `method: 'wish'`. That check moved to runtime, where the answer actually
+ * lives — `PaymentMethodsService.assertUsable()` refuses an unknown, disabled
+ * or unconfigured key, and `transactions_method_key_payment_methods_key_fk`
+ * refuses it again at the database if a caller ever skips the service.
+ */
 
 export class RequestDepositDto {
   /**
@@ -47,11 +57,12 @@ export class RequestDepositDto {
   currency: string;
 
   @ApiProperty({
-    enum: DEPOSIT_METHODS,
+    example: 'whish',
     description: 'How the client is sending the money. Decides which instructions they are shown.',
   })
-  @IsIn(DEPOSIT_METHODS)
-  method: DepositMethod;
+  @IsString()
+  @Length(1, 40)
+  method: string;
 
   /**
    * Fund a TRADING ACCOUNT rather than leaving the money in the wallet.
@@ -100,7 +111,7 @@ export class DepositRequestDto {
   @ApiProperty({ example: 'USD' })
   currency: string;
 
-  @ApiProperty({ enum: DEPOSIT_METHODS })
+  @ApiProperty({ example: 'whish', description: 'The `payment_methods.key` used.' })
   method: string;
 
   @ApiProperty({
