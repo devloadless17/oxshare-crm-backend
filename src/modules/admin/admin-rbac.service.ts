@@ -1,8 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Admin, AdminsStore } from '../../store/admins.store';
-import { RolesStore } from '../../store/roles.store';
+import {
+  ADMIN_SORT_COLUMNS,
+  Admin,
+  AdminsStore,
+  DEFAULT_ADMIN_ORDER,
+  DEFAULT_ADMIN_SORT,
+} from '../../store/admins.store';
+import {
+  DEFAULT_ROLE_ORDER,
+  DEFAULT_ROLE_SORT,
+  ROLE_SORT_COLUMNS,
+  RolesStore,
+} from '../../store/roles.store';
+import { sortKey, sortOrder } from '../../common/sorting';
 import { InvitesStore } from '../../store/admins.store';
 import {
   AuthorizationError,
@@ -16,6 +28,20 @@ import { ClientFieldsService } from './client-fields.service';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
+
+/** One row of the administrator directory — whatever `sanitize()` admits. */
+type AdminProfile = Awaited<ReturnType<AdminRbacService['sanitize']>>;
+
+/** The opt-in paginated envelope `listAdmins` returns when asked for a page. */
+// Exported because `listAdmins` is part of a public method's return type on
+// AdminRbacController, and TypeScript cannot name an unexported interface
+// there (TS4053).
+export interface AdminDirectoryPage {
+  items: AdminProfile[];
+  total: number;
+  page: number;
+  limit: number;
+}
 
 /** `config/permissions.json`, keyed by module. The single grantable vocabulary. */
 type PermissionCatalog = Record<
@@ -219,8 +245,13 @@ export class AdminRbacService {
     }
   }
   // ─── RBAC: roles ──────────────────────────────────────────────────────────
-  async listRoles() {
-    return await this.roles.findAll();
+  async listRoles(query: { sort?: string; order?: string } = {}) {
+    return await this.roles.findAll({
+      // R-2.5. An unrecognised key is a 400 naming the allowed ones, never a
+      // silent fallback to the default ordering.
+      sort: sortKey(query.sort, ROLE_SORT_COLUMNS, DEFAULT_ROLE_SORT, 'roles'),
+      order: sortOrder(query.order, DEFAULT_ROLE_ORDER),
+    });
   }
   async createRole(
     name: string,
@@ -295,9 +326,58 @@ export class AdminRbacService {
     return { message: 'Role deleted.' };
   }
   // ─── RBAC: admin directory ────────────────────────────────────────────────
-  async listAdmins() {
-    const all = await this.admins.findAll();
-    return Promise.all(all.map((a) => this.sanitize(a)));
+  /**
+   * The administrator directory.
+   *
+   * ## The response SHAPE depends on whether paging was asked for
+   *
+   * With no `page`/`limit` this returns a bare array, exactly as it always has —
+   * the admin app's directory screen, the export service and two specs all read
+   * it that way, and administrators number in the dozens. Wrapping it
+   * unconditionally would be a breaking change to a contract with live callers,
+   * bought for a list that fits on one screen.
+   *
+   * With `page` or `limit` present it returns `{ items, total, page, limit }`,
+   * the envelope every other paginated admin list uses. A caller opts in by
+   * asking; nothing that has not asked is affected.
+   *
+   * `sort`/`order` apply to BOTH shapes — ordering is not paging, and the
+   * unpaged array was previously returned in no defined order at all.
+   */
+  /*
+   * OVERLOADED so the unpaged call site is statically an ARRAY.
+   *
+   * Without these signatures every caller sees `Array | Envelope` and has to
+   * narrow, including `exportAdmins`, which legitimately never pages. The
+   * overloads encode what the body already guarantees: paging keys absent means
+   * the array shape, and the compiler enforces that at each call site rather
+   * than each call site asserting it.
+   */
+  async listAdmins(query?: { sort?: string; order?: string }): Promise<AdminProfile[]>;
+  async listAdmins(query: {
+    sort?: string;
+    order?: string;
+    page?: string;
+    limit?: string;
+  }): Promise<AdminProfile[] | AdminDirectoryPage>;
+  async listAdmins(
+    query: { sort?: string; order?: string; page?: string; limit?: string } = {},
+  ): Promise<AdminProfile[] | AdminDirectoryPage> {
+    const sort = sortKey(query.sort, ADMIN_SORT_COLUMNS, DEFAULT_ADMIN_SORT, 'administrators');
+    const order = sortOrder(query.order, DEFAULT_ADMIN_ORDER);
+
+    const wantsPaging = query.page !== undefined || query.limit !== undefined;
+    const page = Math.max(1, parseInt(query.page ?? '1', 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(query.limit ?? '25', 10) || 25));
+
+    const { rows, total } = await this.admins.findAll({
+      sort,
+      order,
+      ...(wantsPaging ? { page, limit } : {}),
+    });
+    const items = await Promise.all(rows.map((a) => this.sanitize(a)));
+
+    return wantsPaging ? { items, total, page, limit } : items;
   }
   async updateAdmin(
     id: string,

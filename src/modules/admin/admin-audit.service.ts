@@ -1,7 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Admin, AdminsStore } from '../../store/admins.store';
 import { AuthorizationError } from '../../common/errors/domain-errors';
-import { AuditLogStore } from '../../store/audit-log.store';
+import { AUDIT_SORT_COLUMNS, AuditLogStore, DEFAULT_AUDIT_SORT } from '../../store/audit-log.store';
+import { sortKey, sortOrder } from '../../common/sorting';
 import type { Executor } from '../../database/db';
 import { decodeCursor } from '../../common/pagination';
 
@@ -113,20 +114,43 @@ export class AdminAuditService {
       cursor?: string;
       action?: string;
       subjectType?: string;
+      sort?: string;
+      order?: string;
     },
   ) {
-    if (actor.role !== 'master_admin') {
-      throw new AuthorizationError('Only the master admin can read the admin action log.');
+    /*
+     * Kept in step with `MasterAdminGuard`, which now accepts the `*` wildcard
+     * as well as the enum column. R-4.3 requires this service to re-assert
+     * independently of the guard — but "independently" means it must not TRUST
+     * the guard, not that it may disagree with it. A stricter check here than
+     * at the edge produces a route that authorises the request and then refuses
+     * it, which reads as a bug in the audit log rather than a permission.
+     */
+    if (actor.role !== 'master_admin' && !actor.permissions.includes('*')) {
+      throw new AuthorizationError('Only an unrestricted admin can read the admin action log.');
     }
+    /*
+     * Validated BEFORE the cursor is decoded, and the order matters.
+     *
+     * `decodeCursor` refuses a cursor minted under a different ordering and
+     * needs the current sort key to say which. Decoding first would produce
+     * "this cursor is for createdAt but you asked for undefined" — true, and
+     * useless to whoever has to act on it.
+     */
+    const sort = sortKey(query.sort, AUDIT_SORT_COLUMNS, DEFAULT_AUDIT_SORT, 'the audit log');
+    const order = sortOrder(query.order);
+
     return this.auditLog.findAll({
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '25', 10) || 25,
       // R-2.4. An audit trail with a gap is worse than none, because it is
       // believed — and OFFSET over an append-only table that only grows is
       // exactly where a gap appears.
-      cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
+      cursor: query.cursor ? decodeCursor(query.cursor, sort) : undefined,
       action: query.action,
       subjectType: query.subjectType,
+      sort,
+      order,
     });
   }
 }

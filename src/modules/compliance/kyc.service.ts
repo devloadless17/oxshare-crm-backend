@@ -1,7 +1,13 @@
 import { unlink } from 'fs/promises';
 import { basename, join } from 'path';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { KycStore, type KycStatus, type KycSubmission } from '../../store/kyc.store';
+import {
+  KycStore,
+  type KycSortKey,
+  type KycStatus,
+  type KycSubmission,
+} from '../../store/kyc.store';
+import type { SortOrder } from '../../common/sorting';
 import { User, UsersStore } from '../../store/users.store';
 import { KycConfigStore } from '../../store/kyc-config.store';
 import { EmailService } from '../email/email.service';
@@ -268,6 +274,9 @@ export class KycService {
       page?: number;
       limit?: number;
       scope?: ClientScope;
+      /** R-2.5 server-side sort, already validated against KYC_SORT_COLUMNS. */
+      sort?: KycSortKey;
+      order?: SortOrder;
     } = {},
   ) {
     const page = Math.max(1, filter.page ?? 1);
@@ -284,6 +293,8 @@ export class KycService {
       page,
       limit,
       scope: filter.scope,
+      sort: filter.sort,
+      order: filter.order,
     });
   }
 

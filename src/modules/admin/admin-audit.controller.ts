@@ -9,22 +9,29 @@
 // @ApiTags('admin') is repeated on each class so Swagger still groups them as one
 // tag and the generated types.gen.ts is unchanged.
 
-import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Request } from 'express';
+import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Request, Response } from 'express';
 import { Admin } from '../../store/admins.store';
 import { AdminAuditService } from './admin-audit.service';
 import { AuditActionDto, AuditListResponseDto } from './dto/responses.dto';
 import { MasterAdminGuard } from './guards/admin.guard';
 import { AUDIT_ACTIONS } from './audit-actions.catalog';
+import { AUDIT_SORT_COLUMNS } from '../../store/audit-log.store';
 import { searchQuery } from '../../common/query-params';
 import { NotClientScoped } from './guards/client-scope.decorator';
+import { Audited } from './guards/audited.decorator';
+import { AdminExportService } from './admin-export.service';
+import { exportFormat, streamCsv } from '../../common/export/export-response';
 
 /** Append-only admin action log (master admin only). */
 @ApiTags('admin')
 @Controller('admin')
 export class AdminAuditController {
-  constructor(private readonly audit: AdminAuditService) {}
+  constructor(
+    private readonly audit: AdminAuditService,
+    private readonly exports: AdminExportService,
+  ) {}
 
   /**
    * The action vocabulary the filter is built from.
@@ -46,6 +53,76 @@ export class AdminAuditController {
     return AUDIT_ACTIONS;
   }
 
+  /**
+   * The admin action log as CSV — master admin only.
+   *
+   * ── Placed before `audit-log`, and why order does NOT matter here ──────────
+   *
+   * Unlike the client and KYC exports, neither of these routes is
+   * parameterised, so `audit-log/export` and `audit-log` cannot shadow one
+   * another. It is placed adjacent for readability rather than out of
+   * necessity.
+   *
+   * ── `MasterAdminGuard`, asserted a second time in the service ─────────────
+   *
+   * The trail records who acted on which clients, which makes "who may read it"
+   * a privileged question in its own right. `AdminExportService.auditBatch`
+   * re-checks `role === 'master_admin'` rather than trusting the decorator, for
+   * the reason `AdminAuditService.listAuditLog` records: master-only is
+   * deliberately not a grantable permission key, and a guard runs only on an
+   * HTTP request.
+   *
+   * ── This export appears in the NEXT export, not its own ───────────────────
+   *
+   * The audit row lands after the read it describes. That is the useful
+   * behaviour: a reader of one export can see that the previous one happened.
+   */
+  @Get('audit-log/export')
+  @UseGuards(MasterAdminGuard)
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Export the filtered admin action log as CSV (master admin only)',
+    description:
+      'The same `action` and `subjectType` filters as GET /admin/audit-log, over every matching ' +
+      'row rather than one page. The `details` column is the jsonb payload, serialised whole.',
+  })
+  @ApiOkResponse({
+    description: 'A CSV file. `Content-Disposition` names it `audit-log-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @ApiQuery({ name: 'action', required: false })
+  @ApiQuery({ name: 'subjectType', required: false })
+  @NotClientScoped(
+    'MasterAdminGuard only, and a master admin is unrestricted by definition — the same exemption GET /admin/audit-log carries, on the same table. The log records administrators acting, not client-owned rows.',
+  )
+  @Audited('export.audit_log')
+  async exportAuditLog(
+    @Req() req: Request & { admin: Admin },
+    @Res() res: Response,
+    @Query('format') format?: string,
+    @Query('action') action?: string,
+    @Query('subjectType') subjectType?: string,
+  ) {
+    const chosen = exportFormat(format);
+    // Bounded to the column width exactly as the list route does: a term longer
+    // than varchar(100) cannot match any row, so accepting one only buys the
+    // database a pointless scan.
+    const query = {
+      action: searchQuery(action, 'action'),
+      subjectType: searchQuery(subjectType, 'subjectType'),
+    };
+
+    this.audit.record(req.admin.id, 'export.audit_log', 'audit_log', req.admin.id, {
+      format: chosen,
+      filters: query,
+    });
+
+    await streamCsv(res, 'audit-log', chosen, this.exports.auditColumns, (offset, limit) =>
+      this.exports.auditBatch(query, req.admin, offset, limit),
+    );
+  }
+
   @Get('audit-log')
   @UseGuards(MasterAdminGuard)
   @ApiCookieAuth()
@@ -54,6 +131,18 @@ export class AdminAuditController {
   @NotClientScoped(
     'MasterAdminGuard only, and a master admin is unrestricted by definition. The coverage spec also asserts that guard is still attached, so opening this to sub-admins fails CI rather than silently serving unscoped subjects.',
   )
+  /*
+   * Declared OPTIONAL, explicitly — otherwise Swagger emits every `@Query()` as
+   * `required: true` and the generated frontend types demand all seven on a call
+   * that legitimately passes none.
+   */
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({ name: 'action', required: false })
+  @ApiQuery({ name: 'subjectType', required: false })
+  @ApiQuery({ name: 'sort', required: false, enum: Object.keys(AUDIT_SORT_COLUMNS) })
+  @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   listAuditLog(
     @Req() req: Request & { admin: Admin },
     @Query('page') page?: string,
@@ -61,6 +150,8 @@ export class AdminAuditController {
     @Query('cursor') cursor?: string,
     @Query('action') action?: string,
     @Query('subjectType') subjectType?: string,
+    @Query('sort') sort?: string,
+    @Query('order') order?: string,
   ) {
     /*
      * `action` and `subjectType` are varchar(100), not enums, so an odd value
@@ -74,6 +165,10 @@ export class AdminAuditController {
       cursor,
       action: searchQuery(action, 'action'),
       subjectType: searchQuery(subjectType, 'subjectType'),
+      // Validated in the service against AUDIT_SORT_COLUMNS — the one place the
+      // column mapping lives.
+      sort,
+      order,
     });
   }
 }

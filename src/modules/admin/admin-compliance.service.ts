@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { KycConfigStore, KycStepConfig, MANDATORY_KYC_SLUGS } from '../../store/kyc-config.store';
+import { DEFAULT_KYC_SORT, KYC_SORT_COLUMNS } from '../../store/kyc.store';
+import { sortKey, sortOrder } from '../../common/sorting';
 import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-reasons.store';
 import { KycService } from '../compliance/kyc.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
@@ -26,7 +28,14 @@ export class AdminComplianceService {
 
   // ─── KYC: list all ────────────────────────────────────────────────────────
   listKyc(
-    query: { status?: string; q?: string; page?: string; limit?: string },
+    query: {
+      status?: string;
+      q?: string;
+      page?: string;
+      limit?: string;
+      sort?: string;
+      order?: string;
+    },
     actor: AuthenticatedAdmin,
   ) {
     /*
@@ -52,6 +61,10 @@ export class AdminComplianceService {
       // The predicate goes into the queue's own query, so an out-of-scope
       // submission is never in the page and never in the status counts either.
       scope: actor.clientScope,
+      // R-2.5. An unrecognised key is a 400 naming the allowed ones, never a
+      // silent fallback to the default ordering.
+      sort: sortKey(query.sort, KYC_SORT_COLUMNS, DEFAULT_KYC_SORT, 'KYC submissions'),
+      order: sortOrder(query.order),
     });
   }
   /**

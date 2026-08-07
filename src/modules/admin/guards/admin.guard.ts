@@ -243,7 +243,27 @@ export class MasterAdminGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<AdminRequest>();
     const admin = await this.authenticator.authenticate(req);
-    if (admin.role !== 'master_admin') {
+
+    /*
+     * `isMaster`, NOT `role === 'master_admin'`.
+     *
+     * This guard read the enum column alone, while `isMaster()` above accepts
+     * EITHER the enum or the `*` wildcard. That divergence was survivable only
+     * while every unrestricted account carried both — and it stops being
+     * survivable the moment full access is something a ROLE grants rather than
+     * something the bootstrap column hardcodes.
+     *
+     * The failure it produces is silent and badly timed: an admin holding `*`
+     * passes every `PermissionsGuard` route, so they look fully privileged,
+     * then gets a bare 403 from the twelve routes behind THIS guard — the audit
+     * log, reconciliation, SMTP, the security settings. Which is to say, the
+     * ones you reach for when something has already gone wrong.
+     *
+     * `isMaster` documents why the permissive reading is the right one: the
+     * alternative is an unrestricted account locked out of the controls it
+     * exists to operate.
+     */
+    if (!isMaster(admin, admin.permissions)) {
       throw new ForbiddenException('Master admin access required.');
     }
     req.admin = admin;

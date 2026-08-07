@@ -1,8 +1,28 @@
-import { eq } from 'drizzle-orm';
+import { eq, type SQLWrapper } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
 import { roles } from '../database/schema';
+import { orderTerms, type SortOrder } from '../common/sorting';
+
+/**
+ * The columns the role list may be ordered by — R-2.5.
+ *
+ * Small on purpose. `permissions` and `maskedFields` are jsonb arrays with no
+ * meaningful ordering, and `isSystem` is a two-value flag that groups rather
+ * than sorts — a caller wanting the system roles first is filtering, not
+ * sorting, and the screen already does that in the client.
+ */
+export const ROLE_SORT_COLUMNS = {
+  name: roles.name,
+  createdAt: roles.createdAt,
+} as const;
+
+export type RoleSortKey = keyof typeof ROLE_SORT_COLUMNS;
+
+/** Alphabetical — a list you look a role up in, not a feed. */
+export const DEFAULT_ROLE_SORT: RoleSortKey = 'name';
+export const DEFAULT_ROLE_ORDER: SortOrder = 'asc';
 
 export interface Role {
   id: string;
@@ -25,8 +45,30 @@ const toRole = (r: Row): Role => ({
 export class RolesStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
-  async findAll(): Promise<Role[]> {
-    const rows = await this.db.select().from(roles);
+  /**
+   * Every role, ordered — by name ascending unless asked otherwise.
+   *
+   * The default ORDER BY is a BUG FIX. This was `SELECT * FROM roles` with none
+   * at all, and SQL promises no order without one: Postgres returns rows in
+   * whatever order the plan produced, so editing a role can move it in the list
+   * because the UPDATE rewrote it to the end of the heap. On a screen where an
+   * operator picks the role they are about to grant somebody, a list that
+   * silently reorders between visits is how the wrong row gets clicked.
+   *
+   * Alphabetical rather than newest-first for the same reason the administrator
+   * directory is: this is a list you look something up in, not a feed.
+   */
+  async findAll(filter: { sort?: RoleSortKey; order?: SortOrder } = {}): Promise<Role[]> {
+    const sortKey: RoleSortKey = filter.sort ?? DEFAULT_ROLE_SORT;
+    const direction = filter.order ?? DEFAULT_ROLE_ORDER;
+    const sortColumn: SQLWrapper = ROLE_SORT_COLUMNS[sortKey];
+
+    const rows = await this.db
+      .select()
+      .from(roles)
+      // `id` breaks ties so two roles sharing a creation timestamp — the seeded
+      // system roles are inserted together — cannot swap places between reads.
+      .orderBy(...orderTerms(sortColumn, roles.id, direction));
     return rows.map(toRole);
   }
 

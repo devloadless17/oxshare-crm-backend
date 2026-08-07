@@ -1102,6 +1102,46 @@
         ]
       }
     },
+    "/v1/admin/currencies/export": {
+      "get": {
+        "operationId": "AdminCurrenciesController_exportCurrencies",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file, named `currencies-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export every currency as CSV, including disabled ones",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/currencies/{code}": {
       "patch": {
         "description": "PATCH, not PUT: the code is the primary key and is referenced by wallets, transactions and transfers, so it is not editable — a rename would be a data migration across four money tables. Everything else is optional and only supplied fields change.",
@@ -1250,15 +1290,20 @@
         "parameters": [
           {
             "name": "status",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "rejected"
+              ],
               "type": "string"
             }
           },
           {
             "name": "page",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
               "type": "string"
@@ -1266,9 +1311,35 @@
           },
           {
             "name": "limit",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "submittedAt",
+                "status",
+                "userEmail",
+                "userFirstName"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
               "type": "string"
             }
           }
@@ -1284,6 +1355,60 @@
           }
         ],
         "summary": "The partner application queue",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib/applications/export": {
+      "get": {
+        "description": "The same `status` filter as GET /admin/ib/applications, over every matching row rather than one page. Respects the reviewing admin’s client scope.",
+        "operationId": "AdminIbController_exportApplications",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file, named `ib-applications-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the partner application queue as CSV",
         "tags": [
           "admin"
         ]
@@ -1390,7 +1515,7 @@
         "parameters": [
           {
             "name": "page",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
               "type": "string"
@@ -1398,9 +1523,36 @@
           },
           {
             "name": "limit",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "approvedAt",
+                "level",
+                "referralCode",
+                "userEmail",
+                "userFirstName"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
               "type": "string"
             }
           }
@@ -1416,6 +1568,47 @@
           }
         ],
         "summary": "The partner list",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib/partners/export": {
+      "get": {
+        "description": "Every partner the acting admin may see, joined to the person and their level. The list takes no filters, so neither does its export.",
+        "operationId": "AdminIbController_exportPartners",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file, named `ib-partners-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the partner list as CSV",
         "tags": [
           "admin"
         ]
@@ -1740,88 +1933,6 @@
         "summary": "Remove a level",
         "tags": [
           "admin"
-        ]
-      }
-    },
-    "/v1/wallet": {
-      "get": {
-        "operationId": "WalletController_myWallets",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/WalletDto"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "The signed-in client's wallets — balance, on_hold and available, all as strings",
-        "tags": [
-          "wallet"
-        ]
-      }
-    },
-    "/v1/wallet/ledger": {
-      "get": {
-        "operationId": "WalletController_myLedger",
-        "parameters": [
-          {
-            "name": "entryType",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "cursor",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LedgerListResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "The signed-in client's own ledger entries",
-        "tags": [
-          "wallet"
         ]
       }
     },
@@ -2162,6 +2273,46 @@
         ]
       }
     },
+    "/v1/admin/payment-methods/export": {
+      "get": {
+        "operationId": "AdminPaymentMethodsController_exportPaymentMethods",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file, named `payment-methods-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export every payment method as CSV, configured or not",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/payment-methods/{key}": {
       "patch": {
         "description": "PATCH, and `key` itself is not editable: it is the primary key and `transactions.method_key` references it, so renaming is a data migration rather than an edit.",
@@ -2234,6 +2385,88 @@
         "summary": "Remove a payment method",
         "tags": [
           "admin"
+        ]
+      }
+    },
+    "/v1/wallet": {
+      "get": {
+        "operationId": "WalletController_myWallets",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WalletDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's wallets — balance, on_hold and available, all as strings",
+        "tags": [
+          "wallet"
+        ]
+      }
+    },
+    "/v1/wallet/ledger": {
+      "get": {
+        "operationId": "WalletController_myLedger",
+        "parameters": [
+          {
+            "name": "entryType",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's own ledger entries",
+        "tags": [
+          "wallet"
         ]
       }
     },
@@ -3121,6 +3354,141 @@
         ]
       }
     },
+    "/v1/admin/clients/export": {
+      "get": {
+        "description": "Takes the SAME filters as GET /admin/clients and covers every matching row rather than one page. Paging parameters are not accepted. Client scope and field masking apply exactly as they do to the list.",
+        "operationId": "AdminClientsController_exportClients",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Search email and name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "individual",
+                "referral",
+                "partner"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "active",
+                "pending",
+                "suspended"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "level",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                0,
+                1
+              ],
+              "type": "number"
+            }
+          },
+          {
+            "name": "country",
+            "required": false,
+            "in": "query",
+            "description": "Exact match on the country tag.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "required": false,
+            "in": "query",
+            "description": "Tag SLUG, not id (ADM-14).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "email",
+                "firstName",
+                "status",
+                "type",
+                "verificationLevel",
+                "country"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `clients-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered client list as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/clients/{id}": {
       "get": {
         "description": "Each section is gated on its own permission and is ABSENT when the caller lacks it — which is deliberately different from present-and-empty, so a screen can distinguish \"hidden from you\" from \"this client has none\".",
@@ -3257,6 +3625,46 @@
           }
         ],
         "summary": "Create a client tag",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/tags/export": {
+      "get": {
+        "operationId": "AdminTagsController_exportTags",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file, named `tags-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the client tag vocabulary as CSV",
         "tags": [
           "admin"
         ]
@@ -3472,23 +3880,32 @@
         "parameters": [
           {
             "name": "status",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
+              "enum": [
+                "not_started",
+                "in_progress",
+                "submitted",
+                "under_review",
+                "approved",
+                "rejected"
+              ],
               "type": "string"
             }
           },
           {
             "name": "q",
-            "required": true,
+            "required": false,
             "in": "query",
+            "description": "Search applicant email and name.",
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "page",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
               "type": "string"
@@ -3496,9 +3913,36 @@
           },
           {
             "name": "limit",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "submittedAt",
+                "status",
+                "createdAt",
+                "userEmail",
+                "userFirstName"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
               "type": "string"
             }
           }
@@ -3521,6 +3965,72 @@
           }
         ],
         "summary": "List all KYC submissions, optionally filtered by status",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/kyc/export": {
+      "get": {
+        "description": "The same `status` and `q` filters as GET /admin/kyc, over every matching row rather than one page. Carries the queue’s columns only — not the full submission.",
+        "operationId": "AdminComplianceController_exportKyc",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "not_started",
+                "in_progress",
+                "submitted",
+                "under_review",
+                "approved",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Search email and name.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `kyc-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered KYC review queue as CSV",
         "tags": [
           "admin"
         ]
@@ -4090,7 +4600,32 @@
     "/v1/admin/roles": {
       "get": {
         "operationId": "AdminRbacController_listRoles",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "name",
+                "createdAt"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
@@ -4147,6 +4682,46 @@
           }
         ],
         "summary": "Create a custom role (requires roles.manage)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/roles/export": {
+      "get": {
+        "operationId": "AdminRbacController_exportRoles",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file, named `roles-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the RBAC role definitions as CSV",
         "tags": [
           "admin"
         ]
@@ -4235,17 +4810,92 @@
     "/v1/admin/users": {
       "get": {
         "operationId": "AdminRbacController_listAdmins",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "name",
+                "email",
+                "role",
+                "status",
+                "createdAt"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Opting into paging switches the response to the envelope shape.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "A bare array by default. With `page` or `limit`, the paginated envelope `{ items, total, page, limit }` instead.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/AdminProfileDto"
-                  }
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AdminProfileDto"
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/AdminProfileDto"
+                          }
+                        },
+                        "total": {
+                          "type": "number"
+                        },
+                        "page": {
+                          "type": "number"
+                        },
+                        "limit": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "total",
+                        "page",
+                        "limit"
+                      ]
+                    }
+                  ]
                 }
               }
             }
@@ -4257,6 +4907,46 @@
           }
         ],
         "summary": "List admin accounts (requires users.view)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/admin-users/export": {
+      "get": {
+        "operationId": "AdminRbacController_exportAdmins",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file, named `admin-users-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the administrator directory as CSV",
         "tags": [
           "admin"
         ]
@@ -4385,37 +5075,25 @@
         ]
       }
     },
-    "/v1/admin/audit-log": {
+    "/v1/admin/audit-log/export": {
       "get": {
-        "operationId": "AdminAuditController_listAuditLog",
+        "description": "The same `action` and `subjectType` filters as GET /admin/audit-log, over every matching row rather than one page. The `details` column is the jsonb payload, serialised whole.",
+        "operationId": "AdminAuditController_exportAuditLog",
         "parameters": [
           {
-            "name": "page",
-            "required": true,
+            "name": "format",
+            "required": false,
             "in": "query",
             "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "cursor",
-            "required": true,
-            "in": "query",
-            "schema": {
+              "enum": [
+                "csv"
+              ],
               "type": "string"
             }
           },
           {
             "name": "action",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
               "type": "string"
@@ -4423,9 +5101,104 @@
           },
           {
             "name": "subjectType",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `audit-log-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered admin action log as CSV (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/audit-log": {
+      "get": {
+        "operationId": "AdminAuditController_listAuditLog",
+        "parameters": [
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subjectType",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "action",
+                "actorEmail"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
               "type": "string"
             }
           }
@@ -4530,29 +5303,93 @@
         ]
       }
     },
+    "/v1/admin/withdrawals/export": {
+      "get": {
+        "description": "The same `state` filter as GET /admin/withdrawals, over every matching row rather than one page. Amounts are the exact decimal strings the ledger holds — never rounded, never locale-formatted (§6.1).",
+        "operationId": "AdminMoneyController_exportWithdrawals",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `withdrawals-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered withdrawal queue as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/withdrawals": {
       "get": {
         "operationId": "AdminMoneyController_listWithdrawals",
         "parameters": [
           {
             "name": "state",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
               "type": "string"
             }
           },
           {
             "name": "page",
-            "required": true,
+            "required": false,
             "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
             "schema": {
               "type": "string"
             }
           },
           {
             "name": "limit",
-            "required": true,
+            "required": false,
             "in": "query",
             "schema": {
               "type": "string"
@@ -4560,9 +5397,38 @@
           },
           {
             "name": "cursor",
-            "required": true,
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "description": "amount sorts on the NUMERIC column in SQL — never cast, never in JS (§6).",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "amount",
+                "state",
+                "userEmail",
+                "userFirstName"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
             "in": "query",
             "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
               "type": "string"
             }
           }
@@ -5823,146 +6689,6 @@
           "order"
         ]
       },
-      "WalletDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "userId": {
-            "type": "string"
-          },
-          "currency": {
-            "type": "string",
-            "enum": [
-              "USD",
-              "USDT"
-            ]
-          },
-          "balance": {
-            "type": "string",
-            "example": "700.00000000",
-            "description": "Decimal string (§6.1)."
-          },
-          "onHold": {
-            "type": "string",
-            "example": "0.00000000",
-            "description": "Reserved against pending withdrawals."
-          },
-          "available": {
-            "type": "string",
-            "example": "700.00000000",
-            "description": "balance − onHold, computed server-side so both sides agree."
-          },
-          "createdAt": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "userId",
-          "currency",
-          "balance",
-          "onHold",
-          "available",
-          "createdAt"
-        ]
-      },
-      "LedgerEntryDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "walletId": {
-            "type": "string"
-          },
-          "userId": {
-            "type": "string"
-          },
-          "amount": {
-            "type": "string",
-            "description": "Signed monetary value as a string"
-          },
-          "balanceAfter": {
-            "type": "string",
-            "description": "Running balance after this entry, as a string"
-          },
-          "entryType": {
-            "type": "string",
-            "enum": [
-              "deposit",
-              "withdrawal",
-              "commission",
-              "rebate",
-              "payout",
-              "adjustment"
-            ]
-          },
-          "referenceType": {
-            "type": "string"
-          },
-          "referenceId": {
-            "type": "string"
-          },
-          "currency": {
-            "type": "string",
-            "enum": [
-              "USD",
-              "USDT"
-            ]
-          },
-          "createdAt": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "walletId",
-          "userId",
-          "amount",
-          "balanceAfter",
-          "entryType",
-          "referenceType",
-          "referenceId",
-          "currency",
-          "createdAt"
-        ]
-      },
-      "LedgerListResponseDto": {
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/LedgerEntryDto"
-            }
-          },
-          "nextCursor": {
-            "type": "string",
-            "nullable": true
-          },
-          "total": {
-            "type": "number",
-            "description": "Total matching entries, ignoring pagination."
-          },
-          "page": {
-            "type": "number"
-          },
-          "limit": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "items",
-          "nextCursor",
-          "total",
-          "page",
-          "limit"
-        ]
-      },
       "PaymentMethodDto": {
         "type": "object",
         "properties": {
@@ -6480,6 +7206,146 @@
             "type": "number"
           }
         }
+      },
+      "WalletDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "balance": {
+            "type": "string",
+            "example": "700.00000000",
+            "description": "Decimal string (§6.1)."
+          },
+          "onHold": {
+            "type": "string",
+            "example": "0.00000000",
+            "description": "Reserved against pending withdrawals."
+          },
+          "available": {
+            "type": "string",
+            "example": "700.00000000",
+            "description": "balance − onHold, computed server-side so both sides agree."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "currency",
+          "balance",
+          "onHold",
+          "available",
+          "createdAt"
+        ]
+      },
+      "LedgerEntryDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "walletId": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string",
+            "description": "Signed monetary value as a string"
+          },
+          "balanceAfter": {
+            "type": "string",
+            "description": "Running balance after this entry, as a string"
+          },
+          "entryType": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal",
+              "commission",
+              "rebate",
+              "payout",
+              "adjustment"
+            ]
+          },
+          "referenceType": {
+            "type": "string"
+          },
+          "referenceId": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "walletId",
+          "userId",
+          "amount",
+          "balanceAfter",
+          "entryType",
+          "referenceType",
+          "referenceId",
+          "currency",
+          "createdAt"
+        ]
+      },
+      "LedgerListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LedgerEntryDto"
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
+          },
+          "total": {
+            "type": "number",
+            "description": "Total matching entries, ignoring pagination."
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "total",
+          "page",
+          "limit"
+        ]
       },
       "KycFieldConfigDto": {
         "type": "object",

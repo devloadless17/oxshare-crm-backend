@@ -1,5 +1,9 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UseGuards } from '@nestjs/common';
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Query } from '@nestjs/common';
+import type { Response } from 'express';
+import { exportFormat, streamCsvFromArray } from '../../common/export/export-response';
+import { NotAudited } from '../admin/guards/audited.decorator';
 import { PermissionsGuard, RequirePermissions } from '../admin/guards/admin.guard';
 import { NotClientScoped } from '../admin/guards/client-scope.decorator';
 import { Audited } from '../admin/guards/audited.decorator';
@@ -55,6 +59,42 @@ export class AdminCurrenciesController {
     return this.currencies.listAll();
   }
 
+  /**
+   * Every currency as CSV.
+   *
+   * `settings.view` — the same read permission the list carries, and not the
+   * `settings.manage` the writes need: an export is a read.
+   */
+  @Get('export')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.view')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Export every currency as CSV, including disabled ones' })
+  @ApiOkResponse({
+    description: 'A CSV file, named `currencies-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @NotClientScoped('Operator configuration; contains no client data.')
+  /*
+   * NOT audited, unlike the client, KYC, withdrawal and partner exports.
+   *
+   * Those carry client PII or money and are worth being able to attribute
+   * months later. A currency list is the same information the platform shows on
+   * its registration screen — recording every download of it would fill the log
+   * with rows nobody searches for, and make the exports that DO matter harder
+   * to find among them.
+   */
+  @NotAudited(
+    'Operator configuration containing no client data — the same list the signed-out registration screen reads. Auditing it would bury the PII exports that are worth attributing.',
+  )
+  async exportCurrencies(@Res() res: Response, @Query('format') format?: string) {
+    const chosen = exportFormat(format);
+    await streamCsvFromArray(res, 'currencies', chosen, CURRENCY_EXPORT_COLUMNS, async () =>
+      this.currencies.listAll(),
+    );
+  }
+
   @Post()
   @UseGuards(PermissionsGuard)
   @RequirePermissions('settings.manage')
@@ -106,4 +146,33 @@ export class AdminCurrenciesController {
   remove(@Param('code') code: string) {
     return this.currencies.remove(code);
   }
+}
+
+/**
+ * The currency export's columns.
+ *
+ * `decimals` is a DISPLAY precision — how many places the UI shows — and is a
+ * genuine integer column, not a monetary value. There is no money on this
+ * table at all.
+ */
+const CURRENCY_EXPORT_COLUMNS = [
+  { header: 'Code', value: (r: CurrencyExportRow) => r.code },
+  { header: 'Name', value: (r: CurrencyExportRow) => r.name },
+  { header: 'Symbol', value: (r: CurrencyExportRow) => r.symbol },
+  { header: 'Display decimals', value: (r: CurrencyExportRow) => r.decimals },
+  { header: 'Enabled', value: (r: CurrencyExportRow) => r.enabled },
+  { header: 'Default', value: (r: CurrencyExportRow) => r.isDefault },
+  { header: 'Sort order', value: (r: CurrencyExportRow) => r.sortOrder },
+  { header: 'Created at', value: (r: CurrencyExportRow) => r.createdAt },
+] as const;
+
+interface CurrencyExportRow {
+  code: string;
+  name: string;
+  symbol: string;
+  decimals: number;
+  enabled: boolean;
+  isDefault: boolean;
+  sortOrder: number;
+  createdAt: Date;
 }

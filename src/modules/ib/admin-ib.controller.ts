@@ -7,10 +7,11 @@ import {
   Patch,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Request } from 'express';
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Request, Response } from 'express';
 import {
   AuthenticatedAdmin,
   PermissionsGuard,
@@ -19,6 +20,10 @@ import {
 import { ScopedToClients } from '../admin/guards/client-scope.decorator';
 import { Audited } from '../admin/guards/audited.decorator';
 import { IbApplicationsService } from './ib-applications.service';
+import { IB_APPLICATION_SORT_COLUMNS, IB_PARTNER_SORT_COLUMNS } from '../../store/ib.store';
+import { AdminExportService } from '../admin/admin-export.service';
+import { AdminAuditService } from '../admin/admin-audit.service';
+import { exportFormat, streamCsv } from '../../common/export/export-response';
 import {
   ApproveIbApplicationDto,
   ChangeIbLevelDto,
@@ -55,7 +60,11 @@ import {
 @ApiTags('admin')
 @Controller('admin/ib')
 export class AdminIbController {
-  constructor(private readonly applications: IbApplicationsService) {}
+  constructor(
+    private readonly applications: IbApplicationsService,
+    private readonly exports: AdminExportService,
+    private readonly audit: AdminAuditService,
+  ) {}
 
   @Get('applications')
   @UseGuards(PermissionsGuard)
@@ -67,12 +76,24 @@ export class AdminIbController {
       'Paginated, newest first, with per-status counts for the tab labels. Both the rows and ' +
       'the counts respect the reviewing admin’s client scope.',
   })
+  /*
+   * Declared OPTIONAL, explicitly — otherwise Swagger emits every `@Query()` as
+   * `required: true` and the generated frontend types demand all five on a call
+   * that legitimately passes none.
+   */
+  @ApiQuery({ name: 'status', required: false, enum: IB_APPLICATION_STATUSES })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_APPLICATION_SORT_COLUMNS) })
+  @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients('IbStore.findPageWithUsers applies the predicate to ib_applications.user_id.')
   list(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('status') status?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('sort') sort?: string,
+    @Query('order') order?: string,
   ) {
     return this.applications.list(
       {
@@ -81,8 +102,64 @@ export class AdminIbController {
         status: parseStatus(status),
         page: parsePositive(page),
         limit: parsePositive(limit),
+        // Validated in the service against the allowlist, which is where the
+        // column mapping lives.
+        sort,
+        order,
       },
       req.admin.clientScope,
+    );
+  }
+
+  /**
+   * The partner application queue as CSV.
+   *
+   * Declared before `applications/:id/*` so Express does not bind `id =
+   * 'export'` — the same ordering rule the client and KYC exports follow.
+   *
+   * `ib.view`, matching the list. Notably NOT `ib.approve`: reading the queue
+   * and deciding on it are separate powers here, and an export is a read.
+   */
+  @Get('applications/export')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Export the partner application queue as CSV',
+    description:
+      'The same `status` filter as GET /admin/ib/applications, over every matching row rather ' +
+      'than one page. Respects the reviewing admin’s client scope.',
+  })
+  @ApiOkResponse({
+    description: 'A CSV file, named `ib-applications-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @ApiQuery({ name: 'status', required: false, enum: IB_APPLICATION_STATUSES })
+  @ScopedToClients(
+    'AdminExportService.ibApplicationBatch → IbStore.findPageWithUsers with actor.clientScope, the same predicate on users.id the queue applies.',
+  )
+  @Audited('export.ib_applications')
+  async exportApplications(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Res() res: Response,
+    @Query('format') format?: string,
+    @Query('status') status?: string,
+  ) {
+    const chosen = exportFormat(format);
+    const query = { status: parseStatus(status) };
+
+    this.audit.record(req.admin.id, 'export.ib_applications', 'ib_applications', req.admin.id, {
+      format: chosen,
+      filters: query,
+    });
+
+    await streamCsv(
+      res,
+      'ib-applications',
+      chosen,
+      this.exports.ibApplicationColumns,
+      (offset, limit) => this.exports.ibApplicationBatch(query, req.admin, offset, limit),
     );
   }
 
@@ -142,15 +219,62 @@ export class AdminIbController {
     summary: 'The partner list',
     description: 'Joined to the person and their level, newest approval first.',
   })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_PARTNER_SORT_COLUMNS) })
+  @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients('IbStore.findPartnersPage applies the predicate to ib_accounts.user_id.')
   listPartners(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('sort') sort?: string,
+    @Query('order') order?: string,
   ) {
     return this.applications.listPartners(
-      { page: parsePositive(page), limit: parsePositive(limit) },
+      { page: parsePositive(page), limit: parsePositive(limit), sort, order },
       req.admin.clientScope,
+    );
+  }
+
+  /**
+   * The partner list as CSV.
+   *
+   * Declared before `partners/:userId/*` for the same routing reason as the
+   * applications export above.
+   */
+  @Get('partners/export')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Export the partner list as CSV',
+    description:
+      'Every partner the acting admin may see, joined to the person and their level. The list ' +
+      'takes no filters, so neither does its export.',
+  })
+  @ApiOkResponse({
+    description: 'A CSV file, named `ib-partners-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @ScopedToClients(
+    'AdminExportService.ibPartnerBatch → IbStore.findPartnersPage with actor.clientScope, the same predicate on users.id the list applies.',
+  )
+  @Audited('export.ib_partners')
+  async exportPartners(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Res() res: Response,
+    @Query('format') format?: string,
+  ) {
+    const chosen = exportFormat(format);
+
+    this.audit.record(req.admin.id, 'export.ib_partners', 'ib_partners', req.admin.id, {
+      format: chosen,
+    });
+
+    await streamCsv(res, 'ib-partners', chosen, this.exports.ibPartnerColumns, (offset, limit) =>
+      this.exports.ibPartnerBatch(req.admin, offset, limit),
     );
   }
 

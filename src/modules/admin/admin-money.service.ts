@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
-import { TransactionsService } from '../payments/transactions.service';
+import {
+  DEFAULT_WITHDRAWAL_SORT,
+  TransactionsService,
+  WITHDRAWAL_SORT_COLUMNS,
+} from '../payments/transactions.service';
+import { sortKey, sortOrder } from '../../common/sorting';
 import { WalletService } from '../wallet/wallet.service';
 import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
@@ -40,10 +45,33 @@ export class AdminMoneyService {
   // ─── Withdrawals (ADM-03 · §8.4) ──────────────────────────────────────────
   // Every transition here moves client money, so every one is audited.
   async listWithdrawals(
-    query: { state?: string; page?: string; limit?: string; cursor?: string },
+    query: {
+      state?: string;
+      page?: string;
+      limit?: string;
+      cursor?: string;
+      sort?: string;
+      order?: string;
+    },
     actor: AuthenticatedAdmin,
   ) {
     assertActorCan(actor, 'withdrawals.view', 'list withdrawal requests');
+
+    /*
+     * The sort is validated BEFORE the cursor is decoded, and the order matters.
+     *
+     * `decodeCursor` refuses a cursor minted under a different ordering and needs
+     * the current sort key to say which. Decoding first would produce "this
+     * cursor is for createdAt but you asked for undefined" — true and useless.
+     */
+    const sort = sortKey(
+      query.sort,
+      WITHDRAWAL_SORT_COLUMNS,
+      DEFAULT_WITHDRAWAL_SORT,
+      'withdrawals',
+    );
+    const order = sortOrder(query.order);
+
     return this.transactions.listForAdmin({
       scope: actor.clientScope,
       state: query.state,
@@ -51,7 +79,9 @@ export class AdminMoneyService {
       limit: parseInt(query.limit ?? '25', 10) || 25,
       // R-2.4. This is a work queue an admin reads while clients keep
       // submitting — the concurrent-insert case offset paging gets wrong.
-      cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
+      cursor: query.cursor ? decodeCursor(query.cursor, sort) : undefined,
+      sort,
+      order,
     });
   }
   /*

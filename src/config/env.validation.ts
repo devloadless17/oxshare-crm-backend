@@ -115,28 +115,6 @@ const envSchema = z
       .optional(),
 
     /*
-     * Print verification links, reset links, invite links and withdrawal OTPs to
-     * the server log — LOCAL DEVELOPMENT ONLY.
-     *
-     * Those values are bearer credentials, and logging them is exactly what
-     * R-6.3 removed from email.service.ts: read access to a log store was enough
-     * to mint an admin on a system that approves withdrawals. That removal was
-     * right, and it left anyone without a working SMTP server unable to test
-     * registration, invites or OTP at all — the code went to a mailbox that does
-     * not exist.
-     *
-     * So this is the deliberate, narrow way back in, and it is refused outright
-     * in production (see the NODE_ENV block below) rather than merely
-     * discouraged. Opt-in on purpose: a flag you had to type is one you know is
-     * on, where a default-on-in-development flag rides along to the first
-     * staging box that forgets to set NODE_ENV.
-     */
-    MAIL_DEV_ECHO: z
-      .enum(['true', 'false'])
-      .optional()
-      .describe('Log email credentials to stdout. Never valid in production.'),
-
-    /*
      * Redis — single-use replay markers for signed webhooks (§8.4, R-5.3), and
      * the future BullMQ backend.
      *
@@ -277,24 +255,6 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
       throw new Error(
         `Refusing to start in production without: ${missing.join(', ')}. ` +
           'Development fallback secrets are not acceptable in production.',
-      );
-    }
-
-    /*
-     * REFUSE TO BOOT rather than quietly ignoring the flag.
-     *
-     * MAIL_DEV_ECHO prints verification links, invite links and withdrawal OTPs
-     * to stdout. Silently disabling it in production would be the friendlier
-     * behaviour and the wrong one: the person who set it believes they are
-     * seeing those values, and a deploy that carries a copied .env should be
-     * told it is carrying something that must not go to production — loudly, at
-     * boot, not by having the feature mysteriously not work.
-     */
-    if (env['MAIL_DEV_ECHO'] === 'true') {
-      throw new Error(
-        'Refusing to start: MAIL_DEV_ECHO=true prints verification links, invite links ' +
-          'and one-time codes to the log. Those are bearer credentials — an invite link ' +
-          'alone mints an admin account. Remove it from the production environment.',
       );
     }
 

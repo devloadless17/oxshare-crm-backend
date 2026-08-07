@@ -246,6 +246,20 @@
       "when": 1786716355600,
       "tag": "0034_remove_ip_allowlist",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1786889155600,
+      "tag": "0036_administrator_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1786975555600,
+      "tag": "0037_admin_sort_indexes",
+      "breakpoints": true
     }
   ]
 }

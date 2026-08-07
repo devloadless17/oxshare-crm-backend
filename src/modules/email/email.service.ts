@@ -107,37 +107,6 @@ export class EmailService {
   }
 
   /**
-   * Print a credential to the log — LOCAL DEVELOPMENT ONLY, opt-in.
-   *
-   * The docblock at the top of this file explains why nothing here logs a URL by
-   * default, and that reasoning stands. What it did not account for is that a
-   * developer with no working SMTP server then has NO WAY to obtain a
-   * verification link, an invite link or an OTP: the mail goes to a mailbox that
-   * does not exist, the send fails, and the flow is untestable end to end.
-   *
-   * Two independent locks, because one is how this kind of thing escapes:
-   *
-   *   1. `MAIL_DEV_ECHO=true` — opt-in, so the flag is one you typed rather than
-   *      one you inherited;
-   *   2. NODE_ENV must not be production — and `env.validation.ts` REFUSES TO
-   *      BOOT if the flag is set there, so a copied .env fails loudly at deploy
-   *      instead of quietly streaming invite links into a log aggregator.
-   *
-   * `warn`, not `log`: this is an abnormal state that should look abnormal in
-   * the terminal, and it keeps the line out of a default `log`-level capture.
-   */
-  private echoForDevelopment(label: string, recipient: string, credential: string): void {
-    if (this.configService.get<string>('MAIL_DEV_ECHO') !== 'true') return;
-    if (this.configService.get<string>('NODE_ENV') === 'production') return;
-
-    this.logger.warn(
-      `[MAIL_DEV_ECHO] ${label} for ${recipient}: ${credential}\n` +
-        '           ^ development only — this is a live credential, and it is in your log ' +
-        'because MAIL_DEV_ECHO=true.',
-    );
-  }
-
-  /**
    * Render, send, log, swallow — the shape every message below shares.
    *
    * Extracted because the eight methods that used to live here each repeated it
@@ -163,13 +132,11 @@ export class EmailService {
 
   async sendVerificationEmail(email: string, token: string): Promise<void> {
     const url = `${this.portalUrl()}/auth/verify-email?token=${token}`;
-    this.echoForDevelopment('Verification link', email, url);
     await this.send(email, 'verification email', verifyEmail(url));
   }
 
   async sendPasswordResetEmail(email: string, token: string): Promise<void> {
     const url = `${this.portalUrl()}/auth/reset-password?token=${token}`;
-    this.echoForDevelopment('Password reset link', email, url);
     await this.send(email, 'password reset email', passwordReset(url));
   }
 
@@ -246,9 +213,7 @@ export class EmailService {
    * Failure is still swallowed and logged by `send()`; the controller answers
    * with `required: true` regardless, and the client can request another.
    *
-   * `echoForDevelopment` prints the code when MAIL_DEV_ECHO is on, and its own
-   * warning says it is a live credential in a log. Never logged otherwise
-   * (R-6.3).
+   * The code itself is never logged (R-6.3).
    */
   async sendWithdrawalOtpEmail(
     email: string,
@@ -256,12 +221,10 @@ export class EmailService {
     currency: string,
     code: string,
   ): Promise<void> {
-    this.echoForDevelopment(`Withdrawal OTP (${amount} ${currency})`, email, code);
     await this.send(email, 'withdrawal confirmation code', withdrawalOtp(amount, currency, code));
   }
 
   async sendAdminInviteEmail(email: string, name: string, inviteUrl: string): Promise<void> {
-    this.echoForDevelopment('Admin invite link', email, inviteUrl);
     await this.send(email, 'admin invite email', adminInvite(name, inviteUrl));
   }
 
@@ -272,7 +235,6 @@ export class EmailService {
     initiatedBy: string,
     expiresInMinutes: number,
   ): Promise<void> {
-    this.echoForDevelopment('Admin password reset link', email, resetUrl);
     await this.send(
       email,
       'admin password reset email',

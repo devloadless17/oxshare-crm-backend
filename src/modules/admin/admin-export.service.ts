@@ -1,0 +1,531 @@
+import { Injectable } from '@nestjs/common';
+import { UsersStore, clientSortKey, clientSortOrder } from '../../store/users.store';
+import { ClientTagsStore } from '../../store/client-tags.store';
+import { KycStore } from '../../store/kyc.store';
+import { AuditLogStore } from '../../store/audit-log.store';
+import { IbStore } from '../../store/ib.store';
+import { RolesStore } from '../../store/roles.store';
+import { AuthorizationError, ValidationError } from '../../common/errors/domain-errors';
+import { actorHasPermission, assertActorCan } from '../../common/security/actor';
+import { applyMaskAll } from '../../common/security/field-mask';
+import { TransactionsService } from '../payments/transactions.service';
+import type { AuthenticatedAdmin } from './guards/admin.guard';
+import type { Admin } from '../../store/admins.store';
+import type { CsvColumn } from '../../common/export/csv';
+
+/**
+ * Row sources for the admin table exports.
+ *
+ * ── What this service is, and what it deliberately is not ───────────────────
+ *
+ * It is the BATCH FETCHER half of an export: given an actor, the list screen's
+ * own filters and an offset, hand back the next slice of rows. The CSV encoding
+ * lives in `common/export/csv.ts` and the HTTP framing in
+ * `common/export/export-response.ts`; neither is imported here, and this file
+ * imports no HTTP types at all, so the layering rule that keeps `HttpException`
+ * out of `*.service.ts` holds without an exception.
+ *
+ * ── The property this file exists to guarantee ──────────────────────────────
+ *
+ * EVERY method takes the acting admin and passes `actor.clientScope` into the
+ * store, in the WHERE clause, exactly as the corresponding list endpoint does.
+ * An export that forgot would be the single worst defect available in this
+ * feature — a scoped administrator handed a file containing the clients they
+ * were specifically denied, silently, with a 200 and no error anywhere.
+ * `test/admin-export.spec.ts` drives each of these with a genuinely out-of-scope
+ * client and asserts the row is absent.
+ *
+ * `assertActorCan` is called here as well as in the guard (R-4.3), for the same
+ * reason `AdminClientsService.listClients` does it: this method decides WHICH
+ * ROWS the caller gets from the actor, so it is making an authorization
+ * decision rather than merely receiving one. The guard is a fast reject at the
+ * edge, and a future scheduled report calling this directly has no guard at all.
+ *
+ * ── Why the columns live here beside the fetchers ───────────────────────────
+ *
+ * A column set and the query that feeds it are one thing: a header that names a
+ * field the query stopped selecting is an empty column in an audit artefact,
+ * and nothing else in the system would notice. Keeping them adjacent makes that
+ * a visible edit rather than a silent one.
+ */
+@Injectable()
+export class AdminExportService {
+  constructor(
+    private readonly users: UsersStore,
+    private readonly tags: ClientTagsStore,
+    private readonly kyc: KycStore,
+    private readonly auditLog: AuditLogStore,
+    private readonly ib: IbStore,
+    private readonly roles: RolesStore,
+    private readonly transactions: TransactionsService,
+  ) {}
+
+  // ── Clients ───────────────────────────────────────────────────────────────
+
+  /**
+   * The client export's columns.
+   *
+   * `Tags` is one comma-joined cell rather than a column per tag: the tag
+   * vocabulary is operator-editable, so a column-per-tag layout would change
+   * shape between two exports taken a week apart and stop being diffable.
+   */
+  readonly clientColumns: readonly CsvColumn<ClientExportRow>[] = [
+    { header: 'Client ID', value: (r) => r.id },
+    { header: 'Email', value: (r) => r.email },
+    { header: 'First name', value: (r) => r.firstName },
+    { header: 'Last name', value: (r) => r.lastName },
+    { header: 'Type', value: (r) => r.type },
+    { header: 'Status', value: (r) => r.status },
+    { header: 'Verification level', value: (r) => r.verificationLevel },
+    { header: 'Country', value: (r) => r.country },
+    { header: 'Tags', value: (r) => r.tags.map((t) => t.label).join(', ') },
+    { header: 'Registered at', value: (r) => r.createdAt },
+  ];
+
+  /**
+   * One batch of clients, filtered and scoped exactly as `GET /admin/clients`.
+   *
+   * The filter parsing is duplicated from `AdminClientsService.listClients` on
+   * purpose and only as far as it has to be: an unknown `?tag=` is still a 400
+   * rather than an empty file (R-2.5), because "this segment is empty" and "you
+   * typed the segment name wrong" must not produce the same artefact. What is
+   * NOT duplicated is the row query — that is `UsersStore.findPage`, the same
+   * method the list screen calls, with the same scope argument.
+   */
+  async clientBatch(
+    query: ClientExportQuery,
+    actor: AuthenticatedAdmin,
+    offset: number,
+    limit: number,
+  ): Promise<ClientExportRow[]> {
+    assertActorCan(actor, 'users.view', 'export clients');
+
+    let level: number | undefined;
+    if (query.level !== undefined && query.level !== '') {
+      const parsed = Number(query.level);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1) {
+        throw new ValidationError('level must be 0 or 1.');
+      }
+      level = parsed;
+    }
+
+    if (query.tag) {
+      const tag = await this.tags.findBySlug(query.tag);
+      if (!tag) {
+        throw new ValidationError(
+          `There is no client tag "${query.tag}". Check the tag list for the current names.`,
+        );
+      }
+    }
+
+    const sort = clientSortKey(query.sort);
+    const order = clientSortOrder(query.order);
+
+    const { rows } = await this.users.findPage({
+      /*
+       * `findPage` computes its offset as `(page - 1) * limit`, so a batch at an
+       * arbitrary offset is expressed as a page in a window of that size. The
+       * export's batch size is constant, which makes this exact rather than an
+       * approximation.
+       */
+      page: Math.floor(offset / limit) + 1,
+      limit,
+      withTotal: false,
+      q: query.q?.trim() || undefined,
+      type: query.type,
+      status: query.status,
+      level,
+      country: query.country?.trim() || undefined,
+      tagSlug: query.tag,
+      sort,
+      order,
+      // The whole point. Row-level visibility, in the WHERE clause.
+      scope: actor.clientScope,
+    });
+
+    /*
+     * `findPage` fetches `limit + 1` to answer "is there a next page" for the
+     * screen. The export pages by offset and does not need that signal, and
+     * keeping the extra row would emit one duplicate at every batch boundary.
+     */
+    const page = rows.slice(0, limit);
+
+    const tagsByClient = await this.tags.tagsForClients(page.map((r) => r.id));
+    const withTags = page.map((row) => ({ ...row, tags: tagsByClient.get(row.id) ?? [] }));
+
+    /*
+     * Field masking applies to a file exactly as it applies to a screen.
+     *
+     * RBAC-03 lets a role hide client fields — an admin who may not see email
+     * addresses on the client list must not be handed a CSV of them. Skipping
+     * this would make the export button a documented bypass of the masking
+     * feature, which is the same class of defect as skipping the client scope.
+     */
+    return applyMaskAll('client', withTags, actor.fieldMask);
+  }
+
+  // ── Withdrawals ───────────────────────────────────────────────────────────
+
+  readonly withdrawalColumns: readonly CsvColumn<WithdrawalExportRow>[] = [
+    { header: 'Withdrawal ID', value: (r) => r.id },
+    /*
+     * The amount, as the STRING the database produced.
+     *
+     * ARCHITECTURE §6.1. No `Number()`, no `toFixed`, no thousands separator:
+     * every one of those goes through a float, and a CSV is the output most
+     * likely to be re-imported into something that does arithmetic on it.
+     */
+    { header: 'Amount', value: (r) => r.amount },
+    { header: 'Currency', value: (r) => r.currency },
+    { header: 'State', value: (r) => r.state },
+    { header: 'Client ID', value: (r) => r.userId },
+    { header: 'Client email', value: (r) => r.userEmail },
+    { header: 'Client first name', value: (r) => r.userFirstName },
+    { header: 'Client last name', value: (r) => r.userLastName },
+    { header: 'Provider', value: (r) => r.provider },
+    { header: 'Provider reference', value: (r) => r.providerRef },
+    { header: 'Destination', value: (r) => r.destination },
+    { header: 'Rejection reason', value: (r) => r.rejectionReason },
+    { header: 'Requested at', value: (r) => r.requestedAt },
+    { header: 'Reviewed at', value: (r) => r.reviewedAt },
+    { header: 'Settled at', value: (r) => r.settledAt },
+  ];
+
+  async withdrawalBatch(
+    query: { state?: string },
+    actor: AuthenticatedAdmin,
+    offset: number,
+    limit: number,
+  ): Promise<WithdrawalExportRow[]> {
+    assertActorCan(actor, 'withdrawals.view', 'export withdrawals');
+    return this.transactions.listForExport({
+      state: query.state,
+      offset,
+      limit,
+      scope: actor.clientScope,
+    });
+  }
+
+  // ── KYC ───────────────────────────────────────────────────────────────────
+
+  readonly kycColumns: readonly CsvColumn<KycExportRow>[] = [
+    { header: 'Client ID', value: (r) => r.userId },
+    { header: 'Client email', value: (r) => r.user.email },
+    { header: 'First name', value: (r) => r.user.firstName },
+    { header: 'Last name', value: (r) => r.user.lastName },
+    { header: 'Status', value: (r) => r.status },
+    /*
+     * The one field taken from `personal_info`, and the only one.
+     *
+     * The queue query extracts `country` out of the jsonb rather than selecting
+     * the blob, so date of birth, address, nationality and phone are not in
+     * this result set at all — they cannot leak into the file by accident.
+     */
+    { header: 'Country', value: (r) => r.personalInfo?.country },
+    { header: 'Submitted at', value: (r) => r.submittedAt },
+    { header: 'Reviewed at', value: (r) => r.reviewedAt },
+    { header: 'Created at', value: (r) => r.createdAt },
+    { header: 'Updated at', value: (r) => r.updatedAt },
+  ];
+
+  /**
+   * KYC submissions, scoped.
+   *
+   * The store is called directly rather than through `KycService.listAll`,
+   * which clamps its limit to 100 — a ceiling that is right for the queue
+   * screen and wrong for a file that promises every matching row. The scope
+   * argument is the same one `listAll` passes, on the same column.
+   *
+   * Note what is NOT in the column set: this exports the QUEUE's columns, not
+   * the submission. Date of birth, address, nationality, phone and document
+   * paths stay out, following the same R-2.5 minimisation the queue query
+   * already applies — a reviewer reads those on the detail screen, where doing
+   * so is an audited act.
+   */
+  async kycBatch(
+    query: { status?: string; q?: string },
+    actor: AuthenticatedAdmin,
+    offset: number,
+    limit: number,
+  ): Promise<KycExportRow[]> {
+    assertActorCan(actor, 'kyc.review', 'export KYC submissions');
+
+    const { items } = await this.kyc.findPageWithUsers({
+      status: query.status as KycExportRow['status'] | undefined,
+      q: query.q,
+      page: Math.floor(offset / limit) + 1,
+      limit,
+      scope: actor.clientScope,
+    });
+    return items;
+  }
+
+  // ── Audit log ─────────────────────────────────────────────────────────────
+
+  readonly auditColumns: readonly CsvColumn<AuditExportRow>[] = [
+    { header: 'Recorded at', value: (r) => r.createdAt },
+    { header: 'Actor email', value: (r) => r.actorEmail },
+    { header: 'Actor ID', value: (r) => r.actorId },
+    { header: 'Actor kind', value: (r) => r.actorKind },
+    { header: 'Action', value: (r) => r.action },
+    { header: 'Subject type', value: (r) => r.subjectType },
+    { header: 'Subject ID', value: (r) => r.subjectId },
+    { header: 'IP address', value: (r) => r.ipAddress },
+    /*
+     * `details` is jsonb and has no fixed shape, so it is serialised whole
+     * rather than being spread into columns that would differ per action. The
+     * CSV escaping handles the embedded quotes and braces.
+     */
+    {
+      header: 'Details',
+      value: (r) => (r.details === undefined ? '' : JSON.stringify(r.details)),
+    },
+  ];
+
+  /**
+   * The admin action log — master admin only, asserted HERE and not merely in
+   * the guard.
+   *
+   * The same check `AdminAuditService.listAuditLog` makes, and for the reason
+   * recorded there: master-only is deliberately not expressed as a permission
+   * key, because it is not a grant anybody can be given. An export route that
+   * checked only its guard would be one decorator away from serving the trail
+   * of who acted on which clients to a sub-admin.
+   */
+  async auditBatch(
+    query: { action?: string; subjectType?: string },
+    actor: Admin,
+    offset: number,
+    limit: number,
+  ): Promise<AuditExportRow[]> {
+    if (actor.role !== 'master_admin') {
+      throw new AuthorizationError('Only the master admin can read the admin action log.');
+    }
+
+    const { items } = await this.auditLog.findAll({
+      page: Math.floor(offset / limit) + 1,
+      limit,
+      action: query.action,
+      subjectType: query.subjectType,
+    });
+    // `findAll` fetches limit + 1 for its cursor; drop the lookahead row.
+    return items.slice(0, limit);
+  }
+
+  // ── IB applications ───────────────────────────────────────────────────────
+
+  readonly ibApplicationColumns: readonly CsvColumn<IbApplicationExportRow>[] = [
+    { header: 'Application ID', value: (r) => r.application.id },
+    { header: 'Client ID', value: (r) => r.application.userId },
+    { header: 'Client email', value: (r) => r.user.email },
+    { header: 'First name', value: (r) => r.user.firstName },
+    { header: 'Last name', value: (r) => r.user.lastName },
+    { header: 'Verification level', value: (r) => r.user.verificationLevel },
+    { header: 'Status', value: (r) => r.application.status },
+    /*
+     * Self-reported free text, NOT a monetary column — `expected_volume` is
+     * `varchar(120)` holding whatever the applicant typed. It is emitted
+     * verbatim, and the CSV escaping is what makes an applicant-supplied string
+     * safe in a spreadsheet.
+     */
+    { header: 'Expected volume', value: (r) => r.application.expectedVolume },
+    { header: 'Website', value: (r) => r.application.website },
+    { header: 'Motivation', value: (r) => r.application.motivation },
+    { header: 'Rejection reason', value: (r) => r.application.rejectionReason },
+    { header: 'Submitted at', value: (r) => r.application.submittedAt },
+    { header: 'Reviewed at', value: (r) => r.application.reviewedAt },
+  ];
+
+  async ibApplicationBatch(
+    query: { status?: string },
+    actor: AuthenticatedAdmin,
+    offset: number,
+    limit: number,
+  ): Promise<IbApplicationExportRow[]> {
+    assertActorCan(actor, 'ib.view', 'export partner applications');
+
+    const { rows } = await this.ib.findPageWithUsers({
+      status: query.status as IbApplicationExportRow['application']['status'] | undefined,
+      page: Math.floor(offset / limit) + 1,
+      limit,
+      scope: actor.clientScope,
+    });
+    return rows;
+  }
+
+  // ── IB partners ───────────────────────────────────────────────────────────
+
+  readonly ibPartnerColumns: readonly CsvColumn<IbPartnerExportRow>[] = [
+    { header: 'Partner client ID', value: (r) => r.account.userId },
+    { header: 'Email', value: (r) => r.user.email },
+    { header: 'First name', value: (r) => r.user.firstName },
+    { header: 'Last name', value: (r) => r.user.lastName },
+    { header: 'Level', value: (r) => r.account.level },
+    { header: 'Level name', value: (r) => r.levelName },
+    { header: 'Referral code', value: (r) => r.account.referralCode },
+    { header: 'Parent partner ID', value: (r) => r.account.parentIbUserId },
+    { header: 'Active', value: (r) => r.account.active },
+    { header: 'Approved at', value: (r) => r.account.approvedAt },
+  ];
+
+  async ibPartnerBatch(
+    actor: AuthenticatedAdmin,
+    offset: number,
+    limit: number,
+  ): Promise<IbPartnerExportRow[]> {
+    assertActorCan(actor, 'ib.view', 'export partners');
+
+    const { rows } = await this.ib.findPartnersPage({
+      page: Math.floor(offset / limit) + 1,
+      limit,
+      scope: actor.clientScope,
+    });
+    return rows;
+  }
+
+  // ── Roles ─────────────────────────────────────────────────────────────────
+
+  readonly roleColumns: readonly CsvColumn<RoleExportRow>[] = [
+    { header: 'Role ID', value: (r) => r.id },
+    { header: 'Name', value: (r) => r.name },
+    { header: 'Description', value: (r) => r.description },
+    { header: 'System role', value: (r) => r.isSystem },
+    { header: 'Permissions', value: (r) => r.permissions.join(' ') },
+    { header: 'Masked fields', value: (r) => r.maskedFields.join(' ') },
+    { header: 'Created at', value: (r) => r.createdAt },
+  ];
+
+  /**
+   * OR semantics, matching `GET /admin/roles` exactly: anyone who can see the
+   * admin directory needs the role vocabulary to make sense of it, so requiring
+   * `roles.view` alone would deny the export to most of the people who can read
+   * the screen it sits on.
+   */
+  async allRoles(actor: AuthenticatedAdmin): Promise<RoleExportRow[]> {
+    if (!actorHasPermission(actor, 'roles.view') && !actorHasPermission(actor, 'users.view')) {
+      throw new AuthorizationError(
+        `${actor.email} cannot export roles: the roles.view or users.view permission is required.`,
+      );
+    }
+    return this.roles.findAll();
+  }
+}
+
+// ── Row shapes ──────────────────────────────────────────────────────────────
+//
+// Declared from what the stores actually return rather than imported from the
+// list DTOs: a DTO describes the JSON a screen receives, and these are the row
+// shapes the queries produce. Tying the export's columns to the DTO would make
+// a presentational change to a screen silently reshape an audit artefact.
+
+export interface ClientExportQuery {
+  q?: string;
+  type?: string;
+  status?: string;
+  level?: string;
+  country?: string;
+  tag?: string;
+  sort?: string;
+  order?: string;
+}
+
+export interface ClientExportRow {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  type: string;
+  status: string;
+  verificationLevel: number;
+  country: string | null;
+  tags: { label: string }[];
+  createdAt: Date;
+}
+
+export interface WithdrawalExportRow {
+  id: string;
+  /** A STRING, always — see `withdrawalColumns`. */
+  amount: string;
+  currency: string;
+  state: string;
+  provider: string;
+  providerRef: string | null;
+  destination: string | null;
+  rejectionReason: string | null;
+  requestedAt: Date;
+  reviewedAt: Date | null;
+  settledAt: Date | null;
+  userId: string;
+  userEmail: string;
+  userFirstName: string;
+  userLastName: string;
+}
+
+export interface KycExportRow {
+  userId: string;
+  status: 'not_started' | 'in_progress' | 'submitted' | 'under_review' | 'approved' | 'rejected';
+  /** Only `country` — see the column note. The rest of the profile is not selected. */
+  personalInfo?: { country: string };
+  submittedAt?: Date;
+  reviewedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+  user: { id: string; email: string; firstName: string; lastName: string };
+}
+
+export interface AuditExportRow {
+  id: string;
+  actorId: string;
+  actorEmail: string;
+  actorKind: string;
+  action: string;
+  subjectType: string;
+  subjectId: string;
+  details?: Record<string, unknown>;
+  ipAddress: string | null;
+  createdAt: Date;
+}
+
+export interface IbApplicationExportRow {
+  application: {
+    id: string;
+    userId: string;
+    status: 'pending' | 'approved' | 'rejected';
+    motivation: string | null;
+    expectedVolume: string | null;
+    website: string | null;
+    rejectionReason: string | null;
+    submittedAt: Date;
+    reviewedAt: Date | null;
+  };
+  user: {
+    id: string;
+    email: string;
+    firstName: string;
+    lastName: string;
+    verificationLevel: number;
+  };
+}
+
+export interface IbPartnerExportRow {
+  account: {
+    userId: string;
+    level: number;
+    parentIbUserId: string | null;
+    referralCode: string;
+    active: boolean;
+    approvedAt: Date;
+  };
+  user: { id: string; email: string; firstName: string; lastName: string };
+  levelName: string;
+}
+
+export interface RoleExportRow {
+  id: string;
+  name: string;
+  description?: string;
+  permissions: string[];
+  maskedFields: string[];
+  isSystem: boolean;
+  createdAt: Date;
+}

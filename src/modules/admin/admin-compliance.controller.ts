@@ -20,11 +20,16 @@ import {
   Put,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Request } from 'express';
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Request, Response } from 'express';
 import { AdminComplianceService } from './admin-compliance.service';
+import { AdminExportService } from './admin-export.service';
+import { AdminAuditService } from './admin-audit.service';
+import { exportFormat, streamCsv } from '../../common/export/export-response';
+import { KYC_SORT_COLUMNS } from '../../store/kyc.store';
 import { KycStepConfig } from '../../store/kyc-config.store';
 import { RejectionContext } from '../../store/rejection-reasons.store';
 import {
@@ -57,7 +62,11 @@ import { Audited } from './guards/audited.decorator';
 @ApiTags('admin')
 @Controller('admin')
 export class AdminComplianceController {
-  constructor(private readonly compliance: AdminComplianceService) {}
+  constructor(
+    private readonly compliance: AdminComplianceService,
+    private readonly exports: AdminExportService,
+    private readonly audit: AdminAuditService,
+  ) {}
 
   // ── KYC Review — requires the kyc.review permission (RBAC-02/03) ──────────
   @Get('kyc')
@@ -68,6 +77,17 @@ export class AdminComplianceController {
     summary: 'List all KYC submissions, optionally filtered by status',
   })
   @ApiOkResponse({ type: KycListResponseDto })
+  /*
+   * Declared OPTIONAL, explicitly — otherwise Swagger emits every `@Query()` as
+   * `required: true` and the generated frontend types demand all six on a call
+   * that legitimately passes none.
+   */
+  @ApiQuery({ name: 'status', required: false, enum: kycStatusEnum.enumValues })
+  @ApiQuery({ name: 'q', required: false, description: 'Search applicant email and name.' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'sort', required: false, enum: Object.keys(KYC_SORT_COLUMNS) })
+  @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients('KycStore.findPageWithUsers applies the predicate to kyc_submissions.user_id.')
   listKyc(
     @Req() req: Request & { admin: AuthenticatedAdmin },
@@ -75,6 +95,8 @@ export class AdminComplianceController {
     @Query('q') q?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('sort') sort?: string,
+    @Query('order') order?: string,
   ) {
     return this.compliance.listKyc(
       {
@@ -84,8 +106,75 @@ export class AdminComplianceController {
         q: searchQuery(q),
         page,
         limit,
+        // Validated in the service against KYC_SORT_COLUMNS — the one place the
+        // column mapping lives.
+        sort,
+        order,
       },
       req.admin,
+    );
+  }
+
+  /**
+   * The KYC review queue as CSV.
+   *
+   * ── Declared before `kyc/:userId`, which is load-bearing ──────────────────
+   *
+   * Express matches in registration order, so with the parameterised route
+   * first `/admin/kyc/export` would bind `userId = 'export'` and 400 on
+   * `UuidParam`.
+   *
+   * ── What this file deliberately does NOT contain ──────────────────────────
+   *
+   * The QUEUE's columns, not the submission's. Date of birth, address,
+   * nationality, phone and document paths stay out, following the same R-2.5
+   * minimisation the queue query already applies — a reviewer reads those on
+   * the detail screen, where doing so writes its own audit row. An export that
+   * flattened full identity profiles into a spreadsheet would route the most
+   * sensitive read in the system around the record that accounts for it.
+   */
+  @Get('kyc/export')
+  @UseGuards(PermissionsGuard)
+  // The same permission as the queue. An export is not a lesser act.
+  @RequirePermissions('kyc.review')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Export the filtered KYC review queue as CSV',
+    description:
+      'The same `status` and `q` filters as GET /admin/kyc, over every matching row rather than ' +
+      'one page. Carries the queue’s columns only — not the full submission.',
+  })
+  @ApiOkResponse({
+    description: 'A CSV file. `Content-Disposition` names it `kyc-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @ApiQuery({ name: 'status', required: false, enum: kycStatusEnum.enumValues })
+  @ApiQuery({ name: 'q', required: false, description: 'Search email and name.' })
+  @ScopedToClients(
+    'AdminExportService.kycBatch → KycStore.findPageWithUsers with actor.clientScope, the same predicate on kyc_submissions.user_id the queue applies.',
+  )
+  @Audited('export.kyc')
+  async exportKyc(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Res() res: Response,
+    @Query('format') format?: string,
+    @Query('status') status?: string,
+    @Query('q') q?: string,
+  ) {
+    const chosen = exportFormat(format);
+    const query = {
+      status: enumQuery(status, kycStatusEnum.enumValues, 'status'),
+      q: searchQuery(q),
+    };
+
+    this.audit.record(req.admin.id, 'export.kyc', 'kyc_queue', req.admin.id, {
+      format: chosen,
+      filters: query,
+    });
+
+    await streamCsv(res, 'kyc', chosen, this.exports.kycColumns, (offset, limit) =>
+      this.exports.kycBatch(query, req.admin, offset, limit),
     );
   }
 

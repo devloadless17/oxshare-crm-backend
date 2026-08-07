@@ -1,5 +1,6 @@
-import { and, count, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, sql, type SQLWrapper } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
+import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { ibAccounts, ibApplications, ibLevels, users } from '../database/schema';
@@ -13,6 +14,48 @@ export type IbApplicationStatus = (typeof ibApplications.status.enumValues)[numb
 
 export type IbApplicationRow = typeof ibApplications.$inferSelect;
 export type IbAccountRow = typeof ibAccounts.$inferSelect;
+
+/**
+ * The columns the partner APPLICATION queue may be ordered by — R-2.5.
+ *
+ * `submittedAt` is `NOT NULL DEFAULT now()`, so unlike the KYC queue's it needs
+ * no null handling: an application exists only once it has been submitted.
+ *
+ * The applicant columns come from the `users` INNER JOIN the queue already does
+ * for its name and email display, so sorting by them costs no extra join.
+ */
+export const IB_APPLICATION_SORT_COLUMNS = {
+  submittedAt: ibApplications.submittedAt,
+  status: ibApplications.status,
+  userEmail: users.email,
+  userFirstName: users.firstName,
+} as const;
+
+export type IbApplicationSortKey = keyof typeof IB_APPLICATION_SORT_COLUMNS;
+
+/** Newest first — what the queue showed before it was sortable. */
+export const DEFAULT_IB_APPLICATION_SORT: IbApplicationSortKey = 'submittedAt';
+
+/**
+ * The columns the PARTNER list may be ordered by — R-2.5.
+ *
+ * `level` is the ladder rung, and it sorts as the INTEGER it is. That is worth
+ * stating because the obvious alternative — ordering by the joined
+ * `ib_levels.name` — would sort "Level 10" before "Level 2" as text, which is
+ * exactly the kind of ordering that looks plausible enough to ship.
+ */
+export const IB_PARTNER_SORT_COLUMNS = {
+  approvedAt: ibAccounts.approvedAt,
+  level: ibAccounts.level,
+  referralCode: ibAccounts.referralCode,
+  userEmail: users.email,
+  userFirstName: users.firstName,
+} as const;
+
+export type IbPartnerSortKey = keyof typeof IB_PARTNER_SORT_COLUMNS;
+
+/** Newest approval first — what the list showed before it was sortable. */
+export const DEFAULT_IB_PARTNER_SORT: IbPartnerSortKey = 'approvedAt';
 
 /**
  * Reads and writes for the partner programme.
@@ -114,9 +157,16 @@ export class IbStore {
     page: number;
     limit: number;
     scope?: ClientScope;
+    /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
+    sort?: IbApplicationSortKey;
+    order?: SortOrder;
   }) {
     const scope = filter.scope ?? UNRESTRICTED;
     const visible = clientScopePredicate(scope, users.id);
+
+    const sortKey: IbApplicationSortKey = filter.sort ?? DEFAULT_IB_APPLICATION_SORT;
+    const direction = filter.order ?? 'desc';
+    const sortColumn: SQLWrapper = IB_APPLICATION_SORT_COLUMNS[sortKey];
 
     const where = and(
       filter.status ? eq(ibApplications.status, filter.status) : undefined,
@@ -137,7 +187,11 @@ export class IbStore {
       .from(ibApplications)
       .innerJoin(users, eq(users.id, ibApplications.userId))
       .where(where)
-      .orderBy(desc(ibApplications.submittedAt))
+      // `id` is the total-order tiebreak. Without it, two applications sharing a
+      // status — which is most of the queue — sit either side of an OFFSET
+      // boundary in an order Postgres may change between queries, so paging can
+      // show one twice and another never. See `orderTerms`.
+      .orderBy(...orderTerms(sortColumn, ibApplications.id, direction))
       .limit(filter.limit)
       .offset((filter.page - 1) * filter.limit);
 
@@ -237,8 +291,19 @@ export class IbStore {
   }
 
   /** The partner list. Joined to the person, because a uuid is not a partner. */
-  async findPartnersPage(filter: { page: number; limit: number; scope?: ClientScope }) {
+  async findPartnersPage(filter: {
+    page: number;
+    limit: number;
+    scope?: ClientScope;
+    /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
+    sort?: IbPartnerSortKey;
+    order?: SortOrder;
+  }) {
     const visible = clientScopePredicate(filter.scope ?? UNRESTRICTED, users.id);
+
+    const sortKey: IbPartnerSortKey = filter.sort ?? DEFAULT_IB_PARTNER_SORT;
+    const direction = filter.order ?? 'desc';
+    const sortColumn: SQLWrapper = IB_PARTNER_SORT_COLUMNS[sortKey];
 
     const rows = await this.db
       .select({
@@ -255,7 +320,11 @@ export class IbStore {
       .innerJoin(users, eq(users.id, ibAccounts.userId))
       .innerJoin(ibLevels, eq(ibLevels.level, ibAccounts.level))
       .where(visible)
-      .orderBy(desc(ibAccounts.approvedAt))
+      // `user_id` is this table's PRIMARY KEY — one partner account per client —
+      // so it is the unique tiebreak here, where the applications queue uses
+      // `id`. Load-bearing for the same reason: `level` has a handful of values
+      // and ties across a page boundary are the norm rather than the exception.
+      .orderBy(...orderTerms(sortColumn, ibAccounts.userId, direction))
       .limit(filter.limit)
       .offset((filter.page - 1) * filter.limit);
 

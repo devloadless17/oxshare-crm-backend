@@ -71,6 +71,35 @@ export async function runSeeds(): Promise<void> {
     .insert(roles)
     .values([
       {
+        /*
+         * The role that grants everything, so "full access" is something a
+         * person can be ASSIGNED rather than something only the bootstrap
+         * account's enum column can express.
+         *
+         * `['*']` is the same wildcard `PermissionsGuard` and `isMaster()`
+         * already honour, so this is not a new privilege level — it is the
+         * existing one, finally attached to a row an operator can see, name and
+         * hand out. Before this, the admin directory displayed a raw
+         * `master_admin` enum value corresponding to no assignable role, and
+         * there was no way to make a second unrestricted administrator except
+         * by editing the database by hand.
+         *
+         * NOT `isSystem`. A system role is hidden from the roles screen, and the
+         * entire point of this one is that it can be seen and assigned. The API
+         * still refuses to delete any role while an admin holds it.
+         */
+        name: 'Administrator',
+        description: 'Unrestricted access to every part of the console.',
+        permissions: ['*'],
+        /*
+         * No masking, matching what `isMaster()` resolves for an unrestricted
+         * account: it returns BEFORE the mask lookup runs, so a mask stored here
+         * would never be honoured — which is worse than none, because it reads
+         * on the roles screen as a protection that is in force.
+         */
+        maskedFields: [],
+      },
+      {
         name: 'Support Agent',
         description: 'Answers client tickets. Reads client records; changes nothing.',
         permissions: ['users.view', 'kyc.view', 'tags.view'],

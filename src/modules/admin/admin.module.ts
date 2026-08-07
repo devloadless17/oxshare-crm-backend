@@ -18,6 +18,7 @@ import { PaymentsModule } from '../payments/payments.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { AdminAuthModule } from './admin-auth.module';
 import { ComplianceModule } from '../compliance/compliance.module';
+import { AdminExportModule } from './admin-export.module';
 
 /*
  * Every import above this array, including the ones that used to sit below it.
@@ -48,7 +49,9 @@ const ADMIN_SERVICES = [
    * runs one way: payments imports `AdminAuthModule` for its guards, never this
    * module, so the back-office graph stays out of the portal's routes.
    */
-  imports: [ComplianceModule, AdminAuthModule, PaymentsModule, WalletModule],
+  // `AdminExportModule` carries AdminExportService for the export routes that sit
+  // on these same controllers — see that module for why it is separate.
+  imports: [ComplianceModule, AdminAuthModule, PaymentsModule, WalletModule, AdminExportModule],
   // Seven controllers share the 'admin' prefix, one per concern, mirroring the
   // services. Express registers all of their routes; there are no path
   // collisions. Order is irrelevant — no two routes overlap.

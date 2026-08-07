@@ -1,9 +1,10 @@
-import { and, desc, eq, gt, notExists, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, notExists, sql, type SQLWrapper } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
 import { adminInvites, admins } from '../database/schema';
+import { orderTerms, type SortOrder } from '../common/sorting';
 
 /**
  * SHA-256 of an invite token, hex — the same treatment reset tokens get.
@@ -22,6 +23,34 @@ import { adminInvites, admins } from '../database/schema';
 export function hashInviteToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
+
+/**
+ * The columns the administrator directory may be ordered by — R-2.5.
+ *
+ * `permissions` and `maskedFields` are deliberately absent: both are `jsonb`
+ * arrays, and "sort by a list" has no meaning a reader would agree on.
+ * `pagination.ts` refuses a non-scalar cursor value for the same reason.
+ */
+export const ADMIN_SORT_COLUMNS = {
+  name: admins.name,
+  email: admins.email,
+  role: admins.role,
+  status: admins.status,
+  createdAt: admins.createdAt,
+} as const;
+
+export type AdminSortKey = keyof typeof ADMIN_SORT_COLUMNS;
+
+/**
+ * Alphabetical, ASCENDING — and unlike every other list here, that is the point.
+ *
+ * The queues default to `createdAt desc` because their job is "what arrived
+ * most recently". A directory's job is "find this person", and the order you
+ * look somebody up in is by name, upwards. This is also the ordering the screen
+ * already implied it had while the query had none at all.
+ */
+export const DEFAULT_ADMIN_SORT: AdminSortKey = 'name';
+export const DEFAULT_ADMIN_ORDER: SortOrder = 'asc';
 
 export type AdminRole = 'master_admin' | 'sub_admin';
 /** Mirrors `user_status`; only these two are meaningful for an admin. */
@@ -222,9 +251,61 @@ export class AdminsStore {
     return row ? toAdmin(row) : undefined;
   }
 
-  async findAll(): Promise<Admin[]> {
-    const rows = await this.db.select().from(admins);
-    return rows.map(toAdmin);
+  /**
+   * The administrator directory — ordered, and optionally paged.
+   *
+   * ## The default ORDER BY is a BUG FIX, not a preference
+   *
+   * This was `SELECT * FROM admins` with no ORDER BY at all. SQL does not
+   * promise an order without one, and Postgres genuinely varies it: the row
+   * order follows whatever the executor produced, so a seq scan, a plan change
+   * after ANALYZE, or an UPDATE moving a row to the end of the heap all reorder
+   * the directory. An operator who saw a colleague third in the list yesterday
+   * and cannot find them today has no way to tell a reordering from a deletion.
+   * `name asc` is the order the screen already presents itself as having.
+   *
+   * ## Paging is OPT-IN, and that is deliberate
+   *
+   * `page`/`limit` absent returns every administrator, because that is what this
+   * endpoint has always returned and what its callers are written against — the
+   * response is a bare array, and wrapping it unconditionally would break the
+   * admin directory screen and the two specs that read it. Administrators number
+   * in the dozens, not the hundreds of thousands, so unpaged is a defensible
+   * default here in a way it never was for the client index.
+   *
+   * When paging IS requested the count comes back alongside, so a caller can
+   * render "of 84" without a second round trip.
+   */
+  async findAll(
+    filter: {
+      /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
+      sort?: AdminSortKey;
+      order?: SortOrder;
+      /** Omit BOTH to get every row — see above. */
+      page?: number;
+      limit?: number;
+    } = {},
+  ): Promise<{ rows: Admin[]; total: number }> {
+    const sortKey: AdminSortKey = filter.sort ?? DEFAULT_ADMIN_SORT;
+    const direction = filter.order ?? DEFAULT_ADMIN_ORDER;
+    const sortColumn: SQLWrapper = ADMIN_SORT_COLUMNS[sortKey];
+
+    const query = this.db
+      .select()
+      .from(admins)
+      // `id` is the total-order tiebreak: `role` has two values and `status`
+      // has two, so ties are the norm rather than the exception here, and rows
+      // tied on the sort key would otherwise swap places between requests.
+      .orderBy(...orderTerms(sortColumn, admins.id, direction))
+      .$dynamic();
+
+    const paged =
+      filter.page !== undefined && filter.limit !== undefined
+        ? await query.limit(filter.limit).offset((filter.page - 1) * filter.limit)
+        : await query;
+
+    const [{ value: total }] = await this.db.select({ value: count() }).from(admins);
+    return { rows: paged.map(toAdmin), total };
   }
 
   async findByRoleId(roleId: string): Promise<Admin[]> {

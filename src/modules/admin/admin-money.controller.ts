@@ -17,17 +17,29 @@ import {
   Patch,
   Query,
   Req,
+  Res,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { ApiCookieAuth, ApiHeader, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiCookieAuth,
+  ApiHeader,
+  ApiOkResponse,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
+import { WITHDRAWAL_SORT_COLUMNS } from '../payments/transactions.service';
 import {
   IDEMPOTENCY_HEADER,
   IdempotencyInterceptor,
   Idempotent,
 } from '../../common/security/idempotency.interceptor';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { AdminMoneyService } from './admin-money.service';
+import { AdminExportService } from './admin-export.service';
+import { AdminAuditService } from './admin-audit.service';
+import { exportFormat, streamCsv } from '../../common/export/export-response';
 import { SettleWithdrawalDto, WithdrawalRejectDto } from './dto/requests/money.dto';
 import {
   LedgerListResponseDto,
@@ -69,7 +81,70 @@ export class AdminMoneyController {
   constructor(
     private readonly money: AdminMoneyService,
     private readonly reconciliation: ReconciliationService,
+    private readonly exports: AdminExportService,
+    private readonly audit: AdminAuditService,
   ) {}
+
+  /**
+   * The withdrawal queue as CSV — every row matching the state filter.
+   *
+   * ── Amounts are emitted as the STRING the database produced ────────────────
+   *
+   * ARCHITECTURE §6.1, and the reason this route is worth reading carefully. A
+   * withdrawal amount is `NUMERIC(28,8)`; it reaches the exporter as a string
+   * and is written to the file character-for-character. Nothing here calls
+   * `Number`, `toFixed` or a locale formatter — a CSV is the output most likely
+   * to be re-imported into a spreadsheet that does arithmetic on it, so a value
+   * rounded on the way out becomes a wrong number in somebody's reconciliation.
+   *
+   * Unlike the client, KYC and IB exports, this one has no `withdrawals/:id`
+   * GET to be shadowed by, so its position is not load-bearing. It is placed
+   * first among the withdrawal routes anyway, to match the pattern the other
+   * exports follow.
+   */
+  @Get('withdrawals/export')
+  @UseGuards(PermissionsGuard)
+  // The SAME permission as the list. An export must never be a way around one.
+  @RequirePermissions('withdrawals.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Export the filtered withdrawal queue as CSV',
+    description:
+      'The same `state` filter as GET /admin/withdrawals, over every matching row rather than ' +
+      'one page. Amounts are the exact decimal strings the ledger holds — never rounded, never ' +
+      'locale-formatted (§6.1).',
+  })
+  @ApiOkResponse({
+    description: 'A CSV file. `Content-Disposition` names it `withdrawals-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues })
+  @ScopedToClients(
+    'AdminExportService.withdrawalBatch → TransactionsService.listForExport, the same clientScopePredicate on transactions.user_id the queue applies.',
+  )
+  @Audited('export.withdrawals')
+  async exportWithdrawals(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Res() res: Response,
+    @Query('format') format?: string,
+    @Query('state') state?: string,
+  ) {
+    const chosen = exportFormat(format);
+    // Validated against the schema's own enum, exactly as the list route does,
+    // so an unrecognised state is a 400 rather than a database error or a file
+    // that is silently empty.
+    const query = { state: enumQuery(state, transactionStateEnum.enumValues, 'state') };
+
+    this.audit.record(req.admin.id, 'export.withdrawals', 'withdrawal_queue', req.admin.id, {
+      format: chosen,
+      filters: query,
+    });
+
+    await streamCsv(res, 'withdrawals', chosen, this.exports.withdrawalColumns, (offset, limit) =>
+      this.exports.withdrawalBatch(query, req.admin, offset, limit),
+    );
+  }
 
   // ── Withdrawals (ADM-03 · §8.4) ───────────────────────────────────────────
   @Get('withdrawals')
@@ -80,6 +155,22 @@ export class AdminMoneyController {
     summary: 'Withdrawal requests with per-state counts (amounts are strings)',
   })
   @ApiOkResponse({ type: WithdrawalListResponseDto })
+  /*
+   * Declared OPTIONAL, explicitly — without these, Swagger emits every `@Query()`
+   * as `required: true` and the frontends' generated types then demand all six
+   * parameters on a call that legitimately passes none.
+   */
+  @ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues })
+  @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'sort',
+    required: false,
+    enum: Object.keys(WITHDRAWAL_SORT_COLUMNS),
+    description: 'amount sorts on the NUMERIC column in SQL — never cast, never in JS (§6).',
+  })
+  @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients(
     'TransactionsService.listForAdmin applies the predicate to transactions.user_id.',
   )
@@ -89,6 +180,8 @@ export class AdminMoneyController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
+    @Query('sort') sort?: string,
+    @Query('order') order?: string,
   ) {
     return this.money.listWithdrawals(
       {
@@ -99,6 +192,11 @@ export class AdminMoneyController {
         page,
         limit,
         cursor,
+        // `sort`/`order` are validated in the service against the allowlist,
+        // which is where the column mapping lives. Validating here too would put
+        // the allowlist in two places.
+        sort,
+        order,
       },
       req.admin,
     );

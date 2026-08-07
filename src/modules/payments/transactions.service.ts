@@ -1,11 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomBytes } from 'crypto';
-import { and, desc, eq, gte, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ne, sql, type SQLWrapper } from 'drizzle-orm';
 import { tradingAccounts, transactions, users } from '../../database/schema';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
 import { assertActorCan, type Actor } from '../../common/security/actor';
 import { money, toDecimal } from '../wallet/money';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
+import type { SortOrder } from '../../common/sorting';
 import { MoneyLimits } from '../../config/money-limits';
 import { PaymentMethodsService } from './payment-methods.service';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
@@ -74,6 +75,46 @@ export type WithinTransaction = (
   tx: Executor,
   row: typeof transactions.$inferSelect,
 ) => Promise<void>;
+
+/**
+ * The columns the admin withdrawal queue may be ordered by — R-2.5.
+ *
+ * ## `amount` sorts on the NUMERIC column, in SQL
+ *
+ * This is the money rule (§6), not a performance preference. `amount` is
+ * `NUMERIC(28,8)`, and the two obvious shortcuts are both wrong:
+ *
+ *  - `ORDER BY amount::float8` loses precision above 2^53. Two withdrawals
+ *    differing in the last satoshi compare EQUAL after the cast, so the queue
+ *    orders them arbitrarily and the operator working top-down cannot tell.
+ *  - Sorting the fetched page in JavaScript sorts the 25 rows in hand, which is
+ *    R-2.5's named failure: identical-looking, and wrong in a way nobody notices
+ *    until somebody acts on the top row.
+ *
+ * Postgres compares `numeric` exactly at full precision, so the bare column is
+ * both the correct comparison and the indexable one. `Number()`/`parseFloat` are
+ * lint errors on this path precisely so the first shortcut cannot be taken by
+ * accident.
+ *
+ * ## The joined client columns
+ *
+ * `users` is already INNER JOINed for the queue's name/email display, so sorting
+ * by applicant costs no extra join. `firstName` is offered rather than a
+ * concatenated full name: the index is on the column, and a `first || ' ' ||
+ * last` expression would need its own expression index to stay seekable.
+ */
+export const WITHDRAWAL_SORT_COLUMNS = {
+  createdAt: transactions.createdAt,
+  amount: transactions.amount,
+  state: transactions.state,
+  userEmail: users.email,
+  userFirstName: users.firstName,
+} as const;
+
+export type WithdrawalSortKey = keyof typeof WITHDRAWAL_SORT_COLUMNS;
+
+/** Newest first — what the queue showed before it was sortable. */
+export const DEFAULT_WITHDRAWAL_SORT: WithdrawalSortKey = 'createdAt';
 
 @Injectable()
 export class TransactionsService {
@@ -259,10 +300,17 @@ export class TransactionsService {
     cursor?: CursorPosition;
     /** Row-level visibility. Admin callers pass the actor's; defaults to open. */
     scope?: ClientScope;
+    /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
+    sort?: WithdrawalSortKey;
+    order?: SortOrder;
   }) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = pageSize(filter.limit);
     const db = this.db;
+
+    const sortKey: WithdrawalSortKey = filter.sort ?? DEFAULT_WITHDRAWAL_SORT;
+    const direction = filter.order ?? 'desc';
+    const sortColumn: SQLWrapper = WITHDRAWAL_SORT_COLUMNS[sortKey];
 
     const conditions = [eq(transactions.direction, 'withdrawal')];
 
@@ -278,14 +326,42 @@ export class TransactionsService {
      * while clients keep submitting, which is precisely the concurrent-insert
      * case where offset paging skips a row. A skipped withdrawal is one nobody
      * actions, and nothing about it looks wrong.
+     *
+     * The COMPARATOR FOLLOWS THE SORT DIRECTION, and the cursor value is cast to
+     * the sort column's own type — both for the reasons `users.store.ts`
+     * records. Under `ORDER BY ... ASC` "after this row" is `>`, and a `<` left
+     * behind would page backwards through a forwards list, silently re-serving
+     * rows the caller had already seen.
+     *
+     * `amount` casts to `numeric`, never to a float: the cursor carries the
+     * exact decimal string the row held, and `::numeric` is what compares it at
+     * full precision against a `NUMERIC(28,8)` column.
      */
     if (filter.cursor) {
+      const comparator = direction === 'asc' ? sql`>` : sql`<`;
+      const cast =
+        sortKey === 'createdAt'
+          ? sql`${filter.cursor.value}::timestamptz`
+          : sortKey === 'amount'
+            ? sql`${filter.cursor.value}::numeric`
+            : sql`${filter.cursor.value}::text`;
+      // The enum column (`state`) compares as text; Postgres knows the enum's
+      // text representation, so this casts cleanly.
+      const seekColumn =
+        sortKey === 'createdAt' || sortKey === 'amount'
+          ? sql`${sortColumn}`
+          : sql`${sortColumn}::text`;
+
       conditions.push(
-        sql`(${transactions.createdAt}, ${transactions.id}) < (${filter.cursor.value}::timestamptz, ${filter.cursor.id}::uuid)`,
+        sql`(${seekColumn}, ${transactions.id}) ${comparator} (${cast}, ${filter.cursor.id}::uuid)`,
       );
     }
     const where = and(...conditions);
     const usingCursor = Boolean(filter.cursor) || page <= 1;
+    // Both keys in the SAME direction — a b-tree can be read backwards only when
+    // every column of the ORDER BY agrees, which is what lets migration 0035's
+    // `(col DESC, id DESC)` indexes serve both directions with no sort node.
+    const orderBy = direction === 'asc' ? asc : desc;
 
     const rows = await db
       .select({
@@ -308,7 +384,7 @@ export class TransactionsService {
       .from(transactions)
       .innerJoin(users, eq(transactions.userId, users.id))
       .where(where)
-      .orderBy(desc(transactions.createdAt), desc(transactions.id))
+      .orderBy(orderBy(sortColumn), orderBy(transactions.id))
       .limit(limit + 1)
       .offset(usingCursor ? 0 : (page - 1) * limit);
 
@@ -330,13 +406,23 @@ export class TransactionsService {
       counts['all'] += row.value;
     }
 
-    // `buildCursorPage` needs `id` and `createdAt`; the projection renames the
-    // latter to `requestedAt` for the API, so the page is built from the raw rows
-    // and the shaping happens after.
+    /*
+     * `buildCursorPage` mints the cursor by reading `row[sort]`, so the row it
+     * is handed must carry the sort key under THAT NAME.
+     *
+     * The projection renames two of them — `created_at` is served as
+     * `requestedAt`, and the client columns are flattened to `userEmail` /
+     * `userFirstName` — so the page is built from rows re-labelled back to the
+     * allowlist's keys, and the API shaping happens afterwards. Without this the
+     * lookup returns `undefined` on every non-default sort, `cursorValueOf`
+     * turns that into an empty string, and page two seeks to a position that
+     * matches nothing: the list would simply end after one page.
+     */
     const paged = buildCursorPage(
       rows.map((r) => ({ ...r, createdAt: r.requestedAt })),
       limit,
       total,
+      sortKey,
     );
 
     const items = paged.items.map((r) => ({
@@ -360,6 +446,80 @@ export class TransactionsService {
     }));
 
     return { items, nextCursor: paged.nextCursor, total, page, limit, counts };
+  }
+
+  /**
+   * One batch of withdrawals for a CSV export — the same filter and the same
+   * scope as `listForAdmin`, without the page-size ceiling.
+   *
+   * ── Why this is a separate method rather than a flag on `listForAdmin` ─────
+   *
+   * `listForAdmin` runs its limit through `pageSize()`, which clamps to
+   * `MAX_PAGE_SIZE` (100). That ceiling is correct for a screen and wrong for an
+   * export, whose whole promise is "every row matching these filters, not the
+   * page you are looking at". Adding an `unbounded: true` parameter to the list
+   * method would put a switch on the query the entire admin surface reads, and
+   * getting that switch wrong is an unpaginated read of a 219,000-row table
+   * from a screen.
+   *
+   * What is NOT duplicated is the part that matters: the scope predicate is
+   * built by the same `clientScopePredicate` call against the same
+   * `transactions.userId` column, in the WHERE clause. An export cannot see a
+   * row the queue would have hidden.
+   *
+   * Offset paging rather than a keyset seek, deliberately. The ordering is
+   * total (`created_at DESC, id DESC`) and the export reads it to completion in
+   * one request, so a concurrent insert can only add a row at the head this
+   * pass has already passed — it cannot shift a row across a batch boundary.
+   */
+  async listForExport(filter: {
+    state?: string;
+    offset: number;
+    limit: number;
+    scope?: ClientScope;
+  }) {
+    const conditions = [eq(transactions.direction, 'withdrawal')];
+
+    // Identical to the queue's, on the same column. See the note above.
+    const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, transactions.userId);
+    if (scoped) conditions.push(scoped);
+    if (filter.state) {
+      conditions.push(eq(transactions.state, filter.state as 'pending'));
+    }
+
+    const rows = await this.db
+      .select({
+        id: transactions.id,
+        amount: transactions.amount,
+        currency: transactions.currency,
+        state: transactions.state,
+        provider: transactions.provider,
+        providerRef: transactions.providerRef,
+        destination: transactions.destination,
+        rejectionReason: transactions.rejectionReason,
+        requestedAt: transactions.createdAt,
+        reviewedAt: transactions.reviewedAt,
+        settledAt: transactions.settledAt,
+        userId: transactions.userId,
+        userEmail: users.email,
+        userFirstName: users.firstName,
+        userLastName: users.lastName,
+      })
+      .from(transactions)
+      .innerJoin(users, eq(transactions.userId, users.id))
+      .where(and(...conditions))
+      // Matching the queue's default ordering, so an export and the screen list
+      // the same rows in the same order.
+      .orderBy(desc(transactions.createdAt), desc(transactions.id))
+      .limit(filter.limit)
+      .offset(filter.offset);
+
+    /*
+     * `money()` for the same reason `listForAdmin` uses it: the value crosses
+     * the boundary as a STRING, normalised to the 8 decimal places the column
+     * stores, and is never converted to a number on the way to the file.
+     */
+    return rows.map((r) => ({ ...r, amount: money(r.amount) }));
   }
 
   async listForUser(userId: string) {

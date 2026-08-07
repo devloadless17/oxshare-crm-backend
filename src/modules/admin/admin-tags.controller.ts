@@ -1,9 +1,23 @@
 // Part of the `admin` controller surface, split by concern — see
 // admin-clients.controller.ts for why several classes share one prefix.
 
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Request } from 'express';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Request, Response } from 'express';
+import { exportFormat, streamCsvFromArray } from '../../common/export/export-response';
+import { NotAudited } from './guards/audited.decorator';
 import { AdminTagsService } from './admin-tags.service';
 import { CreateClientTagDto, UpdateClientTagDto } from './dto/requests/tags.dto';
 import { ClientTagDto, ClientTagWithCountDto } from './dto/responses.dto';
@@ -34,6 +48,41 @@ export class AdminTagsController {
   @NotClientScoped('The tag VOCABULARY, not the clients carrying them.')
   list() {
     return this.tags.list();
+  }
+
+  /**
+   * The tag vocabulary as CSV, with how many clients carry each.
+   *
+   * ── `@NotClientScoped`, and why the COUNT does not change that ────────────
+   *
+   * The rows are tags, not clients: no client is named and no client-owned row
+   * is returned. `clientCount` is an aggregate over the whole client base
+   * rather than over the caller's territory, exactly as `GET /admin/tags`
+   * already reports it — a scoped admin reading "412" learns how many clients
+   * carry the tag platform-wide, which is a property of the tag and not a way
+   * to reach anybody's record.
+   */
+  @Get('tags/export')
+  @UseGuards(PermissionsGuard)
+  // OR semantics, matching the list: anyone who can see the client index needs
+  // the tag vocabulary to make sense of its chips and its filter.
+  @RequirePermissions('tags.view', 'users.view')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Export the client tag vocabulary as CSV' })
+  @ApiOkResponse({
+    description: 'A CSV file, named `tags-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @NotClientScoped(
+    'The tag VOCABULARY, not the clients carrying them — the same stance the list takes.',
+  )
+  @NotAudited(
+    'A vocabulary of operator-defined labels containing no client data. The exports worth attributing are the ones carrying PII or money.',
+  )
+  async exportTags(@Res() res: Response, @Query('format') format?: string) {
+    const chosen = exportFormat(format);
+    await streamCsvFromArray(res, 'tags', chosen, TAG_EXPORT_COLUMNS, async () => this.tags.list());
   }
 
   @Post('tags')
@@ -139,4 +188,25 @@ export class AdminTagsController {
   ) {
     return this.tags.unassign(id, tagId, req.admin);
   }
+}
+
+const TAG_EXPORT_COLUMNS = [
+  { header: 'Tag ID', value: (r: TagExportRow) => r.id },
+  { header: 'Slug', value: (r: TagExportRow) => r.slug },
+  { header: 'Label', value: (r: TagExportRow) => r.label },
+  { header: 'Description', value: (r: TagExportRow) => r.description },
+  { header: 'Colour', value: (r: TagExportRow) => r.color },
+  // A genuine integer count, not a monetary value.
+  { header: 'Clients carrying it', value: (r: TagExportRow) => r.clientCount },
+  { header: 'Created at', value: (r: TagExportRow) => r.createdAt },
+] as const;
+
+interface TagExportRow {
+  id: string;
+  slug: string;
+  label: string;
+  description?: string;
+  color?: string;
+  clientCount: number;
+  createdAt: Date;
 }

@@ -1,6 +1,20 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Request } from 'express';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Request, Response } from 'express';
+import { exportFormat, streamCsvFromArray } from '../../common/export/export-response';
+import { NotAudited } from '../admin/guards/audited.decorator';
 import {
   AuthenticatedAdmin,
   PermissionsGuard,
@@ -52,6 +66,41 @@ export class AdminPaymentMethodsController {
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
   list() {
     return this.methods.listAll();
+  }
+
+  /**
+   * Every payment method as CSV.
+   *
+   * ── `minAmount` and `maxAmount` are MONEY and are emitted unchanged ────────
+   *
+   * Both are `NUMERIC(28,8)` columns and arrive from the driver as strings.
+   * They are written to the file exactly as they arrive — §6.1 applies to a
+   * configured deposit limit as much as to a ledger entry, and this is the
+   * table that decides how much a client is allowed to send.
+   */
+  @Get('export')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('payments.view')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Export every payment method as CSV, configured or not' })
+  @ApiOkResponse({
+    description: 'A CSV file, named `payment-methods-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
+  @NotAudited(
+    'Platform configuration naming no client. The exports worth attributing are the ones carrying client PII or ledger movements; recording this one would bury them.',
+  )
+  async exportPaymentMethods(@Res() res: Response, @Query('format') format?: string) {
+    const chosen = exportFormat(format);
+    await streamCsvFromArray(
+      res,
+      'payment-methods',
+      chosen,
+      PAYMENT_METHOD_EXPORT_COLUMNS,
+      async () => this.methods.listAll(),
+    );
   }
 
   @Post()
@@ -108,4 +157,41 @@ export class AdminPaymentMethodsController {
   remove(@Param('key') key: string) {
     return this.methods.remove(key);
   }
+}
+
+/**
+ * The payment-method export's columns.
+ *
+ * `Minimum` and `Maximum` are the raw `NUMERIC(28,8)` strings — never
+ * `Number()`, never rounded. `instructions` is free text an operator wrote and
+ * may contain commas and newlines; the CSV escaping handles both.
+ */
+const PAYMENT_METHOD_EXPORT_COLUMNS = [
+  { header: 'Key', value: (r: PaymentMethodExportRow) => r.key },
+  { header: 'Name', value: (r: PaymentMethodExportRow) => r.name },
+  { header: 'Kind', value: (r: PaymentMethodExportRow) => r.kind },
+  { header: 'Currency', value: (r: PaymentMethodExportRow) => r.currency },
+  { header: 'Pay to', value: (r: PaymentMethodExportRow) => r.payTo },
+  // Money: the exact string the column holds.
+  { header: 'Minimum', value: (r: PaymentMethodExportRow) => r.minAmount },
+  { header: 'Maximum', value: (r: PaymentMethodExportRow) => r.maxAmount },
+  { header: 'Enabled', value: (r: PaymentMethodExportRow) => r.enabled },
+  { header: 'Instructions', value: (r: PaymentMethodExportRow) => r.instructions },
+  { header: 'Sort order', value: (r: PaymentMethodExportRow) => r.sortOrder },
+  { header: 'Updated at', value: (r: PaymentMethodExportRow) => r.updatedAt },
+] as const;
+
+interface PaymentMethodExportRow {
+  key: string;
+  name: string;
+  kind: string;
+  currency: string;
+  payTo: string | null;
+  /** NUMERIC(28,8) as a string — see the column note above. */
+  minAmount: string | null;
+  maxAmount: string | null;
+  enabled: boolean;
+  instructions: string | null;
+  sortOrder: number;
+  updatedAt: Date;
 }

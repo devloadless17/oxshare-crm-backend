@@ -1,5 +1,6 @@
-import { and, count, desc, eq, sql, SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, sql, SQL, type SQLWrapper } from 'drizzle-orm';
 import { buildCursorPage, pageSize, type CursorPosition } from '../common/pagination';
+import type { SortOrder } from '../common/sorting';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
@@ -32,6 +33,31 @@ export interface AuditEntry {
   ipAddress?: string | null;
   createdAt: Date;
 }
+
+/**
+ * The columns the audit trail may be ordered by — R-2.5.
+ *
+ * Deliberately SMALL. This table is append-only and only grows, so every
+ * sortable column is one whose composite index has to be maintained on every
+ * write forever — and the trail is written on every audited admin action. The
+ * three offered are the three a reader actually asks for: when it happened, what
+ * was done, and who did it.
+ *
+ * `actorEmail` rather than `actorId`: an operator scanning the log is looking
+ * for a person, and grouping by an opaque uuid orders by nothing they can read.
+ * The column is denormalised onto the row already (it is captured at write time
+ * precisely so a later rename cannot rewrite history), so this needs no join.
+ */
+export const AUDIT_SORT_COLUMNS = {
+  createdAt: auditLog.createdAt,
+  action: auditLog.action,
+  actorEmail: auditLog.actorEmail,
+} as const;
+
+export type AuditSortKey = keyof typeof AUDIT_SORT_COLUMNS;
+
+/** Newest first — what the trail showed before it was sortable. */
+export const DEFAULT_AUDIT_SORT: AuditSortKey = 'createdAt';
 
 @Injectable()
 export class AuditLogStore {
@@ -76,10 +102,17 @@ export class AuditLogStore {
       action?: string;
       subjectType?: string;
       actorId?: string;
+      /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
+      sort?: AuditSortKey;
+      order?: SortOrder;
     } = {},
   ) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = pageSize(filter.limit);
+
+    const sortKey: AuditSortKey = filter.sort ?? DEFAULT_AUDIT_SORT;
+    const direction = filter.order ?? 'desc';
+    const sortColumn: SQLWrapper = AUDIT_SORT_COLUMNS[sortKey];
 
     const conditions: SQL[] = [];
     if (filter.action) conditions.push(eq(auditLog.action, filter.action));
@@ -92,29 +125,51 @@ export class AuditLogStore {
      * worse than no audit trail, because it is believed.
      */
     if (filter.cursor) {
+      /*
+       * The comparator FOLLOWS the sort direction, and the value is cast to the
+       * sort column's own type — both for the reasons `users.store.ts` records.
+       * Under `ORDER BY ... ASC`, "after this row" is `>`; a `<` left behind
+       * would page backwards through a forwards list and silently re-serve rows
+       * the reader had already seen. On an audit trail that reads as duplicated
+       * history.
+       */
+      const comparator = direction === 'asc' ? sql`>` : sql`<`;
+      const cast =
+        sortKey === 'createdAt'
+          ? sql`${filter.cursor.value}::timestamptz`
+          : sql`${filter.cursor.value}::text`;
+      const seekColumn = sortKey === 'createdAt' ? sql`${sortColumn}` : sql`${sortColumn}::text`;
+
       conditions.push(
-        sql`(${auditLog.createdAt}, ${auditLog.id}) < (${filter.cursor.value}::timestamptz, ${filter.cursor.id}::uuid)`,
+        sql`(${seekColumn}, ${auditLog.id}) ${comparator} (${cast}, ${filter.cursor.id}::uuid)`,
       );
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     const db = this.db;
     const usingCursor = Boolean(filter.cursor) || page <= 1;
+    // Both keys in the SAME direction, matching migration 0035's composites —
+    // a b-tree is readable backwards only when every ORDER BY column agrees.
+    const orderBy = direction === 'asc' ? asc : desc;
 
     const rows = await db
       .select()
       .from(auditLog)
       .where(where)
-      .orderBy(desc(auditLog.createdAt), desc(auditLog.id))
+      .orderBy(orderBy(sortColumn), orderBy(auditLog.id))
       .limit(limit + 1)
       .offset(usingCursor ? 0 : (page - 1) * limit);
 
     const [{ value: total }] = await db.select({ value: count() }).from(auditLog).where(where);
 
+    // The sort key is stamped into the cursor so it cannot be replayed under a
+    // different ordering — `decodeCursor` refuses one that was, rather than
+    // seeking to a meaningless position and returning the wrong rows silently.
     const page_ = buildCursorPage(
       rows.map((r) => ({ ...r, details: r.details ?? undefined })),
       limit,
       total,
+      sortKey,
     );
 
     return { ...page_, page, limit };

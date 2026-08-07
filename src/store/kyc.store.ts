@@ -1,5 +1,6 @@
-import { and, asc, desc, eq, ilike, inArray, or, sql, SQL } from 'drizzle-orm';
+import { and, asc, eq, ilike, inArray, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
+import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { kycSubmissionAttempts, kycSubmissions, users } from '../database/schema';
@@ -11,6 +12,41 @@ import {
 
 export type KycStatus =
   'not_started' | 'in_progress' | 'submitted' | 'under_review' | 'approved' | 'rejected';
+
+/**
+ * The columns the KYC review queue may be ordered by — R-2.5.
+ *
+ * ## `submittedAt` stays the BARE nullable column, deliberately
+ *
+ * A submission row exists from the moment a client starts one and is stamped
+ * only when they finish, so `submitted_at` is null for every in-progress
+ * applicant. The client index coalesces its nullable sort column to `''`
+ * because a keyset SEEK over null is UNKNOWN and silently drops those rows —
+ * but this queue pages by OFFSET, not by a row comparison, so that failure mode
+ * does not arise here and a coalesce would only change which end the
+ * unsubmitted rows sort to.
+ *
+ * That matters because this is the DEFAULT ordering and it is not being
+ * changed: `ORDER BY submitted_at DESC` puts nulls first under Postgres'
+ * default (`DESC` implies `NULLS FIRST`), and the ORDER BY below pins
+ * `NULLS LAST`/`NULLS FIRST` explicitly per direction so the two directions are
+ * mirrors of each other rather than one of them being arbitrary.
+ *
+ * The applicant columns come from the `users` INNER JOIN the queue already does
+ * for its name and email display, so sorting by them costs no extra join.
+ */
+export const KYC_SORT_COLUMNS = {
+  submittedAt: kycSubmissions.submittedAt,
+  status: kycSubmissions.status,
+  createdAt: kycSubmissions.createdAt,
+  userEmail: users.email,
+  userFirstName: users.firstName,
+} as const;
+
+export type KycSortKey = keyof typeof KYC_SORT_COLUMNS;
+
+/** Most recently submitted first — what the queue showed before it was sortable. */
+export const DEFAULT_KYC_SORT: KycSortKey = 'submittedAt';
 
 export interface PersonalInfo {
   firstName: string;
@@ -219,9 +255,17 @@ export class KycStore {
     limit: number;
     /** Row-level visibility. Defaults to unrestricted; admin callers pass the actor's. */
     scope?: ClientScope;
+    /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
+    sort?: KycSortKey;
+    order?: SortOrder;
   }) {
     const db = this.db;
     const conditions: SQL[] = [];
+
+    const sortKey: KycSortKey = filter.sort ?? DEFAULT_KYC_SORT;
+    const direction = filter.order ?? 'desc';
+    const sortColumn: SQLWrapper = KYC_SORT_COLUMNS[sortKey];
+
     if (filter.status) conditions.push(eq(kycSubmissions.status, filter.status));
 
     // In the WHERE clause, so an out-of-scope submission never enters the
@@ -274,7 +318,29 @@ export class KycStore {
         .from(kycSubmissions)
         .innerJoin(users, eq(kycSubmissions.userId, users.id))
         .where(where)
-        .orderBy(desc(kycSubmissions.submittedAt))
+        /*
+         * The sort key, then `user_id` as a TOTAL-ORDER tiebreak.
+         *
+         * `user_id` rather than `id`: this table has no `id` column — one
+         * submission per client, so the client IS the key. The tiebreak is not
+         * decoration. Every sortable column here has ties by construction (a
+         * status has six values; two clients submit in the same second during a
+         * campaign), and rows sharing a sort value sit either side of an OFFSET
+         * boundary in an order Postgres is free to change between queries. That
+         * is a reviewer paging through the queue and never being shown a
+         * submission, with nothing to indicate it.
+         *
+         * Both keys in the SAME direction, matching migration 0035's
+         * `(col DESC, user_id DESC)` composites — a b-tree is readable backwards
+         * only when every column of the ORDER BY agrees.
+         */
+        .orderBy(
+          ...orderTerms(sortColumn, kycSubmissions.userId, direction, {
+            // Only `submittedAt` is nullable here — null for every application
+            // still being filled in, which must not lead the queue.
+            nullsLast: sortKey === 'submittedAt',
+          }),
+        )
         .limit(filter.limit)
         .offset((filter.page - 1) * filter.limit),
       db

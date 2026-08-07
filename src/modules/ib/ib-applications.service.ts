@@ -3,11 +3,16 @@ import { randomBytes } from 'node:crypto';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
+  DEFAULT_IB_APPLICATION_SORT,
+  DEFAULT_IB_PARTNER_SORT,
+  IB_APPLICATION_SORT_COLUMNS,
+  IB_PARTNER_SORT_COLUMNS,
   IbStore,
   type IbAccountRow,
   type IbApplicationRow,
   type IbApplicationStatus,
 } from '../../store/ib.store';
+import { sortKey, sortOrder } from '../../common/sorting';
 import { UsersStore } from '../../store/users.store';
 import { IbLevelsService } from './ib-levels.service';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
@@ -160,12 +165,32 @@ export class IbApplicationsService {
    * promise twelve pending applications and then show four.
    */
   list(
-    filter: { status?: IbApplicationStatus; page?: number; limit?: number },
+    filter: {
+      status?: IbApplicationStatus;
+      page?: number;
+      limit?: number;
+      sort?: string;
+      order?: string;
+    },
     scope: ClientScope,
   ) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 20));
-    return this.ib.findPageWithUsers({ status: filter.status, page, limit, scope });
+    return this.ib.findPageWithUsers({
+      status: filter.status,
+      page,
+      limit,
+      scope,
+      // R-2.5. An unrecognised key is a 400 naming the allowed ones, never a
+      // silent fallback — a sort the server ignored is a lie the UI tells.
+      sort: sortKey(
+        filter.sort,
+        IB_APPLICATION_SORT_COLUMNS,
+        DEFAULT_IB_APPLICATION_SORT,
+        'partner applications',
+      ),
+      order: sortOrder(filter.order),
+    });
   }
 
   /**
@@ -325,10 +350,19 @@ export class IbApplicationsService {
   // ── managing partners after approval ───────────────────────────────────────
 
   /** The partner list, scoped to what this admin may see. */
-  listPartners(filter: { page?: number; limit?: number }, scope: ClientScope) {
+  listPartners(
+    filter: { page?: number; limit?: number; sort?: string; order?: string },
+    scope: ClientScope,
+  ) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 20));
-    return this.ib.findPartnersPage({ page, limit, scope });
+    return this.ib.findPartnersPage({
+      page,
+      limit,
+      scope,
+      sort: sortKey(filter.sort, IB_PARTNER_SORT_COLUMNS, DEFAULT_IB_PARTNER_SORT, 'partners'),
+      order: sortOrder(filter.order),
+    });
   }
 
   /**

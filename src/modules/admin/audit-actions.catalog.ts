@@ -188,6 +188,42 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * takeover attempts rather than beside the brand name.
    */
   { action: 'settings.smtp.update', label: 'Mail server configuration changed', group: 'Security' },
+
+  /*
+   * ── Exports ───────────────────────────────────────────────────────────────
+   *
+   * The one group here that records READS rather than writes, and the exception
+   * to the rule stated in `audited.decorator.ts` that a GET is governed by
+   * R-6.6 instead.
+   *
+   * An export is not an ordinary read. Opening the client list shows an
+   * administrator a page of twenty-five rows on a screen; exporting it puts
+   * every matching row — names, emails, countries, withdrawal amounts,
+   * identity-verification decisions — into a file that leaves the building on
+   * a laptop. "Which administrator took a copy of the client base, and when" is
+   * the first question asked after a leak, and it is precisely the question the
+   * audit log exists to be able to answer.
+   *
+   * The same reasoning already applies to `kyc.document.view` and
+   * `kyc.submission.view`, which are also GETs and also recorded. This extends
+   * it to the four exports that carry client PII or money, and deliberately no
+   * further: the configuration exports (currencies, tags, payment methods,
+   * roles, administrators) copy no client data, and recording those would fill
+   * the log with rows nobody searches for and make the ones that matter harder
+   * to find.
+   */
+  { action: 'export.clients', label: 'Client list exported', group: 'Exports' },
+  { action: 'export.withdrawals', label: 'Withdrawals exported', group: 'Exports' },
+  { action: 'export.kyc', label: 'KYC queue exported', group: 'Exports' },
+  /*
+   * Exporting the trail itself is recorded IN the trail. Not circular — the row
+   * lands after the read it describes, so it appears in the next export and not
+   * in its own, which is the correct and useful behaviour: a reader of export N
+   * can see that export N-1 happened.
+   */
+  { action: 'export.audit_log', label: 'Admin action log exported', group: 'Exports' },
+  { action: 'export.ib_applications', label: 'Partner applications exported', group: 'Exports' },
+  { action: 'export.ib_partners', label: 'Partner list exported', group: 'Exports' },
 ] as const;
 
 /** Every action key, for the coverage test and for validating `?action=`. */
