@@ -24,8 +24,18 @@
 export const LEDGER_REFERENCE = {
   /** A commission accrual credited to an IB's wallet on confirmation. */
   accrual: 'accrual',
-  /** A deposit, withdrawal hold, or settlement — anything in `transactions`. */
+  /** A deposit, withdrawal or refund — anything in `transactions`. */
   transaction: 'transaction',
+  /**
+   * A move between a wallet and a trading account — anything in `transfers`.
+   *
+   * ADDED to this constant rather than left as a literal, which is what it was:
+   * `transfers.service.ts` wrote `referenceType: 'transfer'` inline at two call
+   * sites while this file's own docblock described exactly that mistake costing
+   * a permanently-broken reconciliation check. One of the two spellings would
+   * eventually have drifted.
+   */
+  transfer: 'transfer',
 } as const;
 
 export type LedgerReferenceType = (typeof LEDGER_REFERENCE)[keyof typeof LEDGER_REFERENCE];

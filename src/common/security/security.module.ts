@@ -5,14 +5,15 @@ import { CsrfGuard } from './csrf.guard';
 import { IdempotencyInterceptor } from './idempotency.interceptor';
 import { RefreshTokensService } from './refresh-tokens.service';
 import { PasswordService } from './password.service';
+import { MoneyLimits } from '../../config/money-limits';
 import { LoginAttemptsService } from './login-attempts.service';
 import { SecurityScheduler } from './security.scheduler';
 
 /**
  * The cross-cutting security services, available everywhere.
  *
- * @Global so that CsrfService reaches both auth services
- * the payments and partners modules, without any of them importing each other —
+ * @Global so that CsrfService reaches both auth services and MoneyLimits
+ * reaches the payments module, without any of them importing each other —
  * these are policy, not domain, and a domain module should not have to know
  * where policy lives.
  *
@@ -31,6 +32,7 @@ import { SecurityScheduler } from './security.scheduler';
     RefreshTokensService,
     LoginAttemptsService,
     PasswordService,
+    MoneyLimits,
     SecurityScheduler,
   ],
   exports: [
@@ -40,6 +42,7 @@ import { SecurityScheduler } from './security.scheduler';
     RefreshTokensService,
     LoginAttemptsService,
     PasswordService,
+    MoneyLimits,
   ],
 })
 export class SecurityModule {}

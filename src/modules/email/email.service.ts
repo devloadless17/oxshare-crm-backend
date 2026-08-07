@@ -8,6 +8,8 @@ import {
   adminPasswordReset,
   kycDecision,
   partnerDecision,
+  withdrawalDecision,
+  withdrawalOtp,
   passwordReset,
   smtpTest,
   verifyEmail,
@@ -212,6 +214,50 @@ export class EmailService {
       `partner ${decision} email`,
       partnerDecision(firstName, decision, this.portalUrl(), options),
     );
+  }
+
+  /**
+   * The withdrawal verdict — sent, or declined with the reason.
+   *
+   * Fire-and-forget at the call site and AFTER the transaction commits, like
+   * every other decision mail here: the money has already moved, and a mail
+   * server being briefly down must not roll back a settled payout.
+   */
+  async sendWithdrawalDecisionEmail(
+    email: string,
+    firstName: string,
+    decision: 'paid' | 'rejected',
+    amount: string,
+    currency: string,
+    reason?: string,
+  ): Promise<void> {
+    await this.send(
+      email,
+      `withdrawal ${decision} email`,
+      withdrawalDecision(firstName, decision, amount, currency, this.portalUrl(), reason),
+    );
+  }
+
+  /**
+   * The six digits that confirm one specific withdrawal.
+   *
+   * AWAITED by its caller, unlike the decision mails above — the client is
+   * sitting in front of a form waiting for a code, so "sent" has to mean sent.
+   * Failure is still swallowed and logged by `send()`; the controller answers
+   * with `required: true` regardless, and the client can request another.
+   *
+   * `echoForDevelopment` prints the code when MAIL_DEV_ECHO is on, and its own
+   * warning says it is a live credential in a log. Never logged otherwise
+   * (R-6.3).
+   */
+  async sendWithdrawalOtpEmail(
+    email: string,
+    amount: string,
+    currency: string,
+    code: string,
+  ): Promise<void> {
+    this.echoForDevelopment(`Withdrawal OTP (${amount} ${currency})`, email, code);
+    await this.send(email, 'withdrawal confirmation code', withdrawalOtp(amount, currency, code));
   }
 
   async sendAdminInviteEmail(email: string, name: string, inviteUrl: string): Promise<void> {

@@ -32,6 +32,8 @@ export { passwordReset } from './password-reset';
 export { accountExists } from './account-exists';
 export { kycDecision } from './kyc-decision';
 export { partnerDecision } from './partner-decision';
+export { withdrawalDecision } from './withdrawal-decision';
+export { withdrawalOtp } from './withdrawal-otp';
 export { adminInvite } from './admin-invite';
 export { adminPasswordReset } from './admin-password-reset';
 export { smtpTest } from './smtp-test';

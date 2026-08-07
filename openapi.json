@@ -1825,6 +1825,245 @@
         ]
       }
     },
+    "/v1/payments/deposits": {
+      "post": {
+        "description": "Creates a PENDING deposit. No balance changes until the operator confirms the money arrived. The returned reference is what reconciles the payment to this request.",
+        "operationId": "PaymentsController_requestDeposit",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended deposit, reused only when retrying that same one. Without it a double-clicked button files two declarations for one transfer, and the operator reconciling the bank statement has to guess which is real (R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestDepositDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositRequestDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Declare an incoming deposit and get the reference to quote on the transfer",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/v1/payments/withdrawals": {
+      "post": {
+        "operationId": "PaymentsController_requestWithdrawal",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended withdrawal, reused only when retrying that same one. Without it a double-clicked button creates two withdrawals and places two holds (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestWithdrawalDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Request a withdrawal — requires KYC level 1; reserves the amount on hold",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/v1/payments/withdrawals/otp": {
+      "post": {
+        "description": "The code is bound to the exact amount, currency, destination and provider supplied here. Changing any of them before submitting makes the code invalid, which is what stops a code obtained for a small withdrawal from authorising a large one.",
+        "operationId": "PaymentsController_sendWithdrawalOtp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestWithdrawalOtpDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalOtpResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Send a confirmation code for one specific withdrawal (FR-CORE-08)",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/v1/payments/transactions": {
+      "get": {
+        "operationId": "PaymentsController_myTransactions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TransactionDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's own transactions",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/v1/payments/transfers": {
+      "post": {
+        "description": "wallet_to_account holds the amount immediately and debits it on settlement. account_to_wallet credits nothing until the bridge confirms MT5 was debited — the CRM never shows money it has not received. Demo accounts are refused.",
+        "operationId": "PaymentsController_requestTransfer",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended transfer, reused only when retrying that same one.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestTransferDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Transfer between the wallet and a live trading account — requires KYC level 1",
+        "tags": [
+          "payments"
+        ]
+      },
+      "get": {
+        "operationId": "PaymentsController_myTransfers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TransferDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's own wallet <-> trading-account transfers",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
     "/v1/kyc/config": {
       "get": {
         "operationId": "KycController_getConfig",
@@ -5334,6 +5573,360 @@
           "total",
           "page",
           "limit"
+        ]
+      },
+      "RequestDepositDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "500.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "Must be an enabled currency — see GET /currencies."
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "bank_transfer",
+              "usdt_trc20"
+            ],
+            "description": "How the client is sending the money. Decides which instructions they are shown."
+          },
+          "destinationTradingAccountId": {
+            "type": "string",
+            "description": "A live trading account of the caller, to fund once the deposit is confirmed."
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "method"
+        ]
+      },
+      "DepositRequestDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The transaction id. Also shown on /transactions."
+          },
+          "reference": {
+            "type": "string",
+            "description": "Quote this on the transfer. It is what reconciles the payment to this request.",
+            "example": "OX-7F3A21"
+          },
+          "amount": {
+            "type": "string",
+            "example": "500.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "bank_transfer",
+              "usdt_trc20"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "Always `pending`. Nothing is credited until the operator confirms receipt.",
+            "example": "pending"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "reference",
+          "amount",
+          "currency",
+          "method",
+          "state",
+          "createdAt"
+        ]
+      },
+      "RequestWithdrawalDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "300.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "destination": {
+            "type": "string",
+            "description": "Payout target, e.g. an IBAN or a USDT address."
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "whish",
+              "usdt"
+            ]
+          },
+          "otp": {
+            "type": "string",
+            "description": "Six-digit confirmation code. Required while the withdrawal OTP control is on.",
+            "example": "482913"
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "destination",
+          "provider"
+        ]
+      },
+      "TransactionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "walletId": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "example": "300.00000000",
+            "description": "Decimal string (§6.1)."
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "success",
+              "failed"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "whish",
+              "usdt"
+            ]
+          },
+          "providerRef": {
+            "type": "string",
+            "description": "The provider's own reference. Backs UNIQUE(provider, provider_ref), which is what makes settlement idempotent in the database (§6.3).",
+            "nullable": true
+          },
+          "destination": {
+            "type": "string",
+            "nullable": true
+          },
+          "rejectionReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "reviewedBy": {
+            "type": "string",
+            "nullable": true
+          },
+          "reviewedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "settledAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "walletId",
+          "direction",
+          "amount",
+          "currency",
+          "state",
+          "createdAt"
+        ]
+      },
+      "RequestWithdrawalOtpDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "300.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "destination": {
+            "type": "string",
+            "description": "Payout target, e.g. an IBAN or a USDT address."
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "whish",
+              "usdt"
+            ]
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "destination",
+          "provider"
+        ]
+      },
+      "WithdrawalOtpResponseDto": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "A confirmation code has been sent to your email address."
+          },
+          "required": {
+            "type": "boolean",
+            "description": "False when the operator has the withdrawal-OTP control switched off; the withdrawal may then be submitted without a code."
+          }
+        },
+        "required": [
+          "message",
+          "required"
+        ]
+      },
+      "RequestTransferDto": {
+        "type": "object",
+        "properties": {
+          "tradingAccountId": {
+            "type": "string",
+            "description": "A live trading account belonging to the caller."
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "wallet_to_account",
+              "account_to_wallet"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "example": "250.00",
+            "description": "Decimal string, up to 8 places."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          }
+        },
+        "required": [
+          "tradingAccountId",
+          "direction",
+          "amount",
+          "currency"
+        ]
+      },
+      "TransferDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "walletId": {
+            "type": "string"
+          },
+          "tradingAccountId": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "wallet_to_account",
+              "account_to_wallet"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "example": "250.00000000",
+            "description": "Decimal string (§6.1)."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "settled",
+              "failed"
+            ],
+            "description": "pending until the MT5 bridge confirms. A wallet_to_account transfer holds the amount while pending; an account_to_wallet one credits nothing until it settles."
+          },
+          "failureReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "settledAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "walletId",
+          "tradingAccountId",
+          "direction",
+          "amount",
+          "currency",
+          "state",
+          "createdAt"
         ]
       },
       "KycFieldConfigDto": {
