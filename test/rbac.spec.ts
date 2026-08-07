@@ -219,6 +219,13 @@ describe('AdminAuthenticator', () => {
       // The `fam` revocation check, held alive: these specs are about
       // permissions, not session lifetime.
       { familyIsRevoked: () => Promise.resolve(false) } as never,
+      // No API key ever matches: these specs authenticate by cookie, and a
+      // stub that could return a key would make the credential under test
+      // ambiguous.
+      {
+        findActiveByHash: () => Promise.resolve(null),
+        touchLastUsed: () => Promise.resolve(),
+      } as never,
     );
   }
 

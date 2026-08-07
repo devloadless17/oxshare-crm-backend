@@ -765,6 +765,92 @@ export class IbProgramDto {
 export { LedgerEntryDto, LedgerListResponseDto } from '../../wallet/dto/wallet-response.dto';
 
 /**
+ * An API key as the list screen sees it — everything EXCEPT the secret.
+ *
+ * There is no field here that could authenticate. `prefix` is the non-secret
+ * leading characters, which is what lets an operator tell two keys apart and
+ * match one found in a log against a row; the secret itself exists only as a
+ * SHA-256 hash at rest and is returned exactly once, by `POST`.
+ */
+export class ApiKeyDto {
+  @ApiProperty() id: string;
+  @ApiProperty({ example: 'Nightly reporting job' }) name: string;
+
+  @ApiProperty({
+    example: 'oxs_live_a1b2c3',
+    description: 'The non-secret leading characters. Never enough to authenticate with.',
+  })
+  prefix: string;
+
+  @ApiProperty({ type: [String], example: ['users.view'] })
+  permissions: string[];
+
+  /*
+   * `type: 'string'` is STATED on every nullable field below, and it is not
+   * decoration.
+   *
+   * A `string | null` property with no explicit type reflects as `Object`, and
+   * Nest emits `"type": "object"` — which openapi-typescript then generates as
+   * `Record<string, never>`, so the admin console got an unusable type for
+   * every date on this screen. The union is invisible to `emitDecoratorMeta-
+   * data`; only the decorator can carry it.
+   */
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'Null when the creating admin has been deleted.',
+  })
+  createdByName: string | null;
+
+  @ApiProperty({
+    type: 'string',
+    format: 'date-time',
+    nullable: true,
+    description: 'Null means this key never expires.',
+  })
+  expiresAt: string | null;
+
+  @ApiProperty({
+    type: 'string',
+    format: 'date-time',
+    nullable: true,
+    description: 'Set once revoked; the row is kept for the audit.',
+  })
+  revokedAt: string | null;
+
+  @ApiProperty({
+    type: 'string',
+    format: 'date-time',
+    nullable: true,
+    description:
+      'Best effort, written at most once an hour — an update per request would put a write on ' +
+      'the hot path of every integration.',
+  })
+  lastUsedAt: string | null;
+
+  @ApiProperty({ type: 'string', format: 'date-time' }) createdAt: string;
+}
+
+/**
+ * The response to creating a key — the ONLY time the secret is ever returned.
+ *
+ * It is not stored in any recoverable form, so an operator who does not copy it
+ * now must issue a new key. That is the intended trade: a secret this system
+ * could show twice is one a database dump could show an attacker.
+ */
+export class IssuedApiKeyDto {
+  @ApiProperty({ type: ApiKeyDto })
+  key: ApiKeyDto;
+
+  @ApiProperty({
+    example: 'oxs_live_x7Kd9…',
+    description:
+      'THE PLAINTEXT KEY, shown exactly once. Never stored, never recoverable, never logged.',
+  })
+  plaintext: string;
+}
+
+/**
  * One wallet whose balance disagrees with the sum of its own ledger.
  *
  * Every amount is a STRING, for the reason §6.1 gives and this report makes

@@ -95,6 +95,12 @@ function buildAuthenticator() {
     // The `fam` revocation check. These specs are about token KIND confusion, so
     // the family is held alive rather than being silently absent.
     { familyIsRevoked: () => Promise.resolve(false) } as never,
+    // No API key ever matches: these specs authenticate by cookie, and a stub
+    // that could return a key would make the credential under test ambiguous.
+    {
+      findActiveByHash: () => Promise.resolve(null),
+      touchLastUsed: () => Promise.resolve(),
+    } as never,
   );
 }
 

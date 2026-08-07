@@ -10,6 +10,8 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { Admin, AdminsStore } from '../../../store/admins.store';
+import { ApiKeysStore } from '../../../store/api-keys.store';
+import { API_KEY_TOKEN_PREFIX, hashApiKey } from '../../../common/security/api-key';
 import { RolesStore } from '../../../store/roles.store';
 import { Request } from 'express';
 import { COOKIE_BASES, readSessionCookie } from '../../../common/security/session-cookies';
@@ -38,6 +40,40 @@ import { EMPTY_MASK, type FieldMask } from '../../../common/security/field-mask'
  */
 function isMaster(admin: Admin, permissions: readonly string[]): boolean {
   return admin.role === 'master_admin' || permissions.includes('*');
+}
+
+/**
+ * The API key on this request, from `X-API-Key` or a Bearer header.
+ *
+ * Both accepted because integrations arrive with both habits, and refusing one
+ * buys nothing. `Authorization: Bearer` is only read when the value carries the
+ * key prefix — otherwise a portal JWT sent in that header would be mistaken for
+ * a key, and the caller would get "invalid API key" for what is really a
+ * wrong-surface token.
+ */
+function readApiKeyHeader(req: AdminRequest): string | null {
+  /*
+   * `headers` is defaulted rather than assumed.
+   *
+   * Express always populates it, so this looks redundant — and it is not: this
+   * function now runs FIRST on every admin request, ahead of the cookie path,
+   * so anything that reaches the authenticator with a partial request object
+   * crashes here with a TypeError instead of being refused with a 401. That is
+   * a worse failure than the one it replaces, and it is exactly what the
+   * hand-built request objects in the unit specs surfaced.
+   */
+  const headers = req.headers ?? {};
+
+  const header = headers['x-api-key'];
+  const fromHeader = Array.isArray(header) ? header[0] : header;
+  if (fromHeader) return fromHeader.trim();
+
+  const auth = headers.authorization;
+  if (auth?.startsWith('Bearer ')) {
+    const value = auth.slice('Bearer '.length).trim();
+    if (value.startsWith(API_KEY_TOKEN_PREFIX)) return value;
+  }
+  return null;
 }
 
 /**
@@ -82,9 +118,30 @@ export class AdminAuthenticator {
     private readonly scopes: AdminClientScopesStore,
     private readonly clientFields: ClientFieldsService,
     private readonly refreshTokens: RefreshTokensService,
+    private readonly apiKeys: ApiKeysStore,
   ) {}
 
   async authenticate(req: AdminRequest): Promise<AuthenticatedAdmin> {
+    /*
+     * An API key authenticates BEFORE the cookie path, and returns the same
+     * `AuthenticatedAdmin` shape.
+     *
+     * That shape is the entire integration. Every downstream guard, every
+     * `@RequirePermissions`, every client-scope filter and every field mask
+     * reads this object and nothing else — so a key that produces it correctly
+     * needs no changes anywhere else, and a key CANNOT accidentally skip a
+     * check that a session is subject to. The alternative, a parallel guard
+     * chain for keys, is how the two drift until one of them is missing an
+     * enforcement point.
+     *
+     * Checked first because the two credentials are mutually exclusive in
+     * practice: a machine sends a header, a browser sends a cookie. A request
+     * carrying both is a browser calling an integration endpoint, and honouring
+     * the explicit header is the less surprising reading.
+     */
+    const presentedKey = readApiKeyHeader(req);
+    if (presentedKey) return this.authenticateApiKey(presentedKey);
+
     const token = readSessionCookie(
       req.cookies as Record<string, string | undefined> | undefined,
       COOKIE_BASES.adminAccess,
@@ -219,6 +276,111 @@ export class AdminAuthenticator {
       // hiding `client.phone` must also hide `personalInfo.phone` on the KYC
       // screen — the bypass that would otherwise be one tab away.
       fieldMask: this.clientFields.expand(storedMask),
+    };
+  }
+
+  /**
+   * A machine credential, resolved into the same `AuthenticatedAdmin` every
+   * downstream check already understands.
+   *
+   * ── The synthesized identity is not a real admin, and says so ─────────────
+   *
+   * `id` is the KEY's id, not its creator's. That is what makes the audit trail
+   * honest: "this was done by the nightly-report key", not "by the person who
+   * created it eighteen months ago". `email` carries the key name in a
+   * reserved, unroutable form so an auditor reading a row knows what acted
+   * without joining another table — `AdminAuditService` falls back to
+   * 'unknown' for an actorId absent from `admins`, and every key action would
+   * otherwise be untraceable.
+   *
+   * `passwordHash` is empty because a key has none. Nothing downstream reads
+   * it — checked — and it exists here only to satisfy the `Admin` shape.
+   *
+   * ── A key is NEVER unrestricted ───────────────────────────────────────────
+   *
+   * `role` is always 'sub_admin' and the client scope is whatever the key's
+   * permissions justify — never the master-admin bypass, even when the key
+   * holds `*`. `isMaster()` keys on the role column OR the wildcard, so a key
+   * granted `*` by a master admin does get the unrestricted scope; what it
+   * cannot do is acquire that by claiming a role it was never given.
+   */
+  private async authenticateApiKey(presented: string): Promise<AuthenticatedAdmin> {
+    const row = await this.apiKeys.findActiveByHash(hashApiKey(presented));
+
+    /*
+     * One message for "no such key" and "revoked key".
+     *
+     * Distinguishing them tells an attacker holding a rotated key that it was
+     * once real — the same reasoning `resetPassword` applies to its token, and
+     * the same reason login does not say which half was wrong.
+     */
+    if (!row) {
+      throw new UnauthorizedException({
+        message: 'Invalid or revoked API key.',
+        code: 'INVALID_API_KEY',
+      });
+    }
+
+    /*
+     * EXPIRY is answered distinctly, and that is deliberate where revocation is
+     * not. An expired key is one the caller legitimately held: telling them to
+     * issue a new one is actionable and reveals nothing they did not already
+     * know. Revocation is a decision made ABOUT them, and saying so would
+     * confirm the key was genuine.
+     */
+    if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) {
+      throw new UnauthorizedException({
+        message: 'This API key has expired. Issue a new one in the admin console.',
+        code: 'API_KEY_EXPIRED',
+      });
+    }
+
+    // Fire-and-forget, and throttled to once an hour inside the store: a failed
+    // or slow timestamp must never fail or delay the request it describes.
+    void this.apiKeys.touchLastUsed(row.id).catch(() => undefined);
+
+    const permissions = row.permissions;
+    const identity: Admin = {
+      id: row.id,
+      email: `${row.name} (api key ${row.prefix}…)`,
+      passwordHash: '',
+      name: row.name,
+      role: 'sub_admin',
+      permissions,
+      status: 'active',
+      createdAt: row.createdAt,
+    };
+
+    /*
+     * The same master branch the cookie path takes, for the same reason: there
+     * is nothing to scope or mask for a credential holding the wildcard, and a
+     * stored value that is read and then ignored invites the next enforcement
+     * point to honour it.
+     */
+    if (permissions.includes('*')) {
+      return { ...identity, permissions, clientScope: UNRESTRICTED, fieldMask: EMPTY_MASK };
+    }
+
+    /*
+     * A non-wildcard key is UNRESTRICTED IN TERRITORY but fully permission-
+     * checked, and that combination is a deliberate limit worth stating.
+     *
+     * Client scoping is a property of an admin_client_tag_scopes row keyed by
+     * admin id; a key has no such row and inventing one would be inventing a
+     * territory nobody chose. So a key sees every client its permissions allow
+     * it to read. That is correct for the integrations this feature exists for
+     * — a reporting job over the whole book — and it is why issuing a key is
+     * master-admin-only and why `assertGrantable` bounds what one may hold.
+     *
+     * If per-key territory is ever wanted, it belongs as a scope column on this
+     * table feeding `clientScope` here, NOT as a join to the creator's scope:
+     * the key would then silently change territory when its creator did.
+     */
+    return {
+      ...identity,
+      permissions,
+      clientScope: UNRESTRICTED,
+      fieldMask: EMPTY_MASK,
     };
   }
 }

@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { AdminClientScopesStore } from './admin-client-scopes.store';
+import { ApiKeysStore } from './api-keys.store';
 import { AppSettingsStore } from './app-settings.store';
 import { ClientTagsStore } from './client-tags.store';
 import { AdminsStore, InvitesStore } from './admins.store';
@@ -17,6 +18,7 @@ import { ClientVisibilityService } from '../common/security/client-visibility.se
 const STORES = [
   AdminClientScopesStore,
   AdminsStore,
+  ApiKeysStore,
   AppSettingsStore,
   ClientTagsStore,
   InvitesStore,

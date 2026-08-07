@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AdminAuditController } from './admin-audit.controller';
+import { AdminApiKeysController } from './admin-api-keys.controller';
 import { AdminSecuritySettingsController } from './admin-security-settings.controller';
 import { SecuritySettingsService } from './security-settings.service';
 import { AdminAuthController } from './admin-auth.controller';
@@ -12,6 +13,7 @@ import { AdminTagsService } from './admin-tags.service';
 import { AdminClientsService } from './admin-clients.service';
 import { AdminComplianceService } from './admin-compliance.service';
 import { AdminRbacService } from './admin-rbac.service';
+import { ApiKeysService } from './api-keys.service';
 import { AdminMoneyService } from './admin-money.service';
 import { AdminMoneyController } from './admin-money.controller';
 import { AdminStatsService } from './admin-stats.service';
@@ -37,6 +39,7 @@ import { AdminExportModule } from './admin-export.module';
 const ADMIN_SERVICES = [
   AdminAuthService,
   AdminRbacService,
+  ApiKeysService,
   AdminComplianceService,
   AdminClientsService,
   AdminTagsService,
@@ -70,6 +73,7 @@ const ADMIN_SERVICES = [
     AdminComplianceController,
     AdminRbacController,
     AdminAuditController,
+    AdminApiKeysController,
     AdminSecuritySettingsController,
     AdminMoneyController,
     AdminStatsController,

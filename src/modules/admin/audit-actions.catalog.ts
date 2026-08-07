@@ -108,6 +108,13 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'role.create', label: 'Role created', group: 'Administrators' },
   { action: 'role.update', label: 'Role changed', group: 'Administrators' },
   { action: 'role.delete', label: 'Role deleted', group: 'Administrators' },
+  /*
+   * Issuing a key is granting standing, non-expiring access to the admin API
+   * without a login — closer to creating an administrator than to changing a
+   * setting, which is why both live in this group.
+   */
+  { action: 'api_key.create', label: 'API key issued', group: 'Administrators' },
+  { action: 'api_key.revoke', label: 'API key revoked', group: 'Administrators' },
 
   // ── Configuration ─────────────────────────────────────────────────────────
   //
