@@ -151,12 +151,33 @@ describe('the client KYC routes', () => {
     await anonymous(ctx).get('/v1/kyc/status').expect(401);
   });
 
-  it('refuse a client who has not verified their email', async () => {
-    // EmailVerifiedGuard. 403 not 401: the credential is valid, the account is
-    // not yet eligible — a 401 would sign them out of the screen telling them
-    // to check their inbox.
-    const session = await actingAs(ctx, 'portal', UNVERIFIED);
-    await session.get('/v1/kyc/status').expect(403);
+  it('refuse a client who has not verified their email — at SIGN-IN', async () => {
+    /*
+     * This used to sign in as UNVERIFIED and assert a 403 from
+     * `EmailVerifiedGuard` on `/kyc/status`. It cannot any more: login itself
+     * now refuses an unverified address, so the session never exists to make
+     * the request with.
+     *
+     * That is a stronger position, not a weaker one — the guard is still on the
+     * controller and still the backstop for any session minted another way (it
+     * has its own coverage in the unit specs). What changed is that the door
+     * closed one step earlier. Asserted HERE rather than deleted, because the
+     * behaviour this test names — an unverified client cannot reach KYC — is
+     * exactly what is still being promised.
+     *
+     * 403 with EMAIL_NOT_VERIFIED, not 401: the credential is valid and the
+     * account is not yet eligible. A 401 would sign them out of the very screen
+     * telling them to check their inbox.
+     */
+    const res = await anonymous(ctx)
+      .post('/v1/auth/login')
+      // `Origin` for the same reason `actingAs` sets it: the portal login route
+      // is anti-forgery checked and a browser always sends one.
+      .set('Origin', 'http://localhost:3000')
+      .send({ email: UNVERIFIED.email, password: UNVERIFIED.password })
+      .expect(403);
+
+    expect(res.body.code).toBe('EMAIL_NOT_VERIFIED');
   });
 
   it('let a verified client read their own status', async () => {

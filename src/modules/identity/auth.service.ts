@@ -14,6 +14,7 @@ import { Request, Response } from 'express';
 import {
   AuthenticationError,
   AuthorizationError,
+  EmailNotVerifiedError,
   NotFoundError,
   SessionReplayedError,
   SessionRevokedError,
@@ -387,6 +388,26 @@ export class AuthService {
       // comment in schema.ts. Revoking the refresh families below ends the
       // ability to RENEW; this ends the tokens already out there.
       passwordChangedAt: new Date(),
+      /*
+       * A COMPLETED RESET VERIFIES THE ADDRESS.
+       *
+       * The reset link went to this mailbox and came back, which is the same
+       * proof the verification link exists to obtain — a stronger one, since it
+       * also changed the credential. Leaving `emailVerified` false here would
+       * strand a user who registered, never opened the verification mail, and
+       * then used "forgot password": they would hold a working password and be
+       * refused at login by the check above, with the resend button their only
+       * way out and no reason on screen why the reset they just completed did
+       * not count.
+       *
+       * The stale verification token goes with it. It is a live credential for
+       * a fact now established by other means, and the row should not keep one
+       * that can only ever be redundant — the same reasoning `verifyEmail`
+       * applies when it clears an expired token.
+       */
+      emailVerified: true,
+      emailVerificationToken: undefined,
+      emailVerificationExpiry: undefined,
       // Cleared in the same write as the new password: the token is spent the
       // moment it works, so a replay finds nothing.
       passwordResetTokenHash: undefined,
@@ -449,6 +470,36 @@ export class AuthService {
     // never leaks whether credentials were valid.
     if (user.status === 'suspended') {
       throw new AuthorizationError('Your account has been suspended. Please contact support.');
+    }
+
+    /*
+     * An UNVERIFIED address cannot hold a session.
+     *
+     * This check was missing outright: `register` sets `emailVerified: false`
+     * and mails a link, `verifyEmail` is the only writer that sets it true, and
+     * login never read the column — so the link was decorative. Anyone could
+     * register an address they do not control, skip the email, and sign in.
+     *
+     * On THIS system that account then submits KYC documents and opens wallets,
+     * while every later "we emailed the account holder" — a password reset, a
+     * withdrawal OTP — goes to a mailbox nobody proved they own. The address is
+     * the recovery channel for the whole account, so verifying it is what makes
+     * every other email-based control mean anything.
+     *
+     * Placed AFTER the password check, like the suspension check above, for the
+     * same reason: answering before it would tell an unauthenticated caller
+     * which addresses are registered here.
+     *
+     * A distinct error type, not a generic 401, because the portal has to tell
+     * these apart — "wrong password" and "check your inbox" are different
+     * screens, and only the second one gets a resend button. `EmailNotVerified-
+     * Error` already exists and already maps to 403 EMAIL_NOT_VERIFIED.
+     */
+    if (!user.emailVerified) {
+      throw new EmailNotVerifiedError(
+        'Please verify your email address before signing in. Check your inbox for the ' +
+          'verification link we sent when you registered.',
+      );
     }
 
     const familyId = randomUUID();

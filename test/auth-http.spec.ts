@@ -313,12 +313,50 @@ describe('EmailVerifiedGuard', () => {
     expect(res.status).toBe(200);
   });
 
-  it('holds an unverified client out', async () => {
-    const session = await actingAs(ctx, 'portal', UNVERIFIED);
-    // 403, not 401: the credential is valid, the account is not yet eligible.
-    // A 401 would make the portal treat the session as dead and sign them out
-    // of the very screen telling them to check their email.
-    await session.get(PORTAL_KYC_STATUS).expect(403);
+  it('holds an unverified client out at SIGN-IN', async () => {
+    /*
+     * This used to sign in as UNVERIFIED and assert the guard's 403. Login now
+     * refuses an unverified address itself, so the session never exists —
+     * the door closed one step earlier.
+     *
+     * 403, not 401: the credential is valid and the account is not yet
+     * eligible. A 401 would make the portal treat the session as dead and sign
+     * them out of the very screen telling them to check their email.
+     */
+    const res = await anonymous(ctx)
+      .post('/v1/auth/login')
+      .set('Origin', 'http://localhost:3000')
+      .send({ email: UNVERIFIED.email, password: UNVERIFIED.password })
+      .expect(403);
+
+    expect(res.body.code).toBe('EMAIL_NOT_VERIFIED');
+  });
+
+  it('holds out a LIVE session whose address was never verified', async () => {
+    /*
+     * The guard's actual job, now that login screens for this.
+     *
+     * A session minted while the account was verified — or by any future path
+     * that mints one — must stop working the moment the column says otherwise.
+     * That is what makes the guard a backstop rather than a duplicate of the
+     * login check: it is evaluated per REQUEST, against the current row.
+     *
+     * Modelled by flipping the column under a live session, the same way the
+     * suspension test below proves suspension takes effect mid-session.
+     */
+    const session = await actingAs(ctx, 'portal', CLIENT);
+    await session.get(PORTAL_KYC_STATUS).expect(200);
+
+    await ctx.db.db
+      .update(users)
+      .set({ emailVerified: false })
+      .where(eq(users.email, CLIENT.email));
+
+    const res = await session.get(PORTAL_KYC_STATUS).expect(403);
+    expect(res.body.code).toBe('EMAIL_NOT_VERIFIED');
+
+    // Put it back: the fixtures are shared across this file.
+    await ctx.db.db.update(users).set({ emailVerified: true }).where(eq(users.email, CLIENT.email));
   });
 });
 

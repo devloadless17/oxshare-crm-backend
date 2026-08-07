@@ -13,6 +13,7 @@ import { StoredFilesService } from '../src/common/uploads/stored-files.service';
 import {
   AuthenticationError,
   AuthorizationError,
+  EmailNotVerifiedError,
   ValidationError,
 } from '../src/common/errors/domain-errors';
 
@@ -298,6 +299,45 @@ describe('login', () => {
     const { res } = fakeResponse();
     await expect(
       h.service.login({ email: 'nobody@oxshare.com', password: PASSWORD }, res),
+    ).rejects.toThrow(AuthenticationError);
+  });
+
+  it('REFUSES a correct password on an unverified address', async () => {
+    /*
+     * The check was missing outright, and this is the test that was missing
+     * with it: `register` set `emailVerified: false` and mailed a link,
+     * `verifyEmail` was its only writer, and login never read the column — so
+     * the link was decorative and anyone could sign in to an address they had
+     * never proved they owned.
+     */
+    const h = await withPassword({ emailVerified: false });
+    const { res, cookies } = fakeResponse();
+
+    await expect(
+      h.service.login({ email: 'client@oxshare.com', password: PASSWORD }, res),
+    ).rejects.toThrow(EmailNotVerifiedError);
+
+    // A refused login leaves NO session behind — no cookie, no refresh family.
+    expect(Object.keys(cookies)).toHaveLength(0);
+    expect(h.refreshTokens.record).not.toHaveBeenCalled();
+  });
+
+  it('carries EMAIL_NOT_VERIFIED, so the portal can offer the resend', async () => {
+    // The login page branches on this code to show its resend button. It used
+    // to branch on the English message, which broke the day a translation
+    // shipped — so the code is the contract and this pins it.
+    const h = await withPassword({ emailVerified: false });
+    await expect(
+      h.service.login({ email: 'client@oxshare.com', password: PASSWORD }, fakeResponse().res),
+    ).rejects.toMatchObject({ code: 'EMAIL_NOT_VERIFIED' });
+  });
+
+  it('refuses an unverified address BEFORE checking suspension, but AFTER the password', async () => {
+    // Ordering is security-relevant: answering "unverified" to a WRONG password
+    // would confirm the address is registered here.
+    const h = await withPassword({ emailVerified: false });
+    await expect(
+      h.service.login({ email: 'client@oxshare.com', password: 'wrong' }, fakeResponse().res),
     ).rejects.toThrow(AuthenticationError);
   });
 

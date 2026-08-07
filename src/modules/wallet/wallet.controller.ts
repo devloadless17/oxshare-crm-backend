@@ -2,6 +2,7 @@ import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
+import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { WalletService } from './wallet.service';
 import { LedgerListResponseDto, WalletDto } from './dto/wallet-response.dto';
@@ -9,8 +10,22 @@ import { decodeCursor } from '../../common/pagination';
 import { enumQuery } from '../../common/query-params';
 import { ledgerEntryTypeEnum } from '../../database/schema';
 
+/**
+ * `EmailVerifiedGuard` alongside the auth guard, matching KYC, IB and payments.
+ *
+ * It was missing here, and this controller is the one that reads MONEY — wallet
+ * balances and the client's own ledger. Authentication alone was never the
+ * intended bar on the client surface: the address is the account's recovery
+ * channel, so until it is proved, "the signed-in client" is a claim nobody has
+ * checked. Every other client-facing controller already said so; this one
+ * simply never got the guard.
+ *
+ * `auth.controller.ts` is the deliberate exception — sign-in, verification and
+ * resend must all be reachable by an unverified caller, or there is no way to
+ * become verified.
+ */
 @ApiTags('wallet')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, EmailVerifiedGuard)
 @Controller('wallet')
 export class WalletController {
   constructor(private readonly wallets: WalletService) {}

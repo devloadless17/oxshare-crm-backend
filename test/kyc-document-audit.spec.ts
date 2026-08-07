@@ -52,6 +52,8 @@ function makeController(options: {
   documentOwner?: string | null;
   /** Whether that owner is inside the reader's territory. */
   ownerInScope?: boolean;
+  /** The CLIENT's verification state. Default verified — see `users` below. */
+  clientEmailVerified?: boolean;
 }): Harness {
   const recorded: Omit<AuditEntry, 'id' | 'createdAt'>[] = [];
 
@@ -97,7 +99,18 @@ function makeController(options: {
       ),
   };
   const users = {
-    findById: () => Promise.resolve({ id: 'client-1', email: 'client@test.local' }),
+    // `emailVerified` matters now: the client branch of `authorize()` refuses an
+    // unverified owner. Verified is the realistic fixture — an unverified client
+    // cannot have submitted a document to read in the first place.
+    findById: () =>
+      Promise.resolve({
+        id: 'client-1',
+        email: 'client@test.local',
+        // `emailVerified` matters now: the client branch of `authorize()`
+        // refuses an unverified owner. Verified is the realistic default — an
+        // unverified client cannot have submitted a document to read.
+        emailVerified: options.clientEmailVerified ?? true,
+      }),
     // The scoped lookup. Returning undefined is what an out-of-scope client
     // looks like from every admin-facing read.
     findForAdmin: () =>
@@ -201,6 +214,38 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
     });
     // And the document was still served.
     expect(res.sent).toHaveLength(1);
+  });
+
+  it('REFUSES a client whose email is not verified, and serves nothing', async () => {
+    /*
+     * The client branch checks `emailVerified`; the ADMIN branch deliberately
+     * does not, because an admin has no such column and testing it there would
+     * lock every reviewer out of every document. That asymmetry is why this
+     * lives in the handler rather than in a controller-level guard — which
+     * principal is acting is only knowable after the token resolves.
+     *
+     * The document is the client's OWN, so this is not about ownership. It is
+     * that an unverified address makes "this account holder" a claim nobody
+     * confirmed, and a passport is the most sensitive thing this system holds.
+     */
+    const { controller, recorded } = makeController({
+      clientOwnsFile: true,
+      clientEmailVerified: false,
+    });
+    const res = fakeResponse();
+
+    await expect(
+      controller.serveKycFile(
+        FILE,
+        requestWith({ oxshare_crm_portal_at: CLIENT_TOKEN }),
+        res as never,
+      ),
+    ).rejects.toMatchObject({ code: 'EMAIL_NOT_VERIFIED' });
+
+    // No bytes, and no audit row claiming a read that did not happen — the
+    // refusal lands before both, exactly as the scope check does.
+    expect(res.sent).toHaveLength(0);
+    expect(recorded).toHaveLength(0);
   });
 
   it('records a client reading their own document, distinctly from an admin read', async () => {

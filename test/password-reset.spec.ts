@@ -169,6 +169,30 @@ describe('completing a reset', () => {
     expect((await passwords.verify('OriginalPass123!', row.passwordHash)).valid).toBe(false);
   });
 
+  it('VERIFIES the address, because the link proved the mailbox', async () => {
+    /*
+     * A user who registers, never opens the verification mail, and then uses
+     * "forgot password" has just proved they control the mailbox — more
+     * strongly than the verification link would, since they also changed the
+     * credential with it.
+     *
+     * Without this they would hold a working password and still be refused at
+     * login by the `emailVerified` check, with no explanation for why the reset
+     * they just completed did not count. The stale verification token goes too:
+     * it is a live credential for a fact now established another way.
+     */
+    const user = await makeUser('unverified-reset@test.local');
+    expect((await reload(user.id)).emailVerified).toBe(false);
+
+    await auth.requestPasswordReset(user.email);
+    await auth.resetPassword(sentTokens.at(-1)!, 'BrandNewPass123!');
+
+    const row = await reload(user.id);
+    expect(row.emailVerified).toBe(true);
+    expect(row.emailVerificationToken).toBeNull();
+    expect(row.emailVerificationExpiry).toBeNull();
+  });
+
   it('REVOKES every session, because that is why people reset', async () => {
     const user = await makeUser('revoke@test.local');
     await auth.requestPasswordReset(user.email);

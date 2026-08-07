@@ -21,6 +21,8 @@ import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
 import { existsSync } from 'fs';
 import { basename, join } from 'path';
+import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
+import { EmailNotVerifiedError } from '../../common/errors/domain-errors';
 import { AdminsStore, type Admin } from '../../store/admins.store';
 import { RolesStore } from '../../store/roles.store';
 import { KycStore } from '../../store/kyc.store';
@@ -84,8 +86,22 @@ export class UploadsController {
    * holds the session cookies, so nothing served from it may ever be
    * interpreted as active content.
    */
+  /*
+   * `EmailVerifiedGuard` here and NOT on `serveKycFile` below, which is a
+   * deliberate split rather than an omission.
+   *
+   * This route has exactly one reader: the calling CLIENT, fetching their own
+   * photo. That is the portal surface, where an unverified address means the
+   * account holder is unconfirmed, so it takes the same guard as wallet, KYC,
+   * IB and payments.
+   *
+   * `serveKycFile` serves two different readers — the owning client OR an admin
+   * holding `kyc.review` — and resolves that itself in `authorize()`. A
+   * controller-level guard there would test `emailVerified` on an ADMIN, who
+   * has no such column, and lock reviewers out of every document.
+   */
   @Get('avatars/:file')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: "Serve a client's own profile photo" })
   @NotClientScoped(
@@ -344,11 +360,39 @@ export class UploadsController {
         }
         if (await this.submissionReferencesFile(payload.sub, fileName)) {
           const owner = await this.users.findById(payload.sub);
+          /*
+           * The CLIENT branch checks `emailVerified`; the admin branch above
+           * cannot and must not — an admin has no such column, and testing it
+           * there would lock every reviewer out of every document.
+           *
+           * It is checked HERE rather than by a controller-level guard for that
+           * exact reason: which principal is acting is only knowable after the
+           * token resolves, so the guard cannot see the difference. Same
+           * reasoning the removed network check recorded above.
+           *
+           * A client reaching this point owns the document — they cannot see
+           * anyone else's either way — so this is not about the file. It is that
+           * an unverified address makes "this account holder" a claim nobody
+           * confirmed, and their passport is the most sensitive thing here.
+           */
+          if (owner && !owner.emailVerified) {
+            throw new EmailNotVerifiedError(
+              'Please verify your email address before accessing your documents.',
+            );
+          }
           return { kind: 'client', id: payload.sub, email: owner?.email ?? 'unknown' };
         }
         throw new ForbiddenException('You can only access your own documents.');
       } catch (e) {
-        if (e instanceof ForbiddenException) throw e;
+        /*
+         * `EmailNotVerifiedError` propagates alongside `ForbiddenException`, for
+         * the reason the admin branch's catch spells out: a refusal reached ON
+         * PURPOSE is an answer, and swallowing it here would fall through to the
+         * generic "Authentication required" below — telling a signed-in client
+         * they are not signed in, and losing the EMAIL_NOT_VERIFIED code the
+         * portal needs to offer the resend.
+         */
+        if (e instanceof ForbiddenException || e instanceof EmailNotVerifiedError) throw e;
       }
     }
 

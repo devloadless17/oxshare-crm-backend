@@ -319,6 +319,91 @@ describe('R-4.2 every route declares how it is protected', () => {
     ).toEqual([]);
   });
 
+  /*
+   * ── Every CLIENT route requires a verified email, or says why not ──────────
+   *
+   * The same inversion as the guard check above, for the same reason. Login now
+   * refuses an unverified address, but that only stops a session being ISSUED:
+   * a session minted before that check existed, or by any future path that
+   * mints one, still carries a valid cookie. The API is where it has to hold.
+   *
+   * The gap this was written after: `/wallet` — balances and the client's own
+   * ledger — ran on `JwtAuthGuard` alone, while KYC, IB and payments all
+   * carried `EmailVerifiedGuard`. Nothing distinguished "decided not to" from
+   * "forgot", which is exactly the condition this file exists to eliminate.
+   *
+   * The exemptions below are the decision, and they follow one rule: email
+   * verification gates PRODUCT surfaces, never identity or account recovery. A
+   * person who cannot verify must still be able to discover that fact, change a
+   * compromised password, and end their sessions.
+   */
+  /*
+   * `AuthController` declares TWO prefixes — @Controller(['auth', 'identity'])
+   * — so each of its routes registers under both and is exempted under both.
+   * Expanded from one list so the pair cannot drift.
+   */
+  const IDENTITY_EXEMPTIONS: Array<[string, string]> = [
+    [
+      'GET /me',
+      'The portal calls this on load to DISCOVER whether the address is verified. Guarding it ' +
+        'would leave the app unable to tell the user why they are blocked.',
+    ],
+    [
+      'POST /change-password',
+      'Account recovery. Someone who cannot verify must still be able to change a password they ' +
+        'believe is compromised.',
+    ],
+    ['GET /sessions', 'Account recovery — seeing where you are signed in.'],
+    ['DELETE /sessions/:id', 'Account recovery — ending a session you do not recognise.'],
+    ['POST /me/avatar', 'Profile self-management, not a product surface. No client data.'],
+    ['DELETE /me/avatar', 'Profile self-management, not a product surface. No client data.'],
+  ];
+
+  const VERIFICATION_EXEMPT: Record<string, string> = {
+    'GET /platforms':
+      'Download links for the trading terminal — operator content, identical for every caller, ' +
+      'and deliberately readable before verification (see the controller).',
+    'GET /uploads/kyc/:file':
+      'Authenticates INSIDE the handler because it serves two identities. The CLIENT branch ' +
+      'checks emailVerified there; a controller guard would test the column on an ADMIN, who ' +
+      'has none, and lock every reviewer out of every document.',
+  };
+  for (const [route, reason] of IDENTITY_EXEMPTIONS) {
+    const [method, path] = route.split(' ');
+    for (const prefix of ['auth', 'identity']) {
+      VERIFICATION_EXEMPT[`${method} /${prefix}${path}`] = reason;
+    }
+  }
+
+  it('has no client route that skips EmailVerifiedGuard without saying why', () => {
+    const unguarded = routes()
+      .filter((r) => {
+        // Admin routes are a different surface with a different principal —
+        // an administrator has no `emailVerified` column at all.
+        if (r.signature.includes(' /admin')) return false;
+        // Only routes that authenticate a CLIENT are in scope.
+        if (!r.guards.includes('JwtAuthGuard')) return false;
+        return !r.guards.includes('EmailVerifiedGuard');
+      })
+      .map((r) => r.signature)
+      .filter((s) => !(s in VERIFICATION_EXEMPT));
+
+    expect(
+      unguarded,
+      `These client routes authenticate but never check emailVerified:\n` +
+        unguarded.map((s) => `  ${s}`).join('\n') +
+        `\n\nAdd EmailVerifiedGuard, or add the route to VERIFICATION_EXEMPT with the reason.`,
+    ).toEqual([]);
+  });
+
+  it('has no stale VERIFICATION_EXEMPT entry', () => {
+    // Same hazard as a stale PUBLIC_ROUTES entry: it reads as a considered
+    // decision and silently covers the next route to take that path.
+    const live = new Set(routes().map((r) => r.signature));
+    const stale = Object.keys(VERIFICATION_EXEMPT).filter((s) => !live.has(s));
+    expect(stale, `Stale VERIFICATION_EXEMPT entries: ${stale.join(', ')}`).toEqual([]);
+  });
+
   it('has no PUBLIC_ROUTES entry for a route that no longer exists', () => {
     // A stale exemption is worse than none: it reads as a considered decision
     // about a route, and silently covers the next route to take that path.
