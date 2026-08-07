@@ -4,6 +4,9 @@ import { AuthService } from '../src/modules/identity/auth.service';
 import { IbStore } from '../src/store/ib.store';
 import { UsersStore } from '../src/store/users.store';
 import { PasswordService } from '../src/common/security/password.service';
+import { WalletService } from '../src/modules/wallet/wallet.service';
+import { WalletProvisioningService } from '../src/modules/wallet/wallet-provisioning.service';
+import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -44,6 +47,9 @@ beforeAll(async () => {
     {} as never, // loginAttempts
     {} as never, // files
     ib,
+    // Real, because registration opening a wallet is part of what this suite
+    // now covers — see the last describe block.
+    new WalletProvisioningService(new WalletService(ctx.db), new CurrenciesService(ctx.db)),
   );
 }, 120_000);
 
@@ -96,6 +102,8 @@ function registration(email: string, referralCode?: string) {
 
 beforeEach(async () => {
   sendVerificationEmail.mockClear();
+  await ctx.db.execute(sql`DELETE FROM ledger_entries`);
+  await ctx.db.execute(sql`DELETE FROM wallets`);
   // Children first: `users.referred_by_ib_user_id` is a restrict FK onto
   // ib_accounts, which is itself a restrict FK onto users.
   await ctx.db.execute(sql`UPDATE users SET referred_by_ib_user_id = NULL`);
@@ -194,5 +202,41 @@ describe('the attribution, once written', () => {
     await expect(
       ctx.db.execute(sql`DELETE FROM ib_accounts WHERE user_id = ${partnerId}`),
     ).rejects.toThrow();
+  });
+});
+
+describe('registration opens wallets', () => {
+  it('opens one per enabled currency', async () => {
+    const clientId = await registerClient('wallets@test.local');
+
+    const { rows } = await ctx.db.execute<{ currency: string; balance: string }>(
+      sql`SELECT currency, balance FROM wallets WHERE user_id = ${clientId} ORDER BY currency`,
+    );
+
+    /*
+     * The chosen shape: every enabled currency at REGISTRATION, not the default
+     * one now and the rest at KYC approval. A client sees the full set of
+     * balances the platform offers from their first sign-in, rather than
+     * watching /wallet grow rows at a moment they associate with identity
+     * checks.
+     */
+    expect(rows.map((r) => r.currency)).toEqual(['USD', 'USDT']);
+    expect(rows.every((r) => r.balance === '0.00000000')).toBe(true);
+  });
+
+  it('still registers when no currency is enabled', async () => {
+    await ctx.db.execute(sql`UPDATE currencies SET enabled = false`);
+
+    // A misconfigured platform costs the client their wallets, never their
+    // account — the address would be taken and unrecoverable.
+    const clientId = await registerClient('no-currency@test.local');
+    expect(clientId).toBeTruthy();
+
+    const { rows } = await ctx.db.execute<{ count: number }>(
+      sql`SELECT count(*)::int AS count FROM wallets WHERE user_id = ${clientId}`,
+    );
+    expect(rows[0].count).toBe(0);
+
+    await ctx.db.execute(sql`UPDATE currencies SET enabled = true`);
   });
 });

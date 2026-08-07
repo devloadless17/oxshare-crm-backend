@@ -1743,6 +1743,88 @@
         ]
       }
     },
+    "/v1/wallet": {
+      "get": {
+        "operationId": "WalletController_myWallets",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WalletDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's wallets — balance, on_hold and available, all as strings",
+        "tags": [
+          "wallet"
+        ]
+      }
+    },
+    "/v1/wallet/ledger": {
+      "get": {
+        "operationId": "WalletController_myLedger",
+        "parameters": [
+          {
+            "name": "entryType",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's own ledger entries",
+        "tags": [
+          "wallet"
+        ]
+      }
+    },
     "/v1/kyc/config": {
       "get": {
         "operationId": "KycController_getConfig",
@@ -5112,6 +5194,146 @@
         },
         "required": [
           "order"
+        ]
+      },
+      "WalletDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "balance": {
+            "type": "string",
+            "example": "700.00000000",
+            "description": "Decimal string (§6.1)."
+          },
+          "onHold": {
+            "type": "string",
+            "example": "0.00000000",
+            "description": "Reserved against pending withdrawals."
+          },
+          "available": {
+            "type": "string",
+            "example": "700.00000000",
+            "description": "balance − onHold, computed server-side so both sides agree."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "currency",
+          "balance",
+          "onHold",
+          "available",
+          "createdAt"
+        ]
+      },
+      "LedgerEntryDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "walletId": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string",
+            "description": "Signed monetary value as a string"
+          },
+          "balanceAfter": {
+            "type": "string",
+            "description": "Running balance after this entry, as a string"
+          },
+          "entryType": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal",
+              "commission",
+              "rebate",
+              "payout",
+              "adjustment"
+            ]
+          },
+          "referenceType": {
+            "type": "string"
+          },
+          "referenceId": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD",
+              "USDT"
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "walletId",
+          "userId",
+          "amount",
+          "balanceAfter",
+          "entryType",
+          "referenceType",
+          "referenceId",
+          "currency",
+          "createdAt"
+        ]
+      },
+      "LedgerListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LedgerEntryDto"
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
+          },
+          "total": {
+            "type": "number",
+            "description": "Total matching entries, ignoring pagination."
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "total",
+          "page",
+          "limit"
         ]
       },
       "KycFieldConfigDto": {

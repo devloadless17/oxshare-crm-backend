@@ -52,6 +52,8 @@
   "GET /v1/platforms",
   "GET /v1/uploads/avatars/{file}",
   "GET /v1/uploads/kyc/{file}",
+  "GET /v1/wallet",
+  "GET /v1/wallet/ledger",
   "PATCH /v1/admin/clients/{id}/status",
   "PATCH /v1/admin/currencies/{code}",
   "PATCH /v1/admin/ib-levels",

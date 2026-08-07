@@ -11,6 +11,7 @@ import {
   AuthenticationError,
   AuthorizationError,
   EmailNotVerifiedError,
+  KycNotVerifiedError,
   ConflictError,
   DomainError,
   MoneyRuleError,
@@ -41,6 +42,7 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   [AuthenticationError, HttpStatus.UNAUTHORIZED],
   [AuthorizationError, HttpStatus.FORBIDDEN],
   [EmailNotVerifiedError, HttpStatus.FORBIDDEN],
+  [KycNotVerifiedError, HttpStatus.FORBIDDEN],
   [ConflictError, HttpStatus.CONFLICT],
   [MoneyRuleError, HttpStatus.UNPROCESSABLE_ENTITY],
 ]);

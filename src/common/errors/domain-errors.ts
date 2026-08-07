@@ -168,6 +168,23 @@ export class EmailNotVerifiedError extends DomainError {
   readonly code = 'EMAIL_NOT_VERIFIED';
 }
 
+/**
+ * Authenticated and email-verified, but identity is not verified. → 403
+ *
+ * A distinct subclass for exactly the reason `EmailNotVerifiedError` above is
+ * one: the portal has to tell this refusal apart from every other 403 in order
+ * to offer the way OUT of it — a link to the KYC flow — and the only
+ * alternative is matching the English text of the message, which breaks on a
+ * copy edit and again on the day Arabic ships.
+ *
+ * The distinction matters more here than there. A client refused a deposit sees
+ * a screen about money; "you cannot do this" without "and here is how to become
+ * able to" is the version of this refusal that generates a support ticket.
+ */
+export class KycNotVerifiedError extends DomainError {
+  readonly code = 'KYC_NOT_VERIFIED';
+}
+
 /** The operation conflicts with existing state. → 409 */
 export class ConflictError extends DomainError {
   readonly code = 'CONFLICT';

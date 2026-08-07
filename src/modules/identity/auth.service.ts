@@ -1,9 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import { UsersStore, User } from '../../store/users.store';
 import { IbStore } from '../../store/ib.store';
+import {
+  WALLET_PROVISIONING,
+  type WalletProvisioningPort,
+} from '../../common/provisioning/wallet-provisioning.port';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { EmailService } from '../email/email.service';
 import { Request, Response } from 'express';
@@ -103,10 +107,25 @@ export class AuthService {
      * a required parameter would mean editing each of them to test something
      * unrelated to referrals. `resolveReferral` returns undefined without it.
      *
-     * The wallet-provisioning parameter that used to sit here went with the
-     * money teardown. When it returns it goes AFTER this one, same reasoning.
      */
     private readonly ib?: IbStore,
+    /*
+     * Opens the client's wallets on registration — one per ENABLED currency.
+     *
+     * A PORT, not `WalletProvisioningService` itself: importing `WalletModule`
+     * here would recreate the identity ↔ wallet cycle this module's header
+     * calls "cheap to add and expensive to notice", and reaching the service
+     * through the @Global `StoreModule` inverts the layering the lint rule
+     * protects. The declaration lives in `common/`; `WalletModule` binds it.
+     *
+     * Optional, following the convention above. It never throws — see the
+     * port's contract: a registration that fails after the user row is
+     * committed leaves an account nobody can sign into and nobody can
+     * re-create, because the address is taken.
+     */
+    @Optional()
+    @Inject(WALLET_PROVISIONING)
+    private readonly walletProvisioning?: WalletProvisioningPort,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -172,6 +191,16 @@ export class AuthService {
       phone: dto.phone,
       referredByIbUserId,
     });
+
+    /*
+     * A wallet in every enabled currency, before the email goes out.
+     *
+     * Awaited rather than fire-and-forget so the client's first sign-in finds
+     * their balances already there — but it cannot fail the registration, and
+     * the service swallows its own errors for that reason. `?.` because the
+     * parameter is optional; see the constructor.
+     */
+    await this.walletProvisioning?.openAllEnabledWallets(user.id);
 
     // The verification link is a bearer credential. It is emailed and never
     // written to stdout — it used to be console.logged in every environment.
