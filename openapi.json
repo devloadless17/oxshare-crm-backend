@@ -1245,6 +1245,34 @@
         ]
       }
     },
+    "/v1/ib/overview": {
+      "get": {
+        "description": "Everything the partner area renders, in one request, because these figures are read together and a count from one instant beside a total from another is a screen that contradicts itself.\n\n404s for a client who is not a partner: zeroes across the board would render as a partner dashboard belonging to somebody who is not one. Call GET /ib/status first.\n\nIMPORTANT — `earnings.engineLive` is FALSE today. The commission engine was removed in migration 0028 and nothing writes commission entries yet, so the totals are true reads of an empty ledger rather than computed results. A client MUST label them as such instead of presenting a calculated-looking zero.",
+        "operationId": "IbController_overviewForMe",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbOverviewDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "An approved partner's own dashboard — level, earnings, referred clients, sub-partners",
+        "tags": [
+          "ib"
+        ]
+      }
+    },
     "/v1/ib/apply": {
       "post": {
         "description": "Requires a verified identity (KYC level 1). Refuses a second application while one is still awaiting review, and refuses outright if the client is already a partner.",
@@ -2467,6 +2495,68 @@
         "summary": "The signed-in client's own ledger entries",
         "tags": [
           "wallet"
+        ]
+      }
+    },
+    "/v1/trading/accounts": {
+      "get": {
+        "description": "The whole list, unpaginated — a client holds a handful of accounts rather than a growing log. Balances are decimal STRINGS (§6.1) and are the CRM-held figure, not MT5 equity: there is no bridge, so equity, margin and open positions are deliberately absent rather than fabricated.",
+        "operationId": "TradingController_myAccounts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TradingAccountDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's trading accounts, live first then demo",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/v1/trading/accounts/transferable": {
+      "get": {
+        "description": "Narrows what the transfer screen OFFERS. It does not become the check: `TransfersService` still refuses a demo, suspended or closed destination, because a second opinion about the same question is a second thing to drift.",
+        "operationId": "TradingController_myTransferableAccounts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TradingAccountDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The accounts a transfer from the wallet may credit — live and active only",
+        "tags": [
+          "trading"
         ]
       }
     },
@@ -5286,6 +5376,109 @@
         ]
       }
     },
+    "/v1/admin/api-keys": {
+      "get": {
+        "description": "Includes revoked and expired keys. The secret is never returned — `prefix` is the non-secret leading characters, which is what makes two keys distinguishable on screen.",
+        "operationId": "AdminApiKeysController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ApiKeyDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every API key, newest first (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "The response carries the plaintext key, and it is the ONLY time it is ever available: only a SHA-256 hash is stored, so it cannot be shown again or recovered. An admin may only grant permissions they hold themselves.",
+        "operationId": "AdminApiKeysController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedApiKeyDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Issue a new API key (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/api-keys/{id}": {
+      "delete": {
+        "operationId": "AdminApiKeysController_revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Revoke an API key (master admin only)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/security-settings": {
       "get": {
         "operationId": "AdminSecuritySettingsController_list",
@@ -7054,6 +7247,172 @@
           "ineligibleReason"
         ]
       },
+      "IbLevelSummaryDto": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "number",
+            "example": 1
+          },
+          "name": {
+            "type": "string",
+            "example": "Master Partner"
+          },
+          "payoutModel": {
+            "type": "string",
+            "enum": [
+              "revenue_share",
+              "per_lot"
+            ]
+          },
+          "rateValue": {
+            "type": "string",
+            "example": "70.0000",
+            "description": "A percentage under revenue_share, an amount per lot under per_lot — read `payoutModel` before rendering it. A decimal string, never a number."
+          },
+          "maxDirectPartners": {
+            "type": "number",
+            "nullable": true,
+            "description": "How many direct partners this level may recruit. Null means unlimited."
+          }
+        },
+        "required": [
+          "level",
+          "name",
+          "payoutModel",
+          "rateValue",
+          "maxDirectPartners"
+        ]
+      },
+      "IbEarningsDto": {
+        "type": "object",
+        "properties": {
+          "lifetime": {
+            "type": "string",
+            "example": "0.00000000",
+            "description": "Lifetime credited earnings, as a decimal string (§6.1). Summed from ledger commission, rebate and payout entries — never computed on the fly."
+          },
+          "last30Days": {
+            "type": "string",
+            "example": "0.00000000",
+            "description": "Credited in the last 30 days. Same source as `lifetime`."
+          },
+          "currency": {
+            "type": "string",
+            "description": "The currency the totals are stated in.",
+            "example": "USD"
+          },
+          "engineLive": {
+            "type": "boolean",
+            "description": "FALSE means no commission engine has run — the totals are true but structurally zero, and must be labelled as such rather than shown as a computed result. See the DTO note."
+          }
+        },
+        "required": [
+          "lifetime",
+          "last30Days",
+          "currency",
+          "engineLive"
+        ]
+      },
+      "IbReferredClientDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "The client's display name. Their EMAIL is deliberately absent — a partner is owed attribution, not their referrals' contact details."
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "Whether this client has completed identity verification."
+          },
+          "since": {
+            "format": "date-time",
+            "type": "string",
+            "description": "When they registered under the code."
+          }
+        },
+        "required": [
+          "userId",
+          "name",
+          "verified",
+          "since"
+        ]
+      },
+      "IbSubPartnerDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "level": {
+            "type": "number",
+            "example": 2
+          },
+          "active": {
+            "type": "boolean",
+            "description": "A suspended sub-partner keeps their tree and stops earning."
+          },
+          "since": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userId",
+          "name",
+          "level",
+          "active",
+          "since"
+        ]
+      },
+      "IbOverviewDto": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/IbLevelSummaryDto"
+              }
+            ]
+          },
+          "earnings": {
+            "$ref": "#/components/schemas/IbEarningsDto"
+          },
+          "referredClients": {
+            "description": "Newest first. The whole list — a partner may read every client they introduced.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IbReferredClientDto"
+            }
+          },
+          "subPartners": {
+            "description": "Partners directly beneath this one.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IbSubPartnerDto"
+            }
+          },
+          "verifiedReferredCount": {
+            "type": "number",
+            "description": "How many referred clients have completed KYC — the ones who can actually fund."
+          }
+        },
+        "required": [
+          "level",
+          "earnings",
+          "referredClients",
+          "subPartners",
+          "verifiedReferredCount"
+        ]
+      },
       "CreateIbApplicationDto": {
         "type": "object",
         "properties": {
@@ -7936,6 +8295,72 @@
           "total",
           "page",
           "limit"
+        ]
+      },
+      "TradingAccountDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "login": {
+            "type": "string",
+            "nullable": true,
+            "description": "The MT5 login, once there is an MT5 to issue one. Null until a bridge assigns it — a string rather than a number because leading zeros are significant."
+          },
+          "mt5Group": {
+            "type": "string",
+            "nullable": true
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "description": "The account's own currency, which need not match the wallet's."
+          },
+          "balance": {
+            "type": "string",
+            "example": "1250.00000000",
+            "description": "Decimal string (§6.1). The CRM-held balance — see the DTO note: this is what a transfer credits, and it becomes an MT5 mirror when the bridge lands. Not equity."
+          },
+          "tier": {
+            "type": "string",
+            "nullable": true
+          },
+          "leverage": {
+            "type": "number",
+            "nullable": true,
+            "description": "The leverage ratio denominator — 500 means 1:500. Null when unset."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "suspended",
+              "closed"
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "login",
+          "mt5Group",
+          "environment",
+          "currency",
+          "balance",
+          "tier",
+          "leverage",
+          "status",
+          "createdAt"
         ]
       },
       "KycFieldConfigDto": {
@@ -9908,6 +10333,117 @@
           "total",
           "page",
           "limit"
+        ]
+      },
+      "ApiKeyDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "example": "Nightly reporting job"
+          },
+          "prefix": {
+            "type": "string",
+            "example": "oxs_live_a1b2c3",
+            "description": "The non-secret leading characters. Never enough to authenticate with."
+          },
+          "permissions": {
+            "example": [
+              "users.view"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdByName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null when the creating admin has been deleted."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Null means this key never expires."
+          },
+          "revokedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Set once revoked; the row is kept for the audit."
+          },
+          "lastUsedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Best effort, written at most once an hour — an update per request would put a write on the hot path of every integration."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prefix",
+          "permissions",
+          "createdByName",
+          "expiresAt",
+          "revokedAt",
+          "lastUsedAt",
+          "createdAt"
+        ]
+      },
+      "CreateApiKeyDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Nightly reporting job",
+            "description": "What this key is for. Shown in the key list."
+          },
+          "permissions": {
+            "example": [
+              "users.view",
+              "withdrawals.view"
+            ],
+            "description": "Permission keys from config/permissions.json. An admin may only grant permissions they themselves hold; only a master admin may grant \"*\". At least one is required — a key with none can authenticate but do nothing.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expiresAt": {
+            "type": "object",
+            "example": "2027-01-01T00:00:00.000Z",
+            "description": "ISO 8601. Omit or send null for a key that never expires — stated rather than defaulted, because a key that silently stops working at 3am is worse than one somebody chose to make permanent."
+          }
+        },
+        "required": [
+          "name",
+          "permissions"
+        ]
+      },
+      "IssuedApiKeyDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/ApiKeyDto"
+          },
+          "plaintext": {
+            "type": "string",
+            "example": "oxs_live_x7Kd9…",
+            "description": "THE PLAINTEXT KEY, shown exactly once. Never stored, never recoverable, never logged."
+          }
+        },
+        "required": [
+          "key",
+          "plaintext"
         ]
       },
       "SecuritySwitchDto": {

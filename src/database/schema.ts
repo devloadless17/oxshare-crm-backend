@@ -318,6 +318,99 @@ export const adminInvites = pgTable('admin_invites', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Machine credentials for the admin API — a key belongs to the PLATFORM, not
+ * to a person.
+ *
+ * ── Why not "acts as the admin who created it" ─────────────────────────────
+ *
+ * That is the shape most systems reach for and it fails twice. The key
+ * silently GAINS power when its creator is promoted, and it dies — or worse,
+ * keeps a departed employee's authority — when they leave. An integration that
+ * pulls a nightly client report should not be a person, so it holds its own
+ * permission list, chosen at creation from the same catalog roles use.
+ *
+ * ── The secret is stored as a SHA-256 hash, and that is deliberate ─────────
+ *
+ * Not argon2id, which `admins.password_hash` uses. The reasoning differs
+ * because the threat does: a password is low-entropy and human-chosen, so it
+ * needs a slow hash to survive an offline crack. This key is 32 bytes of
+ * `randomBytes` — brute-forcing it is not on the table — and it is presented on
+ * EVERY request, where a deliberately slow hash would be a self-inflicted
+ * denial of service. Fast hash, high entropy; the pairing is the point.
+ *
+ * The plaintext is shown once at creation and never stored, so a database dump
+ * yields nothing usable. `prefix` exists precisely because of that: it is the
+ * non-secret first characters, enough for an operator to tell two keys apart on
+ * screen and to match a leaked key against a row without the system ever
+ * holding a credential it could leak itself.
+ */
+export const apiKeys = pgTable(
+  'api_keys',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** What this key is for, in an operator's words. Shown in the list. */
+    name: varchar('name', { length: 100 }).notNull(),
+    /**
+     * SHA-256 of the presented secret, hex. UNIQUE so a lookup is one indexed
+     * equality — the alternative, scanning rows and comparing, would put an
+     * O(n) hash loop on the hot path of every authenticated request.
+     */
+    secretHash: varchar('secret_hash', { length: 64 }).notNull().unique(),
+    /**
+     * The non-secret leading characters (`oxs_live_a1b2c3`), for display.
+     * Never enough to authenticate with — see the table comment.
+     */
+    prefix: varchar('prefix', { length: 24 }).notNull(),
+    /**
+     * What this key may do, from `config/permissions.json` — the same catalog
+     * roles draw from, so a key can never hold a power no role could grant.
+     *
+     * Deliberately NOT nullable and NOT defaulted to `['*']`: a key created
+     * with no permissions can do nothing, which is the safe direction for a
+     * field somebody might forget to fill in.
+     */
+    permissions: jsonb('permissions').$type<string[]>().notNull().default([]),
+    /**
+     * Who created it. `set null` rather than `cascade`: deleting an
+     * administrator must not silently delete the still-live credentials they
+     * issued, and an orphaned key with a null creator is a thing an operator
+     * can see and revoke.
+     */
+    createdBy: uuid('created_by').references(() => admins.id, { onDelete: 'set null' }),
+    /**
+     * NULL means no expiry. Stated rather than defaulted to a date, because a
+     * key that silently stops working at 3am is worse than one an operator
+     * chose to make permanent.
+     */
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    /**
+     * Set on revocation instead of deleting the row — the audit trail points at
+     * this id, and a deleted row makes every entry referencing it unreadable.
+     * Revocation is checked on every request, so it takes effect immediately.
+     */
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    /**
+     * Best-effort, for spotting keys nobody uses any more.
+     *
+     * Written on a throttled schedule rather than on every request: an UPDATE
+     * per authenticated call would put a write on the hot path of a read-only
+     * integration, and "last used within the hour" answers the question an
+     * operator is actually asking.
+     */
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // The authentication path: hash → row. Partial, because a revoked key is
+    // never a hit and there is no reason to carry dead rows in the hot index.
+    index('api_keys_active_idx')
+      .on(table.secretHash)
+      .where(sql`${table.revokedAt} IS NULL`),
+    index('api_keys_created_at_idx').on(table.createdAt),
+  ],
+);
+
 // ── Client tagging & segmentation (ADM-14, DECISIONS D-15) ───────────────────
 
 /**
@@ -1796,5 +1889,109 @@ export const ibAccounts = pgTable(
        on every approval to enforce `ibLevels.maxDirectPartners`. */
     index('ib_accounts_parent_idx').on(t.parentIbUserId),
     index('ib_accounts_level_idx').on(t.level),
+  ],
+);
+
+/**
+ * What a partner has earned, one row per earner per revenue event.
+ *
+ * ## Why an accruals table rather than crediting the wallet directly
+ *
+ * A commission is EARNED at one moment and PAYABLE at another. Crediting the
+ * wallet the instant a deposit lands would make every commission irreversible
+ * before the revenue it is a share of has settled — and a deposit later
+ * reversed would leave a partner holding money that can only be recovered by a
+ * compensating entry with no record of what it compensates.
+ *
+ * So: `pending` on accrual, `confirmed` once credited, `reversed` when the
+ * underlying revenue is undone. The ROW is the record; the wallet credit is a
+ * consequence of it, and `ledgerEntryId` ties the two so neither can be
+ * reconciled without the other.
+ *
+ * This is the table migration 0028 deleted as `commission_accruals`. It is NOT
+ * a restore: that one keyed off `deals` and `ib_programs`, both gone with the
+ * MT5 bridge. This one keys off whatever moved the money — `sourceType` /
+ * `sourceId` — and takes its rate from `ib_levels`.
+ */
+export const ibAccrualStatusEnum = pgEnum('ib_accrual_status', [
+  'pending',
+  'confirmed',
+  'reversed',
+]);
+
+export const ibAccruals = pgTable(
+  'ib_accruals',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** The partner who earned it. */
+    ibUserId: uuid('ib_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** The client whose activity generated it — who this is owed BECAUSE of. */
+    clientUserId: uuid('client_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * What moved the money. `'transaction'` today; a deal feed adds its own.
+     *
+     * A varchar rather than an enum because the set grows with every new revenue
+     * source, and adding a string is not a migration where an enum value is.
+     * Paired with `sourceId` it is the idempotency key — see the unique index.
+     */
+    sourceType: varchar('source_type', { length: 50 }).notNull(),
+    sourceId: uuid('source_id').notNull(),
+    /**
+     * How far above the client this partner sat: 1 is the introducer, 2 their
+     * parent. STORED, because the chain can be reassigned later and an accrual
+     * must stay explainable against the hierarchy as it was when earned.
+     */
+    depth: integer('depth').notNull(),
+    /** Their rung at the time. Stored for the same reason as `depth`. */
+    level: integer('level').notNull(),
+    /** The rate applied, so the arithmetic is reproducible from the row alone. */
+    rateValue: numeric('rate_value', { precision: 12, scale: 4 }).notNull(),
+    /** The revenue base this is a share of. */
+    baseAmount: numeric('base_amount', { precision: 28, scale: 8 }).notNull(),
+    /** §6.1: NUMERIC(28,8), never a float, and a string at every boundary. */
+    amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
+    status: ibAccrualStatusEnum('status').notNull().default('pending'),
+    /**
+     * The ledger entry that paid it, once confirmed.
+     *
+     * NULL while pending. Set inside the SAME transaction as the credit, so an
+     * accrual marked confirmed with no entry — or the reverse — is a state this
+     * system cannot reach.
+     */
+    ledgerEntryId: uuid('ledger_entry_id').references(() => ledgerEntries.id, {
+      onDelete: 'restrict',
+    }),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /*
+     * ⚠️ THE IDEMPOTENCY GUARANTEE (§6.3).
+     *
+     * One accrual per earner per source event. A replayed webhook, a retried job
+     * or a double-submitted approval all resolve to the same row — the insert is
+     * `ON CONFLICT DO NOTHING`, never a check-then-insert, because every
+     * check-then-insert loses under concurrency.
+     *
+     * `depth` is deliberately NOT in the key: one partner cannot legitimately
+     * earn twice from one event, and including it would let a cycle in the tree
+     * pay somebody at both depth 1 and depth 2 for the same deposit.
+     */
+    uniqueIndex('ib_accruals_source_earner_uq').on(t.sourceType, t.sourceId, t.ibUserId),
+    /* "What has this partner earned?" — the overview's own query. */
+    index('ib_accruals_ib_user_idx').on(t.ibUserId, t.createdAt),
+    /* The confirm job: everything still pending, oldest first. */
+    index('ib_accruals_status_idx').on(t.status, t.createdAt),
+    /* A commission is a share of revenue and can never be negative — a clawback
+       is a REVERSAL of the row, not a negative accrual. */
+    check('ib_accruals_amount_positive', sql`${t.amount} > 0`),
+    check('ib_accruals_depth_range', sql`${t.depth} >= 1 AND ${t.depth} <= 2`),
   ],
 );

@@ -16,6 +16,7 @@ import { PlatformsModule } from './modules/platforms/platforms.module';
 import { CurrenciesModule } from './modules/currencies/currencies.module';
 import { IbModule } from './modules/ib/ib.module';
 import { WalletModule } from './modules/wallet/wallet.module';
+import { TradingModule } from './modules/trading/trading.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { ComplianceModule } from './modules/compliance/compliance.module';
@@ -73,6 +74,7 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     CurrenciesModule,
     IbModule,
     WalletModule,
+    TradingModule,
     PaymentsModule,
     ComplianceModule,
     SettingsModule,

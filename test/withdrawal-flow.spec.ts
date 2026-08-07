@@ -8,6 +8,7 @@ import { MoneyLimits } from '../src/config/money-limits';
 import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
 import { SYSTEM_ACTOR } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
+import { commissionStubAs } from './commission-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -36,6 +37,7 @@ beforeAll(async () => {
     new MoneyLimits(new ConfigService()),
     new PaymentMethodsService(ctx.db, currencies, auditStubAs()),
     currencies,
+    commissionStubAs(),
   );
 }, 120_000);
 

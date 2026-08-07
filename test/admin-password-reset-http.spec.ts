@@ -122,9 +122,10 @@ describe('POST /admin/password-reset/complete', () => {
   async function armReset(targetEmail: string): Promise<string> {
     const master = await actingAs(ctx, 'admin', MASTER);
     await master.post(`/v1/admin/users/${ids[targetEmail]}/password-reset`, {}).expect(200);
-    // The raw token only exists in the email. `MAIL_DEV_ECHO` is off under test,
-    // so the spec re-derives it: it arms a KNOWN token by writing the hash the
-    // route would have written. Everything after this is the real path.
+    // The raw token only exists in the email, and nothing echoes it anywhere, so
+    // a test cannot read it back. The spec therefore arms a KNOWN token by
+    // writing the hash the route would have written. Everything after this is
+    // the real path.
     const known = 'e2e-reset-token-known-value';
     const { createHash } = await import('crypto');
     await ctx.db.db

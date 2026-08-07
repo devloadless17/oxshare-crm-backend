@@ -5,7 +5,9 @@ import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { IbApplicationsService } from './ib-applications.service';
+import { IbOverviewService } from './ib-overview.service';
 import { CreateIbApplicationDto, IbApplicationDto, IbStatusDto } from './dto/ib-application.dto';
+import { IbOverviewDto } from './dto/ib-overview.dto';
 
 /**
  * The client's own view of the partner programme.
@@ -23,7 +25,10 @@ import { CreateIbApplicationDto, IbApplicationDto, IbStatusDto } from './dto/ib-
 @Controller('ib')
 @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
 export class IbController {
-  constructor(private readonly applications: IbApplicationsService) {}
+  constructor(
+    private readonly applications: IbApplicationsService,
+    private readonly overview: IbOverviewService,
+  ) {}
 
   @Get('status')
   @ApiCookieAuth()
@@ -37,6 +42,27 @@ export class IbController {
   @ApiOkResponse({ type: IbStatusDto })
   status(@Req() req: Request & { user: User }) {
     return this.applications.statusFor(req.user.id);
+  }
+
+  @Get('overview')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary:
+      "An approved partner's own dashboard — level, earnings, referred clients, sub-partners",
+    description:
+      'Everything the partner area renders, in one request, because these figures are read ' +
+      'together and a count from one instant beside a total from another is a screen that ' +
+      'contradicts itself.\n\n' +
+      '404s for a client who is not a partner: zeroes across the board would render as a partner ' +
+      'dashboard belonging to somebody who is not one. Call GET /ib/status first.\n\n' +
+      'IMPORTANT — `earnings.engineLive` is FALSE today. The commission engine was removed in ' +
+      'migration 0028 and nothing writes commission entries yet, so the totals are true reads of ' +
+      'an empty ledger rather than computed results. A client MUST label them as such instead of ' +
+      'presenting a calculated-looking zero.',
+  })
+  @ApiOkResponse({ type: IbOverviewDto })
+  overviewForMe(@Req() req: Request & { user: User }) {
+    return this.overview.overviewFor(req.user.id);
   }
 
   @Post('apply')

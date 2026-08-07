@@ -14,6 +14,10 @@ import { CurrenciesService } from '../currencies/currencies.service';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
+  COMMISSION_ACCRUAL,
+  type CommissionAccrualPort,
+} from '../../common/provisioning/commission-accrual.port';
+import {
   AuthorizationError,
   MoneyRuleError,
   NotFoundError,
@@ -145,6 +149,20 @@ export class TransactionsService {
      * parameter in the middle silently shifts the ones after it.
      */
     private readonly currencies: CurrenciesService,
+    /*
+     * Partner commissions, behind a PORT rather than the IB module.
+     *
+     * Injecting the token keeps the graph acyclic: importing `IbModule` here
+     * would close a cycle, because both modules depend on `WalletModule`. See
+     * `common/provisioning/commission-accrual.port.ts` for the full reasoning —
+     * it is the same shape identity uses to open wallets without importing the
+     * wallet module.
+     *
+     * APPENDED LAST, for the reason the two parameters above record: this class
+     * is constructed positionally in the test suite, so inserting a parameter
+     * in the middle silently shifts every one after it.
+     */
+    @Inject(COMMISSION_ACCRUAL) private readonly commissions: CommissionAccrualPort,
   ) {}
 
   async requestWithdrawal(params: {
@@ -920,6 +938,28 @@ export class TransactionsService {
       referenceType: LEDGER_REFERENCE.transaction,
       referenceId: tx.id,
     });
+
+    /*
+     * The partner commission this deposit earns, accrued AFTER the client's own
+     * credit and outside its transaction.
+     *
+     * Order matters: the client's money landing is the important half. The port
+     * contract is explicitly no-throw and idempotent, so a commission failure
+     * cannot roll back — or fail — a deposit that has already credited. A
+     * missing accrual is recoverable by re-running the pipeline; a reversed
+     * deposit is a support incident.
+     *
+     * Awaited rather than fire-and-forget: this writes `pending` rows only and
+     * moves no money, so it is cheap, and awaiting means a caller that has just
+     * settled a deposit can immediately read the accruals it caused.
+     */
+    await this.commissions.accrueForSettledDeposit({
+      transactionId: tx.id,
+      clientUserId: params.userId,
+      amount: params.amount,
+      currency: params.currency,
+    });
+
     return { transaction: tx, replayed: false as const };
     // NOTE: kept as two steps deliberately — the credit is idempotent on
     // (wallet, 'transaction', id) and the transaction row is idempotent on

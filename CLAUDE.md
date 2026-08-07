@@ -44,6 +44,89 @@ pipes, filters. Lint enforces this: it is a `no-restricted-imports` error inside
 `store/**` and `commission.ts`. Adding a new failure mode means adding a `DomainError` subclass
 with a `code`, not a new HTTP throw.
 
+## The two client-facing reads added for the portal
+
+Both are authenticated but **not** permission-gated, so the owner comes from the session and
+**never** from a parameter (R-4.4). That is the entire distance between "my data" and "anyone's
+data" — the admin equivalents take a `userId` filter precisely because they *are* gated.
+
+- **`GET /trading/accounts`** (`modules/trading/`) — the client's own accounts, live before demo,
+  unpaginated because a client holds a handful rather than a growing log. Returns `balance` (the
+  CRM-held figure a transfer credits) and deliberately **no equity, margin or open positions**:
+  there is no MT5 bridge, nothing here holds them, and a fabricated equity beside a real login is
+  the most expensive kind of wrong number on a trading product. `GET /trading/accounts/transferable`
+  narrows to live+active for the transfer screen — it shapes what is *offered*; `TransfersService`
+  still owns the refusal.
+- **`GET /ib/overview`** (`modules/ib/ib-overview.service.ts`) — the partner dashboard: level and
+  rate, earnings, referred clients, direct sub-partners. 404s for a non-partner, because zeroes
+  across the board would render as a partner dashboard belonging to somebody who is not one.
+
+Referred clients come from `users.referred_by_ib_user_id` (written at registration) and carry
+**no email address**: a partner is owed attribution, not their referrals' contact details.
+Sub-partners are **direct only** — one hop — because payout resolution stops at a single
+`parent_ib_id`, and showing a deep tree would display a structure the payout logic does not honour.
+
+## The commission engine (`modules/ib/commission*`)
+
+Rebuilt after migration 0028 deleted the original. It is **not** a restore: that one computed from
+MT5 `deals` (spread × volume) through an `ib_programs` table, and both are gone with the bridge —
+rebuilding against them would be an engine that can never run.
+
+This one computes from what the system actually has: a **client deposit**, attributed by
+`users.referred_by_ib_user_id`, split along the `ib_levels` ladder.
+
+```
+deposit settles → accrueForDeposit → ib_accruals (pending, no money moved)
+hourly @Cron    → confirmPending   → wallet credit + status=confirmed
+```
+
+- **`commission.ts` is a pure seam** — no Nest, no Drizzle, no `store/`. `resolveChain`,
+  `calculate` and `checkPlausible` live there so every boundary case is one assertion.
+  `commission.spec.ts` covers them and was mutation-checked.
+- **Two steps, deliberately.** A commission is earned at one moment and payable at another.
+  Crediting at accrual time makes it irreversible before the revenue behind it settles.
+- **Every step is idempotent via DB constraints**, never check-then-insert:
+  `ib_accruals_source_earner_uq` absorbs a replayed accrual,
+  `ledger_entries_wallet_reference_uq` absorbs a replayed credit. Safe under at-least-once
+  delivery, which is what makes the `@Cron` → BullMQ move a no-op later.
+- The confirm credit is keyed on the **accrual id**, not the transaction — one deposit can pay two
+  partners, and keying on the transaction would make the L2 credit look like a replay of the L1's
+  and silently drop it.
+
+### Three refusals worth knowing about
+
+- **`per_lot` levels accrue nothing on a deposit.** The rate is an amount per standard lot and a
+  deposit has no lot count, so there is no honest number. It refuses with a logged reason rather
+  than treating the rate as a percentage — which would pay a plausible wrong figure.
+- **A suspended partner earns nothing AND breaks the chain.** Their parent does not keep collecting
+  through them; suspension is a decision about the whole subtree.
+- **`checkPlausible` refuses a total exceeding the revenue it is a share of.** That is the unit-error
+  backstop: a rate meaning 70× rather than 70% would otherwise accrue seventy times the deposit.
+  It refuses rather than clamping, so the deposit stays re-accruable once the rate is fixed.
+
+### `earnings.engineLive` is a READ, not a constant
+
+`CommissionService.isEngineLive()` asks whether any **confirmed** accrual exists. It flips true on
+its own the first time the pipeline pays somebody — no code change, and no risk of reading false
+while real money moves. Deliberately not `lifetime !== '0'`, which is per-partner and would tell a
+brand-new partner on a working platform that nothing is being calculated.
+
+### The wiring is a PORT, not a module import
+
+`TransactionsService` injects `COMMISSION_ACCRUAL`
+(`common/provisioning/commission-accrual.port.ts`) rather than importing `IbModule` — both modules
+depend on `WalletModule`, so a direct import is a cycle. Same recipe `WalletModule` uses to expose
+`WALLET_PROVISIONING` to identity, `@Global()` included.
+
+The port contract is **idempotent and never throws**, and the no-throw half is load-bearing: by the
+time it runs the client's deposit has already credited. A commission failure must not roll that
+back. A missing accrual is recoverable by re-running; a reversed deposit is a support incident.
+
+**Migrations are hand-written from 0027 onwards** (see the header of `0040_ib_accruals.sql`): the
+committed drizzle snapshots stop at 0026, so `drizzle-kit generate` diffs against a stale baseline
+and prompts to rename a dozen unrelated enums. Write the SQL to match `schema.ts` and add the
+journal entry by hand.
+
 ## Money code — read ARCHITECTURE §6 and §8.6 first
 
 `src/modules/wallet/`, `src/modules/partners/`, `src/modules/payments/`.

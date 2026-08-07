@@ -9,6 +9,7 @@ import { MoneyLimits } from '../src/config/money-limits';
 import { toDecimal } from '../src/modules/wallet/money';
 import type { Actor } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
+import { commissionStubAs } from './commission-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -48,6 +49,7 @@ beforeAll(async () => {
     new MoneyLimits(new ConfigService()),
     methods,
     currencies,
+    commissionStubAs(),
   );
 }, 120_000);
 

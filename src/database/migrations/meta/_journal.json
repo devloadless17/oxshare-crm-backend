@@ -267,6 +267,20 @@
       "when": 1787061955600,
       "tag": "0038_holdings_sort_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1787061956600,
+      "tag": "0039_api_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1787061957600,
+      "tag": "0040_ib_accruals",
+      "breakpoints": true
     }
   ]
 }
