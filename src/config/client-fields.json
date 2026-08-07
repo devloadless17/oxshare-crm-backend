@@ -1,11 +1,11 @@
 {
   "$comment": [
-    "RBAC-03 field masking \u2014 the catalog of client fields a role may hide.",
+    "RBAC-03 field masking — the catalog of client fields a role may hide.",
     "",
     "Shaped deliberately like permissions.json, and served the same way (GET",
     "/admin/client-fields), because R-4.5's rule applies identically: the",
     "frontend never invents a key. A mask key with no backend counterpart is not",
-    "a cosmetic bug \u2014 it is a field an operator believes they hid.",
+    "a cosmetic bug — it is a field an operator believes they hid.",
     "",
     "KEYS ARE PATH-QUALIFIED, NEVER FLAT. A bare 'country' is ambiguous between",
     "users.country and the country inside a KYC submission's personal_info JSON.",
@@ -16,7 +16,7 @@
     "every alias of a masked key, so hiding client.phone also removes",
     "personalInfo.phone from GET /admin/kyc/:userId. A test asserts every",
     "identifying/contact client.* field either lists its kyc counterpart here or",
-    "carries its own entry \u2014 otherwise the KYC screen is a bypass for the whole",
+    "carries its own entry — otherwise the KYC screen is a bypass for the whole",
     "feature.",
     "",
     "'maskable: false' means the field is structurally required to render a row",
@@ -53,7 +53,7 @@
   },
   "contact": {
     "groupName": "Contact",
-    "description": "How the client is reached \u2014 the most commonly restricted group",
+    "description": "How the client is reached — the most commonly restricted group",
     "fields": [
       {
         "key": "client.email",
@@ -102,6 +102,18 @@
         "label": "Verification level",
         "maskable": false,
         "reason": "Gates withdrawals; an admin acting without it would act blind."
+      },
+      {
+        "key": "client.emailVerified",
+        "label": "Email verified",
+        "maskable": false,
+        "reason": "Says whether the client can be reached at all. Hiding it would leave a reviewer unable to tell an unconfirmed address from a queued document, which is the distinction this field exists to make."
+      },
+      {
+        "key": "client.kycStatus",
+        "label": "KYC status",
+        "maskable": false,
+        "reason": "The verification decision itself. Approve/reject work is triaged from it, and a masked queue would hide the rows that need doing."
       },
       {
         "key": "client.createdAt",

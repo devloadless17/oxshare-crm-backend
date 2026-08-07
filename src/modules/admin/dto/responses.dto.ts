@@ -240,8 +240,33 @@ export class ClientRowDto {
   @ApiPropertyOptional() firstName?: string;
   @ApiPropertyOptional() lastName?: string;
   @ApiProperty({ enum: ['individual', 'referral', 'partner'] }) type: string;
-  @ApiProperty({ enum: ['active', 'pending', 'suspended'] }) status: string;
-  @ApiProperty({ enum: [0, 1] }) verificationLevel: number;
+  @ApiProperty({
+    enum: ['active', 'pending', 'suspended'],
+    description:
+      'The ACCOUNT state, and only that: whether this person may sign in. It is deliberately not a verification state — read `emailVerified` and `kycStatus` for those. "pending" here means the account itself is not yet active, and says nothing about documents.',
+  })
+  status: string;
+
+  @ApiProperty({
+    description:
+      'Whether the client confirmed the address they registered with. Separate from KYC: an unconfirmed email is a self-service problem the client can fix, while a KYC decision is work for a reviewer.',
+  })
+  emailVerified: boolean;
+
+  @ApiProperty({
+    enum: ['not_started', 'in_progress', 'submitted', 'under_review', 'approved', 'rejected'],
+    description:
+      "The client's identity-verification state, joined from kyc_submissions. Total: a client who never began verification reads as 'not_started' rather than null.",
+  })
+  kycStatus: string;
+
+  @ApiProperty({
+    enum: [0, 1],
+    description:
+      'The verification TIER the account has reached (0 or 1), which gates what the client may do. Not a synonym for `kycStatus`: a rejected submission leaves the level at 0, and the reason lives in the status.',
+  })
+  verificationLevel: number;
+
   @ApiPropertyOptional() country?: string;
   @ApiPropertyOptional() createdAt?: Date;
   @ApiPropertyOptional({ type: [ClientTagDto] }) tags?: ClientTagDto[];
@@ -608,6 +633,93 @@ export class WithdrawalListResponseDto {
   counts: Record<string, number>;
 }
 
+// ── Client holdings: wallets and trading accounts ───────────────────────────
+//
+// Both carry a `NUMERIC(28,8)` balance, and both declare it as a STRING with an
+// example that says so. `@ApiProperty({ type: 'string' })` is not decoration
+// here: it is what makes the generated frontend type say `string`, which is
+// what stops a screen writing `Number(balance)` and being wrong past the eighth
+// decimal place (ARCHITECTURE §6.1, and the admin app's own money lint rule).
+
+/** The owner a holding is displayed against. Joined, never fetched per row. */
+export class HoldingOwnerDto {
+  @ApiProperty() id: string;
+  @ApiProperty() email: string;
+  @ApiProperty() firstName: string;
+  @ApiProperty() lastName: string;
+}
+
+export class WalletRowDto {
+  @ApiProperty() id: string;
+  @ApiProperty({
+    type: 'string',
+    example: '250.00000000',
+    description:
+      'Monetary value — ALWAYS a string, never a number. NUMERIC(28,8) exceeds what a ' +
+      'JavaScript number represents exactly, so Number()/parseFloat lose value before any ' +
+      'formatting starts (§6.1).',
+  })
+  balance: string;
+  @ApiProperty({
+    type: 'string',
+    example: '0.00000000',
+    description:
+      'Reserved against a pending transfer — a string for the same reason as `balance`. ' +
+      'Available = balance − onHold, and that subtraction belongs in decimal arithmetic.',
+  })
+  onHold: string;
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty() createdAt: Date;
+  @ApiProperty() updatedAt: Date;
+  @ApiProperty({ type: HoldingOwnerDto }) user: HoldingOwnerDto;
+}
+
+export class WalletListResponseDto {
+  @ApiProperty({ type: [WalletRowDto] }) items: WalletRowDto[];
+  /** Pass back as `?cursor=` for the next page; `null` on the last (R-2.4). */
+  @ApiProperty({ type: String, nullable: true }) nextCursor: string | null;
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() limit: number;
+}
+
+export class TradingAccountRowDto {
+  @ApiProperty() id: string;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'The MT5 login, once there is an MT5 to issue one. NULL until assigned, and a STRING ' +
+      'rather than a number because leading zeros are significant to the bridge.',
+  })
+  login?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true }) mt5Group?: string | null;
+  @ApiProperty({ enum: ['live', 'demo'] }) environment: string;
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty({
+    type: 'string',
+    example: '1000.00000000',
+    description:
+      'Monetary value — ALWAYS a string. CRM-owned until the MT5 bridge lands, at which ' +
+      'point it becomes a mirror of MT5 or is removed (see the schema comment).',
+  })
+  balance: string;
+  @ApiPropertyOptional({ type: String, nullable: true }) tier?: string | null;
+  @ApiPropertyOptional({ type: Number, nullable: true }) leverage?: number | null;
+  @ApiProperty({ enum: ['active', 'suspended', 'closed'] }) status: string;
+  @ApiProperty() createdAt: Date;
+  @ApiProperty() updatedAt: Date;
+  @ApiProperty({ type: HoldingOwnerDto }) user: HoldingOwnerDto;
+}
+
+export class TradingAccountListResponseDto {
+  @ApiProperty({ type: [TradingAccountRowDto] }) items: TradingAccountRowDto[];
+  @ApiProperty({ type: String, nullable: true }) nextCursor: string | null;
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() limit: number;
+}
+
 export class IbProgramDto {
   @ApiProperty() id: string;
   @ApiProperty() name: string;
@@ -651,3 +763,69 @@ export class IbProgramDto {
  * the module that owns the ledger, surfaced here for the admin routes.
  */
 export { LedgerEntryDto, LedgerListResponseDto } from '../../wallet/dto/wallet-response.dto';
+
+/**
+ * One wallet whose balance disagrees with the sum of its own ledger.
+ *
+ * Every amount is a STRING, for the reason §6.1 gives and this report makes
+ * especially sharp: a discrepancy is the one number nobody may see rounded. A
+ * float here could render a real 0.00000001 drift as a clean 0 — reporting
+ * "balanced" for the exact condition this screen exists to catch.
+ */
+export class WalletDiscrepancyDto {
+  @ApiProperty() walletId: string;
+  @ApiProperty() userId: string;
+  @ApiProperty() currency: string;
+
+  @ApiProperty({
+    type: 'string',
+    example: '150.00000000',
+    description: 'What the wallet row claims. Monetary value — always a string.',
+  })
+  balance: string;
+
+  @ApiProperty({
+    type: 'string',
+    example: '149.00000000',
+    description: 'What its ledger entries actually sum to. Monetary value — always a string.',
+  })
+  ledgerSum: string;
+
+  @ApiProperty({
+    type: 'string',
+    example: '1.00000000',
+    description:
+      'balance − ledgerSum, SIGNED so the direction is visible: positive means the wallet ' +
+      'claims more than the ledger justifies. Monetary value — always a string.',
+  })
+  difference: string;
+}
+
+/**
+ * The §12.2 reconciliation report.
+ *
+ * Previously this route documented a bare `200` with no schema, so both
+ * frontends generated `unknown` for it and any screen showing the report had to
+ * hand-write the shape — which is how a field gets renamed on one side only.
+ */
+export class ReconciliationReportDto {
+  @ApiProperty({ description: 'When this run completed (ISO 8601).' })
+  checkedAt: string;
+
+  @ApiProperty({ description: 'How many wallets were compared against their ledgers.' })
+  walletsChecked: number;
+
+  @ApiProperty({
+    type: [WalletDiscrepancyDto],
+    description: 'Empty when every wallet agrees with its ledger.',
+  })
+  walletDiscrepancies: WalletDiscrepancyDto[];
+
+  @ApiProperty({
+    description:
+      'True when nothing is wrong. Read this rather than testing the array length — it is the ' +
+      'field the service decides, and a future check can make it false without adding a wallet ' +
+      'discrepancy.',
+  })
+  balanced: boolean;
+}

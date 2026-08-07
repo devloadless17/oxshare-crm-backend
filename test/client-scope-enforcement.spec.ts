@@ -91,6 +91,10 @@ beforeAll(async () => {
         'kyc.review',
         'kyc.review',
         'ib.view',
+        // The wallet list's key. Without it `/admin/wallets` 403s and the
+        // assertion below would report scoping as working when what it actually
+        // proved is that the admin cannot reach the route at all.
+        'withdrawals.view',
       ],
     })
     .returning();
@@ -157,6 +161,19 @@ describe('list routes omit out-of-scope clients', () => {
   const LISTS = [
     { name: 'clients', path: '/v1/admin/clients?q=oxshare-e2e.test' },
     { name: 'kyc queue', path: '/v1/admin/kyc' },
+    /*
+     * The two holdings lists. Both are client-OWNED money/config rows, which is
+     * exactly the shape this file exists to police — and both apply the
+     * predicate to their own `user_id` column rather than to `users.id`, so
+     * they are a genuinely different code path from the two above.
+     *
+     * The out-of-scope client carries no wallet or trading account in this
+     * fixture, so these assert the weaker half here (the row is not present)
+     * and `admin-wallets.spec.ts` / `admin-trading-accounts.spec.ts` assert the
+     * strong half against seeded out-of-scope rows, with master controls.
+     */
+    { name: 'wallets', path: '/v1/admin/wallets?limit=100' },
+    { name: 'trading accounts', path: '/v1/admin/trading-accounts?limit=100' },
   ];
 
   for (const list of LISTS) {

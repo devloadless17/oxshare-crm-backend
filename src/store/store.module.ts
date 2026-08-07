@@ -10,6 +10,7 @@ import { KycStore } from './kyc.store';
 import { RejectionReasonsStore } from './rejection-reasons.store';
 import { RolesStore } from './roles.store';
 import { SecuritySettingsStore } from './security-settings.store';
+import { StatsStore } from './stats.store';
 import { UsersStore } from './users.store';
 import { ClientVisibilityService } from '../common/security/client-visibility.service';
 
@@ -26,6 +27,7 @@ const STORES = [
   RejectionReasonsStore,
   RolesStore,
   SecuritySettingsStore,
+  StatsStore,
   UsersStore,
   /*
    * Not a store, but it belongs in this @Global() module for the same reason

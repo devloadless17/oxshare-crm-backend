@@ -9,6 +9,33 @@ import { applyMask, applyMaskAll, maskedFieldsFor } from '../../common/security/
 import { KycStore, type KycSubmission } from '../../store/kyc.store';
 import { actorHasPermission } from '../../common/security/actor';
 
+/** The six `kyc_status` values, in the order a client passes through them. */
+const KYC_STATUSES = [
+  'not_started',
+  'in_progress',
+  'submitted',
+  'under_review',
+  'approved',
+  'rejected',
+] as const;
+
+/**
+ * A caller's `?kycStatus=`, or a 400 naming what is allowed.
+ *
+ * NEVER a silent fallback — R-2.5. A misspelled status that was quietly ignored
+ * would return the unfiltered list, and "every client" looks enough like a
+ * plausible answer that nobody checks it against the filter they asked for.
+ */
+function kycStatusFilter(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (!(KYC_STATUSES as readonly string[]).includes(value)) {
+    throw new ValidationError(
+      `Cannot filter by kycStatus "${value}". Allowed: ${KYC_STATUSES.join(', ')}.`,
+    );
+  }
+  return value;
+}
+
 /**
  * How many referred clients a PROFILE shows.
  *
@@ -60,6 +87,8 @@ export class AdminClientsService {
       status?: string;
       level?: string;
       country?: string;
+      emailVerified?: string;
+      kycStatus?: string;
       tag?: string;
       sort?: string;
       order?: string;
@@ -140,6 +169,17 @@ export class AdminClientsService {
       status: query.status,
       level,
       country: query.country?.trim() || undefined,
+      /*
+       * A tri-state, not a boolean: absent means "do not filter", which is a
+       * different request from `emailVerified=false`. `=== 'true'` alone would
+       * collapse the two and make an unfiltered list silently show only
+       * unverified clients.
+       */
+      emailVerified:
+        query.emailVerified === undefined || query.emailVerified === ''
+          ? undefined
+          : query.emailVerified === 'true',
+      kycStatus: kycStatusFilter(query.kycStatus),
       tagSlug: query.tag,
       sort,
       order,

@@ -43,6 +43,7 @@ import { exportFormat, streamCsv } from '../../common/export/export-response';
 import { SettleWithdrawalDto, WithdrawalRejectDto } from './dto/requests/money.dto';
 import {
   LedgerListResponseDto,
+  ReconciliationReportDto,
   WithdrawalListResponseDto,
   WithdrawalRowDto,
 } from './dto/responses.dto';
@@ -320,6 +321,7 @@ export class AdminMoneyController {
       'Read-only — a discrepancy is reported, never repaired, because an automatic correction ' +
       'would write a compensating entry for a cause nobody has diagnosed.',
   })
+  @ApiOkResponse({ type: ReconciliationReportDto })
   @NotClientScoped(
     'MasterAdminGuard only, and a master admin is unrestricted by definition. Deliberately not narrowed: a reconciliation reporting "balanced" over a subset of clients is the opposite of what a reconciliation is for.',
   )

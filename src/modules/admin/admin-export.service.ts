@@ -9,6 +9,7 @@ import { AuthorizationError, ValidationError } from '../../common/errors/domain-
 import { actorHasPermission, assertActorCan } from '../../common/security/actor';
 import { applyMaskAll } from '../../common/security/field-mask';
 import { TransactionsService } from '../payments/transactions.service';
+import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { Admin } from '../../store/admins.store';
 import type { CsvColumn } from '../../common/export/csv';
@@ -58,6 +59,15 @@ export class AdminExportService {
     private readonly ib: IbStore,
     private readonly roles: RolesStore,
     private readonly transactions: TransactionsService,
+    /*
+     * The wallet and trading-account row sources.
+     *
+     * APPENDED, and the reason is the one `TransactionsService` records about
+     * its own constructor: this class is constructed positionally in parts of
+     * the suite, so inserting a parameter in the middle silently shifts every
+     * one after it.
+     */
+    private readonly holdings: AdminHoldingsService,
   ) {}
 
   // ── Clients ───────────────────────────────────────────────────────────────
@@ -76,6 +86,11 @@ export class AdminExportService {
     { header: 'Last name', value: (r) => r.lastName },
     { header: 'Type', value: (r) => r.type },
     { header: 'Status', value: (r) => r.status },
+    // The two columns the screen now shows. An export that omitted them would
+    // answer "which clients are waiting on verification?" with a file that
+    // cannot distinguish an unconfirmed email from a queued document.
+    { header: 'Email verified', value: (r) => (r.emailVerified ? 'yes' : 'no') },
+    { header: 'KYC status', value: (r) => r.kycStatus },
     { header: 'Verification level', value: (r) => r.verificationLevel },
     { header: 'Country', value: (r) => r.country },
     { header: 'Tags', value: (r) => r.tags.map((t) => t.label).join(', ') },
@@ -204,6 +219,80 @@ export class AdminExportService {
       limit,
       scope: actor.clientScope,
     });
+  }
+
+  // ── Wallets ───────────────────────────────────────────────────────────────
+
+  readonly walletColumns: readonly CsvColumn<WalletExportRow>[] = [
+    { header: 'Wallet ID', value: (r) => r.id },
+    /*
+     * Balance and hold, as the STRINGS the database produced.
+     *
+     * ARCHITECTURE §6.1, and a CSV is the output where this matters most: it is
+     * the format most likely to be re-imported into a spreadsheet that does
+     * arithmetic on it, so a value rounded or locale-formatted on the way out
+     * becomes a wrong number in somebody's reconciliation. No `Number()`, no
+     * `toFixed`, no thousands separator.
+     */
+    { header: 'Balance', value: (r) => r.balance },
+    { header: 'On hold', value: (r) => r.onHold },
+    { header: 'Currency', value: (r) => r.currency },
+    { header: 'Client ID', value: (r) => r.userId },
+    { header: 'Client email', value: (r) => r.userEmail },
+    { header: 'Client first name', value: (r) => r.userFirstName },
+    { header: 'Client last name', value: (r) => r.userLastName },
+    { header: 'Opened at', value: (r) => r.createdAt },
+    { header: 'Updated at', value: (r) => r.updatedAt },
+  ];
+
+  /**
+   * Wallets, scoped exactly as `GET /admin/wallets`.
+   *
+   * `AdminHoldingsService.walletExportBatch` builds its predicate with the same
+   * `clientScopePredicate` call on the same `wallets.user_id` column the list
+   * uses, and asserts the same permission there as well as in the guard. An
+   * export that scoped less than its list would be a documented way around the
+   * feature — the defect `test/admin-export.spec.ts` exists to catch.
+   */
+  async walletBatch(
+    query: { userId?: string; currency?: string },
+    actor: AuthenticatedAdmin,
+    offset: number,
+    limit: number,
+  ): Promise<WalletExportRow[]> {
+    assertActorCan(actor, 'withdrawals.view', 'export client wallets');
+    return this.holdings.walletExportBatch(query, actor, offset, limit);
+  }
+
+  // ── Trading accounts ──────────────────────────────────────────────────────
+
+  readonly tradingAccountColumns: readonly CsvColumn<TradingAccountExportRow>[] = [
+    { header: 'Account ID', value: (r) => r.id },
+    { header: 'Login', value: (r) => r.login },
+    { header: 'MT5 group', value: (r) => r.mt5Group },
+    { header: 'Environment', value: (r) => r.environment },
+    { header: 'Currency', value: (r) => r.currency },
+    // A string, for the same reason the wallet balance is. See above.
+    { header: 'Balance', value: (r) => r.balance },
+    { header: 'Tier', value: (r) => r.tier },
+    { header: 'Leverage', value: (r) => r.leverage },
+    { header: 'Status', value: (r) => r.status },
+    { header: 'Client ID', value: (r) => r.userId },
+    { header: 'Client email', value: (r) => r.userEmail },
+    { header: 'Client first name', value: (r) => r.userFirstName },
+    { header: 'Client last name', value: (r) => r.userLastName },
+    { header: 'Opened at', value: (r) => r.createdAt },
+    { header: 'Updated at', value: (r) => r.updatedAt },
+  ];
+
+  async tradingAccountBatch(
+    query: { userId?: string; environment?: string; status?: string },
+    actor: AuthenticatedAdmin,
+    offset: number,
+    limit: number,
+  ): Promise<TradingAccountExportRow[]> {
+    assertActorCan(actor, 'users.view', 'export client trading accounts');
+    return this.holdings.tradingAccountExportBatch(query, actor, offset, limit);
   }
 
   // ── KYC ───────────────────────────────────────────────────────────────────
@@ -436,6 +525,8 @@ export interface ClientExportRow {
   lastName: string;
   type: string;
   status: string;
+  emailVerified: boolean;
+  kycStatus: string;
   verificationLevel: number;
   country: string | null;
   tags: { label: string }[];
@@ -455,6 +546,40 @@ export interface WithdrawalExportRow {
   requestedAt: Date;
   reviewedAt: Date | null;
   settledAt: Date | null;
+  userId: string;
+  userEmail: string;
+  userFirstName: string;
+  userLastName: string;
+}
+
+export interface WalletExportRow {
+  id: string;
+  /** A STRING, always — see `walletColumns`. */
+  balance: string;
+  /** A STRING, always. */
+  onHold: string;
+  currency: string;
+  createdAt: Date;
+  updatedAt: Date;
+  userId: string;
+  userEmail: string;
+  userFirstName: string;
+  userLastName: string;
+}
+
+export interface TradingAccountExportRow {
+  id: string;
+  login: string | null;
+  mt5Group: string | null;
+  environment: string;
+  currency: string;
+  /** A STRING, always — see `tradingAccountColumns`. */
+  balance: string;
+  tier: string | null;
+  leverage: number | null;
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
   userId: string;
   userEmail: string;
   userFirstName: string;

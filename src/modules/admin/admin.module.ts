@@ -14,6 +14,9 @@ import { AdminComplianceService } from './admin-compliance.service';
 import { AdminRbacService } from './admin-rbac.service';
 import { AdminMoneyService } from './admin-money.service';
 import { AdminMoneyController } from './admin-money.controller';
+import { AdminStatsService } from './admin-stats.service';
+import { AdminStatsController } from './admin-stats.controller';
+import { AdminHoldingsController } from './admin-holdings.controller';
 import { PaymentsModule } from '../payments/payments.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { AdminAuthModule } from './admin-auth.module';
@@ -39,6 +42,9 @@ const ADMIN_SERVICES = [
   AdminTagsService,
   SecuritySettingsService,
   AdminMoneyService,
+  // Reads only, and only through StoreModule's StatsStore — no money service and
+  // no audit writer, because it neither moves money nor names a client.
+  AdminStatsService,
 ];
 
 @Module({
@@ -52,9 +58,11 @@ const ADMIN_SERVICES = [
   // `AdminExportModule` carries AdminExportService for the export routes that sit
   // on these same controllers — see that module for why it is separate.
   imports: [ComplianceModule, AdminAuthModule, PaymentsModule, WalletModule, AdminExportModule],
-  // Seven controllers share the 'admin' prefix, one per concern, mirroring the
+  // Nine controllers share the 'admin' prefix, one per concern, mirroring the
   // services. Express registers all of their routes; there are no path
-  // collisions. Order is irrelevant — no two routes overlap.
+  // collisions. Order is irrelevant — no two routes overlap. (`stats/*` sits
+  // under no parameterised sibling, so it needs no ordering care of the kind
+  // `clients/export` before `clients/:id` does.)
   controllers: [
     AdminAuthController,
     AdminClientsController,
@@ -64,6 +72,8 @@ const ADMIN_SERVICES = [
     AdminAuditController,
     AdminSecuritySettingsController,
     AdminMoneyController,
+    AdminStatsController,
+    AdminHoldingsController,
   ],
   /*
    * The RBAC-08 `IpAllowlistGuard` was registered HERE as an APP_GUARD and is

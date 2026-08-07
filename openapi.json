@@ -3293,6 +3293,36 @@
             }
           },
           {
+            "name": "emailVerified",
+            "required": false,
+            "in": "query",
+            "description": "Omit to include both. Distinct from KYC — see ClientRowDto.",
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "kycStatus",
+            "required": false,
+            "in": "query",
+            "description": "`not_started` matches clients with no submission row at all.",
+            "schema": {
+              "enum": [
+                "not_started",
+                "in_progress",
+                "submitted",
+                "under_review",
+                "approved",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "tag",
             "required": false,
             "in": "query",
@@ -3423,6 +3453,36 @@
             "in": "query",
             "description": "Exact match on the country tag.",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "emailVerified",
+            "required": false,
+            "in": "query",
+            "description": "Omit to include both. Distinct from KYC — see ClientRowDto.",
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "kycStatus",
+            "required": false,
+            "in": "query",
+            "description": "`not_started` matches clients with no submission row at all.",
+            "schema": {
+              "enum": [
+                "not_started",
+                "in_progress",
+                "submitted",
+                "under_review",
+                "approved",
+                "rejected"
+              ],
               "type": "string"
             }
           },
@@ -5619,7 +5679,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationReportDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5704,6 +5771,530 @@
           }
         ],
         "summary": "Append-only ledger, filterable for reconciliation",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/stats/overview": {
+      "get": {
+        "description": "Each section is gated on its own permission and is ABSENT when the caller lacks it — deliberately different from present-and-zero, so a screen can distinguish \"hidden from you\" from \"there are none\". `sections` lists what came back. Every counter is a real COUNT/SUM in SQL, restricted to the clients this administrator may see; `scoped` says whether that restriction is in force. Withdrawal amounts are STRINGS.",
+        "operationId": "AdminStatsController_getOverview",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsOverviewDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Dashboard headline counters (clients, KYC, withdrawals, IB)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/stats/registrations": {
+      "get": {
+        "description": "Zero-filled: every calendar day in the window is present, and a day with no registrations comes back as 0 rather than being omitted. A chart fed only the days that have data draws the gaps closed and shows steady growth through an outage.",
+        "operationId": "AdminStatsController_getRegistrations",
+        "parameters": [
+          {
+            "name": "days",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "default": 30
+            },
+            "description": "Window length, 1–365. Defaults to 30. An out-of-range or non-integer value is a 400 naming the range — never a silent clamp (R-2.5)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrationSeriesDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Registrations per day for the last N days",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/stats/kyc-trend": {
+      "get": {
+        "description": "Zero-filled like the registration series. `submitted` buckets on submitted_at and `approved` on reviewed_at where the status is approved — a submission made Monday and approved Thursday counts once in each, on its own day. A rejection reviewed that day is NOT counted as an approval.",
+        "operationId": "AdminStatsController_getKycTrend",
+        "parameters": [
+          {
+            "name": "days",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "default": 30
+            },
+            "description": "Window length, 1–365. Defaults to 30. Out of range is a 400 (R-2.5)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycTrendSeriesDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "KYC submissions and approvals per day for the last N days",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/stats/withdrawal-volume": {
+      "get": {
+        "description": "Zero-filled; a day with no withdrawals is `{count: 0, totalAmount: \"0\"}`. Amounts are STRINGS summed by Postgres over NUMERIC(28,8) and cast to text — never parsed into a JavaScript number anywhere on the path (ARCHITECTURE §6.1). Bucketed on when the withdrawal was requested, the only date defined for a pending or rejected one.",
+        "operationId": "AdminStatsController_getWithdrawalVolume",
+        "parameters": [
+          {
+            "name": "days",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "default": 30
+            },
+            "description": "Window length, 1–365. Defaults to 30. Out of range is a 400 (R-2.5)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalVolumeSeriesDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Withdrawal amount and count per day for the last N days",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/wallets/export": {
+      "get": {
+        "description": "The same `userId` and `currency` filters as GET /admin/wallets, over every matching row rather than one page. Balances are the exact decimal strings the column holds — never rounded, never locale-formatted (§6.1). Client scope applies exactly as it does to the list.",
+        "operationId": "AdminHoldingsController_exportWallets",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Wallets of one client.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "description": "Exact match on the wallet code.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `wallets-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered wallet list as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/wallets": {
+      "get": {
+        "description": "`balance` and `onHold` are NUMERIC(28,8) and cross this boundary as STRINGS. Do not coerce them: Number() on a value of this width loses precision before formatting even starts (§6.1).",
+        "operationId": "AdminHoldingsController_listWallets",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Wallets of one client.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "description": "Exact match on the wallet code.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "withTotal",
+            "required": false,
+            "in": "query",
+            "description": "Counting is a full scan.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "description": "balance sorts on the NUMERIC column in SQL — never cast, never in JS (§6).",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "balance",
+                "currency",
+                "userEmail",
+                "userFirstName"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every client wallet, with its owner (balances are strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/export": {
+      "get": {
+        "description": "The same filters as GET /admin/trading-accounts, over every matching row rather than one page. Balances are the exact decimal strings the column holds. Client scope applies exactly as it does to the list.",
+        "operationId": "AdminHoldingsController_exportTradingAccounts",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Accounts of one client.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "live",
+                "demo"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "active",
+                "suspended",
+                "closed"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `trading-accounts-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered trading-account list as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts": {
+      "get": {
+        "description": "`balance` is CRM-owned until the MT5 bridge lands and crosses this boundary as a STRING. `login` is NULL until MT5 issues one, and is a string rather than a number because leading zeros are significant to the bridge.",
+        "operationId": "AdminHoldingsController_listTradingAccounts",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Accounts of one client.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "live",
+                "demo"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "active",
+                "suspended",
+                "closed"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "withTotal",
+            "required": false,
+            "in": "query",
+            "description": "Counting is a full scan.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "description": "login is nullable and pins NULLS LAST in both directions.",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "balance",
+                "login",
+                "currency",
+                "status",
+                "environment",
+                "userEmail",
+                "userFirstName"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingAccountListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every client trading account, with its owner (balances are strings)",
         "tags": [
           "admin"
         ]
@@ -8102,14 +8693,32 @@
               "active",
               "pending",
               "suspended"
-            ]
+            ],
+            "description": "The ACCOUNT state, and only that: whether this person may sign in. It is deliberately not a verification state — read `emailVerified` and `kycStatus` for those. \"pending\" here means the account itself is not yet active, and says nothing about documents."
+          },
+          "emailVerified": {
+            "type": "boolean",
+            "description": "Whether the client confirmed the address they registered with. Separate from KYC: an unconfirmed email is a self-service problem the client can fix, while a KYC decision is work for a reviewer."
+          },
+          "kycStatus": {
+            "type": "string",
+            "enum": [
+              "not_started",
+              "in_progress",
+              "submitted",
+              "under_review",
+              "approved",
+              "rejected"
+            ],
+            "description": "The client's identity-verification state, joined from kyc_submissions. Total: a client who never began verification reads as 'not_started' rather than null."
           },
           "verificationLevel": {
             "type": "number",
             "enum": [
               0,
               1
-            ]
+            ],
+            "description": "The verification TIER the account has reached (0 or 1), which gates what the client may do. Not a synonym for `kycStatus`: a rejected submission leaves the level at 0, and the reason lives in the status."
           },
           "country": {
             "type": "string"
@@ -8129,6 +8738,8 @@
           "id",
           "type",
           "status",
+          "emailVerified",
+          "kycStatus",
           "verificationLevel"
         ]
       },
@@ -9498,6 +10109,633 @@
         },
         "required": [
           "providerRef"
+        ]
+      },
+      "WalletDiscrepancyDto": {
+        "type": "object",
+        "properties": {
+          "walletId": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "balance": {
+            "type": "string",
+            "example": "150.00000000",
+            "description": "What the wallet row claims. Monetary value — always a string."
+          },
+          "ledgerSum": {
+            "type": "string",
+            "example": "149.00000000",
+            "description": "What its ledger entries actually sum to. Monetary value — always a string."
+          },
+          "difference": {
+            "type": "string",
+            "example": "1.00000000",
+            "description": "balance − ledgerSum, SIGNED so the direction is visible: positive means the wallet claims more than the ledger justifies. Monetary value — always a string."
+          }
+        },
+        "required": [
+          "walletId",
+          "userId",
+          "currency",
+          "balance",
+          "ledgerSum",
+          "difference"
+        ]
+      },
+      "ReconciliationReportDto": {
+        "type": "object",
+        "properties": {
+          "checkedAt": {
+            "type": "string",
+            "description": "When this run completed (ISO 8601)."
+          },
+          "walletsChecked": {
+            "type": "number",
+            "description": "How many wallets were compared against their ledgers."
+          },
+          "walletDiscrepancies": {
+            "description": "Empty when every wallet agrees with its ledger.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WalletDiscrepancyDto"
+            }
+          },
+          "balanced": {
+            "type": "boolean",
+            "description": "True when nothing is wrong. Read this rather than testing the array length — it is the field the service decides, and a future check can make it false without adding a wallet discrepancy."
+          }
+        },
+        "required": [
+          "checkedAt",
+          "walletsChecked",
+          "walletDiscrepancies",
+          "balanced"
+        ]
+      },
+      "ClientRegistrationWindowDto": {
+        "type": "object",
+        "properties": {
+          "today": {
+            "type": "number",
+            "description": "Registered since midnight UTC today."
+          },
+          "thisWeek": {
+            "type": "number",
+            "description": "Registered since the start of the current ISO week (UTC)."
+          },
+          "thisMonth": {
+            "type": "number",
+            "description": "Registered since the first of the current month (UTC)."
+          }
+        },
+        "required": [
+          "today",
+          "thisWeek",
+          "thisMonth"
+        ]
+      },
+      "ClientStatusCountsDto": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "number"
+          },
+          "pending": {
+            "type": "number"
+          },
+          "suspended": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "active",
+          "pending",
+          "suspended"
+        ]
+      },
+      "ClientVerificationCountsDto": {
+        "type": "object",
+        "properties": {
+          "verified": {
+            "type": "number",
+            "description": "verification_level >= 1."
+          },
+          "notVerified": {
+            "type": "number",
+            "description": "verification_level < 1."
+          }
+        },
+        "required": [
+          "verified",
+          "notVerified"
+        ]
+      },
+      "ClientStatsDto": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "number",
+            "description": "Every client visible to the calling admin."
+          },
+          "registered": {
+            "$ref": "#/components/schemas/ClientRegistrationWindowDto"
+          },
+          "byStatus": {
+            "$ref": "#/components/schemas/ClientStatusCountsDto"
+          },
+          "byVerification": {
+            "$ref": "#/components/schemas/ClientVerificationCountsDto"
+          }
+        },
+        "required": [
+          "total",
+          "registered",
+          "byStatus",
+          "byVerification"
+        ]
+      },
+      "KycStatsDto": {
+        "type": "object",
+        "properties": {
+          "byStatus": {
+            "type": "object",
+            "description": "Submission count per kyc_status (not_started, in_progress, submitted, under_review, approved, rejected). ALL of them are always present; a status with no submissions is 0, never absent — absent and zero look identical to a chart and mean opposite things to a reviewer.",
+            "additionalProperties": {
+              "type": "number"
+            },
+            "example": {
+              "not_started": 0,
+              "in_progress": 0,
+              "submitted": 0,
+              "under_review": 0,
+              "approved": 0,
+              "rejected": 0
+            }
+          }
+        },
+        "required": [
+          "byStatus"
+        ]
+      },
+      "WithdrawalStateTotalDto": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "success",
+              "failure",
+              "rejected"
+            ]
+          },
+          "count": {
+            "type": "number"
+          },
+          "totalAmount": {
+            "type": "string",
+            "example": "12500.00000000",
+            "description": "Monetary value — ALWAYS a string, never a number. NUMERIC(28,8) at rest; Number()/parseFloat on this field truncates past 2^53 (ARCHITECTURE §6.1)."
+          }
+        },
+        "required": [
+          "state",
+          "count",
+          "totalAmount"
+        ]
+      },
+      "WithdrawalStatsDto": {
+        "type": "object",
+        "properties": {
+          "byState": {
+            "description": "One entry per transaction_state, always all of them, covering withdrawals only (direction = withdrawal). Deposits are excluded.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WithdrawalStateTotalDto"
+            }
+          }
+        },
+        "required": [
+          "byState"
+        ]
+      },
+      "IbStatsDto": {
+        "type": "object",
+        "properties": {
+          "applications": {
+            "type": "object",
+            "description": "Application count per ib_application_status (pending, approved, rejected). All values always present.",
+            "additionalProperties": {
+              "type": "number"
+            },
+            "example": {
+              "pending": 0,
+              "approved": 0,
+              "rejected": 0
+            }
+          },
+          "partners": {
+            "type": "number",
+            "description": "Rows in ib_accounts — partners on the books, active or not."
+          }
+        },
+        "required": [
+          "applications",
+          "partners"
+        ]
+      },
+      "StatsOverviewDto": {
+        "type": "object",
+        "properties": {
+          "clients": {
+            "description": "Present only with users.view. ABSENT — not zeroed — otherwise.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClientStatsDto"
+              }
+            ]
+          },
+          "kyc": {
+            "description": "Present only with kyc.view or kyc.review. ABSENT otherwise.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/KycStatsDto"
+              }
+            ]
+          },
+          "withdrawals": {
+            "description": "Present only with withdrawals.view. ABSENT otherwise.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WithdrawalStatsDto"
+              }
+            ]
+          },
+          "ib": {
+            "description": "Present only with ib.view. ABSENT otherwise.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/IbStatsDto"
+              }
+            ]
+          },
+          "sections": {
+            "description": "The sections this response actually carries, so a screen reads a list rather than probing for undefined keys.",
+            "example": [
+              "clients",
+              "kyc"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scoped": {
+            "type": "boolean",
+            "description": "True when the calling admin is restricted to a subset of clients, in which case every number above counts only THEIR clients. A screen showing a headline total to a scoped admin without saying so invites it to be read as a platform total."
+          }
+        },
+        "required": [
+          "sections",
+          "scoped"
+        ]
+      },
+      "RegistrationPointDto": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "example": "2026-08-01",
+            "description": "UTC calendar day, YYYY-MM-DD."
+          },
+          "count": {
+            "type": "number",
+            "description": "Registrations that day. 0 for a day with none — never omitted."
+          }
+        },
+        "required": [
+          "date",
+          "count"
+        ]
+      },
+      "RegistrationSeriesDto": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "number",
+            "description": "The window actually served, echoed back."
+          },
+          "points": {
+            "description": "Exactly `days` entries, oldest first, one per calendar day with no gaps.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegistrationPointDto"
+            }
+          },
+          "scoped": {
+            "type": "boolean",
+            "description": "True when these counts cover only the actor’s own clients."
+          }
+        },
+        "required": [
+          "days",
+          "points",
+          "scoped"
+        ]
+      },
+      "KycTrendPointDto": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "example": "2026-08-01"
+          },
+          "submitted": {
+            "type": "number",
+            "description": "Submissions whose submitted_at falls on this day."
+          },
+          "approved": {
+            "type": "number",
+            "description": "Submissions REVIEWED on this day whose status is approved. A rejection reviewed the same day is not counted here."
+          }
+        },
+        "required": [
+          "date",
+          "submitted",
+          "approved"
+        ]
+      },
+      "KycTrendSeriesDto": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "number"
+          },
+          "points": {
+            "description": "Exactly `days` entries, no gaps.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycTrendPointDto"
+            }
+          },
+          "scoped": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "days",
+          "points",
+          "scoped"
+        ]
+      },
+      "WithdrawalVolumePointDto": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "example": "2026-08-01"
+          },
+          "count": {
+            "type": "number",
+            "description": "Withdrawal requests created that day."
+          },
+          "totalAmount": {
+            "type": "string",
+            "example": "4200.50000000",
+            "description": "Monetary value — ALWAYS a string, never a number (§6.1). \"0\" for a day with no withdrawals, never null."
+          }
+        },
+        "required": [
+          "date",
+          "count",
+          "totalAmount"
+        ]
+      },
+      "WithdrawalVolumeSeriesDto": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "number"
+          },
+          "points": {
+            "description": "Exactly `days` entries, no gaps. Bucketed on when the withdrawal was REQUESTED (created_at), which is the only date defined for a pending or rejected request.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WithdrawalVolumePointDto"
+            }
+          },
+          "scoped": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "days",
+          "points",
+          "scoped"
+        ]
+      },
+      "HoldingOwnerDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "firstName",
+          "lastName"
+        ]
+      },
+      "WalletRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "balance": {
+            "type": "string",
+            "example": "250.00000000",
+            "description": "Monetary value — ALWAYS a string, never a number. NUMERIC(28,8) exceeds what a JavaScript number represents exactly, so Number()/parseFloat lose value before any formatting starts (§6.1)."
+          },
+          "onHold": {
+            "type": "string",
+            "example": "0.00000000",
+            "description": "Reserved against a pending transfer — a string for the same reason as `balance`. Available = balance − onHold, and that subtraction belongs in decimal arithmetic."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/HoldingOwnerDto"
+          }
+        },
+        "required": [
+          "id",
+          "balance",
+          "onHold",
+          "currency",
+          "createdAt",
+          "updatedAt",
+          "user"
+        ]
+      },
+      "WalletListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WalletRowDto"
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "total",
+          "page",
+          "limit"
+        ]
+      },
+      "TradingAccountRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "login": {
+            "type": "string",
+            "nullable": true,
+            "description": "The MT5 login, once there is an MT5 to issue one. NULL until assigned, and a STRING rather than a number because leading zeros are significant to the bridge."
+          },
+          "mt5Group": {
+            "type": "string",
+            "nullable": true
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "balance": {
+            "type": "string",
+            "example": "1000.00000000",
+            "description": "Monetary value — ALWAYS a string. CRM-owned until the MT5 bridge lands, at which point it becomes a mirror of MT5 or is removed (see the schema comment)."
+          },
+          "tier": {
+            "type": "string",
+            "nullable": true
+          },
+          "leverage": {
+            "type": "number",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "suspended",
+              "closed"
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/HoldingOwnerDto"
+          }
+        },
+        "required": [
+          "id",
+          "environment",
+          "currency",
+          "balance",
+          "status",
+          "createdAt",
+          "updatedAt",
+          "user"
+        ]
+      },
+      "TradingAccountListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TradingAccountRowDto"
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "total",
+          "page",
+          "limit"
         ]
       },
       "ErrorResponseDto": {

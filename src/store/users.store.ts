@@ -3,7 +3,7 @@ import type { CursorPosition } from '../common/pagination';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { clientTagAssignments, clientTags, users } from '../database/schema';
+import { clientTagAssignments, clientTags, kycSubmissions, users } from '../database/schema';
 import {
   clientScopePredicate,
   UNRESTRICTED,
@@ -259,6 +259,13 @@ export class UsersStore {
     level?: number;
     /** Exact match on `users.country` — the ADM-14 "country tag". */
     country?: string;
+    /** Has the client confirmed their registration address? */
+    emailVerified?: boolean;
+    /**
+     * One of the six `kyc_status` values. `not_started` matches clients with no
+     * submission row at all, which is most of them — see the predicate.
+     */
+    kycStatus?: string;
     /** ADM-14 label filter, by tag SLUG so a rename cannot break a saved link. */
     tagSlug?: string;
     /** R-2.5 server-side sort. Validated by `clientSortKey` before it gets here. */
@@ -288,6 +295,26 @@ export class UsersStore {
       conditions.push(eq(users.verificationLevel, filter.level));
     }
     if (filter.country) conditions.push(eq(users.country, filter.country));
+
+    /*
+     * The two filters that make the new columns useful.
+     *
+     * `kycStatus` filters on the JOINED table, and the `not_started` case has
+     * to be written as "the row is absent OR says not_started" — a client who
+     * never began verification has no `kyc_submissions` row, so an equality
+     * test alone would return nothing for the very group an operator is most
+     * likely to be chasing.
+     */
+    if (typeof filter.emailVerified === 'boolean') {
+      conditions.push(eq(users.emailVerified, filter.emailVerified));
+    }
+    if (filter.kycStatus) {
+      conditions.push(
+        filter.kycStatus === 'not_started'
+          ? sql`coalesce(${kycSubmissions.status}::text, 'not_started') = 'not_started'`
+          : sql`${kycSubmissions.status}::text = ${filter.kycStatus}`,
+      );
+    }
 
     /*
      * The tag filter, and the client scope, are both EXISTS — never a join.
@@ -385,6 +412,23 @@ export class UsersStore {
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
+    /*
+     * `emailVerified` and `kycStatus` are on the row because the directory
+     * could not otherwise answer the question it exists to answer.
+     *
+     * `users.status` is 'active' | 'pending' | 'suspended', and "pending" says
+     * almost nothing on its own: it does not distinguish somebody who has not
+     * confirmed their email from somebody whose documents are sitting in the
+     * review queue. Those are different problems with different owners, and the
+     * list had no way to tell them apart — so the one column was carrying three
+     * unrelated meanings and answering none of them.
+     *
+     * The KYC state is a LEFT JOIN, and it has to be left: a client who never
+     * started verification has no `kyc_submissions` row at all, and an inner
+     * join would drop exactly the clients most worth chasing. `coalesce` turns
+     * that absence into the enum's own 'not_started', so the column is TOTAL —
+     * every client carries one of the six values and never a null.
+     */
     const columns = {
       id: users.id,
       email: users.email,
@@ -392,7 +436,9 @@ export class UsersStore {
       lastName: users.lastName,
       type: users.type,
       status: users.status,
+      emailVerified: users.emailVerified,
       verificationLevel: users.verificationLevel,
+      kycStatus: sql<string>`coalesce(${kycSubmissions.status}::text, 'not_started')`,
       country: users.country,
       createdAt: users.createdAt,
     };
@@ -417,6 +463,13 @@ export class UsersStore {
     const rows = await db
       .select(columns)
       .from(users)
+      /*
+       * LEFT, not inner — `kyc_submissions` is keyed on `user_id` and only
+       * exists once a client begins verification. An inner join would silently
+       * drop every client who has not started, which is both the largest group
+       * and the one an operator most wants to see.
+       */
+      .leftJoin(kycSubmissions, eq(kycSubmissions.userId, users.id))
       .where(where)
       .orderBy(orderBy(sortColumn), orderBy(users.id))
       // One extra row answers "is there a next page" with no second query and
@@ -429,9 +482,22 @@ export class UsersStore {
     // more" for free.
     let total: number | undefined;
     if (filter.withTotal) {
+      /*
+       * The SAME join as the page query, and it is not optional.
+       *
+       * `where` may now contain a predicate on `kyc_submissions`, and a count
+       * that omitted the join would fail outright rather than merely disagree.
+       * It stays a LEFT join for the same reason as above, so the count matches
+       * the rows exactly — a total that counted a different set than the one it
+       * paginates is the bug this kind of duplication usually causes.
+       *
+       * The join costs nothing here: `kyc_submissions.user_id` is the primary
+       * key, so it is a unique index lookup and cannot multiply rows.
+       */
       const [countRow] = await db
         .select({ value: sql<number>`count(*)::int` })
         .from(users)
+        .leftJoin(kycSubmissions, eq(kycSubmissions.userId, users.id))
         .where(where);
       total = countRow.value;
     }

@@ -260,6 +260,13 @@
       "when": 1786975555600,
       "tag": "0037_admin_sort_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787061955600,
+      "tag": "0038_holdings_sort_indexes",
+      "breakpoints": true
     }
   ]
 }

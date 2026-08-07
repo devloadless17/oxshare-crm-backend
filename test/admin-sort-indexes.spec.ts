@@ -8,6 +8,10 @@ import { AUDIT_SORT_COLUMNS } from '../src/store/audit-log.store';
 import { IB_APPLICATION_SORT_COLUMNS, IB_PARTNER_SORT_COLUMNS } from '../src/store/ib.store';
 import { ADMIN_SORT_COLUMNS } from '../src/store/admins.store';
 import { ROLE_SORT_COLUMNS } from '../src/store/roles.store';
+import {
+  TRADING_ACCOUNT_SORT_COLUMNS,
+  WALLET_SORT_COLUMNS,
+} from '../src/modules/admin/admin-holdings.service';
 
 /**
  * R-2.5's other half, for the six lists migration 0037 covers: "every sortable
@@ -225,6 +229,47 @@ describeSortIndexes(
     createdAt: { sql: 'roles.created_at' },
   },
   ROLE_SORT_COLUMNS,
+);
+
+// ── The wallet list ──────────────────────────────────────────────────────────
+//
+// `balance` is the one worth naming, for the reason the withdrawal queue's
+// `amount` is: NUMERIC(28,8), indexed as numeric, so the b-tree orders by true
+// value. An index over a float cast would collapse values differing beyond 2^53
+// into one key — and a wallet balance is the number that mistake is worst on.
+describeSortIndexes(
+  'the wallet list',
+  'wallets',
+  'id',
+  {
+    createdAt: { sql: 'wallets.created_at' },
+    balance: { sql: 'wallets.balance' },
+    currency: { sql: 'wallets.currency' },
+    userEmail: { sql: 'users.email', on: 'users' },
+    userFirstName: { sql: 'users.first_name', on: 'users' },
+  },
+  WALLET_SORT_COLUMNS,
+);
+
+// ── The trading-account list ─────────────────────────────────────────────────
+//
+// `login` is NULLABLE and the query pins NULLS LAST in both directions, so the
+// index declares the same — otherwise the planner sorts instead of scanning.
+describeSortIndexes(
+  'the trading-account list',
+  'trading_accounts',
+  'id',
+  {
+    createdAt: { sql: 'trading_accounts.created_at' },
+    balance: { sql: 'trading_accounts.balance' },
+    login: { sql: 'trading_accounts.login', nullsLast: true },
+    currency: { sql: 'trading_accounts.currency' },
+    status: { sql: 'trading_accounts.status' },
+    environment: { sql: 'trading_accounts.environment' },
+    userEmail: { sql: 'users.email', on: 'users' },
+    userFirstName: { sql: 'users.first_name', on: 'users' },
+  },
+  TRADING_ACCOUNT_SORT_COLUMNS,
 );
 
 /**

@@ -24,7 +24,7 @@ import {
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
 import { UuidParam, enumQuery, searchQuery } from '../../common/query-params';
-import { userStatusEnum, userTypeEnum } from '../../database/schema';
+import { kycStatusEnum, userStatusEnum, userTypeEnum } from '../../database/schema';
 import { CLIENT_SORT_COLUMNS } from '../../store/users.store';
 import { ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
@@ -63,6 +63,18 @@ export class AdminClientsController {
   @ApiQuery({ name: 'status', required: false, enum: userStatusEnum.enumValues })
   @ApiQuery({ name: 'level', required: false, enum: [0, 1] })
   @ApiQuery({ name: 'country', required: false, description: 'Exact match on the country tag.' })
+  @ApiQuery({
+    name: 'emailVerified',
+    required: false,
+    enum: ['true', 'false'],
+    description: 'Omit to include both. Distinct from KYC — see ClientRowDto.',
+  })
+  @ApiQuery({
+    name: 'kycStatus',
+    required: false,
+    enum: kycStatusEnum.enumValues,
+    description: '`not_started` matches clients with no submission row at all.',
+  })
   @ApiQuery({ name: 'tag', required: false, description: 'Tag SLUG, not id (ADM-14).' })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
@@ -80,6 +92,8 @@ export class AdminClientsController {
     @Query('status') status?: string,
     @Query('level') level?: string,
     @Query('country') country?: string,
+    @Query('emailVerified') emailVerified?: string,
+    @Query('kycStatus') kycStatus?: string,
     @Query('tag') tag?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
@@ -103,6 +117,11 @@ export class AdminClientsController {
         // Bounded for the same reason as `q` — both reach an indexed comparison
         // over a 219,000-row table.
         country: searchQuery(country, 'country'),
+        // Both validated in the service — `kycStatus` against the enum, so an
+        // unrecognised value is a 400 naming the six rather than a silently
+        // unfiltered list.
+        emailVerified,
+        kycStatus,
         tag: searchQuery(tag, 'tag'),
         // `sort`/`order` are validated in the service against the SORTABLE_COLUMNS
         // allowlist, which is where the column mapping lives. Validating here too
@@ -158,6 +177,18 @@ export class AdminClientsController {
   @ApiQuery({ name: 'status', required: false, enum: userStatusEnum.enumValues })
   @ApiQuery({ name: 'level', required: false, enum: [0, 1] })
   @ApiQuery({ name: 'country', required: false, description: 'Exact match on the country tag.' })
+  @ApiQuery({
+    name: 'emailVerified',
+    required: false,
+    enum: ['true', 'false'],
+    description: 'Omit to include both. Distinct from KYC — see ClientRowDto.',
+  })
+  @ApiQuery({
+    name: 'kycStatus',
+    required: false,
+    enum: kycStatusEnum.enumValues,
+    description: '`not_started` matches clients with no submission row at all.',
+  })
   @ApiQuery({ name: 'tag', required: false, description: 'Tag SLUG, not id (ADM-14).' })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
@@ -179,6 +210,8 @@ export class AdminClientsController {
     @Query('status') status?: string,
     @Query('level') level?: string,
     @Query('country') country?: string,
+    @Query('emailVerified') emailVerified?: string,
+    @Query('kycStatus') kycStatus?: string,
     @Query('tag') tag?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
@@ -192,6 +225,11 @@ export class AdminClientsController {
       status: enumQuery(status, userStatusEnum.enumValues, 'status'),
       level,
       country: searchQuery(country, 'country'),
+      // The export honours the SAME filters as the list, so "export what I am
+      // looking at" stays true as filters are added. Omitting these two would
+      // have made a filtered screen produce an unfiltered file.
+      emailVerified,
+      kycStatus,
       tag: searchQuery(tag, 'tag'),
       sort,
       order,

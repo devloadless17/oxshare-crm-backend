@@ -224,6 +224,19 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'export.audit_log', label: 'Admin action log exported', group: 'Exports' },
   { action: 'export.ib_applications', label: 'Partner applications exported', group: 'Exports' },
   { action: 'export.ib_partners', label: 'Partner list exported', group: 'Exports' },
+  /*
+   * The two holdings exports, recorded for the reason the block above states:
+   * they carry client money and client PII off the screen and into a file.
+   *
+   * `export.wallets` is the strongest case in this group — it is every client's
+   * balance, which is the single most sensitive table a CRM export can produce.
+   */
+  { action: 'export.wallets', label: 'Wallet balances exported', group: 'Exports' },
+  {
+    action: 'export.trading_accounts',
+    label: 'Trading accounts exported',
+    group: 'Exports',
+  },
 ] as const;
 
 /** Every action key, for the coverage test and for validating `?action=`. */
