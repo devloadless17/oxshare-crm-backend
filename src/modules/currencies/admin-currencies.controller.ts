@@ -1,10 +1,25 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Query } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { exportFormat, streamCsvFromArray } from '../../common/export/export-response';
 import { NotAudited } from '../admin/guards/audited.decorator';
-import { PermissionsGuard, RequirePermissions } from '../admin/guards/admin.guard';
+import {
+  AuthenticatedAdmin,
+  PermissionsGuard,
+  RequirePermissions,
+} from '../admin/guards/admin.guard';
 import { NotClientScoped } from '../admin/guards/client-scope.decorator';
 import { Audited } from '../admin/guards/audited.decorator';
 import { CurrenciesService } from './currencies.service';
@@ -108,8 +123,8 @@ export class AdminCurrenciesController {
   @ApiOkResponse({ type: CurrencyDto })
   @NotClientScoped('Operator configuration; contains no client data.')
   @Audited('currency.create')
-  create(@Body() dto: CreateCurrencyDto) {
-    return this.currencies.create(dto);
+  create(@Req() req: Request & { admin: AuthenticatedAdmin }, @Body() dto: CreateCurrencyDto) {
+    return this.currencies.create(dto, req.admin);
   }
 
   @Patch(':code')
@@ -126,8 +141,12 @@ export class AdminCurrenciesController {
   @ApiOkResponse({ type: CurrencyDto })
   @NotClientScoped('Operator configuration; contains no client data.')
   @Audited('currency.update')
-  update(@Param('code') code: string, @Body() dto: UpdateCurrencyDto) {
-    return this.currencies.update(code, dto);
+  update(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('code') code: string,
+    @Body() dto: UpdateCurrencyDto,
+  ) {
+    return this.currencies.update(code, dto, req.admin);
   }
 
   @Delete(':code')
@@ -143,8 +162,8 @@ export class AdminCurrenciesController {
   })
   @NotClientScoped('Operator configuration; contains no client data.')
   @Audited('currency.delete')
-  remove(@Param('code') code: string) {
-    return this.currencies.remove(code);
+  remove(@Req() req: Request & { admin: AuthenticatedAdmin }, @Param('code') code: string) {
+    return this.currencies.remove(code, req.admin);
   }
 }
 

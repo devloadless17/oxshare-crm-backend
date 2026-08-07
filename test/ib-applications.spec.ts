@@ -7,6 +7,8 @@ import { UsersStore } from '../src/store/users.store';
 import { ClientVisibilityService } from '../src/common/security/client-visibility.service';
 import type { EmailService } from '../src/modules/email/email.service';
 import { UNRESTRICTED } from '../src/common/security/client-scope';
+import type { Actor } from '../src/common/security/actor';
+import { auditStubAs } from './audit-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -41,9 +43,10 @@ beforeAll(async () => {
     ctx.db,
     store,
     users,
-    new IbLevelsService(ctx.db),
+    new IbLevelsService(ctx.db, auditStubAs()),
     new ClientVisibilityService(users),
     email,
+    auditStubAs(),
   );
 }, 120_000);
 
@@ -51,8 +54,18 @@ afterAll(async () => {
   await stopMoneyTestDb(ctx);
 });
 
-/** A reviewer id. No FK on `reviewed_by`, so any uuid stands in. */
-const REVIEWER = '00000000-0000-4000-8000-000000000001';
+/**
+ * The reviewing administrator.
+ *
+ * An `Actor` rather than a bare id: the decisions record who made them, and the
+ * audit writer needs the actor the same way the money services do. No FK on
+ * `reviewed_by`, so any uuid stands in — `REVIEWER.id` is what lands there.
+ */
+const REVIEWER: Actor = {
+  id: '00000000-0000-4000-8000-000000000001',
+  email: 'ib-reviewer@oxshare.internal',
+  permissions: ['*'],
+};
 
 /** Verified by default — the unverified case is a test of its own. */
 async function makeClient(email: string, verificationLevel = 1): Promise<string> {
@@ -288,7 +301,7 @@ describe('rejection', () => {
     const rejected = await service.reject(application.id, REVIEWER, UNRESTRICTED, {
       reason: 'Application is incomplete or unclear',
     });
-    expect(rejected.reviewedBy).toBe(REVIEWER);
+    expect(rejected.reviewedBy).toBe(REVIEWER.id);
     expect(rejected.reviewedAt).toBeInstanceOf(Date);
   });
 });
@@ -425,7 +438,7 @@ describe('managing a live partner', () => {
 
   it('moves a partner to another enabled level', async () => {
     const [parent] = await makePair();
-    const moved = await service.changeLevel(parent, 2, UNRESTRICTED);
+    const moved = await service.changeLevel(parent, 2, UNRESTRICTED, REVIEWER);
     expect(moved.level).toBe(2);
   });
 
@@ -435,7 +448,9 @@ describe('managing a live partner', () => {
 
     // A disabled level takes no share, so this would stop their earnings
     // silently rather than demote them visibly.
-    await expect(service.changeLevel(parent, 2, UNRESTRICTED)).rejects.toThrow(/not an enabled/i);
+    await expect(service.changeLevel(parent, 2, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /not an enabled/i,
+    );
   });
 
   it('refuses a parent that would close a loop', async () => {
@@ -443,12 +458,16 @@ describe('managing a live partner', () => {
 
     // Making the child the parent's parent completes A→B→A. Postgres would
     // accept it; this is the only guard.
-    await expect(service.reassignParent(parent, child, UNRESTRICTED)).rejects.toThrow(/loop/i);
+    await expect(service.reassignParent(parent, child, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /loop/i,
+    );
   });
 
   it('refuses a partner as their own parent', async () => {
     const [parent] = await makePair();
-    await expect(service.reassignParent(parent, parent, UNRESTRICTED)).rejects.toThrow(/loop/i);
+    await expect(service.reassignParent(parent, parent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /loop/i,
+    );
   });
 
   it('accepts an unrelated parent', async () => {
@@ -456,13 +475,13 @@ describe('managing a live partner', () => {
     const outsider = await makeClient('mgmt-outsider@test.local');
     await store.createAccount({ userId: outsider, level: 1, referralCode: 'MGMTOUTS' });
 
-    const moved = await service.reassignParent(child, outsider, UNRESTRICTED);
+    const moved = await service.reassignParent(child, outsider, UNRESTRICTED, REVIEWER);
     expect(moved.parentIbUserId).toBe(outsider);
   });
 
   it('cuts a partner loose to deal direct', async () => {
     const [, child] = await makePair();
-    const freed = await service.reassignParent(child, null, UNRESTRICTED);
+    const freed = await service.reassignParent(child, null, UNRESTRICTED, REVIEWER);
     // null is a real value, not an omission — it means top of a chain.
     expect(freed.parentIbUserId).toBeNull();
   });
@@ -478,7 +497,7 @@ describe('managing a live partner', () => {
 
     // `parent` already holds `child`. A reassignment fills a slot exactly as an
     // approval does, so it has to be checked in both places.
-    await expect(service.reassignParent(another, parent, UNRESTRICTED)).rejects.toThrow(
+    await expect(service.reassignParent(another, parent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
       /already holds 1 of their 1/i,
     );
   });
@@ -486,7 +505,7 @@ describe('managing a live partner', () => {
   it('suspends without deleting the tree', async () => {
     const [parent, child] = await makePair();
 
-    const suspended = await service.setActive(parent, false, UNRESTRICTED);
+    const suspended = await service.setActive(parent, false, UNRESTRICTED, REVIEWER);
     expect(suspended.active).toBe(false);
     // The code and the tree survive: clients attributed to them stay
     // attributed, and everybody beneath keeps their placement.
@@ -496,19 +515,19 @@ describe('managing a live partner', () => {
 
   it('reactivates', async () => {
     const [parent] = await makePair();
-    await service.setActive(parent, false, UNRESTRICTED);
-    const back = await service.setActive(parent, true, UNRESTRICTED);
+    await service.setActive(parent, false, UNRESTRICTED, REVIEWER);
+    const back = await service.setActive(parent, true, UNRESTRICTED, REVIEWER);
     expect(back.active).toBe(true);
   });
 
   it('refuses a suspended partner as a new parent', async () => {
     const [parent] = await makePair();
-    await service.setActive(parent, false, UNRESTRICTED);
+    await service.setActive(parent, false, UNRESTRICTED, REVIEWER);
 
     const orphan = await makeClient('mgmt-orphan@test.local');
     await store.createAccount({ userId: orphan, level: 2, referralCode: 'MGMTORPH' });
 
-    await expect(service.reassignParent(orphan, parent, UNRESTRICTED)).rejects.toThrow(
+    await expect(service.reassignParent(orphan, parent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
       /suspended/i,
     );
   });

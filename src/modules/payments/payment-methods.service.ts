@@ -7,6 +7,8 @@ import { paymentMethods } from '../../database/schema';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { toDecimal } from '../wallet/money';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import { AdminAuditService } from '../admin/admin-audit.service';
+import type { Actor } from '../../common/security/actor';
 import type { CreatePaymentMethodDto, UpdatePaymentMethodDto } from './dto/payment-method.dto';
 
 export type PaymentMethodRow = typeof paymentMethods.$inferSelect;
@@ -38,6 +40,7 @@ export class PaymentMethodsService {
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly currencies: CurrenciesService,
+    private readonly audit: AdminAuditService,
   ) {}
 
   /** Everything, including disabled and unconfigured. The admin screen's list. */
@@ -126,7 +129,8 @@ export class PaymentMethodsService {
     }
   }
 
-  async create(dto: CreatePaymentMethodDto, adminId: string): Promise<PaymentMethodRow> {
+  async create(dto: CreatePaymentMethodDto, actor: Actor): Promise<PaymentMethodRow> {
+    const adminId = actor.id;
     const key = this.normalise(dto.key);
     if (await this.findOne(key)) {
       throw new ConflictError(`A payment method with the key ${key} already exists.`);
@@ -153,14 +157,33 @@ export class PaymentMethodsService {
         updatedBy: adminId,
       })
       .returning();
+
+    /*
+     * `payTo` is recorded, and it is the point of auditing this table.
+     *
+     * It is the account number every client is told to send money to — "who
+     * changed the Whish number, and when" is the first question asked when a
+     * deposit goes missing, and it is unanswerable from a row that holds only
+     * the current destination. It is operator configuration displayed publicly
+     * to every client, not a credential, so recording it leaks nothing.
+     *
+     * `minAmount`/`maxAmount` are NUMERIC(28,8) strings and are logged
+     * unchanged (§6.1).
+     */
+    this.audit.record(actor.id, 'payment_method.create', 'payment_method', row.key, {
+      name: row.name,
+      kind: row.kind,
+      currency: row.currency,
+      payTo: row.payTo,
+      minAmount: row.minAmount,
+      maxAmount: row.maxAmount,
+      enabled: row.enabled,
+    });
     return row;
   }
 
-  async update(
-    key: string,
-    dto: UpdatePaymentMethodDto,
-    adminId: string,
-  ): Promise<PaymentMethodRow> {
+  async update(key: string, dto: UpdatePaymentMethodDto, actor: Actor): Promise<PaymentMethodRow> {
+    const adminId = actor.id;
     const current = await this.findOne(key);
     if (!current) throw new NotFoundError(`Unknown payment method ${this.normalise(key)}.`);
 
@@ -188,6 +211,31 @@ export class PaymentMethodsService {
       })
       .where(eq(paymentMethods.key, this.normalise(key)))
       .returning();
+
+    /*
+     * The changed fields with their OLD values — a repointed `payTo` is the
+     * case this exists for, and the previous account number is exactly what an
+     * investigator needs and exactly what the UPDATE destroyed.
+     *
+     * Money fields stay strings on both sides (§6.1).
+     */
+    const changed: Record<string, { before: unknown; after: unknown }> = {};
+    for (const field of [
+      'name',
+      'kind',
+      'currency',
+      'payTo',
+      'minAmount',
+      'maxAmount',
+      'enabled',
+      'sortOrder',
+      'instructions',
+      'logoUrl',
+    ] as const) {
+      if (current[field] !== row[field])
+        changed[field] = { before: current[field], after: row[field] };
+    }
+    this.audit.record(actor.id, 'payment_method.update', 'payment_method', row.key, { changed });
     return row;
   }
 
@@ -200,7 +248,7 @@ export class PaymentMethodsService {
    * almost always what they meant: it stops new deposits and keeps the history
    * readable.
    */
-  async remove(key: string): Promise<{ key: string; deleted: true }> {
+  async remove(key: string, actor: Actor): Promise<{ key: string; deleted: true }> {
     const normalised = this.normalise(key);
     const current = await this.findOne(normalised);
     if (!current) throw new NotFoundError(`Unknown payment method ${normalised}.`);
@@ -213,6 +261,16 @@ export class PaymentMethodsService {
           'Disable it instead — that stops new deposits and keeps the history intact.',
       );
     }
+
+    // After the delete succeeded, never in the catch above — a log entry for a
+    // removal the database refused describes something that did not happen.
+    this.audit.record(actor.id, 'payment_method.delete', 'payment_method', normalised, {
+      name: current.name,
+      kind: current.kind,
+      currency: current.currency,
+      payTo: current.payTo,
+      enabled: current.enabled,
+    });
     return { key: normalised, deleted: true };
   }
 

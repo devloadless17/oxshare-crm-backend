@@ -84,7 +84,7 @@ export class AdminSettingsController {
   @NotClientScoped('Operator branding and contact details; contains no client data.')
   @Audited('settings.general.update')
   setGeneral(@Body() dto: UpdateGeneralSettingsDto, @Req() req: Request & { admin: Admin }) {
-    return this.settings.setGeneral(dto, req.admin.id);
+    return this.settings.setGeneral(dto, req.admin);
   }
 
   /* ── Email / SMTP ───────────────────────────────────────────────────────── */
@@ -118,7 +118,7 @@ export class AdminSettingsController {
   @NotClientScoped('Mail server configuration; contains no client data.')
   @Audited('settings.smtp.update')
   setSmtp(@Body() dto: UpdateSmtpSettingsDto, @Req() req: Request & { admin: Admin }) {
-    return this.settings.setSmtp(dto, req.admin.id);
+    return this.settings.setSmtp(dto, req.admin);
   }
 
   /**

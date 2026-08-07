@@ -182,7 +182,7 @@ export class AdminIbController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ApproveIbApplicationDto,
   ) {
-    return this.applications.approve(id, req.admin.id, req.admin.clientScope, {
+    return this.applications.approve(id, req.admin, req.admin.clientScope, {
       level: dto.level,
       parentIbUserId: dto.parentIbUserId ?? null,
     });
@@ -206,7 +206,7 @@ export class AdminIbController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: RejectIbApplicationDto,
   ) {
-    return this.applications.reject(id, req.admin.id, req.admin.clientScope, dto);
+    return this.applications.reject(id, req.admin, req.admin.clientScope, dto);
   }
 
   // ── partners, once they exist ──────────────────────────────────────────────
@@ -296,7 +296,7 @@ export class AdminIbController {
     @Param('userId', ParseUUIDPipe) userId: string,
     @Body() dto: ChangeIbLevelDto,
   ) {
-    return this.applications.changeLevel(userId, dto.level, req.admin.clientScope);
+    return this.applications.changeLevel(userId, dto.level, req.admin.clientScope, req.admin);
   }
 
   @Patch('partners/:userId/parent')
@@ -318,7 +318,12 @@ export class AdminIbController {
     @Param('userId', ParseUUIDPipe) userId: string,
     @Body() dto: ReassignIbParentDto,
   ) {
-    return this.applications.reassignParent(userId, dto.parentIbUserId, req.admin.clientScope);
+    return this.applications.reassignParent(
+      userId,
+      dto.parentIbUserId,
+      req.admin.clientScope,
+      req.admin,
+    );
   }
 
   @Patch('partners/:userId/active')
@@ -339,7 +344,7 @@ export class AdminIbController {
     @Param('userId', ParseUUIDPipe) userId: string,
     @Body() dto: SetIbActiveDto,
   ) {
-    return this.applications.setActive(userId, dto.active, req.admin.clientScope);
+    return this.applications.setActive(userId, dto.active, req.admin.clientScope, req.admin);
   }
 }
 

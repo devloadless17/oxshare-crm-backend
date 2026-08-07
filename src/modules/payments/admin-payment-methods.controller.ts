@@ -118,7 +118,7 @@ export class AdminPaymentMethodsController {
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
   @Audited('payment_method.create')
   create(@Req() req: Request & { admin: AuthenticatedAdmin }, @Body() dto: CreatePaymentMethodDto) {
-    return this.methods.create(dto, req.admin.id);
+    return this.methods.create(dto, req.admin);
   }
 
   @Patch(':key')
@@ -139,7 +139,7 @@ export class AdminPaymentMethodsController {
     @Param('key') key: string,
     @Body() dto: UpdatePaymentMethodDto,
   ) {
-    return this.methods.update(key, dto, req.admin.id);
+    return this.methods.update(key, dto, req.admin);
   }
 
   @Delete(':key')
@@ -154,8 +154,8 @@ export class AdminPaymentMethodsController {
   })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
   @Audited('payment_method.delete')
-  remove(@Param('key') key: string) {
-    return this.methods.remove(key);
+  remove(@Req() req: Request & { admin: AuthenticatedAdmin }, @Param('key') key: string) {
+    return this.methods.remove(key, req.admin);
   }
 }
 

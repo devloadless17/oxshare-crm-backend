@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { WalletProvisioningService } from '../src/modules/wallet/wallet-provisioning.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
+import { auditStubAs } from './audit-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -21,7 +22,10 @@ let provisioning: WalletProvisioningService;
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
   wallets = new WalletService(ctx.db);
-  provisioning = new WalletProvisioningService(wallets, new CurrenciesService(ctx.db));
+  provisioning = new WalletProvisioningService(
+    wallets,
+    new CurrenciesService(ctx.db, auditStubAs()),
+  );
 }, 120_000);
 
 afterAll(async () => {

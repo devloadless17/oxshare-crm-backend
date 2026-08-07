@@ -7,6 +7,7 @@ import { CurrenciesService } from '../src/modules/currencies/currencies.service'
 import { MoneyLimits } from '../src/config/money-limits';
 import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
 import { SYSTEM_ACTOR } from '../src/common/security/actor';
+import { auditStubAs } from './audit-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -28,12 +29,12 @@ const ADMIN = '00000000-0000-4000-8000-000000000001';
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
   wallets = new WalletService(ctx.db);
-  const currencies = new CurrenciesService(ctx.db);
+  const currencies = new CurrenciesService(ctx.db, auditStubAs());
   transactions = new TransactionsService(
     wallets,
     ctx.db,
     new MoneyLimits(new ConfigService()),
-    new PaymentMethodsService(ctx.db, currencies),
+    new PaymentMethodsService(ctx.db, currencies, auditStubAs()),
     currencies,
   );
 }, 120_000);

@@ -4,6 +4,8 @@ import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
 import { currencies } from '../../database/schema';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import { AdminAuditService } from '../admin/admin-audit.service';
+import type { Actor } from '../../common/security/actor';
 import type { CreateCurrencyDto, UpdateCurrencyDto } from './dto/currency.dto';
 
 type Db = ReturnType<typeof getDb>;
@@ -30,7 +32,10 @@ type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
  */
 @Injectable()
 export class CurrenciesService {
-  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DRIZZLE_DB) private readonly db: Db,
+    private readonly audit: AdminAuditService,
+  ) {}
 
   /**
    * The single normalisation point.
@@ -121,19 +126,19 @@ export class CurrenciesService {
     return normalised;
   }
 
-  async create(dto: CreateCurrencyDto) {
+  async create(dto: CreateCurrencyDto, actor: Actor) {
     const code = this.normalise(dto.code);
 
     const existing = await this.findOne(code);
     if (existing) throw new ConflictError(`Currency ${code} already exists.`);
 
-    return this.db.transaction(async (tx) => {
+    const row = await this.db.transaction(async (tx) => {
       // Clear the incumbent FIRST. The partial unique index means two rows with
       // is_default = true cannot coexist even momentarily, so "insert then
       // clear" fails at the insert rather than at the clear.
       if (dto.isDefault) await this.clearDefaultWithin(tx);
 
-      const [row] = await tx
+      const [created] = await tx
         .insert(currencies)
         .values({
           code,
@@ -145,11 +150,26 @@ export class CurrenciesService {
           sortOrder: dto.sortOrder ?? 0,
         })
         .returning();
-      return row;
+      return created;
     });
+
+    /*
+     * `record`, not `recordWithin`. No balance moves here — adding a currency
+     * changes what the platform OFFERS, and losing the audit row should not
+     * undo a correct configuration change. The money rule applies to the
+     * transitions that move a balance, not to every write inside a transaction.
+     */
+    this.audit.record(actor.id, 'currency.create', 'currency', row.code, {
+      name: row.name,
+      symbol: row.symbol,
+      decimals: row.decimals,
+      enabled: row.enabled,
+      isDefault: row.isDefault,
+    });
+    return row;
   }
 
-  async update(code: string, dto: UpdateCurrencyDto) {
+  async update(code: string, dto: UpdateCurrencyDto, actor: Actor) {
     const normalised = this.normalise(code);
     const current = await this.findOne(normalised);
     if (!current) throw new NotFoundError(`Unknown currency ${normalised}.`);
@@ -180,10 +200,10 @@ export class CurrenciesService {
       );
     }
 
-    return this.db.transaction(async (tx) => {
+    const row = await this.db.transaction(async (tx) => {
       if (dto.isDefault && !current.isDefault) await this.clearDefaultWithin(tx);
 
-      const [row] = await tx
+      const [updated] = await tx
         .update(currencies)
         .set({
           ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
@@ -196,8 +216,32 @@ export class CurrenciesService {
         })
         .where(eq(currencies.code, normalised))
         .returning();
-      return row;
+      return updated;
     });
+
+    /*
+     * Only the fields that MOVED, with what they were.
+     *
+     * `enabled` and `isDefault` are the two worth attributing: disabling a
+     * currency stops every new wallet and deposit in it, and moving the default
+     * changes what every subsequent registration opens. Both are quiet — no
+     * error, no balance change — and "when did we stop offering EUR" is
+     * unanswerable from a row that only holds the current state.
+     */
+    const changed: Record<string, { before: unknown; after: unknown }> = {};
+    for (const field of [
+      'name',
+      'symbol',
+      'decimals',
+      'enabled',
+      'isDefault',
+      'sortOrder',
+    ] as const) {
+      if (current[field] !== row[field])
+        changed[field] = { before: current[field], after: row[field] };
+    }
+    this.audit.record(actor.id, 'currency.update', 'currency', normalised, { changed });
+    return row;
   }
 
   /**
@@ -216,7 +260,7 @@ export class CurrenciesService {
    * WHEN MONEY RETURNS, this check must return with it. A currency delete that
    * silently succeeds while wallets hold it is how a balance loses its unit.
    */
-  async remove(code: string) {
+  async remove(code: string, actor: Actor) {
     const normalised = this.normalise(code);
     const current = await this.findOne(normalised);
     if (!current) throw new NotFoundError(`Unknown currency ${normalised}.`);
@@ -228,6 +272,14 @@ export class CurrenciesService {
     }
 
     await this.db.delete(currencies).where(eq(currencies.code, normalised));
+
+    // The row as it was, because the DELETE is the last place it existed.
+    this.audit.record(actor.id, 'currency.delete', 'currency', normalised, {
+      name: current.name,
+      symbol: current.symbol,
+      decimals: current.decimals,
+      enabled: current.enabled,
+    });
     return { code: normalised, deleted: true };
   }
 

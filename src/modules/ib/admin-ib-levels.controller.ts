@@ -7,10 +7,16 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { PermissionsGuard, RequirePermissions } from '../admin/guards/admin.guard';
+import { Request } from 'express';
+import {
+  AuthenticatedAdmin,
+  PermissionsGuard,
+  RequirePermissions,
+} from '../admin/guards/admin.guard';
 import { NotClientScoped } from '../admin/guards/client-scope.decorator';
 import { Audited } from '../admin/guards/audited.decorator';
 import { IbLevelsService } from './ib-levels.service';
@@ -75,8 +81,8 @@ export class AdminIbLevelsController {
   @ApiOkResponse({ type: IbLevelDto })
   @NotClientScoped('Platform payout configuration; names no client and returns no client data.')
   @Audited('ib_level.create')
-  create(@Body() dto: CreateIbLevelDto) {
-    return this.levels.create(dto);
+  create(@Req() req: Request & { admin: AuthenticatedAdmin }, @Body() dto: CreateIbLevelDto) {
+    return this.levels.create(dto, req.admin);
   }
 
   @Patch(':level')
@@ -92,8 +98,12 @@ export class AdminIbLevelsController {
   @ApiOkResponse({ type: IbLevelDto })
   @NotClientScoped('Platform payout configuration; names no client and returns no client data.')
   @Audited('ib_level.update')
-  update(@Param('level', ParseIntPipe) level: number, @Body() dto: UpdateIbLevelDto) {
-    return this.levels.update(level, dto);
+  update(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('level', ParseIntPipe) level: number,
+    @Body() dto: UpdateIbLevelDto,
+  ) {
+    return this.levels.update(level, dto, req.admin);
   }
 
   /**
@@ -118,8 +128,8 @@ export class AdminIbLevelsController {
   @ApiOkResponse({ type: IbLevelDto, isArray: true })
   @NotClientScoped('Platform payout configuration; names no client and returns no client data.')
   @Audited('ib_level.reorder')
-  reorder(@Body() dto: ReorderIbLevelsDto) {
-    return this.levels.reorder(dto.order);
+  reorder(@Req() req: Request & { admin: AuthenticatedAdmin }, @Body() dto: ReorderIbLevelsDto) {
+    return this.levels.reorder(dto.order, req.admin);
   }
 
   @Delete(':level')
@@ -134,7 +144,10 @@ export class AdminIbLevelsController {
   })
   @NotClientScoped('Platform payout configuration; names no client and returns no client data.')
   @Audited('ib_level.delete')
-  remove(@Param('level', ParseIntPipe) level: number) {
-    return this.levels.remove(level);
+  remove(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('level', ParseIntPipe) level: number,
+  ) {
+    return this.levels.remove(level, req.admin);
   }
 }

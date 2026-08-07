@@ -17,6 +17,8 @@ import { UsersStore } from '../../store/users.store';
 import { IbLevelsService } from './ib-levels.service';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import { EmailService } from '../email/email.service';
+import { AdminAuditService } from '../admin/admin-audit.service';
+import type { Actor } from '../../common/security/actor';
 import type { ClientScope } from '../../common/security/client-scope';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 
@@ -61,6 +63,7 @@ export class IbApplicationsService {
     private readonly levels: IbLevelsService,
     private readonly visibility: ClientVisibilityService,
     private readonly email: EmailService,
+    private readonly audit: AdminAuditService,
   ) {}
 
   // ── the client's side ──────────────────────────────────────────────────────
@@ -206,13 +209,29 @@ export class IbApplicationsService {
    * has been told they were accepted and has no referral code.
    *
    * The pre-reads above it are advisory, for precise messages only.
+   *
+   * ## The audit row joins the TRANSACTION — `recordWithin`, not `record`
+   *
+   * The only one of the five actions here that does. Approving does not merely
+   * change a status: it CREATES THE PAYABLE RELATIONSHIP — an `ib_accounts` row
+   * with a level, a parent and a referral code, which is what every future
+   * commission is calculated from and attributed through. R-6.5's rule is that
+   * where the money relationship is established the record of who established it
+   * commits with it, so a partner who exists and is being paid with no record of
+   * who let them in is not a state this system can reach.
+   *
+   * The other four (`reject`, `level_change`, `parent_change`, `suspend`) use
+   * fire-and-forget `record`: they change an existing row rather than creating
+   * the relationship, and an audit-write failure should not undo a correct
+   * rejection.
    */
   async approve(
     applicationId: string,
-    reviewerId: string,
+    actor: Actor,
     scope: ClientScope,
     options: { level?: number; parentIbUserId?: string | null } = {},
   ): Promise<IbAccountRow> {
+    const reviewerId = actor.id;
     const application = await this.ib.findById(applicationId);
     if (!application) throw new NotFoundError('Application not found.');
     /*
@@ -255,7 +274,7 @@ export class IbApplicationsService {
         );
       }
 
-      return this.ib.createAccount(
+      const created = await this.ib.createAccount(
         {
           userId: application.userId,
           level,
@@ -265,6 +284,23 @@ export class IbApplicationsService {
         },
         tx,
       );
+
+      /*
+       * Inside the transaction, and awaited. The subject is the CLIENT who
+       * became a partner rather than the application id, because that is what
+       * somebody investigating a disputed payout has in their hand.
+       *
+       * The referral code is deliberately absent: it is an identifier the
+       * partner hands out, it is on the account row already, and the log is
+       * read by more people than the account is.
+       */
+      await this.audit.recordWithin(tx, actor.id, 'ib.approve', 'ib_account', application.userId, {
+        applicationId,
+        level,
+        parentIbUserId,
+      });
+
+      return created;
     });
 
     /*
@@ -313,10 +349,11 @@ export class IbApplicationsService {
    */
   async reject(
     applicationId: string,
-    reviewerId: string,
+    actor: Actor,
     scope: ClientScope,
     input: { reason?: string; note?: string },
   ): Promise<IbApplicationRow> {
+    const reviewerId = actor.id;
     const reason = composeReason(input.reason, input.note);
 
     const application = await this.ib.findById(applicationId);
@@ -339,6 +376,17 @@ export class IbApplicationsService {
         'This application was changed by another reviewer. Reload and try again.',
       );
     }
+
+    /*
+     * The composed REASON is recorded, because that is the sentence the client
+     * was shown, and a complaint about a refusal is a complaint about that
+     * text. The application row holds it too — but a resubmission overwrites
+     * the queue's view of this person, and the log does not.
+     */
+    this.audit.record(actor.id, 'ib.reject', 'ib_application', applicationId, {
+      userId: application.userId,
+      reason,
+    });
 
     // The composed sentence, not the parts — the client reads the same text the
     // portal shows them, so the two can never disagree.
@@ -372,7 +420,12 @@ export class IbApplicationsService {
    * somebody on one is a silent stop to their earnings rather than a demotion
    * they could see.
    */
-  async changeLevel(userId: string, level: number, scope: ClientScope): Promise<IbAccountRow> {
+  async changeLevel(
+    userId: string,
+    level: number,
+    scope: ClientScope,
+    actor: Actor,
+  ): Promise<IbAccountRow> {
     await this.visibility.assertVisible(userId, scope);
 
     const account = await this.ib.findAccount(userId);
@@ -389,6 +442,14 @@ export class IbApplicationsService {
 
     const updated = await this.ib.updateAccount(userId, { level });
     if (!updated) throw new NotFoundError('That partner does not exist.');
+
+    // The OLD level, because the level is what decides the rate — "who moved
+    // this partner to level 2, and what were they on before" is the question
+    // asked when a payout looks wrong, and the current row answers half of it.
+    this.audit.record(actor.id, 'ib.level_change', 'ib_account', userId, {
+      before: account.level,
+      after: updated.level,
+    });
     return updated;
   }
 
@@ -410,6 +471,7 @@ export class IbApplicationsService {
     userId: string,
     parentIbUserId: string | null,
     scope: ClientScope,
+    actor: Actor,
   ): Promise<IbAccountRow> {
     await this.visibility.assertVisible(userId, scope);
 
@@ -428,6 +490,16 @@ export class IbApplicationsService {
 
     const updated = await this.ib.updateAccount(userId, { parentIbUserId });
     if (!updated) throw new NotFoundError('That partner does not exist.');
+
+    /*
+     * A reassignment moves who is paid ABOVE this partner from that point on,
+     * and the old parent is not recoverable from the row afterwards — this is
+     * the only place it survives.
+     */
+    this.audit.record(actor.id, 'ib.parent_change', 'ib_account', userId, {
+      before: account.parentIbUserId,
+      after: updated.parentIbUserId,
+    });
     return updated;
   }
 
@@ -439,11 +511,24 @@ export class IbApplicationsService {
    * instead would orphan everybody beneath them, which is why there is no
    * "remove partner" here at all.
    */
-  async setActive(userId: string, active: boolean, scope: ClientScope): Promise<IbAccountRow> {
+  async setActive(
+    userId: string,
+    active: boolean,
+    scope: ClientScope,
+    actor: Actor,
+  ): Promise<IbAccountRow> {
     await this.visibility.assertVisible(userId, scope);
 
     const updated = await this.ib.updateAccount(userId, { active });
     if (!updated) throw new NotFoundError('That partner does not exist.');
+
+    /*
+     * One action for both directions, matching the `@Audited('ib.suspend')` on
+     * the route — the DTO carries which. `active: false` stops the partner
+     * earning while they keep their tree, so a suspension nobody can attribute
+     * is a partner who stopped being paid for reasons no longer on record.
+     */
+    this.audit.record(actor.id, 'ib.suspend', 'ib_account', userId, { active: updated.active });
     return updated;
   }
 

@@ -5,6 +5,8 @@ import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
 import { ibLevels } from '../../database/schema';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import { AdminAuditService } from '../admin/admin-audit.service';
+import type { Actor } from '../../common/security/actor';
 import type { CreateIbLevelDto, UpdateIbLevelDto } from './dto/ib-level.dto';
 
 type Db = ReturnType<typeof getDb>;
@@ -14,7 +16,10 @@ const MAX_TOTAL_SHARE = new Decimal(100);
 
 @Injectable()
 export class IbLevelsService {
-  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DRIZZLE_DB) private readonly db: Db,
+    private readonly audit: AdminAuditService,
+  ) {}
 
   /** The whole ladder, shallowest first. Level 1 is closest to the broker. */
   listAll() {
@@ -47,7 +52,7 @@ export class IbLevelsService {
     return enabled.length;
   }
 
-  async create(dto: CreateIbLevelDto) {
+  async create(dto: CreateIbLevelDto, actor: Actor) {
     const existing = await this.findOne(dto.level);
     if (existing) throw new ConflictError(`Level ${dto.level} already exists.`);
 
@@ -68,10 +73,24 @@ export class IbLevelsService {
         enabled,
       })
       .returning();
+
+    /*
+     * `rateValue` is logged as the STRING it arrived as — §6.1. This is the
+     * number that decides what every partner on this rung is paid, and passing
+     * it through `Number()` on the way into the log would make the record of a
+     * commission rate differ from the commission rate.
+     */
+    this.audit.record(actor.id, 'ib_level.create', 'ib_level', String(row.level), {
+      name: row.name,
+      payoutModel: row.payoutModel,
+      rateValue: row.rateValue,
+      maxDirectPartners: row.maxDirectPartners,
+      enabled: row.enabled,
+    });
     return row;
   }
 
-  async update(level: number, dto: UpdateIbLevelDto) {
+  async update(level: number, dto: UpdateIbLevelDto, actor: Actor) {
     const current = await this.findOne(level);
     if (!current) throw new NotFoundError(`Level ${level} does not exist.`);
 
@@ -96,6 +115,31 @@ export class IbLevelsService {
       })
       .where(eq(ibLevels.level, level))
       .returning();
+
+    /*
+     * BEFORE and AFTER, for the fields that actually moved.
+     *
+     * "Who lowered level 3 last quarter" is the question this table's log
+     * exists to answer, and the current value answers none of it — by the time
+     * anybody asks, the row has been overwritten. Only changed fields are
+     * recorded, so a reader is not left comparing eight identical pairs to find
+     * the one that moved.
+     *
+     * `rateValue` is a decimal string on both sides (§6.1).
+     */
+    const changed: Record<string, { before: unknown; after: unknown }> = {};
+    for (const field of [
+      'name',
+      'payoutModel',
+      'rateValue',
+      'maxDirectPartners',
+      'enabled',
+    ] as const) {
+      if (current[field] !== row[field]) {
+        changed[field] = { before: current[field], after: row[field] };
+      }
+    }
+    this.audit.record(actor.id, 'ib_level.update', 'ib_level', String(level), { changed });
     return row;
   }
 
@@ -109,7 +153,7 @@ export class IbLevelsService {
    * a delete that succeeds while rows reference it is how a partner loses their
    * position in the ladder silently.
    */
-  async remove(level: number) {
+  async remove(level: number, actor: Actor) {
     const current = await this.findOne(level);
     if (!current) throw new NotFoundError(`Level ${level} does not exist.`);
 
@@ -129,6 +173,19 @@ export class IbLevelsService {
     }
 
     await this.db.delete(ibLevels).where(eq(ibLevels.level, level));
+
+    /*
+     * The whole row, because after the DELETE there is nowhere else to read it
+     * from. A create can be reconstructed from the current table; a delete
+     * cannot be reconstructed from anything.
+     */
+    this.audit.record(actor.id, 'ib_level.delete', 'ib_level', String(level), {
+      name: current.name,
+      payoutModel: current.payoutModel,
+      rateValue: current.rateValue,
+      maxDirectPartners: current.maxDirectPartners,
+      enabled: current.enabled,
+    });
     return { level, deleted: true };
   }
 
@@ -154,7 +211,7 @@ export class IbLevelsService {
    * One transaction, because a half-applied renumber is a ladder whose rungs do
    * not match the partners standing on them.
    */
-  async reorder(order: number[]) {
+  async reorder(order: number[], actor: Actor) {
     const rows = await this.listAll();
 
     if (order.length !== rows.length) {
@@ -171,10 +228,22 @@ export class IbLevelsService {
     }
 
     // Already in this order: nothing to write, and no reason to churn every
-    // partner's FK to produce the state we are in.
+    // partner's FK to produce the state we are in. No audit row either — a log
+    // that records a renumber which did not happen describes events that did
+    // not occur, which is the same defect as not recording one that did.
     if (order.every((level, index) => level === index + 1)) return this.listAll();
 
-    return this.db.transaction(async (tx) => {
+    /*
+     * The ladder BEFORE, captured while it still exists.
+     *
+     * A renumber moves every partner with it (`ib_accounts.level` is ON UPDATE
+     * CASCADE), so "which rung was this partner on in March" is answerable only
+     * from the old numbering. Read here rather than after the transaction,
+     * where it is already gone.
+     */
+    const before = rows.map((r) => ({ level: r.level, name: r.name, rateValue: r.rateValue }));
+
+    const reordered = await this.db.transaction(async (tx) => {
       // Phase 1 — park every level out of the way, keeping its identity in the
       // sign-flipped number so phase 2 can find it. Partner placements follow
       // via ON UPDATE CASCADE; nothing here touches ib_accounts.
@@ -193,6 +262,20 @@ export class IbLevelsService {
 
       return tx.select().from(ibLevels).orderBy(asc(ibLevels.level));
     });
+
+    /*
+     * One row for the whole act, not one per rung. The reorder is a single
+     * decision an operator made on the ladder — see the PATCH-on-the-collection
+     * note above — and n rows would read as n separate edits.
+     *
+     * The subject is the ladder itself rather than any one level, because every
+     * level's number changed.
+     */
+    this.audit.record(actor.id, 'ib_level.reorder', 'ib_level', 'ladder', {
+      before,
+      after: reordered.map((r) => ({ level: r.level, name: r.name, rateValue: r.rateValue })),
+    });
+    return reordered;
   }
 
   /**

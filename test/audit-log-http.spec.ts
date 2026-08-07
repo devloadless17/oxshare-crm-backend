@@ -36,6 +36,46 @@ interface AuditRow {
 
 const rows = (body: unknown) => (body as { items: AuditRow[] }).items;
 
+/**
+ * Wait for a row to appear, because `record()` is FIRE-AND-FORGET.
+ *
+ * ── The cause of this file's intermittent failures ─────────────────────────
+ *
+ * `AdminAuditService.record` deliberately does not await its write: an
+ * audit-write failure must never fail the administrative action it describes.
+ * So the row lands some time AFTER the HTTP response the caller already has,
+ * and a test that asserts on the very next line is racing it. It usually won —
+ * the write is a single INSERT on a warm pool — which is the worst kind of
+ * flake, because it passes locally and fails on a loaded CI box.
+ *
+ * ── Polling rather than a fixed sleep ──────────────────────────────────────
+ *
+ * The same approach `audit-completeness.spec.ts` takes, and the reason is the
+ * same: this returns as soon as the row is there, so the ordinary case costs
+ * one extra request and nothing else, while a genuine non-recorder still fails
+ * — just a second later. A `setTimeout(500)` would instead tax every run for
+ * the worst case and STILL be a race, just a longer one.
+ *
+ * Asserted through the API rather than the table on purpose: this file is about
+ * what the endpoint SERVES (`ipAddress`, `actorKind`), so reading the table
+ * would test the wrong half. Money routes use `recordWithin`, which commits
+ * inside the caller's transaction and needs none of this.
+ */
+async function waitForRow(
+  session: Awaited<ReturnType<typeof actingAs>>,
+  query: string,
+  match: (row: AuditRow) => boolean,
+  timeoutMs = 3000,
+): Promise<AuditRow | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = await session.get(query);
+    const found = res.status === 200 ? rows(res.body).find(match) : undefined;
+    if (found || Date.now() >= deadline) return found;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 beforeAll(async () => {
   ctx = await startHttpTestApp();
   const passwords = new PasswordService();
@@ -76,10 +116,11 @@ describe('the action log serves what it records', () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     await session.patch(`/v1/admin/clients/${clientId}/status`, { status: 'suspended' });
 
-    const res = await session.get('/v1/admin/audit-log?action=client.suspend');
-    expect(res.status).toBe(200);
-
-    const row = rows(res.body).find((r) => r.subjectId === clientId);
+    const row = await waitForRow(
+      session,
+      '/v1/admin/audit-log?action=client.suspend',
+      (r) => r.subjectId === clientId,
+    );
     expect(row, 'the suspension was not recorded at all').toBeDefined();
     // The property the whole file exists for. Supertest connects over loopback,
     // so this is 127.0.0.1 — the value matters less than the field being
@@ -91,18 +132,31 @@ describe('the action log serves what it records', () => {
     // Background work runs as a NAMED `system` actor rather than an implicit
     // bypass (R-4.3). Without this field on the wire, a reviewer cannot tell a
     // scheduled sweep from a person at a keyboard.
+    //
+    // Performs its OWN suspension rather than reading the one the previous test
+    // made: relying on a sibling test's side effect makes this pass or fail
+    // depending on execution order, which is a second race on top of the one
+    // the polling removes.
     const session = await actingAs(ctx, 'admin', MASTER);
-    const res = await session.get('/v1/admin/audit-log?action=client.suspend');
+    await session.patch(`/v1/admin/clients/${clientId}/status`, { status: 'suspended' });
 
-    const row = rows(res.body).find((r) => r.subjectId === clientId);
+    const row = await waitForRow(
+      session,
+      '/v1/admin/audit-log?action=client.suspend',
+      (r) => r.subjectId === clientId,
+    );
     expect(row?.actorKind).toBe('admin');
   });
 
   it('names the administrator who acted', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
-    const res = await session.get('/v1/admin/audit-log?action=client.suspend');
+    await session.patch(`/v1/admin/clients/${clientId}/status`, { status: 'suspended' });
 
-    const row = rows(res.body).find((r) => r.subjectId === clientId);
+    const row = await waitForRow(
+      session,
+      '/v1/admin/audit-log?action=client.suspend',
+      (r) => r.subjectId === clientId,
+    );
     expect(row?.actorEmail).toBe(MASTER.email);
   });
 });
@@ -124,8 +178,11 @@ describe('the actions that previously left no trace', () => {
 
     await session.put(`/v1/admin/rejection-reasons/${id}`, { label: 'Audit HTTP new wording' });
 
-    const res = await session.get('/v1/admin/audit-log?action=rejection_reason.update');
-    const row = rows(res.body).find((r) => r.subjectId === id);
+    const row = await waitForRow(
+      session,
+      '/v1/admin/audit-log?action=rejection_reason.update',
+      (r) => r.subjectId === id,
+    );
 
     expect(row, 'editing what a client is TOLD left no trace').toBeDefined();
     // The old wording, because the current value answers nothing about a
@@ -145,8 +202,11 @@ describe('the actions that previously left no trace', () => {
     });
     expect(set.status).toBe(200);
 
-    const res = await session.get('/v1/admin/audit-log?action=platform_link.set');
-    const row = rows(res.body).find((r) => r.subjectId === 'desktop');
+    const row = await waitForRow(
+      session,
+      '/v1/admin/audit-log?action=platform_link.set',
+      (r) => r.subjectId === 'desktop',
+    );
 
     expect(row).toBeDefined();
     expect(row?.details?.['after']).toBe('https://download.example.com/mt5-audit-http.exe');
@@ -165,10 +225,12 @@ describe('the actions that previously left no trace', () => {
     const reset = await session.post('/v1/admin/kyc-config/reset', {});
     expect(reset.status).toBe(201);
 
-    const res = await session.get('/v1/admin/audit-log?action=kyc_config.reset');
-    expect(rows(res.body).length, 'discarding the KYC configuration left no trace').toBeGreaterThan(
-      0,
+    const row = await waitForRow(
+      session,
+      '/v1/admin/audit-log?action=kyc_config.reset',
+      () => true,
     );
-    expect(rows(res.body)[0]?.actorEmail).toBe(MASTER.email);
+    expect(row, 'discarding the KYC configuration left no trace').toBeDefined();
+    expect(row?.actorEmail).toBe(MASTER.email);
   });
 });

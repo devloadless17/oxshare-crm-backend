@@ -7,6 +7,7 @@ import { PasswordService } from '../src/common/security/password.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { WalletProvisioningService } from '../src/modules/wallet/wallet-provisioning.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
+import { auditStubAs } from './audit-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -49,7 +50,10 @@ beforeAll(async () => {
     ib,
     // Real, because registration opening a wallet is part of what this suite
     // now covers — see the last describe block.
-    new WalletProvisioningService(new WalletService(ctx.db), new CurrenciesService(ctx.db)),
+    new WalletProvisioningService(
+      new WalletService(ctx.db),
+      new CurrenciesService(ctx.db, auditStubAs()),
+    ),
   );
 }, 120_000);
 

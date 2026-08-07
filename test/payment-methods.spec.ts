@@ -7,6 +7,8 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { MoneyLimits } from '../src/config/money-limits';
 import { toDecimal } from '../src/modules/wallet/money';
+import type { Actor } from '../src/common/security/actor';
+import { auditStubAs } from './audit-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -23,13 +25,23 @@ let methods: PaymentMethodsService;
 let transactions: TransactionsService;
 let wallets: WalletService;
 
-const ADMIN = '00000000-0000-4000-8000-000000000001';
+/**
+ * The configuring administrator.
+ *
+ * An `Actor` rather than a bare id — every write here is audited, and the
+ * writer needs who did it. `updated_by` still receives `ADMIN.id`.
+ */
+const ADMIN: Actor = {
+  id: '00000000-0000-4000-8000-000000000001',
+  email: 'payments-admin@oxshare.internal',
+  permissions: ['*'],
+};
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
-  const currencies = new CurrenciesService(ctx.db);
+  const currencies = new CurrenciesService(ctx.db, auditStubAs());
   wallets = new WalletService(ctx.db);
-  methods = new PaymentMethodsService(ctx.db, currencies);
+  methods = new PaymentMethodsService(ctx.db, currencies, auditStubAs());
   transactions = new TransactionsService(
     wallets,
     ctx.db,
@@ -293,7 +305,7 @@ describe('managing methods', () => {
      * would refuse this anyway. The service turns that into a sentence naming
      * what to do instead.
      */
-    await expect(methods.remove('whish')).rejects.toThrow(/disable it instead/i);
+    await expect(methods.remove('whish', ADMIN)).rejects.toThrow(/disable it instead/i);
   });
 
   it('deletes one nothing references', async () => {
@@ -302,7 +314,7 @@ describe('managing methods', () => {
       ADMIN,
     );
 
-    await expect(methods.remove('temp')).resolves.toEqual({ key: 'temp', deleted: true });
+    await expect(methods.remove('temp', ADMIN)).resolves.toEqual({ key: 'temp', deleted: true });
   });
 
   it('keeps bounds as strings — §6.1', async () => {
