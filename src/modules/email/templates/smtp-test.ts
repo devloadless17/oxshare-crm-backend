@@ -28,7 +28,7 @@ export function smtpTest(
         ),
         // Composed rather than passed to `fine()` because the port is a number
         // and the source phrase is chosen, not interpolated user input.
-        `        <p style="font-size: 12px; color: #94a3b8;">Sent via ${esc(host)}:${port} using the ${
+        `        <p style="font-size: 12px; color: #6b7280;">Sent via ${esc(host)}:${port} using the ${
           source === 'database' ? 'saved settings' : 'server environment configuration'
         }.</p>`,
       ].join('\n'),

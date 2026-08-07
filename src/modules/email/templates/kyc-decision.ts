@@ -45,7 +45,7 @@ export function kycDecision(
     // this is the one template whose heading colour carries meaning, so it
     // composes its own <h2> — but the logo, the card and the footer still come
     // from the shared helper, so it cannot drift from the other messages.
-    html: card(`        <h2 style="color: ${approved ? '#22c55e' : '#f87171'}; margin-top: 0;">
+    html: card(`        <h2 style="color: ${approved ? '#047857' : '#b42318'}; margin-top: 0;">
           ${approved ? 'Your identity is verified' : 'Your KYC application needs correction'}
         </h2>
 ${p(`Hello ${firstName || 'Valued Client'},`)}

@@ -25,7 +25,7 @@
  *   3. Say what the recipient should do next. A decision email with no reason
  *      and no action is one the reader cannot act on.
  */
-export { esc, layout, card, button, p, fine, panel, type RenderedEmail } from './layout';
+export { esc, layout, card, button, link, p, fine, panel, type RenderedEmail } from './layout';
 
 export { verifyEmail } from './verify-email';
 export { passwordReset } from './password-reset';

@@ -48,7 +48,7 @@ export function withdrawalDecision(
 
   return {
     subject: paid ? 'Withdrawal Sent — OxShare' : 'Withdrawal Declined — OxShare',
-    html: card(`        <h2 style="color: ${paid ? '#22c55e' : '#f87171'}; margin-top: 0;">
+    html: card(`        <h2 style="color: ${paid ? '#047857' : '#b42318'}; margin-top: 0;">
           ${paid ? 'Your withdrawal has been sent' : 'Your withdrawal was declined'}
         </h2>
 ${p(`Hello ${esc(firstName) || 'Valued Client'},`)}

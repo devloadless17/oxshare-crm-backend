@@ -12,22 +12,45 @@
  * same wrapper, same heading colour, same button — so a change to the brand
  * meant eight edits and a diff nobody could read. One copy now.
  *
- * ## Dark card, deliberately
+ * ## No background, so the reader's theme wins
  *
- * The card is dark (`#0f172a`) with light text, and that is the ONE piece of
- * styling here that ignores the recipient's preference: a mail client's dark
- * mode may invert an email's colours, and a card that is already dark inverts
- * to something legible rather than to black-on-black. The alternative — a white
- * card — is the one that breaks, and it breaks for exactly the people who set
- * dark mode deliberately.
+ * The card sets NO background and NO text colour. It used to force a dark card
+ * (`#0f172a`) with near-white text, on the theory that a dark card survives a
+ * mail client's dark-mode inversion better than a light one. That reasoning
+ * only ever considered dark mode: on the phone of somebody using a LIGHT theme
+ * it planted a heavy dark slab in the middle of an otherwise white inbox, which
+ * is nothing like the product the message came from.
+ *
+ * Inheriting works in both. The client paints its own background and its own
+ * default text colour, so the mail looks native either way and there is no
+ * combination where the card and the client disagree. Everything that DOES
+ * carry a colour below holds its contrast against white and near-black alike.
+ *
+ * The one rule this imposes on templates: never set a background without also
+ * setting a foreground, and never assume the surface behind you is light.
  */
 
-/** Brand colours, in one place rather than repeated per template. */
-const CARD_BG = '#0f172a';
-const TEXT = '#f8fafc';
-const HEADING = '#3b82f6';
-const BUTTON_BG = '#2563eb';
-const MUTED = '#94a3b8';
+/**
+ * The product's own colours — the same tokens the portal and admin use, taken
+ * from their `globals.css`.
+ *
+ * These were generic blues (#3b82f6 / #2563eb) that appear nowhere else in
+ * OxShare, so a verification mail did not look like the site that sent it.
+ *
+ * ── Why two ambers ─────────────────────────────────────────────────────────
+ *
+ * `--ox-amber` (#ffa800) on white is about 1.9:1 — fine as a FILL, unreadable
+ * as text. The frontends already solve this with a second token, and the same
+ * split applies here: bright amber fills the button, deep amber (#b45309,
+ * `--ox-amber-deep`) writes headings and links. Text on an amber fill is
+ * near-black ink (`--ox-ink`), not white, for the same contrast reason.
+ */
+const HEADING = '#b45309'; // --ox-amber-deep: the accent, legible as text
+const LINK = '#b45309'; // same token: a link is accent-coloured text
+const BUTTON_BG = '#ffa800'; // --ox-amber: the accent as a fill
+const BUTTON_TEXT = '#1a0f05'; // --ox-ink: what goes on an amber fill
+const MUTED = '#6b7280'; // readable on white AND on dark
+const BORDER = 'rgba(128,128,128,0.28)'; // neutral in both themes
 
 /**
  * Escape a value before it goes into an email template.
@@ -86,7 +109,7 @@ function masthead(): string {
  * wants clients to have about mails that AREN'T from us.
  */
 function footer(): string {
-  return `        <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid rgba(148,163,184,0.2);">
+  return `        <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid ${BORDER};">
           <p style="font-size: 11px; color: ${MUTED}; margin: 0;">
             This is an automated message from OxShare. Please do not reply to it.
           </p>
@@ -121,7 +144,7 @@ ${bodyHtml}`);
  */
 export function card(innerHtml: string): string {
   return `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; background: ${CARD_BG}; color: ${TEXT}; border-radius: 12px;">
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border-radius: 12px;">
 ${masthead()}
 ${innerHtml}
 ${footer()}
@@ -139,7 +162,7 @@ ${footer()}
 export function button(href: string, label: string): string {
   return `
         <div style="margin: 30px 0;">
-          <a href="${href}" style="background: ${BUTTON_BG}; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">
+          <a href="${href}" style="background: ${BUTTON_BG}; color: ${BUTTON_TEXT}; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">
             ${esc(label)}
           </a>
         </div>`;
@@ -162,5 +185,23 @@ export function fine(text: string): string {
  * into one block. Every current caller runs its values through `esc` first.
  */
 export function panel(innerHtml: string): string {
-  return `        <div style="background: rgba(148,163,184,0.12); border-radius: 8px; padding: 12px 16px; margin: 20px 0;">${innerHtml}</div>`;
+  // A neutral grey wash plus a border, rather than a light fill: it reads as a
+  // panel on a white background and on a dark one, and it deliberately sets no
+  // text colour so the client's own default stays readable inside it.
+  return `        <div style="background: rgba(128,128,128,0.12); border: 1px solid ${BORDER}; border-radius: 8px; padding: 12px 16px; margin: 20px 0;">${innerHtml}</div>`;
+}
+
+/**
+ * An inline text link, in the product's accent.
+ *
+ * Exported so a template never hand-writes an `<a>` and inherits the mail
+ * client's default blue — which is what made the links in these messages look
+ * like nothing else in OxShare. Deep amber, because a link is TEXT: the bright
+ * accent is a fill colour and fails contrast at this size.
+ *
+ * `href` is not escaped, matching `button()`: it is a URL this application
+ * built, and escaping it would break the query string carrying a token.
+ */
+export function link(href: string, label: string): string {
+  return `<a href="${href}" style="color: ${LINK}; font-weight: 600; text-decoration: underline;">${esc(label)}</a>`;
 }

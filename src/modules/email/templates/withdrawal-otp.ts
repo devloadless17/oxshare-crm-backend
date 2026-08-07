@@ -33,13 +33,21 @@ export function withdrawalOtp(amount: string, currency: string, code: string): R
     subject: `Confirm your ${amount} ${currency} withdrawal — OxShare`,
     html: layout(
       'Confirm your withdrawal',
-      `${p(`You asked to withdraw <strong style="color:#f8fafc;">${money}</strong>.`)}
+      /*
+       * NO colour on the amount or the code — they inherit the client's own
+       * text colour, the only value guaranteed to be readable on the client's
+       * own background. Both were `#f8fafc` (near-white), correct while the
+       * card was forced dark and white-on-white the moment it stopped being.
+       * Of everything this product sends, the withdrawal OTP is the message
+       * that must never be unreadable.
+       */
+      `${p(`You asked to withdraw <strong>${money}</strong>.`)}
 ${p('Enter this code to confirm it:')}
-        <div style="margin: 24px 0; font-size: 32px; letter-spacing: 8px; font-weight: bold; color: #f8fafc;">
+        <div style="margin: 24px 0; font-size: 32px; letter-spacing: 8px; font-weight: bold;">
           ${esc(code)}
         </div>
 ${fine('This code expires in 5 minutes and can be used once.')}
-        <p style="font-size: 12px; color: #fca5a5;">
+        <p style="font-size: 12px; color: #b42318;">
           If you did not request this withdrawal, do not enter the code — change your password and
           contact support immediately.
         </p>`,
