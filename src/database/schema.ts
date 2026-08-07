@@ -887,22 +887,465 @@ export const currencies = pgTable(
 );
 
 /*
- * The money and commission tables were HERE, and are gone.
+ * ── The money surface, rebuilt (migration 0033) ──────────────────────────────
  *
- * `wallets`, `ledger_entries`, `transactions`, `transfers`, `trading_accounts`,
- * `deals`, `ib_programs`, `ib_profiles`, `referral_attributions` and
- * `commission_accruals`, all dropped in migration 0028.
+ * `wallets`, `ledger_entries`, `transactions`, `transfers` and
+ * `trading_accounts` were dropped in 0028 and are back here. The commission
+ * tables (`deals`, `ib_programs`, `ib_profiles`, `commission_accruals`) are NOT
+ * — the engine never processed a real deal and returns with the MT5 bridge.
+ * `referral_attributions` is not coming back at all: it became
+ * `users.referred_by_ib_user_id` in 0032, for the reason recorded there.
  *
- * The commission engine never processed a real deal. The money tables DID work,
- * and were removed anyway because the balance and idempotency model is being
- * rebuilt rather than extended. The migration carries the full reasoning and the
- * one guarantee that left with them: `ledger_entries` held the unique constraint
- * that `WalletService.post()` used with ON CONFLICT to make a replayed deposit a
- * no-op. Nothing replaces it yet, and the rebuild must, before any payment
- * provider is connected.
- *
- * `currencies` above SURVIVES: the IB level configuration references it.
+ * THE GUARANTEE THAT LEFT IN 0028 IS RESTORED HERE. `ledger_entries` carries
+ * `ledger_entries_wallet_reference_uq` again — the unique constraint
+ * `WalletService.post()` uses with ON CONFLICT to make a replayed deposit a
+ * no-op rather than a second credit. The teardown note said the rebuild must
+ * reintroduce it before a payment provider is connected; this is that.
  */
+
+/**
+ * What caused a ledger entry.
+ *
+ * `transfer` is its own type rather than reusing deposit/withdrawal: those mean
+ * money crossing the platform BOUNDARY through a provider, and counting an
+ * internal wallet↔account move as either would overstate both total deposits
+ * and total withdrawals in every report that sums by type.
+ */
+export const ledgerEntryTypeEnum = pgEnum('ledger_entry_type', [
+  'deposit',
+  'withdrawal',
+  'commission',
+  'rebate',
+  'payout',
+  'adjustment',
+  'transfer',
+]);
+
+/*
+ * ── transactions (CORE-13 state machine · §5 · §8.3/§8.4) ────────────────────
+ *
+ * §5 names three states (pending|success|failure) — that is the PROVIDER
+ * lifecycle. FR-ADM-03 additionally requires an admin to approve or reject a
+ * withdrawal before any provider is called, so the machine carries two more:
+ *
+ *   pending ──approve──> approved ──settle──> success
+ *      │                    │
+ *      └──reject──> rejected└──provider fails──> failure
+ *
+ * ## Money movement per state — CHANGED from the deleted version
+ *
+ * The old machine HELD funds on request (`on_hold`, no ledger entry) and posted
+ * the debit at settlement. This one DEBITS ON REQUEST and refunds with a
+ * compensating credit if the withdrawal is refused:
+ *
+ *   request  →  post(−amount)                       state=pending
+ *   approve  →  nothing                             state=approved
+ *   settle   →  nothing                             state=success
+ *   reject   →  post(+amount) as an `adjustment`    state=rejected
+ *   fail     →  post(+amount) as an `adjustment`    state=failure
+ *
+ * The balance therefore always reflects committed funds: a client cannot
+ * request two withdrawals totalling more than they hold and discover the second
+ * fails at approval time, after being told it was submitted. The refund is a
+ * COMPENSATING ENTRY (§6.4) — never an UPDATE or DELETE on a ledger row — and
+ * its reference id is suffixed so it cannot collide with the original debit
+ * under the wallet/reference unique index.
+ *
+ * `on_hold` survives on `wallets` because TRANSFERS still use it: the
+ * wallet→account leg holds while the (future) bridge confirms.
+ */
+export const transactionDirectionEnum = pgEnum('transaction_direction', ['deposit', 'withdrawal']);
+export const transactionStateEnum = pgEnum('transaction_state', [
+  'pending',
+  'approved',
+  'success',
+  'failure',
+  'rejected',
+]);
+
+/*
+ * ── transfers · wallet <-> trading account ───────────────────────────────────
+ *
+ * The deleted version of this table was shaped by refusing to paper over the
+ * fact that MT5 owns trading-account balances and the CRM does not. There is
+ * still no bridge, so for now the CRM owns BOTH sides — see the note on
+ * `trading_accounts.balance`, which records that this reverses a deliberate
+ * decision and must be reversed back when the bridge lands.
+ *
+ * The two-leg asymmetry is kept even so, because it is what makes the table
+ * correct the day the bridge arrives:
+ *
+ *   wallet_to_account  the wallet leg is real and immediate — funds are HELD on
+ *                      request and debited on settlement.
+ *   account_to_wallet  nothing is credited on request. Money the CRM has not
+ *                      received is money the CRM must not show.
+ *
+ * ## Why not reuse `transactions`
+ *
+ * A transaction moves money between the client and the OUTSIDE world through a
+ * provider, and carries provider, provider_ref, destination and an admin
+ * approval step to prove it. A transfer is internal, has no provider, needs no
+ * approval, and its counterparty is a trading account. Overloading one table
+ * would mean a `provider` column null for half the rows, an approval state
+ * machine half the rows skip, and `transactions_provider_ref_uq` — the §6.3
+ * idempotency guarantee — becoming nullable-tolerant on a money table.
+ */
+export const transferDirectionEnum = pgEnum('transfer_direction', [
+  'wallet_to_account',
+  'account_to_wallet',
+]);
+
+/**
+ * pending → settled, or pending → failed. No approval state.
+ *
+ * `failed` releases the hold on a wallet_to_account transfer and credits
+ * nothing on an account_to_wallet one — in both cases returning to exactly the
+ * position before the request, which is what makes a failed transfer safe to
+ * retry.
+ */
+export const transferStateEnum = pgEnum('transfer_state', ['pending', 'settled', 'failed']);
+
+export const tradingEnvironmentEnum = pgEnum('trading_environment', ['live', 'demo']);
+
+/** A trading account an operator has suspended stops accepting transfers. */
+export const tradingAccountStatusEnum = pgEnum('trading_account_status', [
+  'active',
+  'suspended',
+  'closed',
+]);
+
+/**
+ * How a payment method behaves, which decides the deposit flow.
+ *
+ * The type rather than the key: a screen that branches on `key === 'whish'` has
+ * to be edited every time an operator adds a method, which is the thing making
+ * these rows data instead of code was meant to avoid.
+ *
+ *   manual   show instructions and a pay-to, take a client-supplied reference,
+ *            and wait for an admin to confirm the money arrived.
+ *   gateway  redirect to a provider and settle on its callback.
+ *   crypto   show an address and confirm on-chain.
+ *
+ * Only `manual` is implemented. Whish is a manual method today because its
+ * sandbox credentials are open decision #5 in ARCHITECTURE.md and nobody has
+ * them; the `PaymentProvider` seam exists so `gateway` slots in behind the same
+ * deposit screen without redesigning it.
+ */
+export const paymentMethodKindEnum = pgEnum('payment_method_kind', ['manual', 'gateway', 'crypto']);
+
+/**
+ * A way a client can put money in.
+ *
+ * Rows, not a hardcoded list. The deleted deposit page carried a two-element
+ * `METHODS` array in the component, so adding one was a deploy and the operator
+ * could not turn one off when a provider went down.
+ *
+ * `instructions` and `pay_to` are NULLABLE and seeded null on purpose. The
+ * deleted deposit page recorded why: "Inventing an IBAN is the same failure as
+ * the fake $0.00 balances, with a worse outcome: the money leaves and does not
+ * arrive." An operator fills in the real account details; until they do, the
+ * method is not offered.
+ */
+export const paymentMethods = pgTable(
+  'payment_methods',
+  {
+    /** A stable machine key — 'whish', 'usdt_trc20'. Never renamed. */
+    key: varchar('key', { length: 40 }).primaryKey(),
+    name: varchar('name', { length: 80 }).notNull(),
+    kind: paymentMethodKindEnum('kind').notNull(),
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
+    /** Sized for a real URL, like `platform_links.url` and for the same reason. */
+    logoUrl: varchar('logo_url', { length: 2048 }),
+    /** What the client must do, in the operator's words. Shown verbatim. */
+    instructions: text('instructions'),
+    /** The Whish number, IBAN or wallet address the client sends to. */
+    payTo: varchar('pay_to', { length: 255 }),
+    /**
+     * Per-method bounds, both nullable.
+     *
+     * NULL means "no bound beyond the platform's own", not zero — a method with
+     * a 0 minimum and a 0 maximum would accept nothing at all, and that is the
+     * value a NOT NULL DEFAULT '0' would have handed every existing row.
+     */
+    minAmount: numeric('min_amount', { precision: 28, scale: 8 }),
+    maxAmount: numeric('max_amount', { precision: 28, scale: 8 }),
+    enabled: boolean('enabled').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(0),
+    updatedBy: uuid('updated_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('payment_methods_enabled_sort_idx').on(t.enabled, t.sortOrder)],
+);
+
+/**
+ * Money the platform holds for a client.
+ *
+ * One per client per currency, opened for every ENABLED currency at
+ * registration. `available = balance − on_hold` is what a client may actually
+ * move; `wallets_hold_within_balance` makes a hold exceeding the balance a
+ * constraint violation rather than a state the arithmetic has to survive.
+ */
+export const wallets = pgTable(
+  'wallets',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /*
+     * RESTRICT, not CASCADE: deleting a currency that holds balances would take
+     * the balances with it. The operator disables instead — see `currencies`.
+     */
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
+    /** §6.1: NUMERIC(28,8), never a float, and a string at every boundary. */
+    balance: numeric('balance', { precision: 28, scale: 8 }).notNull().default('0'),
+    /**
+     * Reserved against a pending transfer. NOT a balance change, so it writes
+     * no ledger entry — the debit posts when the movement settles.
+     */
+    onHold: numeric('on_hold', { precision: 28, scale: 8 }).notNull().default('0'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /*
+     * One wallet per user per currency, in the DATABASE.
+     *
+     * "Open a wallet if they have none" is a read-then-insert, and two
+     * concurrent registrations — or one retried request — otherwise leave a
+     * client with two USD wallets and a balance split across them, which reads
+     * on screen as money going missing. The insert expects this conflict and
+     * treats it as success.
+     */
+    uniqueIndex('wallets_user_currency_uq').on(t.userId, t.currency),
+    index('wallets_user_idx').on(t.userId),
+    check('wallets_balance_non_negative', sql`${t.balance} >= 0`),
+    check('wallets_on_hold_non_negative', sql`${t.onHold} >= 0`),
+    /*
+     * A hold may not exceed the balance it is held against.
+     *
+     * The deleted `releaseWithin` clamped `on_hold` at zero in application code
+     * with a comment saying never let it go negative. This says the same thing
+     * to the database, and adds the other half: `available = balance − on_hold`
+     * is the number every money decision reads, and a hold larger than the
+     * balance makes it negative — a state from which every subsequent
+     * calculation is wrong in a way no single query looks wrong.
+     */
+    check('wallets_hold_within_balance', sql`${t.onHold} <= ${t.balance}`),
+  ],
+);
+
+/**
+ * Every movement, append-only.
+ *
+ * §6.4: corrections are compensating entries. No UPDATE, no DELETE — migration
+ * 0033 revokes those grants from the application role rather than leaving the
+ * rule as a comment, which is what ARCHITECTURE asks for in as many words
+ * ("Enforce it — revoke those grants").
+ */
+export const ledgerEntries = pgTable(
+  'ledger_entries',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    walletId: uuid('wallet_id')
+      .notNull()
+      .references(() => wallets.id, { onDelete: 'restrict' }),
+    /** Signed: credits positive, debits negative. Sum per wallet == balance. */
+    amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
+    /** The running balance AFTER this entry (FSD requirement, §6.2). */
+    balanceAfter: numeric('balance_after', { precision: 28, scale: 8 }).notNull(),
+    entryType: ledgerEntryTypeEnum('entry_type').notNull(),
+    /** What caused this row — every movement traces back to its cause. */
+    referenceType: varchar('reference_type', { length: 50 }).notNull(),
+    referenceId: varchar('reference_id', { length: 255 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('ledger_entries_wallet_idx').on(t.walletId),
+    index('ledger_entries_created_at_idx').on(t.createdAt),
+    /*
+     * ⚠️ THE IDEMPOTENCY GUARANTEE. Losing this is how a replayed deposit or a
+     * retried provider webhook credits a client twice — the exact consequence
+     * migration 0028 recorded when it dropped this table, and the reason the
+     * teardown note demanded it come back before any provider is connected.
+     *
+     * `WalletService.post()` inserts with ON CONFLICT on these three columns and
+     * returns the ORIGINAL entry when it fires, leaving the balance untouched.
+     * A service-level "have I seen this reference?" is not a substitute: that is
+     * a check-then-insert, and every check-then-insert loses under concurrency
+     * (§6.3).
+     */
+    uniqueIndex('ledger_entries_wallet_reference_uq').on(
+      t.walletId,
+      t.referenceType,
+      t.referenceId,
+    ),
+  ],
+);
+
+/** A trading account. See the balance column for what the CRM owns and why. */
+export const tradingAccounts = pgTable(
+  'trading_accounts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * The MT5 login, once there is an MT5 to issue one.
+     *
+     * NULLABLE and renamed from `mt5_login`: there is no bridge, so a CRM-side
+     * account has no login until one is assigned. Unique WHERE NOT NULL, so two
+     * unassigned accounts do not collide on it.
+     *
+     * A string, not a number — leading zeros are significant to the bridge.
+     */
+    login: varchar('login', { length: 50 }),
+    mt5Group: varchar('mt5_group', { length: 100 }),
+    environment: tradingEnvironmentEnum('environment').notNull().default('live'),
+    /**
+     * The account's own currency, which need not be the wallet's.
+     *
+     * A transfer between a USD wallet and a USD account is a move; between
+     * different currencies it is a conversion, and there is no FX rate source
+     * here. `TransfersService` refuses a mismatch rather than inventing a rate.
+     */
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
+    /**
+     * ⚠️ THIS COLUMN REVERSES A DELIBERATE DECISION, and must be reversed back.
+     *
+     * The deleted `trading_accounts` had NO balance, and its DTO said why: "No
+     * balance, equity, margin or open positions. Those live in MT5, not in this
+     * database … a fabricated figure beside a real MT5 login is the most
+     * expensive kind of wrong number on a trading product."
+     *
+     * That was right, and it depended on MT5 existing. It does not — there is
+     * no bridge service (ARCHITECTURE open decision #1), so nothing else can
+     * hold this number and a transfer would have nowhere to land. The CRM owns
+     * it in the meantime.
+     *
+     * WHEN THE BRIDGE LANDS: this becomes a mirror of MT5's balance, written
+     * only by the sync, or it is removed and the terminal is the only source.
+     * What it must NOT do is stay a CRM-owned number that MT5 also has an
+     * opinion about — two numbers for one balance is the state the original
+     * design existed to prevent.
+     */
+    balance: numeric('balance', { precision: 28, scale: 8 }).notNull().default('0'),
+    tier: varchar('tier', { length: 50 }),
+    leverage: integer('leverage'),
+    status: tradingAccountStatusEnum('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('trading_accounts_user_idx').on(t.userId),
+    uniqueIndex('trading_accounts_login_uq')
+      .on(t.login)
+      .where(sql`${t.login} IS NOT NULL`),
+    check('trading_accounts_balance_non_negative', sql`${t.balance} >= 0`),
+  ],
+);
+
+export const transactions = pgTable(
+  'transactions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    walletId: uuid('wallet_id')
+      .notNull()
+      .references(() => wallets.id, { onDelete: 'restrict' }),
+    direction: transactionDirectionEnum('direction').notNull(),
+    amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
+    state: transactionStateEnum('state').notNull().default('pending'),
+    /** The `payment_methods.key` this went through, for a deposit. */
+    methodKey: varchar('method_key', { length: 40 }).references(() => paymentMethods.key, {
+      onDelete: 'restrict',
+    }),
+    provider: varchar('provider', { length: 50 }).notNull(),
+    /**
+     * The provider's own reference — or, for a manual method, the one the
+     * client transcribed from their transfer.
+     *
+     * §6.3: `UNIQUE(provider, provider_ref)` is the idempotency guarantee for
+     * replayed payment callbacks.
+     */
+    providerRef: varchar('provider_ref', { length: 255 }),
+    /** Withdrawal destination (bank/wallet address) as the client supplied it. */
+    destination: varchar('destination', { length: 255 }),
+    /**
+     * Set when the client asked to fund a TRADING ACCOUNT rather than the wallet.
+     *
+     * The money still lands in the wallet first — the wallet is the CRM's ledger
+     * and every balance the platform owns passes through it, so a deposit that
+     * skipped it would be money with no ledger row. This records the client's
+     * INTENT, and on confirmation the deposit chains a `transfers` row to move
+     * it on. One ledger, one truth, and the two-step is visible in the data
+     * rather than hidden behind a single ambiguous "deposit".
+     *
+     * A REAL foreign key this time; the deleted column was a bare uuid.
+     */
+    destinationTradingAccountId: uuid('destination_trading_account_id').references(
+      () => tradingAccounts.id,
+      { onDelete: 'restrict' },
+    ),
+    rejectionReason: text('rejection_reason'),
+    /** The admin who decided. No FK — same reasoning as `audit_log.actor_id`. */
+    reviewedBy: uuid('reviewed_by'),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('transactions_user_idx').on(t.userId),
+    index('transactions_state_idx').on(t.state),
+    index('transactions_created_at_idx').on(t.createdAt),
+    uniqueIndex('transactions_provider_ref_uq').on(t.provider, t.providerRef),
+  ],
+);
+
+export const transfers = pgTable(
+  'transfers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    walletId: uuid('wallet_id')
+      .notNull()
+      .references(() => wallets.id, { onDelete: 'restrict' }),
+    tradingAccountId: uuid('trading_account_id')
+      .notNull()
+      .references(() => tradingAccounts.id, { onDelete: 'restrict' }),
+    direction: transferDirectionEnum('direction').notNull(),
+    amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
+    state: transferStateEnum('state').notNull().default('pending'),
+    /** Why it was refused. Null unless `state = 'failed'`. */
+    failureReason: text('failure_reason'),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('transfers_user_idx').on(t.userId),
+    index('transfers_state_idx').on(t.state),
+    index('transfers_created_at_idx').on(t.createdAt),
+    index('transfers_trading_account_idx').on(t.tradingAccountId),
+  ],
+);
 
 // ── Audit log — APPEND ONLY (D-21). No UPDATE, no DELETE, ever. ──────────────
 /** Who — or what — performed an audited action. See `audit_log.actor_kind`. */
@@ -1359,76 +1802,5 @@ export const ibAccounts = pgTable(
        on every approval to enforce `ibLevels.maxDirectPartners`. */
     index('ib_accounts_parent_idx').on(t.parentIbUserId),
     index('ib_accounts_level_idx').on(t.level),
-  ],
-);
-
-/*
- * ── wallets ──────────────────────────────────────────────────────────────────
- *
- * Rebuilt after the money teardown, deliberately smaller than what it replaced.
- *
- * This is a BALANCE HOLDER and nothing else. The old table came with
- * `ledger_entries`, `transactions` and `transfers`, and it was that cluster —
- * not the wallet — that the teardown removed. It is back on its own because the
- * partner programme needs somewhere for a commission to land and registration
- * needs a wallet to open, and because the portal was showing a hardcoded $0.00
- * to clients while a real balance existed.
- *
- * ⚠️ WHAT THIS DOES NOT YET HAVE. The dropped `ledger_entries` carried
- * `ON CONFLICT (wallet, reference_type, reference_id)`, which was the only
- * database-level guard against a replayed deposit crediting a client twice.
- * That guarantee left with it and has NOT been reintroduced here. Nothing
- * writes to `balance` yet, so nothing is currently at risk — but the first code
- * that credits this column must bring the ledger and its idempotency key back
- * with it, per §6.2 and §6.3. A service-level "have I seen this reference?"
- * check is not a substitute; that is what the constraint was protecting against.
- *
- * §6.1: NUMERIC(28,8), never a float, and it leaves this process as a string.
- */
-export const wallets = pgTable(
-  'wallets',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
-    /**
-     * The currency, by code. A real FK, so a wallet cannot be opened in a
-     * currency the platform does not have — `currencies` is operator-editable
-     * and a free-text code here would drift from it silently.
-     */
-    currency: varchar('currency', { length: 10 })
-      .notNull()
-      .references(() => currencies.code, { onDelete: 'restrict' }),
-    /**
-     * 28,8 per §6.1. The precision is not negotiable and not "generous": eight
-     * decimal places is what a crypto balance needs, and a column that cannot
-     * hold one has to be migrated under a live balance later.
-     */
-    balance: numeric('balance', { precision: 28, scale: 8 }).notNull().default('0'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    /*
-     * One wallet per user per currency.
-     *
-     * In the database, because "open a wallet if they have none" is a
-     * read-then-insert and two concurrent registrations of the same account —
-     * or a retried request — otherwise leave a client with two USD wallets and
-     * a balance split across them. The insert is written to expect this and
-     * treat the conflict as success.
-     */
-    uniqueIndex('wallets_user_currency_uq').on(t.userId, t.currency),
-    index('wallets_user_idx').on(t.userId),
-    /*
-     * A balance may not go negative.
-     *
-     * A CHECK rather than a service guard: this one IS expressible per-row, it
-     * costs nothing, and it is the last line between a bug in a debit path and
-     * a client owing the broker money silently. Credit lines are not a feature
-     * here; if they ever are, this constraint is where that decision surfaces.
-     */
-    check('wallets_balance_non_negative', sql`${t.balance} >= 0`),
   ],
 );

@@ -66,6 +66,24 @@ async function makePartner(email: string, code: string, active = true): Promise<
   return userId;
 }
 
+/**
+ * Register, and hand back the new client's id.
+ *
+ * `register()` answers a union — it returns `{ message }` with no id when the
+ * address is already taken, which is the membership-oracle defence its own
+ * docblock describes. Every case here uses a fresh address, so an absent id
+ * means the test set up something it did not intend; failing loudly here beats
+ * a non-null assertion that would turn that into a confusing `undefined`
+ * comparison further down.
+ */
+async function registerClient(email: string, referralCode?: string): Promise<string> {
+  const result = await auth.register(registration(email, referralCode));
+  if (!('userId' in result)) {
+    throw new Error(`Expected a new account for ${email}, got the already-registered answer.`);
+  }
+  return result.userId;
+}
+
 function registration(email: string, referralCode?: string) {
   return {
     firstName: 'New',
@@ -94,9 +112,9 @@ describe('a code that resolves', () => {
   it('attributes the client to the partner who owns it', async () => {
     const partnerId = await makePartner('owner@test.local', 'ABCD2345');
 
-    const result = await auth.register(registration('referred@test.local', 'ABCD2345'));
+    const clientId = await registerClient('referred@test.local', 'ABCD2345');
 
-    const client = await users.findById(result.userId as string);
+    const client = await users.findById(clientId);
     expect(client?.referredByIbUserId).toBe(partnerId);
   });
 
@@ -104,18 +122,18 @@ describe('a code that resolves', () => {
     const partnerId = await makePartner('case@test.local', 'ABCD2345');
 
     // Codes are issued upper-case, but this one arrives off a screenshot.
-    const result = await auth.register(registration('lower@test.local', 'abcd2345'));
+    const clientId = await registerClient('lower@test.local', 'abcd2345');
 
-    const client = await users.findById(result.userId as string);
+    const client = await users.findById(clientId);
     expect(client?.referredByIbUserId).toBe(partnerId);
   });
 
   it('accepts a code with surrounding whitespace', async () => {
     const partnerId = await makePartner('space@test.local', 'ABCD2345');
 
-    const result = await auth.register(registration('padded@test.local', '  ABCD2345 '));
+    const clientId = await registerClient('padded@test.local', '  ABCD2345 ');
 
-    const client = await users.findById(result.userId as string);
+    const client = await users.findById(clientId);
     expect(client?.referredByIbUserId).toBe(partnerId);
   });
 
@@ -128,37 +146,33 @@ describe('a code that resolves', () => {
      * them stay put. A reactivated partner must not find the clients they
      * introduced while suspended were quietly attributed to nobody.
      */
-    const result = await auth.register(registration('during@test.local', 'SUSP2345'));
+    const clientId = await registerClient('during@test.local', 'SUSP2345');
 
-    const client = await users.findById(result.userId as string);
+    const client = await users.findById(clientId);
     expect(client?.referredByIbUserId).toBe(partnerId);
   });
 });
 
 describe('a code that does not resolve', () => {
   it('registers the client anyway, unattributed', async () => {
-    const result = await auth.register(registration('unknown@test.local', 'NOSUCH99'));
-
     // The signup is the thing we cannot get back. The attribution is not.
-    expect(result.userId).toBeTruthy();
-    const client = await users.findById(result.userId as string);
+    const clientId = await registerClient('unknown@test.local', 'NOSUCH99');
+
+    const client = await users.findById(clientId);
     expect(client?.referredByIbUserId).toBeUndefined();
     expect(sendVerificationEmail).toHaveBeenCalledTimes(1);
   });
 
   it('registers when the code is empty or blank', async () => {
-    const blank = await auth.register(registration('blank@test.local', '   '));
-    expect(blank.userId).toBeTruthy();
-
-    const empty = await auth.register(registration('empty@test.local', ''));
-    expect(empty.userId).toBeTruthy();
+    await expect(registerClient('blank@test.local', '   ')).resolves.toBeTruthy();
+    await expect(registerClient('empty@test.local', '')).resolves.toBeTruthy();
   });
 
   it('registers with no code at all', async () => {
-    const result = await auth.register(registration('direct@test.local'));
+    const clientId = await registerClient('direct@test.local');
 
     // The common case: a client who found the platform on their own.
-    const client = await users.findById(result.userId as string);
+    const client = await users.findById(clientId);
     expect(client?.referredByIbUserId).toBeUndefined();
   });
 });
@@ -166,15 +180,15 @@ describe('a code that does not resolve', () => {
 describe('the attribution, once written', () => {
   it('survives being read back through the store', async () => {
     const partnerId = await makePartner('read@test.local', 'READ2345');
-    const result = await auth.register(registration('client@test.local', 'READ2345'));
+    const clientId = await registerClient('client@test.local', 'READ2345');
 
-    const client = await users.findById(result.userId as string);
+    const client = await users.findById(clientId);
     expect(client?.referredByIbUserId).toBe(partnerId);
   });
 
   it('refuses to let the partner be deleted out from under it', async () => {
     const partnerId = await makePartner('protected@test.local', 'PROT2345');
-    await auth.register(registration('beneath@test.local', 'PROT2345'));
+    await registerClient('beneath@test.local', 'PROT2345');
 
     // RESTRICT, like every other reference to a person in this schema.
     await expect(
