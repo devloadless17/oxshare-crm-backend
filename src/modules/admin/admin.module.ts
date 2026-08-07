@@ -7,10 +7,6 @@ import { AdminTagsController } from './admin-tags.controller';
 import { AdminClientsController } from './admin-clients.controller';
 import { AdminComplianceController } from './admin-compliance.controller';
 import { AdminRbacController } from './admin-rbac.controller';
-import { APP_GUARD } from '@nestjs/core';
-import { AdminIpAllowlistController } from './admin-ip-allowlist.controller';
-import { AdminIpAllowlistService } from './admin-ip-allowlist.service';
-import { IpAllowlistGuard } from './guards/ip-allowlist.guard';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminTagsService } from './admin-tags.service';
 import { AdminClientsService } from './admin-clients.service';
@@ -35,7 +31,6 @@ import { ComplianceModule } from '../compliance/compliance.module';
  */
 
 const ADMIN_SERVICES = [
-  AdminIpAllowlistService,
   AdminAuthService,
   AdminRbacService,
   AdminComplianceService,
@@ -54,7 +49,7 @@ const ADMIN_SERVICES = [
    * module, so the back-office graph stays out of the portal's routes.
    */
   imports: [ComplianceModule, AdminAuthModule, PaymentsModule, WalletModule],
-  // Eight controllers share the 'admin' prefix, one per concern, mirroring the
+  // Seven controllers share the 'admin' prefix, one per concern, mirroring the
   // services. Express registers all of their routes; there are no path
   // collisions. Order is irrelevant — no two routes overlap.
   controllers: [
@@ -65,16 +60,19 @@ const ADMIN_SERVICES = [
     AdminRbacController,
     AdminAuditController,
     AdminSecuritySettingsController,
-    AdminIpAllowlistController,
     AdminMoneyController,
   ],
-  providers: [
-    ...ADMIN_SERVICES,
-    // RBAC-08, global rather than per-route for the same reason CsrfGuard is: a
-    // route that forgets to opt IN is indistinguishable from one that never
-    // needed it. The guard itself is a no-op until the allowlist has a row.
-    { provide: APP_GUARD, useClass: IpAllowlistGuard },
-  ],
+  /*
+   * The RBAC-08 `IpAllowlistGuard` was registered HERE as an APP_GUARD and is
+   * gone with the feature. It restricted the whole admin surface to configured
+   * CIDR ranges and was a no-op until somebody added a rule.
+   *
+   * What replaced it is nothing: admin routes are gated on authentication and
+   * permissions only. If a network restriction is wanted again, it belongs at
+   * the edge — a load balancer or WAF rule — rather than as an application
+   * guard reading a table, which is where it was.
+   */
+  providers: [...ADMIN_SERVICES],
   // Re-exported so importers keep reaching the audit writer through this
   // module, as they did when it was provided here.
   exports: [...ADMIN_SERVICES, AdminAuthModule],

@@ -46,7 +46,6 @@ function makeController(options: {
    * RBAC-08 rules in force. Default `[]` — the allowlist is off, which is the
    * state every other case in this file assumes.
    */
-  ipAllowlist?: string[];
   /** RBAC-03 territory. Default unrestricted — see `scopes` below. */
   clientScope?: ClientScope;
   /** Who the document belongs to. `null` models a filename nobody owns. */
@@ -114,7 +113,6 @@ function makeController(options: {
     },
   };
 
-  const ipAllowlist = { listCidrs: () => Promise.resolve(options.ipAllowlist ?? []) };
   // Unrestricted unless a case says otherwise: these specs are about the audit
   // record and the permission split, not about territory.
   const scopes = {
@@ -130,7 +128,6 @@ function makeController(options: {
     users as never,
     auditLog as never,
     new StoredFilesService(),
-    ipAllowlist as never,
     scopes as never,
   );
 
@@ -342,113 +339,21 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
     expect(recorded).toHaveLength(0);
   });
 
-  /**
-   * RBAC-08 reaches this route, which is the one admin read it did not cover.
+  /*
+   * The RBAC-08 describe block was HERE — five tests covering the network
+   * restriction on admin document reads.
    *
-   * `IpAllowlistGuard` matches the `/admin` path prefix, and this handler lives
-   * at `/uploads/kyc/:file`. So the most sensitive data in the system — a
-   * client's passport, national ID and proof of address — was readable from any
-   * network on earth with a valid admin session, while the Network Access
-   * screen reported the protection as enforcing.
+   * They went with the IP allowlist itself. What they asserted is worth
+   * recording, because it is exactly what no longer holds: an admin outside the
+   * configured CIDRs was refused and nothing was audited; a caller whose
+   * address could not be determined was refused too, failing closed; and a
+   * CLIENT reading their own document was never restricted, which is why the
+   * check lived in the handler rather than in a guard.
+   *
+   * An admin reading a client's passport is still gated on a valid session and
+   * on `kyc.documents.view`, and the read is still audited. It is no longer
+   * restricted by network.
    */
-  describe('RBAC-08 covers admin document reads', () => {
-    it('refuses an admin on a network outside the allowlist, and records nothing', async () => {
-      const { controller, recorded } = makeController({
-        adminPermissions: ['kyc.review'],
-        ipAllowlist: ['203.0.113.0/24'],
-      });
-      const res = fakeResponse();
-
-      await expect(
-        controller.serveKycFile(
-          FILE,
-          requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }, '8.8.8.8'),
-          res as never,
-        ),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-
-      // Nothing served, and no audit row: a read that did not happen must not
-      // leave a trace claiming it did.
-      expect(res.sent).toHaveLength(0);
-      expect(recorded).toHaveLength(0);
-    });
-
-    it('refuses an admin whose address cannot be determined', async () => {
-      // Fails closed. Once someone has said "only these addresses", admitting a
-      // caller we cannot identify defeats the point.
-      const { controller, recorded } = makeController({
-        adminPermissions: ['kyc.review'],
-        ipAllowlist: ['203.0.113.0/24'],
-      });
-      const res = fakeResponse();
-
-      await expect(
-        controller.serveKycFile(
-          FILE,
-          requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }),
-          res as never,
-        ),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-
-      expect(recorded).toHaveLength(0);
-    });
-
-    it('serves an admin INSIDE the allowlist, and still audits the read', async () => {
-      const { controller, recorded } = makeController({
-        adminPermissions: ['kyc.review'],
-        ipAllowlist: ['203.0.113.0/24'],
-      });
-      const res = fakeResponse();
-
-      await controller.serveKycFile(
-        FILE,
-        requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }, '203.0.113.9'),
-        res as never,
-      );
-
-      expect(res.sent).toHaveLength(1);
-      expect(recorded).toHaveLength(1);
-    });
-
-    it('does NOT restrict a CLIENT reading their own document', async () => {
-      /*
-       * The reason this check lives in the handler rather than in the guard.
-       *
-       * This route serves both surfaces. An allowlist covering the whole route
-       * would mean customers could only reach their own uploaded documents from
-       * the broker's office network — a support incident manufactured by a
-       * control that was never aimed at them.
-       */
-      const { controller, recorded } = makeController({
-        clientOwnsFile: true,
-        ipAllowlist: ['203.0.113.0/24'],
-      });
-      const res = fakeResponse();
-
-      await controller.serveKycFile(
-        FILE,
-        requestWith({ oxshare_crm_portal_at: CLIENT_TOKEN }, '8.8.8.8'),
-        res as never,
-      );
-
-      expect(res.sent).toHaveLength(1);
-      expect(recorded[0]).toMatchObject({ actorKind: 'client' });
-    });
-
-    it('is off while the list is empty, like every other RBAC-08 surface', async () => {
-      // D-10: the deploy that creates the table must not lock everyone out.
-      const { controller } = makeController({ adminPermissions: ['kyc.review'], ipAllowlist: [] });
-      const res = fakeResponse();
-
-      await controller.serveKycFile(
-        FILE,
-        requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }, '8.8.8.8'),
-        res as never,
-      );
-
-      expect(res.sent).toHaveLength(1);
-    });
-  });
 
   /**
    * RBAC-03 reaches the route whose only parameter is a FILENAME.

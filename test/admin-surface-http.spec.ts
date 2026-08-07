@@ -1,8 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
-import { sql } from 'drizzle-orm';
 import { startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
-import { adminIpAllowlist } from '../src/database/schema';
 
 /**
  * The ADMIN SURFACE as assembled — who reaches it, and by which spellings.
@@ -67,76 +65,17 @@ describe('admin surface (HTTP)', () => {
       expect(res.status).toBe(200);
     });
   });
-
-  /**
-   * The guard half. These run against a real allowlist row, so they prove
-   * registration, ordering and live reads at once.
+  /*
+   * An `IpAllowlistGuard` describe block was HERE and went with RBAC-08.
    *
-   * Every request here originates from 127.0.0.1 (supertest talks to the
-   * in-process server), so a rule covering only 203.0.113.0/24 denies the
-   * suite itself — which is exactly the condition worth asserting.
+   * It proved the guard was registered, ran BEFORE authentication — an
+   * off-list caller could not even attempt credential stuffing at the login
+   * route — did not leak onto the client portal, and read the list live rather
+   * than caching it, so a rule removed on one instance stopped denying on
+   * another.
+   *
+   * None of that holds now: admin routes are gated on authentication and
+   * permissions only. A network restriction, if wanted again, belongs at the
+   * edge rather than in an application guard.
    */
-  describe('IpAllowlistGuard is registered and runs before authentication', () => {
-    const OFF_LIST = '203.0.113.0/24';
-
-    async function withRule<T>(run: () => Promise<T>): Promise<T> {
-      await ctx.db.db.insert(adminIpAllowlist).values({
-        cidr: OFF_LIST,
-        label: 'admin-surface-http.spec fixture',
-        createdBy: '00000000-0000-0000-0000-000000000000',
-      });
-      try {
-        return await run();
-      } finally {
-        // Torn down inside the spec rather than in afterAll: a rule left behind
-        // denies every later admin request in this database, and the failures it
-        // causes look like anything but "a test forgot to clean up".
-        await ctx.db.db.execute(sql`DELETE FROM admin_ip_allowlist WHERE cidr = ${OFF_LIST}`);
-      }
-    }
-
-    it('refuses an off-list caller on an admin route', async () => {
-      await withRule(async () => {
-        const res = await request(ctx.server).get('/v1/admin/clients');
-        expect(res.status).toBe(403);
-      });
-    });
-
-    it('refuses an off-list caller at LOGIN, before any credential is checked', async () => {
-      // The strongest property of this guard: an attacker off-list cannot even
-      // attempt credential stuffing. A 401 here would mean the allowlist runs
-      // after authentication and the login endpoint is exposed regardless.
-      await withRule(async () => {
-        const res = await request(ctx.server)
-          .post('/v1/admin/auth/login')
-          .set('Origin', 'http://localhost:3002')
-          .send({ email: 'admin@oxshare.com', password: 'admin123' });
-        expect(res.status).toBe(403);
-      });
-    });
-
-    it('leaves the client portal reachable while the admin surface is denied', async () => {
-      // The portal is public by nature. An allowlist that leaks onto it locks
-      // out the customers the system exists to serve.
-      await withRule(async () => {
-        const res = await request(ctx.server)
-          .post('/v1/auth/login')
-          .set('Origin', 'http://localhost:3000')
-          .send({ email: 'nobody@example.com', password: 'wrong-password' });
-        expect(res.status).not.toBe(403);
-      });
-    });
-
-    it('takes effect and stops taking effect immediately — the list is not cached', async () => {
-      // Multi-instance correctness: a rule removed on one process must not keep
-      // denying on another. The guard reads live, and this is what pins that.
-      await withRule(async () => {
-        const denied = await request(ctx.server).get('/v1/admin/clients');
-        expect(denied.status).toBe(403);
-      });
-
-      const afterRemoval = await request(ctx.server).get('/v1/admin/clients');
-      expect(afterRemoval.status).toBe(401);
-    });
-  });
 });

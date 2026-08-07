@@ -794,23 +794,17 @@ export const loginAttempts = pgTable(
   ],
 );
 
-export const adminIpAllowlist = pgTable(
-  'admin_ip_allowlist',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    /** Canonical CIDR — a bare address is stored as `/32`. */
-    cidr: varchar('cidr', { length: 43 }).notNull(),
-    /** Why this rule exists. A list of bare ranges becomes unmaintainable fast. */
-    label: varchar('label', { length: 200 }).notNull(),
-    createdBy: uuid('created_by').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    // Canonicalised before insert, so `10.0.0.5/24` and `10.0.0.0/24` cannot both
-    // exist and leave someone believing they removed a rule still in force.
-    uniqueIndex('admin_ip_allowlist_cidr_uq').on(t.cidr),
-  ],
-);
+/*
+ * `admin_ip_allowlist` was HERE, and is dropped in migration 0034.
+ *
+ * RBAC-08: a table of CIDR rules that `IpAllowlistGuard` enforced across the
+ * whole admin surface, plus an independent check on `/uploads/kyc/:file`
+ * because that route sits outside `/admin`. Removed on request, whole.
+ *
+ * Admin routes are gated on authentication and permissions only now. A network
+ * restriction, if wanted again, belongs at the edge — a load balancer or WAF
+ * rule — rather than as an application guard reading a table.
+ */
 
 // ═══ MONEY (ARCHITECTURE §6 — non-negotiable) ════════════════════════════════
 //

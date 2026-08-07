@@ -1,0 +1,21 @@
+-- Remove RBAC-08, the admin IP allowlist.
+--
+-- The table held CIDR rules that `IpAllowlistGuard` enforced across the whole
+-- `/admin` surface, and that `uploads.controller.ts` checked independently for
+-- `/uploads/kyc/:file` — a route outside `/admin` that serves both a client
+-- fetching their own document and an admin fetching anyone's.
+--
+-- ── What this costs, stated ─────────────────────────────────────────────────
+--
+-- Admin routes are gated on authentication and permissions only from here. KYC
+-- documents — passports, national IDs, proof of address — are still behind a
+-- valid admin session and `kyc.documents.view`, and every read is still
+-- audited; what is gone is the restriction to particular networks.
+--
+-- If that restriction is wanted again it belongs at the edge, in a load
+-- balancer or WAF rule, rather than as an application guard reading a table.
+-- That placement also survives an application bug, which this one did not.
+--
+-- Nothing references this table, so the drop needs no ordering.
+
+DROP TABLE IF EXISTS "admin_ip_allowlist";

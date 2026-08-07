@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { transactionStateEnum } from '../../../database/schema';
 import { IsIn, IsNotEmpty, IsNumberString, IsOptional, IsString, Matches } from 'class-validator';
 
 // Request + response DTOs for the client-facing payments surface.
@@ -8,7 +9,22 @@ import { IsIn, IsNotEmpty, IsNumberString, IsOptional, IsString, Matches } from 
 const CURRENCIES = ['USD', 'USDT'] as const;
 const PROVIDERS = ['whish', 'usdt'] as const;
 const DIRECTIONS = ['deposit', 'withdrawal'] as const;
-const STATES = ['pending', 'approved', 'rejected', 'success', 'failed'] as const;
+
+/**
+ * DERIVED from the column, not restated.
+ *
+ * This was written out by hand and said `'failed'` where the database enum says
+ * `'failure'` — so the generated type promised both frontends a state the API
+ * can never send, and hid the one it does. A portal rendering a `failure` row
+ * fell through its own state map to the raw enum value, which is what a client
+ * saw when a withdrawal failed at the provider.
+ *
+ * Nothing rejected the spelling: Swagger emits whatever the array holds and the
+ * column is only compared at runtime. Reading `enumValues` means the next state
+ * added to the schema reaches both frontends without anybody remembering this
+ * file exists.
+ */
+const STATES = transactionStateEnum.enumValues;
 
 /**
  * The withdrawal a confirmation code is being requested FOR — FR-CORE-08.

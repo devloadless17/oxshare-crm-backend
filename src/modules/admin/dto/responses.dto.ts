@@ -642,33 +642,6 @@ export class IbProgramDto {
   @ApiProperty() updatedAt: Date;
 }
 
-export class IpAllowlistRuleDto {
-  @ApiProperty() id: string;
-  @ApiProperty({ example: '203.0.113.0/24' }) cidr: string;
-  @ApiProperty({ example: 'Beirut office' }) label: string;
-  @ApiProperty() createdBy: string;
-  @ApiProperty() createdAt: string;
-}
-
-export class IpAllowlistStatusDto {
-  @ApiProperty({
-    description:
-      'False while the list is empty. An empty list deliberately means the feature is OFF, ' +
-      'so the deploy that adds the table cannot lock every administrator out (RBAC-08).',
-  })
-  enforced: boolean;
-
-  @ApiProperty({
-    description: "The requesting admin's own address, so the UI can warn before a lockout.",
-    nullable: true,
-    type: String,
-  })
-  yourIp: string | null;
-
-  @ApiProperty({ type: [IpAllowlistRuleDto] })
-  rules: IpAllowlistRuleDto[];
-}
-
 /*
  * Re-exported rather than redeclared.
  *

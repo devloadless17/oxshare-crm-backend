@@ -4530,104 +4530,6 @@
         ]
       }
     },
-    "/v1/admin/ip-allowlist": {
-      "get": {
-        "operationId": "AdminIpAllowlistController_list",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IpAllowlistStatusDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "The IP allowlist, whether it is being enforced, and your own address",
-        "tags": [
-          "admin"
-        ]
-      },
-      "post": {
-        "operationId": "AdminIpAllowlistController_add",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AddIpAllowlistRuleDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IpAllowlistStatusDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Add an address or range to the allowlist",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/ip-allowlist/{id}": {
-      "delete": {
-        "operationId": "AdminIpAllowlistController_remove",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MessageResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Remove a rule from the allowlist",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
     "/v1/admin/withdrawals": {
       "get": {
         "operationId": "AdminMoneyController_listWithdrawals",
@@ -6276,9 +6178,9 @@
             "enum": [
               "pending",
               "approved",
-              "rejected",
               "success",
-              "failed"
+              "failure",
+              "rejected"
             ]
           },
           "provider": {
@@ -8574,79 +8476,6 @@
         },
         "required": [
           "enabled"
-        ]
-      },
-      "IpAllowlistRuleDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "cidr": {
-            "type": "string",
-            "example": "203.0.113.0/24"
-          },
-          "label": {
-            "type": "string",
-            "example": "Beirut office"
-          },
-          "createdBy": {
-            "type": "string"
-          },
-          "createdAt": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "cidr",
-          "label",
-          "createdBy",
-          "createdAt"
-        ]
-      },
-      "IpAllowlistStatusDto": {
-        "type": "object",
-        "properties": {
-          "enforced": {
-            "type": "boolean",
-            "description": "False while the list is empty. An empty list deliberately means the feature is OFF, so the deploy that adds the table cannot lock every administrator out (RBAC-08)."
-          },
-          "yourIp": {
-            "type": "string",
-            "description": "The requesting admin's own address, so the UI can warn before a lockout.",
-            "nullable": true
-          },
-          "rules": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/IpAllowlistRuleDto"
-            }
-          }
-        },
-        "required": [
-          "enforced",
-          "yourIp",
-          "rules"
-        ]
-      },
-      "AddIpAllowlistRuleDto": {
-        "type": "object",
-        "properties": {
-          "cidr": {
-            "type": "string",
-            "description": "IPv4 address or CIDR range. A bare address is stored as /32.",
-            "example": "203.0.113.0/24"
-          },
-          "label": {
-            "type": "string",
-            "description": "Why this rule exists — an unlabelled list becomes unmaintainable.",
-            "example": "Beirut office"
-          }
-        },
-        "required": [
-          "cidr",
-          "label"
         ]
       },
       "WithdrawalUserDto": {
