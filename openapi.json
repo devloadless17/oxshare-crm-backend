@@ -1037,7 +1037,7 @@
     },
     "/v1/admin/currencies": {
       "get": {
-        "description": "Unlike the client-facing GET /currencies, this includes disabled currencies — managing them is the point of the screen.",
+        "description": "Unlike the client-facing GET /currencies, this includes disabled currencies — managing them is the point of the screen. Readable with `payments.view` as well, because the payment-method form picks a currency from this list.",
         "operationId": "AdminCurrenciesController_list",
         "parameters": [],
         "responses": {
@@ -1995,6 +1995,44 @@
         ]
       }
     },
+    "/v1/payments/deposits/{reference}/status": {
+      "get": {
+        "description": "Asks the payment provider directly rather than trusting anything the browser carried back. Safe to call repeatedly: settlement is idempotent, so this and the provider callback converge on the same outcome whichever arrives first.",
+        "operationId": "PaymentsController_settleDeposit",
+        "parameters": [
+          {
+            "name": "reference",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Re-check a gateway deposit with the provider, settling it if it has completed",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
     "/v1/payments/deposits": {
       "post": {
         "description": "Creates a PENDING deposit. No balance changes until the operator confirms the money arrived. The returned reference is what reconciles the payment to this request.",
@@ -2236,7 +2274,7 @@
     },
     "/v1/admin/payment-methods": {
       "get": {
-        "description": "Includes disabled methods and ones with no pay-to details — managing those is the point of the screen. Clients see a narrower list: GET /payments/methods returns only what is enabled AND configured.",
+        "description": "Includes disabled methods — turning them on and off is the point of the screen. Clients see a narrower list: GET /payments/methods returns only what is enabled AND, for a gateway, reachable from this deployment.",
         "operationId": "AdminPaymentMethodsController_list",
         "parameters": [],
         "responses": {
@@ -2259,13 +2297,13 @@
             "cookie": []
           }
         ],
-        "summary": "Every payment method, configured or not",
+        "summary": "Every payment method, enabled or not",
         "tags": [
           "admin"
         ]
       },
       "post": {
-        "description": "A method with no `payTo` is created but never offered to clients — see the service. That is deliberate: an account number nobody has filled in cannot receive money, and inventing one is how money leaves and does not arrive.",
+        "description": "Key, name, currency and an optional logo. `enabled` decides whether clients are offered it, and is the only thing about a method an operator changes afterwards — with one exception they cannot: a GATEWAY method stays hidden on a deployment holding no provider credentials, because a client who picks it would land on an error.",
         "operationId": "AdminPaymentMethodsController_create",
         "parameters": [],
         "requestBody": {
@@ -2386,23 +2424,22 @@
         "tags": [
           "admin"
         ]
-      },
-      "delete": {
-        "description": "Refuses one that any deposit references — disabling is almost always what was meant, and it keeps the history readable while stopping new deposits.",
-        "operationId": "AdminPaymentMethodsController_remove",
-        "parameters": [
-          {
-            "name": "key",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+      }
+    },
+    "/v1/admin/payment-methods/logo": {
+      "post": {
+        "operationId": "AdminPaymentMethodsController_uploadLogo",
+        "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentLogoResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2410,7 +2447,7 @@
             "cookie": []
           }
         ],
-        "summary": "Remove a payment method",
+        "summary": "Upload a payment-method logo (JPEG, PNG, WebP or SVG, max 1MB)",
         "tags": [
           "admin"
         ]
@@ -2835,6 +2872,30 @@
           }
         ],
         "summary": "Serve a client's own profile photo",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/v1/uploads/payment-logos/{file}": {
+      "get": {
+        "operationId": "UploadsController_servePaymentLogo",
+        "parameters": [
+          {
+            "name": "file",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Serve a payment-method logo (public)",
         "tags": [
           "compliance"
         ]
@@ -7731,15 +7792,6 @@
             "type": "string",
             "example": "Whish Money"
           },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "manual",
-              "gateway",
-              "crypto"
-            ],
-            "description": "Decides the deposit FLOW, so a screen branches on this rather than on the key — a screen that checks `key === \"whish\"` needs editing every time a method is added."
-          },
           "currency": {
             "type": "string",
             "example": "USD"
@@ -7748,23 +7800,15 @@
             "type": "string",
             "nullable": true
           },
-          "instructions": {
-            "type": "string",
-            "nullable": true,
-            "description": "What the client must do, in the operator's words. Rendered verbatim."
-          },
-          "payTo": {
-            "type": "string",
-            "nullable": true,
-            "description": "The account the client sends to. A method with none is NOT offered — see PaymentMethodsService.listAvailable."
-          },
           "minAmount": {
             "type": "string",
-            "nullable": true
+            "example": "10.00000000",
+            "description": "The smallest deposit this method accepts, RESOLVED SERVER-SIDE from the platform limits (§12.4). The same figure `POST /payments/deposits` enforces, so a client showing it cannot promise a floor the validator disagrees with. A decimal string, never a number (§6.1)."
           },
           "maxAmount": {
             "type": "string",
-            "nullable": true
+            "example": "5000.00000000",
+            "description": "The largest deposit this method accepts. Same source and same guarantee as above."
           },
           "enabled": {
             "type": "boolean"
@@ -7776,11 +7820,8 @@
         "required": [
           "key",
           "name",
-          "kind",
           "currency",
           "logoUrl",
-          "instructions",
-          "payTo",
           "minAmount",
           "maxAmount",
           "enabled",
@@ -7842,12 +7883,18 @@
           },
           "state": {
             "type": "string",
-            "description": "Always `pending`. Nothing is credited until the operator confirms receipt.",
+            "description": "Always `pending`. Nothing is credited until the operator confirms receipt (manual method) or the provider confirms the payment (gateway method).",
             "example": "pending"
           },
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "paymentUrl": {
+            "type": "string",
+            "nullable": true,
+            "example": "https://whish.money/pay/8nQS2mL",
+            "description": "The provider's hosted payment page, for a GATEWAY method. Send the client there — they pay on the provider’s own domain, and no card or OTP detail touches this system.\n\nNULL for a manual method, where the client is shown `payTo` and instructions instead. A client MUST branch on this: assuming a link strands a bank-transfer client with nowhere to go, and assuming instructions shows a gateway client an account number that is not how that method works."
           }
         },
         "required": [
@@ -7857,7 +7904,8 @@
           "currency",
           "method",
           "state",
-          "createdAt"
+          "createdAt",
+          "paymentUrl"
         ]
       },
       "RequestWithdrawalDto": {
@@ -8148,37 +8196,14 @@
             "type": "string",
             "example": "Whish Money"
           },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "manual",
-              "gateway",
-              "crypto"
-            ]
-          },
           "currency": {
             "type": "string",
             "example": "USD"
           },
           "logoUrl": {
             "type": "string",
-            "maxLength": 2048
-          },
-          "instructions": {
-            "type": "string",
-            "description": "Shown verbatim on the deposit screen."
-          },
-          "payTo": {
-            "type": "string",
-            "description": "The Whish number, IBAN or wallet address."
-          },
-          "minAmount": {
-            "type": "string",
-            "example": "10.00"
-          },
-          "maxAmount": {
-            "type": "string",
-            "example": "5000.00"
+            "maxLength": 2048,
+            "example": "/v1/uploads/payment-logos/8f2c….png"
           },
           "enabled": {
             "type": "boolean",
@@ -8192,7 +8217,6 @@
         "required": [
           "key",
           "name",
-          "kind",
           "currency"
         ]
       },
@@ -8202,32 +8226,13 @@
           "name": {
             "type": "string"
           },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "manual",
-              "gateway",
-              "crypto"
-            ]
-          },
           "currency": {
             "type": "string"
           },
           "logoUrl": {
             "type": "string",
-            "maxLength": 2048
-          },
-          "instructions": {
-            "type": "string"
-          },
-          "payTo": {
-            "type": "string"
-          },
-          "minAmount": {
-            "type": "string"
-          },
-          "maxAmount": {
-            "type": "string"
+            "maxLength": 2048,
+            "example": "/v1/uploads/payment-logos/8f2c….png"
           },
           "enabled": {
             "type": "boolean"
@@ -8236,6 +8241,19 @@
             "type": "number"
           }
         }
+      },
+      "PaymentLogoResponseDto": {
+        "type": "object",
+        "properties": {
+          "logoUrl": {
+            "type": "string",
+            "example": "/v1/uploads/payment-logos/8f2c….png",
+            "description": "A path on THIS API, not a third-party host. Put it on the method’s `logoUrl` when saving."
+          }
+        },
+        "required": [
+          "logoUrl"
+        ]
       },
       "WalletDto": {
         "type": "object",

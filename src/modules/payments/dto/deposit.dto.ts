@@ -115,11 +115,27 @@ export class DepositRequestDto {
   method: string;
 
   @ApiProperty({
-    description: 'Always `pending`. Nothing is credited until the operator confirms receipt.',
+    description:
+      'Always `pending`. Nothing is credited until the operator confirms receipt (manual method) ' +
+      'or the provider confirms the payment (gateway method).',
     example: 'pending',
   })
   state: string;
 
   @ApiProperty({ format: 'date-time' })
   createdAt: string;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: 'https://whish.money/pay/8nQS2mL',
+    description:
+      "The provider's hosted payment page, for a GATEWAY method. Send the client there — they pay " +
+      'on the provider’s own domain, and no card or OTP detail touches this system.\n\n' +
+      'NULL for a manual method, where the client is shown `payTo` and instructions instead. A ' +
+      'client MUST branch on this: assuming a link strands a bank-transfer client with nowhere to ' +
+      'go, and assuming instructions shows a gateway client an account number that is not how ' +
+      'that method works.',
+  })
+  paymentUrl: string | null;
 }

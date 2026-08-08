@@ -194,3 +194,31 @@ export class ConflictError extends DomainError {
 export class MoneyRuleError extends DomainError {
   readonly code = 'MONEY_RULE_VIOLATION';
 }
+
+/**
+ * A payment provider was asked to start a payment and did not say whether it
+ * did. → 400, like the `ValidationError` it extends.
+ *
+ * ## This is not a failure, and that distinction is the whole point
+ *
+ * A gateway can refuse three different ways: it can be unreachable, it can
+ * refuse outright, or it can answer "I do not know" — Whish signals the last
+ * with code `500`. The first two mean no payment exists. The third means one
+ * MIGHT, and might still be payable by the client.
+ *
+ * The caller uses the type to decide what happens to the deposit row it already
+ * wrote. A definite refusal marks it `failure`, because leaving it `pending`
+ * shows the client "processing" for a payment that never started. An
+ * indeterminate answer must stay `pending` and be reconciled against
+ * `getStatus`, because marking it failed would tell a client who DID pay that
+ * their money did not arrive — the more expensive of the two mistakes by a wide
+ * margin.
+ *
+ * It is a sibling of `ValidationError` rather than a subclass — `code` there is
+ * a literal type and cannot be narrowed — and is registered in
+ * `all-exceptions.filter.ts` for the same 400, so the wire contract is unchanged
+ * apart from the distinct `code` a frontend can branch on.
+ */
+export class PaymentIndeterminateError extends DomainError {
+  readonly code = 'PAYMENT_INDETERMINATE';
+}

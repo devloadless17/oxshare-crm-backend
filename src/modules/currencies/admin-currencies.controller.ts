@@ -58,15 +58,32 @@ import { CreateCurrencyDto, CurrencyDto, UpdateCurrencyDto } from './dto/currenc
 export class AdminCurrenciesController {
   constructor(private readonly currencies: CurrenciesService) {}
 
+  /**
+   * `settings.view` OR `payments.view` — `@RequirePermissions` is an OR.
+   *
+   * The second was added because the payment-method form needs this list: a
+   * method's `currency` is a foreign key into this table and decides which
+   * wallet a deposit lands in, so the form offers the platform's own codes
+   * rather than a free-text field the API would 400 on.
+   *
+   * Without it, an admin holding `payments.manage` and not `settings.view` — a
+   * perfectly ordinary payments role — opened the form to an empty dropdown and
+   * could not create a payment method at all. The alternative was a second
+   * endpoint serving the same rows under a different permission, which is two
+   * places to keep in step for no gain: the list is currency CODES, the least
+   * sensitive configuration the platform holds, and reading it grants nothing a
+   * payments admin cannot already see on every transaction.
+   */
   @Get()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.view')
+  @RequirePermissions('settings.view', 'payments.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Every currency, including disabled ones, in operator order',
     description:
       'Unlike the client-facing GET /currencies, this includes disabled currencies — managing ' +
-      'them is the point of the screen.',
+      'them is the point of the screen. Readable with `payments.view` as well, because the ' +
+      'payment-method form picks a currency from this list.',
   })
   @ApiOkResponse({ type: CurrencyDto, isArray: true })
   @NotClientScoped('Operator configuration; contains no client data.')

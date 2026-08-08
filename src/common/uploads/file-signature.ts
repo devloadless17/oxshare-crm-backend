@@ -40,12 +40,60 @@ const SIGNATURES: { mime: string; magic: number[]; offset?: number }[] = [
   { mime: 'image/webp', magic: [0x52, 0x49, 0x46, 0x46] },
 ];
 
-/** How many bytes a caller needs to read for `sniffMimeType` to decide. */
-export const SIGNATURE_BYTES = 16;
+/**
+ * How many bytes a caller needs to read for `sniffMimeType` to decide.
+ *
+ * Widened from 16 for SVG, which has no magic number: it is XML, so the marker
+ * is the `<svg` element — and that can sit behind an XML declaration, a DOCTYPE,
+ * a comment and any amount of whitespace. 1KB covers every real file without
+ * reading an unbounded prefix of a hostile one.
+ */
+export const SIGNATURE_BYTES = 1024;
 
 function startsWith(header: Buffer, magic: number[], offset = 0): boolean {
   if (header.length < offset + magic.length) return false;
   return magic.every((byte, i) => header[offset + i] === byte);
+}
+
+/**
+ * Does this look like SVG?
+ *
+ * ## Why a text scan, when this file's whole premise is magic bytes
+ *
+ * SVG is XML and HAS no magic bytes, so the table above cannot describe it. That
+ * is exactly why it was excluded at first — "the accepted types are decided from
+ * the file's own magic bytes, never the multipart Content-Type" does not work
+ * for a format with none.
+ *
+ * What makes it safe to accept is this check PLUS how the file is served, and
+ * BOTH halves are required:
+ *
+ *   1. `uploads.controller.ts` serves every logo with `Content-Security-Policy:
+ *      default-src 'none'; sandbox`, which stops script executing even when the
+ *      SVG is navigated to directly as a top-level document.
+ *   2. Both frontends render logos through `<img>`, which does not execute
+ *      script inside an SVG at all.
+ *
+ * Remove either and SVG must come back out of `PAYMENT_LOGO_BUCKET`.
+ *
+ * So this is a TYPE check, not a sanitiser. It answers "is this plausibly an
+ * SVG"; the serving headers answer "and can it hurt anyone". An HTML document
+ * renamed `.svg` still fails here, which is the specific substitution that turns
+ * an upload into stored XSS.
+ *
+ * A BOM is skipped because Windows editors write one, and rejecting those files
+ * would look like an arbitrary failure to an operator exporting from a design
+ * tool.
+ */
+function looksLikeSvg(header: Buffer): boolean {
+  let text = header.toString('utf8');
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+
+  const head = text.trimStart().toLowerCase();
+  // The root element directly, or an XML prologue that leads to one.
+  if (head.startsWith('<svg')) return true;
+  if (!head.startsWith('<?xml') && !head.startsWith('<!doctype svg')) return false;
+  return head.includes('<svg');
 }
 
 /**
@@ -55,6 +103,10 @@ function startsWith(header: Buffer, magic: number[], offset = 0): boolean {
  * to identify, it is a file we have no reason to accept.
  */
 export function sniffMimeType(header: Buffer): string | undefined {
+  // LAST resort, checked first only because it is cheap to rule out: SVG is the
+  // one accepted type with no binary signature. See `looksLikeSvg`.
+  if (looksLikeSvg(header)) return 'image/svg+xml';
+
   for (const { mime, magic } of SIGNATURES) {
     if (!startsWith(header, magic)) continue;
     if (mime === 'image/webp') {

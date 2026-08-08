@@ -128,6 +128,63 @@ const envSchema = z
     REDIS_URL: z.string().url().optional(),
 
     /*
+     * ── Whish Money, the first real payment GATEWAY ─────────────────────────
+     *
+     * All four are optional TOGETHER, and that is the whole design: with any of
+     * them missing the Whish method is not offered to clients at all, exactly
+     * as a manual method with no `pay_to` is not offered. A gateway nobody can
+     * reach must not appear on the deposit screen — a client who picks it and
+     * lands on an error has been told the platform is broken.
+     *
+     * `WhishConfig.isConfigured()` is the single reader of that rule.
+     *
+     * These are BEARER CREDENTIALS for money movement: `secret` authorises
+     * collection against the operator's own Whish account. They belong in a
+     * secrets manager, never in client-side code and never in a log line —
+     * `whish.provider.ts` never logs a request body for that reason.
+     */
+    /**
+     * Where THIS API is publicly reachable, for provider callbacks.
+     *
+     * Required alongside the Whish credentials and validated with them, because
+     * a gateway payment is created with a callback URL baked in: get this wrong
+     * and Whish calls a host that does not exist, so a paid deposit never
+     * settles from the provider's side.
+     *
+     * NOT derived from the inbound request's `Host` header. That value is
+     * attacker-influenceable, and this one is handed to a third party who will
+     * fetch it later — it has to be something the operator configured.
+     *
+     * It must be PUBLICLY REACHABLE: `localhost` cannot receive a callback, so
+     * local development needs a tunnel (ngrok, cloudflared) pointed here. The
+     * client's own browser redirect settles the deposit too, so a missed
+     * callback degrades rather than breaks — but only one of those two paths
+     * working is not a state to run production in.
+     */
+    API_PUBLIC_URL: z.string().url().optional(),
+
+    WHISH_CHANNEL: z.string().min(1).optional(),
+    WHISH_SECRET: z.string().min(1).optional(),
+    /**
+     * The EXACT value Whish issued with the keys. Not "our website" loosely —
+     * Whish matches it against the credential pair and refuses a mismatch, so a
+     * plausible-looking substitution fails every call with an opaque code.
+     */
+    WHISH_WEBSITE_URL: z.string().url().optional(),
+    /**
+     * Sandbox or production, chosen explicitly rather than derived from
+     * NODE_ENV.
+     *
+     * Deriving it would mean a staging deployment — NODE_ENV=production by
+     * necessity — silently pointing at the LIVE money API. This has to be a
+     * decision somebody typed.
+     *
+     * Sandbox:    https://partner.api.sbx.whish.money/itel-service/api
+     * Production: https://api.whish.money/itel-service/api
+     */
+    WHISH_BASE_URL: z.string().url().optional(),
+
+    /*
      * The §12.4 money bounds — validated HERE, at boot.
      *
      * `money-limits.ts` says these are "also validated at boot in

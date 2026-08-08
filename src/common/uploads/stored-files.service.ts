@@ -1,7 +1,7 @@
 import { createReadStream, existsSync, mkdirSync } from 'node:fs';
 import { unlink, writeFile } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
-import { basename, join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ValidationError } from '../errors/domain-errors';
@@ -67,6 +67,50 @@ export const AVATAR_BUCKET: FileBucket = {
     'image/jpg': '.jpg',
     'image/png': '.png',
     'image/webp': '.webp',
+  },
+};
+
+/**
+ * Payment-method logos: JPEG, PNG or WebP, up to 1MB.
+ *
+ * Smaller than an avatar because these render at roughly 20px in the admin
+ * table and on the client's deposit screen. A megabyte is already generous for
+ * a brand mark, and the ceiling is what stops a 6MB press-kit PNG landing in a
+ * list every client loads.
+ *
+ * ## ⚠️ SVG IS ACCEPTED, AND IT IS THE ONE ENTRY HERE WITH A SHARP EDGE
+ *
+ * An SVG is a DOCUMENT, not an image: it can carry `<script>`, and one served
+ * from our own origin is stored XSS. It is accepted because it is the obvious
+ * format for a brand mark, and it is SAFE HERE only because of two things that
+ * must both stay true:
+ *
+ *   1. `uploads.controller.ts` serves every logo with `Content-Security-Policy:
+ *      default-src 'none'; sandbox` and `X-Content-Type-Options: nosniff`. That
+ *      stops script executing even when the file is navigated to directly as a
+ *      top-level document, which is the only way an SVG executes anything.
+ *   2. Both frontends render logos through `<img>`, which does not execute
+ *      script inside an SVG at all.
+ *
+ * `looksLikeSvg` in file-signature.ts is a TYPE check, not a sanitiser — it
+ * rejects an HTML document renamed `.svg`, which is the substitution that turns
+ * an upload into stored XSS, but it does not strip anything.
+ *
+ * IF EITHER PROTECTION IS REMOVED — a logo inlined into the DOM with
+ * `dangerouslySetInnerHTML`, or the CSP dropped from that route — SVG comes
+ * straight back out of this list. Nothing else in this bucket carries that
+ * condition.
+ */
+export const PAYMENT_LOGO_BUCKET: FileBucket = {
+  dir: 'payment-logos',
+  maxBytes: 1024 * 1024,
+  allowedMimeTypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/svg+xml'],
+  extensions: {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'image/svg+xml': '.svg',
   },
 };
 
@@ -152,6 +196,46 @@ export class StoredFilesService {
     if (!existsSync(path)) return null;
 
     return { stream: createReadStream(path), path };
+  }
+
+  /**
+   * The `Content-Type` to serve a stored file with, or `null` if we never wrote
+   * that shape.
+   *
+   * ## Why this is trustworthy, and why the extension is the right source
+   *
+   * Reading a type from a filename is normally exactly the mistake this service
+   * exists to prevent — but this is OUR filename. `write()` generates it as
+   * `<uuid><ext>`, and picks `<ext>` from the bucket's map keyed on the type it
+   * decided from the file's own MAGIC BYTES. The uploader's filename and their
+   * multipart `Content-Type` are both discarded before that point. So the
+   * extension here is a record of what the bytes actually were.
+   *
+   * ## Why serving without one was broken
+   *
+   * The routes streamed with no `Content-Type` at all, alongside
+   * `X-Content-Type-Options: nosniff`. A PNG survives that — browsers still
+   * decode it from its magic bytes — so nothing looked wrong for years. SVG has
+   * no magic bytes: it is XML, and a browser that is forbidden to sniff and told
+   * nothing will not render it as an image. The logo simply did not appear.
+   *
+   * `null` for an unrecognised extension, and the callers 404 on it. A file in
+   * one of our buckets with an extension we never write is not one we wrote, and
+   * guessing a type for it is the sniffing this whole class refuses to do.
+   */
+  contentType(bucket: FileBucket, name: string): string | null {
+    const ext = extname(basename(name)).toLowerCase();
+    if (!ext) return null;
+
+    /*
+     * The bucket's own map, read backwards. Two types can share an extension
+     * (`image/jpeg` and `image/jpg` both write `.jpg`); the first wins, and the
+     * buckets list the canonical spelling first for that reason.
+     */
+    for (const [mimeType, extension] of Object.entries(bucket.extensions)) {
+      if (extension.toLowerCase() === ext) return mimeType;
+    }
+    return null;
   }
 
   /**

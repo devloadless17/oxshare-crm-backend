@@ -288,6 +288,20 @@
       "when": 1787061958600,
       "tag": "0041_positions",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1787061959600,
+      "tag": "0042_payment_methods_simplified",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1787061960600,
+      "tag": "0043_payment_methods_enable_only",
+      "breakpoints": true
     }
   ]
 }

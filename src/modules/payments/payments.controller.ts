@@ -4,7 +4,9 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
+  Query,
   Req,
   UseGuards,
   UseInterceptors,
@@ -115,6 +117,37 @@ export class PaymentsController {
   @ApiOkResponse({ type: PaymentMethodDto, isArray: true })
   listMethods() {
     return this.paymentMethods.listAvailable();
+  }
+
+  /**
+   * "I have come back from the payment page — did it work?"
+   *
+   * The client's browser lands on the portal after paying, and this is what that
+   * screen calls. It is the SECOND settlement path, and having two is
+   * deliberate: a provider callback can be delayed, lost, or blocked by a
+   * firewall, and a client staring at a pending deposit they have just paid for
+   * is the worst outcome this flow has.
+   *
+   * Whichever arrives first settles it; the other is a no-op, because
+   * settlement is conditional on the row still being pending and the ledger
+   * write is guarded by its own uniqueness constraint.
+   *
+   * AUTHENTICATED, unlike the callback. `settleGatewayDeposit` matches on the
+   * reference alone, so without this guard the route would be an oracle for
+   * anybody else's payment status.
+   */
+  @Get('deposits/:reference/status')
+  @UseGuards(KycVerifiedGuard)
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Re-check a gateway deposit with the provider, settling it if it has completed',
+    description:
+      'Asks the payment provider directly rather than trusting anything the browser carried back. ' +
+      'Safe to call repeatedly: settlement is idempotent, so this and the provider callback ' +
+      'converge on the same outcome whichever arrives first.',
+  })
+  settleDeposit(@Param('reference') reference: string, @Query('method') method: string) {
+    return this.transactions.settleGatewayDeposit(method, reference);
   }
 
   @Post('deposits')

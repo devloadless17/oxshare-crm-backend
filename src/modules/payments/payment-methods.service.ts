@@ -10,8 +10,24 @@ import { ConflictError, NotFoundError, ValidationError } from '../../common/erro
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
 import type { CreatePaymentMethodDto, UpdatePaymentMethodDto } from './dto/payment-method.dto';
+import { PaymentGateways } from './payment-gateways.service';
+import { MoneyLimits } from '../../config/money-limits';
 
 export type PaymentMethodRow = typeof paymentMethods.$inferSelect;
+
+/**
+ * A method as a CLIENT sees it: the stored row plus the bounds it is subject to.
+ *
+ * The bounds are not columns any more — migration 0042 dropped the per-method
+ * ones — so they are attached here from `MoneyLimits`. Keeping them ON the
+ * method rather than returning them alongside means the portal reads one shape,
+ * and would keep reading one shape if per-method bounds ever came back.
+ */
+export type ClientPaymentMethod = PaymentMethodRow & {
+  /** Decimal strings (§6.1). The same figures `requestDeposit` enforces. */
+  minAmount: string;
+  maxAmount: string;
+};
 
 /**
  * The ways a client can put money in — operator data, not a constant.
@@ -23,17 +39,16 @@ export type PaymentMethodRow = typeof paymentMethods.$inferSelect;
  * union. So adding a payment option was a code change in three places, and an
  * operator whose provider went down at 2am could not turn one off at all.
  *
- * ## A method with no pay-to details is NOT offered
+ * ## `enabled` is the operator's WHOLE decision
  *
- * `listAvailable` filters them out, and that is the single most important rule
- * here. A client shown "Whish Money" with nowhere to send the money either
- * abandons the deposit or invents a destination — and the deleted deposit page
- * recorded the consequence of the alternative in as many words: "Inventing an
- * IBAN is the same failure as the fake $0.00 balances, with a worse outcome:
- * the money leaves and does not arrive."
+ * A row is a method; the boolean is whether clients are offered it. There is no
+ * second condition an operator can get wrong — no pay-to to leave blank, no kind
+ * to classify — because every one of those was a way for a method to sit in the
+ * admin list marked Enabled while no client could use it.
  *
- * So an operator enabling a method is not enough. They have to say where the
- * money goes.
+ * The one test `enabled` does NOT cover is `isConfigured`, and it is not an
+ * operator's to answer: a gateway needs its provider credentials, and those live
+ * in the environment.
  */
 @Injectable()
 export class PaymentMethodsService {
@@ -41,6 +56,20 @@ export class PaymentMethodsService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly currencies: CurrenciesService,
     private readonly audit: AdminAuditService,
+    /*
+     * Which gateways this deployment can actually reach.
+     *
+     * APPENDED LAST, for the reason `TransactionsService` records about its own
+     * constructor: this class is built positionally in the unit suites, so
+     * inserting a parameter in the middle silently shifts every one after it.
+     */
+    private readonly gateways: PaymentGateways,
+    /*
+     * The platform-wide deposit floor and ceiling, so `listAvailable` can hand
+     * the client the bounds they are ACTUALLY subject to. APPENDED LAST — this
+     * class is constructed positionally in the unit suites.
+     */
+    private readonly limits: MoneyLimits,
   ) {}
 
   /** Everything, including disabled and unconfigured. The admin screen's list. */
@@ -54,19 +83,81 @@ export class PaymentMethodsService {
   /**
    * What a CLIENT may actually choose right now.
    *
-   * Enabled, and configured. `payTo` is the test for configured: a method whose
-   * destination nobody has filled in cannot receive money, so offering it is
-   * offering a dead end. The Whish row ships in exactly that state — seeded with
-   * its name and logo, disabled, with no account number invented for it.
+   * Enabled, and CONFIGURED — see `isConfigured` for the one thing enabling a
+   * method cannot settle.
    */
-  async listAvailable(): Promise<PaymentMethodRow[]> {
+  async listAvailable(): Promise<ClientPaymentMethod[]> {
     const rows = await this.db
       .select()
       .from(paymentMethods)
       .where(eq(paymentMethods.enabled, true))
       .orderBy(asc(paymentMethods.sortOrder), asc(paymentMethods.key));
 
-    return rows.filter((row) => Boolean(row.payTo?.trim()));
+    return rows.filter((row) => this.isConfigured(row)).map((row) => this.withEffectiveBounds(row));
+  }
+
+  /**
+   * Resolve the bounds a CLIENT is actually subject to, on the row itself.
+   *
+   * ## Why the server computes this rather than the portal
+   *
+   * Two limits apply to every deposit and neither is derivable from the other:
+   * the platform's own floor and ceiling (`MoneyLimits`, §12.4) and whatever the
+   * method carries. `requestDeposit` enforces BOTH, so the number a client is
+   * refused by is the tighter of the two.
+   *
+   * A portal that showed only the per-method value would tell a client "minimum
+   * $1" and then refuse $5 against a platform floor of $10 — a rejection with no
+   * visible cause. Resolving here means the figure on the screen and the figure
+   * in the validator are the same number by construction, rather than by two
+   * places agreeing to stay in step.
+   *
+   * The per-method columns were DROPPED in migration 0042, so these are simply
+   * the platform limits — which is exactly what makes the bounds identical
+   * across every method. They are attached to the row rather than returned
+   * separately so a caller reads one shape whether or not per-method bounds ever
+   * come back.
+   */
+  private withEffectiveBounds(row: PaymentMethodRow): ClientPaymentMethod {
+    // Strings out, at the ledger's scale (§6.1) — never a number, and never
+    // rounded to something the validator would not agree with.
+    return {
+      ...row,
+      minAmount: this.limits.minDeposit().toFixed(8),
+      maxAmount: this.limits.maxDeposit().toFixed(8),
+    };
+  }
+
+  /**
+   * Is this method actually able to receive money?
+   *
+   * ## `enabled` is the operator's whole answer
+   *
+   * A method used to also need `pay_to` filled in, and before that a `kind` an
+   * operator picked from a dropdown. Both are gone with their columns: the admin
+   * surface is name, key, currency, logo and an enable/disable toggle, so
+   * "should clients see this?" is a question the operator answers directly
+   * rather than one inferred from whether they happened to complete a form.
+   *
+   * ## Except for a GATEWAY, which has a second, non-negotiable test
+   *
+   * A gateway needs its PROVIDER credentials present on this deployment. That is
+   * not an operator decision and cannot be one — the keys live in the
+   * environment, not the database, so an operator can enable Whish on a
+   * deployment that has no way to reach it.
+   *
+   * Such a method must not appear at all. A client who picks it and lands on an
+   * error has been told the platform is broken, rather than that this particular
+   * method is unavailable.
+   *
+   * `isImplemented` decides whether the credential test applies, and it is a fact
+   * about the BUILD rather than the row. A key with no gateway behind it is a
+   * manual method by definition, and there is nothing about it a deployment can
+   * fail to configure.
+   */
+  private isConfigured(row: PaymentMethodRow): boolean {
+    if (this.gateways.isImplemented(row.key)) return this.gateways.isConfigured(row.key);
+    return true;
   }
 
   async findOne(key: string): Promise<PaymentMethodRow | null> {
@@ -89,40 +180,49 @@ export class PaymentMethodsService {
    * Returns the ROW, so the caller has the currency and the bounds without a
    * second read.
    */
-  async assertUsable(key: string): Promise<PaymentMethodRow> {
+  async assertUsable(key: string): Promise<ClientPaymentMethod> {
     const row = await this.findOne(key);
     if (!row) throw new NotFoundError(`Unknown payment method ${this.normalise(key)}.`);
     if (!row.enabled) {
       throw new ValidationError(`${row.name} is not currently available. Choose another method.`);
     }
-    if (!row.payTo?.trim()) {
+    if (!this.isConfigured(row)) {
       /*
-       * Reachable only if an operator enabled a method without configuring it,
-       * since `listAvailable` hides those. The message says "not available"
-       * rather than "not configured": which of our accounts is set up is not a
-       * client's problem, and naming it invites a support call they cannot act
-       * on.
+       * Reachable only if an operator enabled a gateway this deployment holds no
+       * credentials for, since `listAvailable` hides those. The message says
+       * "not available" rather than "not configured": which gateway credentials
+       * this deployment holds is not a client's problem, and naming it invites a
+       * support call they cannot act on.
        */
       throw new ValidationError(`${row.name} is not currently available. Choose another method.`);
     }
-    return row;
+    /*
+     * The same resolution the client was shown. `requestDeposit` reads the bounds
+     * to refuse an out-of-range amount, so handing back the RAW row here would
+     * let the write path disagree with the screen the client just used.
+     */
+    return this.withEffectiveBounds(row);
   }
 
   /**
-   * Per-method bounds, checked against the amount.
+   * The bounds, checked against the amount.
    *
-   * SEPARATE from the platform limits in `MoneyLimits`, and both apply. A
-   * provider may not accept under $20 while the platform's own floor is $10;
-   * the tighter of the two is what the client experiences, and neither is
-   * derivable from the other.
+   * Takes a `ClientPaymentMethod` — the resolved shape from `assertUsable`, not
+   * a raw row — so the figures enforced here are exactly the ones the client was
+   * shown. That is the whole reason the bounds are attached to the method
+   * instead of read separately: two call sites reading `MoneyLimits`
+   * independently is two places that can drift.
+   *
+   * The message NAMES the method and the figure, because "deposit refused" with
+   * no number is something a client can only respond to by guessing.
    */
-  assertAmountWithin(row: PaymentMethodRow, amount: Decimal): void {
-    if (row.minAmount && amount.lessThan(toDecimal(row.minAmount))) {
+  assertAmountWithin(row: ClientPaymentMethod, amount: Decimal): void {
+    if (amount.lessThan(toDecimal(row.minAmount))) {
       throw new ValidationError(
         `The minimum ${row.name} deposit is ${toDecimal(row.minAmount).toString()} ${row.currency}.`,
       );
     }
-    if (row.maxAmount && amount.greaterThan(toDecimal(row.maxAmount))) {
+    if (amount.greaterThan(toDecimal(row.maxAmount))) {
       throw new ValidationError(
         `The maximum ${row.name} deposit is ${toDecimal(row.maxAmount).toString()} ${row.currency}.`,
       );
@@ -138,20 +238,14 @@ export class PaymentMethodsService {
     // Refuses an unknown or DISABLED currency — a method denominated in one the
     // platform does not hold could never open a wallet to receive into.
     const currency = await this.currencies.assertUsable(dto.currency);
-    this.assertBoundsMakeSense(dto.minAmount, dto.maxAmount);
 
     const [row] = await this.db
       .insert(paymentMethods)
       .values({
         key,
         name: dto.name.trim(),
-        kind: dto.kind,
         currency,
         logoUrl: dto.logoUrl ?? null,
-        instructions: dto.instructions ?? null,
-        payTo: dto.payTo ?? null,
-        minAmount: dto.minAmount ?? null,
-        maxAmount: dto.maxAmount ?? null,
         enabled: dto.enabled ?? true,
         sortOrder: dto.sortOrder ?? 0,
         updatedBy: adminId,
@@ -159,24 +253,16 @@ export class PaymentMethodsService {
       .returning();
 
     /*
-     * `payTo` is recorded, and it is the point of auditing this table.
+     * What an operator can actually change, recorded in full.
      *
-     * It is the account number every client is told to send money to — "who
-     * changed the Whish number, and when" is the first question asked when a
-     * deposit goes missing, and it is unanswerable from a row that holds only
-     * the current destination. It is operator configuration displayed publicly
-     * to every client, not a credential, so recording it leaks nothing.
-     *
-     * `minAmount`/`maxAmount` are NUMERIC(28,8) strings and are logged
-     * unchanged (§6.1).
+     * The pay-to and bounds columns went in 0042 and `kind` in 0043, so what is
+     * left is the method's identity and the one switch that decides whether
+     * clients are offered it. "Who turned Whish off, and when" is the question
+     * this answers, and it is the first one asked when deposits stop arriving.
      */
     this.audit.record(actor.id, 'payment_method.create', 'payment_method', row.key, {
       name: row.name,
-      kind: row.kind,
       currency: row.currency,
-      payTo: row.payTo,
-      minAmount: row.minAmount,
-      maxAmount: row.maxAmount,
       enabled: row.enabled,
     });
     return row;
@@ -188,22 +274,12 @@ export class PaymentMethodsService {
     if (!current) throw new NotFoundError(`Unknown payment method ${this.normalise(key)}.`);
 
     const currency = dto.currency ? await this.currencies.assertUsable(dto.currency) : undefined;
-    this.assertBoundsMakeSense(
-      dto.minAmount ?? current.minAmount,
-      dto.maxAmount ?? current.maxAmount,
-    );
-
     const [row] = await this.db
       .update(paymentMethods)
       .set({
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
-        ...(dto.kind !== undefined ? { kind: dto.kind } : {}),
         ...(currency !== undefined ? { currency } : {}),
         ...(dto.logoUrl !== undefined ? { logoUrl: dto.logoUrl } : {}),
-        ...(dto.instructions !== undefined ? { instructions: dto.instructions } : {}),
-        ...(dto.payTo !== undefined ? { payTo: dto.payTo } : {}),
-        ...(dto.minAmount !== undefined ? { minAmount: dto.minAmount } : {}),
-        ...(dto.maxAmount !== undefined ? { maxAmount: dto.maxAmount } : {}),
         ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
         updatedBy: adminId,
@@ -213,25 +289,15 @@ export class PaymentMethodsService {
       .returning();
 
     /*
-     * The changed fields with their OLD values — a repointed `payTo` is the
-     * case this exists for, and the previous account number is exactly what an
-     * investigator needs and exactly what the UPDATE destroyed.
+     * The changed fields with their OLD values, because the UPDATE destroyed
+     * them and the previous value is exactly what an investigator needs.
      *
-     * Money fields stay strings on both sides (§6.1).
+     * `enabled` is the field this now exists for: a method turned off is a
+     * deposit route that stopped working, and "when did it stop, and who" is
+     * otherwise unanswerable from a row holding only the current state.
      */
     const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const field of [
-      'name',
-      'kind',
-      'currency',
-      'payTo',
-      'minAmount',
-      'maxAmount',
-      'enabled',
-      'sortOrder',
-      'instructions',
-      'logoUrl',
-    ] as const) {
+    for (const field of ['name', 'currency', 'enabled', 'sortOrder', 'logoUrl'] as const) {
       if (current[field] !== row[field])
         changed[field] = { before: current[field], after: row[field] };
     }
@@ -239,56 +305,24 @@ export class PaymentMethodsService {
     return row;
   }
 
-  /**
-   * Remove a method.
+  /*
+   * ── `remove()` IS GONE, AND SHOULD NOT COME BACK ──────────────────────────
    *
-   * Refuses one that any transaction references, because `transactions.
-   * method_key` is a RESTRICT foreign key — the database would refuse it anyway
-   * and this turns that into a sentence an operator can act on. Disabling is
-   * almost always what they meant: it stops new deposits and keeps the history
-   * readable.
-   */
-  async remove(key: string, actor: Actor): Promise<{ key: string; deleted: true }> {
-    const normalised = this.normalise(key);
-    const current = await this.findOne(normalised);
-    if (!current) throw new NotFoundError(`Unknown payment method ${normalised}.`);
-
-    try {
-      await this.db.delete(paymentMethods).where(eq(paymentMethods.key, normalised));
-    } catch {
-      throw new ConflictError(
-        `${current.name} has deposits recorded against it and cannot be deleted. ` +
-          'Disable it instead — that stops new deposits and keeps the history intact.',
-      );
-    }
-
-    // After the delete succeeded, never in the catch above — a log entry for a
-    // removal the database refused describes something that did not happen.
-    this.audit.record(actor.id, 'payment_method.delete', 'payment_method', normalised, {
-      name: current.name,
-      kind: current.kind,
-      currency: current.currency,
-      payTo: current.payTo,
-      enabled: current.enabled,
-    });
-    return { key: normalised, deleted: true };
-  }
-
-  /**
-   * A minimum above a maximum accepts nothing, and says so at neither end.
+   * `transactions.method_key` is a RESTRICT foreign key, so the database
+   * refuses to delete any method a deposit has ever referenced. The old method
+   * turned that into a readable message — but it meant deleting only ever
+   * worked on methods nobody had used, and threw a conflict on every method
+   * that mattered.
    *
-   * The client sees "the minimum is 500" on one attempt and "the maximum is
-   * 100" on the next, with no amount satisfying both — a configuration mistake
-   * that presents as an unusable payment method rather than as an error.
+   * DISABLING is what deleting was reached for, and it does the job completely:
+   * `listAvailable` filters on `enabled` so the method vanishes from the client
+   * portal immediately, `assertUsable` refuses it on the write path, and every
+   * historical deposit keeps a readable method name instead of pointing at a row
+   * that no longer exists.
+   *
+   * The admin surface is therefore create, update, and toggle `enabled` —
+   * nothing that can destroy a row money history depends on.
    */
-  private assertBoundsMakeSense(min?: string | null, max?: string | null): void {
-    if (!min || !max) return;
-    if (toDecimal(min).greaterThan(toDecimal(max))) {
-      throw new ValidationError(
-        `The minimum (${min}) cannot be above the maximum (${max}) — no amount would be accepted.`,
-      );
-    }
-  }
 
   /** Keys are lower-case and trimmed, so 'Whish' and 'whish' are one method. */
   private normalise(key: string): string {

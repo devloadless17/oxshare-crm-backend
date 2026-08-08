@@ -13,14 +13,17 @@ import { Currency, Executor, WalletService } from '../wallet/wallet.service';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
+import { ConfigService } from '@nestjs/config';
 import {
   COMMISSION_ACCRUAL,
   type CommissionAccrualPort,
 } from '../../common/provisioning/commission-accrual.port';
+import { PaymentGateways } from './payment-gateways.service';
 import {
   AuthorizationError,
   MoneyRuleError,
   NotFoundError,
+  PaymentIndeterminateError,
   ValidationError,
 } from '../../common/errors/domain-errors';
 import {
@@ -163,6 +166,14 @@ export class TransactionsService {
      * in the middle silently shifts every one after it.
      */
     @Inject(COMMISSION_ACCRUAL) private readonly commissions: CommissionAccrualPort,
+    /*
+     * The hosted payment providers, and the config the callback URLs are built
+     * from. APPENDED LAST for the reason every parameter above records: this
+     * class is constructed positionally in the test suite, so inserting one in
+     * the middle silently shifts the rest.
+     */
+    private readonly gateways: PaymentGateways,
+    private readonly config: ConfigService,
   ) {}
 
   async requestWithdrawal(params: {
@@ -792,6 +803,23 @@ export class TransactionsService {
      */
     const currency = await this.currencies.assertUsable(paymentMethod.currency);
 
+    /*
+     * Does this deposit go through a hosted payment page, or is it a declaration
+     * an operator confirms by hand?
+     *
+     * Asked of `PaymentGateways` rather than read off the row. The `kind` column
+     * went in migration 0043: it claimed to say how a method behaved, while the
+     * real answer is whether THIS BUILD has an implementation for the key —
+     * which is what is asked here, and what `PaymentMethodsService` was already
+     * overriding the column with on every read.
+     *
+     * `isImplemented`, not `isConfigured`. By this point `assertUsable` has
+     * already refused a gateway whose credentials are missing, and treating one
+     * as manual here would file a bank-transfer declaration against a provider
+     * with no bank account.
+     */
+    const isGateway = this.gateways.isImplemented(paymentMethod.key);
+
     // Per-method bounds AND the platform's own, because neither is derivable
     // from the other — a provider may refuse under $20 while the platform's
     // floor is $10.
@@ -870,10 +898,98 @@ export class TransactionsService {
          * two eras stay tellable apart.
          */
         methodKey: paymentMethod.key,
-        provider: `manual_${paymentMethod.key}`,
+        /*
+         * A GATEWAY row carries the bare provider key; a manual declaration
+         * keeps its `manual_` prefix. The comment above records why: the two
+         * eras must stay tellable apart in a reconciliation, and
+         * UNIQUE(provider, provider_ref) is scoped on this column.
+         */
+        provider: isGateway ? paymentMethod.key : `manual_${paymentMethod.key}`,
         providerRef: reference,
       })
       .returning();
+
+    /*
+     * A gateway deposit gets a payment LINK; a manual one gets instructions.
+     *
+     * The row is written FIRST and the provider called second, deliberately. If
+     * the call fails, what is left behind is a pending deposit with no link —
+     * visible, refusable, and re-startable. The other order risks a payment
+     * existing at Whish that this system has no record of, which is money
+     * arriving against a reference nobody can reconcile.
+     *
+     * `reference` is the externalId: it is already unique (the insert above
+     * would have failed otherwise), it is what support quotes, and Whish treats
+     * a reused one as a replay — so a retried request converges on one payment
+     * rather than creating a second.
+     *
+     * ## ⚠️ WHAT THE ROW MUST SAY IF THE PROVIDER REFUSES
+     *
+     * Writing first is right and stays. What was wrong is what the row said
+     * afterwards: it kept its `pending` state, which the client's transaction
+     * list renders as money on its way. So a deposit that never started — the
+     * gateway unreachable, credentials rejected, the request refused — sat in
+     * the client's own history as processing, indefinitely, with no payment link
+     * and nothing to reconcile it against. The client waits for a balance that
+     * is not coming, and support has a queue of pending deposits that are not.
+     *
+     * A definite refusal now marks the row `failure`. It is NOT deleted: the
+     * attempt happened, the client made it, and it is the row support quotes
+     * when the client says "I tried and it did not work".
+     *
+     * ## The one case that must STAY pending
+     *
+     * `PaymentIndeterminateError` — the provider answered "I do not know"
+     * (Whish's code `500`). A payment link may exist and may still be paid.
+     * Marking that failed would tell a client who went on to pay that their
+     * money did not arrive, which is far more expensive than a stale pending
+     * row, and the reconciler settles it from `getStatus` either way.
+     *
+     * Nothing is credited or reversed on this path. It is a state correction on
+     * a row that never touched a balance — `requestDeposit` writes no ledger
+     * entries at all.
+     */
+    let paymentUrl: string | null = null;
+    if (isGateway) {
+      try {
+        const started = await this.gateways.startPayment(paymentMethod.key, {
+          externalId: reference,
+          amount: money(params.amount),
+          currency,
+          invoice: `Deposit ${reference}`,
+          successCallbackUrl: this.callbackUrl(paymentMethod.key, reference, 'success'),
+          failureCallbackUrl: this.callbackUrl(paymentMethod.key, reference, 'failure'),
+          successRedirectUrl: this.redirectUrl(paymentMethod.key, reference, 'success'),
+          failureRedirectUrl: this.redirectUrl(paymentMethod.key, reference, 'failure'),
+        });
+        paymentUrl = started.paymentUrl;
+      } catch (error) {
+        if (!(error instanceof PaymentIndeterminateError)) {
+          await this.db
+            .update(transactions)
+            .set({
+              state: 'failure',
+              /*
+               * The provider's own reason, kept on the row. These messages are
+               * already written to be shown to a client, so this leaks nothing
+               * — and "the payment provider refused the request" is exactly what
+               * support needs when the client asks why, months later, from a row
+               * that would otherwise say only `failure`.
+               */
+              rejectionReason:
+                error instanceof Error ? error.message : 'The payment could not be started.',
+              settledAt: new Date(),
+            })
+            .where(eq(transactions.id, tx.id));
+        }
+        /*
+         * Rethrown either way. The client asked to deposit and no deposit is
+         * possible; swallowing this would return a confirmation screen for a
+         * payment with no link and no chance of arriving.
+         */
+        throw error;
+      }
+    }
 
     return {
       id: tx.id,
@@ -883,7 +999,153 @@ export class TransactionsService {
       method: paymentMethod.key,
       state: tx.state,
       createdAt: tx.createdAt.toISOString(),
+      /*
+       * Null for a manual method, and the portal branches on it. A screen that
+       * assumed a link would send a bank-transfer client to nowhere; one that
+       * assumed instructions would leave a gateway client with an account
+       * number that is not how this method works.
+       */
+      paymentUrl,
     };
+  }
+
+  /**
+   * Where the PROVIDER calls us back.
+   *
+   * `API_PUBLIC_URL` rather than a request-derived host: a callback URL built
+   * from an inbound `Host` header is one a caller can influence, and this value
+   * is handed to a third party who will fetch it later. It must be a value the
+   * operator configured.
+   *
+   * The reference travels in the query string because Whish preserves custom
+   * parameters and sends no body — without it the callback says only "something
+   * happened" with no way to know what.
+   */
+  private callbackUrl(method: string, reference: string, outcome: 'success' | 'failure'): string {
+    const base = (this.config.get<string>('API_PUBLIC_URL') ?? '').replace(/\/+$/, '');
+    return `${base}/v1/payments/gateway/${method}/callback?reference=${encodeURIComponent(
+      reference,
+    )}&outcome=${outcome}`;
+  }
+
+  /** Where the CLIENT's browser lands after paying. The portal, not the API. */
+  private redirectUrl(method: string, reference: string, outcome: 'success' | 'failure'): string {
+    const base = (this.config.get<string>('PORTAL_URL') ?? '').replace(/\/+$/, '');
+    /*
+     * `method` travels too, and its absence was a latent bug.
+     *
+     * The landing page settles by calling
+     * `GET /payments/deposits/:reference/status?method=…`, and that query
+     * matches on `transactions.provider` — so the method has to be right or the
+     * lookup finds nothing. Only `reference` was sent, so the portal defaulted
+     * to `whish` and documented itself as reading the method "from the query
+     * when present". It was never present.
+     *
+     * With one gateway that was invisible. The day a second one is added, every
+     * redirect from it would settle against `whish`, miss, and leave the client
+     * on "not confirmed yet" for a payment that had gone through — while the
+     * comment claimed the case was handled.
+     */
+    return (
+      `${base}/deposit/${outcome}` +
+      `?reference=${encodeURIComponent(reference)}&method=${encodeURIComponent(method)}`
+    );
+  }
+
+  /**
+   * Settle a gateway deposit by ASKING THE PROVIDER, never by trusting a
+   * callback.
+   *
+   * ## The security boundary of the whole integration
+   *
+   * The callback that triggers this is an unauthenticated GET with no body and
+   * no signature. Anybody who learns the URL can fire it. So it is treated as a
+   * NUDGE — "go and look" — and the provider's authenticated status answer is
+   * the only thing money is credited on. A callback-trusting implementation
+   * credits a wallet for whoever can guess a reference.
+   *
+   * Safe to call repeatedly, and called from two places for that reason: the
+   * callback, and the client's own browser landing back on the portal. Whichever
+   * arrives first settles it; the second is a no-op.
+   *
+   * Idempotency is the DATABASE's, twice over: the state transition is
+   * conditional on the row still being pending, and `WalletService.post` is
+   * guarded by `ledger_entries_wallet_reference_uq`. Neither is a
+   * check-then-insert, because every check-then-insert loses under concurrency.
+   */
+  async settleGatewayDeposit(method: string, reference: string): Promise<{ state: string }> {
+    const [tx] = await this.db
+      .select()
+      .from(transactions)
+      .where(and(eq(transactions.provider, method), eq(transactions.providerRef, reference)))
+      .limit(1);
+
+    // Not found is not an error worth shouting about: a callback for a
+    // reference this system never issued is noise, not an incident.
+    if (!tx) throw new NotFoundError('No deposit matches that reference.');
+
+    // Already settled — nothing to ask, nothing to do.
+    if (tx.state !== 'pending') return { state: tx.state };
+
+    const result = await this.gateways.checkPayment(method, reference, tx.currency);
+
+    if (!result.settled) {
+      /*
+       * Still payable. `pending` at Whish INCLUDES "the client tried and
+       * failed" — the link stays live until it is paid or expires — so a
+       * failure callback must not mark the deposit failed. Doing so would tell a
+       * client their payment did not work while the link they are still looking
+       * at continues to accept money.
+       */
+      return { state: tx.state };
+    }
+
+    if (!result.paid) {
+      const updated = await this.db
+        .update(transactions)
+        .set({ state: 'failure', settledAt: new Date() })
+        .where(and(eq(transactions.id, tx.id), eq(transactions.state, 'pending')))
+        .returning();
+      return { state: updated[0]?.state ?? tx.state };
+    }
+
+    /*
+     * PAID. The credit and the state change share one transaction, so a
+     * deposit marked success with no ledger entry behind it — or a credit with
+     * no transaction pointing at it — is a state this system cannot reach.
+     */
+    await this.db.transaction(async (dbTx) => {
+      await this.wallets.post(
+        {
+          userId: tx.userId,
+          currency: tx.currency,
+          amount: tx.amount,
+          entryType: 'deposit',
+          referenceType: LEDGER_REFERENCE.transaction,
+          referenceId: tx.id,
+        },
+        dbTx,
+      );
+
+      await dbTx
+        .update(transactions)
+        .set({ state: 'success', settledAt: new Date() })
+        .where(and(eq(transactions.id, tx.id), eq(transactions.state, 'pending')));
+    });
+
+    /*
+     * The partner commission this deposit earns, accrued AFTER the credit and
+     * outside its transaction — the same ordering and the same no-throw port as
+     * `creditDeposit`. The client's money landing is the important half.
+     */
+    await this.commissions.accrueForSettledDeposit({
+      transactionId: tx.id,
+      clientUserId: tx.userId,
+      amount: tx.amount,
+      currency: tx.currency,
+    });
+
+    return { state: 'success' };
   }
 
   /**

@@ -154,6 +154,42 @@ const PUBLIC_ROUTES: Record<string, string> = {
    */
   'GET /currencies':
     'Operator currency list. No client data, and the signed-out registration screen needs it.',
+
+  /*
+   * The payment gateway's return URL. Open because the CALLER IS THE PROVIDER,
+   * or the client's browser bouncing back off the provider's hosted page —
+   * neither carries our cookies, and Whish has no way to obtain one.
+   *
+   * ⚠️ The reason this is safe is NOT that the request is verified. It is that
+   * the request is treated as a NUDGE and never as evidence: the handler reads
+   * nothing from the query string, credits nothing, and only asks the provider
+   * over an authenticated server-to-server call what the payment's status
+   * actually is. Anyone on the internet may hit this route; the worst they
+   * achieve is making us re-ask Whish about a payment reference.
+   *
+   * It always answers 200, including for an unknown reference, so it cannot be
+   * used to enumerate which references exist.
+   */
+  'GET /payments/gateway/:method/callback':
+    'The gateway returns the payer here. Untrusted by design — settles ONLY from an ' +
+    'authenticated getStatus() call, reads nothing from the URL, and always answers 200.',
+
+  /*
+   * Payment-method brand marks. Open because the deposit screen renders them,
+   * and part of that screen is reachable before a session is fully established.
+   *
+   * The content is operator-uploaded artwork identical for every caller — no
+   * client data, and the filenames are server-minted UUIDs, so the route
+   * discloses nothing even to someone enumerating it.
+   *
+   * ⚠️ Served with `X-Content-Type-Options: nosniff` and `Content-Security-Policy:
+   * default-src 'none'; sandbox`, which is what makes accepting SVG here safe.
+   * `payment-methods-http.spec.ts` asserts both headers; if either goes, SVG
+   * must come out of PAYMENT_LOGO_BUCKET.
+   */
+  'GET /uploads/payment-logos/:file':
+    'Operator-uploaded brand marks, identical for every caller and needed by the signed-out ' +
+    'deposit screen. UUID filenames; served nosniff under a sandboxed CSP.',
 };
 
 let app: INestApplication;

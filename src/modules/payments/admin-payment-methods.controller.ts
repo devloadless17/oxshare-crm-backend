@@ -1,17 +1,31 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
   Query,
   Req,
   Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import {
+  ApiConsumes,
+  ApiCookieAuth,
+  ApiOkResponse,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
+import { ValidationError } from '../../common/errors/domain-errors';
+import { PAYMENT_LOGO_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { Request, Response } from 'express';
 import { exportFormat, streamCsvFromArray } from '../../common/export/export-response';
 import { NotAudited } from '../admin/guards/audited.decorator';
@@ -25,6 +39,7 @@ import { Audited } from '../admin/guards/audited.decorator';
 import { PaymentMethodsService } from './payment-methods.service';
 import {
   CreatePaymentMethodDto,
+  PaymentLogoResponseDto,
   PaymentMethodDto,
   UpdatePaymentMethodDto,
 } from './dto/payment-method.dto';
@@ -49,18 +64,21 @@ import {
 @ApiTags('admin')
 @Controller('admin/payment-methods')
 export class AdminPaymentMethodsController {
-  constructor(private readonly methods: PaymentMethodsService) {}
+  constructor(
+    private readonly methods: PaymentMethodsService,
+    private readonly files: StoredFilesService,
+  ) {}
 
   @Get()
   @UseGuards(PermissionsGuard)
   @RequirePermissions('payments.view')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Every payment method, configured or not',
+    summary: 'Every payment method, enabled or not',
     description:
-      'Includes disabled methods and ones with no pay-to details — managing those is the point ' +
-      'of the screen. Clients see a narrower list: GET /payments/methods returns only what is ' +
-      'enabled AND configured.',
+      'Includes disabled methods — turning them on and off is the point of the screen. Clients ' +
+      'see a narrower list: GET /payments/methods returns only what is enabled AND, for a ' +
+      'gateway, reachable from this deployment.',
   })
   @ApiOkResponse({ type: PaymentMethodDto, isArray: true })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
@@ -71,12 +89,10 @@ export class AdminPaymentMethodsController {
   /**
    * Every payment method as CSV.
    *
-   * ── `minAmount` and `maxAmount` are MONEY and are emitted unchanged ────────
-   *
-   * Both are `NUMERIC(28,8)` columns and arrive from the driver as strings.
-   * They are written to the file exactly as they arrive — §6.1 applies to a
-   * configured deposit limit as much as to a ledger entry, and this is the
-   * table that decides how much a client is allowed to send.
+   * The per-method bounds, pay-to and instructions columns went in migration
+   * 0042 and `kind` in 0043, so none of them is exported — there is nothing left
+   * to export. What remains is the method's identity and the one thing an
+   * operator decides: whether clients are offered it.
    */
   @Get('export')
   @UseGuards(PermissionsGuard)
@@ -110,9 +126,10 @@ export class AdminPaymentMethodsController {
   @ApiOperation({
     summary: 'Add a payment method',
     description:
-      'A method with no `payTo` is created but never offered to clients — see the service. That ' +
-      'is deliberate: an account number nobody has filled in cannot receive money, and inventing ' +
-      'one is how money leaves and does not arrive.',
+      'Key, name, currency and an optional logo. `enabled` decides whether clients are offered ' +
+      'it, and is the only thing about a method an operator changes afterwards — with one ' +
+      'exception they cannot: a GATEWAY method stays hidden on a deployment holding no provider ' +
+      'credentials, because a client who picks it would land on an error.',
   })
   @ApiOkResponse({ type: PaymentMethodDto })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
@@ -142,41 +159,110 @@ export class AdminPaymentMethodsController {
     return this.methods.update(key, dto, req.admin);
   }
 
-  @Delete(':key')
+  /**
+   * Upload a logo and get back the URL to store on the method.
+   *
+   * ## Why an upload rather than a URL field
+   *
+   * The form used to take a URL, which meant every client's deposit screen
+   * loaded an image from a host the operator pasted in — a third party that can
+   * change the image, log every client that views it, or simply go away and
+   * leave a broken mark on the payment screen. Hosting it ourselves removes all
+   * three.
+   *
+   * ## The type is decided from the BYTES
+   *
+   * `StoredFilesService` sniffs the content and ignores the multipart
+   * `Content-Type`, because that header is a claim by the uploader — and an HTML
+   * document declared `image/png` is how a stored file becomes stored XSS.
+   *
+   * ## SVG is accepted, and what that costs
+   *
+   * Brand marks arrive as SVG, and rasterising one for a 20px table row throws
+   * away the reason it was vector. It is also the ONE accepted type with no
+   * magic bytes, so its check is a text scan rather than a signature — an HTML
+   * document is text too, and `looksLikeSvg` exists to tell them apart.
+   *
+   * ⚠️ That scan is only half. The other half is `GET /uploads/payment-logos/:file`
+   * serving with `X-Content-Type-Options: nosniff` and `Content-Security-Policy:
+   * default-src 'none'; sandbox`, so a stored SVG cannot execute even if one
+   * gets past. The two are a PAIR: if the CSP goes, SVG must come out of the
+   * bucket. `payment-methods-http.spec.ts` asserts both.
+   *
+   * The size limit is set at BOTH the interceptor and inside the service, so a
+   * ceiling stays a ceiling if one of the two is later reconfigured.
+   *
+   * Returns the URL only — it does NOT write it to the method. The operator is
+   * still editing a form they may cancel, and an upload that mutated the row
+   * would change what clients see before Save was pressed.
+   */
+  @Post('logo')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('payments.manage')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: PAYMENT_LOGO_BUCKET.maxBytes, files: 1 },
+    }),
+  )
+  @HttpCode(HttpStatus.OK)
   @ApiCookieAuth()
-  @ApiOperation({
-    summary: 'Remove a payment method',
-    description:
-      'Refuses one that any deposit references — disabling is almost always what was meant, and ' +
-      'it keeps the history readable while stopping new deposits.',
-  })
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Upload a payment-method logo (JPEG, PNG, WebP or SVG, max 1MB)' })
+  @ApiOkResponse({ type: PaymentLogoResponseDto })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
-  @Audited('payment_method.delete')
-  remove(@Req() req: Request & { admin: AuthenticatedAdmin }, @Param('key') key: string) {
-    return this.methods.remove(key, req.admin);
+  /*
+   * Not audited, because nothing is CHANGED by it.
+   *
+   * This writes an orphan file and hands back a URL. Until a create or update
+   * attaches that URL to a method, no client sees it and no configuration
+   * differs — and both of those ARE audited, carrying the logoUrl in their
+   * payload. So the change is attributed where it takes effect. Auditing the
+   * upload as well would record every abandoned attempt as if it were one.
+   */
+  @NotAudited(
+    'Writes an unreferenced file and returns its URL; changes no configuration and no client sees it. The create/update that attaches the URL is audited and carries it.',
+  )
+  async uploadLogo(@UploadedFile() file: Express.Multer.File | undefined) {
+    if (!file) throw new ValidationError('No file was uploaded.');
+    const stored = await this.files.write(PAYMENT_LOGO_BUCKET, file.buffer, file.mimetype);
+    return { logoUrl: `/v1/uploads/payment-logos/${stored.filename}` };
   }
+
+  /*
+   * ── THERE IS NO DELETE, DELIBERATELY ──────────────────────────────────────
+   *
+   * `DELETE /admin/payment-methods/:key` was removed along with its service
+   * method, and the capability is not coming back behind a confirmation dialog.
+   *
+   * A payment method is referenced by every deposit ever filed against it. The
+   * old endpoint already refused to delete one with history — which meant the
+   * button worked exactly once per method, on the ones nobody had used, and
+   * threw a conflict on every method that mattered. That is a control whose
+   * successful case is the uninteresting one.
+   *
+   * DISABLING does what deleting was reached for: it stops the method being
+   * offered to clients immediately (`listAvailable` filters on `enabled`, and
+   * `assertUsable` refuses it on the write path), while every historical deposit
+   * keeps a readable method name instead of pointing at a row that is gone.
+   *
+   * So the surface is: create, update, and toggle `enabled`. Nothing here can
+   * destroy a row that money history depends on.
+   */
 }
 
 /**
  * The payment-method export's columns.
  *
- * `Minimum` and `Maximum` are the raw `NUMERIC(28,8)` strings — never
- * `Number()`, never rounded. `instructions` is free text an operator wrote and
- * may contain commas and newlines; the CSV escaping handles both.
+ * The whole table, which is now small enough to say so: what the method is, and
+ * whether clients are offered it. Nothing here is money, so nothing here needs
+ * the §6.1 string handling the other exports do.
  */
 const PAYMENT_METHOD_EXPORT_COLUMNS = [
   { header: 'Key', value: (r: PaymentMethodExportRow) => r.key },
   { header: 'Name', value: (r: PaymentMethodExportRow) => r.name },
-  { header: 'Kind', value: (r: PaymentMethodExportRow) => r.kind },
   { header: 'Currency', value: (r: PaymentMethodExportRow) => r.currency },
-  { header: 'Pay to', value: (r: PaymentMethodExportRow) => r.payTo },
-  // Money: the exact string the column holds.
-  { header: 'Minimum', value: (r: PaymentMethodExportRow) => r.minAmount },
-  { header: 'Maximum', value: (r: PaymentMethodExportRow) => r.maxAmount },
   { header: 'Enabled', value: (r: PaymentMethodExportRow) => r.enabled },
-  { header: 'Instructions', value: (r: PaymentMethodExportRow) => r.instructions },
   { header: 'Sort order', value: (r: PaymentMethodExportRow) => r.sortOrder },
   { header: 'Updated at', value: (r: PaymentMethodExportRow) => r.updatedAt },
 ] as const;
@@ -184,14 +270,8 @@ const PAYMENT_METHOD_EXPORT_COLUMNS = [
 interface PaymentMethodExportRow {
   key: string;
   name: string;
-  kind: string;
   currency: string;
-  payTo: string | null;
-  /** NUMERIC(28,8) as a string — see the column note above. */
-  minAmount: string | null;
-  maxAmount: string | null;
   enabled: boolean;
-  instructions: string | null;
   sortOrder: number;
   updatedAt: Date;
 }

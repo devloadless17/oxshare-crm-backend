@@ -31,7 +31,11 @@ import { AuditLogStore } from '../../store/audit-log.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
 import { COOKIE_BASES, readSessionCookie } from '../../common/security/session-cookies';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
-import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
+import {
+  AVATAR_BUCKET,
+  PAYMENT_LOGO_BUCKET,
+  StoredFilesService,
+} from '../../common/uploads/stored-files.service';
 import {
   isTokenKind,
   TOKEN_ALGORITHMS,
@@ -124,11 +128,101 @@ export class UploadsController {
     const found = this.files.read(AVATAR_BUCKET, name);
     if (!found) throw new NotFoundException('Photo not found.');
 
+    /*
+     * Declared, for the reason the payment-logo handler below sets out at
+     * length: this route sent no `Content-Type` either. It renders anyway
+     * because the avatar bucket takes only JPEG, PNG and WebP, all of which a
+     * browser decodes from their magic bytes despite `nosniff` — so this is a
+     * correctness fix rather than a visible one, and it is what stops the same
+     * bug reappearing if a signature-less type is ever added to the bucket.
+     */
+    const contentType = this.files.contentType(AVATAR_BUCKET, name);
+    if (!contentType) throw new NotFoundException('Photo not found.');
+
+    res.setHeader('Content-Type', contentType);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     // Private, because it is one client's photo, and short — an avatar the
     // client has just replaced should not survive on their own screen.
     res.setHeader('Cache-Control', 'private, max-age=300');
+    found.stream.pipe(res);
+  }
+
+  /**
+   * A payment-method logo — PUBLIC, unlike everything else in this controller.
+   *
+   * ## Why there is no guard here
+   *
+   * It is a brand mark: the Whish logo, a bank's wordmark. It names no client,
+   * reveals nothing about anybody's account, and appears on a deposit screen
+   * every client sees. Guarding it would mean a client's payment options fail to
+   * render while their session refreshes, for a file whose contents are on the
+   * provider's own public website.
+   *
+   * The other routes here serve a PERSON's photo and their identity documents,
+   * which is why those are gated and this is not. That difference is the reason
+   * this is a separate handler rather than a parameter on one of them.
+   *
+   * ## Still served defensively
+   *
+   * `basename` neutralises traversal, and `sandbox` plus a `script-src` that
+   * falls back to `'none'` means nothing reachable here can execute. Cached
+   * PUBLICLY for a day: these change roughly never and every client loads them.
+   *
+   * ## ⚠️ THE BUCKET DOES ACCEPT SVG, and this note used to claim it did not
+   *
+   * That was true when written and stopped being true when brand marks were
+   * allowed in. Two things follow from it, and both were wrong until an uploaded
+   * logo failed to appear on the deposit screen:
+   *
+   *   1. `Content-Type` MUST be sent. It was not sent at all, and `nosniff`
+   *      forbids the browser from working one out. A PNG survives that on its
+   *      magic bytes, which is why nothing looked broken; SVG is XML with no
+   *      signature, so an undeclared one is not rendered as an image at all.
+   *   2. The CSP must permit the SVG's OWN stylesheet. Illustrator and Figma
+   *      export a `<style>` block and put every fill in it, so `default-src
+   *      'none'` — under which `style-src` falls back to `'none'` — stripped the
+   *      colour out of any mark that did render.
+   *
+   * `style-src 'unsafe-inline'` is the narrowest fix and weakens nothing that
+   * matters. `script-src` still falls back to `default-src 'none'`, `sandbox`
+   * (with no `allow-scripts`) blocks execution independently of it, and CSS
+   * `url()` fetches are refused because `img-src`, `font-src` and `connect-src`
+   * all still fall back to `'none'`. The stylesheet may colour its own shapes
+   * and reach nothing outside itself.
+   *
+   * These headers are a PAIR with the upload check: `StoredFilesService` refuses
+   * anything whose BYTES are not really an image, because an HTML document
+   * declared `image/svg+xml` is how a stored file becomes stored XSS. If either
+   * side is relaxed, SVG comes out of the bucket.
+   * `payment-methods-http.spec.ts` asserts both halves.
+   */
+  @Get('payment-logos/:file')
+  @ApiOperation({ summary: 'Serve a payment-method logo (public)' })
+  @NotClientScoped(
+    'A payment brand mark on the deposit screen. Names no client and carries no client data.',
+  )
+  servePaymentLogo(@Param('file') file: string, @Res() res: Response) {
+    const name = basename(file);
+    const found = this.files.read(PAYMENT_LOGO_BUCKET, name);
+    if (!found) throw new NotFoundException('Logo not found.');
+
+    /*
+     * From the STORED extension, which this service chose from the file's own
+     * magic bytes at upload — never from anything a caller supplied. A file in
+     * the bucket with an extension we never write is not one we wrote: 404
+     * rather than a guess, because guessing is the sniffing `nosniff` forbids.
+     */
+    const contentType = this.files.contentType(PAYMENT_LOGO_BUCKET, name);
+    if (!contentType) throw new NotFoundException('Logo not found.');
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    );
+    res.setHeader('Cache-Control', 'public, max-age=86400');
     found.stream.pipe(res);
   }
 

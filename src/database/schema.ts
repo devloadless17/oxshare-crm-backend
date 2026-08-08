@@ -1102,62 +1102,68 @@ export const tradingAccountStatusEnum = pgEnum('trading_account_status', [
 ]);
 
 /**
- * How a payment method behaves, which decides the deposit flow.
- *
- * The type rather than the key: a screen that branches on `key === 'whish'` has
- * to be edited every time an operator adds a method, which is the thing making
- * these rows data instead of code was meant to avoid.
- *
- *   manual   show instructions and a pay-to, take a client-supplied reference,
- *            and wait for an admin to confirm the money arrived.
- *   gateway  redirect to a provider and settle on its callback.
- *   crypto   show an address and confirm on-chain.
- *
- * Only `manual` is implemented. Whish is a manual method today because its
- * sandbox credentials are open decision #5 in ARCHITECTURE.md and nobody has
- * them; the `PaymentProvider` seam exists so `gateway` slots in behind the same
- * deposit screen without redesigning it.
- */
-export const paymentMethodKindEnum = pgEnum('payment_method_kind', ['manual', 'gateway', 'crypto']);
-
-/**
  * A way a client can put money in.
  *
  * Rows, not a hardcoded list. The deleted deposit page carried a two-element
  * `METHODS` array in the component, so adding one was a deploy and the operator
  * could not turn one off when a provider went down.
  *
- * `instructions` and `pay_to` are NULLABLE and seeded null on purpose. The
- * deleted deposit page recorded why: "Inventing an IBAN is the same failure as
- * the fake $0.00 balances, with a worse outcome: the money leaves and does not
- * arrive." An operator fills in the real account details; until they do, the
- * method is not offered.
+ * ## `enabled` is the ONE decision this table records
+ *
+ * Every other column IDENTIFIES the method — its key, what to call it, what it
+ * settles in, what mark to show beside it. The operator's actual choice is
+ * whether clients are offered it at all, and that is a boolean they flip from
+ * the admin console the moment a provider goes down.
+ *
+ * ## `kind` is GONE, and is not to come back as a column
+ *
+ * Dropped in migration 0043. It claimed to say how a method behaved — manual,
+ * gateway, crypto — but that is a fact about the CODE, not about the row: it is
+ * whether a gateway implementation exists for that key. Every reader had already
+ * stopped trusting it (`PaymentMethodsService.effectiveKind` overrode the stored
+ * value on each read, because the seeded Whish row said `manual` while the Whish
+ * gateway existed), and a column every reader overrides is a second copy of an
+ * answer, kept only long enough to disagree.
+ *
+ * `PaymentGateways.isImplemented(key)` is the answer now. The rule the old enum
+ * carried survives it, and still applies: a SCREEN must not branch on
+ * `key === 'whish'` — the API tells the portal what happened by returning a
+ * `paymentUrl` or not, so adding a provider stays a case in one switch.
  */
 export const paymentMethods = pgTable(
   'payment_methods',
   {
-    /** A stable machine key — 'whish', 'usdt_trc20'. Never renamed. */
+    /** A stable machine key — 'whish'. Never renamed. */
     key: varchar('key', { length: 40 }).primaryKey(),
     name: varchar('name', { length: 80 }).notNull(),
-    kind: paymentMethodKindEnum('kind').notNull(),
     currency: varchar('currency', { length: 10 })
       .notNull()
       .references(() => currencies.code, { onDelete: 'restrict' }),
     /** Sized for a real URL, like `platform_links.url` and for the same reason. */
     logoUrl: varchar('logo_url', { length: 2048 }),
-    /** What the client must do, in the operator's words. Shown verbatim. */
-    instructions: text('instructions'),
-    /** The Whish number, IBAN or wallet address the client sends to. */
-    payTo: varchar('pay_to', { length: 255 }),
-    /**
-     * Per-method bounds, both nullable.
+    /*
+     * ── `pay_to`, `instructions`, `min_amount` and `max_amount` are GONE ─────
      *
-     * NULL means "no bound beyond the platform's own", not zero — a method with
-     * a 0 minimum and a 0 maximum would accept nothing at all, and that is the
-     * value a NOT NULL DEFAULT '0' would have handed every existing row.
+     * Dropped in migration 0042. The admin surface is now key, name, logo and an
+     * enable/disable toggle, so nothing wrote to them.
+     *
+     * WHAT WENT WITH THEM, stated because it is a real capability and not a
+     * tidy-up: `pay_to` was the account number and `instructions` the transfer
+     * notes a MANUAL method showed the client. Without them a manual deposit
+     * gives a reference and no destination — which is fine while the platform
+     * runs the GATEWAY flow, where the client is redirected and never sees an
+     * account number, and is not fine the day a bank transfer is offered again.
+     *
+     * If manual deposits return, so do these columns — and with them the rule
+     * they used to carry: a manual method with no destination is NOT OFFERED.
+     * That rule existed because "inventing an IBAN is the same failure as the
+     * fake $0.00 balances, with a worse outcome: the money leaves and does not
+     * arrive."
+     *
+     * The bounds are no loss. `PaymentMethodsService.withEffectiveBounds`
+     * reports the platform-wide floor and ceiling on every method, which is what
+     * makes the limits identical across them, and `requestDeposit` enforces it.
      */
-    minAmount: numeric('min_amount', { precision: 28, scale: 8 }),
-    maxAmount: numeric('max_amount', { precision: 28, scale: 8 }),
     enabled: boolean('enabled').notNull().default(true),
     sortOrder: integer('sort_order').notNull().default(0),
     updatedBy: uuid('updated_by'),

@@ -17,6 +17,7 @@ import {
   MoneyRuleError,
   ClientNotFoundError,
   NotFoundError,
+  PaymentIndeterminateError,
   ValidationError,
 } from '../errors/domain-errors';
 import { safeLogPath } from '../logging/redact';
@@ -39,6 +40,15 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   // Same status as NotFoundError; the point is the distinct `code` it carries.
   [ClientNotFoundError, HttpStatus.NOT_FOUND],
   [ValidationError, HttpStatus.BAD_REQUEST],
+  /*
+   * Same 400 as a validation failure, and the point is the distinct `code`.
+   *
+   * The provider was asked to start a payment and did not say whether it did.
+   * The client's next step differs from every other 400 here — check the payment
+   * history before retrying, because a link may exist — and a frontend must be
+   * able to tell that apart without matching on English.
+   */
+  [PaymentIndeterminateError, HttpStatus.BAD_REQUEST],
   [AuthenticationError, HttpStatus.UNAUTHORIZED],
   [AuthorizationError, HttpStatus.FORBIDDEN],
   [EmailNotVerifiedError, HttpStatus.FORBIDDEN],

@@ -256,21 +256,24 @@ describe('recorded: the feature modules', () => {
     expect(await waitForCount('currency.create', before + 1)).toBe(before + 1);
   });
 
-  it('payment_method.create — the account number clients pay into', async () => {
+  it('payment_method.create — a new way for clients to send money in', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const before = await countOf('payment_method.create');
 
     /*
      * A REAL body, for the reason the ib_level case below spells out: the
-     * `it.fails` version sent `label` (the field is `name`), `kind: 'bank'`
-     * (the kinds are manual|gateway|crypto) and no `currency` at all, so it
-     * was refused at validation rather than reaching any audit code. `it.fails`
-     * counts any throw as success, so it looked green while proving nothing.
+     * `it.fails` version sent `label` (the field is `name`), a `kind` that was
+     * not one of the enum's values, and no `currency` at all, so it was refused
+     * at validation rather than reaching any audit code. `it.fails` counts any
+     * throw as success, so it looked green while proving nothing.
+     *
+     * `kind` is not sent now because the column is gone (migration 0043) — and
+     * `forbidNonWhitelisted` would refuse the request for carrying it, which is
+     * the same trap in a new spelling.
      */
     const res = await session.post('/v1/admin/payment-methods', {
       key: `audit_test_${Date.now() % 100000}`,
       name: 'Audit Test Method',
-      kind: 'manual',
       currency: 'USD',
     });
     expect([200, 201]).toContain(res.status);

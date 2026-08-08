@@ -59,12 +59,36 @@ describe('declared type versus content', () => {
     expect(signatureMatchesDeclared(html, 'image/png')).toBe(false);
   });
 
-  it('rejects an SVG declared as an image, which a browser would execute', () => {
-    // SVG is not in the accepted set at all, and it is the specific case that
-    // makes "it is only an image" untrue — an SVG can carry script.
+  /*
+   * SVG is recognised now, and it was not before.
+   *
+   * `PAYMENT_LOGO_BUCKET` accepts it — brand marks arrive as SVG and rasterising
+   * them for a 20px row is a real loss — and the KYC and avatar buckets do NOT.
+   * That is the line: this function answers "do the bytes match the claim", and
+   * WHETHER a match is acceptable belongs to the bucket's `allowedMimeTypes`.
+   *
+   * The safety of accepting it anywhere rests on two things outside this file:
+   * the sniffer refusing HTML (below), and `Content-Security-Policy:
+   * default-src 'none'; sandbox` on the route that serves the logo. If that
+   * header goes, SVG must come out of the bucket.
+   */
+  it('matches an SVG only under its OWN declaration', () => {
     const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>');
     expect(signatureMatchesDeclared(svg, 'image/png')).toBe(false);
-    expect(signatureMatchesDeclared(svg, 'image/svg+xml')).toBe(false);
+    expect(signatureMatchesDeclared(svg, 'image/svg+xml')).toBe(true);
+  });
+
+  /*
+   * ⚠️ The case the SVG allowance turns on. SVG has no magic bytes, so its check
+   * is a text scan — and an HTML document is text too. A page accepted here and
+   * served from our own origin is stored XSS.
+   */
+  it('rejects an HTML document declared as SVG', () => {
+    const html = Buffer.from('<html><script>alert(document.cookie)</script></html>');
+    expect(signatureMatchesDeclared(html, 'image/svg+xml')).toBe(false);
+    expect(signatureMatchesDeclared(Buffer.from('  <script>x</script>'), 'image/svg+xml')).toBe(
+      false,
+    );
   });
 
   it('accepts each real type under its own declaration', () => {

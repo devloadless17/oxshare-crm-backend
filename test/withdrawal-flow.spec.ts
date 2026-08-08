@@ -9,6 +9,7 @@ import { PaymentMethodsService } from '../src/modules/payments/payment-methods.s
 import { SYSTEM_ACTOR } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
 import { commissionStubAs } from './commission-stub';
+import { gatewayStubAs } from './gateway-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -35,9 +36,17 @@ beforeAll(async () => {
     wallets,
     ctx.db,
     new MoneyLimits(new ConfigService()),
-    new PaymentMethodsService(ctx.db, currencies, auditStubAs()),
+    new PaymentMethodsService(
+      ctx.db,
+      currencies,
+      auditStubAs(),
+      gatewayStubAs(),
+      new MoneyLimits(new ConfigService()),
+    ),
     currencies,
     commissionStubAs(),
+    gatewayStubAs(),
+    new ConfigService(),
   );
 }, 120_000);
 

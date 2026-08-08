@@ -11,6 +11,9 @@ import { CurrenciesModule } from '../currencies/currencies.module';
 import { WithdrawalOtpService } from './withdrawal-otp.service';
 import { SecuritySettingsService } from '../admin/security-settings.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
+import { PaymentCallbacksController } from './payment-callbacks.controller';
+import { PaymentGateways } from './payment-gateways.service';
+import { WhishProvider } from './whish.provider';
 
 /** Whish · USDT · deposits · withdrawals · OTP · provider callbacks */
 @Module({
@@ -24,7 +27,14 @@ import { AdminAuditService } from '../admin/admin-audit.service';
    * graph, which is the thing the note below is protecting against.
    */
   imports: [WalletModule, IdentityModule, CurrenciesModule, AdminAuthModule],
-  controllers: [PaymentsController, AdminPaymentMethodsController],
+  /*
+   * `PaymentCallbacksController` is UNAUTHENTICATED, uniquely in this module and
+   * deliberately: a payment gateway calls it server-to-server with no credential
+   * of any kind. It is a separate file rather than an exception inside
+   * `PaymentsController` so that the unauthenticated surface of this system
+   * stays greppable — see the note in it for why that is safe.
+   */
+  controllers: [PaymentsController, PaymentCallbacksController, AdminPaymentMethodsController],
   /*
    * `SecuritySettingsService` and `AdminAuditService` are provided here rather
    * than imported from AdminModule, deliberately: importing the admin module
@@ -40,6 +50,16 @@ import { AdminAuditService } from '../admin/admin-audit.service';
     WithdrawalOtpService,
     SecuritySettingsService,
     AdminAuditService,
+    /*
+     * The hosted-gateway seam. `PaymentGateways` is the registry every caller
+     * talks to; `WhishProvider` is the one implementation behind it today.
+     *
+     * Nothing outside this module names Whish — adding a second provider is a
+     * case in one switch, not a change to the deposit flow, the method list and
+     * the callback route.
+     */
+    PaymentGateways,
+    WhishProvider,
   ],
   /*
    * `PaymentsService` is gone from this list, and it was an empty

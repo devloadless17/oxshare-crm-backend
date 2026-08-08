@@ -342,43 +342,71 @@ describe('trading accounts', () => {
 });
 
 describe('payment methods', () => {
-  it('ships Whish, disabled, with its logo and no invented pay-to details', async () => {
+  /**
+   * What a freshly migrated database actually holds — Whish, disabled, alone.
+   *
+   * This asserts the SEED, which is why it lives here rather than in
+   * `payment-methods.spec.ts`: that suite resets the table before every test, so
+   * an assertion there would pass on its own cleanup.
+   *
+   * `pay_to`, `instructions` and the per-method bounds are absent from the query
+   * because the COLUMNS are gone (migration 0042). `kind` is absent for the same
+   * reason (0043).
+   */
+  it('ships Whish, disabled, and no other method', async () => {
     const { rows } = await ctx.db.execute<{
+      key: string;
       name: string;
-      kind: string;
       currency: string;
       enabled: boolean;
       logo_url: string | null;
-      pay_to: string | null;
-      instructions: string | null;
-    }>(sql`SELECT name, kind, currency, enabled, logo_url, pay_to, instructions
-             FROM payment_methods WHERE key = 'whish'`);
+    }>(sql`SELECT key, name, currency, enabled, logo_url
+             FROM payment_methods ORDER BY key`);
 
-    const whish = rows[0];
-    expect(whish.name).toBe('Whish Money');
-    // `manual`, not `gateway`: the sandbox credentials are an open decision and
-    // a gateway wired to credentials nobody has is a deposit button that fails.
-    expect(whish.kind).toBe('manual');
-    expect(whish.logo_url).toContain('Whish');
+    const whish = rows.find((r) => r.key === 'whish');
+    expect(whish?.name).toBe('Whish Money');
+    expect(whish?.currency).toBe('USD');
+    expect(whish?.logo_url).toContain('Whish');
+    // Disabled: `enabled` is the operator's whole decision about whether clients
+    // see a method, and nobody has switched this one on.
+    expect(whish?.enabled).toBe(false);
 
     /*
-     * DISABLED, and pay-to details absent rather than invented. The deleted
-     * deposit page recorded the rule: "Inventing an IBAN is the same failure as
-     * the fake $0.00 balances, with a worse outcome: the money leaves and does
-     * not arrive." An operator supplies the real number; until then no client
-     * is offered the method.
+     * ⚠️ `usdt_trc20` must be GONE, and this is the assertion that says so.
+     *
+     * Migration 0042 seeded it ENABLED to exercise a `crypto` deposit branch.
+     * There is no such branch and no crypto provider, so what shipped was a
+     * method every client could pick and none could complete: the deposit filed
+     * pending and waited on a credit nothing was going to issue. 0043 deletes
+     * it.
      */
-    expect(whish.enabled).toBe(false);
-    expect(whish.pay_to).toBeNull();
-    expect(whish.instructions).toBeNull();
+    expect(rows.map((r) => r.key)).toEqual(['whish']);
+  });
+
+  /**
+   * ⚠️ `kind` is DROPPED, and inserting it must fail at the DATABASE.
+   *
+   * The column was a second copy of an answer the code already held — whether a
+   * gateway implementation exists for the key — and every reader had started
+   * overriding it. This pins that it cannot come back by accident: a restored
+   * dump, a stale migration or a hand-written INSERT carrying `kind` is an error
+   * here rather than a silently ignored column.
+   */
+  it('has no kind column — 0043 dropped it', async () => {
+    await expect(
+      ctx.db.execute(sql`
+        INSERT INTO payment_methods (key, name, kind, currency)
+        VALUES ('with_kind', 'With kind', 'manual', 'USD')
+      `),
+    ).rejects.toThrow(/column "kind" of relation "payment_methods" does not exist/i);
   });
 
   it('refuses a method in a currency the platform does not have', async () => {
     expect(
       await constraintViolatedBy(
         ctx.db.execute(sql`
-          INSERT INTO payment_methods (key, name, kind, currency)
-          VALUES ('bogus', 'Bogus', 'manual', 'XXX')
+          INSERT INTO payment_methods (key, name, currency)
+          VALUES ('bogus', 'Bogus', 'XXX')
         `),
       ),
     ).toBe('payment_methods_currency_currencies_code_fk');
