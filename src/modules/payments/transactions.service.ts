@@ -1,7 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomBytes } from 'crypto';
-import { and, asc, desc, eq, gte, ne, sql, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, ne, sql, type SQLWrapper } from 'drizzle-orm';
 import { tradingAccounts, transactions, users } from '../../database/schema';
+import type { ListTransactionsQueryDto } from './dto/transaction-query.dto';
+
+/** The stored row, as every read here returns it. */
+type TransactionRow = typeof transactions.$inferSelect;
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
 import { assertActorCan, type Actor } from '../../common/security/actor';
 import { money, toDecimal } from '../wallet/money';
@@ -551,14 +555,120 @@ export class TransactionsService {
     return rows.map((r) => ({ ...r, amount: money(r.amount) }));
   }
 
-  async listForUser(userId: string) {
-    const rows = await this.db
-      .select()
-      .from(transactions)
-      .where(eq(transactions.userId, userId))
-      .orderBy(desc(transactions.createdAt))
-      .limit(100);
-    return rows.map((r) => ({ ...r, amount: money(r.amount) }));
+  /**
+   * A client's own history — filtered, ordered and paged BY THE DATABASE.
+   *
+   * ## ⚠️ What this replaced, and why it was wrong
+   *
+   * This method used to be a bare `SELECT ... ORDER BY created_at DESC LIMIT
+   * 100` with no parameters, and the portal did the filtering, the sorting and
+   * the counting in the browser. Both apps documented that as "the client's
+   * whole history"; the `LIMIT 100` had made it false without anybody updating
+   * the sentence.
+   *
+   * So a client with 150 movements was filtering the newest 100 and being told
+   * "showing 4 of 100". PLATFORM-CONVENTIONS R-2.5 names that failure exactly —
+   * and this is the screen a client uses to check the ledger against their own
+   * records, which makes an under-report here worse than on any other list.
+   *
+   * Every constraint is now a WHERE, the ordering is an ORDER BY, and `total` is
+   * a COUNT over the same predicate. A filter therefore covers every row the
+   * client has, not the newest hundred.
+   *
+   * ## Ordering amounts is the database's job, and it is better at it
+   *
+   * `amount` is `NUMERIC(28,8)`. Postgres orders it numerically and exactly —
+   * no decimal.js, no `Number()`, and no risk of the text comparison that puts
+   * '9.00000000' above '100.00000000'. §6.1 is satisfied by never taking the
+   * value out of the database to compare it.
+   */
+  async listForUser(
+    userId: string,
+    query: ListTransactionsQueryDto = {},
+  ): Promise<{ items: TransactionRow[]; total: number; page: number; limit: number }> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 25;
+
+    /*
+     * The predicate, built once and used TWICE — for the page and for the
+     * count.
+     *
+     * Sharing it is the point: two separately-assembled WHERE clauses are two
+     * things that can drift, and the failure is a total that disagrees with the
+     * rows beside it. "Showing 25 of 312" where 312 counted something else is a
+     * number a client cannot act on and cannot tell is wrong.
+     */
+    const where = and(
+      eq(transactions.userId, userId),
+      ...(query.direction ? [eq(transactions.direction, query.direction)] : []),
+      ...(query.state ? [eq(transactions.state, query.state)] : []),
+      ...(query.currency ? [eq(transactions.currency, query.currency)] : []),
+      /*
+       * INCLUSIVE at both ends, compared by DATE PART.
+       *
+       * `created_at::date >= from` rather than `created_at >= from`, and `<=`
+       * rather than `< to`. Comparing a timestamp against the end date parsed as
+       * midnight excludes almost the whole final day — the "my newest
+       * transaction vanished when I set an end date" bug the portal's
+       * `date-range.ts` exists to prevent. Casting both sides to `date` means
+       * there is no end-of-day arithmetic to get wrong.
+       *
+       * The cast resolves in the database's session timezone, so a client in a
+       * distant zone can see a movement land on the neighbouring day. That is a
+       * known limit of comparing dates without a per-client timezone, and it is
+       * the same one the previous client-side filter had in the other
+       * direction.
+       */
+      ...(query.from ? [sql`${transactions.createdAt}::date >= ${query.from}::date`] : []),
+      ...(query.to ? [sql`${transactions.createdAt}::date <= ${query.to}::date`] : []),
+    );
+
+    /*
+     * The sort column, resolved through a MAP rather than by interpolation.
+     *
+     * The DTO's `@IsIn` already closes the set, but this is what makes the
+     * closure structural: there is no path from a request string to a SQL
+     * identifier, only a lookup that either finds a column object or falls back
+     * to `created_at`. Defence in depth on the one value here that reaches an
+     * ORDER BY.
+     */
+    const sortable = {
+      createdAt: transactions.createdAt,
+      amount: transactions.amount,
+      direction: transactions.direction,
+      currency: transactions.currency,
+      state: transactions.state,
+    } as const;
+    const column = sortable[query.sort ?? 'createdAt'] ?? transactions.createdAt;
+    const direction = query.order === 'asc' ? asc : desc;
+
+    const [rows, [counted]] = await Promise.all([
+      this.db
+        .select()
+        .from(transactions)
+        .where(where)
+        /*
+         * A TIE-BREAKER on `id`, and it is not cosmetic.
+         *
+         * Ordering by `state` or `currency` puts many rows on the same value,
+         * and Postgres gives no guarantee about their relative order between
+         * queries. Without a stable second key, paging through such a sort can
+         * show one row twice and skip another entirely — a client's own money
+         * history silently missing a row. `id` is unique, so it makes the total
+         * order deterministic.
+         */
+        .orderBy(direction(column), desc(transactions.id))
+        .limit(limit)
+        .offset((page - 1) * limit),
+      this.db.select({ value: count() }).from(transactions).where(where),
+    ]);
+
+    return {
+      items: rows.map((r) => ({ ...r, amount: money(r.amount) })),
+      total: counted?.value ?? 0,
+      page,
+      limit,
+    };
   }
 
   async getById(id: string) {

@@ -43,6 +43,7 @@ import { SECURITY_SWITCHES } from '../../store/security-settings.store';
 import { EmailService } from '../email/email.service';
 import { ValidationError } from '../../common/errors/domain-errors';
 import { DepositRequestDto, RequestDepositDto } from './dto/deposit.dto';
+import { ListTransactionsQueryDto, TransactionPageDto } from './dto/transaction-query.dto';
 import { TransfersService } from './transfers.service';
 import { PaymentMethodsService } from './payment-methods.service';
 import { PaymentMethodDto } from './dto/payment-method.dto';
@@ -280,12 +281,36 @@ export class PaymentsController {
     };
   }
 
+  /**
+   * The signed-in client's own transactions, filtered and ordered by the
+   * DATABASE.
+   *
+   * ## ⚠️ The shape changed, and the old one was under-reporting
+   *
+   * This returned a bare array capped at 100 rows and took no parameters, so the
+   * portal filtered, sorted and counted in the browser while describing the
+   * result as the client's whole history. It was the newest hundred — and
+   * "showing 4 of 100" beside a history of 150 is R-2.5's failure on the one
+   * screen a client would use to find an error in their own ledger.
+   *
+   * It answers `{ items, total, page, limit }` now. `total` counts every row
+   * matching the filters, so the count on screen describes the history rather
+   * than the page.
+   *
+   * The client's id comes from the SESSION and is never a parameter — a `userId`
+   * in the query string here would be an oracle for anybody else's money.
+   */
   @Get('transactions')
   @ApiCookieAuth()
-  @ApiOperation({ summary: "The signed-in client's own transactions" })
-  @ApiOkResponse({ type: [TransactionDto] })
-  myTransactions(@Req() req: Request & { user: User }) {
-    return this.transactions.listForUser(req.user.id);
+  @ApiOperation({
+    summary: "The signed-in client's own transactions, filtered, ordered and paged",
+    description:
+      'Every filter is applied by the database against the whole table, so `total` is the real ' +
+      'count of matching rows and a sort covers the entire history rather than one page.',
+  })
+  @ApiOkResponse({ type: TransactionPageDto })
+  myTransactions(@Req() req: Request & { user: User }, @Query() query: ListTransactionsQueryDto) {
+    return this.transactions.listForUser(req.user.id, query);
   }
 
   /**

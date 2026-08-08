@@ -2168,18 +2168,124 @@
     },
     "/v1/payments/transactions": {
       "get": {
+        "description": "Every filter is applied by the database against the whole table, so `total` is the real count of matching rows and a sort covers the entire history rather than one page.",
         "operationId": "PaymentsController_myTransactions",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "direction",
+            "required": false,
+            "in": "query",
+            "description": "Deposits or withdrawals only.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "deposit",
+                "withdrawal"
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ]
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "USD",
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "example": "2026-08-01",
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "example": "2026-08-31",
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": "createdAt",
+              "type": "string",
+              "enum": [
+                "createdAt",
+                "amount",
+                "direction",
+                "currency",
+                "state"
+              ]
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": "desc",
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25,
+              "type": "number"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/TransactionDto"
-                  }
+                  "$ref": "#/components/schemas/TransactionPageDto"
                 }
               }
             }
@@ -2190,7 +2296,7 @@
             "cookie": []
           }
         ],
-        "summary": "The signed-in client's own transactions",
+        "summary": "The signed-in client's own transactions, filtered, ordered and paged",
         "tags": [
           "payments"
         ]
@@ -8085,6 +8191,33 @@
         "required": [
           "message",
           "required"
+        ]
+      },
+      "TransactionPageDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransactionDto"
+            }
+          },
+          "total": {
+            "type": "number",
+            "description": "Rows matching the filters, across every page."
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "limit"
         ]
       },
       "RequestTransferDto": {
