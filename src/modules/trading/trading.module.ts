@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TradingController } from './trading.controller';
 import { TradingService } from './trading.service';
+import { DashboardController } from './dashboard.controller';
+import { DashboardService } from './dashboard.service';
 import { IdentityModule } from '../identity/identity.module';
 
 /**
@@ -18,10 +20,20 @@ import { IdentityModule } from '../identity/identity.module';
  * The service is exported so the transfer screen's destination list has a
  * single source; nothing else should reach into `trading_accounts` directly.
  */
+/*
+ * The DASHBOARD lives here rather than in a module of its own.
+ *
+ * It is a composition of reads this module already owns — accounts and
+ * positions — plus wallets and transactions. A separate module would import
+ * TradingModule for both, and would exist only to hold one controller that
+ * assembles other people's data.
+ *
+ * `WalletService` resolves without an import because `WalletModule` is @Global.
+ */
 @Module({
   imports: [IdentityModule],
-  controllers: [TradingController],
-  providers: [TradingService],
+  controllers: [TradingController, DashboardController],
+  providers: [TradingService, DashboardService],
   exports: [TradingService],
 })
 export class TradingModule {}

@@ -1,9 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { tradingAccounts } from '../../database/schema';
+import { positions, tradingAccounts } from '../../database/schema';
 import type { TradingAccountDto } from './dto/trading-account.dto';
+import type { PositionDto } from './dto/position.dto';
 
 /**
  * The signed-in client's own trading accounts.
@@ -88,5 +89,68 @@ export class TradingService {
   async listTransferable(userId: string): Promise<TradingAccountDto[]> {
     const rows = await this.listMine(userId);
     return rows.filter((row) => row.environment === 'live' && row.status === 'active');
+  }
+
+  /**
+   * This client's positions — open by default, or the closed history.
+   *
+   * ## Returns an empty list today, and that is a real answer
+   *
+   * Nothing writes to `positions`: there is no MT5 bridge, so no ingestion path
+   * exists. This is a genuine query against a genuine table, so "no open
+   * positions" is something the database said rather than something the portal
+   * assumed. See the table comment in schema.ts for why that distinction is
+   * worth a migration.
+   *
+   * Joined to `trading_accounts` for the login, because a trade is meaningless
+   * without knowing which account it sits on — and a client with a live and a
+   * demo account has two very different reads of the same symbol.
+   *
+   * `limit` is capped rather than trusted: the closed history grows without
+   * bound, and an uncapped caller would eventually ask for all of it.
+   */
+  async listPositions(
+    userId: string,
+    options: { status?: 'open' | 'closed'; limit?: number } = {},
+  ): Promise<PositionDto[]> {
+    const status = options.status ?? 'open';
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+
+    const rows = await this.db
+      .select({
+        id: positions.id,
+        tradingAccountId: positions.tradingAccountId,
+        login: tradingAccounts.login,
+        ticket: positions.ticket,
+        symbol: positions.symbol,
+        side: positions.side,
+        volume: positions.volume,
+        openPrice: positions.openPrice,
+        closePrice: positions.closePrice,
+        stopLoss: positions.stopLoss,
+        takeProfit: positions.takeProfit,
+        profit: positions.profit,
+        swap: positions.swap,
+        commission: positions.commission,
+        currency: positions.currency,
+        status: positions.status,
+        openedAt: positions.openedAt,
+        closedAt: positions.closedAt,
+      })
+      .from(positions)
+      .innerJoin(tradingAccounts, eq(tradingAccounts.id, positions.tradingAccountId))
+      .where(and(eq(positions.userId, userId), eq(positions.status, status)))
+      /*
+       * Open positions read newest-first by OPEN time; closed ones by CLOSE
+       * time. Ordering the closed set by `openedAt` would bury a trade opened
+       * last month and closed this morning beneath older, already-settled ones.
+       */
+      .orderBy(status === 'open' ? desc(positions.openedAt) : desc(positions.closedAt))
+      .limit(limit);
+
+    // Returned as-is: every numeric column arrives as the STRING Postgres sends
+    // for NUMERIC, and stays one (§6.1). No mapping step, so nobody is tempted
+    // to add a `Number()` to a price or a P/L.
+    return rows;
   }
 }

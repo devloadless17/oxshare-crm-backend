@@ -60,6 +60,33 @@ data" — the admin equivalents take a `userId` filter precisely because they *a
 - **`GET /ib/overview`** (`modules/ib/ib-overview.service.ts`) — the partner dashboard: level and
   rate, earnings, referred clients, direct sub-partners. 404s for a non-partner, because zeroes
   across the board would render as a partner dashboard belonging to somebody who is not one.
+- **`GET /trading/positions`** — open (default) or closed trades. See the empty-table note below.
+- **`GET /dashboard`** (`modules/trading/dashboard.service.ts`) — wallets, recent transactions,
+  trading accounts, open positions and five counts, in ONE request. One rather than six because
+  these are read in a single glance: a balance from one instant beside a transaction list from
+  another is a screen that contradicts itself, and six requests give the portal six ways to
+  half-fail. Every figure is `count()`-ed from a table; the screen it replaces carried hardcoded
+  zeros for "trading accounts" and "pending transactions", so a client holding three read 0.
+
+### `positions` is created EMPTY on purpose (migration 0041)
+
+Nothing writes to it. There is no MT5 bridge, so no ingestion path exists and no row can appear by
+any route the app offers. It exists so the portal renders against a **real query returning zero
+rows** rather than a hardcoded empty state that would need rewriting the day a feed lands.
+
+That distinction has cost this codebase twice: a screen showing a fixed "nothing here" is
+indistinguishable from one whose query genuinely found nothing — the accounts page once told a
+client with three live accounts they had none, and the wallet showed `$0.00` to somebody holding
+$700. A real table makes "no open positions" an answer the database gave.
+
+**When the bridge lands** it owns the INSERT/UPDATE and owes this table the idempotency
+`positions_account_ticket_uq` provides — scoped to the account, because a ticket is only unique
+within the server that issued it.
+
+`close_price`, `closed_at` and `profit` are nullable because they do not exist while a trade is
+open; defaulting them to zero would make an open position look like a closed one that broke even.
+`profit` is the **realised** result only. Unrealised P/L is deliberately absent everywhere — it
+changes on every tick, so a stored copy is stale the moment it is written.
 
 Referred clients come from `users.referred_by_ib_user_id` (written at registration) and carry
 **no email address**: a partner is owed attribution, not their referrals' contact details.

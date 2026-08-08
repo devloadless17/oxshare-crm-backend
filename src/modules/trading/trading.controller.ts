@@ -1,11 +1,14 @@
-import { Controller, Get, Req, UseGuards } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
+import { enumQuery } from '../../common/query-params';
+import { positionStatusEnum } from '../../database/schema';
 import { TradingService } from './trading.service';
 import { TradingAccountDto } from './dto/trading-account.dto';
+import { PositionDto } from './dto/position.dto';
 
 /**
  * The client's own trading accounts.
@@ -66,5 +69,37 @@ export class TradingController {
   @ApiOkResponse({ type: [TradingAccountDto] })
   myTransferableAccounts(@Req() req: Request & { user: User }) {
     return this.trading.listTransferable(req.user.id);
+  }
+
+  @Get('positions')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "The signed-in client's positions — open by default",
+    description:
+      'IMPORTANT: this returns an EMPTY LIST for everyone today, and that is a real answer rather ' +
+      'than a stub. Nothing writes to `positions` because there is no MT5 bridge, so the table ' +
+      'exists and the query is genuine — "no open positions" is something the database said.\n\n' +
+      'The table is created ahead of the feed deliberately: a screen rendering a hardcoded empty ' +
+      'state is indistinguishable from one whose query found nothing, and that confusion has ' +
+      'already told a client holding three live accounts that they had none.\n\n' +
+      'Prices and volumes are decimal STRINGS (§6.1). `profit` is the REALISED result and is null ' +
+      'while a position is open — floating P/L is deliberately absent, because it changes on ' +
+      'every tick and a stored copy is stale the moment it is written.',
+  })
+  @ApiQuery({ name: 'status', required: false, enum: positionStatusEnum.enumValues })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiOkResponse({ type: [PositionDto] })
+  myPositions(
+    @Req() req: Request & { user: User },
+    @Query('status') status?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.trading.listPositions(req.user.id, {
+      // Checked against the schema's own enum, never cast: `?status=nonsense`
+      // compared against a Postgres enum surfaces as a 500 carrying a database
+      // error, where R-2.5 wants a 400 naming what IS allowed.
+      status: enumQuery(status, positionStatusEnum.enumValues, 'status'),
+      limit: limit ? Number.parseInt(limit, 10) : undefined,
+    });
   }
 }
