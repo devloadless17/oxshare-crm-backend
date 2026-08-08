@@ -127,7 +127,54 @@ export class TransactionDto {
   @ApiProperty({ enum: CURRENCIES }) currency: (typeof CURRENCIES)[number];
   @ApiProperty({ enum: STATES }) state: (typeof STATES)[number];
 
-  @ApiPropertyOptional({ enum: PROVIDERS }) provider?: (typeof PROVIDERS)[number];
+  /**
+   * Who or what moved the money — `whish`, `manual_bank_transfer`,
+   * `manual_admin`.
+   *
+   * ## ⚠️ A plain string, and the enum it used to declare was WRONG
+   *
+   * This said `enum: PROVIDERS`, which is `['whish', 'usdt']`. The column has
+   * never held only those: a manual deposit is written as `manual_<methodKey>`
+   * (see `requestDeposit`), so the generated type promised both frontends a
+   * two-value union while the API sent them `manual_bank_transfer`. A screen
+   * that switched on it fell through every case.
+   *
+   * It is not re-narrowed to a longer list, because the set is OPEN: it grows
+   * with every payment method an operator adds, which is data rather than code.
+   * `methodKey` below is the field to branch on.
+   */
+  @ApiPropertyOptional({
+    type: String,
+    description: 'Open set — never switch on this exhaustively.',
+  })
+  provider?: string;
+
+  /**
+   * The payment method this went through, or null.
+   *
+   * Null for a withdrawal, and null for a MANUAL ADMIN CREDIT — money an
+   * operator placed directly, which went through no method at all. `provider`
+   * reads `manual_admin` in that case, and it is the only value a screen should
+   * need to recognise by name.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true })
+  methodKey?: string | null;
+
+  /**
+   * What to CALL that method on screen — 'Whish Money', 'Bank transfer'.
+   *
+   * Resolved server-side from `payment_methods.name` so a client and an operator
+   * read the same words, and so a renamed method is renamed everywhere at once.
+   * Null wherever `methodKey` is null.
+   *
+   * Deliberately NOT a translated label. It is the operator's own name for their
+   * own method — a brand, which does not translate — and inventing an English
+   * label here would put copy in the API that the frontends cannot localise.
+   * "Manual credit" and the like are the frontends' strings, keyed off
+   * `provider === 'manual_admin'`.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true })
+  methodName?: string | null;
 
   @ApiPropertyOptional({
     description:

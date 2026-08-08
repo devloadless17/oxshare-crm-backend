@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
 import {
   DEFAULT_WITHDRAWAL_SORT,
+  MANUAL_ADMIN_PROVIDER,
   TransactionsService,
   WITHDRAWAL_SORT_COLUMNS,
 } from '../payments/transactions.service';
@@ -16,6 +17,7 @@ import { decodeCursor } from '../../common/pagination';
 import { enumQuery } from '../../common/query-params';
 import { ledgerEntryTypeEnum } from '../../database/schema';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
+import { CurrenciesService } from '../currencies/currencies.service';
 import type { ClientScope } from '../../common/security/client-scope';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 
@@ -40,7 +42,197 @@ export class AdminMoneyService {
     private readonly email: EmailService,
     private readonly audit: AdminAuditService,
     private readonly visibility: ClientVisibilityService,
+    /*
+     * Decides whether a currency code is one this platform actually holds.
+     * APPENDED LAST — this class is constructed positionally in the unit suites,
+     * so inserting a parameter in the middle silently shifts every one after it.
+     */
+    private readonly currencies: CurrenciesService,
   ) {}
+
+  /**
+   * Put money into a client's wallet, by hand.
+   *
+   * ## ⚠️ THIS IS THE ONLY WAY MONEY CAN ARRIVE WITHOUT A PROVIDER
+   *
+   * It exists because there was no way at all. A client could file a manual
+   * deposit and it sat `pending` for ever: the admin surface had approve, reject
+   * and settle for WITHDRAWALS and nothing whatsoever for deposits, and
+   * `creditDeposit` had no route in front of it. Money could leave the platform
+   * and could not enter it — an end-to-end run left four deposits stranded.
+   *
+   * ## It writes a DEPOSIT row, not a silent adjustment
+   *
+   * `direction: 'deposit'`, `state: 'success'`, so it appears in the client's
+   * own history beside every other way money has arrived. An operator crediting
+   * an account and the client seeing nothing on their statement is the failure
+   * this closes, not one to repeat.
+   *
+   * `provider` is `manual_admin`, which is how both frontends tell it from a
+   * deposit that went through a payment method. There is no `methodKey`, because
+   * no method was used.
+   *
+   * ## `reason` is REQUIRED
+   *
+   * An unexplained credit is an unauditable one. "Why is there an extra $500 on
+   * this account" has to be answerable six months later from the row itself
+   * rather than from whoever remembers. It goes on the audit entry and into the
+   * client's email.
+   *
+   * ## Idempotency is the caller's key, all the way down
+   *
+   * `reference` is the request's own `Idempotency-Key` and becomes
+   * `provider_ref`, which `UNIQUE(provider, provider_ref)` enforces. A
+   * double-submitted form therefore converges on ONE credit in the database
+   * rather than relying on the HTTP interceptor alone.
+   */
+  async creditWallet(
+    params: { userId: string; amount: string; currency: string; reason: string },
+    reference: string,
+    actor: AuthenticatedAdmin,
+  ) {
+    /*
+     * Its OWN permission, not `withdrawals.approve` or a general payments key.
+     *
+     * This mints balance from nothing — the most sensitive money action the
+     * console can perform — and this codebase already treats separation of
+     * duties as a real control: `withdrawals.settle` was split from
+     * `withdrawals.approve` precisely so one person cannot both authorise and
+     * release a payout. Reusing an existing key here would silently hand this
+     * capability to everyone who already holds that one.
+     */
+    assertActorCan(actor, 'wallets.credit', 'credit a client wallet');
+
+    const reasonText = params.reason.trim();
+    if (!reasonText) {
+      throw new ValidationError('A reason is required when crediting a wallet by hand.');
+    }
+
+    /*
+     * SCOPE FIRST, so an admin restricted to a subset of clients cannot credit
+     * somebody outside it. `assertVisible` throws the same not-found a stranger
+     * would get, rather than confirming the account exists.
+     */
+    await this.visibility.assertVisible(params.userId, actor.clientScope);
+    const user = await this.users.findById(params.userId);
+    if (!user) throw new NotFoundError('Client not found.');
+
+    const result = await this.transactions.creditDeposit({
+      userId: params.userId,
+      amount: params.amount,
+      currency: params.currency,
+      provider: MANUAL_ADMIN_PROVIDER,
+      providerRef: reference,
+    });
+
+    /*
+     * A REPLAY writes no audit row and sends no second email. The credit did not
+     * happen twice, so logging it twice would put two entries against one
+     * movement, and mailing again would tell the client they had been paid
+     * twice.
+     */
+    if (result.replayed) return { transaction: result.transaction, replayed: true as const };
+
+    /*
+     * Audited AFTER the credit rather than inside it — a departure from the
+     * withdrawal transitions below, stated so it is not read as an oversight.
+     *
+     * R-6.5 wants the audit row committed with the movement, and `reject()`
+     * manages that by taking a `WithinTransaction` callback. `creditDeposit`
+     * offers no such seam: it is deliberately two idempotent steps (the
+     * transaction row on `UNIQUE(provider, provider_ref)`, the ledger entry on
+     * `(wallet, reference)`) so a retry converges instead of rolling back.
+     *
+     * The trade is that a crash between the credit and this line loses the
+     * ATTRIBUTION, not the money — and that is recoverable, because the
+     * transaction row still carries the reference, the amount and the timestamp.
+     * Wrapping a deliberately-retryable credit in a transaction to satisfy the
+     * audit would trade a recoverable gap for an unrecoverable one.
+     */
+    this.audit.record(actor.id, 'wallet.credit', 'transaction', result.transaction.id, {
+      userId: params.userId,
+      amount: result.transaction.amount,
+      currency: result.transaction.currency,
+      reason: reasonText,
+    });
+
+    /*
+     * Fire-and-forget, AFTER the money has landed — the rule every other
+     * decision mail here follows. A mail server being briefly down must not roll
+     * back a credit that has already posted.
+     */
+    void this.email.sendWalletCreditEmail(
+      user.email,
+      user.firstName,
+      result.transaction.amount,
+      result.transaction.currency,
+      reasonText,
+    );
+
+    return { transaction: result.transaction, replayed: false as const };
+  }
+
+  /**
+   * Open a wallet for a client in a currency they do not hold one in.
+   *
+   * Registration opens a wallet for every ENABLED currency, so this is for the
+   * two cases that leaves behind: a currency the operator added after the client
+   * signed up, and one that was disabled when they did.
+   *
+   * `wallets.manage`, NOT `wallets.credit` — this creates an empty container and
+   * moves no money, so it does not belong behind the key that mints balance.
+   *
+   * `getOrCreateWallet` makes it idempotent: opening a wallet that already
+   * exists returns the existing one rather than failing, which is the right
+   * answer for a button somebody pressed twice.
+   */
+  async openWallet(params: { userId: string; currency: string }, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'wallets.manage', 'open a client wallet');
+    await this.visibility.assertVisible(params.userId, actor.clientScope);
+
+    /*
+     * Refuses an unknown or DISABLED currency. Without it an operator could open
+     * a wallet the platform does not hold, which nothing downstream can credit —
+     * and the foreign key would refuse it anyway, as an opaque driver error.
+     */
+    const currency = await this.currencies.assertUsable(params.currency);
+    const wallet = await this.wallets.getOrCreateWallet(params.userId, currency);
+
+    this.audit.record(actor.id, 'wallet.create', 'wallet', wallet.id, {
+      userId: params.userId,
+      currency,
+    });
+    return wallet;
+  }
+
+  /**
+   * Close an empty, unused wallet.
+   *
+   * The guards live in `WalletService.deleteEmptyWallet` — a balance, funds on
+   * hold, or any ledger/transaction/transfer history each refuse with their own
+   * message. What is enforced HERE is who may ask and whether they can see the
+   * client, because those are questions about the actor rather than the wallet.
+   *
+   * Audited BEFORE the delete, deliberately: afterwards the row is gone, and the
+   * currency and owner that make the entry meaningful would have to be
+   * remembered rather than read. A failed delete leaves an audit row for an
+   * attempt, which is the safer of the two errors on a destructive action.
+   */
+  async closeWallet(id: string, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'wallets.manage', 'close a client wallet');
+
+    const wallet = await this.wallets.findById(id);
+    if (!wallet) throw new NotFoundError('Wallet not found.');
+    await this.visibility.assertVisible(wallet.userId, actor.clientScope);
+
+    this.audit.record(actor.id, 'wallet.delete', 'wallet', id, {
+      userId: wallet.userId,
+      currency: wallet.currency,
+      balance: wallet.balance,
+    });
+
+    await this.wallets.deleteEmptyWallet(id);
+  }
 
   // ─── Withdrawals (ADM-03 · §8.4) ──────────────────────────────────────────
   // Every transition here moves client money, so every one is audited.

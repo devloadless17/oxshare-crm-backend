@@ -74,6 +74,14 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   /* Settlement is the step that actually releases the money — a separate
      permission from approval (R-5.4), and a separate line here. */
   { action: 'withdrawal.settle', label: 'Withdrawal marked paid', group: 'Compliance' },
+  /* Money placed into a wallet BY HAND — the only way funds arrive without a
+     payment provider, and so the entry an auditor looks for first. The payload
+     carries the reason the operator was required to give. */
+  { action: 'wallet.credit', label: 'Wallet credited by hand', group: 'Compliance' },
+  { action: 'wallet.create', label: 'Wallet opened', group: 'Compliance' },
+  /* Only ever an EMPTY, unused wallet — the service refuses any other. Audited
+     BEFORE the delete, so the currency and owner are still readable. */
+  { action: 'wallet.delete', label: 'Wallet closed', group: 'Compliance' },
 
   // ── Administrators ────────────────────────────────────────────────────────
   { action: 'admin.invite', label: 'Administrator invited', group: 'Administrators' },

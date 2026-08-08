@@ -1,5 +1,16 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsInt, IsNumberString, IsOptional, IsString, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsNumberString,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Length,
+  Matches,
+  Min,
+} from 'class-validator';
 
 // Request DTOs for the withdrawal lifecycle and IB commission programs.
 // See the note in ./auth.dto.ts for why these moved out of the controller.
@@ -34,6 +45,78 @@ export class SettleWithdrawalDto {
   @ApiProperty({ example: 'wise-tx-9f3a1c' })
   @IsString()
   providerRef: string;
+}
+
+/**
+ * Money an operator puts into a client's wallet by hand.
+ *
+ * The counterpart to the withdrawal lifecycle above: this is the only way funds
+ * can ARRIVE without a payment provider, and until it existed a manual deposit
+ * sat `pending` for ever because nothing could confirm it.
+ */
+export class CreditWalletDto {
+  @ApiProperty({ format: 'uuid', description: 'The client to credit.' })
+  @IsUUID()
+  userId: string;
+
+  /**
+   * A positive decimal string, at most eight places — §6.1.
+   *
+   * `@IsNumberString` and not `@IsNumber`, for the reason at the top of this
+   * file: a JS number cannot hold a NUMERIC(28,8) without losing the tail, and
+   * this value is credited to somebody's balance verbatim.
+   *
+   * The PATTERN is what makes it positive. `@IsNumberString` alone accepts
+   * `'-500'`, which would turn a credit into a debit through a route that has no
+   * refusal path for one — the ledger would post a negative deposit while the
+   * client's email announced that funds had been added.
+   */
+  @ApiProperty({ type: 'string', example: '250.00000000' })
+  @IsNumberString()
+  @Matches(/^\d{1,20}(\.\d{1,8})?$/, {
+    message: 'amount must be a positive decimal string with at most 8 decimal places',
+  })
+  amount: string;
+
+  @ApiProperty({ example: 'USD', description: 'Must be a currency the platform holds.' })
+  @IsString()
+  @Length(1, 10)
+  currency: string;
+
+  /**
+   * WHY, and it is required.
+   *
+   * An unexplained credit cannot be audited or defended: "why is there an extra
+   * $500 on this account" has to be answerable from the record rather than from
+   * whoever remembers. It is written to the audit entry AND shown to the client
+   * in the mail announcing the credit, so two audiences read it and both need it
+   * to stand on its own.
+   */
+  @ApiProperty({ example: 'Goodwill adjustment for the failed 4 August transfer.', maxLength: 500 })
+  @IsString()
+  @Length(3, 500)
+  reason: string;
+}
+
+/**
+ * Open a wallet for a client in a currency they do not hold one in.
+ *
+ * No amount: this creates an empty container. Funding it is `CreditWalletDto`
+ * above, behind a different permission, precisely so the two are separate
+ * decisions.
+ */
+export class OpenWalletDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  userId: string;
+
+  @ApiProperty({
+    example: 'USD',
+    description: 'Must be a currency the platform holds and has enabled.',
+  })
+  @IsString()
+  @Length(1, 10)
+  currency: string;
 }
 
 export class ProgramDto {

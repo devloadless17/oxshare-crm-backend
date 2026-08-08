@@ -8,6 +8,7 @@ import {
   adminPasswordReset,
   kycDecision,
   partnerDecision,
+  walletCredit,
   withdrawalDecision,
   withdrawalOtp,
   passwordReset,
@@ -202,6 +203,31 @@ export class EmailService {
       email,
       `withdrawal ${decision} email`,
       withdrawalDecision(firstName, decision, amount, currency, this.portalUrl(), reason),
+    );
+  }
+
+  /**
+   * Money an operator added to a wallet by hand.
+   *
+   * Fire-and-forget at the call site and AFTER the credit has posted, like the
+   * decision mails above: the money has already landed, and a mail server being
+   * briefly down must not roll back a balance the client can already spend.
+   *
+   * The REASON is passed straight through rather than defaulted — `creditWallet`
+   * refuses an empty one, so there is no case where this mail has nothing to
+   * explain.
+   */
+  async sendWalletCreditEmail(
+    email: string,
+    firstName: string,
+    amount: string,
+    currency: string,
+    reason: string,
+  ): Promise<void> {
+    await this.send(
+      email,
+      'wallet credit email',
+      walletCredit(firstName, amount, currency, reason, this.portalUrl()),
     );
   }
 

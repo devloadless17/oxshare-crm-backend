@@ -5956,6 +5956,223 @@
         ]
       }
     },
+    "/v1/admin/wallets/credit": {
+      "post": {
+        "description": "Writes a successful DEPOSIT transaction and a ledger entry, so the credit appears in the client's own history, and emails them the amount and the reason. Requires a reason: an unexplained credit cannot be audited.",
+        "operationId": "AdminMoneyController_creditWallet",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended credit, reused only when retrying that same one. It is also stored as the transaction `provider_ref`, so a replay collides on UNIQUE(provider, provider_ref) and credits once (R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreditWalletDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add funds to a client's wallet by hand",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/wallets": {
+      "post": {
+        "description": "Idempotent: opening one that already exists returns it rather than failing. The currency must be one the platform holds and has enabled.",
+        "operationId": "AdminMoneyController_openWallet",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenWalletDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The wallet, new or existing."
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Open a wallet for a client",
+        "tags": [
+          "admin"
+        ]
+      },
+      "get": {
+        "description": "`balance` and `onHold` are NUMERIC(28,8) and cross this boundary as STRINGS. Do not coerce them: Number() on a value of this width loses precision before formatting even starts (§6.1).",
+        "operationId": "AdminHoldingsController_listWallets",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Wallets of one client.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "description": "Exact match on the wallet code.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "withTotal",
+            "required": false,
+            "in": "query",
+            "description": "Counting is a full scan.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "description": "balance sorts on the NUMERIC column in SQL — never cast, never in JS (§6).",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "balance",
+                "currency",
+                "userEmail",
+                "userFirstName"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every client wallet, with its owner (balances are strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/wallets/{id}": {
+      "delete": {
+        "description": "Refuses a wallet with a balance, with funds on hold, or with any history against it — a wallet is the anchor its ledger entries point at.",
+        "operationId": "AdminMoneyController_closeWallet",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The wallet was closed."
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Close an empty, unused wallet",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/withdrawals/{id}/approve": {
       "patch": {
         "operationId": "AdminMoneyController_approveWithdrawal",
@@ -6421,116 +6638,6 @@
           }
         ],
         "summary": "Export the filtered wallet list as CSV",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/wallets": {
-      "get": {
-        "description": "`balance` and `onHold` are NUMERIC(28,8) and cross this boundary as STRINGS. Do not coerce them: Number() on a value of this width loses precision before formatting even starts (§6.1).",
-        "operationId": "AdminHoldingsController_listWallets",
-        "parameters": [
-          {
-            "name": "userId",
-            "required": false,
-            "in": "query",
-            "description": "Wallets of one client.",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "currency",
-            "required": false,
-            "in": "query",
-            "description": "Exact match on the wallet code.",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "page",
-            "required": false,
-            "in": "query",
-            "description": "Legacy offset paging. Prefer cursor.",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "cursor",
-            "required": false,
-            "in": "query",
-            "description": "Opaque keyset cursor (R-2.4).",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "withTotal",
-            "required": false,
-            "in": "query",
-            "description": "Counting is a full scan.",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "sort",
-            "required": false,
-            "in": "query",
-            "description": "balance sorts on the NUMERIC column in SQL — never cast, never in JS (§6).",
-            "schema": {
-              "enum": [
-                "createdAt",
-                "balance",
-                "currency",
-                "userEmail",
-                "userFirstName"
-              ],
-              "type": "string"
-            }
-          },
-          {
-            "name": "order",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "enum": [
-                "asc",
-                "desc"
-              ],
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WalletListResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Every client wallet, with its owner (balances are strings)",
         "tags": [
           "admin"
         ]
@@ -8095,10 +8202,15 @@
           },
           "provider": {
             "type": "string",
-            "enum": [
-              "whish",
-              "usdt"
-            ]
+            "description": "Open set — never switch on this exhaustively."
+          },
+          "methodKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "methodName": {
+            "type": "string",
+            "nullable": true
           },
           "providerRef": {
             "type": "string",
@@ -11033,6 +11145,54 @@
           "page",
           "limit",
           "counts"
+        ]
+      },
+      "CreditWalletDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The client to credit."
+          },
+          "amount": {
+            "type": "string",
+            "example": "250.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "Must be a currency the platform holds."
+          },
+          "reason": {
+            "type": "string",
+            "example": "Goodwill adjustment for the failed 4 August transfer.",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "userId",
+          "amount",
+          "currency",
+          "reason"
+        ]
+      },
+      "OpenWalletDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "Must be a currency the platform holds and has enabled."
+          }
+        },
+        "required": [
+          "userId",
+          "currency"
         ]
       },
       "WithdrawalRejectDto": {

@@ -210,8 +210,40 @@ describe('the response envelope', () => {
     await expect(providerWith().createCollect(COLLECT_INPUT)).rejects.toThrow(/refused/i);
   });
 
-  it('refuses on a non-200 without trying to read a body', async () => {
+  /**
+   * ⚠️ A non-200 refuses EVEN WHEN THE BODY CANNOT BE READ.
+   *
+   * The provider logs the response body on an HTTP error, because `answered
+   * HTTP 401` and nothing else is the least actionable form of that failure —
+   * 401, 403 and 404 all reach this branch and the body is what tells them
+   * apart.
+   *
+   * This mock supplies `json` and no `text`, so `response.text()` throws
+   * SYNCHRONOUSLY, and that is the case worth pinning. The read was first
+   * guarded with `.catch()`, which only handles a REJECTED PROMISE — so the
+   * throw escaped it and the caller received `response.text is not a function`
+   * instead of a refusal. An unhandled TypeError on a money path, caused by a
+   * log line.
+   *
+   * The assertion is that the caller's experience is unchanged whatever the
+   * body does.
+   */
+  it('refuses on a non-200 even when the body cannot be read', async () => {
     mockFetch(null, false, 503);
+    await expect(providerWith().createCollect(COLLECT_INPUT)).rejects.toThrow(/refused/i);
+  });
+
+  /** The ordinary case: a body exists, is read for the log, and changes nothing. */
+  it('refuses on a non-200 and still refuses when the body reads fine', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve(null),
+        text: () => Promise.resolve('{"error":"bad credentials"}'),
+      }),
+    );
     await expect(providerWith().createCollect(COLLECT_INPUT)).rejects.toThrow(/refused/i);
   });
 

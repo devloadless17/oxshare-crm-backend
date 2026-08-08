@@ -260,10 +260,23 @@ export class WhishProvider {
        * headers, and this is Whish's answer. The request body is still withheld,
        * because it carries the amount and our reference.
        */
-      const detail = await response
-        .text()
-        .then((text) => text.slice(0, 500).replace(/\s+/g, ' ').trim())
-        .catch(() => '<unreadable>');
+      /*
+       * try/catch, NOT `.catch()` — and the difference is not stylistic.
+       *
+       * `.catch()` only handles a REJECTED promise. `response.text()` can throw
+       * SYNCHRONOUSLY when the property is absent or not callable, and that
+       * throw sails straight past a `.catch()` chain — turning a provider
+       * refusal into an unhandled TypeError on a money path, which is precisely
+       * what this guard claimed to prevent. `whish-provider.spec.ts` caught it
+       * with a fetch mock that supplies `json` and no `text`.
+       */
+      let detail = '<unreadable>';
+      try {
+        detail = (await response.text()).slice(0, 500).replace(/\s+/g, ' ').trim();
+      } catch {
+        // Keep the placeholder. The status below is still worth logging, and a
+        // missing body must never change what the caller sees.
+      }
 
       this.logger.error(
         `Whish ${path} answered HTTP ${response.status} ${response.statusText}: ${

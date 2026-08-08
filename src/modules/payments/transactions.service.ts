@@ -1,11 +1,33 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { and, asc, count, desc, eq, gte, ne, sql, type SQLWrapper } from 'drizzle-orm';
-import { tradingAccounts, transactions, users } from '../../database/schema';
+import {
+  // Aliased: `this.paymentMethods` is the injected SERVICE, and an unaliased
+  // import of the table would shadow it in every query below.
+  paymentMethods as paymentMethodsTable,
+  tradingAccounts,
+  transactions,
+  users,
+} from '../../database/schema';
 import type { ListTransactionsQueryDto } from './dto/transaction-query.dto';
 
 /** The stored row, as every read here returns it. */
 type TransactionRow = typeof transactions.$inferSelect;
+
+/**
+ * `transactions.provider` for money an ADMIN placed by hand.
+ *
+ * A named constant because three places have to agree on the exact string: the
+ * admin service that writes it, and both frontends, which show "Manual credit"
+ * instead of a payment-method name when they see it. A literal repeated in
+ * three repos is a typo away from a transaction that renders as an unknown
+ * source on the client's own statement.
+ *
+ * It carries the `manual_` prefix every non-gateway row uses, so a
+ * reconciliation that groups on the prefix keeps working, and `_admin` where a
+ * method key would be — there is no method.
+ */
+export const MANUAL_ADMIN_PROVIDER = 'manual_admin';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
 import { assertActorCan, type Actor } from '../../common/security/actor';
 import { money, toDecimal } from '../wallet/money';
@@ -644,8 +666,19 @@ export class TransactionsService {
 
     const [rows, [counted]] = await Promise.all([
       this.db
-        .select()
+        .select({ tx: transactions, methodName: paymentMethodsTable.name })
         .from(transactions)
+        /*
+         * LEFT join, and it has to be left: `method_key` is null for every
+         * withdrawal and for a manual admin credit, and an inner join would drop
+         * exactly those rows from a client's own history.
+         *
+         * Joined rather than resolved per row in the caller, because a page of
+         * 100 transactions is otherwise 100 extra queries — and because the name
+         * has to be filterable and sortable from the same statement if it ever
+         * becomes either.
+         */
+        .leftJoin(paymentMethodsTable, eq(paymentMethodsTable.key, transactions.methodKey))
         .where(where)
         /*
          * A TIE-BREAKER on `id`, and it is not cosmetic.
@@ -664,7 +697,16 @@ export class TransactionsService {
     ]);
 
     return {
-      items: rows.map((r) => ({ ...r, amount: money(r.amount) })),
+      /*
+       * `methodName` is flattened onto the row rather than nested, so the shape
+       * a frontend reads is the transaction it already knows plus one field.
+       * Null where there was no method — see the join note above.
+       */
+      items: rows.map(({ tx, methodName }) => ({
+        ...tx,
+        amount: money(tx.amount),
+        methodName: methodName ?? null,
+      })),
       total: counted?.value ?? 0,
       page,
       limit,

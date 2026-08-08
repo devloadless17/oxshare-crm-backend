@@ -21,6 +21,7 @@ import { AdminStatsController } from './admin-stats.controller';
 import { AdminHoldingsController } from './admin-holdings.controller';
 import { PaymentsModule } from '../payments/payments.module';
 import { WalletModule } from '../wallet/wallet.module';
+import { CurrenciesModule } from '../currencies/currencies.module';
 import { AdminAuthModule } from './admin-auth.module';
 import { ComplianceModule } from '../compliance/compliance.module';
 import { AdminExportModule } from './admin-export.module';
@@ -60,7 +61,17 @@ const ADMIN_SERVICES = [
    */
   // `AdminExportModule` carries AdminExportService for the export routes that sit
   // on these same controllers — see that module for why it is separate.
-  imports: [ComplianceModule, AdminAuthModule, PaymentsModule, WalletModule, AdminExportModule],
+  imports: [
+    ComplianceModule,
+    AdminAuthModule,
+    PaymentsModule,
+    WalletModule,
+    AdminExportModule,
+    // For AdminMoneyService.openWallet: a wallet may only be opened in a
+    // currency the platform actually holds and has enabled, and
+    // CurrenciesService is what answers that.
+    CurrenciesModule,
+  ],
   // Nine controllers share the 'admin' prefix, one per concern, mirroring the
   // services. Express registers all of their routes; there are no path
   // collisions. Order is irrelevant — no two routes overlap. (`stats/*` sits

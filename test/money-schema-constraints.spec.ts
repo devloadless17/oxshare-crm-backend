@@ -41,6 +41,31 @@ async function constraintViolatedBy(run: Promise<unknown>): Promise<string> {
   throw new Error('Expected the statement to be refused, but it succeeded.');
 }
 
+/**
+ * The DATABASE's own message for a statement that failed, not the driver's.
+ *
+ * `constraintViolatedBy` above answers with a constraint NAME, which is the
+ * right handle for a check or a foreign key. A missing COLUMN violates no
+ * constraint — it never reaches one — so it needs the message instead.
+ *
+ * Reading `.cause` is the whole point. Drizzle wraps a failure in a
+ * `DrizzleQueryError` whose own `message` is the SQL it tried to run, so
+ * `rejects.toThrow(/column "kind"/)` matches the text of the query rather than
+ * the reason it failed — and passes for entirely the wrong reason on any
+ * statement that happens to mention the column. That is how the first version
+ * of this assertion was written, and it failed loudly rather than silently only
+ * because the query and the error disagreed.
+ */
+async function failureMessage(run: Promise<unknown>): Promise<string> {
+  try {
+    await run;
+  } catch (error) {
+    const cause: unknown = (error as { cause?: unknown }).cause ?? error;
+    return (cause as Error).message;
+  }
+  throw new Error('Expected the statement to be refused, but it succeeded.');
+}
+
 async function makeUser(email: string): Promise<string> {
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
@@ -393,12 +418,13 @@ describe('payment methods', () => {
    * here rather than a silently ignored column.
    */
   it('has no kind column — 0043 dropped it', async () => {
-    await expect(
+    const message = await failureMessage(
       ctx.db.execute(sql`
         INSERT INTO payment_methods (key, name, kind, currency)
         VALUES ('with_kind', 'With kind', 'manual', 'USD')
       `),
-    ).rejects.toThrow(/column "kind" of relation "payment_methods" does not exist/i);
+    );
+    expect(message).toMatch(/column "kind" of relation "payment_methods" does not exist/i);
   });
 
   it('refuses a method in a currency the platform does not have', async () => {

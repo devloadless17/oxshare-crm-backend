@@ -1,10 +1,15 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, count, desc, eq, sql } from 'drizzle-orm';
 import { getDb } from '../../database/db';
-import { ledgerEntries, wallets } from '../../database/schema';
+import { ledgerEntries, transactions, transfers, wallets } from '../../database/schema';
 import { available, money, MoneyInput, toDecimal } from './money';
-import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import {
+  ConflictError,
+  MoneyRuleError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
 import { DRIZZLE_DB } from '../../database/database.module';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
 import {
@@ -280,6 +285,72 @@ export class WalletService {
       onHold: money(w.onHold),
       available: available(w.balance, w.onHold),
     }));
+  }
+
+  /** One wallet by id, or undefined. For the admin lifecycle methods below. */
+  async findById(id: string) {
+    const [row] = await this.db.select().from(wallets).where(eq(wallets.id, id)).limit(1);
+    return row;
+  }
+
+  /**
+   * Close an EMPTY, UNUSED wallet.
+   *
+   * ## ⚠️ Four refusals, and each one is a different mistake
+   *
+   * A wallet is not a row an operator should be able to make disappear. It is
+   * the anchor every ledger entry and every transaction for that currency points
+   * at, so the checks below are ordered by how expensive the mistake would be:
+   *
+   *  1. NOT FOUND — nothing to do, said plainly rather than as a silent success.
+   *  2. A BALANCE — deleting this would be deleting the client's money. The
+   *     message names the figure, because "cannot delete" without it invites the
+   *     operator to try again rather than to go and look.
+   *  3. FUNDS ON HOLD — the balance can read zero while a transfer is in flight
+   *     against it. Checked separately for that reason: a wallet with 0 balance
+   *     and 200 held is not an empty wallet, and treating it as one would strand
+   *     the transfer's release with nowhere to land.
+   *  4. HISTORY — any ledger entry, transaction or transfer. The three foreign
+   *     keys are RESTRICT, so the database refuses this anyway; doing it here
+   *     turns a driver-level constraint error into a sentence that says which
+   *     kind of history exists and how much of it.
+   *
+   * What survives all four is a wallet that was opened and never used — which is
+   * the only wallet whose deletion loses nothing.
+   */
+  async deleteEmptyWallet(id: string): Promise<void> {
+    const wallet = await this.findById(id);
+    if (!wallet) throw new NotFoundError('Wallet not found.');
+
+    if (!toDecimal(wallet.balance).isZero()) {
+      throw new ConflictError(
+        `This wallet holds ${money(wallet.balance)} ${wallet.currency}. Move the balance out before closing it.`,
+      );
+    }
+    if (!toDecimal(wallet.onHold).isZero()) {
+      throw new ConflictError(
+        `This wallet has ${money(wallet.onHold)} ${wallet.currency} on hold against a pending transfer. It cannot be closed until that settles.`,
+      );
+    }
+
+    /*
+     * One query per referencing table rather than a join: they are three
+     * independent reasons, and the operator is told WHICH one applies. A single
+     * "it has history" would leave them guessing where to look.
+     */
+    const [entries, txs, moves] = await Promise.all([
+      this.db.select({ n: count() }).from(ledgerEntries).where(eq(ledgerEntries.walletId, id)),
+      this.db.select({ n: count() }).from(transactions).where(eq(transactions.walletId, id)),
+      this.db.select({ n: count() }).from(transfers).where(eq(transfers.walletId, id)),
+    ]);
+    const history = (entries[0]?.n ?? 0) + (txs[0]?.n ?? 0) + (moves[0]?.n ?? 0);
+    if (history > 0) {
+      throw new ConflictError(
+        `This wallet has ${history} historical record(s) against it and cannot be deleted. A wallet is the anchor its ledger entries point at; closing it would orphan them.`,
+      );
+    }
+
+    await this.db.delete(wallets).where(eq(wallets.id, id));
   }
 
   /** ADM-13 ledger view — filterable for reconciliation. */
