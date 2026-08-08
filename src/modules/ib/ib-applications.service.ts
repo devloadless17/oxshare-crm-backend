@@ -3,8 +3,10 @@ import { randomBytes } from 'node:crypto';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
+  DEFAULT_IB_ACCRUAL_SORT,
   DEFAULT_IB_APPLICATION_SORT,
   DEFAULT_IB_PARTNER_SORT,
+  IB_ACCRUAL_SORT_COLUMNS,
   IB_APPLICATION_SORT_COLUMNS,
   IB_PARTNER_SORT_COLUMNS,
   IbStore,
@@ -397,18 +399,72 @@ export class IbApplicationsService {
 
   // ── managing partners after approval ───────────────────────────────────────
 
-  /** The partner list, scoped to what this admin may see. */
-  listPartners(
+  /** The partner list, scoped to what this admin may see, WITH earnings. */
+  async listPartners(
     filter: { page?: number; limit?: number; sort?: string; order?: string },
     scope: ClientScope,
   ) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 20));
-    return this.ib.findPartnersPage({
+    const result = await this.ib.findPartnersPage({
       page,
       limit,
       scope,
       sort: sortKey(filter.sort, IB_PARTNER_SORT_COLUMNS, DEFAULT_IB_PARTNER_SORT, 'partners'),
+      order: sortOrder(filter.order),
+    });
+
+    /*
+     * EARNINGS, attached per row.
+     *
+     * The list said who the partners were and nothing about what they had made
+     * — the first question anybody opening this screen has. One grouped query
+     * for the whole page rather than one per row.
+     *
+     * A partner with no accruals is absent from the map and reports '0': the
+     * honest reading of "nothing earned yet", rather than a row invented to fill
+     * a column.
+     */
+    const earnings = await this.ib.earningsByPartner(result.rows.map((r) => r.account.userId));
+
+    return {
+      ...result,
+      rows: result.rows.map((row) => ({
+        ...row,
+        earnings: earnings.get(row.account.userId) ?? { confirmed: '0', pending: '0' },
+      })),
+    };
+  }
+
+  /**
+   * The COMMISSION LEDGER — every accrual, filterable and paged.
+   *
+   * The read that did not exist. The engine wrote `ib_accruals` on every settled
+   * deposit and nothing ever read them back, so "what do we owe our partners"
+   * was answerable only from the database.
+   */
+  listAccruals(
+    filter: {
+      page?: number;
+      limit?: number;
+      sort?: string;
+      order?: string;
+      ibUserId?: string;
+      clientUserId?: string;
+      status?: string;
+    },
+    scope: ClientScope,
+  ) {
+    const page = Math.max(1, filter.page ?? 1);
+    const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
+    return this.ib.findAccrualsPage({
+      page,
+      limit,
+      scope,
+      ibUserId: filter.ibUserId,
+      clientUserId: filter.clientUserId,
+      status: filter.status,
+      sort: sortKey(filter.sort, IB_ACCRUAL_SORT_COLUMNS, DEFAULT_IB_ACCRUAL_SORT, 'accruals'),
       order: sortOrder(filter.order),
     });
   }

@@ -29,6 +29,7 @@
   "GET /v1/admin/currencies",
   "GET /v1/admin/currencies/export",
   "GET /v1/admin/ib-levels",
+  "GET /v1/admin/ib/accruals",
   "GET /v1/admin/ib/applications",
   "GET /v1/admin/ib/applications/export",
   "GET /v1/admin/ib/partners",

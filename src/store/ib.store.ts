@@ -1,9 +1,9 @@
-import { and, count, desc, eq, inArray, sql, type SQLWrapper } from 'drizzle-orm';
+import { aliasedTable, and, count, desc, eq, inArray, sql, type SQLWrapper } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { ibAccounts, ibApplications, ibLevels, users } from '../database/schema';
+import { ibAccounts, ibAccruals, ibApplications, ibLevels, users } from '../database/schema';
 import {
   clientScopePredicate,
   UNRESTRICTED,
@@ -56,6 +56,26 @@ export type IbPartnerSortKey = keyof typeof IB_PARTNER_SORT_COLUMNS;
 
 /** Newest approval first — what the list showed before it was sortable. */
 export const DEFAULT_IB_PARTNER_SORT: IbPartnerSortKey = 'approvedAt';
+
+/**
+ * The columns the commission ledger may be ordered by — R-2.5, an allow-list.
+ *
+ * `amount` orders on the NUMERIC column in SQL, for the reason the withdrawal
+ * queue records: a float cast loses precision above 2^53, and sorting the
+ * fetched page in JavaScript orders 25 rows while presenting the answer as an
+ * ordering of the whole ledger.
+ */
+export const IB_ACCRUAL_SORT_COLUMNS = {
+  createdAt: ibAccruals.createdAt,
+  amount: ibAccruals.amount,
+  status: ibAccruals.status,
+  level: ibAccruals.level,
+} as const;
+
+export type IbAccrualSortKey = keyof typeof IB_ACCRUAL_SORT_COLUMNS;
+
+/** Newest first — a commission ledger is read from the top. */
+export const DEFAULT_IB_ACCRUAL_SORT: IbAccrualSortKey = 'createdAt';
 
 /**
  * Reads and writes for the partner programme.
@@ -335,6 +355,147 @@ export class IbStore {
       .where(visible);
 
     return { rows, total };
+  }
+
+  /**
+   * The COMMISSION LEDGER — every accrual, who earned it and who generated it.
+   *
+   * ## ⚠️ Nothing read this table before
+   *
+   * The engine wrote `ib_accruals` on every settled deposit and no endpoint,
+   * screen or export ever read them back. An operator could see partners and
+   * levels but not one commission: not who had earned what, not what was pending
+   * against what was confirmed, and not which client produced it. "What do we
+   * owe our partners" was unanswerable outside the database.
+   *
+   * ## Two user joins, and they are different people
+   *
+   * `ibUser` is the partner being PAID; `clientUser` is the client whose deposit
+   * generated it. Conflating them is the mistake this shape exists to prevent —
+   * a commission row is a statement about a relationship, and showing one side
+   * makes it unreadable.
+   *
+   * ## The scope predicate is on the PARTNER
+   *
+   * An admin restricted to a set of clients sees the accruals of the partners
+   * they can see. Filtering on the client instead would leak a partner's total
+   * earnings to somebody entitled to only part of their book.
+   */
+  async findAccrualsPage(filter: {
+    page: number;
+    limit: number;
+    scope?: ClientScope;
+    ibUserId?: string;
+    clientUserId?: string;
+    status?: string;
+    sort?: IbAccrualSortKey;
+    order?: SortOrder;
+  }) {
+    const visible = clientScopePredicate(filter.scope ?? UNRESTRICTED, ibAccruals.ibUserId);
+    const where = and(
+      visible,
+      ...(filter.ibUserId ? [eq(ibAccruals.ibUserId, filter.ibUserId)] : []),
+      ...(filter.clientUserId ? [eq(ibAccruals.clientUserId, filter.clientUserId)] : []),
+      ...(filter.status ? [eq(ibAccruals.status, filter.status as 'pending')] : []),
+    );
+
+    const sortKey: IbAccrualSortKey = filter.sort ?? DEFAULT_IB_ACCRUAL_SORT;
+    const direction = filter.order ?? 'desc';
+    const sortColumn: SQLWrapper = IB_ACCRUAL_SORT_COLUMNS[sortKey];
+
+    /*
+     * Aliased, because both joins land on `users`. Without distinct aliases the
+     * second join is a duplicate table reference and the query is ambiguous.
+     */
+    const partner = aliasedTable(users, 'partner_user');
+    const client = aliasedTable(users, 'client_user');
+
+    const rows = await this.db
+      .select({
+        accrual: ibAccruals,
+        partner: {
+          id: partner.id,
+          email: partner.email,
+          firstName: partner.firstName,
+          lastName: partner.lastName,
+        },
+        client: {
+          id: client.id,
+          email: client.email,
+          firstName: client.firstName,
+          lastName: client.lastName,
+        },
+      })
+      .from(ibAccruals)
+      .innerJoin(partner, eq(partner.id, ibAccruals.ibUserId))
+      .innerJoin(client, eq(client.id, ibAccruals.clientUserId))
+      .where(where)
+      // `id` breaks the tie. `status` and `level` have a handful of values, so
+      // ties across a page boundary are the norm — without it, paging such a
+      // sort can repeat one row and skip another.
+      .orderBy(...orderTerms(sortColumn, ibAccruals.id, direction))
+      .limit(filter.limit)
+      .offset((filter.page - 1) * filter.limit);
+
+    const [{ value: total }] = await this.db
+      .select({ value: count() })
+      .from(ibAccruals)
+      .where(where);
+
+    /*
+     * Totals by STATUS, summed in SQL over the whole filtered set rather than
+     * the page. Adding a page of decimal strings in JavaScript would be both
+     * the wrong number (it is one page) and the wrong arithmetic (floats).
+     *
+     * `::text` keeps the sum a decimal STRING all the way out — §6.1. A bare
+     * `sum()` on NUMERIC comes back as a string from the driver anyway, but
+     * saying so here means a future change to the select cannot quietly turn it
+     * into a number.
+     */
+    const totals = await this.db
+      .select({
+        status: ibAccruals.status,
+        amount: sql<string>`coalesce(sum(${ibAccruals.amount}), 0)::text`,
+      })
+      .from(ibAccruals)
+      .where(where)
+      .groupBy(ibAccruals.status);
+
+    return { rows, total, totals };
+  }
+
+  /**
+   * Lifetime and pending earnings per partner, for the partner LIST.
+   *
+   * One grouped query for the whole page rather than one per row: a list of
+   * twenty-five partners would otherwise be twenty-five extra round trips to
+   * render a column.
+   *
+   * Returns a map keyed by partner id. A partner with no accruals is simply
+   * absent — the caller renders zero, which is the honest reading of "nothing
+   * has been earned" and avoids inventing a row that does not exist.
+   */
+  async earningsByPartner(ibUserIds: string[]) {
+    if (ibUserIds.length === 0) return new Map<string, { confirmed: string; pending: string }>();
+
+    const rows = await this.db
+      .select({
+        ibUserId: ibAccruals.ibUserId,
+        status: ibAccruals.status,
+        amount: sql<string>`coalesce(sum(${ibAccruals.amount}), 0)::text`,
+      })
+      .from(ibAccruals)
+      .where(inArray(ibAccruals.ibUserId, ibUserIds))
+      .groupBy(ibAccruals.ibUserId, ibAccruals.status);
+
+    const map = new Map<string, { confirmed: string; pending: string }>();
+    for (const row of rows) {
+      const entry = map.get(row.ibUserId) ?? { confirmed: '0', pending: '0' };
+      if (row.status === 'confirmed') entry.confirmed = row.amount;
+      if (row.status === 'pending') entry.pending = row.amount;
+      map.set(row.ibUserId, entry);
+    }
+    return map;
   }
 
   async updateAccount(

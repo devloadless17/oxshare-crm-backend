@@ -20,7 +20,13 @@ import {
 import { ScopedToClients } from '../admin/guards/client-scope.decorator';
 import { Audited } from '../admin/guards/audited.decorator';
 import { IbApplicationsService } from './ib-applications.service';
-import { IB_APPLICATION_SORT_COLUMNS, IB_PARTNER_SORT_COLUMNS } from '../../store/ib.store';
+import {
+  IB_ACCRUAL_SORT_COLUMNS,
+  IB_APPLICATION_SORT_COLUMNS,
+  IB_PARTNER_SORT_COLUMNS,
+} from '../../store/ib.store';
+import { ibAccrualStatusEnum } from '../../database/schema';
+import { enumQuery } from '../../common/query-params';
 import { AdminExportService } from '../admin/admin-export.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import { exportFormat, streamCsv } from '../../common/export/export-response';
@@ -210,6 +216,68 @@ export class AdminIbController {
   }
 
   // ── partners, once they exist ──────────────────────────────────────────────
+
+  /**
+   * The COMMISSION LEDGER — every accrual, who earned it and who generated it.
+   *
+   * ## ⚠️ This read did not exist
+   *
+   * `ib_accruals` was written on every settled deposit and never read back by
+   * anything: no endpoint, no screen, no export. An operator could see partners
+   * and levels but not one commission — not who had earned what, not pending
+   * against confirmed, not which client produced it. "What do we owe our
+   * partners" was answerable only by opening the database.
+   *
+   * Declared BEFORE `partners/:userId/*` for the same routing reason as the
+   * exports above: a literal segment must not sit behind a parameterised
+   * sibling.
+   *
+   * `totals` is summed in SQL over the whole FILTERED set rather than the page.
+   * A page total under a filter is a number that looks like an answer and is not.
+   */
+  @Get('accruals')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Partner commission accruals, filterable',
+    description:
+      'Every accrual with the partner who earned it and the client whose deposit generated it. ' +
+      '`totals` sums by status across the whole filtered set, as decimal strings (§6.1).',
+  })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'ibUserId', required: false, description: 'Restrict to one partner.' })
+  @ApiQuery({ name: 'clientUserId', required: false, description: 'Restrict to one client.' })
+  @ApiQuery({ name: 'status', required: false, enum: ibAccrualStatusEnum.enumValues })
+  @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_ACCRUAL_SORT_COLUMNS) })
+  @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ScopedToClients('IbStore.findAccrualsPage applies the predicate to ib_accruals.ib_user_id.')
+  listAccruals(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('ibUserId') ibUserId?: string,
+    @Query('clientUserId') clientUserId?: string,
+    @Query('status') status?: string,
+    @Query('sort') sort?: string,
+    @Query('order') order?: string,
+  ) {
+    return this.applications.listAccruals(
+      {
+        page: parsePositive(page),
+        limit: parsePositive(limit),
+        ibUserId,
+        clientUserId,
+        // Validated against the column's own enum, so an unrecognised value is
+        // a 400 rather than a filter that silently matches nothing.
+        status: enumQuery(status, ibAccrualStatusEnum.enumValues, 'status'),
+        sort,
+        order,
+      },
+      req.admin.clientScope,
+    );
+  }
 
   @Get('partners')
   @UseGuards(PermissionsGuard)
