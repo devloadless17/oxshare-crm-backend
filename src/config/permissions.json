@@ -1,158 +1,144 @@
 {
-  "kyc": {
-    "moduleName": "KYC & Verification",
-    "description": "Dynamic KYC field builder, document review, and status verification",
+  "clients": {
+    "moduleName": "Clients",
+    "description": "The client directory and one client's profile. Clients register themselves and are never deleted — every ledger row and audit entry has to keep resolving to a name — so this module has no create and no delete.",
     "permissions": [
-      {
-        "key": "kyc.view",
-        "label": "View KYC Fields & Submissions"
-      },
-      {
-        "key": "kyc.create",
-        "label": "Create Dynamic KYC Fields"
-      },
-      {
-        "key": "kyc.edit",
-        "label": "Edit Dynamic KYC Fields"
-      },
-      {
-        "key": "kyc.delete",
-        "label": "Delete Dynamic KYC Fields"
-      },
-      {
-        "key": "kyc.documents.view",
-        "label": "View Submitted Documents"
-      },
-      {
-        "key": "kyc.review",
-        "label": "Approve / Reject Submissions"
-      }
+      { "key": "clients.view", "label": "View Clients" },
+      { "key": "clients.edit", "label": "Edit Client Profiles" },
+      { "key": "clients.suspend", "label": "Suspend / Restore Client Access" },
+      { "key": "clients.tag", "label": "Assign / Unassign Tags on a Client" }
     ]
   },
-  "users": {
-    "moduleName": "User & Admin Management",
-    "description": "Client management, Admin user creation, and role assignments",
+  "admins": {
+    "moduleName": "Administrators",
+    "description": "The administrator directory, invitations and role assignment. Separate from clients on purpose: one key used to open both lists, so granting somebody the client list also handed them the admin directory.",
     "permissions": [
-      {
-        "key": "users.view",
-        "label": "View Clients & Admins List"
-      },
-      {
-        "key": "users.create",
-        "label": "Add New Admins"
-      },
-      {
-        "key": "users.edit",
-        "label": "Edit User Profiles & Roles"
-      },
-      {
-        "key": "users.suspend",
-        "label": "Suspend / Activate Accounts"
-      },
-      {
-        "key": "users.scope",
-        "label": "Set Client-Tag Scope & Field Masking for an Admin"
-      }
+      { "key": "admins.view", "label": "View Administrators & Pending Invites" },
+      { "key": "admins.create", "label": "Invite an Administrator & Revoke an Invite" },
+      { "key": "admins.edit", "label": "Rename an Administrator & Assign Their Role" },
+      { "key": "admins.suspend", "label": "Revoke / Restore Administrator Access" },
+      { "key": "admins.scope", "label": "Set Which Client Tags an Administrator Is Limited To" },
+      { "key": "admins.reset", "label": "Email an Administrator a Password Reset Link" }
     ]
   },
   "roles": {
-    "moduleName": "Role & Permissions Config",
-    "description": "Manage dynamic RBAC roles and permission assignments",
+    "moduleName": "Roles & Permissions",
+    "description": "Roles are the only source of access in this system — there is no role above another and no wildcard. Editing a role takes effect on the next request from every administrator holding it.",
     "permissions": [
-      {
-        "key": "roles.view",
-        "label": "View Roles & Permission Matrix"
-      },
-      {
-        "key": "roles.manage",
-        "label": "Create, Edit & Delete Custom Roles"
-      }
+      { "key": "roles.view", "label": "View Roles & the Permission Matrix" },
+      { "key": "roles.create", "label": "Create a Role" },
+      { "key": "roles.edit", "label": "Edit a Role's Name & Permissions" },
+      { "key": "roles.delete", "label": "Delete a Role" }
     ]
   },
-  "settings": {
-    "moduleName": "Settings",
-    "description": "Operational settings shown to clients, such as the trading terminal download links.",
+  "kyc": {
+    "moduleName": "KYC & Verification",
+    "description": "The review queue, the documents clients upload, and the dynamic field builder behind them. Reviewing and configuring are separate: a reviewer decides on submissions, an administrator decides what is asked for.",
     "permissions": [
-      {
-        "key": "settings.view",
-        "label": "View settings"
-      },
-      {
-        "key": "settings.manage",
-        "label": "Change settings"
-      }
+      { "key": "kyc.view", "label": "View Submissions & the Review Queue" },
+      { "key": "kyc.documents.view", "label": "Open Submitted Documents" },
+      { "key": "kyc.review", "label": "Claim, Approve & Reject Submissions" },
+      { "key": "kyc.create", "label": "Create Dynamic KYC Fields" },
+      { "key": "kyc.edit", "label": "Edit Dynamic KYC Fields" },
+      { "key": "kyc.delete", "label": "Delete Dynamic KYC Fields" }
     ]
   },
-  "tags": {
-    "moduleName": "Client Tags & Segmentation",
-    "description": "Arbitrary client labels (ADM-14) and the tag filters on the client list",
+  "wallets": {
+    "moduleName": "Client Wallets",
+    "description": "Client holdings, opening a wallet, and manual credits. Crediting and closing are separate keys because adding money and removing an account are not one power — and a credit is a real ledger movement (§6), not an edit to a number.",
     "permissions": [
-      {
-        "key": "tags.view",
-        "label": "View Tags & Client Tag Assignments"
-      },
-      {
-        "key": "tags.manage",
-        "label": "Create, Rename & Delete Tags"
-      },
-      {
-        "key": "tags.assign",
-        "label": "Assign / Unassign Tags on a Client"
-      }
-    ]
-  },
-  "ib": {
-    "moduleName": "Partners & IB",
-    "description": "Introducing-broker levels, applications and the partner network",
-    "permissions": [
-      {
-        "key": "ib.view",
-        "label": "View Partners & Applications"
-      },
-      {
-        "key": "ib.manage",
-        "label": "Configure IB Levels & Partner Records"
-      },
-      {
-        "key": "ib.approve",
-        "label": "Approve Partner Applications"
-      },
-      {
-        "key": "ib.reject",
-        "label": "Reject Partner Applications"
-      }
+      { "key": "wallets.view", "label": "View Client Wallets & Balances" },
+      { "key": "wallets.create", "label": "Open a Wallet for a Client" },
+      { "key": "wallets.credit", "label": "Add Funds to a Client Wallet" },
+      { "key": "wallets.delete", "label": "Close an Empty Wallet" }
     ]
   },
   "withdrawals": {
     "moduleName": "Withdrawals & Payouts",
     "description": "Reviewing and paying out client withdrawal requests. Approve and settle are SEPARATE keys on purpose (R-5.4): approval says a payout may be released, settlement releases it. While both required the same permission, 'two people must be involved in a payout' was unexpressible — one admin could authorise their own instruction and pay it out in the same minute, with the audit log showing one name on both rows.",
     "permissions": [
-      {
-        "key": "withdrawals.view",
-        "label": "View Withdrawal Requests"
-      },
-      {
-        "key": "withdrawals.approve",
-        "label": "Approve / Reject Withdrawals"
-      },
-      {
-        "key": "withdrawals.settle",
-        "label": "Mark Withdrawals Paid"
-      }
+      { "key": "withdrawals.view", "label": "View Withdrawal Requests" },
+      { "key": "withdrawals.approve", "label": "Approve / Reject Withdrawals" },
+      { "key": "withdrawals.settle", "label": "Mark Withdrawals Paid" }
+    ]
+  },
+  "trading": {
+    "moduleName": "Trading Accounts",
+    "description": "Read-only. Nothing in the console writes to a trading account, so this module has one key rather than an invented set of verbs nothing is behind.",
+    "permissions": [{ "key": "trading.view", "label": "View Trading Accounts" }]
+  },
+  "ib": {
+    "moduleName": "Partners & IB",
+    "description": "Two objects share this module and the keys go one level deeper because of it: editing the LEVEL ladder changes what every partner earns, while changing one partner's level changes what one partner earns.",
+    "permissions": [
+      { "key": "ib.view", "label": "View Partners, Applications & the Level Ladder" },
+      { "key": "ib.approve", "label": "Approve Partner Applications" },
+      { "key": "ib.reject", "label": "Reject Partner Applications" },
+      { "key": "ib.levels.create", "label": "Create an IB Level" },
+      { "key": "ib.levels.edit", "label": "Edit & Reorder IB Levels" },
+      { "key": "ib.levels.delete", "label": "Delete an IB Level" },
+      { "key": "ib.partners.edit", "label": "Change a Partner's Level or Parent" },
+      { "key": "ib.partners.suspend", "label": "Deactivate / Reactivate a Partner" },
+      { "key": "ib.commissions.view", "label": "View Accrued Commission" }
+    ]
+  },
+  "tags": {
+    "moduleName": "Client Tags",
+    "description": "The tag vocabulary itself. Deleting a tag is a privilege change rather than a label edit — an administrator restricted to it loses that restriction, and an empty scope means unrestricted — so delete is its own key. Applying a tag TO a client is clients.tag.",
+    "permissions": [
+      { "key": "tags.view", "label": "View Tags" },
+      { "key": "tags.create", "label": "Create a Tag" },
+      { "key": "tags.edit", "label": "Rename & Recolour a Tag" },
+      { "key": "tags.delete", "label": "Delete a Tag" }
+    ]
+  },
+  "currencies": {
+    "moduleName": "Currencies",
+    "description": "Its own module rather than a corner of settings: a currency is a money object, and granting somebody the support email address should not also let them delete one.",
+    "permissions": [
+      { "key": "currencies.view", "label": "View Currencies" },
+      { "key": "currencies.create", "label": "Add a Currency" },
+      { "key": "currencies.edit", "label": "Edit a Currency" },
+      { "key": "currencies.delete", "label": "Delete a Currency" }
     ]
   },
   "payments": {
     "moduleName": "Payment Methods",
     "description": "How clients can put money in — the methods offered on the deposit screen, their instructions, and the account details money is sent to.",
     "permissions": [
-      {
-        "key": "payments.view",
-        "label": "View Payment Methods"
-      },
-      {
-        "key": "payments.manage",
-        "label": "Add / Edit Payment Methods"
-      }
+      { "key": "payments.view", "label": "View Payment Methods" },
+      { "key": "payments.create", "label": "Add a Payment Method" },
+      { "key": "payments.edit", "label": "Edit a Payment Method" },
+      { "key": "payments.delete", "label": "Remove a Payment Method" }
+    ]
+  },
+  "apikeys": {
+    "moduleName": "API Keys",
+    "description": "Machine credentials for the admin API. Grant create NARROWLY: a key is standing access with no login and no session lifetime, carrying whatever permissions its creator holds, so the power to issue one is close to the power to grant one.",
+    "permissions": [
+      { "key": "apikeys.view", "label": "View API Keys" },
+      { "key": "apikeys.create", "label": "Issue an API Key" },
+      { "key": "apikeys.revoke", "label": "Revoke an API Key" }
+    ]
+  },
+  "settings": {
+    "moduleName": "Settings",
+    "description": "Operational settings: brand, support contacts, terminal download links, outbound mail and the security controls. A singleton, so there is no create and no delete. The SMTP keys gate the SCREEN — the system sends mail regardless of who holds them.",
+    "permissions": [
+      { "key": "settings.view", "label": "View Settings" },
+      { "key": "settings.edit", "label": "Change Brand, Contacts & Platform Links" },
+      { "key": "settings.smtp.view", "label": "View the Outbound Mail Tab" },
+      { "key": "settings.smtp.edit", "label": "Change Outbound Mail Credentials" },
+      { "key": "settings.security.view", "label": "View the Security Tab" },
+      { "key": "settings.security.edit", "label": "Change the Security Controls" }
+    ]
+  },
+  "audit": {
+    "moduleName": "Audit & Reconciliation",
+    "description": "The record of who did what, and the ledger reconciliation report. Read-only both — neither screen writes anything, so neither has a write key.",
+    "permissions": [
+      { "key": "audit.view", "label": "View the Audit Log" },
+      { "key": "reconciliation.view", "label": "View the Reconciliation Report" }
     ]
   }
 }

@@ -30,17 +30,16 @@ import { ClientFieldsService } from '../client-fields.service';
 import { UNRESTRICTED, type ClientScope } from '../../../common/security/client-scope';
 import { EMPTY_MASK, type FieldMask } from '../../../common/security/field-mask';
 
-/**
- * Whether this admin is exempt from scoping and masking entirely.
+/*
+ * `isMaster()` is gone. Nothing is exempt from scoping and masking by identity
+ * any more — an administrator with no scope rows resolves to UNRESTRICTED on the
+ * ordinary path, which is the same answer the exemption gave.
  *
- * Checks BOTH the role column and the `*` wildcard. They agree today, and the
- * check is cheap; if they ever diverge, the safe reading of "is this the
- * unrestricted account" is the permissive one, because the alternative is a
- * master admin locked out of the client base by a stale scope row.
+ * `admins.role` still exists as a column and still carries `master_admin` on
+ * bootstrap accounts, because Postgres cannot drop an enum value without
+ * rewriting the type under a live table. Nothing READS it after migration 0044:
+ * no guard, no service and no screen branches on it. Treat it as a dead column.
  */
-function isMaster(admin: Admin, permissions: readonly string[]): boolean {
-  return admin.role === 'master_admin' || permissions.includes('*');
-}
 
 /**
  * The API key on this request, from `X-API-Key` or a Bearer header.
@@ -246,19 +245,20 @@ export class AdminAuthenticator {
     const permissions = await this.roles.resolvePermissions(admin.roleId, admin.permissions);
 
     /*
-     * A master admin is unrestricted, and this branch is BEFORE the lookups
-     * rather than after them.
+     * There is no master bypass here any more.
      *
-     * FR-RBAC-01 is "the full set of administrative permissions, with access to
-     * every administration section and operation WITHOUT EXCEPTION". Reading a
-     * scope or a mask for them and then ignoring it would leave a stored value
-     * that looks meaningful, and the next person to add an enforcement point
-     * would reasonably honour it. There is nothing to honour, so there is
-     * nothing to read.
+     * This used to short-circuit before the two lookups below: a master admin
+     * was UNRESTRICTED and EMPTY_MASK by definition, so reading a scope or a
+     * mask for them would have left a stored value that looks meaningful and
+     * is ignored.
+     *
+     * Removing it changes nothing for those accounts, and that is worth stating
+     * because it looks like it should. An administrator with no rows in
+     * `admin_client_tag_scopes` resolves to UNRESTRICTED anyway — an empty scope
+     * means every client, by RBAC-08 and D-10 — and a role with no masked fields
+     * resolves to an empty mask. The bypass was an optimisation over a lookup
+     * that already returned the same answer, not a separate privilege.
      */
-    if (isMaster(admin, permissions)) {
-      return { ...admin, permissions, clientScope: UNRESTRICTED, fieldMask: EMPTY_MASK };
-    }
 
     // Both resolve live, for the same reason permissions do: revoking a
     // territory or hiding a field must take effect on the next request, not
@@ -352,18 +352,8 @@ export class AdminAuthenticator {
     };
 
     /*
-     * The same master branch the cookie path takes, for the same reason: there
-     * is nothing to scope or mask for a credential holding the wildcard, and a
-     * stored value that is read and then ignored invites the next enforcement
-     * point to honour it.
-     */
-    if (permissions.includes('*')) {
-      return { ...identity, permissions, clientScope: UNRESTRICTED, fieldMask: EMPTY_MASK };
-    }
-
-    /*
-     * A non-wildcard key is UNRESTRICTED IN TERRITORY but fully permission-
-     * checked, and that combination is a deliberate limit worth stating.
+     * A key is UNRESTRICTED IN TERRITORY but fully permission-checked, and that
+     * combination is a deliberate limit worth stating.
      *
      * Client scoping is a property of an admin_client_tag_scopes row keyed by
      * admin id; a key has no such row and inventing one would be inventing a
@@ -396,42 +386,27 @@ export class AdminGuard implements CanActivate {
   }
 }
 
-// Per ARCHITECTURE §8.8 a permission failure is a 403, never a 401 — a 401
-// makes the admin client treat the session as dead and log the admin out.
-@Injectable()
-export class MasterAdminGuard implements CanActivate {
-  constructor(private readonly authenticator: AdminAuthenticator) {}
-
-  async canActivate(context: ExecutionContext): Promise<boolean> {
-    const req = context.switchToHttp().getRequest<AdminRequest>();
-    const admin = await this.authenticator.authenticate(req);
-
-    /*
-     * `isMaster`, NOT `role === 'master_admin'`.
-     *
-     * This guard read the enum column alone, while `isMaster()` above accepts
-     * EITHER the enum or the `*` wildcard. That divergence was survivable only
-     * while every unrestricted account carried both — and it stops being
-     * survivable the moment full access is something a ROLE grants rather than
-     * something the bootstrap column hardcodes.
-     *
-     * The failure it produces is silent and badly timed: an admin holding `*`
-     * passes every `PermissionsGuard` route, so they look fully privileged,
-     * then gets a bare 403 from the twelve routes behind THIS guard — the audit
-     * log, reconciliation, SMTP, the security settings. Which is to say, the
-     * ones you reach for when something has already gone wrong.
-     *
-     * `isMaster` documents why the permissive reading is the right one: the
-     * alternative is an unrestricted account locked out of the controls it
-     * exists to operate.
-     */
-    if (!isMaster(admin, admin.permissions)) {
-      throw new ForbiddenException('Master admin access required.');
-    }
-    req.admin = admin;
-    return true;
-  }
-}
+/*
+ * `MasterAdminGuard` IS GONE, and with it the idea of a role above other roles.
+ *
+ * It guarded twelve routes — the audit log, reconciliation, SMTP, the security
+ * settings and API keys — by checking WHO the caller was rather than what they
+ * held. No permission key could open them, so they could not be delegated at
+ * all: the only way in was to sign in as the bootstrap account. That is why
+ * `apikeys.*`, `audit.view`, `reconciliation.view` and `settings.smtp.*` did not
+ * exist as keys, and it is the same failure as the eleven keys that were
+ * enforced but absent from the catalog — a screen nobody could be given.
+ *
+ * Every one of those routes now carries a real `@RequirePermissions`, so access
+ * to them is granted the way access to everything else is: through a role
+ * somebody created.
+ *
+ * The invariant that replaces it does not live in a guard, because it is not
+ * about who is asking. `assertNotLastManager` in admin-rbac.service.ts refuses
+ * the single write that would leave NOBODY able to manage roles or
+ * administrators — see the note there for why that is a refusal rather than a
+ * privileged account.
+ */
 
 export const PERMISSIONS_KEY = 'required_permissions';
 
@@ -444,7 +419,15 @@ export const PERMISSIONS_KEY = 'required_permissions';
 export const ANY_ADMIN_KEY = 'any_admin';
 export const AnyAdmin = (reason: string) => SetMetadata(ANY_ADMIN_KEY, reason);
 
-/** Route decorator: any ONE of the listed permissions grants access ('*' always does). */
+/**
+ * Route decorator: any ONE of the listed permissions grants access.
+ *
+ * There is no longer a wildcard that always does. `*` used to mean "every
+ * permission", including every permission added after the grant was made — so a
+ * key introduced next year was retroactively held by whoever carried it.
+ * Migration 0044 expanded every stored `*` into the catalog as it stood that
+ * day, and nothing writes one again.
+ */
 export const RequirePermissions = (...permissions: string[]) =>
   SetMetadata(PERMISSIONS_KEY, permissions);
 
@@ -499,7 +482,8 @@ export class PermissionsGuard implements CanActivate {
       );
     }
 
-    if (admin.permissions.includes('*')) return true;
+    // No wildcard branch. Full access is a real list of real keys now — see
+    // RequirePermissions above and migration 0044.
     const held = new Set(admin.permissions.map(normalizePermissionKey));
     if (required.some((p) => held.has(normalizePermissionKey(p)))) return true;
 

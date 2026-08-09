@@ -65,8 +65,14 @@ export function normalizePermissionKey(key: string): string {
   return key.toLowerCase();
 }
 
+/*
+ * No wildcard branch. `*` used to mean "every permission", including every
+ * permission added after the grant was made — migration 0044 expanded every
+ * stored one into the catalog as it stood that day, and nothing writes one
+ * again. Leaving the branch here would silently re-privilege any row that
+ * acquired a `*` afterwards, which is the failure mode dropping it prevents.
+ */
 export function actorHasPermission(actor: Actor, permission: string): boolean {
-  if (actor.permissions.includes('*')) return true;
   const wanted = normalizePermissionKey(permission);
   return actor.permissions.some((held) => normalizePermissionKey(held) === wanted);
 }

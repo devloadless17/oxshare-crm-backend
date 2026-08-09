@@ -15,7 +15,7 @@ import { Request, Response } from 'express';
 import { Admin } from '../../store/admins.store';
 import { AdminAuditService } from './admin-audit.service';
 import { AuditActionDto, AuditListResponseDto } from './dto/responses.dto';
-import { MasterAdminGuard } from './guards/admin.guard';
+import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
 import { AUDIT_ACTIONS } from './audit-actions.catalog';
 import { AUDIT_SORT_COLUMNS } from '../../store/audit-log.store';
 import { searchQuery } from '../../common/query-params';
@@ -44,7 +44,8 @@ export class AdminAuditController {
    * looking for.
    */
   @Get('audit-log/actions')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('audit.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Every action the log can record (master admin only)' })
   @ApiOkResponse({ type: [AuditActionDto] })
@@ -63,14 +64,14 @@ export class AdminAuditController {
    * another. It is placed adjacent for readability rather than out of
    * necessity.
    *
-   * ── `MasterAdminGuard`, asserted a second time in the service ─────────────
+   * ── `audit.view`, asserted a second time in the service ───────────────────
    *
    * The trail records who acted on which clients, which makes "who may read it"
    * a privileged question in its own right. `AdminExportService.auditBatch`
-   * re-checks `role === 'master_admin'` rather than trusting the decorator, for
-   * the reason `AdminAuditService.listAuditLog` records: master-only is
-   * deliberately not a grantable permission key, and a guard runs only on an
-   * HTTP request.
+   * re-checks the key rather than trusting the decorator, for the reason
+   * `AdminAuditService.listAuditLog` records (R-4.3): a guard runs only on an
+   * HTTP request, and this service is reachable from a batch job that never
+   * passes one.
    *
    * ── This export appears in the NEXT export, not its own ───────────────────
    *
@@ -78,7 +79,8 @@ export class AdminAuditController {
    * behaviour: a reader of one export can see that the previous one happened.
    */
   @Get('audit-log/export')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('audit.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Export the filtered admin action log as CSV (master admin only)',
@@ -94,7 +96,7 @@ export class AdminAuditController {
   @ApiQuery({ name: 'action', required: false })
   @ApiQuery({ name: 'subjectType', required: false })
   @NotClientScoped(
-    'MasterAdminGuard only, and a master admin is unrestricted by definition — the same exemption GET /admin/audit-log carries, on the same table. The log records administrators acting, not client-owned rows.',
+    'Gated on audit.view, and the log records administrators acting rather than client-owned rows — the same stance GET /admin/audit-log takes, on the same table.',
   )
   @Audited('export.audit_log')
   async exportAuditLog(
@@ -124,12 +126,13 @@ export class AdminAuditController {
   }
 
   @Get('audit-log')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('audit.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Append-only admin action log (master admin only)' })
   @ApiOkResponse({ type: AuditListResponseDto })
   @NotClientScoped(
-    'MasterAdminGuard only, and a master admin is unrestricted by definition. The coverage spec also asserts that guard is still attached, so opening this to sub-admins fails CI rather than silently serving unscoped subjects.',
+    'Gated on audit.view. The log records administrators acting, not client-owned rows, so there is no client scope to apply — the subjects are admin ids and the actions they took.',
   )
   /*
    * Declared OPTIONAL, explicitly — otherwise Swagger emits every `@Query()` as

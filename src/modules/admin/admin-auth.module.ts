@@ -1,12 +1,7 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import {
-  AdminAuthenticator,
-  AdminGuard,
-  MasterAdminGuard,
-  PermissionsGuard,
-} from './guards/admin.guard';
+import { AdminAuthenticator, AdminGuard, PermissionsGuard } from './guards/admin.guard';
 import { ClientFieldsService } from './client-fields.service';
 import { AdminAuditService } from './admin-audit.service';
 
@@ -20,7 +15,6 @@ import { AdminAuditService } from './admin-audit.service';
 const PROVIDERS = [
   AdminAuthenticator,
   AdminGuard,
-  MasterAdminGuard,
   PermissionsGuard,
   ClientFieldsService,
   /*

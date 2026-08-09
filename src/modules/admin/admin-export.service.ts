@@ -387,8 +387,14 @@ export class AdminExportService {
     offset: number,
     limit: number,
   ): Promise<AuditExportRow[]> {
-    if (actor.role !== 'master_admin') {
-      throw new AuthorizationError('Only the master admin can read the admin action log.');
+    /*
+     * R-4.3: re-asserted here rather than trusted from the route, because this
+     * method is reachable from a batch export that never passes through a guard.
+     * The key matches the controller's exactly — a stricter check here would
+     * authorise the request and then refuse it.
+     */
+    if (!actorHasPermission(actor, 'audit.view')) {
+      throw new AuthorizationError('Reading the admin action log requires audit.view.');
     }
 
     const { items } = await this.auditLog.findAll({

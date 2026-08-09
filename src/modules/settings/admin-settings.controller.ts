@@ -3,11 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Admin } from '../../store/admins.store';
-import {
-  MasterAdminGuard,
-  PermissionsGuard,
-  RequirePermissions,
-} from '../admin/guards/admin.guard';
+import { PermissionsGuard, RequirePermissions } from '../admin/guards/admin.guard';
 import { NotClientScoped } from '../admin/guards/client-scope.decorator';
 import { Audited, NotAudited } from '../admin/guards/audited.decorator';
 import { EmailService } from '../email/email.service';
@@ -72,7 +68,7 @@ export class AdminSettingsController {
 
   @Put('general')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.manage')
+  @RequirePermissions('settings.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Update the general settings',
@@ -90,7 +86,8 @@ export class AdminSettingsController {
   /* ── Email / SMTP ───────────────────────────────────────────────────────── */
 
   @Get('smtp')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.smtp.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Mail server configuration (master admin only)',
@@ -106,7 +103,8 @@ export class AdminSettingsController {
   }
 
   @Put('smtp')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.smtp.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Update the mail server configuration (master admin only)',
@@ -144,7 +142,8 @@ export class AdminSettingsController {
    * without adding a fact they can act on.
    */
   @Post('smtp/test')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.smtp.edit')
   @Throttle({ default: { ttl: 60_000, limit: 3 } })
   @ApiCookieAuth()
   @ApiOperation({

@@ -6,7 +6,7 @@ import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swa
 import { Request } from 'express';
 import { Admin } from '../../store/admins.store';
 import { SecuritySettingsService } from './security-settings.service';
-import { MasterAdminGuard } from './guards/admin.guard';
+import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
 import { SecuritySwitchDto, SetSecuritySwitchDto } from './dto/requests/security-settings.dto';
 import { NotClientScoped } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
@@ -29,7 +29,8 @@ export class AdminSecuritySettingsController {
   constructor(private readonly settings: SecuritySettingsService) {}
 
   @Get('security-settings')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.security.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Security controls and whether each is currently on (master admin only)',
@@ -41,7 +42,8 @@ export class AdminSecuritySettingsController {
   }
 
   @Put('security-settings/:key')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.security.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Turn a security control on or off (master admin only)',

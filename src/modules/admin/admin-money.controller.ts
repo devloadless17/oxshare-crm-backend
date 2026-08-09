@@ -57,7 +57,6 @@ import {
   WithdrawalRowDto,
 } from './dto/responses.dto';
 import {
-  MasterAdminGuard,
   PermissionsGuard,
   RequirePermissions,
   type AuthenticatedAdmin,
@@ -287,7 +286,7 @@ export class AdminMoneyController {
    */
   @Post('wallets')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('wallets.manage')
+  @RequirePermissions('wallets.create')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Open a wallet for a client',
@@ -319,7 +318,7 @@ export class AdminMoneyController {
    */
   @Delete('wallets/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('wallets.manage')
+  @RequirePermissions('wallets.delete')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Close an empty, unused wallet',
@@ -446,7 +445,8 @@ export class AdminMoneyController {
    * to look at in a way a filtered reconciliation is not.
    */
   @Get('reconciliation')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('reconciliation.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Run reconciliation now and return the report (§12.2)',
@@ -458,7 +458,7 @@ export class AdminMoneyController {
   })
   @ApiOkResponse({ type: ReconciliationReportDto })
   @NotClientScoped(
-    'MasterAdminGuard only, and a master admin is unrestricted by definition. Deliberately not narrowed: a reconciliation reporting "balanced" over a subset of clients is the opposite of what a reconciliation is for.',
+    'Gated on reconciliation.view and deliberately NOT client-scoped: a reconciliation reporting "balanced" over a subset of clients is the opposite of what a reconciliation is for.',
   )
   reconcile() {
     return this.reconciliation.run();

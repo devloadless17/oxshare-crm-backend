@@ -9,7 +9,7 @@ import {
 } from '@nestjs/swagger';
 import { Request } from 'express';
 import { ApiKeysService } from './api-keys.service';
-import { AuthenticatedAdmin, MasterAdminGuard } from './guards/admin.guard';
+import { AuthenticatedAdmin, PermissionsGuard, RequirePermissions } from './guards/admin.guard';
 import { NotClientScoped } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 import { CreateApiKeyDto } from './dto/requests/api-keys.dto';
@@ -19,18 +19,22 @@ import type { ApiKeyListRow, ApiKeyRow } from '../../store/api-keys.store';
 /**
  * Machine credentials for the admin API.
  *
- * ── MASTER ADMIN ONLY, and that is not conservatism ────────────────────────
+ * ── GRANTABLE, and `apikeys.create` deserves care ──────────────────────────
  *
- * Issuing a key creates a credential that reaches the admin API with no login,
- * no session lifetime and no browser — and `assertGrantable` means it can carry
- * any permission its creator holds. That places it in the same category as
- * `admin-security-settings.controller.ts` and the SMTP form: powers that should
- * not be delegatable at all, because making one a permission key means somebody
- * eventually grants it to a role called "Operations".
+ * This was `MasterAdminGuard`, on the argument that issuing a key should not be
+ * delegatable at all: a key reaches the admin API with no login, no session
+ * lifetime and no browser, and `assertGrantable` means it carries any permission
+ * its creator holds. So `apikeys.create` is, in effect, a permission that mints
+ * permissions.
  *
- * The anti-escalation check still runs underneath, so this is belt and braces
- * rather than the only control. A master admin issuing a key is the intended
- * path; a sub-admin issuing one is not a path at all.
+ * That argument lost to a stronger one — with no master admin, "not delegatable"
+ * means "reachable by nobody". The three keys exist so one role can own this
+ * page and one administrator can hold that role. Grant `apikeys.create`
+ * narrowly; `apikeys.view` and `apikeys.revoke` are safe to spread, and revoking
+ * quickly is what you want when a key leaks.
+ *
+ * `assertGrantable` still bounds what a key may carry, so a holder cannot mint
+ * one more powerful than themselves.
  */
 /*
  * `@NotClientScoped` is declared PER METHOD below, not once on the class.
@@ -48,15 +52,16 @@ import type { ApiKeyListRow, ApiKeyRow } from '../../store/api-keys.store';
  */
 @ApiTags('admin')
 @Controller('admin/api-keys')
-@UseGuards(MasterAdminGuard)
+@UseGuards(PermissionsGuard)
 @ApiCookieAuth()
 export class AdminApiKeysController {
   constructor(private readonly apiKeys: ApiKeysService) {}
 
   @Get()
+  @RequirePermissions('apikeys.view')
   @NotClientScoped('Machine credentials for the admin API; contains no client data.')
   @ApiOperation({
-    summary: 'Every API key, newest first (master admin only)',
+    summary: 'Every API key, newest first ',
     description:
       'Includes revoked and expired keys. The secret is never returned — `prefix` is the ' +
       'non-secret leading characters, which is what makes two keys distinguishable on screen.',
@@ -76,10 +81,11 @@ export class AdminApiKeysController {
    * to survive its own revocation.
    */
   @Post()
+  @RequirePermissions('apikeys.create')
   @NotClientScoped('Issues a machine credential; reads no client-owned rows.')
   @Throttle({ default: { ttl: 3_600_000, limit: 10 } })
   @ApiOperation({
-    summary: 'Issue a new API key (master admin only)',
+    summary: 'Issue a new API key ',
     description:
       'The response carries the plaintext key, and it is the ONLY time it is ever available: ' +
       'only a SHA-256 hash is stored, so it cannot be shown again or recovered. An admin may ' +
@@ -108,8 +114,9 @@ export class AdminApiKeysController {
    * caller's intent is already satisfied.
    */
   @Delete(':id')
+  @RequirePermissions('apikeys.revoke')
   @NotClientScoped('Revokes a machine credential; reads no client-owned rows.')
-  @ApiOperation({ summary: 'Revoke an API key (master admin only)' })
+  @ApiOperation({ summary: 'Revoke an API key ' })
   @ApiOkResponse({ type: ApiKeyDto })
   @Audited('api_key.revoke')
   async revoke(

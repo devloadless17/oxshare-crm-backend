@@ -48,7 +48,6 @@ import {
 import {
   AnyAdmin,
   AdminGuard,
-  MasterAdminGuard,
   PermissionsGuard,
   RequirePermissions,
   type AuthenticatedAdmin,
@@ -296,7 +295,8 @@ export class AdminComplianceController {
   }
 
   @Post('rejection-reasons')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.create')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Add a rejection reason (master admin only)' })
   @ApiOkResponse({ type: RejectionReasonResponseDto })
@@ -310,7 +310,8 @@ export class AdminComplianceController {
   }
 
   @Put('rejection-reasons/:id')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Rename a rejection reason (master admin only)' })
   @ApiOkResponse({ type: RejectionReasonResponseDto })
@@ -325,7 +326,8 @@ export class AdminComplianceController {
   }
 
   @Delete('rejection-reasons/:id')
-  @UseGuards(MasterAdminGuard)
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.delete')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a rejection reason (master admin only)' })
   @ApiOkResponse({ type: MessageResponseDto })

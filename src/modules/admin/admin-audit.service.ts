@@ -5,6 +5,7 @@ import { AUDIT_SORT_COLUMNS, AuditLogStore, DEFAULT_AUDIT_SORT } from '../../sto
 import { sortKey, sortOrder } from '../../common/sorting';
 import type { Executor } from '../../database/db';
 import { decodeCursor } from '../../common/pagination';
+import { actorHasPermission } from '../../common/security/actor';
 
 /**
  * D-21 admin action log.
@@ -119,15 +120,18 @@ export class AdminAuditService {
     },
   ) {
     /*
-     * Kept in step with `MasterAdminGuard`, which now accepts the `*` wildcard
-     * as well as the enum column. R-4.3 requires this service to re-assert
-     * independently of the guard — but "independently" means it must not TRUST
-     * the guard, not that it may disagree with it. A stricter check here than
-     * at the edge produces a route that authorises the request and then refuses
-     * it, which reads as a bug in the audit log rather than a permission.
+     * Kept in step with the route's `@RequirePermissions('audit.view')`. R-4.3
+     * requires this service to re-assert independently of the guard — but
+     * "independently" means it must not TRUST the guard, not that it may
+     * disagree with it. A stricter check here than at the edge produces a route
+     * that authorises the request and then refuses it, which reads as a bug in
+     * the audit log rather than as a permission.
+     *
+     * This used to demand the `master_admin` enum or the `*` wildcard. Neither
+     * exists any more: reading the trail is `audit.view`, a key like any other.
      */
-    if (actor.role !== 'master_admin' && !actor.permissions.includes('*')) {
-      throw new AuthorizationError('Only an unrestricted admin can read the admin action log.');
+    if (!actorHasPermission(actor, 'audit.view')) {
+      throw new AuthorizationError('Reading the admin action log requires audit.view.');
     }
     /*
      * Validated BEFORE the cursor is decoded, and the order matters.

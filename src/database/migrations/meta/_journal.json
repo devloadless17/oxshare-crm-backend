@@ -302,6 +302,13 @@
       "when": 1787061960600,
       "tag": "0043_payment_methods_enable_only",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1787061961600,
+      "tag": "0044_permission_model",
+      "breakpoints": true
     }
   ]
 }
