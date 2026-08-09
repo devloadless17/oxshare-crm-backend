@@ -592,7 +592,7 @@ export class AdminRbacService {
    * may leave makes forgetting fail safe instead of fail open.
    */
   async sanitize(admin: Admin) {
-    const [permissions, maskedFields, scopedTags] = await Promise.all([
+    const [permissions, maskedFields, scopedTags, role] = await Promise.all([
       this.roles.resolvePermissions(admin.roleId, admin.permissions),
       /*
        * The RESOLVED mask — what this administrator actually cannot see right
@@ -605,6 +605,20 @@ export class AdminRbacService {
       // is the answer the exemption used to short-circuit to.
       this.roles.resolveMaskedFields(admin.roleId, admin.maskedFields),
       this.scopes.describeFor(admin.id),
+      /*
+       * The role's NAME, for the console to display.
+       *
+       * The profile carried `roleId` and nothing else, so the only way to show
+       * "Administrator" beside an operator's name was to fetch the whole roles
+       * list and look it up — which needs `roles.view`, a permission most
+       * administrators do not have and should not need in order to read their
+       * own job title.
+       *
+       * `undefined` when the admin is on no role. That is a real state — the
+       * seeded account was in it until migration 0045 — and it must not render
+       * as a guess.
+       */
+      admin.roleId ? this.roles.findById(admin.roleId) : Promise.resolve(undefined),
     ]);
 
     return {
@@ -613,6 +627,7 @@ export class AdminRbacService {
       name: admin.name,
       role: admin.role,
       roleId: admin.roleId,
+      roleName: role?.name,
       status: admin.status,
       createdAt: admin.createdAt,
       permissions,

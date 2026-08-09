@@ -20,6 +20,15 @@ export class AdminProfileDto {
   @ApiProperty({ enum: ['master_admin', 'sub_admin'] }) role: 'master_admin' | 'sub_admin';
   @ApiProperty({ type: [String] }) permissions: string[];
   @ApiPropertyOptional() roleId?: string;
+  /**
+   * The role's display name — what the console shows beside the operator's own.
+   *
+   * `roleId` alone was useless for that: resolving it meant fetching the roles
+   * list, which requires `roles.view`, so every administrator without it saw
+   * their email address where their job title should be. Absent when the admin
+   * is on no role, which is a real state and must not be guessed at.
+   */
+  @ApiPropertyOptional() roleName?: string;
   /*
    * The admin directory rendered a hardcoded "Active" badge for every row,
    * because this field did not exist and the screen showed something rather

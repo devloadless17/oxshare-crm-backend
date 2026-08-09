@@ -3425,7 +3425,7 @@
             "cookie": []
           }
         ],
-        "summary": "Invite a new sub-admin with a role or explicit permissions (requires users.create)",
+        "summary": "Invite a new sub-admin with a role or explicit permissions (requires admins.create)",
         "tags": [
           "admin"
         ]
@@ -3455,7 +3455,7 @@
             "cookie": []
           }
         ],
-        "summary": "List outstanding invites (requires users.view)",
+        "summary": "List outstanding invites (requires admins.view)",
         "tags": [
           "admin"
         ]
@@ -3492,7 +3492,7 @@
             "cookie": []
           }
         ],
-        "summary": "Revoke an outstanding invite (requires users.create)",
+        "summary": "Revoke an outstanding invite (requires admins.create)",
         "tags": [
           "admin"
         ]
@@ -4051,7 +4051,7 @@
             "cookie": []
           }
         ],
-        "summary": "Suspend or reactivate a client account (requires users.suspend)",
+        "summary": "Suspend or reactivate a client account (requires clients.suspend)",
         "tags": [
           "admin"
         ]
@@ -5053,7 +5053,7 @@
             "cookie": []
           }
         ],
-        "summary": "Permission catalog grouped by module (requires roles.view or users.view)",
+        "summary": "Permission catalog grouped by module (requires roles.view or admins.view)",
         "tags": [
           "admin"
         ]
@@ -5083,7 +5083,7 @@
             "cookie": []
           }
         ],
-        "summary": "Maskable client fields, grouped (requires roles.view or users.view)",
+        "summary": "Maskable client fields, grouped (requires roles.view or admins.view)",
         "tags": [
           "admin"
         ]
@@ -5138,7 +5138,7 @@
             "cookie": []
           }
         ],
-        "summary": "List RBAC roles (requires roles.view or users.view)",
+        "summary": "List RBAC roles (requires roles.view or admins.view)",
         "tags": [
           "admin"
         ]
@@ -5398,7 +5398,7 @@
             "cookie": []
           }
         ],
-        "summary": "List admin accounts (requires users.view)",
+        "summary": "List admin accounts (requires admins.view)",
         "tags": [
           "admin"
         ]
@@ -5484,7 +5484,7 @@
             "cookie": []
           }
         ],
-        "summary": "Update an admin’s name, role, or permissions (requires users.edit)",
+        "summary": "Update an admin’s name, role, or permissions (requires admins.edit)",
         "tags": [
           "admin"
         ]
@@ -5531,7 +5531,7 @@
             "cookie": []
           }
         ],
-        "summary": "Suspend or reactivate an administrator (requires users.suspend)",
+        "summary": "Suspend or reactivate an administrator (requires admins.suspend)",
         "tags": [
           "admin"
         ]
@@ -5743,7 +5743,7 @@
             "cookie": []
           }
         ],
-        "summary": "Every API key, newest first (master admin only)",
+        "summary": "Every API key, newest first ",
         "tags": [
           "admin"
         ]
@@ -5779,7 +5779,7 @@
             "cookie": []
           }
         ],
-        "summary": "Issue a new API key (master admin only)",
+        "summary": "Issue a new API key ",
         "tags": [
           "admin"
         ]
@@ -5815,7 +5815,7 @@
             "cookie": []
           }
         ],
-        "summary": "Revoke an API key (master admin only)",
+        "summary": "Revoke an API key ",
         "tags": [
           "admin"
         ]
@@ -9448,6 +9448,9 @@
             }
           },
           "roleId": {
+            "type": "string"
+          },
+          "roleName": {
             "type": "string"
           },
           "status": {

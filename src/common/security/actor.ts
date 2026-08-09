@@ -1,3 +1,4 @@
+import permissionsCatalog from '../../config/permissions.json';
 import { AuthorizationError } from '../errors/domain-errors';
 
 /**
@@ -24,21 +25,46 @@ export interface Actor {
 }
 
 /**
+ * Every key the catalog defines, read from the file the API itself serves.
+ *
+ * Not a hand-written list: a permission added to `permissions.json` has to
+ * reach the system identity below without anybody remembering a second place,
+ * or the next background job to need it fails authorization in production with
+ * a message about a permission nobody knew it required.
+ */
+const CATALOG_KEYS: string[] = Object.values(
+  permissionsCatalog as Record<string, { permissions: { key: string }[] }>,
+).flatMap((module) => module.permissions.map((entry) => entry.key));
+
+/**
  * The identity a background job acts under.
  *
  * Explicit and auditable, never an implicit "trusted because internal". A job
  * that runs as nobody produces audit rows that say nobody did it, and a
  * permission model with an unnamed bypass is a permission model with a hole.
  *
- * The `*` is deliberate and safe here in a way it would not be for a person:
- * this identity cannot log in — no password, no session, no token is ever
- * minted for it — so it can only ever be reached from code that already runs
- * inside the process.
+ * ── It held `['*']`, and the wildcard branch below was deleted ─────────────
+ *
+ * The two changes did not land together. `assertPermission` stopped honouring
+ * `*` when the permission model was rebuilt, and this constant kept it — with a
+ * comment explaining why the wildcard was safe HERE, which stayed true about
+ * the identity and stopped being true about the mechanism.
+ *
+ * The result was total and silent: every background path that asserts a
+ * permission began refusing itself. Marking a withdrawal failed, the confirm
+ * job, the deal sweep — each raising "system@oxshare.internal cannot … : the
+ * withdrawals.settle permission is required" about an identity that is supposed
+ * to be able to do everything.
+ *
+ * Enumerating the catalog is what the wildcard was standing in for, and it is
+ * strictly better: this identity cannot log in — no password, no session, no
+ * token is ever minted for it — so it is reachable only from code already
+ * running inside the process, and it now holds a list somebody can read.
  */
 export const SYSTEM_ACTOR: Actor = {
   id: '00000000-0000-0000-0000-000000000000',
   email: 'system@oxshare.internal',
-  permissions: ['*'],
+  permissions: CATALOG_KEYS,
 };
 
 /**
