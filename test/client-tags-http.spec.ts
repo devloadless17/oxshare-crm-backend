@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -50,7 +51,7 @@ beforeAll(async () => {
 
   const [masterRole] = await db
     .insert(roles)
-    .values({ name: 'Tags HTTP Master', permissions: ['*'], isSystem: true })
+    .values({ name: 'Tags HTTP Master', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
 
   await db.insert(admins).values({
@@ -59,7 +60,7 @@ beforeAll(async () => {
     name: 'Tags Master',
     role: 'master_admin',
     roleId: masterRole.id,
-    permissions: ['*'],
+    permissions: ALL_PERMISSIONS,
     status: 'active',
   });
 
@@ -69,7 +70,7 @@ beforeAll(async () => {
     .insert(roles)
     .values({
       name: 'Tags HTTP Scoped',
-      permissions: ['users.view', 'users.suspend', 'tags.view', 'tags.assign'],
+      permissions: ['clients.view', 'clients.suspend', 'tags.view', 'clients.tag'],
     })
     .returning();
 

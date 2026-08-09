@@ -14,7 +14,7 @@ import { Audited } from './guards/audited.decorator';
 /**
  * The operator's switches for security controls — master admin only.
  *
- * NOT a permission (`@RequirePermissions('settings.security')` or similar), and
+ * NOT a permission (`@RequirePermissions('settings.security.edit')` or similar), and
  * that is the decision worth defending. RBAC-02 exists so a sub-admin holds only
  * what was explicitly granted, and the thing being granted here is the ability
  * to switch off the control standing between a stolen client session and that

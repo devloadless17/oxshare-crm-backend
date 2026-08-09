@@ -70,10 +70,10 @@ export class AdminRbacController {
   // ── RBAC: permission catalog, roles, admin directory (RBAC-02/07) ─────────
   @Get('permissions')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('roles.view', 'users.view')
+  @RequirePermissions('roles.view', 'admins.view')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Permission catalog grouped by module (requires roles.view or users.view)',
+    summary: 'Permission catalog grouped by module (requires roles.view or admins.view)',
   })
   @ApiOkResponse({
     schema: {
@@ -99,9 +99,9 @@ export class AdminRbacController {
    */
   @Get('client-fields')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('roles.view', 'users.view')
+  @RequirePermissions('roles.view', 'admins.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Maskable client fields, grouped (requires roles.view or users.view)' })
+  @ApiOperation({ summary: 'Maskable client fields, grouped (requires roles.view or admins.view)' })
   @ApiOkResponse({
     schema: {
       type: 'object',
@@ -118,10 +118,10 @@ export class AdminRbacController {
 
   @Get('roles')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('roles.view', 'users.view')
+  @RequirePermissions('roles.view', 'admins.view')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'List RBAC roles (requires roles.view or users.view)',
+    summary: 'List RBAC roles (requires roles.view or admins.view)',
   })
   @ApiOkResponse({ type: [RoleResponseDto] })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(ROLE_SORT_COLUMNS) })
@@ -144,7 +144,7 @@ export class AdminRbacController {
   @Get('roles/export')
   @UseGuards(PermissionsGuard)
   // OR semantics, matching GET /admin/roles exactly.
-  @RequirePermissions('roles.view', 'users.view')
+  @RequirePermissions('roles.view', 'admins.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Export the RBAC role definitions as CSV' })
   @ApiOkResponse({
@@ -169,7 +169,7 @@ export class AdminRbacController {
 
   @Post('roles')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('roles.manage')
+  @RequirePermissions('roles.create')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Create a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: RoleResponseDto })
@@ -187,7 +187,7 @@ export class AdminRbacController {
 
   @Put('roles/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('roles.manage')
+  @RequirePermissions('roles.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Update a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: RoleResponseDto })
@@ -203,7 +203,7 @@ export class AdminRbacController {
 
   @Delete('roles/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('roles.manage')
+  @RequirePermissions('roles.delete')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a custom role (requires roles.manage)' })
   @ApiOkResponse({ type: MessageResponseDto })
@@ -218,9 +218,9 @@ export class AdminRbacController {
 
   @Get('users')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.view')
+  @RequirePermissions('admins.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'List admin accounts (requires users.view)' })
+  @ApiOperation({ summary: 'List admin accounts (requires admins.view)' })
   /*
    * Two response shapes, and the OpenAPI declaration says so.
    *
@@ -309,7 +309,7 @@ export class AdminRbacController {
    */
   @Get('admin-users/export')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.view')
+  @RequirePermissions('admins.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Export the administrator directory as CSV' })
   @ApiOkResponse({
@@ -338,10 +338,10 @@ export class AdminRbacController {
 
   @Patch('users/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.edit')
+  @RequirePermissions('admins.edit')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Update an admin’s name, role, or permissions (requires users.edit)',
+    summary: 'Update an admin’s name, role, or permissions (requires admins.edit)',
   })
   @ApiOkResponse({ type: AdminProfileDto })
   @NotClientScoped('Edits an administrator, not a client.')
@@ -356,16 +356,16 @@ export class AdminRbacController {
 
   /*
    * Separate from PATCH users/:id on purpose: suspension needs users.SUSPEND,
-   * not users.edit. One endpoint whose required permission depends on which
+   * not admins.edit. One endpoint whose required permission depends on which
    * body keys arrive is a guard that silently widens the next time a field is
    * added. See AdminStatusDto.
    */
   @Patch('users/:id/status')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.suspend')
+  @RequirePermissions('admins.suspend')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Suspend or reactivate an administrator (requires users.suspend)',
+    summary: 'Suspend or reactivate an administrator (requires admins.suspend)',
     description:
       'Suspension takes effect on the target’s NEXT request — AdminGuard re-reads status ' +
       'on every call — and blocks login. Refused on your own account and on the master admin.',

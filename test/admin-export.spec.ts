@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   actingAs,
@@ -82,7 +83,7 @@ beforeAll(async () => {
 
   const [masterRole] = await db
     .insert(roles)
-    .values({ name: 'Export Master', permissions: ['*'], isSystem: true })
+    .values({ name: 'Export Master', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
   await db.insert(admins).values({
     email: MASTER.email,
@@ -90,7 +91,7 @@ beforeAll(async () => {
     name: 'Export Master',
     role: 'master_admin',
     roleId: masterRole.id,
-    permissions: ['*'],
+    permissions: ALL_PERMISSIONS,
     status: 'active',
   });
 
@@ -106,7 +107,7 @@ beforeAll(async () => {
     .insert(roles)
     .values({
       name: 'Export Scoped',
-      permissions: ['users.view', 'kyc.review', 'withdrawals.view', 'ib.view'],
+      permissions: ['clients.view', 'kyc.review', 'withdrawals.view', 'ib.view'],
     })
     .returning();
   const [scopedAdmin] = await db

@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
 import {
@@ -54,7 +55,7 @@ beforeAll(async () => {
     .values({
       name: 'SC Master Admin',
       description: 'Full access.',
-      permissions: ['*'],
+      permissions: ALL_PERMISSIONS,
       isSystem: true,
     })
     .returning();
@@ -67,7 +68,7 @@ beforeAll(async () => {
       name: 'Session Correctness Admin',
       role: 'master_admin',
       roleId: masterRole.id,
-      permissions: ['*'],
+      permissions: ALL_PERMISSIONS,
     })
     .returning();
   adminId = row.id;
@@ -320,7 +321,7 @@ describe('B-C4 — a suspended admin cannot refresh', () => {
         passwordHash: await passwords.hash('admin-password-123'),
         name: 'Suspended Admin',
         role: 'master_admin',
-        permissions: ['*'],
+        permissions: ALL_PERMISSIONS,
       })
       .returning();
 
@@ -474,7 +475,7 @@ describe('B-C10 — a few seconds of clock skew is not a dead session', () => {
 describe('B-C7 — a declared permission is actually enforced', () => {
   it('refuses a sub-admin the platform download links', async () => {
     /*
-     * `@RequirePermissions('settings.manage')` was paired with
+     * `@RequirePermissions('settings.edit')` was paired with
      * `@UseGuards(AdminGuard)`, and only `PermissionsGuard` reads
      * `PERMISSIONS_KEY` — so the decorator was decoration. Any authenticated
      * admin could rewrite the executable download URL handed to every client.
@@ -530,7 +531,7 @@ describe('B-C8 — an invite carries the territory and mask it was sent with', (
       .post('/v1/admin/invite', {
         email: 'sc-invitee@oxshare.com',
         name: 'Invitee',
-        permissions: ['users.view'],
+        permissions: ['clients.view'],
         maskedFields: ['client.email'],
         scopedTagIds: [tag.id],
       })

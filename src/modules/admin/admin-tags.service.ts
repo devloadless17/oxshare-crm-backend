@@ -57,7 +57,7 @@ export class AdminTagsService {
     input: { label: string; color?: string; description?: string },
     actor: AuthenticatedAdmin,
   ): Promise<ClientTag> {
-    assertActorCan(actor, 'tags.manage', 'create a client tag');
+    assertActorCan(actor, 'tags.create', 'create a client tag');
 
     const label = input.label.trim();
     if (label === '') throw new ValidationError('A tag needs a label.');
@@ -89,7 +89,7 @@ export class AdminTagsService {
     patch: { label?: string; color?: string | null; description?: string | null },
     actor: AuthenticatedAdmin,
   ): Promise<ClientTag> {
-    assertActorCan(actor, 'tags.manage', 'edit a client tag');
+    assertActorCan(actor, 'tags.edit', 'edit a client tag');
 
     const tag = await this.tags.findById(id);
     if (!tag) throw new NotFoundError('Tag not found.');
@@ -113,7 +113,7 @@ export class AdminTagsService {
   }
 
   async remove(id: string, actor: AuthenticatedAdmin): Promise<void> {
-    assertActorCan(actor, 'tags.manage', 'delete a client tag');
+    assertActorCan(actor, 'tags.delete', 'delete a client tag');
 
     const tag = await this.tags.findById(id);
     if (!tag) throw new NotFoundError('Tag not found.');
@@ -150,13 +150,13 @@ export class AdminTagsService {
   // ─── assignment ───────────────────────────────────────────────────────────
 
   async tagsForClient(clientId: string, actor: AuthenticatedAdmin): Promise<ClientTag[]> {
-    assertActorCan(actor, 'users.view', "view a client's tags");
+    assertActorCan(actor, 'clients.view', "view a client's tags");
     await this.assertClientVisible(clientId, actor);
     return this.tags.tagsForClient(clientId);
   }
 
   async assign(clientId: string, tagId: string, actor: AuthenticatedAdmin): Promise<ClientTag[]> {
-    assertActorCan(actor, 'tags.assign', 'tag a client');
+    assertActorCan(actor, 'clients.tag', 'tag a client');
     await this.assertClientVisible(clientId, actor);
 
     const tag = await this.tags.findById(tagId);
@@ -176,7 +176,7 @@ export class AdminTagsService {
   }
 
   async unassign(clientId: string, tagId: string, actor: AuthenticatedAdmin): Promise<ClientTag[]> {
-    assertActorCan(actor, 'tags.assign', 'untag a client');
+    assertActorCan(actor, 'clients.tag', 'untag a client');
     await this.assertClientVisible(clientId, actor);
 
     const tag = await this.tags.findById(tagId);

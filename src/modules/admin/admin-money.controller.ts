@@ -280,7 +280,7 @@ export class AdminMoneyController {
    * that leaves: a currency added after the client signed up, and one that was
    * disabled at the time.
    *
-   * `wallets.manage`, not `wallets.credit`. This creates an empty container and
+   * `wallets.create`, not `wallets.credit`. This creates an empty container and
    * moves no money; putting it behind the key that mints balance would mean
    * granting the power to create money in order to fix a missing wallet.
    */

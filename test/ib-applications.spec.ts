@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { IbApplicationsService } from '../src/modules/ib/ib-applications.service';
@@ -64,7 +65,7 @@ afterAll(async () => {
 const REVIEWER: Actor = {
   id: '00000000-0000-4000-8000-000000000001',
   email: 'ib-reviewer@oxshare.internal',
-  permissions: ['*'],
+  permissions: ALL_PERMISSIONS,
 };
 
 /** Verified by default — the unverified case is a test of its own. */

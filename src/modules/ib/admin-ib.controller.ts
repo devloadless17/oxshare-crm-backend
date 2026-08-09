@@ -60,7 +60,7 @@ import {
  * them the ability to create partners who will be paid, and a single key makes
  * that distinction unavailable to whoever configures a role.
  *
- * Neither one implies `ib.manage`: rewriting the payout ladder is a different
+ * Neither one implies `ib.partners.edit`: rewriting the payout ladder is a different
  * power from deciding who joins it.
  */
 @ApiTags('admin')
@@ -237,7 +237,7 @@ export class AdminIbController {
    */
   @Get('accruals')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view')
+  @RequirePermissions('ib.view', 'ib.commissions.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Partner commission accruals, filterable',
@@ -348,7 +348,7 @@ export class AdminIbController {
 
   @Patch('partners/:userId/level')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.manage')
+  @RequirePermissions('ib.partners.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Move a partner to a different level',
@@ -369,7 +369,7 @@ export class AdminIbController {
 
   @Patch('partners/:userId/parent')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.manage')
+  @RequirePermissions('ib.partners.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Reassign a partner’s parent',
@@ -396,7 +396,7 @@ export class AdminIbController {
 
   @Patch('partners/:userId/active')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.manage')
+  @RequirePermissions('ib.partners.suspend')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Suspend or reactivate a partner',
@@ -406,7 +406,7 @@ export class AdminIbController {
   })
   @ApiOkResponse({ type: IbAccountDto })
   @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
-  @Audited('ib.suspend')
+  @Audited('ib.partners.suspend')
   setActive(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('userId', ParseUUIDPipe) userId: string,

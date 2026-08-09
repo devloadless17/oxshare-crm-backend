@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { describe, expect, it } from 'vitest';
 import { refuseReset, RESET_TOKEN_TTL_MS } from '../src/modules/admin/admin-reset';
 
@@ -14,12 +15,12 @@ import { refuseReset, RESET_TOKEN_TTL_MS } from '../src/modules/admin/admin-rese
  * fixture that has to be believed.
  */
 
-const master = { id: 'm1', role: 'master_admin' as const, permissions: ['*'] };
-const otherMaster = { id: 'm2', role: 'master_admin' as const, permissions: ['*'] };
+const master = { id: 'm1', role: 'master_admin' as const, permissions: ALL_PERMISSIONS };
+const otherMaster = { id: 'm2', role: 'master_admin' as const, permissions: ALL_PERMISSIONS };
 const manager = {
   id: 's1',
   role: 'sub_admin' as const,
-  permissions: ['users.create', 'kyc.review'],
+  permissions: ['admins.create', 'kyc.review'],
 };
 const peer = { id: 's2', role: 'sub_admin' as const, permissions: ['kyc.review'] };
 
@@ -81,10 +82,10 @@ describe('refuseReset', () => {
   });
 
   it('treats a wildcard permission as master, whatever the role column says', () => {
-    // The two ways to be all-powerful must not disagree. A row carrying ['*']
+    // The two ways to be all-powerful must not disagree. A row carrying ALL_PERMISSIONS
     // with role 'sub_admin' is a master in everything but name, in both
     // directions: it may reset, and it may not be reset by a lesser admin.
-    const wildcardSub = { id: 'w1', role: 'sub_admin' as const, permissions: ['*'] };
+    const wildcardSub = { id: 'w1', role: 'sub_admin' as const, permissions: ALL_PERMISSIONS };
     expect(refuseReset(wildcardSub, peer)).toBeNull();
     expect(refuseReset(manager, wildcardSub)).toBe('target-is-master');
   });

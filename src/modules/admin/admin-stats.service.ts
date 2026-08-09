@@ -27,7 +27,7 @@ import type {
  * and asserted HERE as well as at the guard.** R-4.3: the guard runs on an HTTP
  * request, and this method is what a queued report job would call. The overview
  * therefore does not assert-or-throw per section — it CHECKS and OMITS, because
- * an admin holding `users.view` but not `kyc.review` should get a working
+ * an admin holding `clients.view` but not `kyc.review` should get a working
  * dashboard with the client tiles on it, not a 403 for the whole screen.
  *
  * ## Why the overview omits rather than zeroes
@@ -49,7 +49,7 @@ export class AdminStatsService {
    * — instead of a property of control flow spread down a method.
    */
   private static readonly SECTION_PERMISSIONS = {
-    clients: ['users.view'],
+    clients: ['clients.view'],
     kyc: ['kyc.view', 'kyc.review'],
     withdrawals: ['withdrawals.view'],
     ib: ['ib.view'],
@@ -89,9 +89,9 @@ export class AdminStatsService {
 
     if (wanted.length === 0) {
       // Names one of the keys rather than all four: the message is read by a
-      // person deciding what to grant, and "requires users.view" is actionable
+      // person deciding what to grant, and "requires clients.view" is actionable
       // where "requires one of four things" is a puzzle.
-      assertActorCan(actor, 'users.view', 'view the dashboard overview');
+      assertActorCan(actor, 'clients.view', 'view the dashboard overview');
     }
 
     const scope = actor.clientScope;
@@ -131,7 +131,7 @@ export class AdminStatsService {
     days: string | undefined,
     actor: AuthenticatedAdmin,
   ): Promise<RegistrationSeriesDto> {
-    assertActorCan(actor, 'users.view', 'view the registration trend');
+    assertActorCan(actor, 'clients.view', 'view the registration trend');
     const window = parseDays(days);
 
     return {

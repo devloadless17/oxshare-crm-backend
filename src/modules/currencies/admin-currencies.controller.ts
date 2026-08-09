@@ -31,14 +31,14 @@ import { CreateCurrencyDto, CurrencyDto, UpdateCurrencyDto } from './dto/currenc
  * ## Guarded with `settings.*`, not a new permission key
  *
  * A currency is operator configuration of exactly the same class as the
- * platform download links and the brand name, and those are `settings.manage`
+ * platform download links and the brand name, and those are `currencies.edit`
  * (`admin-platform-links.controller.ts` records the reasoning: forcing a master
  * admin to edit routine operational content is how the master credential ends
  * up shared). Minting `currencies.manage` would add a key every existing role
  * lacks, so the screen would be invisible to everybody until someone edited
  * roles — a migration disguised as a feature.
  *
- * Reads are `settings.view` and writes are `settings.manage`, matching the
+ * Reads are `currencies.view` and writes are `currencies.edit`, matching the
  * general-settings split exactly.
  *
  * ## Every write is audited
@@ -59,14 +59,14 @@ export class AdminCurrenciesController {
   constructor(private readonly currencies: CurrenciesService) {}
 
   /**
-   * `settings.view` OR `payments.view` — `@RequirePermissions` is an OR.
+   * `currencies.view` OR `payments.view` — `@RequirePermissions` is an OR.
    *
    * The second was added because the payment-method form needs this list: a
    * method's `currency` is a foreign key into this table and decides which
    * wallet a deposit lands in, so the form offers the platform's own codes
    * rather than a free-text field the API would 400 on.
    *
-   * Without it, an admin holding `payments.manage` and not `settings.view` — a
+   * Without it, an admin holding `payments.manage` and not `currencies.view` — a
    * perfectly ordinary payments role — opened the form to an empty dropdown and
    * could not create a payment method at all. The alternative was a second
    * endpoint serving the same rows under a different permission, which is two
@@ -76,7 +76,7 @@ export class AdminCurrenciesController {
    */
   @Get()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.view', 'payments.view')
+  @RequirePermissions('currencies.view', 'payments.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Every currency, including disabled ones, in operator order',
@@ -94,12 +94,12 @@ export class AdminCurrenciesController {
   /**
    * Every currency as CSV.
    *
-   * `settings.view` — the same read permission the list carries, and not the
-   * `settings.manage` the writes need: an export is a read.
+   * `currencies.view` — the same read permission the list carries, and not the
+   * `currencies.edit` the writes need: an export is a read.
    */
   @Get('export')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.view')
+  @RequirePermissions('currencies.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Export every currency as CSV, including disabled ones' })
   @ApiOkResponse({
@@ -129,7 +129,7 @@ export class AdminCurrenciesController {
 
   @Post()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.manage')
+  @RequirePermissions('currencies.create')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Add a currency',
@@ -146,7 +146,7 @@ export class AdminCurrenciesController {
 
   @Patch(':code')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.manage')
+  @RequirePermissions('currencies.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Update a currency',
@@ -168,7 +168,7 @@ export class AdminCurrenciesController {
 
   @Delete(':code')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.manage')
+  @RequirePermissions('currencies.delete')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Delete a currency that nobody holds',

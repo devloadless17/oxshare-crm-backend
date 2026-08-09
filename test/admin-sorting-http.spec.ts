@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -89,7 +90,7 @@ beforeAll(async () => {
 
   const [masterRole] = await db
     .insert(roles)
-    .values({ name: 'Sort HTTP Master', permissions: ['*'], isSystem: true })
+    .values({ name: 'Sort HTTP Master', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
   await db.insert(admins).values({
     email: MASTER.email,
@@ -97,7 +98,7 @@ beforeAll(async () => {
     name: 'Sort Master',
     role: 'master_admin',
     roleId: masterRole.id,
-    permissions: ['*'],
+    permissions: ALL_PERMISSIONS,
     status: 'active',
   });
 
@@ -116,14 +117,14 @@ beforeAll(async () => {
       passwordHash: await passwords.hash('admin-password-123'),
       name,
       role: 'sub_admin',
-      permissions: ['users.view'],
+      permissions: ['clients.view'],
       status: 'active',
     });
   }
 
   // Roles, likewise inserted in a deliberately unhelpful order.
   for (const name of ['Zeta Reviewer', 'Alpha Reviewer', 'Mid Reviewer']) {
-    await db.insert(roles).values({ name, permissions: ['users.view'], isSystem: false });
+    await db.insert(roles).values({ name, permissions: ['clients.view'], isSystem: false });
   }
 
   /*

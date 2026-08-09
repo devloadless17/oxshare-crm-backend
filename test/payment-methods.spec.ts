@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
@@ -50,7 +51,7 @@ let gateways: ReturnType<typeof gatewayStub>;
 const ADMIN: Actor = {
   id: '00000000-0000-4000-8000-000000000001',
   email: 'payments-admin@oxshare.internal',
-  permissions: ['*'],
+  permissions: ALL_PERMISSIONS,
 };
 
 beforeAll(async () => {

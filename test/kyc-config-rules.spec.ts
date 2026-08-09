@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { AdminComplianceService } from '../src/modules/admin/admin-compliance.service';
 import { MANDATORY_KYC_SLUGS, type KycStepConfig } from '../src/store/kyc-config.store';
@@ -44,7 +45,7 @@ const deleteStep = vi.fn();
 const getSteps = vi.fn();
 
 /** These config routes are now audited, so they take an acting admin. */
-const ACTOR = { id: 'admin-1', email: 'admin@oxshare.com', permissions: ['*'] } as never;
+const ACTOR = { id: 'admin-1', email: 'admin@oxshare.com', permissions: ALL_PERMISSIONS } as never;
 
 function makeService(steps: KycStepConfig[] = DEFAULT_STEPS) {
   getSteps.mockResolvedValue(steps);

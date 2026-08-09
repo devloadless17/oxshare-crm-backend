@@ -179,7 +179,7 @@ export class AdminMoneyService {
    * two cases that leaves behind: a currency the operator added after the client
    * signed up, and one that was disabled when they did.
    *
-   * `wallets.manage`, NOT `wallets.credit` — this creates an empty container and
+   * `wallets.create`, NOT `wallets.credit` — this creates an empty container and
    * moves no money, so it does not belong behind the key that mints balance.
    *
    * `getOrCreateWallet` makes it idempotent: opening a wallet that already
@@ -187,7 +187,7 @@ export class AdminMoneyService {
    * answer for a button somebody pressed twice.
    */
   async openWallet(params: { userId: string; currency: string }, actor: AuthenticatedAdmin) {
-    assertActorCan(actor, 'wallets.manage', 'open a client wallet');
+    assertActorCan(actor, 'wallets.create', 'open a client wallet');
     await this.visibility.assertVisible(params.userId, actor.clientScope);
 
     /*
@@ -219,7 +219,7 @@ export class AdminMoneyService {
    * attempt, which is the safer of the two errors on a destructive action.
    */
   async closeWallet(id: string, actor: AuthenticatedAdmin) {
-    assertActorCan(actor, 'wallets.manage', 'close a client wallet');
+    assertActorCan(actor, 'wallets.delete', 'close a client wallet');
 
     const wallet = await this.wallets.findById(id);
     if (!wallet) throw new NotFoundError('Wallet not found.');

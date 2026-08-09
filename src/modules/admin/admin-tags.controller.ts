@@ -41,7 +41,7 @@ export class AdminTagsController {
   // OR semantics: anyone who can see the client list needs the vocabulary to
   // render its chips and its filter, so requiring `tags.view` alone would make
   // the tag column render as blank for most administrators.
-  @RequirePermissions('tags.view', 'users.view')
+  @RequirePermissions('tags.view', 'clients.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Client tags, with how many clients carry each' })
   @ApiOkResponse({ type: [ClientTagWithCountDto] })
@@ -66,7 +66,7 @@ export class AdminTagsController {
   @UseGuards(PermissionsGuard)
   // OR semantics, matching the list: anyone who can see the client index needs
   // the tag vocabulary to make sense of its chips and its filter.
-  @RequirePermissions('tags.view', 'users.view')
+  @RequirePermissions('tags.view', 'clients.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Export the client tag vocabulary as CSV' })
   @ApiOkResponse({
@@ -87,7 +87,7 @@ export class AdminTagsController {
 
   @Post('tags')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('tags.manage')
+  @RequirePermissions('tags.create')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Create a client tag' })
   @ApiOkResponse({ type: ClientTagDto })
@@ -99,7 +99,7 @@ export class AdminTagsController {
 
   @Patch('tags/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('tags.manage')
+  @RequirePermissions('tags.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Rename or restyle a client tag (the slug is fixed)' })
   @ApiOkResponse({ type: ClientTagDto })
@@ -115,7 +115,7 @@ export class AdminTagsController {
 
   @Delete('tags/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('tags.manage')
+  @RequirePermissions('tags.delete')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Delete a client tag and every assignment of it' })
   @NotClientScoped('Deletes a tag; refused while any admin is scoped to it.')
@@ -139,7 +139,7 @@ export class AdminTagsController {
 
   @Get('clients/:id/tags')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.view')
+  @RequirePermissions('clients.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: "A client's tags" })
   @ApiOkResponse({ type: [ClientTagDto] })
@@ -155,7 +155,7 @@ export class AdminTagsController {
 
   @Post('clients/:id/tags/:tagId')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('tags.assign')
+  @RequirePermissions('clients.tag')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Attach a tag to a client' })
   @ApiOkResponse({ type: [ClientTagDto] })
@@ -173,7 +173,7 @@ export class AdminTagsController {
 
   @Delete('clients/:id/tags/:tagId')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('tags.assign')
+  @RequirePermissions('clients.tag')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Detach a tag from a client' })
   @ApiOkResponse({ type: [ClientTagDto] })

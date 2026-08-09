@@ -40,7 +40,7 @@ import {
  * module are the opposite — they read `ib_accounts.user_id` and will be
  * `@ScopedToClients`.
  *
- * ## Reads are `ib.view`, writes are `ib.manage`
+ * ## Reads are `ib.view`, writes are `ib.levels.edit`
  *
  * Matching the general-settings split. `ib.approve` and `ib.reject` are
  * deliberately NOT accepted here: approving a partner application and rewriting
@@ -70,7 +70,7 @@ export class AdminIbLevelsController {
 
   @Post()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.manage')
+  @RequirePermissions('ib.levels.create')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Add a level to the ladder',
@@ -87,7 +87,7 @@ export class AdminIbLevelsController {
 
   @Patch(':level')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.manage')
+  @RequirePermissions('ib.levels.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Update a level',
@@ -116,7 +116,7 @@ export class AdminIbLevelsController {
    */
   @Patch()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.manage')
+  @RequirePermissions('ib.levels.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Renumber the ladder',
@@ -134,7 +134,7 @@ export class AdminIbLevelsController {
 
   @Delete(':level')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.manage')
+  @RequirePermissions('ib.levels.delete')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Remove a level',

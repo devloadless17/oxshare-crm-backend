@@ -75,7 +75,7 @@ describe('migration 0009 — stored keys are converted before the shims are remo
     const roles = await ctx.db.execute(
       sql`SELECT permissions FROM roles WHERE name = 'Legacy Reviewer'`,
     );
-    expect(roles.rows[0]).toEqual({ permissions: ['kyc.review', 'users.view'] });
+    expect(roles.rows[0]).toEqual({ permissions: ['kyc.review', 'clients.view'] });
 
     const admins = await ctx.db.execute(
       sql`SELECT permissions FROM admins WHERE email = 'legacy@test.local'`,

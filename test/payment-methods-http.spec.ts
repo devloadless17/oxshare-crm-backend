@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { rm } from 'node:fs/promises';
@@ -71,7 +72,7 @@ beforeAll(async () => {
 
   const [role] = await db
     .insert(roles)
-    .values({ name: 'PM Master', permissions: ['*'], isSystem: true })
+    .values({ name: 'PM Master', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
   await db.insert(admins).values({
     email: MASTER.email,
@@ -79,7 +80,7 @@ beforeAll(async () => {
     name: 'PM Master',
     role: 'master_admin',
     roleId: role.id,
-    permissions: ['*'],
+    permissions: ALL_PERMISSIONS,
     status: 'active',
   });
 

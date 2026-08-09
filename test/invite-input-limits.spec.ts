@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   actingAs,
@@ -40,7 +41,7 @@ beforeAll(async () => {
 
   const [masterRole] = await ctx.db.db
     .insert(roles)
-    .values({ name: 'Limits Master', permissions: ['*'], isSystem: true })
+    .values({ name: 'Limits Master', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
   roleId = masterRole.id;
 
@@ -50,7 +51,7 @@ beforeAll(async () => {
     name: 'Limits Master',
     role: 'master_admin',
     roleId: masterRole.id,
-    permissions: ['*'],
+    permissions: ALL_PERMISSIONS,
     status: 'active',
   });
 });

@@ -71,7 +71,7 @@ CREATE TEMPORARY TABLE _perm_all (key text PRIMARY KEY);
 --> statement-breakpoint
 
 INSERT INTO _perm_all (key) VALUES
-  ('clients.view'), ('clients.edit'), ('clients.suspend'), ('clients.tag'),
+  ('clients.view'), ('clients.suspend'), ('clients.tag'),
   ('admins.view'), ('admins.create'), ('admins.edit'), ('admins.suspend'),
   ('admins.scope'), ('admins.reset'),
   ('roles.view'), ('roles.create'), ('roles.edit'), ('roles.delete'),
@@ -85,7 +85,6 @@ INSERT INTO _perm_all (key) VALUES
   ('ib.partners.suspend'), ('ib.commissions.view'),
   ('tags.view'), ('tags.create'), ('tags.edit'), ('tags.delete'),
   ('currencies.view'), ('currencies.create'), ('currencies.edit'), ('currencies.delete'),
-  ('payments.view'), ('payments.create'), ('payments.edit'), ('payments.delete'),
   ('apikeys.view'), ('apikeys.create'), ('apikeys.revoke'),
   ('settings.view'), ('settings.edit'), ('settings.smtp.view'),
   ('settings.smtp.edit'), ('settings.security.view'), ('settings.security.edit'),
@@ -108,7 +107,9 @@ INSERT INTO _perm_map (old, new) VALUES
   ('users.view', 'clients.view'),
   ('users.view', 'admins.view'),
   ('users.view', 'trading.view'),
-  ('users.edit', 'clients.edit'),
+  -- `users.edit` yields only the ADMIN half: no endpoint edits a client's
+  -- profile, so a `clients.edit` key would be one an operator can grant and
+  -- then watch do nothing.
   ('users.edit', 'admins.edit'),
   ('users.suspend', 'clients.suspend'),
   ('users.suspend', 'admins.suspend'),
@@ -162,9 +163,10 @@ INSERT INTO _perm_map (old, new) VALUES
   ('tags.assign', 'clients.tag'),
 
   ('payments.view', 'payments.view'),
+  -- No `payments.delete`: a method is DISABLED rather than removed (0043),
+  -- because deleting one would orphan the deposits that used it.
   ('payments.manage', 'payments.create'),
   ('payments.manage', 'payments.edit'),
-  ('payments.manage', 'payments.delete'),
 
   -- Currencies lived under settings.*, which is why the support-email grant also
   -- carried the power to delete a currency.

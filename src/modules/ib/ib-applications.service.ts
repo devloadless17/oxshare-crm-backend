@@ -579,12 +579,14 @@ export class IbApplicationsService {
     if (!updated) throw new NotFoundError('That partner does not exist.');
 
     /*
-     * One action for both directions, matching the `@Audited('ib.suspend')` on
+     * One action for both directions, matching the `@Audited('ib.partners.suspend')` on
      * the route — the DTO carries which. `active: false` stops the partner
      * earning while they keep their tree, so a suspension nobody can attribute
      * is a partner who stopped being paid for reasons no longer on record.
      */
-    this.audit.record(actor.id, 'ib.suspend', 'ib_account', userId, { active: updated.active });
+    this.audit.record(actor.id, 'ib.partners.suspend', 'ib_account', userId, {
+      active: updated.active,
+    });
     return updated;
   }
 

@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import {
@@ -40,7 +41,12 @@ beforeAll(async () => {
 
   const [masterRole] = await ctx.db.db
     .insert(roles)
-    .values({ name: 'API Key Master', description: 'Full.', permissions: ['*'], isSystem: false })
+    .values({
+      name: 'API Key Master',
+      description: 'Full.',
+      permissions: ALL_PERMISSIONS,
+      isSystem: false,
+    })
     .returning();
 
   // A deliberately LIMITED role: the anti-escalation assertions below need an
@@ -50,7 +56,7 @@ beforeAll(async () => {
     .values({
       name: 'API Key Limited',
       description: 'Reads clients only.',
-      permissions: ['users.view'],
+      permissions: ['clients.view'],
       isSystem: false,
     })
     .returning();
@@ -62,7 +68,7 @@ beforeAll(async () => {
       name: 'API Key Master',
       role: 'master_admin',
       roleId: masterRole.id,
-      permissions: ['*'],
+      permissions: ALL_PERMISSIONS,
     },
     {
       email: SUB.email,
@@ -70,7 +76,7 @@ beforeAll(async () => {
       name: 'API Key Sub',
       role: 'sub_admin',
       roleId: limitedRole.id,
-      permissions: ['users.view'],
+      permissions: ['clients.view'],
     },
   ]);
 }, 180_000);
@@ -83,7 +89,7 @@ afterAll(async () => {
 async function issueKey(
   body: { name: string; permissions: string[]; expiresAt?: string | null } = {
     name: 'Test key',
-    permissions: ['users.view'],
+    permissions: ['clients.view'],
   },
 ): Promise<{ plaintext: string; id: string }> {
   const session = await actingAs(ctx, 'admin', MASTER);
@@ -139,7 +145,7 @@ describe('issuing a key', () => {
     await session
       .post('/v1/admin/api-keys', {
         name: 'Stale',
-        permissions: ['users.view'],
+        permissions: ['clients.view'],
         expiresAt: new Date(Date.now() - 60_000).toISOString(),
       })
       .expect(400);
@@ -154,14 +160,14 @@ describe('issuing a key', () => {
      */
     const session = await actingAs(ctx, 'admin', SUB);
     await session
-      .post('/v1/admin/api-keys', { name: 'Escalation', permissions: ['users.view'] })
+      .post('/v1/admin/api-keys', { name: 'Escalation', permissions: ['clients.view'] })
       .expect(403);
   });
 });
 
 describe('authenticating with a key', () => {
   it('reaches an admin endpoint with no cookie at all', async () => {
-    const { plaintext } = await issueKey({ name: 'Reader', permissions: ['users.view'] });
+    const { plaintext } = await issueKey({ name: 'Reader', permissions: ['clients.view'] });
 
     const res = await anonymous(ctx)
       .get('/v1/admin/clients?limit=1')
@@ -174,7 +180,7 @@ describe('authenticating with a key', () => {
   });
 
   it('is accepted as a Bearer token too', async () => {
-    const { plaintext } = await issueKey({ name: 'Bearer', permissions: ['users.view'] });
+    const { plaintext } = await issueKey({ name: 'Bearer', permissions: ['clients.view'] });
     await anonymous(ctx)
       .get('/v1/admin/clients?limit=1')
       .set('Authorization', `Bearer ${plaintext}`)
@@ -187,7 +193,7 @@ describe('authenticating with a key', () => {
      * session is. `users.view` does not imply the audit log, and the key does
      * not become its creator — who, here, is a master admin.
      */
-    const { plaintext } = await issueKey({ name: 'Narrow', permissions: ['users.view'] });
+    const { plaintext } = await issueKey({ name: 'Narrow', permissions: ['clients.view'] });
 
     await anonymous(ctx).get('/v1/admin/audit-log').set('X-API-Key', plaintext).expect(403);
   });
@@ -200,7 +206,7 @@ describe('authenticating with a key', () => {
   });
 
   it('stops working the moment it is revoked', async () => {
-    const { plaintext, id } = await issueKey({ name: 'Doomed', permissions: ['users.view'] });
+    const { plaintext, id } = await issueKey({ name: 'Doomed', permissions: ['clients.view'] });
 
     await anonymous(ctx).get('/v1/admin/clients?limit=1').set('X-API-Key', plaintext).expect(200);
 
@@ -223,7 +229,7 @@ describe('authenticating with a key', () => {
      * already expired — the two rules are consistent, so the only way to
      * observe expiry is to let time pass.
      */
-    const { plaintext, id } = await issueKey({ name: 'Expiring', permissions: ['users.view'] });
+    const { plaintext, id } = await issueKey({ name: 'Expiring', permissions: ['clients.view'] });
     await ctx.db.db
       .update(apiKeys)
       .set({ expiresAt: new Date(Date.now() - 1000) })
@@ -238,7 +244,7 @@ describe('authenticating with a key', () => {
   });
 
   it('does not let a revoked key be told apart from a fictional one', async () => {
-    const { plaintext, id } = await issueKey({ name: 'Revoked', permissions: ['users.view'] });
+    const { plaintext, id } = await issueKey({ name: 'Revoked', permissions: ['clients.view'] });
     const session = await actingAs(ctx, 'admin', MASTER);
     await session.del(`/v1/admin/api-keys/${id}`).expect(200);
 
@@ -257,14 +263,14 @@ describe('authenticating with a key', () => {
   it('cannot reach the PORTAL surface', async () => {
     // An admin credential must be worthless on the client surface — the same
     // separation the two JWT secrets enforce for sessions.
-    const { plaintext } = await issueKey({ name: 'Wrong surface', permissions: ['users.view'] });
+    const { plaintext } = await issueKey({ name: 'Wrong surface', permissions: ['clients.view'] });
     await anonymous(ctx).get('/v1/auth/me').set('X-API-Key', plaintext).expect(401);
   });
 });
 
 describe('revoking', () => {
   it('keeps the row, so the audit trail still resolves', async () => {
-    const { id } = await issueKey({ name: 'Kept', permissions: ['users.view'] });
+    const { id } = await issueKey({ name: 'Kept', permissions: ['clients.view'] });
     const session = await actingAs(ctx, 'admin', MASTER);
     await session.del(`/v1/admin/api-keys/${id}`).expect(200);
 
@@ -276,7 +282,7 @@ describe('revoking', () => {
   it('succeeds when the key is already revoked', async () => {
     // The caller's intent is already satisfied; erroring would make a retry
     // after a dropped connection look like a failure.
-    const { id } = await issueKey({ name: 'Twice', permissions: ['users.view'] });
+    const { id } = await issueKey({ name: 'Twice', permissions: ['clients.view'] });
     const session = await actingAs(ctx, 'admin', MASTER);
     await session.del(`/v1/admin/api-keys/${id}`).expect(200);
     await session.del(`/v1/admin/api-keys/${id}`).expect(200);

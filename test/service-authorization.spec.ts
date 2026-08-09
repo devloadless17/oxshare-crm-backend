@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -26,10 +27,10 @@ import { AuthorizationError } from '../src/common/errors/domain-errors';
 const subAdmin: Actor = {
   id: 'a-1',
   email: 'sub@oxshare.com',
-  permissions: ['kyc.review', 'users.view'],
+  permissions: ['kyc.review', 'clients.view'],
 };
 
-const master: Actor = { id: 'a-0', email: 'master@oxshare.com', permissions: ['*'] };
+const master: Actor = { id: 'a-0', email: 'master@oxshare.com', permissions: ALL_PERMISSIONS };
 
 describe('R-4.3 actor permission checks', () => {
   it('allows an actor holding the permission', () => {
@@ -92,7 +93,9 @@ describe('R-4.3 actor permission checks', () => {
 
   it('refuses an actor with no permissions at all', () => {
     const nobody: Actor = { id: 'a-3', email: 'nobody@oxshare.com', permissions: [] };
-    expect(() => assertActorCan(nobody, 'users.view', 'list clients')).toThrow(AuthorizationError);
+    expect(() => assertActorCan(nobody, 'clients.view', 'list clients')).toThrow(
+      AuthorizationError,
+    );
   });
 
   it('gives background jobs a NAMED identity, not an implicit bypass', () => {

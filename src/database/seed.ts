@@ -14,10 +14,21 @@ import {
 } from './schema';
 import { eq } from 'drizzle-orm';
 import { DEFAULT_KYC_STEPS } from '../store/kyc-config.store';
+import permissionsCatalog from '../config/permissions.json';
 
 // Idempotent dev/bootstrap seeds — safe to run on every boot. Idempotency
 // lives in database constraints (unique email / role name / (context,label)),
 // never in check-then-insert.
+/**
+ * Every key in `config/permissions.json`, read from the same file the API
+ * serves — never a second hand-written list. A seed carrying its own would
+ * drift from the catalog the moment a key was added, and the drift would look
+ * like a role that mysteriously lacks a permission.
+ */
+const ALL_PERMISSIONS: string[] = Object.values(
+  permissionsCatalog as Record<string, { permissions: { key: string }[] }>,
+).flatMap((module) => module.permissions.map((entry) => entry.key));
+
 export async function runSeeds(): Promise<void> {
   const db = getDb();
 
@@ -31,15 +42,14 @@ export async function runSeeds(): Promise<void> {
     passwords.hash('client123'),
   ]);
 
-  await db
-    .insert(roles)
-    .values({
-      name: 'Master Admin',
-      description: 'Full access to every administration section and operation (RBAC-01).',
-      permissions: ['*'],
-      isSystem: true,
-    })
-    .onConflictDoNothing({ target: roles.name });
+  /*
+   * There is no 'Master Admin' role any more, and no `isSystem` role at all.
+   *
+   * It carried `['*']` and was hidden from the roles screen, which made "full
+   * access" a thing the console could neither show nor hand out. The
+   * `Administrator` role below replaces it: every key, listed explicitly, on an
+   * ordinary row somebody can read, rename, narrow and delete.
+   */
 
   /*
    * Ten ordinary roles, so /roles has something to be a list OF.
@@ -72,37 +82,28 @@ export async function runSeeds(): Promise<void> {
     .values([
       {
         /*
-         * The role that grants everything, so "full access" is something a
-         * person can be ASSIGNED rather than something only the bootstrap
-         * account's enum column can express.
+         * Every key in the catalog, listed OUT rather than wildcarded.
          *
-         * `['*']` is the same wildcard `PermissionsGuard` and `isMaster()`
-         * already honour, so this is not a new privilege level — it is the
-         * existing one, finally attached to a row an operator can see, name and
-         * hand out. Before this, the admin directory displayed a raw
-         * `master_admin` enum value corresponding to no assignable role, and
-         * there was no way to make a second unrestricted administrator except
-         * by editing the database by hand.
+         * `['*']` used to mean "everything", including every permission added
+         * after the grant was made — so a key introduced later was held
+         * retroactively by whoever carried it. Listing them means this role
+         * grants exactly what existed when it was seeded, and a new permission
+         * has to be ticked deliberately, like any other.
          *
-         * NOT `isSystem`. A system role is hidden from the roles screen, and the
-         * entire point of this one is that it can be seen and assigned. The API
-         * still refuses to delete any role while an admin holds it.
+         * An ORDINARY role: not `isSystem`, so it can be seen, assigned,
+         * renamed, narrowed and deleted like any role somebody creates. The one
+         * write the API refuses is the one that would leave nobody holding
+         * `roles.edit` or `admins.edit` — see assertNotLastManager.
          */
         name: 'Administrator',
-        description: 'Unrestricted access to every part of the console.',
-        permissions: ['*'],
-        /*
-         * No masking, matching what `isMaster()` resolves for an unrestricted
-         * account: it returns BEFORE the mask lookup runs, so a mask stored here
-         * would never be honoured — which is worse than none, because it reads
-         * on the roles screen as a protection that is in force.
-         */
+        description: 'Every permission in the catalog.',
+        permissions: ALL_PERMISSIONS,
         maskedFields: [],
       },
       {
         name: 'Support Agent',
         description: 'Answers client tickets. Reads client records; changes nothing.',
-        permissions: ['users.view', 'kyc.view', 'tags.view'],
+        permissions: ['clients.view', 'kyc.view', 'tags.view'],
         // Answering a ticket does not need a phone number, and this is the role
         // most people hold — so it is the one worth masking by default.
         maskedFields: ['client.phone'],
@@ -110,13 +111,13 @@ export async function runSeeds(): Promise<void> {
       {
         name: 'Senior Support',
         description: 'Escalation point. May edit client records and assign tags.',
-        permissions: ['users.view', 'users.edit', 'kyc.view', 'tags.view', 'tags.assign'],
+        permissions: ['clients.view', 'kyc.view', 'tags.view', 'clients.tag'],
         maskedFields: [],
       },
       {
         name: 'KYC Reviewer',
         description: 'Approves and rejects identity submissions, including documents.',
-        permissions: ['kyc.view', 'kyc.review', 'kyc.documents.view', 'users.view'],
+        permissions: ['kyc.view', 'kyc.review', 'kyc.documents.view', 'clients.view'],
         maskedFields: [],
       },
       {
@@ -128,7 +129,7 @@ export async function runSeeds(): Promise<void> {
       {
         name: 'Finance Officer',
         description: 'Settles approved withdrawals and reconciles them against the ledger.',
-        permissions: ['users.view'],
+        permissions: ['clients.view'],
         maskedFields: [],
       },
       {
@@ -137,25 +138,25 @@ export async function runSeeds(): Promise<void> {
         // Deliberately WITHOUT withdrawals.settle. Whoever approves a payment
         // should not also mark it settled; that separation of duties is the
         // only reason this and Finance Officer are two roles rather than one.
-        permissions: ['users.view'],
+        permissions: ['clients.view'],
         maskedFields: [],
       },
       {
         name: 'Compliance Officer',
         description: 'Reads everything client-facing for audit. Approves nothing.',
-        permissions: ['users.view', 'kyc.view', 'kyc.documents.view'],
+        permissions: ['clients.view', 'kyc.view', 'kyc.documents.view'],
         maskedFields: [],
       },
       {
         name: 'Onboarding Agent',
         description: 'Creates client records and starts their verification.',
-        permissions: ['users.view', 'users.create', 'kyc.view', 'kyc.create'],
+        permissions: ['clients.view', 'admins.create', 'kyc.view', 'kyc.create'],
         maskedFields: [],
       },
       {
         name: 'Risk Analyst',
         description: 'Watches trading activity and suspends accounts that need it.',
-        permissions: ['users.view', 'users.suspend'],
+        permissions: ['clients.view', 'clients.suspend'],
         maskedFields: [],
       },
       {
@@ -163,7 +164,7 @@ export async function runSeeds(): Promise<void> {
         description: 'Maintains console configuration. No access to client records.',
         // Holds no users.view at all, so this is the role that exercises a
         // gated NAVIGATION rather than only a gated screen body.
-        permissions: ['settings.view', 'settings.manage', 'roles.view'],
+        permissions: ['settings.view', 'settings.edit', 'currencies.view', 'roles.view'],
         maskedFields: [],
       },
     ])
@@ -175,8 +176,9 @@ export async function runSeeds(): Promise<void> {
       email: 'admin@oxshare.com',
       passwordHash: adminHash,
       name: 'Master Admin',
-      role: 'master_admin',
-      permissions: ['*'],
+      // `role` is left at its default: the column is dead after migration 0044 and
+      // nothing reads it. Access comes from the Administrator role assigned below.
+      permissions: ALL_PERMISSIONS,
     })
     .onConflictDoNothing({ target: admins.email });
 
@@ -204,8 +206,9 @@ export async function runSeeds(): Promise<void> {
       email: 'e2e-admin@oxshare.com',
       passwordHash: adminHash,
       name: 'E2E Admin',
-      role: 'master_admin',
-      permissions: ['*'],
+      // `role` is left at its default: the column is dead after migration 0044 and
+      // nothing reads it. Access comes from the Administrator role assigned below.
+      permissions: ALL_PERMISSIONS,
     })
     .onConflictDoNothing({ target: admins.email });
 
@@ -617,7 +620,7 @@ export async function runSeeds(): Promise<void> {
     .values({
       name: 'E2E Restricted',
       description: 'Fixture for the admin end-to-end suite. Not for human use.',
-      permissions: ['users.view', 'kyc.review', 'tags.view'],
+      permissions: ['clients.view', 'kyc.review', 'tags.view'],
       // Hidden from this identity, so a masking spec has something to assert
       // is absent from the response BODY, not merely from the screen.
       maskedFields: ['client.email'],
@@ -638,7 +641,7 @@ export async function runSeeds(): Promise<void> {
         name: 'E2E Restricted',
         role: 'sub_admin',
         roleId: restrictedRoleId,
-        permissions: ['users.view'],
+        permissions: ['clients.view'],
       })
       .onConflictDoNothing({ target: admins.email })
       .returning();

@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { describe, expect, it, vi } from 'vitest';
 import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
@@ -39,7 +40,7 @@ const MASTER: Admin = {
   passwordHash: 'x',
   role: 'master_admin',
   status: 'active',
-  permissions: ['*'],
+  permissions: ALL_PERMISSIONS,
   createdAt: new Date(),
 };
 
@@ -50,7 +51,7 @@ const SUB_ADMIN: Admin = {
   passwordHash: 'x',
   role: 'sub_admin',
   status: 'active',
-  permissions: ['roles.manage', 'roles.view'],
+  permissions: ['roles.edit', 'roles.view'],
   createdAt: new Date(),
 };
 
@@ -128,9 +129,9 @@ describe('AdminRbacService anti-escalation', () => {
   it('REGRESSION C1: a sub-admin cannot grant themselves the wildcard via updateRole', async () => {
     const { service, rolesFake } = await buildRbacService();
 
-    await expect(service.updateRole('role-1', { permissions: ['*'] }, SUB_ADMIN)).rejects.toThrow(
-      AuthorizationError,
-    );
+    await expect(
+      service.updateRole('role-1', { permissions: ALL_PERMISSIONS }, SUB_ADMIN),
+    ).rejects.toThrow(AuthorizationError);
 
     // The point of the regression: the guard rejecting is not enough — the
     // write must not happen. With the missing `await`, update() still ran.
@@ -156,7 +157,7 @@ describe('AdminRbacService anti-escalation', () => {
   it('the master admin may grant the wildcard', async () => {
     const { service, rolesFake } = await buildRbacService();
 
-    await service.updateRole('role-1', { permissions: ['*'] }, MASTER);
+    await service.updateRole('role-1', { permissions: ALL_PERMISSIONS }, MASTER);
     expect(rolesFake.update).toHaveBeenCalled();
   });
 
@@ -172,9 +173,9 @@ describe('AdminRbacService anti-escalation', () => {
   it('applies the same guard on create, not just update', async () => {
     const { service, rolesFake } = await buildRbacService();
 
-    await expect(service.createRole('Escalated', undefined, ['*'], SUB_ADMIN)).rejects.toThrow(
-      AuthorizationError,
-    );
+    await expect(
+      service.createRole('Escalated', undefined, ALL_PERMISSIONS, SUB_ADMIN),
+    ).rejects.toThrow(AuthorizationError);
     expect(rolesFake.create).not.toHaveBeenCalled();
   });
 });
@@ -305,7 +306,7 @@ describe('PermissionsGuard', () => {
   });
 
   it('allows when the admin holds one of the required permissions', async () => {
-    const { guard, context } = buildGuard(SUB_ADMIN, ['roles.manage', 'users.edit']);
+    const { guard, context } = buildGuard(SUB_ADMIN, ['roles.edit', 'admins.edit']);
     await expect(guard.canActivate(context)).resolves.toBe(true);
   });
 

@@ -180,7 +180,7 @@ export class AdminHoldingsService {
     },
     actor: AuthenticatedAdmin,
   ) {
-    assertActorCan(actor, 'withdrawals.view', 'list client wallets');
+    assertActorCan(actor, 'wallets.view', 'list client wallets');
 
     /*
      * The sort is validated BEFORE the cursor is decoded, and the order matters.
@@ -354,7 +354,7 @@ export class AdminHoldingsService {
     offset: number,
     limit: number,
   ) {
-    assertActorCan(actor, 'withdrawals.view', 'export client wallets');
+    assertActorCan(actor, 'wallets.view', 'export client wallets');
 
     const conditions = this.walletConditions({ ...query, scope: actor.clientScope });
     const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -400,7 +400,7 @@ export class AdminHoldingsService {
     },
     actor: AuthenticatedAdmin,
   ) {
-    assertActorCan(actor, 'users.view', 'list client trading accounts');
+    assertActorCan(actor, 'trading.view', 'list client trading accounts');
 
     const sort = sortKey(
       query.sort,
@@ -557,7 +557,7 @@ export class AdminHoldingsService {
     offset: number,
     limit: number,
   ) {
-    assertActorCan(actor, 'users.view', 'export client trading accounts');
+    assertActorCan(actor, 'trading.view', 'export client trading accounts');
 
     const conditions = this.tradingAccountConditions({ ...query, scope: actor.clientScope });
     const where = conditions.length > 0 ? and(...conditions) : undefined;

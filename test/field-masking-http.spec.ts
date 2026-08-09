@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -40,7 +41,7 @@ beforeAll(async () => {
 
   const [masterRole] = await db
     .insert(roles)
-    .values({ name: 'Mask HTTP Master', permissions: ['*'], isSystem: true })
+    .values({ name: 'Mask HTTP Master', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
   await db.insert(admins).values({
     email: MASTER.email,
@@ -48,7 +49,7 @@ beforeAll(async () => {
     name: 'Mask Master',
     role: 'master_admin',
     roleId: masterRole.id,
-    permissions: ['*'],
+    permissions: ALL_PERMISSIONS,
     status: 'active',
   });
 
@@ -68,7 +69,7 @@ beforeAll(async () => {
        * pass for the wrong reason — proving the permission check works, while
        * saying nothing about the mask check it is aimed at.
        */
-      permissions: ['users.view', 'kyc.view', 'kyc.review', 'roles.manage'],
+      permissions: ['clients.view', 'kyc.view', 'kyc.review', 'roles.edit'],
       maskedFields: ['client.email', 'client.phone'],
     })
     .returning();
@@ -248,7 +249,7 @@ describe('anti-escalation on the mask itself', () => {
     const session = await actingAs(ctx, 'admin', MASKED);
     const res = await session.post('/v1/admin/roles', {
       name: 'Mask HTTP Escalation Attempt',
-      permissions: ['users.view'],
+      permissions: ['clients.view'],
       maskedFields: [],
     });
 
@@ -261,7 +262,7 @@ describe('anti-escalation on the mask itself', () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.post('/v1/admin/roles', {
       name: 'Mask HTTP Master Configured',
-      permissions: ['users.view'],
+      permissions: ['clients.view'],
       maskedFields: ['client.country'],
     });
     expect(res.status).toBe(201);
@@ -271,7 +272,7 @@ describe('anti-escalation on the mask itself', () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.post('/v1/admin/roles', {
       name: 'Mask HTTP Unmaskable',
-      permissions: ['users.view'],
+      permissions: ['clients.view'],
       maskedFields: ['client.status'],
     });
 
@@ -283,7 +284,7 @@ describe('anti-escalation on the mask itself', () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.post('/v1/admin/roles', {
       name: 'Mask HTTP Unknown Key',
-      permissions: ['users.view'],
+      permissions: ['clients.view'],
       maskedFields: ['client.doesNotExist'],
     });
 

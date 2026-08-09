@@ -91,7 +91,7 @@ export class AdminHoldingsController {
   @Get('wallets/export')
   @UseGuards(PermissionsGuard)
   // The SAME permission as the list. An export must never be a way around one.
-  @RequirePermissions('withdrawals.view')
+  @RequirePermissions('wallets.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Export the filtered wallet list as CSV',
@@ -143,7 +143,7 @@ export class AdminHoldingsController {
 
   @Get('wallets')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('withdrawals.view')
+  @RequirePermissions('wallets.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Every client wallet, with its owner (balances are strings)',
@@ -207,7 +207,7 @@ export class AdminHoldingsController {
 
   @Get('trading-accounts/export')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.view')
+  @RequirePermissions('trading.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Export the filtered trading-account list as CSV',
@@ -264,7 +264,7 @@ export class AdminHoldingsController {
 
   @Get('trading-accounts')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.view')
+  @RequirePermissions('trading.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Every client trading account, with its owner (balances are strings)',

@@ -305,7 +305,7 @@ export class AdminAuthService {
      * would strand a real person on a dead link with no explanation.
      *
      * The message deliberately does NOT confirm which client — an admin holding
-     * `users.create` but no `users.view` would otherwise learn whether a given
+     * `users.create` but no `admins.view` would otherwise learn whether a given
      * address banks here by trying to invite it.
      */
     if (await this.users.findByEmail(email)) {
@@ -341,7 +341,7 @@ export class AdminAuthService {
       if (!role) throw new NotFoundError('Role not found.');
       grantedPermissions = role.permissions;
     }
-    await this.rbac.assertGrantable(actor, grantedPermissions ?? ['kyc.review', 'users.view']);
+    await this.rbac.assertGrantable(actor, grantedPermissions ?? ['kyc.review', 'admins.view']);
     const invitedBy = actor.id;
 
     const token = uuidv4();
@@ -403,7 +403,7 @@ export class AdminAuthService {
       name: invite.name,
       role: 'sub_admin',
       roleId: invite.roleId,
-      permissions: invite.permissions ?? ['kyc.review', 'users.view'],
+      permissions: invite.permissions ?? ['kyc.review', 'admins.view'],
       // Carried from the invite. Without it the mask was always the role's
       // default and the inviter's choice was silently discarded.
       maskedFields: invite.maskedFields,

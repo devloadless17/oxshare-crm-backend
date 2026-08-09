@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import {
@@ -86,7 +87,7 @@ beforeAll(async () => {
 
   const [masterRole] = await ctx.db.db
     .insert(roles)
-    .values({ name: 'Master Admin', permissions: ['*'], isSystem: true })
+    .values({ name: 'Master Admin', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
   // Reviews KYC, but cannot edit the step configurator — the split under test.
   const [reviewerRole] = await ctx.db.db
@@ -101,7 +102,7 @@ beforeAll(async () => {
       name: 'Master',
       role: 'master_admin',
       roleId: masterRole.id,
-      permissions: ['*'],
+      permissions: ALL_PERMISSIONS,
     },
     {
       email: REVIEWER.email,

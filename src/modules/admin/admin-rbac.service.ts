@@ -125,9 +125,21 @@ export class AdminRbacService {
   }
   /**
    * Anti-escalation invariant: nobody hands out access they don't hold.
-   * - every key must exist in the catalog ('*' is reserved for the master),
-   * - a non-master actor can only grant keys from their own permission set.
+   * - every key must exist in the catalog,
+   * - an actor can only grant keys from their own permission set.
    * The actor's permissions arrive live-resolved from the guard.
+   *
+   * ── There is no wildcard and no exempt actor ───────────────────────────────
+   *
+   * This used to accept `*` as a key and return early for an actor holding it.
+   * Both are gone with the master admin: `*` meant "every permission, including
+   * every permission added later", so an actor holding one was outside the
+   * invariant this function exists to enforce — it could grant keys that did not
+   * exist yet.
+   *
+   * The rule is now uniform, which also makes it stronger: the account with
+   * every key can grant every key BECAUSE it holds them, not because it is
+   * exempt from being checked.
    *
    * Public because AdminAuthService applies the same invariant when an invite
    * carries a permission set. There must be exactly one implementation of it.
@@ -140,18 +152,10 @@ export class AdminRbacService {
   // eslint-disable-next-line @typescript-eslint/require-await
   async assertGrantable(actor: Admin, permissions: string[]) {
     const catalog = this.catalogKeys();
-    const unknown = permissions.filter(
-      (p) => p !== '*' && !catalog.has(AdminRbacService.normalizeKey(p)),
-    );
+    const unknown = permissions.filter((p) => !catalog.has(AdminRbacService.normalizeKey(p)));
     if (unknown.length > 0) {
       throw new ValidationError(`Unknown permission key(s): ${unknown.join(', ')}.`);
     }
-
-    const actorIsMaster = actor.permissions.includes('*');
-    if (permissions.includes('*') && !actorIsMaster) {
-      throw new AuthorizationError('Only the master admin can grant the * wildcard.');
-    }
-    if (actorIsMaster) return;
 
     const held = new Set(actor.permissions.map((p) => AdminRbacService.normalizeKey(p)));
     const beyond = permissions.filter((p) => !held.has(AdminRbacService.normalizeKey(p)));
@@ -160,6 +164,46 @@ export class AdminRbacService {
         `You cannot grant permissions you do not hold: ${beyond.join(', ')}.`,
       );
     }
+  }
+
+  /**
+   * NOBODY MAY LEAVE THE SYSTEM UNMANAGEABLE.
+   *
+   * With no role above another, the last administrator who can manage roles can
+   * remove that ability from themselves — untick `roles.edit` on the only role
+   * that carries it, save, and no one can ever edit a role again. Suspending the
+   * last holder of `admins.edit` does the same for the directory. Recovery is a
+   * SQL statement against production, which is not a recovery path anybody
+   * should have to use at 2am.
+   *
+   * This is a refusal of one specific write, NOT a privileged account. Every
+   * role stays equally editable and equally deletable; what cannot happen is the
+   * single change that leaves zero active administrators holding the key.
+   *
+   * Checked AFTER the change is computed and BEFORE it is written, against the
+   * state the write would produce — asking "does anybody still hold this?" of
+   * the current state would happily allow the very write that empties it.
+   */
+  private async assertNotLastManager(
+    key: 'roles.edit' | 'admins.edit',
+    /** The state the write would produce, per admin id. */
+    predict: (admin: Admin) => Promise<{ active: boolean; permissions: string[] }>,
+  ): Promise<void> {
+    const { rows } = await this.admins.findAll();
+    for (const admin of rows) {
+      const next = await predict(admin);
+      if (!next.active) continue;
+      if (next.permissions.some((p) => AdminRbacService.normalizeKey(p) === key)) return;
+    }
+    throw new ValidationError(
+      `This would leave no active administrator holding ${key}. ` +
+        'At least one account must keep it, or nobody could undo the change.',
+    );
+  }
+
+  /** The permissions an admin WOULD hold — role-derived, exactly as the guard resolves them. */
+  private async effectivePermissions(admin: Admin): Promise<string[]> {
+    return await this.roles.resolvePermissions(admin.roleId, admin.permissions);
   }
 
   /**
@@ -413,9 +457,11 @@ export class AdminRbacService {
       patch.scopedTagIds !== undefined,
     );
 
-    if (admin.role === 'master_admin' && touchesAccess) {
-      throw new ValidationError('The master admin’s permissions cannot be changed.');
-    }
+    /*
+     * There is no master admin to protect any more. What is protected is the
+     * SYSTEM: this write may not be the one that leaves nobody able to manage
+     * roles or administrators. See assertNotLastManager.
+     */
     // Nobody rewrites their own access — not even a harmless-looking subset;
     // it keeps every permission change attributable to someone else's decision.
     if (actor.id === id && touchesAccess) {
@@ -423,15 +469,15 @@ export class AdminRbacService {
     }
 
     /*
-     * A SEPARATE permission from `users.edit`, deliberately.
+     * A SEPARATE permission from `admins.edit`, deliberately.
      *
-     * Reusing `users.edit` would mean anyone who can rename an administrator can
+     * Reusing `admins.edit` would mean anyone who can rename an administrator can
      * also widen that administrator's view of the entire client base. Those are
      * not the same size of act, and the permission matrix should not imply they
      * are.
      */
     if (patch.maskedFields !== undefined || patch.scopedTagIds !== undefined) {
-      assertActorCan(actor, 'users.scope', "change an administrator's client visibility");
+      assertActorCan(actor, 'admins.scope', "change an administrator's client visibility");
     }
 
     let update: Partial<Admin> = { name: patch.name ?? admin.name };
@@ -478,7 +524,7 @@ export class AdminRbacService {
     return await this.sanitize(updated);
   }
 
-  // ─── Admin suspension (users.suspend) ─────────────────────────────────────
+  // ─── Admin suspension (admins.suspend) ─────────────────────────────────────
   /**
    * FR-RBAC-07's "manage" half — and the missing end of R-3.3's revocation story.
    *
@@ -496,7 +542,7 @@ export class AdminRbacService {
    * what that involves.
    */
   async setAdminStatus(id: string, status: 'active' | 'suspended', actor: Admin) {
-    assertActorCan(actor, 'users.suspend', 'suspend or reactivate an administrator');
+    assertActorCan(actor, 'admins.suspend', 'suspend or reactivate an administrator');
 
     const admin = await this.admins.findById(id);
     if (!admin) throw new NotFoundError('Admin not found.');
@@ -508,10 +554,17 @@ export class AdminRbacService {
     if (actor.id === id) {
       throw new AuthorizationError('You cannot change your own account status.');
     }
-    // The master admin is the recovery path for everyone else. Suspending it
-    // can leave a deployment with no one able to reinstate anybody.
-    if (admin.role === 'master_admin') {
-      throw new ValidationError('The master admin’s account status cannot be changed.');
+    /*
+     * Suspending the last administrator who can manage the directory leaves
+     * nobody able to reinstate anybody — the master admin used to be the way
+     * back, and there is none now. Refused against the state this write would
+     * produce, not the current one.
+     */
+    if (status === 'suspended') {
+      await this.assertNotLastManager('admins.edit', async (candidate) => ({
+        active: candidate.id === id ? false : candidate.status === 'active',
+        permissions: await this.effectivePermissions(candidate),
+      }));
     }
     if (admin.status === status) {
       throw new ValidationError(`Administrator is already ${status}.`);
@@ -539,8 +592,6 @@ export class AdminRbacService {
    * may leave makes forgetting fail safe instead of fail open.
    */
   async sanitize(admin: Admin) {
-    const isMaster = admin.role === 'master_admin';
-
     const [permissions, maskedFields, scopedTags] = await Promise.all([
       this.roles.resolvePermissions(admin.roleId, admin.permissions),
       /*
@@ -549,10 +600,11 @@ export class AdminRbacService {
        * answer, not the raw column, or a row would read "nothing hidden" for
        * someone whose role hides four fields.
        */
-      isMaster
-        ? Promise.resolve([])
-        : this.roles.resolveMaskedFields(admin.roleId, admin.maskedFields),
-      isMaster ? Promise.resolve([]) : this.scopes.describeFor(admin.id),
+      // No master exemption: an administrator with no override and no scope
+      // rows resolves to an empty mask and an unrestricted scope anyway, which
+      // is the answer the exemption used to short-circuit to.
+      this.roles.resolveMaskedFields(admin.roleId, admin.maskedFields),
+      this.scopes.describeFor(admin.id),
     ]);
 
     return {
@@ -571,7 +623,7 @@ export class AdminRbacService {
        * on their role" without knowing which. `maskedFields` above is the
        * resolved view; this is the stored one.
        */
-      maskedFieldsOverride: isMaster ? null : (admin.maskedFields ?? null),
+      maskedFieldsOverride: admin.maskedFields ?? null,
       scopedTags,
     };
   }

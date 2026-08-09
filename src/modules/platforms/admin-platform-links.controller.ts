@@ -11,7 +11,7 @@ import { Audited } from '../admin/guards/audited.decorator';
 /**
  * The operator's control over the download links.
  *
- * A PERMISSION (`settings.manage`), not `MasterAdminGuard`, and that is the
+ * A PERMISSION (`settings.edit`), not `MasterAdminGuard`, and that is the
  * opposite call from `admin-security-settings.controller.ts` — deliberately.
  *
  * That controller is master-admin-only because what it switches off is the
@@ -36,7 +36,7 @@ export class AdminPlatformLinksController {
   // admin could reach these routes — including the PUT, which sets the
   // executable download URL every client is handed.
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.manage')
+  @RequirePermissions('settings.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Download links for every platform, configured or not' })
   @ApiOkResponse({ type: PlatformLinkDto, isArray: true })
@@ -47,7 +47,7 @@ export class AdminPlatformLinksController {
 
   @Put('platforms/:key')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.manage')
+  @RequirePermissions('settings.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Set or clear one download link',

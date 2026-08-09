@@ -69,8 +69,9 @@ const mine: string[] = [];
 /** Clients carrying no tag at all — invisible to the scoped admin. */
 const theirs: string[] = [];
 
-const ALL_PERMISSIONS = [
-  'users.view',
+/** The read keys every stats section needs — not the whole catalog. */
+const STATS_PERMISSIONS = [
+  'clients.view',
   'kyc.view',
   'kyc.review',
   'withdrawals.view',
@@ -257,9 +258,9 @@ beforeAll(async () => {
   ctx = await startHttpTestApp();
   const db = ctx.db.db;
 
-  await makeAdmin(MASTER, 'Stats Master', ['*'], 'master_admin');
-  const scopedAdminId = await makeAdmin(SCOPED, 'Stats Scoped', ALL_PERMISSIONS);
-  await makeAdmin(CLIENTS_ONLY, 'Stats Clients Only', ['users.view']);
+  await makeAdmin(MASTER, 'Stats Master', STATS_PERMISSIONS, 'master_admin');
+  const scopedAdminId = await makeAdmin(SCOPED, 'Stats Scoped', STATS_PERMISSIONS);
+  await makeAdmin(CLIENTS_ONLY, 'Stats Clients Only', ['clients.view']);
   await makeAdmin(OUTSIDER, 'Stats Outsider', ['tags.view']);
 
   const [tag] = await db

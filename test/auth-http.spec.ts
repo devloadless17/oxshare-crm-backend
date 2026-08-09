@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import {
@@ -62,7 +63,7 @@ beforeAll(async () => {
     .values({
       name: 'Master Admin',
       description: 'Full access.',
-      permissions: ['*'],
+      permissions: ALL_PERMISSIONS,
       isSystem: true,
     })
     .returning();
@@ -73,7 +74,7 @@ beforeAll(async () => {
     name: 'HTTP Test Admin',
     role: 'master_admin',
     roleId: masterRole.id,
-    permissions: ['*'],
+    permissions: ALL_PERMISSIONS,
   });
 
   await ctx.db.db.insert(users).values([
@@ -244,7 +245,7 @@ describe('CSRF, on the assembled stack', () => {
    * green one would have been worse than none.
    */
   const PROTECTED_MUTATION = '/v1/admin/roles';
-  const newRole = () => ({ name: `csrf-probe-${Date.now()}`, permissions: ['users.view'] });
+  const newRole = () => ({ name: `csrf-probe-${Date.now()}`, permissions: ['clients.view'] });
 
   it('refuses a state change with no anti-forgery header', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);

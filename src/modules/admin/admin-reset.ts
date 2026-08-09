@@ -67,19 +67,19 @@ export function refuseReset(
   /*
    * A non-master needs an explicit grant AND must not be reaching above itself.
    *
-   * The subset test is the ladder-closer: holding `users.create` is not
-   * authority over someone who holds `users.create` PLUS `withdrawals.approve`.
+   * The subset test is the ladder-closer: holding `admins.reset` is not
+   * authority over someone who holds `admins.reset` PLUS `withdrawals.approve`.
    * Comparing sets rather than counting them matters — two admins can hold the
    * same NUMBER of permissions and still not be peers.
    */
   /*
-   * `users.create` is the admin-management grant in this catalogue, despite the
+   * `admins.reset` is the admin-management grant in this catalogue, despite the
    * name: it is what `POST /admin/invite` requires to CREATE an administrator.
    * There is no `admins.*` namespace, and inventing one here would have made
    * this branch unreachable — a guard nobody can satisfy looks like a feature
    * and behaves like dead code.
    */
-  if (!actor.permissions.includes('users.create')) return 'actor-not-permitted';
+  if (!actor.permissions.includes('admins.reset')) return 'actor-not-permitted';
 
   const held = new Set(actor.permissions);
   const reachesHigher = target.permissions.some((p) => !held.has(p));

@@ -113,7 +113,7 @@ export class AdminExportService {
     offset: number,
     limit: number,
   ): Promise<ClientExportRow[]> {
-    assertActorCan(actor, 'users.view', 'export clients');
+    assertActorCan(actor, 'clients.view', 'export clients');
 
     let level: number | undefined;
     if (query.level !== undefined && query.level !== '') {
@@ -260,7 +260,7 @@ export class AdminExportService {
     offset: number,
     limit: number,
   ): Promise<WalletExportRow[]> {
-    assertActorCan(actor, 'withdrawals.view', 'export client wallets');
+    assertActorCan(actor, 'wallets.view', 'export client wallets');
     return this.holdings.walletExportBatch(query, actor, offset, limit);
   }
 
@@ -291,7 +291,7 @@ export class AdminExportService {
     offset: number,
     limit: number,
   ): Promise<TradingAccountExportRow[]> {
-    assertActorCan(actor, 'users.view', 'export client trading accounts');
+    assertActorCan(actor, 'trading.view', 'export client trading accounts');
     return this.holdings.tradingAccountExportBatch(query, actor, offset, limit);
   }
 
@@ -497,9 +497,9 @@ export class AdminExportService {
    * the screen it sits on.
    */
   async allRoles(actor: AuthenticatedAdmin): Promise<RoleExportRow[]> {
-    if (!actorHasPermission(actor, 'roles.view') && !actorHasPermission(actor, 'users.view')) {
+    if (!actorHasPermission(actor, 'roles.view') && !actorHasPermission(actor, 'admins.view')) {
       throw new AuthorizationError(
-        `${actor.email} cannot export roles: the roles.view or users.view permission is required.`,
+        `${actor.email} cannot export roles: the roles.view or admins.view permission is required.`,
       );
     }
     return this.roles.findAll();

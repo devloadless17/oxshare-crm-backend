@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import {
@@ -52,7 +53,7 @@ const MASTER: AuthenticatedAdmin = {
   passwordHash: 'x',
   role: 'master_admin',
   status: 'active',
-  permissions: ['*'],
+  permissions: ALL_PERMISSIONS,
   clientScope: UNRESTRICTED,
   fieldMask: EMPTY_MASK,
   createdAt: new Date(),
@@ -66,7 +67,7 @@ const OPERATOR: AuthenticatedAdmin = {
   passwordHash: 'x',
   role: 'sub_admin',
   status: 'active',
-  permissions: ['users.edit', 'users.suspend', 'kyc.review'],
+  permissions: ['admins.edit', 'clients.suspend', 'kyc.review'],
   clientScope: UNRESTRICTED,
   fieldMask: EMPTY_MASK,
   createdAt: new Date(),
@@ -305,7 +306,7 @@ describe('setAdminStatus — cutting off an administrator', () => {
   it('refuses without users.suspend, even holding users.edit', async () => {
     // Editing someone's permissions and revoking their access are different
     // powers. An operator with only users.edit must not be able to do this.
-    const editorOnly: AuthenticatedAdmin = { ...OPERATOR, permissions: ['users.edit'] };
+    const editorOnly: AuthenticatedAdmin = { ...OPERATOR, permissions: ['admins.edit'] };
     const { service, adminsFake } = await build();
 
     await expect(service.setAdminStatus(TARGET.id, 'suspended', editorOnly)).rejects.toThrow(

@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   actingAs,
@@ -77,7 +78,7 @@ beforeAll(async () => {
 
   const [masterRole] = await db
     .insert(roles)
-    .values({ name: 'TA Master', permissions: ['*'], isSystem: true })
+    .values({ name: 'TA Master', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
   await db.insert(admins).values({
     email: MASTER.email,
@@ -85,14 +86,14 @@ beforeAll(async () => {
     name: 'TA Master',
     role: 'master_admin',
     roleId: masterRole.id,
-    permissions: ['*'],
+    permissions: ALL_PERMISSIONS,
     status: 'active',
   });
 
   // Holds the route's permission; only territory constrains them.
   const [scopedRole] = await db
     .insert(roles)
-    .values({ name: 'TA Scoped', permissions: ['users.view', 'withdrawals.view'] })
+    .values({ name: 'TA Scoped', permissions: ['clients.view', 'withdrawals.view'] })
     .returning();
   const [scopedAdmin] = await db
     .insert(admins)

@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { describe, expect, it, beforeEach, afterAll } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -370,7 +371,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
   });
 
   it('still denies an admin without kyc.review, and records nothing', async () => {
-    const { controller, recorded } = makeController({ adminPermissions: ['users.view'] });
+    const { controller, recorded } = makeController({ adminPermissions: ['clients.view'] });
     const res = fakeResponse();
 
     await expect(
@@ -478,7 +479,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
       // The common path: a master admin must not pay two extra queries per
       // document view for a check that cannot refuse them.
       const { controller } = makeController({
-        adminPermissions: ['*'],
+        adminPermissions: ALL_PERMISSIONS,
         ownerInScope: false, // would refuse, if the gate ran at all
       });
       const res = fakeResponse();
@@ -508,7 +509,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
   });
 
   it('the wildcard permission grants an admin read, and is still audited', async () => {
-    const { controller, recorded } = makeController({ adminPermissions: ['*'] });
+    const { controller, recorded } = makeController({ adminPermissions: ALL_PERMISSIONS });
     const res = fakeResponse();
 
     await controller.serveKycFile(

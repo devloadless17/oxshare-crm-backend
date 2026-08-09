@@ -42,7 +42,7 @@ export class AdminClientsController {
   // ── Clients (ADM-01 / ADM-14) ─────────────────────────────────────────────
   @Get('clients')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.view')
+  @RequirePermissions('clients.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Paginated, filterable, sortable client list' })
   @ApiOkResponse({ type: ClientListResponseDto })
@@ -146,7 +146,7 @@ export class AdminClientsController {
    *
    * ── The same permission and the same scope as the list ────────────────────
    *
-   * `users.view` and `@ScopedToClients`, not because the decorators were copied
+   * `clients.view` and `@ScopedToClients`, not because the decorators were copied
    * but because an export that required less, or scoped less, would be a
    * documented way around both. `AdminExportService.clientBatch` passes
    * `actor.clientScope` into the same `UsersStore.findPage` the list calls, and
@@ -155,7 +155,7 @@ export class AdminClientsController {
    */
   @Get('clients/export')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.view')
+  @RequirePermissions('clients.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Export the filtered client list as CSV',
@@ -247,7 +247,7 @@ export class AdminClientsController {
 
   @Get('clients/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.view')
+  @RequirePermissions('clients.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: "A client's full profile — KYC, documents, trading accounts, referrals (FR-ADM-01)",
@@ -269,10 +269,10 @@ export class AdminClientsController {
 
   @Patch('clients/:id/status')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.suspend')
+  @RequirePermissions('clients.suspend')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Suspend or reactivate a client account (requires users.suspend)',
+    summary: 'Suspend or reactivate a client account (requires clients.suspend)',
   })
   @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
   @Audited('client.suspend')

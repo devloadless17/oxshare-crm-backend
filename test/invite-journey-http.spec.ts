@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   actingAs,
@@ -36,7 +37,7 @@ beforeAll(async () => {
 
   const [masterRole] = await ctx.db.db
     .insert(roles)
-    .values({ name: 'Journey Master', permissions: ['*'], isSystem: true })
+    .values({ name: 'Journey Master', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
 
   const [reviewerRole] = await ctx.db.db
@@ -44,7 +45,7 @@ beforeAll(async () => {
     .values({
       name: 'Journey Reviewer',
       description: 'KYC only.',
-      permissions: ['kyc.review', 'users.view'],
+      permissions: ['kyc.review', 'clients.view'],
       isSystem: false,
     })
     .returning();
@@ -56,7 +57,7 @@ beforeAll(async () => {
     name: 'Journey Master',
     role: 'master_admin',
     roleId: masterRole.id,
-    permissions: ['*'],
+    permissions: ALL_PERMISSIONS,
     status: 'active',
   });
 });
@@ -98,7 +99,7 @@ describe('invite → accept → sign in with the granted role', () => {
 
     expect(profile.role).toBe('sub_admin');
     expect(profile.status).toBe('active');
-    expect(profile.permissions.sort()).toEqual(['kyc.review', 'users.view']);
+    expect(profile.permissions.sort()).toEqual(['kyc.review', 'clients.view']);
   });
 
   it('grants ONLY the role — anything else is 403, not 401', async () => {
@@ -287,7 +288,7 @@ describe('outstanding invites are visible and cancellable', () => {
     const master = await actingAs(ctx, 'admin', MASTER);
     const created = await master.post('/v1/admin/roles', {
       name: 'Journey Disposable',
-      permissions: ['users.view'],
+      permissions: ['clients.view'],
     });
     const roleId = (created.body as { id: string }).id;
 

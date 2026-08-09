@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -39,7 +40,7 @@ beforeAll(async () => {
 
   const [masterRole] = await ctx.db.db
     .insert(roles)
-    .values({ name: 'Clients HTTP Master', permissions: ['*'], isSystem: true })
+    .values({ name: 'Clients HTTP Master', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
 
   await ctx.db.db.insert(admins).values({
@@ -48,7 +49,7 @@ beforeAll(async () => {
     name: 'Clients HTTP Master',
     role: 'master_admin',
     roleId: masterRole.id,
-    permissions: ['*'],
+    permissions: ALL_PERMISSIONS,
     status: 'active',
   });
 

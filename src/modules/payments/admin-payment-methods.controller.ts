@@ -55,7 +55,7 @@ import {
  * data. The deposits made THROUGH a method are client data, and they live on
  * the transactions queue, which is scoped.
  *
- * ## Reads are `payments.view`, writes are `payments.manage`
+ * ## Reads are `payments.view`, writes are `payments.edit`
  *
  * Matching the settings and IB-level splits. A write here changes the account
  * number every client is told to send money to, which is why the two are
@@ -121,7 +121,7 @@ export class AdminPaymentMethodsController {
 
   @Post()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('payments.manage')
+  @RequirePermissions('payments.create')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Add a payment method',
@@ -140,7 +140,7 @@ export class AdminPaymentMethodsController {
 
   @Patch(':key')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('payments.manage')
+  @RequirePermissions('payments.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Update a payment method',
@@ -198,7 +198,7 @@ export class AdminPaymentMethodsController {
    */
   @Post('logo')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('payments.manage')
+  @RequirePermissions('payments.edit')
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),

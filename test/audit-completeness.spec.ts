@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -64,7 +65,7 @@ beforeAll(async () => {
 
   const [masterRole] = await db
     .insert(roles)
-    .values({ name: 'Audit Completeness Master', permissions: ['*'], isSystem: true })
+    .values({ name: 'Audit Completeness Master', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
 
   await db.insert(admins).values({
@@ -73,7 +74,7 @@ beforeAll(async () => {
     name: 'Audit Completeness',
     role: 'master_admin',
     roleId: masterRole.id,
-    permissions: ['*'],
+    permissions: ALL_PERMISSIONS,
     status: 'active',
   });
 
@@ -204,14 +205,14 @@ describe('recorded: the admin module', () => {
         passwordHash: await passwords.hash('admin-password-123'),
         name: 'Role Target',
         role: 'sub_admin',
-        permissions: ['users.view'],
+        permissions: ['clients.view'],
         status: 'active',
       })
       .returning();
 
     const [role] = await ctx.db.db
       .insert(roles)
-      .values({ name: `Audit Role ${Date.now() % 100000}`, permissions: ['users.view'] })
+      .values({ name: `Audit Role ${Date.now() % 100000}`, permissions: ['clients.view'] })
       .returning();
 
     const before = await countOf('admin.update');

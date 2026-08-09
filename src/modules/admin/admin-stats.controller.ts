@@ -68,13 +68,13 @@ export class AdminStatsController {
    *
    * The guard is deliberately the looser of the two checks. Requiring all four
    * here would 403 the dashboard for every admin holding a subset — which is
-   * most of them — and requiring only `users.view` would make the route
+   * most of them — and requiring only `clients.view` would make the route
    * unreachable for a compliance admin who legitimately has KYC numbers to see.
    * So the edge answers "may you ask at all" and
    * `AdminStatsService.SECTION_PERMISSIONS` answers "which numbers are yours",
    * per section, on the same permission keys.
    */
-  @RequirePermissions('users.view', 'kyc.view', 'kyc.review', 'withdrawals.view', 'ib.view')
+  @RequirePermissions('clients.view', 'kyc.view', 'kyc.review', 'withdrawals.view', 'ib.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Dashboard headline counters (clients, KYC, withdrawals, IB)',
@@ -101,7 +101,7 @@ export class AdminStatsController {
 
   @Get('stats/registrations')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.view')
+  @RequirePermissions('clients.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Registrations per day for the last N days',

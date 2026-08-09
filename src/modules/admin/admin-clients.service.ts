@@ -104,7 +104,7 @@ export class AdminClientsService {
      * job or scheduled report calling this directly has no guard at all, and
      * "trusted because internal" is how scoping quietly stops applying.
      */
-    assertActorCan(actor, 'users.view', 'list clients');
+    assertActorCan(actor, 'clients.view', 'list clients');
 
     const page = Math.max(1, parseInt(query.page ?? '1', 10) || 1);
     const limit = pageSize(query.limit);
@@ -241,7 +241,7 @@ export class AdminClientsService {
    * profile open into five round trips of latency for no benefit.
    */
   async getClientProfile(clientId: string, actor: AuthenticatedAdmin) {
-    assertActorCan(actor, 'users.view', 'open a client profile');
+    assertActorCan(actor, 'clients.view', 'open a client profile');
 
     // The scoped lookup, first. An out-of-scope client 404s exactly as a
     // missing one does — a 403 here would confirm the id names a real client.
@@ -313,10 +313,10 @@ export class AdminClientsService {
     };
   }
 
-  // ─── Client suspension (users.suspend) ────────────────────────────────────
+  // ─── Client suspension (clients.suspend) ────────────────────────────────────
   async setClientStatus(userId: string, status: 'active' | 'suspended', actor: AuthenticatedAdmin) {
     // Suspension kills live sessions and blocks login — a real privilege.
-    assertActorCan(actor, 'users.suspend', 'suspend or reactivate a client');
+    assertActorCan(actor, 'clients.suspend', 'suspend or reactivate a client');
     // Scoped lookup: an out-of-scope client is 404, never 403. A 403 here would
     // confirm the id exists, turning this endpoint into an oracle for
     // enumerating clients the actor was specifically denied.

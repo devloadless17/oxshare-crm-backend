@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import {
@@ -38,11 +39,21 @@ beforeAll(async () => {
   const hash = await passwords.hash(MASTER.password);
 
   const rows = [
-    { ...MASTER, name: 'Reset Master', role: 'master_admin' as const, permissions: ['*'] },
-    { ...OTHER_MASTER, name: 'Other Master', role: 'master_admin' as const, permissions: ['*'] },
+    {
+      ...MASTER,
+      name: 'Reset Master',
+      role: 'master_admin' as const,
+      permissions: ALL_PERMISSIONS,
+    },
+    {
+      ...OTHER_MASTER,
+      name: 'Other Master',
+      role: 'master_admin' as const,
+      permissions: ALL_PERMISSIONS,
+    },
     // Holds the admin-management grant and nothing above it — the identity that
     // makes "a permission alone is not enough" demonstrable.
-    { ...SUB, name: 'Reset Sub', role: 'sub_admin' as const, permissions: ['users.create'] },
+    { ...SUB, name: 'Reset Sub', role: 'sub_admin' as const, permissions: ['admins.create'] },
     { ...TARGET, name: 'Reset Target', role: 'sub_admin' as const, permissions: ['kyc.review'] },
   ];
 

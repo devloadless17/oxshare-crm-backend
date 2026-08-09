@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -58,7 +59,7 @@ const MASTER: Admin = {
   passwordHash: 'x',
   role: 'master_admin',
   status: 'active',
-  permissions: ['*'],
+  permissions: ALL_PERMISSIONS,
   createdAt: new Date(),
 };
 
@@ -67,7 +68,7 @@ const SUB_ADMIN: Admin = {
   id: 'sub-1',
   email: 'sub@oxshare.com',
   role: 'sub_admin',
-  permissions: ['kyc.review', 'users.view', 'users.create'],
+  permissions: ['kyc.review', 'clients.view', 'admins.create'],
 };
 
 const REVIEWER_ROLE: Role = {
@@ -248,7 +249,7 @@ describe('createInvite', () => {
     // otherwise the rule is trivially bypassed by inviting a second account.
     const h = build();
     await expect(
-      h.service.createInvite('new@oxshare.com', 'New', SUB_ADMIN, undefined, ['*']),
+      h.service.createInvite('new@oxshare.com', 'New', SUB_ADMIN, undefined, ALL_PERMISSIONS),
     ).rejects.toThrow(AuthorizationError);
     expect(h.invites.create).not.toHaveBeenCalled();
   });
@@ -269,7 +270,7 @@ describe('createInvite', () => {
 
   it("takes the role's permissions when a role is named, not the caller's list", async () => {
     const h = build();
-    await h.service.createInvite('new@oxshare.com', 'New', MASTER, 'role-1', ['*']);
+    await h.service.createInvite('new@oxshare.com', 'New', MASTER, 'role-1', ALL_PERMISSIONS);
     expect(h.invites.create).toHaveBeenCalledWith(
       expect.objectContaining({ permissions: REVIEWER_ROLE.permissions, roleId: 'role-1' }),
     );
@@ -391,13 +392,13 @@ describe('acceptInvite', () => {
   });
 
   it('creates a sub_admin holding exactly the invited permissions', async () => {
-    const h = build({ stored: invite({ permissions: ['kyc.review', 'users.view'] }) });
+    const h = build({ stored: invite({ permissions: ['kyc.review', 'clients.view'] }) });
     await h.service.acceptInvite('token-abc', PASSWORD, fakeResponse());
     expect(h.admins.create).toHaveBeenCalledWith(
       expect.objectContaining({
         email: 'newcomer@oxshare.com',
         role: 'sub_admin',
-        permissions: ['kyc.review', 'users.view'],
+        permissions: ['kyc.review', 'clients.view'],
       }),
     );
   });

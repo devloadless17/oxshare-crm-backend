@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { describe, expect, it } from 'vitest';
 import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { JwtService } from '@nestjs/jwt';
@@ -77,7 +78,7 @@ function buildAuthenticator() {
         name: 'Master Admin',
         passwordHash: 'x',
         role: 'master_admin' as const,
-        permissions: ['*'],
+        permissions: ALL_PERMISSIONS,
         createdAt: new Date(),
       }),
   };

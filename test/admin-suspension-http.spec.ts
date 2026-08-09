@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import {
@@ -52,7 +53,7 @@ beforeAll(async () => {
 
   const [masterRole] = await ctx.db.db
     .insert(roles)
-    .values({ name: 'Susp Master', permissions: ['*'], isSystem: true })
+    .values({ name: 'Susp Master', permissions: ALL_PERMISSIONS, isSystem: true })
     .returning();
 
   const [master] = await ctx.db.db
@@ -63,7 +64,7 @@ beforeAll(async () => {
       name: 'Susp Master',
       role: 'master_admin',
       roleId: masterRole.id,
-      permissions: ['*'],
+      permissions: ALL_PERMISSIONS,
       status: 'active',
     })
     .returning();
@@ -74,7 +75,7 @@ beforeAll(async () => {
     passwordHash: hash,
     name: 'Susp Operator',
     role: 'sub_admin',
-    permissions: ['users.view', 'users.edit', 'users.suspend'],
+    permissions: ['clients.view', 'admins.edit', 'clients.suspend'],
     status: 'active',
   });
 
@@ -83,7 +84,7 @@ beforeAll(async () => {
     passwordHash: hash,
     name: 'Susp Editor',
     role: 'sub_admin',
-    permissions: ['users.view', 'users.edit'],
+    permissions: ['clients.view', 'admins.edit'],
     status: 'active',
   });
 

@@ -487,7 +487,7 @@ describe('R-4.2 every route declares how it is protected', () => {
     /*
      * The failure this catches, which the assertion above cannot see.
      *
-     * `@RequirePermissions('settings.manage')` was paired with
+     * `@RequirePermissions('settings.edit')` was paired with
      * `@UseGuards(AdminGuard)` on both `/admin/platforms` routes. Only
      * `PermissionsGuard` reads `PERMISSIONS_KEY`; `AdminGuard` authenticates and
      * returns. So the decorator was decoration, and any authenticated admin

@@ -147,10 +147,10 @@ export class AdminAuthController {
   // ── Invite ────────────────────────────────────────────────────────────────
   @Post('invite')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.create')
+  @RequirePermissions('admins.create')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Invite a new sub-admin with a role or explicit permissions (requires users.create)',
+    summary: 'Invite a new sub-admin with a role or explicit permissions (requires admins.create)',
   })
   @ApiOkResponse({ type: InviteResponseDto })
   @NotClientScoped('Creates an admin_invites row. Administrators are not clients.')
@@ -168,18 +168,18 @@ export class AdminAuthController {
   }
 
   /*
-   * Listed under users.VIEW, not users.create.
+   * Listed under users.VIEW, not admins.create.
    *
    * Reading who is outstanding is the same class of act as reading the admin
    * directory — it is the other half of "who can operate this system". Gating it
-   * on users.create would mean an operator who can see every administrator
+   * on admins.create would mean an operator who can see every administrator
    * cannot see that three more are one click from existing.
    */
   @Get('invites')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.view')
+  @RequirePermissions('admins.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'List outstanding invites (requires users.view)' })
+  @ApiOperation({ summary: 'List outstanding invites (requires admins.view)' })
   @ApiOkResponse({ type: [PendingInviteDto] })
   @NotClientScoped('Lists admin_invites. Administrators are not clients.')
   listInvites() {
@@ -188,10 +188,10 @@ export class AdminAuthController {
 
   @Delete('invites/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.create')
+  @RequirePermissions('admins.create')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Revoke an outstanding invite (requires users.create)',
+    summary: 'Revoke an outstanding invite (requires admins.create)',
     description:
       'Kills the accept link immediately. Whoever may create an invite may cancel one — ' +
       'the undo for a mistyped address, on a 48-hour credential that creates an admin account.',
@@ -237,7 +237,7 @@ export class AdminAuthController {
   /**
    * Start a password reset for another administrator — D-44.
    *
-   * `users.create` is the admin-management grant in this catalogue (it is what
+   * `admins.create` is the admin-management grant in this catalogue (it is what
    * `POST /admin/invite` requires to create one). The permission is only half
    * the control: `refuseReset` inside the service refuses anyone reaching a
    * privilege level above their own, which is what stops a sub-admin holding
@@ -245,7 +245,7 @@ export class AdminAuthController {
    */
   @Post('users/:id/password-reset')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('users.create')
+  @RequirePermissions('admins.reset')
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
   @ApiCookieAuth()
