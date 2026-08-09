@@ -102,7 +102,13 @@ function fakeResponse() {
 }
 
 function build(
-  options: { existingAdmin?: Admin; stored?: AdminInvite; env?: Record<string, string> } = {},
+  options: {
+    existingAdmin?: Admin;
+    stored?: AdminInvite;
+    env?: Record<string, string>;
+    /** A CLIENT already holding the invited address — see createInvite. */
+    existingClient?: { id: string; email: string };
+  } = {},
 ) {
   const admins = {
     findByEmail: vi.fn().mockResolvedValue(options.existingAdmin),
@@ -145,6 +151,13 @@ function build(
 
   const scopes = { replace: vi.fn().mockResolvedValue(undefined) };
 
+  /*
+   * The CLIENT directory, consulted by createInvite alone: somebody who banks
+   * here must not also be an administrator who approves withdrawals. Defaults to
+   * "no such client", which is what every other test in this file assumes.
+   */
+  const users = { findByEmail: vi.fn().mockResolvedValue(options.existingClient) };
+
   const rbac = new AdminRbacService(
     admins as unknown as AdminsStore,
     invites as unknown as InvitesStore,
@@ -178,9 +191,12 @@ function build(
     // AdminClientScopesStore — acceptInvite now applies the territory the
     // inviter chose, before it mints the session.
     scopes as unknown as AdminClientScopesStore,
+    // UsersStore — createInvite refuses an address that already belongs to a
+    // client. Appended for the same positional reason as `scopes` above.
+    users as never,
   );
 
-  return { service, admins, invites, roles, email, audit, refreshTokens, scopes };
+  return { service, admins, invites, roles, email, audit, refreshTokens, scopes, users };
 }
 
 describe('createInvite', () => {
@@ -190,6 +206,32 @@ describe('createInvite', () => {
       h.service.createInvite('sub@oxshare.com', 'Dup', MASTER, undefined, ['kyc.review']),
     ).rejects.toThrow(ConflictError);
     expect(h.invites.create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * SEGREGATION OF DUTIES, not data integrity.
+   *
+   * `admins` and `users` are separate tables with separate unique constraints,
+   * so one address could exist in both and the invite would have been accepted
+   * without complaint — leaving one human with a client account that trades and
+   * an admin account that approves withdrawals. The same person could file a
+   * manual deposit and confirm it, or request a payout and release it.
+   */
+  it('refuses an email that already belongs to a CLIENT', async () => {
+    const h = build({ existingClient: { id: 'user-1', email: 'trader@oxshare.com' } });
+    await expect(
+      h.service.createInvite('trader@oxshare.com', 'Trader', MASTER, undefined, ['kyc.review']),
+    ).rejects.toThrow(ConflictError);
+    expect(h.invites.create).not.toHaveBeenCalled();
+  });
+
+  it('checks the client directory with the NORMALISED address', async () => {
+    // Every other guard on this path compares the lower-cased spelling; a
+    // client lookup on the raw input would be the one that missed
+    // `Trader@Oxshare.com` and let the duplicate through.
+    const h = build();
+    await h.service.createInvite('Trader@Oxshare.COM', 'Trader', MASTER, undefined, ['kyc.review']);
+    expect(h.users.findByEmail).toHaveBeenCalledWith('trader@oxshare.com');
   });
 
   it('refuses an unknown role', async () => {

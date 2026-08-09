@@ -6,6 +6,7 @@ import { Request, Response } from 'express';
 import { Admin, AdminsStore, hashInviteToken, InvitesStore } from '../../store/admins.store';
 import { RolesStore } from '../../store/roles.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
+import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
 import {
   AuthenticationError,
@@ -88,6 +89,8 @@ export class AdminAuthService {
     // `new AdminAuthService(...)` in the suite, and slotting one into the middle
     // shifts every argument after it into the wrong slot.
     private readonly scopes: AdminClientScopesStore,
+    /** Clients — read ONLY to refuse inviting one as an admin. See createInvite. */
+    private readonly users: UsersStore,
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
@@ -284,6 +287,31 @@ export class AdminAuthService {
 
     if (await this.admins.findByEmail(email)) {
       throw new ConflictError('An admin with this email already exists.');
+    }
+
+    /*
+     * A CLIENT may not be invited as an administrator.
+     *
+     * `admins` and `users` are separate tables with separate unique constraints,
+     * so nothing stopped one address existing in both — and accepting the invite
+     * would have succeeded, quietly producing one person holding a client
+     * account that trades and an admin account that approves withdrawals. That
+     * is a segregation-of-duties break, not a data-integrity one: the same human
+     * could file a deposit and confirm it, or request a payout and release it.
+     *
+     * Refused HERE rather than at accept time for the same reason as the
+     * outstanding-invite check below: the failure belongs with the administrator
+     * who can do something about it, at the moment they can. Failing at accept
+     * would strand a real person on a dead link with no explanation.
+     *
+     * The message deliberately does NOT confirm which client — an admin holding
+     * `users.create` but no `users.view` would otherwise learn whether a given
+     * address banks here by trying to invite it.
+     */
+    if (await this.users.findByEmail(email)) {
+      throw new ConflictError(
+        'This email belongs to a client account. An administrator must use a different address.',
+      );
     }
     /*
      * One live invite per address.
