@@ -19,6 +19,10 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { DRIZZLE_DB } from '../../database/database.module';
+import {
+  NOTIFICATION_DISPATCH,
+  type NotificationDispatchPort,
+} from '../../common/provisioning/notification-dispatch.port';
 import type { Db } from '../../database/db';
 import type { ClientScope } from '../../common/security/client-scope';
 
@@ -86,6 +90,12 @@ export class KycService {
      * second data-access path.
      */
     @Inject(DRIZZLE_DB) private readonly db: Db,
+    /*
+     * Bell rows — the decision to the client (in the decision transaction),
+     * the submission to the reviewers (post-write). APPENDED LAST: this class
+     * is constructed positionally in `kyc-service.spec.ts`.
+     */
+    @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
   ) {}
 
   /**
@@ -258,12 +268,28 @@ export class KycService {
 
     // A resubmission after rejection starts a fresh review — stale rejection
     // data must not follow it into the admin queue.
-    return await this.kycStore.update(userId, {
+    const submitted = await this.kycStore.update(userId, {
       status: 'submitted',
       submittedAt: new Date(),
       rejectionReason: undefined,
       rejectedFields: undefined,
     });
+
+    /*
+     * Ring the reviewers' bells — post-write, never-throws, scope-filtered at
+     * write time so a territoried reviewer is not told about a client outside
+     * it. The polled queue badge remains the durable signal; this is the
+     * per-item ping. No dedupe key: submission is client-driven, not retried
+     * by any machine, and a genuine resubmission after rejection SHOULD ring
+     * again.
+     */
+    void this.notifications.notifyAdminsWithPermission(
+      'kyc.review',
+      { kind: 'admin.kyc.submitted', params: { userId } },
+      { subjectClientId: userId },
+    );
+
+    return submitted;
   }
 
   // ─── Admin: list all (paginated, searchable, with per-status counts) ───────
@@ -368,6 +394,12 @@ export class KycService {
       // fact, so a rolled-back approval must not leave an archived attempt.
       await this.kycStore.archiveAttempt(updated, tx);
       await this.users.update(userId, { verificationLevel: 1 }, tx);
+      // The bell row commits WITH the decision — a rolled-back approval must
+      // not leave a "you're verified" the client can read.
+      await this.notifications.notify(
+        { recipient: { kind: 'client', id: userId }, kind: 'kyc.approved', params: {} },
+        tx,
+      );
     });
 
     const user = await this.users.findById(userId);
@@ -441,6 +473,16 @@ export class KycService {
        * should hold none of it, whichever path they arrived by.
        */
       await this.users.update(userId, { verificationLevel: 0 }, tx);
+      // Same stance as approve(): the row and the decision are one commit. The
+      // reason rides in params so the bell can say what to fix.
+      await this.notifications.notify(
+        {
+          recipient: { kind: 'client', id: userId },
+          kind: 'kyc.rejected',
+          params: { reason },
+        },
+        tx,
+      );
     });
 
     if (user) {

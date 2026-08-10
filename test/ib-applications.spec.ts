@@ -10,6 +10,7 @@ import type { EmailService } from '../src/modules/email/email.service';
 import { UNRESTRICTED } from '../src/common/security/client-scope';
 import type { Actor } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
+import { notificationsStubAs } from './notifications-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -48,6 +49,7 @@ beforeAll(async () => {
     new ClientVisibilityService(users),
     email,
     auditStubAs(),
+    notificationsStubAs(),
   );
 }, 120_000);
 

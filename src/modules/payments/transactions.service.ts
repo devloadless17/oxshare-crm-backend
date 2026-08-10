@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { and, asc, count, desc, eq, gte, ne, sql, type SQLWrapper } from 'drizzle-orm';
 import {
@@ -40,10 +40,15 @@ import { CurrenciesService } from '../currencies/currencies.service';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { ConfigService } from '@nestjs/config';
+import { EmailService } from '../email/email.service';
 import {
   COMMISSION_ACCRUAL,
   type CommissionAccrualPort,
 } from '../../common/provisioning/commission-accrual.port';
+import {
+  NOTIFICATION_DISPATCH,
+  type NotificationDispatchPort,
+} from '../../common/provisioning/notification-dispatch.port';
 import { PaymentGateways } from './payment-gateways.service';
 import {
   AuthorizationError,
@@ -151,6 +156,8 @@ export const DEFAULT_WITHDRAWAL_SORT: WithdrawalSortKey = 'createdAt';
 
 @Injectable()
 export class TransactionsService {
+  private readonly logger = new Logger(TransactionsService.name);
+
   /**
    * The db is injected, not fetched from the module-level singleton.
    *
@@ -200,6 +207,17 @@ export class TransactionsService {
      */
     private readonly gateways: PaymentGateways,
     private readonly config: ConfigService,
+    /*
+     * The deposit-outcome mail (FR-CORE-07). Appended for the positional-
+     * construction reason every parameter above records.
+     */
+    private readonly email: EmailService,
+    /*
+     * Bell rows — deposit outcomes to the client, new withdrawals to the
+     * admins who can act on them. Behind the same port recipe as commissions
+     * above, and APPENDED LAST for the same positional-construction reason.
+     */
+    @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
   ) {}
 
   async requestWithdrawal(params: {
@@ -292,42 +310,68 @@ export class TransactionsService {
      * reserved against a withdrawal that did not exist, invisible and
      * unreleasable.
      */
-    return db.transaction(async (dbTx) => {
-      const wallet = await this.wallets.getOrCreateWallet(params.userId, params.currency, dbTx);
-      const [row] = await dbTx
-        .insert(transactions)
-        .values({
-          userId: params.userId,
-          walletId: wallet.id,
-          direction: 'withdrawal',
-          amount: money(amount),
-          currency: params.currency,
-          state: 'pending',
-          provider: params.provider,
-          destination: params.destination,
-        })
-        .returning();
+    return db
+      .transaction(async (dbTx) => {
+        const wallet = await this.wallets.getOrCreateWallet(params.userId, params.currency, dbTx);
+        const [row] = await dbTx
+          .insert(transactions)
+          .values({
+            userId: params.userId,
+            walletId: wallet.id,
+            direction: 'withdrawal',
+            amount: money(amount),
+            currency: params.currency,
+            state: 'pending',
+            provider: params.provider,
+            destination: params.destination,
+          })
+          .returning();
 
-      /*
-       * `post` locks the wallet and refuses an overdraft, so this is also the
-       * balance check — and it is the only one that cannot be raced. A check
-       * before the insert would be a read-then-write, and two withdrawals
-       * submitted together would both pass it.
-       */
-      await this.wallets.post(
-        {
-          userId: params.userId,
-          currency: params.currency,
-          amount: amount.negated(),
-          entryType: 'withdrawal',
-          referenceType: LEDGER_REFERENCE.transaction,
-          referenceId: row.id,
-        },
-        dbTx,
-      );
+        /*
+         * `post` locks the wallet and refuses an overdraft, so this is also the
+         * balance check — and it is the only one that cannot be raced. A check
+         * before the insert would be a read-then-write, and two withdrawals
+         * submitted together would both pass it.
+         */
+        await this.wallets.post(
+          {
+            userId: params.userId,
+            currency: params.currency,
+            amount: amount.negated(),
+            entryType: 'withdrawal',
+            referenceType: LEDGER_REFERENCE.transaction,
+            referenceId: row.id,
+          },
+          dbTx,
+        );
 
-      return row;
-    });
+        return row;
+      })
+      .then((row) => {
+        /*
+         * Ring the reviewers' bells AFTER the request has committed, never
+         * inside it: resolving who holds `withdrawals.approve` is several reads,
+         * and a money transaction does not stay open for a courtesy (§6.2 keeps
+         * that transaction to lock → compute → insert → update). The port never
+         * throws, and the polled queue badge remains the durable signal — this
+         * row is the per-item ping with a deep link on top.
+         */
+        void this.notifications.notifyAdminsWithPermission(
+          'withdrawals.approve',
+          {
+            kind: 'admin.withdrawal.requested',
+            params: {
+              transactionId: row.id,
+              userId: row.userId,
+              amount: row.amount,
+              currency: row.currency,
+            },
+            dedupeKey: `admin.withdrawal.requested:${row.id}`,
+          },
+          { subjectClientId: row.userId },
+        );
+        return row;
+      });
   }
 
   /**
@@ -1258,6 +1302,18 @@ export class TransactionsService {
         .set({ state: 'failure', settledAt: new Date() })
         .where(and(eq(transactions.id, tx.id), eq(transactions.state, 'pending')))
         .returning();
+      if (updated[0]?.state === 'failure') {
+        // FR-CORE-13: the client is told the outcome. Post-write and deduped —
+        // a replayed callback that lost the conditional UPDATE race lands here
+        // with zero rows and says nothing.
+        void this.notifications.notify({
+          recipient: { kind: 'client', id: tx.userId },
+          kind: 'deposit.failed',
+          params: { transactionId: tx.id, amount: tx.amount, currency: tx.currency },
+          dedupeKey: `deposit.failed:${tx.id}`,
+        });
+        void this.sendDepositOutcomeEmail(tx.userId, 'failed', tx.amount, tx.currency);
+      }
       return { state: updated[0]?.state ?? tx.state };
     }
 
@@ -1266,7 +1322,7 @@ export class TransactionsService {
      * deposit marked success with no ledger entry behind it — or a credit with
      * no transaction pointing at it — is a state this system cannot reach.
      */
-    await this.db.transaction(async (dbTx) => {
+    const transitioned = await this.db.transaction(async (dbTx) => {
       await this.wallets.post(
         {
           userId: tx.userId,
@@ -1279,11 +1335,43 @@ export class TransactionsService {
         dbTx,
       );
 
-      await dbTx
+      const updated = await dbTx
         .update(transactions)
         .set({ state: 'success', settledAt: new Date() })
-        .where(and(eq(transactions.id, tx.id), eq(transactions.state, 'pending')));
+        .where(and(eq(transactions.id, tx.id), eq(transactions.state, 'pending')))
+        .returning({ id: transactions.id });
+
+      /*
+       * FR-CORE-07: "the client is notified of the outcome." In the SAME
+       * transaction as the credit, so a deposit can never be credited with the
+       * client untold — and deduped on the transaction id, because provider
+       * callbacks are at-least-once and two replays racing past the
+       * `state !== 'pending'` check above must still converge on one row.
+       */
+      await this.notifications.notify(
+        {
+          recipient: { kind: 'client', id: tx.userId },
+          kind: 'deposit.succeeded',
+          params: { transactionId: tx.id, amount: tx.amount, currency: tx.currency },
+          dedupeKey: `deposit.succeeded:${tx.id}`,
+        },
+        dbTx,
+      );
+
+      return updated.length > 0;
     });
+
+    /*
+     * The outcome EMAIL, post-commit and fire-and-forget like every decision
+     * mail — and gated on the transition ACTUALLY happening. This method is
+     * deliberately reachable twice at once (provider callback + the client's
+     * browser landing); the loser of that race is absorbed idempotently by the
+     * ledger constraint and the bell dedupe, and it must not mail a second
+     * "Deposit Confirmed" for the same money.
+     */
+    if (transitioned) {
+      void this.sendDepositOutcomeEmail(tx.userId, 'succeeded', tx.amount, tx.currency);
+    }
 
     /*
      * The partner commission this deposit earns, accrued AFTER the credit and
@@ -1298,6 +1386,37 @@ export class TransactionsService {
     });
 
     return { state: 'success' };
+  }
+
+  /**
+   * The FR-CORE-07 outcome mail, looked up and sent AFTER the outcome is
+   * committed. Never throws: the send itself is log-and-swallow inside
+   * `EmailService`, and the user lookup here gets the same treatment — this
+   * helper is `void`-dispatched, so a rejection would surface as an unhandled
+   * rejection about a courtesy.
+   */
+  private async sendDepositOutcomeEmail(
+    userId: string,
+    outcome: 'succeeded' | 'failed',
+    amount: string,
+    currency: string,
+  ): Promise<void> {
+    try {
+      const [user] = await this.db.select().from(users).where(eq(users.id, userId)).limit(1);
+      if (!user) return;
+      await this.email.sendDepositOutcomeEmail(
+        user.email,
+        user.firstName,
+        outcome,
+        amount,
+        currency,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Could not send the deposit ${outcome} email for transaction owner ${userId}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**

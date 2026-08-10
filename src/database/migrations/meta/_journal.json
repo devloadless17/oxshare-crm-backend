@@ -318,10 +318,17 @@
       "breakpoints": true
     },
     {
-      "idx": 45,
+      "idx": 46,
       "version": "7",
-      "when": 1787061962600,
+      "when": 1787061963600,
       "tag": "0045_mt5_deals",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1787061964600,
+      "tag": "0046_notifications",
       "breakpoints": true
     }
   ]

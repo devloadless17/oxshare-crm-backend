@@ -7,6 +7,10 @@ import { LEDGER_REFERENCE } from '../../database/ledger-reference';
 import { WalletService } from '../wallet/wallet.service';
 import type { CommissionAccrualPort } from '../../common/provisioning/commission-accrual.port';
 import {
+  NOTIFICATION_DISPATCH,
+  type NotificationDispatchPort,
+} from '../../common/provisioning/notification-dispatch.port';
+import {
   calculate,
   checkPlausible,
   resolveChain,
@@ -56,6 +60,8 @@ export class CommissionService implements CommissionAccrualPort {
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly wallets: WalletService,
+    /** The partner's "commission credited" bell row, written with the credit. */
+    @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
   ) {}
 
   /**
@@ -271,6 +277,30 @@ export class CommissionService implements CommissionAccrualPort {
               confirmedAt: new Date(),
             })
             .where(and(eq(ibAccruals.id, accrual.id), eq(ibAccruals.status, 'pending')));
+
+          /*
+           * The partner's bell row, in the SAME transaction as the credit and
+           * DEDUPED on the accrual id — this loop is at-least-once by design
+           * (hourly, safe on every instance), and two runs racing past the
+           * `pending` filter must converge on one row, exactly as the ledger
+           * credit converges via `ledger_entries_wallet_reference_uq`. No
+           * email, deliberately: an hourly batch would mail a busy partner
+           * once per accrual per hour; the bell and the earnings screen carry
+           * it.
+           */
+          await this.notifications.notify(
+            {
+              recipient: { kind: 'client', id: accrual.ibUserId },
+              kind: 'commission.confirmed',
+              params: {
+                accrualId: accrual.id,
+                amount: accrual.amount,
+                currency: accrual.currency,
+              },
+              dedupeKey: `commission.confirmed:${accrual.id}`,
+            },
+            tx,
+          );
         });
         confirmed += 1;
       } catch (error) {

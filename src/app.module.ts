@@ -11,6 +11,7 @@ import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { StoreModule } from './store/store.module';
 import { EmailModule } from './modules/email/email.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { PlatformsModule } from './modules/platforms/platforms.module';
 import { CurrenciesModule } from './modules/currencies/currencies.module';
@@ -65,6 +66,7 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     DatabaseModule,
     StoreModule,
     EmailModule,
+    NotificationsModule,
     SecurityModule,
     HealthModule,
 

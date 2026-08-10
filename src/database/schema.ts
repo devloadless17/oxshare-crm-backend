@@ -2204,3 +2204,86 @@ export const positions = pgTable(
     check('positions_volume_positive', sql`${t.volume} > 0`),
   ],
 );
+
+/* ────────────────────────────── Notifications ──────────────────────────────
+ *
+ * The in-app feed behind the bell in both frontends. One table for both
+ * audiences: the row shape (kind + params + read marker) is identical whether
+ * the recipient is a client or an admin, and two tables would mean two stores,
+ * two paging implementations and two unread indexes for one enum's worth of
+ * difference.
+ *
+ * No stored title/body/href: copy is i18n'd in each frontend from `kind` +
+ * `params`, and deep links are derived there too — the backend never encodes a
+ * portal route, for the same reason `redirectUrl()` in transactions.service.ts
+ * is the only place that knows one. Money values inside `params` are STRINGS
+ * (§6.1), always.
+ *
+ * These rows are UX, not records — the audit log and the ledger are the
+ * records. A daily prune (NotificationsService) drops rows older than 90 days,
+ * read or not, because this table collects fan-out multiples of every event
+ * and would otherwise out-grow audit_log.
+ */
+
+export const notificationRecipientKindEnum = pgEnum('notification_recipient_kind', [
+  'client',
+  'admin',
+]);
+
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    recipientKind: notificationRecipientKindEnum('recipient_kind').notNull(),
+    /*
+     * Bare uuid, NO foreign key — the audit_log.actor_id precedent: it points
+     * at `users` or `admins` depending on recipient_kind, and Postgres cannot
+     * express a polymorphic reference. Neither principal table deletes rows
+     * (clients are never deleted, admins are suspended), so orphaning is not a
+     * live risk.
+     */
+    recipientId: uuid('recipient_id').notNull(),
+    /*
+     * Catalogue slug, e.g. 'withdrawal.approved'. varchar rather than a
+     * pgEnum: adding an event to the catalogue must not need a migration.
+     */
+    kind: varchar('kind', { length: 100 }).notNull(),
+    params: jsonb('params').$type<Record<string, unknown>>().notNull().default({}),
+    /*
+     * The replay guard for at-least-once callers (webhook-driven deposit
+     * settlement, the hourly commission confirm loop). Nullable: paths that
+     * cannot replay (a conditional state transition already absorbed the
+     * retry) omit it. Idempotency lives in the partial unique index below,
+     * never in a check-then-insert (§6.3).
+     */
+    dedupeKey: varchar('dedupe_key', { length: 255 }),
+    readAt: timestamp('read_at', { withTimezone: true }),
+    /*
+     * MILLISECOND precision, deliberately — the keyset cursor round-trips this
+     * value through a JS Date, which is millisecond-truncated. At Postgres'
+     * default microsecond precision, a row sharing the boundary row's
+     * millisecond but not its microsecond compares strictly LESS than the
+     * minted cursor and silently vanishes from every page — the id tiebreak
+     * can never engage because post-truncation equality never happens. Storing
+     * at the precision the cursor can carry makes the comparison exact.
+     */
+    createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('notifications_recipient_dedupe_uq')
+      .on(t.recipientKind, t.recipientId, t.dedupeKey)
+      .where(sql`${t.dedupeKey} IS NOT NULL`),
+    /* Keyset paging: both ORDER BY keys in the same direction, same rule
+       audit-log.store.ts records. */
+    index('notifications_recipient_created_idx').on(
+      t.recipientKind,
+      t.recipientId,
+      t.createdAt,
+      t.id,
+    ),
+    /* The 60-second unread-count poll, as an index-only scan of a small set. */
+    index('notifications_recipient_unread_idx')
+      .on(t.recipientKind, t.recipientId)
+      .where(sql`${t.readAt} IS NULL`),
+  ],
+);

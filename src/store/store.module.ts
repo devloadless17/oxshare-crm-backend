@@ -8,6 +8,7 @@ import { AuditLogStore } from './audit-log.store';
 import { IbStore } from './ib.store';
 import { KycConfigStore } from './kyc-config.store';
 import { KycStore } from './kyc.store';
+import { NotificationsStore } from './notifications.store';
 import { RejectionReasonsStore } from './rejection-reasons.store';
 import { RolesStore } from './roles.store';
 import { SecuritySettingsStore } from './security-settings.store';
@@ -26,6 +27,7 @@ const STORES = [
   IbStore,
   KycConfigStore,
   KycStore,
+  NotificationsStore,
   RejectionReasonsStore,
   RolesStore,
   SecuritySettingsStore,

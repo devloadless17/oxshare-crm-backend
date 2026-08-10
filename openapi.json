@@ -1,10 +1,63 @@
 {
   "openapi": "3.0.0",
   "paths": {
-    "/health": {
+    "/v1/notifications": {
       "get": {
-        "description": "Dependency-free deliberately: restarting a healthy process because the database is briefly slow turns a blip into an outage. Use /health/ready to decide whether to send traffic.",
-        "operationId": "HealthController_liveness",
+        "operationId": "NotificationsController_list",
+        "parameters": [
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unread",
+            "required": false,
+            "in": "query",
+            "description": "Pass 'true' to see only unread.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in client's notification feed, newest first",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/notifications/unread-count": {
+      "get": {
+        "operationId": "NotificationsController_unreadCount",
         "parameters": [],
         "responses": {
           "200": {
@@ -12,47 +65,227 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LivenessDto"
+                  "$ref": "#/components/schemas/NotificationUnreadCountDto"
                 }
               }
             }
           }
         },
-        "summary": "Liveness — is the process up? Checks no dependencies, by design.",
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Unread notifications for the signed-in client — the badge number",
         "tags": [
-          "health"
+          "notifications"
         ]
       }
     },
-    "/health/ready": {
-      "get": {
-        "operationId": "HealthController_readiness",
-        "parameters": [],
+    "/v1/notifications/{id}/read": {
+      "post": {
+        "operationId": "NotificationsController_markRead",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Every required dependency is up.",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ReadinessDto"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "At least one required dependency is down. Same body, 503 status.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReadinessDto"
+                  "$ref": "#/components/schemas/NotificationDto"
                 }
               }
             }
           }
         },
-        "summary": "Readiness — can this instance actually serve? Probes every dependency.",
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark one notification read. Idempotent.",
         "tags": [
-          "health"
+          "notifications"
+        ]
+      }
+    },
+    "/v1/notifications/read-all": {
+      "post": {
+        "operationId": "NotificationsController_markAllRead",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsMarkAllReadResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark every unread notification read. Idempotent.",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/admin/notifications": {
+      "get": {
+        "operationId": "AdminNotificationsController_list",
+        "parameters": [
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unread",
+            "required": false,
+            "in": "query",
+            "description": "Pass 'true' to see only unread.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The signed-in admin's notification feed, newest first",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/admin/notifications/unread-count": {
+      "get": {
+        "operationId": "AdminNotificationsController_unreadCount",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationUnreadCountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Unread notifications for the signed-in admin — the badge number",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/admin/notifications/{id}/read": {
+      "post": {
+        "operationId": "AdminNotificationsController_markRead",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark one notification read. Idempotent.",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/admin/notifications/read-all": {
+      "post": {
+        "operationId": "AdminNotificationsController_markAllRead",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsMarkAllReadResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark every unread notification read. Idempotent.",
+        "tags": [
+          "notifications"
         ]
       }
     },
@@ -899,6 +1132,61 @@
         "summary": "Remove your profile photo",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Dependency-free deliberately: restarting a healthy process because the database is briefly slow turns a blip into an outage. Use /health/ready to decide whether to send traffic.",
+        "operationId": "HealthController_liveness",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LivenessDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Liveness — is the process up? Checks no dependencies, by design.",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "HealthController_readiness",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Every required dependency is up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessDto"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "At least one required dependency is down. Same body, 503 status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Readiness — can this instance actually serve? Probes every dependency.",
+        "tags": [
+          "health"
         ]
       }
     },
@@ -6975,6 +7263,10 @@
       "description": "KYC documents, verification levels"
     },
     {
+      "name": "notifications",
+      "description": "In-app notification feeds — client and admin bells"
+    },
+    {
       "name": "admin",
       "description": "Back-office endpoints, RBAC"
     }
@@ -6996,92 +7288,86 @@
       }
     },
     "schemas": {
-      "LivenessDto": {
+      "NotificationDto": {
         "type": "object",
         "properties": {
-          "status": {
-            "type": "string",
-            "example": "ok"
+          "id": {
+            "type": "string"
           },
-          "timestamp": {
+          "kind": {
             "type": "string",
-            "example": "2026-08-04T10:13:00.563Z"
+            "description": "Catalogue slug, e.g. 'withdrawal.approved'. Render client-side; unknown kinds get a generic fallback.",
+            "example": "withdrawal.approved"
           },
-          "uptimeSeconds": {
-            "type": "number",
-            "description": "Seconds since the process started.",
-            "example": 1284
+          "params": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Structured payload for the kind — ids, amounts (as strings), reasons. Never another client’s identifiers.",
+            "example": {
+              "transactionId": "a6e1…",
+              "amount": "25.00000000",
+              "currency": "USD"
+            }
+          },
+          "readAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null while unread."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
           }
         },
         "required": [
-          "status",
-          "timestamp",
-          "uptimeSeconds"
+          "id",
+          "kind",
+          "params",
+          "readAt",
+          "createdAt"
         ]
       },
-      "DependencyHealthDto": {
+      "NotificationListResponseDto": {
         "type": "object",
         "properties": {
-          "name": {
-            "type": "string",
-            "example": "postgres"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "up",
-              "down",
-              "not_configured"
-            ],
-            "description": "'not_configured' is deliberately distinct from 'down': a dependency we have not wired yet is not a fault, but hiding it would make this endpoint claim a coverage it does not have."
-          },
-          "latencyMs": {
-            "type": "number",
-            "description": "Round-trip time in milliseconds.",
-            "example": 3
-          },
-          "detail": {
-            "type": "string",
-            "description": "Why it is down. Never carries a connection string or credentials."
-          },
-          "required": {
-            "type": "boolean",
-            "description": "Whether a failure here makes the whole instance unready (503).",
-            "example": true
-          }
-        },
-        "required": [
-          "name",
-          "status",
-          "required"
-        ]
-      },
-      "ReadinessDto": {
-        "type": "object",
-        "properties": {
-          "status": {
-            "type": "string",
-            "enum": [
-              "ready",
-              "not_ready"
-            ],
-            "description": "'not_ready' is served with HTTP 503 so a load balancer acts on it."
-          },
-          "timestamp": {
-            "type": "string",
-            "example": "2026-08-04T10:13:00.563Z"
-          },
-          "dependencies": {
+          "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/DependencyHealthDto"
+              "$ref": "#/components/schemas/NotificationDto"
             }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
-          "status",
-          "timestamp",
-          "dependencies"
+          "items",
+          "nextCursor"
+        ]
+      },
+      "NotificationUnreadCountDto": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number",
+            "description": "Unread rows for the caller. The bell badge number."
+          }
+        },
+        "required": [
+          "count"
+        ]
+      },
+      "NotificationsMarkAllReadResponseDto": {
+        "type": "object",
+        "properties": {
+          "updated": {
+            "type": "number",
+            "description": "Rows marked read by this call. 0 when everything already was."
+          }
+        },
+        "required": [
+          "updated"
         ]
       },
       "RegisterDto": {
@@ -7405,6 +7691,94 @@
             "example": "/uploads/avatars/6f1c...c2.png"
           }
         }
+      },
+      "LivenessDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "timestamp": {
+            "type": "string",
+            "example": "2026-08-04T10:13:00.563Z"
+          },
+          "uptimeSeconds": {
+            "type": "number",
+            "description": "Seconds since the process started.",
+            "example": 1284
+          }
+        },
+        "required": [
+          "status",
+          "timestamp",
+          "uptimeSeconds"
+        ]
+      },
+      "DependencyHealthDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "postgres"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "not_configured"
+            ],
+            "description": "'not_configured' is deliberately distinct from 'down': a dependency we have not wired yet is not a fault, but hiding it would make this endpoint claim a coverage it does not have."
+          },
+          "latencyMs": {
+            "type": "number",
+            "description": "Round-trip time in milliseconds.",
+            "example": 3
+          },
+          "detail": {
+            "type": "string",
+            "description": "Why it is down. Never carries a connection string or credentials."
+          },
+          "required": {
+            "type": "boolean",
+            "description": "Whether a failure here makes the whole instance unready (503).",
+            "example": true
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "required"
+        ]
+      },
+      "ReadinessDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "not_ready"
+            ],
+            "description": "'not_ready' is served with HTTP 503 so a load balancer acts on it."
+          },
+          "timestamp": {
+            "type": "string",
+            "example": "2026-08-04T10:13:00.563Z"
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DependencyHealthDto"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "timestamp",
+          "dependencies"
+        ]
       },
       "PlatformLinkDto": {
         "type": "object",

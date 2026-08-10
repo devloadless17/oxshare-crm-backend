@@ -5,6 +5,7 @@ import type { User, UsersStore } from '../src/store/users.store';
 import type { EmailService } from '../src/modules/email/email.service';
 import type { KycConfigStore } from '../src/store/kyc-config.store';
 import type { Db } from '../src/database/db';
+import { notificationsStubAs } from './notifications-stub';
 import {
   AuthorizationError,
   NotFoundError,
@@ -126,6 +127,7 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
      * transaction only has to be transparent.
      */
     db as unknown as Db,
+    notificationsStubAs(),
   );
   return { service, kycStore, users, email, kycConfig };
 }

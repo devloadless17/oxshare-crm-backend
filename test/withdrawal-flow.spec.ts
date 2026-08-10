@@ -9,6 +9,8 @@ import { PaymentMethodsService } from '../src/modules/payments/payment-methods.s
 import { SYSTEM_ACTOR } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
 import { commissionStubAs } from './commission-stub';
+import { emailStubAs } from './email-stub';
+import { notificationsStubAs } from './notifications-stub';
 import { gatewayStubAs } from './gateway-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -47,6 +49,8 @@ beforeAll(async () => {
     commissionStubAs(),
     gatewayStubAs(),
     new ConfigService(),
+    emailStubAs(),
+    notificationsStubAs(),
   );
 }, 120_000);
 

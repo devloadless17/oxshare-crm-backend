@@ -1,5 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
+import {
+  NOTIFICATION_DISPATCH,
+  type NotificationDispatchPort,
+} from '../../common/provisioning/notification-dispatch.port';
 import {
   DEFAULT_WITHDRAWAL_SORT,
   MANUAL_ADMIN_PROVIDER,
@@ -34,6 +38,8 @@ import type { AuthenticatedAdmin } from './guards/admin.guard';
  */
 @Injectable()
 export class AdminMoneyService {
+  private readonly logger = new Logger(AdminMoneyService.name);
+
   constructor(
     private readonly transactions: TransactionsService,
     private readonly wallets: WalletService,
@@ -48,6 +54,8 @@ export class AdminMoneyService {
      * so inserting a parameter in the middle silently shifts every one after it.
      */
     private readonly currencies: CurrenciesService,
+    /** Bell rows for the client. Same append-last rule as `currencies` above. */
+    @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
   ) {}
 
   /**
@@ -168,6 +176,21 @@ export class AdminMoneyService {
       result.transaction.currency,
       reasonText,
     );
+
+    // Post-commit for the same reason as the email, and skipped on replay for
+    // the same reason too. The dedupe key makes even a racing double-submit
+    // converge on one bell row.
+    void this.notifications.notify({
+      recipient: { kind: 'client', id: params.userId },
+      kind: 'wallet.credited',
+      params: {
+        transactionId: result.transaction.id,
+        amount: result.transaction.amount,
+        currency: result.transaction.currency,
+        reason: reasonText,
+      },
+      dedupeKey: `wallet.credited:${result.transaction.id}`,
+    });
 
     return { transaction: result.transaction, replayed: false as const };
   }
@@ -292,12 +315,30 @@ export class AdminMoneyService {
     assertActorCan(actor, 'withdrawals.approve', 'approve a withdrawal');
     await this.assertWithdrawalVisible(id, actor.clientScope);
 
-    return this.transactions.approve(id, actor.id, (tx, row) =>
-      this.audit.recordWithin(tx, actor.id, 'withdrawal.approve', 'transaction', id, {
-        amount: row.amount,
-        currency: row.currency,
-      }),
-    );
+    const row = await this.transactions.approve(id, actor.id, async (tx, approved) => {
+      await this.audit.recordWithin(tx, actor.id, 'withdrawal.approve', 'transaction', id, {
+        amount: approved.amount,
+        currency: approved.currency,
+      });
+      // In the SAME transaction as the state change (the audit stance): the
+      // client is told "approved" only if it actually was.
+      await this.notifications.notify(
+        {
+          recipient: { kind: 'client', id: approved.userId },
+          kind: 'withdrawal.approved',
+          params: {
+            transactionId: approved.id,
+            amount: approved.amount,
+            currency: approved.currency,
+          },
+        },
+        tx,
+      );
+    });
+    // FR-CORE-08 "email on success/failure" begins at approval: this is the
+    // first decision the client can be told about.
+    void this.emailWithdrawalDecision(row, 'approved');
+    return row;
   }
   async rejectWithdrawal(
     id: string,
@@ -322,24 +363,32 @@ export class AdminMoneyService {
       throw new ValidationError('A rejection reason (reasonId or reason text) is required.');
     }
 
-    const row = await this.transactions.reject(id, actor.id, effectiveReason, (tx, rejected) =>
-      this.audit.recordWithin(tx, actor.id, 'withdrawal.reject', 'transaction', id, {
-        amount: rejected.amount,
-        currency: rejected.currency,
-        reason: effectiveReason,
-      }),
+    const row = await this.transactions.reject(
+      id,
+      actor.id,
+      effectiveReason,
+      async (tx, rejected) => {
+        await this.audit.recordWithin(tx, actor.id, 'withdrawal.reject', 'transaction', id, {
+          amount: rejected.amount,
+          currency: rejected.currency,
+          reason: effectiveReason,
+        });
+        await this.notifications.notify(
+          {
+            recipient: { kind: 'client', id: rejected.userId },
+            kind: 'withdrawal.rejected',
+            params: {
+              transactionId: rejected.id,
+              amount: rejected.amount,
+              currency: rejected.currency,
+              reason: effectiveReason ?? null,
+            },
+          },
+          tx,
+        );
+      },
     );
-    const user = await this.users.findById(row.userId);
-    if (user) {
-      void this.email.sendWithdrawalDecisionEmail(
-        user.email,
-        user.firstName,
-        'rejected',
-        row.amount,
-        row.currency,
-        effectiveReason,
-      );
-    }
+    void this.emailWithdrawalDecision(row, 'rejected', effectiveReason);
     return row;
   }
   async settleWithdrawal(id: string, actor: AuthenticatedAdmin, providerRef: string) {
@@ -363,24 +412,60 @@ export class AdminMoneyService {
     assertActorCan(actor, 'withdrawals.settle', 'settle a withdrawal');
     await this.assertWithdrawalVisible(id, actor.clientScope);
 
-    const row = await this.transactions.settle(id, actor.id, providerRef, (tx, settled) =>
-      this.audit.recordWithin(tx, actor.id, 'withdrawal.settle', 'transaction', id, {
+    const row = await this.transactions.settle(id, actor.id, providerRef, async (tx, settled) => {
+      await this.audit.recordWithin(tx, actor.id, 'withdrawal.settle', 'transaction', id, {
         amount: settled.amount,
         currency: settled.currency,
         providerRef,
-      }),
-    );
-    const user = await this.users.findById(row.userId);
-    if (user) {
-      void this.email.sendWithdrawalDecisionEmail(
+      });
+      await this.notifications.notify(
+        {
+          recipient: { kind: 'client', id: settled.userId },
+          kind: 'withdrawal.paid',
+          params: {
+            transactionId: settled.id,
+            amount: settled.amount,
+            currency: settled.currency,
+          },
+        },
+        tx,
+      );
+    });
+    void this.emailWithdrawalDecision(row, 'paid');
+    return row;
+  }
+
+  /**
+   * The decision mail, looked up and sent WITHOUT ever failing the decision.
+   *
+   * The user lookup is post-commit courtesy work: a transient failure on it
+   * used to reject the handler AFTER the state change had committed, so the
+   * admin saw an error, retried, and was told "only a pending withdrawal can
+   * be approved" about their own success — and the email was never sent.
+   * `void`-dispatched by all three callers, so it must also never reject.
+   */
+  private async emailWithdrawalDecision(
+    row: { userId: string; amount: string; currency: string },
+    decision: 'approved' | 'paid' | 'rejected',
+    reason?: string,
+  ): Promise<void> {
+    try {
+      const user = await this.users.findById(row.userId);
+      if (!user) return;
+      await this.email.sendWithdrawalDecisionEmail(
         user.email,
         user.firstName,
-        'paid',
+        decision,
         row.amount,
         row.currency,
+        reason,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Could not send the withdrawal ${decision} email to the owner of a transaction: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    return row;
   }
   // ─── Ledger view (ADM-13) ─────────────────────────────────────────────────
   /**

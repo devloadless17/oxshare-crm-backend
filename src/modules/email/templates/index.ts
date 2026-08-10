@@ -33,6 +33,7 @@ export { accountExists } from './account-exists';
 export { kycDecision } from './kyc-decision';
 export { partnerDecision } from './partner-decision';
 export { walletCredit } from './wallet-credit';
+export { depositOutcome } from './deposit-outcome';
 export { withdrawalDecision } from './withdrawal-decision';
 export { withdrawalOtp } from './withdrawal-otp';
 export { adminInvite } from './admin-invite';

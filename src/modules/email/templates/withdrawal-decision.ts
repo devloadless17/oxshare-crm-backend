@@ -20,36 +20,62 @@ import { button, card, esc, p, panel, type RenderedEmail } from './layout';
  * So the wording says the amount has been RETURNED, and the reason is always
  * present: a decline the client cannot act on generates a support ticket and a
  * second identical request.
+ *
+ * ## One template for all three lifecycle messages, deliberately
+ *
+ * 'approved' joined 'paid' and 'rejected' rather than getting its own file:
+ * the three sentences describe consecutive states of ONE request, and keeping
+ * them side by side is what stops "approved and being processed" drifting out
+ * of step with "has been sent". Approval says money has NOT moved yet —
+ * FR-CORE-08's outcome email still follows at settlement.
  */
 export function withdrawalDecision(
   firstName: string,
-  decision: 'paid' | 'rejected',
+  decision: 'approved' | 'paid' | 'rejected',
   amount: string,
   currency: string,
   portalUrl: string,
   reason?: string,
 ): RenderedEmail {
-  const paid = decision === 'paid';
   const money = `${esc(amount)} ${esc(currency)}`;
 
-  const body = paid
-    ? p(
-        `Your withdrawal of <strong>${money}</strong> has been processed and sent to your nominated destination.`,
-      )
-    : [
-        p(`Your withdrawal of <strong>${money}</strong> could not be processed.`),
-        reason ? panel(`<strong>Reason:</strong> ${esc(reason)}`) : '',
-        p(
-          `The ${money} has been returned to your balance, and you can submit a new request whenever you are ready.`,
-        ),
-      ]
-        .filter(Boolean)
-        .join('\n');
+  const heading = {
+    approved: 'Your withdrawal has been approved',
+    paid: 'Your withdrawal has been sent',
+    rejected: 'Your withdrawal was declined',
+  }[decision];
+  const headingColor = decision === 'rejected' ? '#b42318' : '#047857';
+
+  const body =
+    decision === 'approved'
+      ? p(
+          `Your withdrawal of <strong>${money}</strong> has been approved and is being processed. ` +
+            `You will receive a confirmation email once the funds have been sent.`,
+        )
+      : decision === 'paid'
+        ? p(
+            `Your withdrawal of <strong>${money}</strong> has been processed and sent to your nominated destination.`,
+          )
+        : [
+            p(`Your withdrawal of <strong>${money}</strong> could not be processed.`),
+            reason ? panel(`<strong>Reason:</strong> ${esc(reason)}`) : '',
+            p(
+              `The ${money} has been returned to your balance, and you can submit a new request whenever you are ready.`,
+            ),
+          ]
+            .filter(Boolean)
+            .join('\n');
+
+  const subject = {
+    approved: 'Withdrawal Approved — OxShare',
+    paid: 'Withdrawal Sent — OxShare',
+    rejected: 'Withdrawal Declined — OxShare',
+  }[decision];
 
   return {
-    subject: paid ? 'Withdrawal Sent — OxShare' : 'Withdrawal Declined — OxShare',
-    html: card(`        <h2 style="color: ${paid ? '#047857' : '#b42318'}; margin-top: 0;">
-          ${paid ? 'Your withdrawal has been sent' : 'Your withdrawal was declined'}
+    subject,
+    html: card(`        <h2 style="color: ${headingColor}; margin-top: 0;">
+          ${heading}
         </h2>
 ${p(`Hello ${esc(firstName) || 'Valued Client'},`)}
 ${body}

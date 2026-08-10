@@ -3,11 +3,13 @@ import {
   accountExists,
   adminInvite,
   adminPasswordReset,
+  depositOutcome,
   kycDecision,
   partnerDecision,
   passwordReset,
   smtpTest,
   verifyEmail,
+  withdrawalDecision,
 } from '../src/modules/email/templates';
 
 const ALL = [
@@ -23,6 +25,26 @@ const ALL = [
   [
     'partnerDecision rejected',
     partnerDecision('Ann', 'rejected', 'https://p.test', { reason: 'No' }),
+  ],
+  [
+    'depositOutcome succeeded',
+    depositOutcome('Ann', 'succeeded', '250.00000000', 'USD', 'https://p.test'),
+  ],
+  [
+    'depositOutcome failed',
+    depositOutcome('Ann', 'failed', '250.00000000', 'USD', 'https://p.test'),
+  ],
+  [
+    'withdrawalDecision approved',
+    withdrawalDecision('Ann', 'approved', '100.00000000', 'USD', 'https://p.test'),
+  ],
+  [
+    'withdrawalDecision paid',
+    withdrawalDecision('Ann', 'paid', '100.00000000', 'USD', 'https://p.test'),
+  ],
+  [
+    'withdrawalDecision rejected',
+    withdrawalDecision('Ann', 'rejected', '100.00000000', 'USD', 'https://p.test', 'Wrong address'),
   ],
   ['adminInvite', adminInvite('Ann', 'https://a.test/i?t=T')],
   ['adminPasswordReset', adminPasswordReset('Ann', 'https://a.test/r', 'Boss', 30)],

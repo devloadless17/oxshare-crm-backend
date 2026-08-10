@@ -8,6 +8,8 @@ import { CurrenciesService } from '../src/modules/currencies/currencies.service'
 import { MoneyLimits } from '../src/config/money-limits';
 import { auditStubAs } from './audit-stub';
 import { commissionStubAs } from './commission-stub';
+import { emailStubAs } from './email-stub';
+import { notificationsStubAs } from './notifications-stub';
 import { gatewayStubAs } from './gateway-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -59,6 +61,8 @@ beforeAll(async () => {
     commissionStubAs(),
     gatewayStubAs(),
     new ConfigService(),
+    emailStubAs(),
+    notificationsStubAs(),
   );
 }, 120_000);
 

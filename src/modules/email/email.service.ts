@@ -8,6 +8,7 @@ import {
   adminPasswordReset,
   kycDecision,
   partnerDecision,
+  depositOutcome,
   walletCredit,
   withdrawalDecision,
   withdrawalOtp,
@@ -194,7 +195,7 @@ export class EmailService {
   async sendWithdrawalDecisionEmail(
     email: string,
     firstName: string,
-    decision: 'paid' | 'rejected',
+    decision: 'approved' | 'paid' | 'rejected',
     amount: string,
     currency: string,
     reason?: string,
@@ -203,6 +204,27 @@ export class EmailService {
       email,
       `withdrawal ${decision} email`,
       withdrawalDecision(firstName, decision, amount, currency, this.portalUrl(), reason),
+    );
+  }
+
+  /**
+   * The deposit verdict — FR-CORE-07's "client notified of the outcome".
+   *
+   * Fire-and-forget at the call site and AFTER the settlement transaction has
+   * committed, like every decision mail here: the credit is already real, and
+   * a mail outage must not roll it back or report it failed.
+   */
+  async sendDepositOutcomeEmail(
+    email: string,
+    firstName: string,
+    outcome: 'succeeded' | 'failed',
+    amount: string,
+    currency: string,
+  ): Promise<void> {
+    await this.send(
+      email,
+      `deposit ${outcome} email`,
+      depositOutcome(firstName, outcome, amount, currency, this.portalUrl()),
     );
   }
 

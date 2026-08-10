@@ -3,6 +3,10 @@ import { randomBytes } from 'node:crypto';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
+  NOTIFICATION_DISPATCH,
+  type NotificationDispatchPort,
+} from '../../common/provisioning/notification-dispatch.port';
+import {
   DEFAULT_IB_ACCRUAL_SORT,
   DEFAULT_IB_APPLICATION_SORT,
   DEFAULT_IB_PARTNER_SORT,
@@ -66,6 +70,12 @@ export class IbApplicationsService {
     private readonly visibility: ClientVisibilityService,
     private readonly email: EmailService,
     private readonly audit: AdminAuditService,
+    /*
+     * Bell rows — decisions to the applicant, new applications to reviewers.
+     * APPENDED LAST: this class is constructed positionally in
+     * `ib-applications.spec.ts`.
+     */
+    @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
   ) {}
 
   // ── the client's side ──────────────────────────────────────────────────────
@@ -144,12 +154,22 @@ export class IbApplicationsService {
     }
 
     try {
-      return await this.ib.createApplication({
+      const created = await this.ib.createApplication({
         userId,
         motivation: input.motivation ?? null,
         expectedVolume: input.expectedVolume ?? null,
         website: input.website ?? null,
       });
+
+      // Ring the reviewers' bells — post-write, never-throws, scope-filtered
+      // at write time. The queue badge stays the durable signal.
+      void this.notifications.notifyAdminsWithPermission(
+        'ib.approve',
+        { kind: 'admin.partner.applied', params: { applicationId: created.id, userId } },
+        { subjectClientId: userId },
+      );
+
+      return created;
     } catch (error) {
       if (violates(error, 'ib_applications_one_pending_uq')) {
         throw new ConflictError('You already have an application awaiting review.');
@@ -302,6 +322,21 @@ export class IbApplicationsService {
         parentIbUserId,
       });
 
+      /*
+       * The applicant's bell row, committed WITH the account. No referral code
+       * in params — the portal shows it the moment they look, and this row
+       * outlives the moment (the same reasoning that keeps it off the audit
+       * entry above).
+       */
+      await this.notifications.notify(
+        {
+          recipient: { kind: 'client', id: application.userId },
+          kind: 'partner.approved',
+          params: {},
+        },
+        tx,
+      );
+
       return created;
     });
 
@@ -393,6 +428,13 @@ export class IbApplicationsService {
     // The composed sentence, not the parts — the client reads the same text the
     // portal shows them, so the two can never disagree.
     void this.notifyDecision(application.userId, 'rejected', { reason });
+    // Post-write like the email: the conditional transition already absorbed
+    // any race, so a second reject cannot reach this line twice.
+    void this.notifications.notify({
+      recipient: { kind: 'client', id: application.userId },
+      kind: 'partner.rejected',
+      params: { reason },
+    });
 
     return updated;
   }
@@ -575,6 +617,11 @@ export class IbApplicationsService {
   ): Promise<IbAccountRow> {
     await this.visibility.assertVisible(userId, scope);
 
+    // Read the state BEFORE the write, so a no-op (a retried request, a stale
+    // screen re-sending the current state) is recognisable below. The write
+    // itself stays unconditional — setting a state to itself is harmless; the
+    // ANNOUNCEMENT of it is not.
+    const previous = await this.ib.findAccount(userId);
     const updated = await this.ib.updateAccount(userId, { active });
     if (!updated) throw new NotFoundError('That partner does not exist.');
 
@@ -587,6 +634,24 @@ export class IbApplicationsService {
     this.audit.record(actor.id, 'ib.partners.suspend', 'ib_account', userId, {
       active: updated.active,
     });
+    /*
+     * The bell row is honest about what is known: state changed, no reason is
+     * recorded for suspension, so none is invented. No EMAIL, deliberately — a
+     * reason-less suspension email is exactly the "decision the reader cannot
+     * act on" templates/index.ts rule 3 forbids; in-app says contact support.
+     *
+     * Rung only when the state ACTUALLY changed: two admins both clicking
+     * Suspend, or a retried request, must not tell the client twice — and a
+     * stale screen re-sending `active: true` must not announce a restoration
+     * that never had a suspension behind it.
+     */
+    if (previous && previous.active !== updated.active) {
+      void this.notifications.notify({
+        recipient: { kind: 'client', id: userId },
+        kind: updated.active ? 'partner.restored' : 'partner.suspended',
+        params: {},
+      });
+    }
     return updated;
   }
 

@@ -62,6 +62,7 @@ export function buildSwaggerConfig() {
       .addTag('payments', 'Deposits, withdrawals, Whish/USDT')
       .addTag('partners', 'IB programs, commission engine, payouts')
       .addTag('compliance', 'KYC documents, verification levels')
+      .addTag('notifications', 'In-app notification feeds — client and admin bells')
       .addTag('admin', 'Back-office endpoints, RBAC')
       .build()
   );

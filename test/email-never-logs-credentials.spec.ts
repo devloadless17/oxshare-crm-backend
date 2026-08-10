@@ -156,6 +156,14 @@ describe('R-6.3 — no email credential ever reaches a log line', () => {
     await service.sendPartnerDecisionEmail('e@test.local', 'E', 'approved', {
       referralCode: 'OX-E1',
     });
+    await service.sendDepositOutcomeEmail('f@test.local', 'F', 'succeeded', '250.00000000', 'USD');
+    await service.sendWithdrawalDecisionEmail(
+      'g@test.local',
+      'G',
+      'approved',
+      '100.00000000',
+      'USD',
+    );
 
     // Broader than the token check: a URL in a log line from this service is a
     // finding regardless of which parameter carries the secret.

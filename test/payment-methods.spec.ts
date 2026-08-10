@@ -11,6 +11,8 @@ import { toDecimal } from '../src/modules/wallet/money';
 import type { Actor } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
 import { commissionStubAs } from './commission-stub';
+import { emailStubAs } from './email-stub';
+import { notificationsStubAs } from './notifications-stub';
 import { gatewayStub } from './gateway-stub';
 import type { PaymentGateways } from '../src/modules/payments/payment-gateways.service';
 import { PaymentIndeterminateError, ValidationError } from '../src/common/errors/domain-errors';
@@ -76,6 +78,8 @@ beforeAll(async () => {
     commissionStubAs(),
     asGateways,
     new ConfigService(),
+    emailStubAs(),
+    notificationsStubAs(),
   );
 }, 120_000);
 
