@@ -97,6 +97,7 @@
   "GET /v1/uploads/payment-logos/{file}",
   "GET /v1/wallet",
   "GET /v1/wallet/ledger",
+  "PATCH /v1/admin/auth/me",
   "PATCH /v1/admin/clients/{id}/status",
   "PATCH /v1/admin/currencies/{code}",
   "PATCH /v1/admin/ib-levels",

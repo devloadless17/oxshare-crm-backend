@@ -46,6 +46,7 @@ const OTHER = { email: 'sec-admin-other@oxshare.com', password: 'admin-password-
 const SESSIONS = '/v1/admin/auth/sessions';
 const CHANGE_PASSWORD = '/v1/admin/auth/change-password';
 const ADMIN_ME = '/v1/admin/auth/me';
+const PROFILE = '/v1/admin/auth/me';
 const AVATAR = '/v1/admin/auth/me/avatar';
 
 let ctx: HttpTestContext;
@@ -385,6 +386,131 @@ describe('POST /admin/auth/change-password', () => {
    * attempts return seven 400s. The portal's copy of this file omits the same
    * assertion for the same reason.
    */
+});
+
+describe('PATCH /admin/auth/me', () => {
+  /** A fresh account per test, so one rename cannot affect another. */
+  async function freshAdmin(label: string) {
+    const passwords = new PasswordService();
+    const creds = { email: `sec-admin-name-${label}@oxshare.com`, password: 'original-password-1' };
+    await ctx.db.db.insert(admins).values({
+      email: creds.email,
+      passwordHash: await passwords.hash(creds.password),
+      name: `Before ${label}`,
+      role: 'sub_admin',
+      permissions: [],
+    });
+    return creds;
+  }
+
+  it('refuses an anonymous caller', async () => {
+    await anonymous(ctx)
+      .patch(PROFILE)
+      .set('Origin', SURFACES.admin.origin)
+      .send({ name: 'Whoever' })
+      .expect(401);
+  });
+
+  it('changes the name, and /auth/me agrees immediately', async () => {
+    /*
+     * Read back through `me` rather than from the response, because `me` is
+     * what the console actually renders — the sidebar, the account menu and
+     * every avatar's initials all come from that object.
+     */
+    const creds = await freshAdmin('happy');
+    const session = await actingAs(ctx, 'admin', creds);
+
+    const res = await session.patch(PROFILE, { name: 'Ada Lovelace' }).expect(200);
+    expect((res.body as { name: string }).name).toBe('Ada Lovelace');
+
+    const me = await session.get(ADMIN_ME).expect(200);
+    expect((me.body as { name: string }).name).toBe('Ada Lovelace');
+  });
+
+  it('trims before storing, so the stored value is the displayed one', async () => {
+    const creds = await freshAdmin('trim');
+    const session = await actingAs(ctx, 'admin', creds);
+
+    const res = await session.patch(PROFILE, { name: '  Ada Lovelace  ' }).expect(200);
+    expect((res.body as { name: string }).name).toBe('Ada Lovelace');
+  });
+
+  it('refuses a name that is only whitespace', async () => {
+    /*
+     * `@IsNotEmpty` does NOT catch this — class-validator sees a non-empty
+     * string of spaces — so the service trims first and checks after. An
+     * administrator with a blank name shows 'U' in every avatar and an
+     * anonymous row in the audit log, which is a real problem rather than a
+     * cosmetic one.
+     */
+    const creds = await freshAdmin('blank');
+    const session = await actingAs(ctx, 'admin', creds);
+
+    await session.patch(PROFILE, { name: '   ' }).expect(400);
+
+    const me = await session.get(ADMIN_ME).expect(200);
+    expect((me.body as { name: string }).name).toBe('Before blank');
+  });
+
+  it('refuses a name past the column width', async () => {
+    // `varchar(100)`. Without the DTO cap this reached Postgres and came back
+    // as a driver error — a 500 on a form where naming the field in a 400 is
+    // the entire purpose of having a DTO.
+    const creds = await freshAdmin('long');
+    const session = await actingAs(ctx, 'admin', creds);
+
+    await session.patch(PROFILE, { name: 'a'.repeat(101) }).expect(400);
+  });
+
+  it('REFUSES a body carrying anything but the name', async () => {
+    /*
+     * The boundary that matters on this route, and it is enforced by refusal
+     * rather than by stripping.
+     *
+     * `VALIDATION_PIPE_OPTIONS` sets `forbidNonWhitelisted: true` on top of
+     * `whitelist`, so an unknown key is a 400 instead of a silent discard —
+     * "on a money system, the caller and the contract disagreeing must be an
+     * error". Written expecting a 200 with the extras ignored, which is the
+     * weaker guarantee; the 400 is the stronger one and is what this now pins.
+     *
+     * Why any of it matters: the address is the login credential AND where
+     * every reset link is sent, so applying it would move the account to an
+     * inbox its owner may no longer control, and applying `role` or
+     * `permissions` would be privilege escalation through a profile form.
+     */
+    const creds = await freshAdmin('scope');
+    const session = await actingAs(ctx, 'admin', creds);
+
+    for (const extra of [
+      { email: 'attacker@evil.example' },
+      { permissions: ['admins.edit'] },
+      { role: 'master_admin' },
+      { status: 'suspended' },
+      { avatarFilename: '../../etc/passwd' },
+    ]) {
+      await session.patch(PROFILE, { name: 'Ada Lovelace', ...extra }).expect(400);
+    }
+
+    // Nothing was half-applied on the way to any of those refusals: the name is
+    // untouched and the original credential still signs in.
+    const me = await session.get(ADMIN_ME).expect(200);
+    const body = me.body as { name: string; email: string; permissions: string[]; status: string };
+    expect(body.name).toBe('Before scope');
+    expect(body.email).toBe(creds.email);
+    expect(body.permissions).toEqual([]);
+    expect(body.status).toBe('active');
+    await actingAs(ctx, 'admin', creds);
+  });
+
+  it('requires the anti-forgery header', async () => {
+    const creds = await freshAdmin('csrf');
+    const session = await actingAs(ctx, 'admin', creds);
+
+    await session.patch(PROFILE, { name: 'Never Applied' }, { omitCsrf: true }).expect(403);
+
+    const me = await session.get(ADMIN_ME).expect(200);
+    expect((me.body as { name: string }).name).toBe('Before csrf');
+  });
 });
 
 describe('the avatar routes', () => {

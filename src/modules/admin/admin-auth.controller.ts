@@ -15,6 +15,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  Patch,
   HttpStatus,
   Param,
   Post,
@@ -38,6 +39,7 @@ import { AVATAR_BUCKET } from '../../common/uploads/stored-files.service';
 import { ValidationError } from '../../common/errors/domain-errors';
 import {
   AdminChangePasswordDto,
+  AdminUpdateProfileDto,
   CompleteAdminResetDto,
   AcceptInviteDto,
   AdminLoginDto,
@@ -48,6 +50,7 @@ import {
   AdminLoginResponseDto,
   AcceptInviteResponseDto,
   AdminProfileDto,
+  AdminProfileNameDto,
   AdminSessionDto,
   InviteResponseDto,
   InviteValidationDto,
@@ -309,6 +312,28 @@ export class AdminAuthController {
    * sessions to end and a face to put on them. The routes above act on somebody
    * ELSE, which is what a permission is for.
    */
+
+  /**
+   * Change your own display name.
+   *
+   * The NAME only — see the service for why the address and the role are not
+   * self-service and must not become so.
+   */
+  @AnyAdmin(
+    "Edits the CALLER's own display name. Needing another administrator to fix your own " +
+      'spelling is the kind of friction that ends with people sharing accounts.',
+  )
+  @Patch('auth/me')
+  @UseGuards(AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Change your own display name' })
+  @ApiOkResponse({ type: AdminProfileNameDto })
+  @NotClientScoped("Edits the calling administrator's own row; reads no client rows.")
+  @Audited('admin.profile_update')
+  updateProfile(@Req() req: Request & { admin: Admin }, @Body() dto: AdminUpdateProfileDto) {
+    return this.profile.updateProfile(req.admin.id, dto.name);
+  }
 
   /**
    * Change your own password, ending every other session.

@@ -181,6 +181,59 @@ export class AdminProfileService {
   }
 
   /**
+   * Change your own display name.
+   *
+   * ── The NAME only, and that boundary is the point ──────────────────────────
+   *
+   * The e-mail address is not editable here and should not become so. It is the
+   * login credential AND the address every password-reset link is sent to, so a
+   * self-service change is a single request that moves an account to an inbox
+   * the owner may no longer control — which is what somebody who has borrowed a
+   * session would reach for first. Changing it is `PATCH /admin/users/:id`,
+   * another administrator's act, and it stays that way.
+   *
+   * The role is not editable for the sharper version of the same reason: a
+   * profile screen that let you edit your own role would be a privilege
+   * escalation with a friendly form around it. `AdminRbacService` refuses
+   * self-service on every method for exactly that.
+   *
+   * A display name is none of those things. It is what colleagues see beside an
+   * action in the audit log, and needing an administrator to fix your own
+   * spelling is the kind of friction that ends with people sharing accounts.
+   */
+  async updateProfile(adminId: string, name: string) {
+    const admin = await this.admins.findById(adminId);
+    if (!admin) throw new AuthenticationError('Your session is no longer valid. Please sign in.');
+
+    /*
+     * Trimmed before the emptiness check, so " " is refused rather than stored.
+     *
+     * An admin with a blank name is not a cosmetic problem: `initialsFor` falls
+     * back to 'U' in every avatar, and the directory, the audit log and the
+     * account menu all show an anonymous row where a person should be.
+     * `@IsNotEmpty` on the DTO does not catch this — class-validator sees a
+     * non-empty string of spaces.
+     */
+    const trimmed = name.trim();
+    if (!trimmed) throw new ValidationError('Your name cannot be blank.');
+
+    // A no-op write is not an error, but it is not worth an audit row either:
+    // the log is read to answer "what changed", and a line saying nothing did
+    // is noise in the one record that cannot be rebuilt.
+    if (trimmed === admin.name) return { name: admin.name };
+
+    await this.admins.update(adminId, { name: trimmed });
+
+    this.audit.record(adminId, 'admin.profile_update', 'admin', adminId, {
+      from: admin.name,
+      to: trimmed,
+    });
+    this.logger.log(`${admin.email} changed their display name`);
+
+    return { name: trimmed };
+  }
+
+  /**
    * Set or replace the profile photo.
    *
    * The accepted TYPES are decided from the file's own magic bytes inside

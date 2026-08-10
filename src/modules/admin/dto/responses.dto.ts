@@ -1001,3 +1001,9 @@ export class AdminAvatarResponseDto {
   })
   avatarUrl: string | null;
 }
+
+/** The stored display name after a self-service change — trimmed, as saved. */
+export class AdminProfileNameDto {
+  @ApiProperty({ example: 'Ada Lovelace' })
+  name: string;
+}

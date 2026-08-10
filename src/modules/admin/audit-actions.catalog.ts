@@ -126,6 +126,13 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   },
   { action: 'admin.session_revoke', label: 'Own session signed out', group: 'Administrators' },
   { action: 'admin.avatar_change', label: 'Own profile photo changed', group: 'Administrators' },
+  /*
+   * Distinct from `admin.update` below, which is somebody editing SOMEBODY
+   * ELSE. Collapsing the two would make "who renamed this account" unanswerable
+   * from the log — and that is the question an auditor asks when an action is
+   * attributed to a name nobody recognises.
+   */
+  { action: 'admin.profile_update', label: 'Own details changed', group: 'Administrators' },
   { action: 'admin.update', label: 'Administrator changed', group: 'Administrators' },
   { action: 'admin.suspend', label: 'Administrator suspended', group: 'Administrators' },
   { action: 'admin.activate', label: 'Administrator reactivated', group: 'Administrators' },

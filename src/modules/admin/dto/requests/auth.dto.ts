@@ -1,5 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsArray,
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 /*
  * Bounds, matching modules/identity/dto/auth.dto.ts rather than being decided
@@ -154,4 +162,20 @@ export class AdminChangePasswordDto {
   @MinLength(8)
   @MaxLength(PASSWORD_MAX)
   newPassword: string;
+}
+
+/**
+ * Change your own display name.
+ *
+ * The NAME only. `email` is deliberately absent and must stay absent: it is the
+ * login credential and the address every reset link is sent to, so a
+ * self-service change would move an account to an inbox its owner may no longer
+ * control. See `AdminProfileService.updateProfile`.
+ */
+export class AdminUpdateProfileDto {
+  @ApiProperty({ maxLength: NAME_MAX, example: 'Ada Lovelace' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(NAME_MAX)
+  name: string;
 }

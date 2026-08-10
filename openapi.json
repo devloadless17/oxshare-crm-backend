@@ -3709,6 +3709,41 @@
         "tags": [
           "admin"
         ]
+      },
+      "patch": {
+        "operationId": "AdminAuthController_updateProfile",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUpdateProfileDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminProfileNameDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Change your own display name",
+        "tags": [
+          "admin"
+        ]
       }
     },
     "/v1/admin/invite": {
@@ -10247,6 +10282,31 @@
         "required": [
           "token",
           "password"
+        ]
+      },
+      "AdminUpdateProfileDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 100,
+            "example": "Ada Lovelace"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "AdminProfileNameDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Ada Lovelace"
+          }
+        },
+        "required": [
+          "name"
         ]
       },
       "AdminChangePasswordDto": {
