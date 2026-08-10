@@ -92,10 +92,16 @@ beforeAll(async () => {
         'kyc.review',
         'kyc.review',
         'ib.view',
-        // The wallet list's key. Without it `/admin/wallets` 403s and the
-        // assertion below would report scoping as working when what it actually
-        // proved is that the admin cannot reach the route at all.
-        'withdrawals.view',
+        /*
+         * The holdings keys. Without them `/admin/wallets` and
+         * `/admin/trading-accounts` 403 and the assertions below would report
+         * scoping as working when what they actually proved is that the admin
+         * cannot reach the routes at all — the failure this comment predicted,
+         * which then happened when the rework split holdings out of
+         * `withdrawals.view` and the fixture kept the old key.
+         */
+        'wallets.view',
+        'trading.view',
       ],
     })
     .returning();

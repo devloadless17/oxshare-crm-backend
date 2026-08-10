@@ -17,10 +17,19 @@ import { refuseReset, RESET_TOKEN_TTL_MS } from '../src/modules/admin/admin-rese
 
 const master = { id: 'm1', role: 'master_admin' as const, permissions: ALL_PERMISSIONS };
 const otherMaster = { id: 'm2', role: 'master_admin' as const, permissions: ALL_PERMISSIONS };
+/*
+ * `admins.reset`, not `admins.create` — the grant the guard actually reads.
+ *
+ * The permission rework renamed the admin-management key and this fixture kept
+ * the old one, so `manager` was refused at `actor-not-permitted` before any of
+ * the outranking logic ran. Two tests below are ABOUT that logic, so they were
+ * asserting a branch they never reached — the failure mode a stale fixture
+ * produces: not a wrong answer, a question never asked.
+ */
 const manager = {
   id: 's1',
   role: 'sub_admin' as const,
-  permissions: ['admins.create', 'kyc.review'],
+  permissions: ['admins.reset', 'kyc.review'],
 };
 const peer = { id: 's2', role: 'sub_admin' as const, permissions: ['kyc.review'] };
 
@@ -81,13 +90,28 @@ describe('refuseReset', () => {
     expect(refuseReset(manager, manager)).toBe('self');
   });
 
-  it('treats a wildcard permission as master, whatever the role column says', () => {
-    // The two ways to be all-powerful must not disagree. A row carrying ALL_PERMISSIONS
-    // with role 'sub_admin' is a master in everything but name, in both
-    // directions: it may reset, and it may not be reset by a lesser admin.
-    const wildcardSub = { id: 'w1', role: 'sub_admin' as const, permissions: ALL_PERMISSIONS };
-    expect(refuseReset(wildcardSub, peer)).toBeNull();
-    expect(refuseReset(manager, wildcardSub)).toBe('target-is-master');
+  it('treats a fully-permissioned sub-admin as unreachable, whatever the role column says', () => {
+    /*
+     * The two ways to be all-powerful must not disagree. A row carrying every
+     * catalogue key with role 'sub_admin' is a master in everything but name,
+     * in both directions: it may reset, and it may not be reset by a lesser
+     * admin.
+     *
+     * The REASON changed and the protection did not. This asserted
+     * 'target-is-master', which came from the guard's `permissions.includes('*')`
+     * short-circuit — and the wildcard is gone, so a fully-permissioned admin
+     * now holds a real list of real keys instead. A lesser admin is refused by
+     * the subset ladder rather than by the master branch, which is the same
+     * refusal arrived at honestly: it is refused for holding LESS, rather than
+     * for the target carrying a symbol that meant everything forever.
+     */
+    const fullyPermissioned = {
+      id: 'w1',
+      role: 'sub_admin' as const,
+      permissions: ALL_PERMISSIONS,
+    };
+    expect(refuseReset(fullyPermissioned, peer)).toBeNull();
+    expect(refuseReset(manager, fullyPermissioned)).toBe('target-outranks-actor');
   });
 });
 

@@ -93,7 +93,13 @@ beforeAll(async () => {
   // Holds the route's permission; only territory constrains them.
   const [scopedRole] = await db
     .insert(roles)
-    .values({ name: 'TA Scoped', permissions: ['clients.view', 'withdrawals.view'] })
+    /*
+     * `trading.view`, not `withdrawals.view` — the key both routes here
+     * require since holdings were split out of the money keys. Same stale
+     * fixture as `admin-wallets.spec.ts`: without it every scope assertion
+     * below was refused before any scoping happened.
+     */
+    .values({ name: 'TA Scoped', permissions: ['clients.view', 'trading.view'] })
     .returning();
   const [scopedAdmin] = await db
     .insert(admins)

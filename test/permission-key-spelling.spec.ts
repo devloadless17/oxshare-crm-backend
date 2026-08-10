@@ -75,7 +75,12 @@ describe('migration 0009 — stored keys are converted before the shims are remo
     const roles = await ctx.db.execute(
       sql`SELECT permissions FROM roles WHERE name = 'Legacy Reviewer'`,
     );
-    expect(roles.rows[0]).toEqual({ permissions: ['kyc.review', 'clients.view'] });
+    // `users.view`, matching the fixture above — the key was renamed from
+    // `clients.view` by the permission rework and the fixture came with it
+    // while this expectation did not. What is under test is the SHAPE of the
+    // fold (colon to dot, case folded), so it must read back whatever was
+    // seeded rather than a key from before the rename.
+    expect(roles.rows[0]).toEqual({ permissions: ['kyc.review', 'users.view'] });
 
     const admins = await ctx.db.execute(
       sql`SELECT permissions FROM admins WHERE email = 'legacy@test.local'`,
@@ -160,8 +165,20 @@ describe('R-4.1/R-4.3 the layers cannot disagree about a permission', () => {
     expect(actorHasPermission(actorWith('KYC.REVIEW'), 'kyc.review')).toBe(true);
   });
 
-  it('still honours the master wildcard', () => {
-    expect(actorHasPermission(actorWith('*'), 'anything.at.all')).toBe(true);
+  /*
+   * The wildcard is GONE, and this pins the removal rather than the feature.
+   *
+   * `*` meant "every permission, including every permission added after the
+   * grant was made" — a retroactive grant, which is the thing the permission
+   * model was rebuilt to remove (migration 0044 expanded every stored `*` into
+   * the catalog as it stood that day, and nothing writes one again).
+   *
+   * Asserted as a REFUSAL because the alternative is no test at all: a
+   * reintroduced wildcard branch would otherwise slip back in silently, and it
+   * is the one change that would make every future key retroactively held.
+   */
+  it('does NOT honour a wildcard — a retroactive grant is what was removed', () => {
+    expect(actorHasPermission(actorWith('*'), 'anything.at.all')).toBe(false);
   });
 
   it('uses one definition, so the three call sites cannot drift', () => {

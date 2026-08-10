@@ -181,7 +181,21 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    */
   { action: 'ib.level_change', label: 'Partner level changed', group: 'Compliance' },
   { action: 'ib.parent_change', label: 'Partner parent reassigned', group: 'Compliance' },
-  { action: 'ib.suspend', label: 'Partner suspended or reactivated', group: 'Compliance' },
+  /*
+   * `ib.partners.suspend`, matching what is actually written.
+   *
+   * The action was renamed to sit alongside its permission key and this entry
+   * kept the old spelling, so the catalog listed a name nothing writes while
+   * the name that IS written was listed nowhere. The consequence is the one
+   * `audit-coverage.spec.ts` states: partner suspensions were unfilterable on
+   * the audit screen, and an operator reads "no results" as "it never
+   * happened" — about the record of somebody's earnings being switched off.
+   */
+  {
+    action: 'ib.partners.suspend',
+    label: 'Partner suspended or reactivated',
+    group: 'Compliance',
+  },
 
   /*
    * Payment methods. A write here changes the account number every client is

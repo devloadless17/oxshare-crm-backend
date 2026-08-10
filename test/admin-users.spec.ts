@@ -67,7 +67,11 @@ const OPERATOR: AuthenticatedAdmin = {
   passwordHash: 'x',
   role: 'sub_admin',
   status: 'active',
-  permissions: ['admins.edit', 'clients.suspend', 'kyc.review'],
+  /*
+   * `admins.suspend`, not `clients.suspend` — suspending an ADMINISTRATOR is
+   * its own key, separate from suspending a client. Stale since the rework.
+   */
+  permissions: ['admins.edit', 'admins.suspend', 'kyc.review'],
   clientScope: UNRESTRICTED,
   fieldMask: EMPTY_MASK,
   createdAt: new Date(),
@@ -110,7 +114,18 @@ async function build(overrides: { admin?: Partial<Admin>; role?: Role | undefine
       ),
     ),
     findByEmail: vi.fn(),
-    findAll: vi.fn(),
+    /*
+     * Returns the real envelope, because `assertNotLastManager` destructures
+     * `{ rows }` from it — the guard that stops a write leaving nobody able to
+     * manage administrators.
+     *
+     * A bare `vi.fn()` resolves undefined, so every path through that guard
+     * died on "Cannot destructure property 'rows'" and the tests reported it
+     * as the wrong error type. The master is included so the system always has
+     * one manager left and the guard's own refusal does not fire in cases that
+     * are not about it.
+     */
+    findAll: vi.fn(() => Promise.resolve({ rows: [MASTER, OPERATOR, target], total: 3 })),
     create: vi.fn(),
     update: vi.fn((_id: string, patch: Partial<Admin>) => Promise.resolve({ ...target, ...patch })),
   };
@@ -240,13 +255,27 @@ describe('updateAdmin — changing what an administrator may do', () => {
     expect(adminsFake.update).toHaveBeenCalled();
   });
 
-  it('refuses to change the MASTER admin’s access', async () => {
-    // The master is everyone else's recovery path.
+  /*
+   * The master is no longer special, and this asserts the rule that REPLACED
+   * the one protecting it.
+   *
+   * This used to read "refuses to change the MASTER admin's access", on the
+   * reasoning that the master was everyone else's recovery path. There is no
+   * master to protect any more (see the service: "There is no master admin to
+   * protect any more. What is protected is the SYSTEM"), so that rule became
+   * two better ones — nobody rewrites their OWN access, whoever they are, and
+   * no write may leave the directory unmanageable.
+   *
+   * Kept as a self-edit case because that is the escalation the old rule was
+   * really standing in front of: a one-request privilege widening with no
+   * permission change for anyone to notice in the audit log.
+   */
+  it('refuses ANY administrator rewriting their own access, master included', async () => {
     const { service } = await build();
 
     await expect(
       service.updateAdmin(MASTER.id, { permissions: ['kyc.review'] }, MASTER),
-    ).rejects.toThrow(ValidationError);
+    ).rejects.toThrow(AuthorizationError);
   });
 
   it('allows renaming the master, which changes no access', async () => {
@@ -334,10 +363,25 @@ describe('setAdminStatus — cutting off an administrator', () => {
     expect(adminsFake.update).not.toHaveBeenCalled();
   });
 
-  it('refuses suspending the MASTER admin', async () => {
+  /*
+   * Again the replacement rule, not the removed one.
+   *
+   * Suspending the master used to be refused BECAUSE it was the master. What
+   * is refused now is the write that would leave nobody holding `admins.edit`
+   * — "the master admin used to be the way back, and there is none now". So
+   * the master is suspendable while somebody else can still manage the
+   * directory, and the LAST manager is not, whoever they are.
+   *
+   * Driven by narrowing the directory to one manager, which is the state the
+   * guard is actually about.
+   */
+  it('refuses the suspension that would leave nobody able to manage administrators', async () => {
     const { service, adminsFake } = await build();
+    // OPERATOR is the only remaining manager; suspending them locks the door
+    // from the inside.
+    adminsFake.findAll.mockResolvedValueOnce({ rows: [OPERATOR, TARGET], total: 2 });
 
-    await expect(service.setAdminStatus(MASTER.id, 'suspended', OPERATOR)).rejects.toThrow(
+    await expect(service.setAdminStatus(OPERATOR.id, 'suspended', MASTER)).rejects.toThrow(
       ValidationError,
     );
     expect(adminsFake.update).not.toHaveBeenCalled();

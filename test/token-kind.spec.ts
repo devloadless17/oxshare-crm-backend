@@ -82,8 +82,17 @@ function buildAuthenticator() {
         createdAt: new Date(),
       }),
   };
+  /*
+   * Both resolvers, because `AdminAuthenticator` awaits them together.
+   *
+   * `resolveMaskedFields` arrived with RBAC-03 field masking and this stub did
+   * not follow it, so every spec in this file died on "is not a function" —
+   * about a method that has nothing to do with token kind. A partial stub of a
+   * collaborator fails for a reason the file is not about.
+   */
   const roles = {
     resolvePermissions: (_r: unknown, snapshot: string[]) => Promise.resolve(snapshot),
+    resolveMaskedFields: (_r: unknown, override?: string[]) => Promise.resolve(override ?? []),
   };
 
   return new AdminAuthenticator(

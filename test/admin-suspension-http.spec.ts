@@ -75,7 +75,14 @@ beforeAll(async () => {
     passwordHash: hash,
     name: 'Susp Operator',
     role: 'sub_admin',
-    permissions: ['clients.view', 'admins.edit', 'clients.suspend'],
+    /*
+     * `admins.suspend`, not `clients.suspend` — this operator suspends
+     * ADMINISTRATORS, and the two are separate keys on purpose ("Revoke /
+     * Restore Administrator Access" vs "Suspend / Restore Client Access").
+     * The fixture kept the client key through the rework, so the test named
+     * for an operator who DOES hold the grant was asserting a 403.
+     */
+    permissions: ['clients.view', 'admins.edit', 'admins.suspend'],
     status: 'active',
   });
 
@@ -192,15 +199,31 @@ describe('who may suspend', () => {
 });
 
 describe('what cannot be suspended', () => {
-  it('refuses suspending the MASTER admin', async () => {
+  /*
+   * The master is no longer a protected row, and this asserts the rule that
+   * replaced the protection.
+   *
+   * This expected 400 on the reasoning that the master is everyone's way back.
+   * The permission rework removed that idea — "there is no master admin to
+   * protect any more. What is protected is the SYSTEM" — and put a sharper
+   * guard in its place: no status change may leave the directory with nobody
+   * holding `admins.edit`. Several administrators hold it here, so suspending
+   * the master is now an ordinary, permitted act.
+   *
+   * It is reversed immediately. The master is the identity most of this file
+   * signs in as, so leaving it suspended would fail the specs after it for a
+   * reason none of them are about — which is exactly how this test failing
+   * took two others down with it.
+   */
+  it('allows suspending the master while other managers remain, and it is reversible', async () => {
     await reactivate();
     const operator = await actingAs(ctx, 'admin', OPERATOR);
-    const res = await operator.patch(`/v1/admin/users/${masterId}/status`, {
-      status: 'suspended',
-    });
-    expect(res.status).toBe(400);
+    await operator.patch(`/v1/admin/users/${masterId}/status`, { status: 'suspended' }).expect(200);
 
-    // And the master is genuinely still able to work.
+    // Suspension bites on the NEXT request, so this is the real check.
+    await expect(actingAs(ctx, 'admin', MASTER)).rejects.toThrow();
+
+    await ctx.db.db.update(admins).set({ status: 'active' }).where(eq(admins.id, masterId));
     const master = await actingAs(ctx, 'admin', MASTER);
     await master.get(ADMIN_ME).expect(200);
   });

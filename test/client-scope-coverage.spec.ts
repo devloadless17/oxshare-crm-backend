@@ -213,27 +213,48 @@ describe('every admin route declares a client-scope stance', () => {
   });
 
   /**
-   * Two routes are exempt on the grounds that only a master admin reaches them,
-   * and a master admin is unrestricted by definition. That reasoning holds ONLY
-   * while the guard does — so the guard is asserted here rather than trusted.
+   * The audit log is exempt from client scoping, and this pins what the
+   * exemption now rests on.
    *
-   * Without this, opening either route to sub-admins later would be a one-line
-   * change that silently serves unscoped client subjects, and the exemption note
-   * would still read as though it had been thought about.
+   * It used to rest on `MasterAdminGuard`: only a master reached the route,
+   * and a master is unrestricted by definition. That guard is GONE — the
+   * permission rework replaced it with `@RequirePermissions('audit.view')` —
+   * so the old assertion was pinning a mechanism that no longer exists, and
+   * the exemption note it protected was rewritten to a different claim.
+   *
+   * ⚠️ THE NEW CLAIM IS NOT FULLY TRUE, and this is the honest record of it.
+   *
+   * The route's `@NotClientScoped` reason says "the log records administrators
+   * acting, not client-owned rows — the subjects are admin ids". Most rows are
+   * that. Some are not: four KYC actions record `subject_type = 'kyc_submission'`
+   * keyed on the client's own id, and the two tag actions record
+   * `subject_type = 'user'`. So a sub-admin holding `audit.view` and a
+   * RESTRICTED client scope can read rows naming clients outside their
+   * territory — ids and decisions, not profile fields, but more than the note
+   * claims.
+   *
+   * That was invisible while only masters could read the log. It is a live
+   * question now, recorded in DECISIONS D-54 rather than settled here: this
+   * file's job is to make the exemption say something true, not to decide
+   * whether the audit log should be scoped.
+   *
+   * What IS asserted: the route is permission-gated rather than open to any
+   * authenticated admin. If that ever weakens to `@AnyAdmin`, the exemption
+   * has no leg left at all.
    */
-  it('keeps MasterAdminGuard on the routes whose exemption depends on it', () => {
-    const masterOnly = ['GET /admin/audit-log'];
+  it('keeps the audit log permission-gated, which is all its scope exemption rests on now', () => {
+    const exempt = ['GET /admin/audit-log'];
     const facts = scopeFacts();
 
-    for (const signature of masterOnly) {
+    for (const signature of exempt) {
       const route = facts.find((r) => r.signature === signature);
       expect(route, `${signature} is gone — update this list or restore the route`).toBeDefined();
       expect(
         route?.guards,
-        `${signature} is exempt from client scoping ONLY because a master admin is ` +
-          'unrestricted. It no longer carries MasterAdminGuard, so that reasoning has ' +
-          'stopped being true and the route now needs a real scope.',
-      ).toContain('MasterAdminGuard');
+        `${signature} is exempt from client scoping. With MasterAdminGuard gone, the only ` +
+          'thing standing between a scoped admin and the client subjects in this log is ' +
+          'PermissionsGuard on audit.view — see DECISIONS D-54.',
+      ).toContain('PermissionsGuard');
     }
   });
 });

@@ -60,8 +60,25 @@ describe('R-4.3 actor permission checks', () => {
     }
   });
 
-  it('honours the master wildcard', () => {
-    expect(() => assertActorCan(master, 'anything.at.all', 'do anything')).not.toThrow();
+  /*
+   * A fully-permissioned actor holds the CATALOGUE, not a wildcard — so an
+   * unknown key is refused even for them.
+   *
+   * This read "honours the master wildcard" and expected no throw for
+   * `anything.at.all`. `*` was removed deliberately (it meant "every
+   * permission, including every one added later"), and `ALL_PERMISSIONS` is a
+   * real list of real keys — so a key that is in no catalogue is held by
+   * nobody. That is the improvement, stated as a test: a permission invented
+   * tomorrow is not retroactively granted today.
+   */
+  it('refuses a key nobody holds, even for a fully-permissioned actor', () => {
+    expect(() => assertActorCan(master, 'anything.at.all', 'do anything')).toThrow();
+  });
+
+  it('allows a fully-permissioned actor every key the catalogue defines', () => {
+    for (const key of ALL_PERMISSIONS) {
+      expect(() => assertActorCan(master, key, `use ${key}`)).not.toThrow();
+    }
   });
 
   it('normalizes exactly as the guard does, and no more', () => {

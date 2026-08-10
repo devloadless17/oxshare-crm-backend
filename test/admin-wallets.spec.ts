@@ -102,7 +102,15 @@ beforeAll(async () => {
    */
   const [scopedRole] = await db
     .insert(roles)
-    .values({ name: 'Wallets Scoped', permissions: ['withdrawals.view', 'clients.view'] })
+    /*
+     * `wallets.view`, not `withdrawals.view` — the key this surface actually
+     * requires since the permission rework gave holdings their own. The
+     * fixture kept the old one, so every scope assertion below was answered
+     * 403 before any scoping ran: the file's whole subject was unreachable,
+     * and it failed saying "expected 200" rather than "you granted the wrong
+     * key".
+     */
+    .values({ name: 'Wallets Scoped', permissions: ['wallets.view', 'clients.view'] })
     .returning();
   const [scopedAdmin] = await db
     .insert(admins)

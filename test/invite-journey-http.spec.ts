@@ -99,7 +99,10 @@ describe('invite → accept → sign in with the granted role', () => {
 
     expect(profile.role).toBe('sub_admin');
     expect(profile.status).toBe('active');
-    expect(profile.permissions.sort()).toEqual(['kyc.review', 'clients.view']);
+    // BOTH sides sorted. Sorting only the received array made this depend on
+    // the order the API happens to return, which is not what the test is about
+    // — and it duly broke when that order changed.
+    expect(profile.permissions.sort()).toEqual(['clients.view', 'kyc.review'].sort());
   });
 
   it('grants ONLY the role — anything else is 403, not 401', async () => {
@@ -108,10 +111,20 @@ describe('invite → accept → sign in with the granted role', () => {
     await acceptInvite(token, NEW_ADMIN_PASSWORD).expect(200);
 
     const invitee = await actingAs(ctx, 'admin', { email, password: NEW_ADMIN_PASSWORD });
-    // users.view is granted, so the directory is readable...
-    await invitee.get('/v1/admin/users').expect(200);
-    // ...but roles.manage is not, and the refusal must be FORBIDDEN. A 401 would
-    // send the admin app into a refresh-and-retry loop it can never win.
+    /*
+     * `clients.view` is granted, so the CLIENT list is readable...
+     *
+     * This used to read the ADMIN directory and call it "users.view is
+     * granted". That key no longer exists, and `/admin/users` is the
+     * administrator directory gated on `admins.view` — which this role has
+     * never held. So the 200 leg was asserting a route the invitee was always
+     * going to be refused, and the test only started saying so when the
+     * catalogue was tightened.
+     */
+    await invitee.get('/v1/admin/clients').expect(200);
+    // ...but creating a role is not granted, and the refusal must be FORBIDDEN.
+    // A 401 would send the admin app into a refresh-and-retry loop it can never
+    // win.
     await invitee.post('/v1/admin/roles', { name: 'Nope', permissions: [] }).expect(403);
   });
 

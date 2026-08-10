@@ -69,7 +69,11 @@ beforeAll(async () => {
        * pass for the wrong reason — proving the permission check works, while
        * saying nothing about the mask check it is aimed at.
        */
-      permissions: ['clients.view', 'kyc.view', 'kyc.review', 'roles.edit'],
+      // `roles.create` is what POST /admin/roles requires — `roles.edit`
+      // covers changing an existing one. Same trap the comment above names:
+      // with the wrong key the guard refuses first and the mask assertion
+      // never runs.
+      permissions: ['clients.view', 'kyc.view', 'kyc.review', 'roles.create', 'roles.edit'],
       maskedFields: ['client.email', 'client.phone'],
     })
     .returning();
