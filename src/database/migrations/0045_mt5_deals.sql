@@ -1,3 +1,26 @@
+-- ⚠️ NUMBERING COLLISION, and it is harmless — read this before "fixing" it.
+--
+-- There are TWO files numbered 0045: this one and
+-- `0045_payments_keys_and_seed_role.sql`. They were authored on branches that
+-- did not see each other and both had landed before the collision was noticed.
+--
+-- Drizzle applies migrations by the `idx` in meta/_journal.json, not by
+-- filename, and the journal orders them correctly:
+--
+--     44  0044_permission_model
+--     45  0045_payments_keys_and_seed_role
+--     46  0045_mt5_deals              <- this file
+--     47  0046_notifications
+--
+-- So the order on a fresh database is right, and on an existing one both have
+-- already run. DO NOT rename this file to close the gap: drizzle keys applied
+-- migrations by tag, so a rename reads as a brand-new migration and it would be
+-- applied a second time on every database that already has it.
+--
+-- The table below is CREATE TABLE IF NOT EXISTS, so even that would be
+-- survivable — but the journal would carry a duplicate for ever, and the next
+-- person would have a harder puzzle than this comment.
+
 -- Closed deals ingested from MT5 — the landing table for ARCHITECTURE §3.1's
 -- push + sweep.
 --
