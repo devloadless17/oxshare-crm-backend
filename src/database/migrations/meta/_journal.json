@@ -330,6 +330,13 @@
       "when": 1787061964600,
       "tag": "0046_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1787061966600,
+      "tag": "0048_admin_avatar",
+      "breakpoints": true
     }
   ]
 }

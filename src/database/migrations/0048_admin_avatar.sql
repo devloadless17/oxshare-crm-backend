@@ -1,0 +1,42 @@
+-- ⚠️ THERE IS NO 0047, and the gap is deliberate — do not close it.
+--
+-- Two files are numbered 0045 (see the header of `0045_mt5_deals.sql`), so from
+-- that point the filename prefix runs one BEHIND the journal's `idx`. This file
+-- is named for its idx rather than for the previous filename, which puts the two
+-- back in step and costs one unused number.
+--
+-- Renaming it to 0047 would be worse than the gap: drizzle records applied
+-- migrations by TAG, so a rename reads as a brand-new migration and re-applies
+-- on every database that already has this one.
+--
+-- The administrator's profile photo.
+--
+-- Same column, same semantics and the same bucket as `users.avatar_filename`:
+-- a STORED FILENAME (`<uuid>.<ext>` under ./uploads/avatars), never a URL and
+-- never the name the uploader supplied.
+--
+-- A filename because the URL is a function of deployment — the §8.5 move to
+-- private S3 changes how the bytes are served, and a stored URL would have to
+-- be rewritten across every row when it does.
+--
+-- The extension is decided from the file's own magic bytes inside
+-- StoredFilesService. The multipart Content-Type is a claim by whoever is
+-- uploading, and an HTML document declared `image/png` is how a stored file
+-- becomes stored XSS on the console that approves withdrawals.
+
+ALTER TABLE "admins" ADD COLUMN IF NOT EXISTS "avatar_filename" varchar(128);
+
+--> statement-breakpoint
+
+-- The cutoff that makes "changing your password signs out your other sessions"
+-- true IMMEDIATELY rather than within fifteen minutes.
+--
+-- Revoking refresh families stops those sessions RENEWING; it does nothing to
+-- an access token already in a browser, which stays valid until it expires. The
+-- portal has had this since `users.password_changed_at`; the admin console —
+-- the surface that approves withdrawals — did not, so its password change was
+-- quietly weaker than the client one.
+--
+-- NULL means NO cutoff, and that is deliberate: every administrator predating
+-- this column has NULL, and adding it must not sign the whole back office out.
+ALTER TABLE "admins" ADD COLUMN IF NOT EXISTS "password_changed_at" timestamp with time zone;

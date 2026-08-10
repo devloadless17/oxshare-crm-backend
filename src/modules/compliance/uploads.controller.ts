@@ -31,6 +31,7 @@ import { AuditLogStore } from '../../store/audit-log.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
 import { COOKIE_BASES, readSessionCookie } from '../../common/security/session-cookies';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
+import { AdminGuard } from '../admin/guards/admin.guard';
 import {
   AVATAR_BUCKET,
   PAYMENT_LOGO_BUCKET,
@@ -144,6 +145,62 @@ export class UploadsController {
     res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     // Private, because it is one client's photo, and short — an avatar the
     // client has just replaced should not survive on their own screen.
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    found.stream.pipe(res);
+  }
+
+  /**
+   * Serve a profile photo to the ADMINISTRATOR it belongs to.
+   *
+   * ## Why this is a second route and not a branch in the one above
+   *
+   * `serveAvatar` is guarded by `JwtAuthGuard` + `EmailVerifiedGuard`, which are
+   * portal guards: they verify a CLIENT access token and read a column
+   * (`emailVerified`) that administrators do not have. An admin cookie fails at
+   * the first and would fail at the second, so there was no photo an admin could
+   * ever fetch — including their own, which is the only one this route serves.
+   *
+   * Widening that handler instead would mean dropping both guards and resolving
+   * the subject by hand inside it, which is exactly the shape `serveKycFile`
+   * below has and the shape its own comment explains is only worth paying for
+   * when a file genuinely has TWO readers. This one has exactly one.
+   *
+   * The bytes share the client bucket — same directory, same 2MB ceiling, same
+   * magic-byte check — because they are the same kind of object. Only the door
+   * differs, and the ownership check behind it is against `admins`, not `users`.
+   */
+  @Get('admin-avatars/:file')
+  @UseGuards(AdminGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: "Serve an administrator's own profile photo" })
+  @NotClientScoped(
+    'Serves the CALLING ADMINISTRATOR their own photo. Reads the admins table and no client rows.',
+  )
+  async serveAdminAvatar(
+    @Param('file') file: string,
+    @Req() req: Request & { admin: { id: string } },
+    @Res() res: Response,
+  ) {
+    const name = basename(file); // neutralise any traversal attempt
+
+    const owner = await this.admins.findById(req.admin.id);
+    if (!owner || owner.avatarFilename !== name) {
+      // 404, not 403, for the reason the client route gives: "that photo exists
+      // but is not yours" confirms the existence of another account's file.
+      throw new NotFoundException('Photo not found.');
+    }
+
+    const found = this.files.read(AVATAR_BUCKET, name);
+    if (!found) throw new NotFoundException('Photo not found.');
+
+    const contentType = this.files.contentType(AVATAR_BUCKET, name);
+    if (!contentType) throw new NotFoundException('Photo not found.');
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    // Private and short, matching the client route: a photo just replaced must
+    // not survive on the replacer's own screen.
     res.setHeader('Cache-Control', 'private, max-age=300');
     found.stream.pipe(res);
   }

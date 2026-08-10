@@ -75,6 +75,15 @@ export interface Admin {
    * person's own answer. See `RolesStore.resolveMaskedFields`.
    */
   maskedFields?: string[];
+  /**
+   * The cutoff that invalidates access tokens issued before it.
+   *
+   * `undefined` means no cutoff — every account predating the column, and the
+   * reason adding it did not sign the back office out. See the guard.
+   */
+  passwordChangedAt?: Date;
+  /** Stored FILENAME of the profile photo, never a URL. See the schema. */
+  avatarFilename?: string;
   createdAt: Date;
 }
 
@@ -114,6 +123,11 @@ const toAdmin = (r: AdminRow): Admin => ({
   // null → undefined, so "inherit the role" is one value throughout the code
   // rather than two that every caller has to check for.
   maskedFields: r.maskedFields ?? undefined,
+  // Same null → undefined normalisation, for the same reason: a nullable column
+  // reaching the domain as `null` gives every call site two empty values to
+  // handle and one of them eventually gets missed.
+  passwordChangedAt: r.passwordChangedAt ?? undefined,
+  avatarFilename: r.avatarFilename ?? undefined,
 });
 
 const toInvite = (r: InviteRow): AdminInvite => ({
@@ -194,9 +208,30 @@ export class AdminsStore {
       // what distinguishes "set it to inherit" from "do not touch it".
       maskedFields: 'maskedFields' in rest ? (rest.maskedFields ?? null) : undefined,
       refreshToken: 'refreshToken' in rest ? (rest.refreshToken ?? null) : undefined,
+      // Same distinction for the photo: `avatarFilename: undefined` in a patch
+      // means "remove it", which must reach the column as NULL rather than be
+      // dropped from the SET and leave the old filename pointing at a file the
+      // caller has just deleted.
+      avatarFilename: 'avatarFilename' in rest ? (rest.avatarFilename ?? null) : undefined,
     };
     const [row] = await this.db.update(admins).set(set).where(eq(admins.id, id)).returning();
     return row ? toAdmin(row) : undefined;
+  }
+
+  /**
+   * Void any outstanding reset link.
+   *
+   * Its own method rather than a field on `Admin`, because the hash is a
+   * credential: putting it on the domain type would carry it into every object
+   * `findById` returns, and from there into logs and audit payloads. The two
+   * writes that touch it — arming and spending — are already methods here for
+   * the same reason.
+   */
+  async clearResetToken(id: string): Promise<void> {
+    await this.db
+      .update(admins)
+      .set({ passwordResetTokenHash: null, passwordResetExpiry: null })
+      .where(eq(admins.id, id));
   }
 
   /**

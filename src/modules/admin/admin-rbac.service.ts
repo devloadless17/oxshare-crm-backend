@@ -28,6 +28,7 @@ import { ClientFieldsService } from './client-fields.service';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
+import { adminAvatarUrl } from '../../common/uploads/stored-files.service';
 
 /** One row of the administrator directory — whatever `sanitize()` admits. */
 type AdminProfile = Awaited<ReturnType<AdminRbacService['sanitize']>>;
@@ -630,6 +631,23 @@ export class AdminRbacService {
       roleName: role?.name,
       status: admin.status,
       createdAt: admin.createdAt,
+      /*
+       * The photo and the password age ride on `me` rather than behind a second
+       * "profile" endpoint, because both are needed on EVERY page: the sidebar
+       * renders the avatar on all of them, and a separate call would mean a
+       * second round trip on every navigation to draw one 32px circle.
+       *
+       * Composed from the stored filename at read time — the column holds a
+       * filename, never a URL, so the section 8.5 move to private object
+       * storage changes this expression and no rows.
+       */
+      avatarUrl: admin.avatarFilename ? adminAvatarUrl(admin.avatarFilename) : null,
+      /*
+       * When the password last changed, for the profile screen to show back.
+       * `null` for every account predating the column — which is not "never
+       * changed", and the console words it as unknown rather than guessing.
+       */
+      passwordChangedAt: admin.passwordChangedAt ?? null,
       permissions,
       maskedFields,
       /*

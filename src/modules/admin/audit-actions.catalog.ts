@@ -110,6 +110,22 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     label: 'Password reset completed',
     group: 'Administrators',
   },
+  /*
+   * The three SELF-service actions. Recorded for the same reason the reset pair
+   * above is: they are the moves an attacker makes with a session they have
+   * just stolen — rotate the password so the owner cannot get back in, then end
+   * the owner's sessions — and neither has a fingerprint anywhere else.
+   *
+   * `admin.session_revoke` is the caller ending one of their OWN sessions.
+   * Ending somebody ELSE's is not an operation this system has.
+   */
+  {
+    action: 'admin.password_change',
+    label: 'Own password changed',
+    group: 'Administrators',
+  },
+  { action: 'admin.session_revoke', label: 'Own session signed out', group: 'Administrators' },
+  { action: 'admin.avatar_change', label: 'Own profile photo changed', group: 'Administrators' },
   { action: 'admin.update', label: 'Administrator changed', group: 'Administrators' },
   { action: 'admin.suspend', label: 'Administrator suspended', group: 'Administrators' },
   { action: 'admin.activate', label: 'Administrator reactivated', group: 'Administrators' },

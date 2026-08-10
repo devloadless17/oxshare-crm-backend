@@ -3366,6 +3366,35 @@
         ]
       }
     },
+    "/v1/uploads/admin-avatars/{file}": {
+      "get": {
+        "operationId": "UploadsController_serveAdminAvatar",
+        "parameters": [
+          {
+            "name": "file",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Serve an administrator's own profile photo",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
     "/v1/uploads/payment-logos/{file}": {
       "get": {
         "operationId": "UploadsController_servePaymentLogo",
@@ -3912,6 +3941,161 @@
           }
         },
         "summary": "Spend a reset link and set a new password",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/auth/change-password": {
+      "post": {
+        "operationId": "AdminAuthController_changePassword",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminChangePasswordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Change your own password - ends every OTHER session",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/auth/sessions": {
+      "get": {
+        "operationId": "AdminAuthController_sessions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminSessionDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "List your active sessions, most recently active first",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/auth/sessions/{id}": {
+      "delete": {
+        "operationId": "AdminAuthController_revokeSession",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Sign out one of your other sessions",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/auth/me/avatar": {
+      "post": {
+        "operationId": "AdminAuthController_uploadAvatar",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAvatarResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Upload or replace your profile photo (JPEG, PNG or WebP, max 2MB)",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "operationId": "AdminAuthController_removeAvatar",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAvatarResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Remove your profile photo",
         "tags": [
           "admin"
         ]
@@ -9853,6 +10037,16 @@
               "$ref": "#/components/schemas/AdminScopeTagDto"
             }
           },
+          "avatarUrl": {
+            "type": "string",
+            "nullable": true,
+            "example": "/uploads/avatars/6f1c.png"
+          },
+          "passwordChangedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -10054,6 +10248,80 @@
           "token",
           "password"
         ]
+      },
+      "AdminChangePasswordDto": {
+        "type": "object",
+        "properties": {
+          "currentPassword": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "newPassword": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "currentPassword",
+          "newPassword"
+        ]
+      },
+      "AdminSessionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Refresh-token family id. Pass this to DELETE /admin/auth/sessions/:id."
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "When this session signed in.",
+            "format": "date-time"
+          },
+          "lastActiveAt": {
+            "type": "string",
+            "description": "Last time this session refreshed — how \"active\" is measured.",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "description": "When it expires on its own if unused.",
+            "format": "date-time"
+          },
+          "userAgent": {
+            "type": "string",
+            "nullable": true,
+            "description": "Most recent User-Agent seen on this session. Null for sessions predating capture."
+          },
+          "ip": {
+            "type": "string",
+            "nullable": true,
+            "description": "Most recent client address. Null for sessions predating capture."
+          },
+          "current": {
+            "type": "boolean",
+            "description": "True for the session this request is on. The console labels it and hides its sign-out button — ending it here would revoke the family and leave the cookies in place."
+          }
+        },
+        "required": [
+          "id",
+          "createdAt",
+          "lastActiveAt",
+          "expiresAt",
+          "current"
+        ]
+      },
+      "AdminAvatarResponseDto": {
+        "type": "object",
+        "properties": {
+          "avatarUrl": {
+            "type": "string",
+            "nullable": true,
+            "description": "Path to the stored photo, or null. Composed from the stored filename, so the section 8.5 move to private object storage changes that expression and no rows.",
+            "example": "/uploads/avatars/6f1c...c2.png"
+          }
+        }
       },
       "ClientTagDto": {
         "type": "object",

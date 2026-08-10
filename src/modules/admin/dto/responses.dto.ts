@@ -69,6 +69,23 @@ export class AdminProfileDto {
    */
   @ApiProperty({ type: [AdminScopeTagDto] }) scopedTags: AdminScopeTagDto[];
 
+  /**
+   * The profile photo, on `me` rather than behind a profile endpoint of its
+   * own — the sidebar renders it on every page, so a second call would be a
+   * round trip per navigation to draw one 32px circle.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true, example: '/uploads/avatars/6f1c.png' })
+  avatarUrl?: string | null;
+
+  /**
+   * When this administrator last changed their own password.
+   *
+   * `null` for every account predating the column, which is NOT "never
+   * changed" — the profile screen words it as unknown rather than guessing.
+   */
+  @ApiPropertyOptional({ type: String, format: 'date-time', nullable: true })
+  passwordChangedAt?: Date | null;
+
   @ApiProperty() createdAt: Date;
 }
 
@@ -923,4 +940,64 @@ export class ReconciliationReportDto {
       'discrepancy.',
   })
   balanced: boolean;
+}
+
+/**
+ * One live session — one LOGIN, not one token row.
+ *
+ * A month-old session is thousands of rotations and one thing the
+ * administrator actually did, so the list is keyed by refresh-token family.
+ */
+export class AdminSessionDto {
+  @ApiProperty({
+    description: 'Refresh-token family id. Pass this to DELETE /admin/auth/sessions/:id.',
+  })
+  id: string;
+
+  @ApiProperty({ description: 'When this session signed in.', format: 'date-time' })
+  createdAt: string;
+
+  @ApiProperty({
+    description: 'Last time this session refreshed — how "active" is measured.',
+    format: 'date-time',
+  })
+  lastActiveAt: string;
+
+  @ApiProperty({ description: 'When it expires on its own if unused.', format: 'date-time' })
+  expiresAt: string;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'Most recent User-Agent seen on this session. Null for sessions predating capture.',
+  })
+  userAgent: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'Most recent client address. Null for sessions predating capture.',
+  })
+  ip: string | null;
+
+  @ApiProperty({
+    description:
+      'True for the session this request is on. The console labels it and hides its sign-out ' +
+      'button — ending it here would revoke the family and leave the cookies in place.',
+  })
+  current: boolean;
+}
+
+/** Where a profile photo is served from, or null when there is none. */
+export class AdminAvatarResponseDto {
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'Path to the stored photo, or null. Composed from the stored filename, so the section ' +
+      '8.5 move to private object storage changes that expression and no rows.',
+    example: '/uploads/avatars/6f1c...c2.png',
+  })
+  avatarUrl: string | null;
 }

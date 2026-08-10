@@ -93,6 +93,19 @@ export interface AuthenticatedAdmin extends Admin {
   clientScope: ClientScope;
   /** Client fields this admin may not see, already expanded with aliases. */
   fieldMask: FieldMask;
+  /**
+   * Which LOGIN this request is on — the `fam` claim, already verified above.
+   *
+   * `undefined` for an API key, which has no session: the profile screen's
+   * session list then marks nothing as "this device", which is the truth.
+   *
+   * Carried here rather than re-decoded at the one call site that wants it. The
+   * portal has to read its refresh cookie and decode an unverified jti for the
+   * same answer, because its access token carries no family; this surface signs
+   * the family into the access token, so the value is already verified by the
+   * time it lands here.
+   */
+  sessionFamilyId?: string;
 }
 
 type AdminRequest = Request & { admin?: AuthenticatedAdmin };
@@ -149,12 +162,16 @@ export class AdminAuthenticator {
 
     let adminId: string;
     let familyId: string | undefined;
+    /** Token issue time in SECONDS, compared against the password cutoff below. */
+    let issuedAt: number | undefined;
     try {
       const payload = this.jwt.verify<{
         sub: string;
         role: string;
         typ?: string;
         fam?: string;
+        /** Issued-at, in SECONDS. Compared against `admins.passwordChangedAt`. */
+        iat?: number;
       }>(token, {
         secret: this.config.getOrThrow<string>('ADMIN_JWT_SECRET'),
         // R-3.1: a portal token must be worthless here, and vice versa. The
@@ -174,6 +191,7 @@ export class AdminAuthenticator {
       }
       adminId = payload.sub;
       familyId = payload.fam;
+      issuedAt = payload.iat;
     } catch (error) {
       /*
        * An EXPIRED token is not an invalid one, and the difference is the whole
@@ -192,6 +210,42 @@ export class AdminAuthenticator {
 
     const admin = await this.admins.findById(adminId);
     if (!admin) throw new UnauthorizedException('Admin not found.');
+
+    /*
+     * Was this token issued BEFORE the password changed? — the cutoff.
+     *
+     * Revoking refresh families on a password change stops those sessions
+     * RENEWING and does nothing to an access token already in a browser, which
+     * keeps working for up to fifteen more minutes. On the console that
+     * approves withdrawals, that is precisely the window somebody changing
+     * their password under duress is trying to close.
+     *
+     * The comparison is `(iat + 1) * 1000 <= cutoff` rather than a plain `<`,
+     * and the arithmetic matters: `iat` is in SECONDS, so a token minted in the
+     * same second as the change has an `iat` that rounds DOWN below a
+     * millisecond-precision cutoff and would be rejected. That token is the
+     * caller's own new one. Asking whether the token's whole second ended
+     * before the change spares it and rejects everything genuinely older.
+     *
+     * It fails CLOSED at the boundary — a token issued in the final
+     * milliseconds before the cutoff is rejected, and the only one that can be
+     * is the caller's pre-change token, which is being replaced on that very
+     * response.
+     *
+     * A missing `passwordChangedAt` means NO cutoff. Every administrator
+     * predating migration 0048 has one, and adding the column must not sign the
+     * back office out. Mirrors `jwt.strategy.ts` on the portal.
+     */
+    if (
+      admin.passwordChangedAt &&
+      issuedAt &&
+      (issuedAt + 1) * 1000 <= admin.passwordChangedAt.getTime()
+    ) {
+      throw new UnauthorizedException({
+        message: 'Your password was changed. Please sign in again.',
+        code: 'SESSION_REVOKED',
+      });
+    }
     /*
      * Suspension takes effect on the NEXT REQUEST — a live token is no shield.
      *
@@ -272,6 +326,7 @@ export class AdminAuthenticator {
       ...admin,
       permissions,
       clientScope,
+      sessionFamilyId: familyId,
       // Expanded here, once, so no enforcement point has to remember that
       // hiding `client.phone` must also hide `personalInfo.phone` on the KYC
       // screen — the bypass that would otherwise be one tab away.

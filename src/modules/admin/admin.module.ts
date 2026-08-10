@@ -9,6 +9,8 @@ import { AdminClientsController } from './admin-clients.controller';
 import { AdminComplianceController } from './admin-compliance.controller';
 import { AdminRbacController } from './admin-rbac.controller';
 import { AdminAuthService } from './admin-auth.service';
+import { AdminProfileService } from './admin-profile.service';
+import { StoredFilesService } from '../../common/uploads/stored-files.service';
 import { AdminTagsService } from './admin-tags.service';
 import { AdminClientsService } from './admin-clients.service';
 import { AdminComplianceService } from './admin-compliance.service';
@@ -39,6 +41,16 @@ import { AdminExportModule } from './admin-export.module';
 
 const ADMIN_SERVICES = [
   AdminAuthService,
+  /*
+   * What an administrator may do to their OWN account, kept apart from
+   * `AdminRbacService` — see the note at the top of that file. It needs
+   * `StoredFilesService` for the avatar, which is provided directly below
+   * rather than by importing `IdentityModule`: the service is a stateless
+   * directory writer with no dependencies, and pulling the whole portal
+   * identity graph into the back office to reach it would be the larger cost.
+   */
+  AdminProfileService,
+  StoredFilesService,
   AdminRbacService,
   ApiKeysService,
   AdminComplianceService,

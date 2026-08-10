@@ -686,6 +686,35 @@ export class AdminAuthService {
     return { accessToken, refreshToken, jti };
   }
   /**
+   * Mint a brand-new session for an admin who already proved themselves, and
+   * put its cookies on this response.
+   *
+   * Exists for one caller: `AdminProfileService.changePassword`, which revokes
+   * EVERY family including the caller's own and must then hand them something
+   * new — see the note there on why the cutoff has no exception. Public rather
+   * than reached for, so the two private helpers below stay the only places
+   * that know how an admin session is signed and named.
+   */
+  async reissueSession(adminId: string, res: Response): Promise<void> {
+    const admin = await this.admins.findById(adminId);
+    if (!admin) throw new AuthenticationError('Your session is no longer valid. Please sign in.');
+
+    const familyId = randomUUID();
+    const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin, familyId);
+    await this.refreshTokens.record({
+      surface: 'admin',
+      subjectId: admin.id,
+      jti,
+      token: refreshToken,
+      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+      familyId,
+    });
+    // The rotated cookies ride back on this response and the browser installs
+    // them, exactly as at login. Nothing is returned in the body — same reason.
+    this.setAdminCookies(res, accessToken, refreshToken, admin.id);
+  }
+
+  /**
    * Sets the session pair plus the anti-forgery token.
    *
    * Names and attributes come from common/security/session-cookies.ts — see the

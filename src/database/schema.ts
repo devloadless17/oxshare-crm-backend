@@ -268,6 +268,40 @@ export const admins = pgTable('admins', {
    */
   passwordResetTokenHash: varchar('password_reset_token_hash', { length: 64 }),
   passwordResetExpiry: timestamp('password_reset_expiry', { withTimezone: true }),
+
+  /*
+   * The instant that invalidates every access token issued before it.
+   *
+   * Mirrors `users.password_changed_at`, and the admin surface needed it more.
+   * Revoking refresh families on a password change only stops those sessions
+   * RENEWING — each keeps working on its already-issued access token for up to
+   * fifteen more minutes. On the console that approves withdrawals, fifteen
+   * minutes of continued access is exactly what somebody changing their
+   * password under duress is trying to prevent.
+   *
+   * NULL means no cutoff, which is what every account predating this column
+   * has. Adding it must not sign anybody out.
+   */
+  passwordChangedAt: timestamp('password_changed_at', { withTimezone: true }),
+
+  /*
+   * The administrator's profile photo — the STORED FILENAME, not a URL.
+   *
+   * Same shape and same reasoning as `users.avatar_filename`: `<uuid>.<ext>`
+   * under ./uploads/avatars, written by StoredFilesService, with the extension
+   * taken from the file's own magic bytes rather than from the multipart
+   * Content-Type. That header is a claim by the uploader, and an HTML document
+   * declared `image/png` is how a stored file becomes stored XSS.
+   *
+   * A filename rather than a URL because the URL is a function of how the API is
+   * deployed — the §8.5 move to private S3 changes how bytes are served and must
+   * not require rewriting a column.
+   *
+   * Shared bucket with client avatars deliberately. The files are the same kind
+   * of thing with the same validation, and a second bucket would be a second
+   * place to get the magic-byte check wrong.
+   */
+  avatarFilename: varchar('avatar_filename', { length: 128 }),
   // `refresh_token` removed here for the same reason as on `users` — superseded
   // by the refresh_tokens family table, written by nothing, read by nothing.
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

@@ -21,30 +21,46 @@ import {
   Query,
   Req,
   Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
   ParseUUIDPipe,
 } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { ApiConsumes, ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request, Response } from 'express';
 import { AdminAuthService } from './admin-auth.service';
+import { AdminProfileService } from './admin-profile.service';
 import { Admin } from '../../store/admins.store';
+import { AVATAR_BUCKET } from '../../common/uploads/stored-files.service';
+import { ValidationError } from '../../common/errors/domain-errors';
 import {
+  AdminChangePasswordDto,
   CompleteAdminResetDto,
   AcceptInviteDto,
   AdminLoginDto,
   InviteDto,
 } from './dto/requests/auth.dto';
 import {
+  AdminAvatarResponseDto,
   AdminLoginResponseDto,
   AcceptInviteResponseDto,
   AdminProfileDto,
+  AdminSessionDto,
   InviteResponseDto,
   InviteValidationDto,
   MessageResponseDto,
   PendingInviteDto,
 } from './dto/responses.dto';
-import { AnyAdmin, AdminGuard, PermissionsGuard, RequirePermissions } from './guards/admin.guard';
+import {
+  AnyAdmin,
+  AdminGuard,
+  PermissionsGuard,
+  RequirePermissions,
+  type AuthenticatedAdmin,
+} from './guards/admin.guard';
 import { NoCsrf } from '../../common/security/csrf.guard';
 import { UuidParam } from '../../common/query-params';
 import { NotClientScoped } from './guards/client-scope.decorator';
@@ -54,7 +70,10 @@ import { Audited, NotAudited } from './guards/audited.decorator';
 @ApiTags('admin')
 @Controller('admin')
 export class AdminAuthController {
-  constructor(private readonly auth: AdminAuthService) {}
+  constructor(
+    private readonly auth: AdminAuthService,
+    private readonly profile: AdminProfileService,
+  ) {}
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   @NoCsrf(
@@ -279,5 +298,158 @@ export class AdminAuthController {
   @Audited('admin.password_reset_complete')
   completePasswordReset(@Body() dto: CompleteAdminResetDto) {
     return this.auth.completePasswordReset(dto.token, dto.password);
+  }
+
+  /*
+   * -- Self-service ----------------------------------------------------------
+   *
+   * Everything below acts on the CALLER's own account, so every one is
+   * `@AnyAdmin`. Gating them on a permission would be a category error: an
+   * administrator whose role is one screen wide still has a password to rotate,
+   * sessions to end and a face to put on them. The routes above act on somebody
+   * ELSE, which is what a permission is for.
+   */
+
+  /**
+   * Change your own password, ending every other session.
+   *
+   * `POST /admin/password-reset/complete` above is NOT this. That one spends an
+   * e-mailed token and exists for somebody who cannot sign in; using it for a
+   * signed-in administrator means mailing them a link to prove an identity they
+   * have already proved.
+   *
+   * Throttled despite requiring a session, because the CURRENT password is
+   * checked here: unthrottled, this is an oracle for guessing the password of
+   * an account whose session has already been stolen, and every guess costs the
+   * process one argon2 verification.
+   */
+  @AnyAdmin(
+    "Rotates the CALLER's own credential. A permission here would leave an administrator " +
+      'unable to change a password they may have just had reason to distrust.',
+  )
+  @Post('auth/change-password')
+  @UseGuards(AdminGuard)
+  @Throttle({ default: { ttl: 900_000, limit: 5 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Change your own password - ends every OTHER session' })
+  @ApiOkResponse({ type: MessageResponseDto })
+  @NotClientScoped("Rewrites the calling administrator's own credential; reads no client rows.")
+  @Audited('admin.password_change')
+  changePassword(
+    @Req() req: Request & { admin: Admin },
+    @Body() dto: AdminChangePasswordDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    /*
+     * `res` because a successful change revokes EVERY session and issues the
+     * caller a fresh one - the new cookies ride back on this response. Sparing
+     * their old session instead would mean the access-token cutoff had an
+     * exception, and an exception is a hole. See AdminProfileService.
+     */
+    return this.profile.changePassword(req.admin.id, dto.currentPassword, dto.newPassword, (id) =>
+      this.auth.reissueSession(id, res),
+    );
+  }
+
+  /**
+   * Your own live sessions - one entry per LOGIN, not per token row.
+   *
+   * The current one is identified from the `fam` claim the guard has already
+   * verified, so nothing here decodes a token a second time.
+   */
+  @AnyAdmin(
+    "Lists the caller's OWN sessions. Seeing where you are signed in is how you notice you " +
+      'are signed in somewhere you are not.',
+  )
+  @Get('auth/sessions')
+  @UseGuards(AdminGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'List your active sessions, most recently active first' })
+  @ApiOkResponse({ type: AdminSessionDto, isArray: true })
+  @NotClientScoped("Reads the calling administrator's own sessions.")
+  sessions(@Req() req: Request & { admin: AuthenticatedAdmin }) {
+    return this.profile.listSessions(req.admin.id, req.admin.sessionFamilyId ?? null);
+  }
+
+  /**
+   * End one of your other sessions.
+   *
+   * `ParseUUIDPipe` rejects a malformed id with a 400 before it reaches a
+   * query. Ownership is enforced inside the UPDATE rather than by a preceding
+   * SELECT, so there is no check-then-act window and a family belonging to
+   * another administrator matches nothing at all.
+   */
+  @AnyAdmin(
+    "Ends one of the caller's OWN sessions. Somebody who suspects a stolen laptop must not " +
+      'have to find an administrator with a permission before they can act.',
+  )
+  @Delete('auth/sessions/:id')
+  @UseGuards(AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Sign out one of your other sessions' })
+  @ApiOkResponse({ type: MessageResponseDto })
+  @NotClientScoped("Revokes one of the calling administrator's own sessions.")
+  @Audited('admin.session_revoke')
+  revokeSession(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.profile.revokeSession(req.admin.id, id, req.admin.sessionFamilyId ?? null);
+  }
+
+  /**
+   * Upload or replace your profile photo.
+   *
+   * `memoryStorage`, not `diskStorage`, and that is the difference from the KYC
+   * path: nothing untrusted reaches the filesystem until the bytes have been
+   * validated, so a rejected upload leaves nothing behind to clean up.
+   *
+   * `limits.fileSize` is what actually stops the bytes; `StoredFilesService`
+   * checks the size again, because a limit enforced in one place is a limit
+   * that moves when the interceptor is reconfigured. The accepted TYPES come
+   * from the file's own magic bytes, never the multipart Content-Type - that
+   * header is a claim by the uploader, and an HTML document declared image/png
+   * is how a stored file becomes stored XSS on the console that approves
+   * withdrawals.
+   */
+  @AnyAdmin("Sets the photo on the CALLER's own account.")
+  @Post('auth/me/avatar')
+  @UseGuards(AdminGuard)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: AVATAR_BUCKET.maxBytes, files: 1 },
+    }),
+  )
+  @Throttle({ default: { ttl: 3_600_000, limit: 20 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Upload or replace your profile photo (JPEG, PNG or WebP, max 2MB)' })
+  @ApiOkResponse({ type: AdminAvatarResponseDto })
+  @NotClientScoped("Writes the calling administrator's own photo; reads no client rows.")
+  @Audited('admin.avatar_change')
+  uploadAvatar(
+    @Req() req: Request & { admin: Admin },
+    @UploadedFile() file: Express.Multer.File | undefined,
+  ) {
+    if (!file) throw new ValidationError('No file was uploaded.');
+    return this.profile.setAvatar(req.admin.id, file.buffer, file.mimetype);
+  }
+
+  /** Remove the photo. The console falls back to initials, never a placeholder. */
+  @AnyAdmin("Removes the photo from the CALLER's own account.")
+  @Delete('auth/me/avatar')
+  @UseGuards(AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Remove your profile photo' })
+  @ApiOkResponse({ type: AdminAvatarResponseDto })
+  @NotClientScoped("Clears the calling administrator's own photo; reads no client rows.")
+  @Audited('admin.avatar_change')
+  removeAvatar(@Req() req: Request & { admin: Admin }) {
+    return this.profile.removeAvatar(req.admin.id);
   }
 }

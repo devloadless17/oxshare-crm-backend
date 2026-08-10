@@ -266,3 +266,22 @@ export class StoredFilesService {
     }
   }
 }
+
+/**
+ * Where an ADMINISTRATOR's avatar is served from.
+ *
+ * Composed at READ time, which is why the column holds a FILENAME. Kept here
+ * rather than at each caller so the §8.5 move to private object storage — where
+ * this becomes a signed, expiring URL — changes one expression instead of
+ * hunting every screen that renders a photo.
+ *
+ * `admin-avatars`, not `avatars`, and the difference is the GUARD rather than
+ * the storage: the bytes live in the client bucket alongside everyone else's,
+ * but `/uploads/avatars/:file` is guarded by the portal's `JwtAuthGuard` and
+ * checks ownership against `users`. An admin fetching their own photo through
+ * it gets a 401 before the ownership check is even reached. See
+ * `UploadsController.serveAdminAvatar`.
+ */
+export function adminAvatarUrl(filename: string): string {
+  return `/uploads/admin-avatars/${filename}`;
+}

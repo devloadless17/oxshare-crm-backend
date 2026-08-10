@@ -131,3 +131,27 @@ export class CompleteAdminResetDto {
   @MaxLength(PASSWORD_MAX)
   password: string;
 }
+
+/**
+ * Change your own password from inside a live session.
+ *
+ * Not `CompleteAdminResetDto`, which spends an e-mailed token and exists for
+ * somebody who CANNOT sign in. Using that flow for a signed-in administrator
+ * would mean mailing them a link to prove an identity they have already proved.
+ *
+ * `currentPassword` is capped but not floored: it is checked against a stored
+ * hash, never created, so a minimum here would only reject the true password of
+ * an account whose rules were laxer when it was set.
+ */
+export class AdminChangePasswordDto {
+  @ApiProperty({ maxLength: PASSWORD_MAX })
+  @IsString()
+  @MaxLength(PASSWORD_MAX)
+  currentPassword: string;
+
+  @ApiProperty({ minLength: 8, maxLength: PASSWORD_MAX })
+  @IsString()
+  @MinLength(8)
+  @MaxLength(PASSWORD_MAX)
+  newPassword: string;
+}
