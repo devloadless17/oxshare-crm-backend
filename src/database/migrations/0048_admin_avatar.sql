@@ -1,13 +1,25 @@
--- ⚠️ THERE IS NO 0047, and the gap is deliberate — do not close it.
+-- ⚠️ THIS FILE IS NUMBERED AHEAD OF THE ONE THAT RUNS AFTER IT.
 --
--- Two files are numbered 0045 (see the header of `0045_mt5_deals.sql`), so from
--- that point the filename prefix runs one BEHIND the journal's `idx`. This file
--- is named for its idx rather than for the previous filename, which puts the two
--- back in step and costs one unused number.
+-- The journal — which is what drizzle actually obeys — reads:
 --
--- Renaming it to 0047 would be worse than the gap: drizzle records applied
--- migrations by TAG, so a rename reads as a brand-new migration and re-applies
--- on every database that already has this one.
+--     47  0046_notifications
+--     48  0048_admin_avatar          <- this file
+--     49  0047_notifications_realtime
+--
+-- So `0047_*` applies AFTER `0048_*`, which looks wrong and is not. Two files
+-- are numbered 0045 (see the header of `0045_mt5_deals.sql`), so from that
+-- point the filename prefix runs one behind the `idx`. This file was named for
+-- its idx to close that gap; `0047_notifications_realtime` was authored on
+-- another branch at the same time and named for the previous filename. Neither
+-- choice was wrong on its own branch and the two disagree.
+--
+-- It is harmless because the two are INDEPENDENT: this adds two columns to
+-- `admins`, that one touches notifications. Nothing here depends on anything
+-- there, in either order.
+--
+-- DO NOT renumber either file to tidy this. Drizzle records applied migrations
+-- by TAG, so a rename reads as a brand-new migration and re-applies on every
+-- database that already has it.
 --
 -- The administrator's profile photo.
 --
