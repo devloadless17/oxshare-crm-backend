@@ -5,6 +5,7 @@ import { IdentityModule } from '../identity/identity.module';
 import { AdminNotificationsController } from './admin-notifications.controller';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
+import { NotificationsRealtimeGateway } from './realtime.gateway';
 
 /**
  * The in-app notification feed — the implementation behind
@@ -25,8 +26,9 @@ import { NotificationsService } from './notifications.service';
   controllers: [NotificationsController, AdminNotificationsController],
   providers: [
     NotificationsService,
+    NotificationsRealtimeGateway,
     { provide: NOTIFICATION_DISPATCH, useExisting: NotificationsService },
   ],
-  exports: [NotificationsService, NOTIFICATION_DISPATCH],
+  exports: [NotificationsService, NotificationsRealtimeGateway, NOTIFICATION_DISPATCH],
 })
 export class NotificationsModule {}
