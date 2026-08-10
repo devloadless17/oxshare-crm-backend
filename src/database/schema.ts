@@ -1346,6 +1346,77 @@ export const tradingAccounts = pgTable(
   ],
 );
 
+/**
+ * Closed deals ingested from MT5, one row per MT5 ticket.
+ *
+ * ── The ticket is the idempotency key, and it is the PRIMARY one ────────────
+ *
+ * ARCHITECTURE §3.1 delivers every deal TWICE by design: the bridge pushes it
+ * live and a sweep re-reads a rolling 24-hour window every five minutes, because
+ * "push alone loses deals under network partition, and a lost deal is an unpaid
+ * partner". So the second delivery is not an error to be logged — it is the
+ * guarantee working, and it must be a no-op.
+ *
+ * `mt5_deal_id` is therefore UNIQUE and the ingestion writes with
+ * `onConflictDoNothing`. Nothing here dedupes in application code, because a
+ * check-then-insert races itself the moment push and sweep land together.
+ *
+ * ── Why the numbers are stored and not computed ────────────────────────────
+ *
+ * Profit, commission and swap are what the partner commission engine is paid
+ * on. They arrive as decimal STRINGS from the bridge — converted once, at the
+ * MT5 boundary, from the doubles the Manager API deals in — and land in NUMERIC
+ * columns unchanged. Nothing in this codebase recomputes them from price and
+ * volume: the broker's server is the authority on what a deal earned.
+ *
+ * ── `login`, not a user id ─────────────────────────────────────────────────
+ *
+ * A deal names an MT5 login, and the mapping to a client lives in
+ * `trading_accounts.login`. Resolved at read time rather than stored, because a
+ * deal that arrives before its account has been linked would otherwise be
+ * orphaned forever — and that ordering is normal during onboarding.
+ */
+export const mt5Deals = pgTable(
+  'mt5_deals',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** MT5's ticket. The natural key, and what makes re-delivery a no-op. */
+    mt5DealId: varchar('mt5_deal_id', { length: 50 }).notNull(),
+    /** The MT5 login this deal belongs to — joined to trading_accounts.login. */
+    login: varchar('login', { length: 50 }).notNull(),
+    mt5OrderId: varchar('mt5_order_id', { length: 50 }),
+    mt5PositionId: varchar('mt5_position_id', { length: 50 }),
+    symbol: varchar('symbol', { length: 50 }).notNull(),
+    /**
+     * MT5's own numeric action and entry, stored raw.
+     *
+     * Not translated into an enum here. MT5 adds values across server builds,
+     * and an enum that does not know the newest one turns an unrecognised deal
+     * into a failed insert — losing exactly the deal somebody needs to explain.
+     */
+    action: integer('action').notNull(),
+    entry: integer('entry').notNull(),
+    volume: numeric('volume', { precision: 28, scale: 8 }).notNull(),
+    price: numeric('price', { precision: 28, scale: 8 }).notNull(),
+    profit: numeric('profit', { precision: 28, scale: 8 }).notNull(),
+    commission: numeric('commission', { precision: 28, scale: 8 }).notNull(),
+    swap: numeric('swap', { precision: 28, scale: 8 }).notNull(),
+    comment: text('comment'),
+    /** When MT5 says it happened — NOT when we ingested it. */
+    dealtAt: timestamp('dealt_at', { withTimezone: true }).notNull(),
+    ingestedAt: timestamp('ingested_at', { withTimezone: true }).notNull().defaultNow(),
+    /** 'push' or 'sweep' — which path won the race. Useful when one is broken. */
+    source: varchar('source', { length: 20 }).notNull().default('push'),
+  },
+  (t) => [
+    uniqueIndex('mt5_deals_deal_id_uq').on(t.mt5DealId),
+    // The commission engine reads by login over a period; the sweep re-checks
+    // by time. Both are covered without a scan.
+    index('mt5_deals_login_dealt_idx').on(t.login, t.dealtAt),
+    index('mt5_deals_dealt_idx').on(t.dealtAt),
+  ],
+);
+
 export const transactions = pgTable(
   'transactions',
   {

@@ -13,6 +13,7 @@ import {
   EmailNotVerifiedError,
   KycNotVerifiedError,
   ConflictError,
+  ExternalServiceError,
   DomainError,
   MoneyRuleError,
   ClientNotFoundError,
@@ -55,6 +56,8 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   [KycNotVerifiedError, HttpStatus.FORBIDDEN],
   [ConflictError, HttpStatus.CONFLICT],
   [MoneyRuleError, HttpStatus.UNPROCESSABLE_ENTITY],
+  // 502: this service is fine, something it calls is not — see the class.
+  [ExternalServiceError, HttpStatus.BAD_GATEWAY],
 ]);
 
 /**

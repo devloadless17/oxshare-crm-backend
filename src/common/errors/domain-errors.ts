@@ -222,3 +222,23 @@ export class MoneyRuleError extends DomainError {
 export class PaymentIndeterminateError extends DomainError {
   readonly code = 'PAYMENT_INDETERMINATE';
 }
+
+/**
+ * A service this one depends on failed or was unreachable. → 502.
+ *
+ * For the MT5 bridge and anything else outside this process that is not a
+ * payment provider — those have `PaymentIndeterminateError` for the specific
+ * "did it happen?" case.
+ *
+ * 502 rather than 500 because the distinction matters to whoever is paged: 500
+ * means this codebase is broken, 502 means it is fine and something it calls is
+ * not. On a CRM whose MT5 bridge lives on a different machine on a different
+ * network, that is the first question asked.
+ *
+ * NOT for an indeterminate WRITE. If a call may or may not have moved money,
+ * `PaymentIndeterminateError` is the one that carries "reconcile, do not retry";
+ * this one means the operation did not happen.
+ */
+export class ExternalServiceError extends DomainError {
+  readonly code = 'EXTERNAL_SERVICE_ERROR';
+}

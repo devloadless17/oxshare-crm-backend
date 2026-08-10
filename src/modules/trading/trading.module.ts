@@ -4,6 +4,9 @@ import { TradingService } from './trading.service';
 import { DashboardController } from './dashboard.controller';
 import { DashboardService } from './dashboard.service';
 import { IdentityModule } from '../identity/identity.module';
+import { Mt5WebhooksController } from './mt5/mt5-webhooks.controller';
+import { Mt5DealsService } from './mt5/mt5-deals.service';
+import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
 
 /**
  * The client's view of their own trading accounts.
@@ -30,10 +33,24 @@ import { IdentityModule } from '../identity/identity.module';
  *
  * `WalletService` resolves without an import because `WalletModule` is @Global.
  */
+/*
+ * The MT5 surface lives here too — ARCHITECTURE §4 puts "MT5 accounts, groups,
+ * tiers, deal ingestion" in this module, and splitting the bridge into its own
+ * would separate deal ingestion from the trading accounts every deal resolves
+ * against.
+ *
+ * `Mt5WebhooksController` is machine-to-machine and carries its own guard
+ * (`BridgeSecretGuard`) rather than the client JWT ones this module's other
+ * controllers use — the bridge is a service on a private network, not a person.
+ *
+ * `Mt5BridgeClient` is exported because account creation and transfers will call
+ * it from the wallet and admin surfaces. Nothing else should know the bridge's
+ * address.
+ */
 @Module({
   imports: [IdentityModule],
-  controllers: [TradingController, DashboardController],
-  providers: [TradingService, DashboardService],
-  exports: [TradingService],
+  controllers: [TradingController, DashboardController, Mt5WebhooksController],
+  providers: [TradingService, DashboardService, Mt5DealsService, Mt5BridgeClient],
+  exports: [TradingService, Mt5BridgeClient],
 })
 export class TradingModule {}
