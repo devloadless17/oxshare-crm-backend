@@ -353,6 +353,19 @@ export class TransfersService {
       .orderBy(desc(transfers.createdAt));
   }
 
+  /**
+   * One transfer by id, for a caller that already knows which one it wants.
+   *
+   * Public because `TransferExecutor` reads a transfer's state before and after
+   * it moves money on MT5, and reading it through `listForUser` would mean
+   * knowing the owner to look up a row it already holds the id of. No ownership
+   * check here on purpose: the only caller is server-side and acts on a row it
+   * was handed, and adding one would imply this is reachable from a request.
+   */
+  async findById(id: string) {
+    return await this.findOne(id);
+  }
+
   private async findOne(id: string) {
     const [row] = await this.db.select().from(transfers).where(eq(transfers.id, id)).limit(1);
     return row ?? null;

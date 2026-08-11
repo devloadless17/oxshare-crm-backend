@@ -45,6 +45,7 @@ import { ValidationError } from '../../common/errors/domain-errors';
 import { DepositRequestDto, RequestDepositDto } from './dto/deposit.dto';
 import { ListTransactionsQueryDto, TransactionPageDto } from './dto/transaction-query.dto';
 import { TransfersService } from './transfers.service';
+import { TransferExecutor } from './transfer-executor.service';
 import { PaymentMethodsService } from './payment-methods.service';
 import { PaymentMethodDto } from './dto/payment-method.dto';
 import { RequestTransferDto, TransferDto } from './dto/transfer.dto';
@@ -77,6 +78,7 @@ export class PaymentsController {
     private readonly securitySettings: SecuritySettingsService,
     private readonly email: EmailService,
     private readonly transfers: TransfersService,
+    private readonly transferExecutor: TransferExecutor,
   ) {}
 
   /**
@@ -344,13 +346,30 @@ export class PaymentsController {
   })
   @ApiCreatedResponse({ type: TransferDto })
   async requestTransfer(@Body() dto: RequestTransferDto, @Req() req: Request & { user: User }) {
-    return await this.transfers.request({
+    const transfer = await this.transfers.request({
       userId: req.user.id,
       tradingAccountId: dto.tradingAccountId,
       direction: dto.direction,
       amount: dto.amount,
       currency: dto.currency,
     });
+
+    /*
+     * Executed inline rather than by a worker, and the trade-off is deliberate.
+     *
+     * A client moving money to their trading account wants to trade with it
+     * NOW; a queue would return "pending" and leave them refreshing. The bridge
+     * call is a second or two against a server on a private network, which is
+     * inside what a request can carry.
+     *
+     * What makes this safe is that `execute` never leaves money in an unknown
+     * place. A refusal fails the transfer and releases the hold; anything
+     * INDETERMINATE — a timeout, a reset — leaves it pending on purpose,
+     * because the deal may have posted and only the response was lost. Pending
+     * is the recoverable state, and the idempotency key is the transfer id, so
+     * finishing it later cannot double-apply.
+     */
+    return await this.transferExecutor.execute(transfer.id);
   }
 
   @Get('transfers')

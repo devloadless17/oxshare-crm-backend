@@ -4,8 +4,10 @@ import { AdminPaymentMethodsController } from './admin-payment-methods.controlle
 import { AdminAuthModule } from '../admin/admin-auth.module';
 import { TransactionsService } from './transactions.service';
 import { TransfersService } from './transfers.service';
+import { TransferExecutor } from './transfer-executor.service';
 import { PaymentMethodsService } from './payment-methods.service';
 import { WalletModule } from '../wallet/wallet.module';
+import { TradingModule } from '../trading/trading.module';
 import { IdentityModule } from '../identity/identity.module';
 import { CurrenciesModule } from '../currencies/currencies.module';
 import { WithdrawalOtpService } from './withdrawal-otp.service';
@@ -26,7 +28,12 @@ import { WhishProvider } from './whish.provider';
    * and IB modules make — it carries the admin guards and not the back-office
    * graph, which is the thing the note below is protecting against.
    */
-  imports: [WalletModule, IdentityModule, CurrenciesModule, AdminAuthModule],
+  /*
+   * `TradingModule` for `Mt5BridgeClient`, which `TransferExecutor` uses to
+   * move the MT5 leg of a transfer. The dependency runs one way — trading does
+   * not import payments — so there is no cycle.
+   */
+  imports: [WalletModule, IdentityModule, CurrenciesModule, AdminAuthModule, TradingModule],
   /*
    * `PaymentCallbacksController` is UNAUTHENTICATED, uniquely in this module and
    * deliberately: a payment gateway calls it server-to-server with no credential
@@ -47,6 +54,12 @@ import { WhishProvider } from './whish.provider';
     TransactionsService,
     PaymentMethodsService,
     TransfersService,
+    /*
+     * The MT5 leg of a transfer. `TransfersService` moves the CRM's two
+     * balances; this is what actually credits or debits the trading account on
+     * the broker's server, and what settles or fails the row afterwards.
+     */
+    TransferExecutor,
     WithdrawalOtpService,
     SecuritySettingsService,
     AdminAuditService,
