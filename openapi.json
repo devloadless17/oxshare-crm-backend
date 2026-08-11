@@ -3166,6 +3166,253 @@
         ]
       }
     },
+    "/v1/admin/mt5/groups": {
+      "get": {
+        "operationId": "Mt5AccountsController_listGroups",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "MT5 groups an account may be opened in, read live from the server",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts": {
+      "post": {
+        "description": "Creates the account on the MT5 server FIRST and records it locally second, so a bridge failure leaves no row pointing at an account that does not exist. Returns the master and investor passwords once; they are never stored.",
+        "operationId": "Mt5AccountsController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMt5AccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Open an MT5 trading account for a client",
+        "tags": [
+          "admin"
+        ]
+      },
+      "get": {
+        "description": "`balance` is CRM-owned until the MT5 bridge lands and crosses this boundary as a STRING. `login` is NULL until MT5 issues one, and is a string rather than a number because leading zeros are significant to the bridge.",
+        "operationId": "AdminHoldingsController_listTradingAccounts",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Accounts of one client.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "live",
+                "demo"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "active",
+                "suspended",
+                "closed"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "withTotal",
+            "required": false,
+            "in": "query",
+            "description": "Counting is a full scan.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "description": "login is nullable and pins NULLS LAST in both directions.",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "balance",
+                "login",
+                "currency",
+                "status",
+                "environment",
+                "userEmail",
+                "userFirstName"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingAccountListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every client trading account, with its owner (balances are strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/{id}/balance": {
+      "post": {
+        "description": "A DEALER operation with no wallet leg — for corrections, bonuses and manual settlement. Funding an account from a client wallet is a transfer (POST /transfers), which holds and posts both sides. Requires trading.deposit or trading.withdraw depending on direction.",
+        "operationId": "Mt5AccountsController_balance",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Mt5BalanceDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Credit or debit a trading account directly on MT5",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/{id}/live": {
+      "get": {
+        "operationId": "Mt5AccountsController_live",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Null when the account has no MT5 login yet."
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Live balance and margin for one account, read from MT5",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/kyc/config": {
       "get": {
         "operationId": "KycController_getConfig",
@@ -7319,135 +7566,6 @@
           "admin"
         ]
       }
-    },
-    "/v1/admin/trading-accounts": {
-      "get": {
-        "description": "`balance` is CRM-owned until the MT5 bridge lands and crosses this boundary as a STRING. `login` is NULL until MT5 issues one, and is a string rather than a number because leading zeros are significant to the bridge.",
-        "operationId": "AdminHoldingsController_listTradingAccounts",
-        "parameters": [
-          {
-            "name": "userId",
-            "required": false,
-            "in": "query",
-            "description": "Accounts of one client.",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "environment",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "enum": [
-                "live",
-                "demo"
-              ],
-              "type": "string"
-            }
-          },
-          {
-            "name": "status",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "enum": [
-                "active",
-                "suspended",
-                "closed"
-              ],
-              "type": "string"
-            }
-          },
-          {
-            "name": "page",
-            "required": false,
-            "in": "query",
-            "description": "Legacy offset paging. Prefer cursor.",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "cursor",
-            "required": false,
-            "in": "query",
-            "description": "Opaque keyset cursor (R-2.4).",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "withTotal",
-            "required": false,
-            "in": "query",
-            "description": "Counting is a full scan.",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "sort",
-            "required": false,
-            "in": "query",
-            "description": "login is nullable and pins NULLS LAST in both directions.",
-            "schema": {
-              "enum": [
-                "createdAt",
-                "balance",
-                "login",
-                "currency",
-                "status",
-                "environment",
-                "userEmail",
-                "userFirstName"
-              ],
-              "type": "string"
-            }
-          },
-          {
-            "name": "order",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "enum": [
-                "asc",
-                "desc"
-              ],
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TradingAccountListResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Every client trading account, with its owner (balances are strings)",
-        "tags": [
-          "admin"
-        ]
-      }
     }
   },
   "info": {
@@ -9574,6 +9692,65 @@
           "tradingAccounts",
           "openPositions",
           "stats"
+        ]
+      },
+      "CreateMt5AccountDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The client this account belongs to."
+          },
+          "group": {
+            "type": "string",
+            "example": "real\\Standard"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ]
+          },
+          "leverage": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 10000,
+            "description": "Omit for the group default. MT5 clamps to what the group allows."
+          }
+        },
+        "required": [
+          "userId",
+          "group",
+          "environment"
+        ]
+      },
+      "Mt5BalanceDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "250.00",
+            "description": "Positive decimal. Direction carries the sign."
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdraw"
+            ]
+          },
+          "comment": {
+            "type": "string",
+            "maxLength": 128,
+            "example": "Goodwill credit, ticket #4412"
+          }
+        },
+        "required": [
+          "amount",
+          "direction",
+          "comment"
         ]
       },
       "KycFieldConfigDto": {

@@ -141,11 +141,23 @@
   },
   "trading": {
     "moduleName": "Trading Accounts",
-    "description": "Read-only. Nothing in the console writes to a trading account, so this module has one key rather than an invented set of verbs nothing is behind.",
+    "description": "No longer read-only: the MT5 bridge is live, so the console can open an account on the broker's server and move its balance. The three write keys are separate because they are three different powers — opening an account costs nothing, crediting one is giving away money, and debiting one is taking it. An operator who onboards clients needs the first and neither of the others.",
     "permissions": [
       {
         "key": "trading.view",
         "label": "View Trading Accounts"
+      },
+      {
+        "key": "trading.create",
+        "label": "Open a Trading Account on MT5"
+      },
+      {
+        "key": "trading.deposit",
+        "label": "Credit a Trading Account"
+      },
+      {
+        "key": "trading.withdraw",
+        "label": "Debit a Trading Account"
       }
     ]
   },

@@ -4,7 +4,10 @@ import { TradingService } from './trading.service';
 import { DashboardController } from './dashboard.controller';
 import { DashboardService } from './dashboard.service';
 import { IdentityModule } from '../identity/identity.module';
+import { AdminAuthModule } from '../admin/admin-auth.module';
 import { Mt5WebhooksController } from './mt5/mt5-webhooks.controller';
+import { Mt5AccountsController } from './mt5/mt5-accounts.controller';
+import { Mt5AccountsService } from './mt5/mt5-accounts.service';
 import { Mt5DealsService } from './mt5/mt5-deals.service';
 import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
 
@@ -48,9 +51,26 @@ import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
  * address.
  */
 @Module({
-  imports: [IdentityModule],
-  controllers: [TradingController, DashboardController, Mt5WebhooksController],
-  providers: [TradingService, DashboardService, Mt5DealsService, Mt5BridgeClient],
+  /*
+   * `AdminAuthModule` for the guards on Mt5AccountsController and for
+   * AdminAuditService. It is the leaf module the whole back office imports
+   * without a cycle — see its own note — so this does not drag the admin graph
+   * into trading.
+   */
+  imports: [IdentityModule, AdminAuthModule],
+  controllers: [
+    TradingController,
+    DashboardController,
+    Mt5WebhooksController,
+    Mt5AccountsController,
+  ],
+  providers: [
+    TradingService,
+    DashboardService,
+    Mt5DealsService,
+    Mt5BridgeClient,
+    Mt5AccountsService,
+  ],
   exports: [TradingService, Mt5BridgeClient],
 })
 export class TradingModule {}

@@ -83,6 +83,16 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
      BEFORE the delete, so the currency and owner are still readable. */
   { action: 'wallet.delete', label: 'Wallet closed', group: 'Compliance' },
 
+  // ── Trading accounts ──────────────────────────────────────────────────────
+  //
+  // Three actions rather than one, because they are three different powers and
+  // an auditor asks about them separately. Opening an account costs nothing;
+  // the other two move money on a server the CRM does not own, with no ledger
+  // row anywhere else to reconcile against — this log is the only record.
+  { action: 'trading.account_create', label: 'MT5 account opened', group: 'Compliance' },
+  { action: 'trading.deposit', label: 'MT5 account credited', group: 'Compliance' },
+  { action: 'trading.withdraw', label: 'MT5 account debited', group: 'Compliance' },
+
   // ── Administrators ────────────────────────────────────────────────────────
   { action: 'admin.invite', label: 'Administrator invited', group: 'Administrators' },
   {

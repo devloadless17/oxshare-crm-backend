@@ -344,6 +344,13 @@
       "when": 1787061967600,
       "tag": "0047_notifications_realtime",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1787061968600,
+      "tag": "0049_trading_write_keys",
+      "breakpoints": true
     }
   ]
 }
