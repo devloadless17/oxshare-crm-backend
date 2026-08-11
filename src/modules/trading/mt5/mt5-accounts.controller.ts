@@ -1,16 +1,26 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { ParseUUIDPipe } from '@nestjs/common';
 import { Mt5AccountsService } from './mt5-accounts.service';
-import { CreateMt5AccountDto, Mt5BalanceDto } from './dto/mt5-account.dto';
+import { CreateMt5AccountDto, Mt5BalanceDto, Mt5LiveBalancesDto } from './dto/mt5-account.dto';
 import {
   PermissionsGuard,
   RequirePermissions,
   type AuthenticatedAdmin,
 } from '../../admin/guards/admin.guard';
 import { ScopedToClients } from '../../admin/guards/client-scope.decorator';
-import { Audited } from '../../admin/guards/audited.decorator';
+import { Audited, NotAudited } from '../../admin/guards/audited.decorator';
 
 /**
  * The back office's write surface onto MT5: open an account, move its balance.
@@ -129,6 +139,37 @@ export class Mt5AccountsController {
       { accountId: id, amount: dto.amount, direction: dto.direction, comment: dto.comment },
       req.admin,
     );
+  }
+
+  /**
+   * Live balances for a page of accounts, keyed by account id.
+   *
+   * POST rather than GET, and that is not REST pedantry: the ids are a list of
+   * up to twenty-five UUIDs, which is roughly 900 characters of query string —
+   * inside most limits and not all of them, and truncation here would silently
+   * refresh some rows and not others.
+   */
+  @Post('trading-accounts/live-balances')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('trading.view')
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Live MT5 balances for the accounts on one page',
+    description:
+      'One bridge call per account, so the list is capped. An account MT5 will not answer for ' +
+      'is simply absent from the result and the console falls back to its cached figure.',
+  })
+  @ScopedToClients('Reads balances for client trading accounts the caller can already list.')
+  @NotAudited(
+    'A READ of balances the caller can already see on the list endpoint, refreshed. Recording ' +
+      'it would add a row per page load of a screen operators leave open.',
+  )
+  liveBalances(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Body() dto: Mt5LiveBalancesDto,
+  ) {
+    return this.accounts.liveBalances(dto.accountIds, req.admin);
   }
 
   /**

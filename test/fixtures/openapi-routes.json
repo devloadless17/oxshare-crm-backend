@@ -142,6 +142,7 @@
   "POST /v1/admin/settings/smtp/test",
   "POST /v1/admin/tags",
   "POST /v1/admin/trading-accounts",
+  "POST /v1/admin/trading-accounts/live-balances",
   "POST /v1/admin/trading-accounts/{id}/balance",
   "POST /v1/admin/users/{id}/password-reset",
   "POST /v1/admin/wallets",
