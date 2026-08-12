@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ValidationError } from '../../../common/errors/domain-errors';
 
@@ -24,10 +24,42 @@ import { ValidationError } from '../../../common/errors/domain-errors';
  * real accounts somewhere nobody chose.
  */
 @Injectable()
-export class SelfServiceGroups {
+export class SelfServiceGroups implements OnModuleInit {
   private readonly logger = new Logger(SelfServiceGroups.name);
 
   constructor(private readonly config: ConfigService) {}
+
+  /**
+   * Say at boot which doors are open.
+   *
+   * Hiding the portal button for an unconfigured environment is right for a
+   * CLIENT — offering something the API will refuse teaches them a feature is
+   * not for them by making them press it. It is terrible for whoever is setting
+   * the system up, because "not configured" and "not built" look identical from
+   * the browser, and there is nothing to grep for.
+   *
+   * One line at startup costs nothing and is the thing that would have been
+   * looked at first.
+   */
+  onModuleInit(): void {
+    const live = this.isEnabled('live');
+    const demo = this.isEnabled('demo');
+
+    if (!live && !demo) {
+      this.logger.warn(
+        'Self-service account opening is OFF for both environments: neither ' +
+          'MT5_CLIENT_GROUP_LIVE nor MT5_CLIENT_GROUP_DEMO is set. The portal will show no ' +
+          '"Open account" button. Set them to the groups the broker allocates to ' +
+          'self-registered clients.',
+      );
+      return;
+    }
+
+    this.logger.log(
+      `Self-service account opening: live=${live ? 'on' : 'OFF (MT5_CLIENT_GROUP_LIVE unset)'}, ` +
+        `demo=${demo ? 'on' : 'OFF (MT5_CLIENT_GROUP_DEMO unset)'}`,
+    );
+  }
 
   /**
    * The group for this environment, or a refusal naming the setting.
