@@ -102,8 +102,8 @@ export class IbApplicationsService {
    * method's job is to make it available.
    */
   async statusFor(userId: string): Promise<{
-    account: IbAccountRow | null;
-    application: IbApplicationRow | null;
+    account: (IbAccountRow & { agencyName: string | null; products: string[] }) | null;
+    application: (IbApplicationRow & { agencyName: string | null }) | null;
     eligible: boolean;
     /** Why not, in a sentence the portal can show verbatim. Null when eligible. */
     ineligibleReason: string | null;
@@ -116,9 +116,41 @@ export class IbApplicationsService {
 
     const verified = (user?.verificationLevel ?? 0) >= REQUIRED_VERIFICATION_LEVEL;
 
+    /*
+     * The agency NAMES, resolved once for both halves.
+     *
+     * Read only when something references an agency, so the common case — a
+     * client who has never applied — costs no extra query. The catalogue is a
+     * handful of rows, so listing it whole beats two id lookups.
+     */
+    const needsCatalogue = Boolean(account?.agencyId ?? application?.agencyId);
+    const [agencies, products] = needsCatalogue
+      ? await Promise.all([this.catalogue.listAgencies(), this.catalogue.listProducts()])
+      : [[], []];
+
+    const agencyOf = (id: string | null) => agencies.find((agency) => agency.id === id) ?? null;
+    const productName = new Map(products.map((product) => [product.id, product.name]));
+
+    const accountAgency = agencyOf(account?.agencyId ?? null);
+
     return {
-      account: account ?? null,
-      application: application ?? null,
+      account: account
+        ? {
+            ...account,
+            agencyName: accountAgency?.name ?? null,
+            /*
+             * Names, not ids — this goes to a partner, who has no use for a
+             * uuid. Empty when they are on no agency, which means their clients
+             * are offered the full catalogue rather than nothing.
+             */
+            products: (accountAgency?.productIds ?? [])
+              .map((id) => productName.get(id))
+              .filter((name): name is string => Boolean(name)),
+          }
+        : null,
+      application: application
+        ? { ...application, agencyName: agencyOf(application.agencyId)?.name ?? null }
+        : null,
       eligible: verified,
       ineligibleReason: verified
         ? null

@@ -9083,6 +9083,17 @@
           "active": {
             "type": "boolean"
           },
+          "agencyName": {
+            "type": "string",
+            "nullable": true
+          },
+          "products": {
+            "description": "Product names this partner may introduce clients to. Empty means unrestricted.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "approvedAt": {
             "format": "date-time",
             "type": "string"
@@ -9094,6 +9105,7 @@
           "parentIbUserId",
           "referralCode",
           "active",
+          "products",
           "approvedAt"
         ]
       },
@@ -9130,6 +9142,10 @@
             "type": "string",
             "nullable": true,
             "description": "Already composed — this is the sentence the client is shown."
+          },
+          "agencyName": {
+            "type": "string",
+            "nullable": true
           },
           "reviewedBy": {
             "type": "string",

@@ -82,6 +82,15 @@ export class IbApplicationDto {
     description: 'Already composed — this is the sentence the client is shown.',
   })
   rejectionReason: string | null;
+  /**
+   * The agency (وكالة) applied for, by NAME.
+   *
+   * Null on an application submitted before agencies existed, or against a
+   * deployment that has none. The portal shows it on the pending card so an
+   * applicant can see what they asked for while they wait — the one detail
+   * they cannot otherwise recover once the form is gone.
+   */
+  @ApiPropertyOptional({ type: 'string', nullable: true }) agencyName: string | null;
   @ApiProperty({ type: 'string', nullable: true }) reviewedBy: string | null;
   @ApiProperty({ type: 'string', format: 'date-time', nullable: true }) reviewedAt: Date | null;
   @ApiProperty() submittedAt: Date;
@@ -94,6 +103,22 @@ export class IbAccountDto {
   @ApiProperty({ description: 'What a client types at registration to be attributed here.' })
   referralCode: string;
   @ApiProperty() active: boolean;
+
+  /**
+   * The agency this partner was appointed under, and what it lets them sell.
+   *
+   * `agencyName` is null for a partner approved before agencies existed. Their
+   * clients fall back to the full catalogue, which is why `products` is empty
+   * rather than wrong — an empty list here means "not narrowed", and the portal
+   * says so instead of printing nothing.
+   */
+  @ApiPropertyOptional({ type: 'string', nullable: true }) agencyName: string | null;
+  @ApiProperty({
+    type: [String],
+    description: 'Product names this partner may introduce clients to. Empty means unrestricted.',
+  })
+  products: string[];
+
   @ApiProperty() approvedAt: Date;
 }
 
