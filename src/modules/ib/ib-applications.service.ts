@@ -256,7 +256,7 @@ export class IbApplicationsService {
    * counts are scoped identically — a count that ignored visibility would
    * promise twelve pending applications and then show four.
    */
-  list(
+  async list(
     filter: {
       status?: IbApplicationStatus;
       page?: number;
@@ -268,7 +268,7 @@ export class IbApplicationsService {
   ) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 20));
-    return this.ib.findPageWithUsers({
+    const result = await this.ib.findPageWithUsers({
       status: filter.status,
       page,
       limit,
@@ -283,6 +283,48 @@ export class IbApplicationsService {
       ),
       order: sortOrder(filter.order),
     });
+
+    /*
+     * The agency NAME, attached per row — the same shape `listPartners` uses
+     * for earnings, and for the same reason.
+     *
+     * Which programme somebody applied for is the first thing a reviewer needs:
+     * approving grants it, and an approval made without seeing it is one made
+     * blind. Resolved from the catalogue in one read rather than joined into
+     * the paged query, which is scoped and sorted and does not need a fourth
+     * table in it.
+     */
+    // The id sits on `application`, one level down, like `account` does on the
+    // partner rows below — lifted so the shared helper can see it.
+    return {
+      ...result,
+      rows: await this.withAgencyNames(
+        result.rows.map((row) => ({ ...row, agencyId: row.application.agencyId })),
+      ),
+    };
+  }
+
+  /**
+   * Attach `agencyName` to rows carrying an `agencyId`.
+   *
+   * Null stays null and means one of two things that resolve identically: the
+   * row predates agencies, or the deployment has none. Either way there is no
+   * programme to name.
+   */
+  private async withAgencyNames<T extends { agencyId?: string | null }>(
+    rows: T[],
+  ): Promise<(T & { agencyName: string | null })[]> {
+    if (!rows.some((row) => row.agencyId)) {
+      return rows.map((row) => ({ ...row, agencyName: null }));
+    }
+
+    const agencies = await this.catalogue.listAgencies();
+    const nameOf = new Map(agencies.map((agency) => [agency.id, agency.name]));
+
+    return rows.map((row) => ({
+      ...row,
+      agencyName: row.agencyId ? (nameOf.get(row.agencyId) ?? null) : null,
+    }));
   }
 
   /**
@@ -575,9 +617,22 @@ export class IbApplicationsService {
      */
     const earnings = await this.ib.earningsByPartner(result.rows.map((r) => r.account.userId));
 
+    /*
+     * The AGENCY, beside the earnings, because the two answer the same
+     * question from opposite ends: what a partner sells and what it has made
+     * them. A partner row that names neither is a name and a referral code.
+     *
+     * `withAgencyNames` reads rows with the id at the top level; here it is one
+     * level down on `account`, so the mapping is done inline against the same
+     * catalogue read.
+     */
+    const withAgency = await this.withAgencyNames(
+      result.rows.map((row) => ({ ...row, agencyId: row.account.agencyId })),
+    );
+
     return {
       ...result,
-      rows: result.rows.map((row) => ({
+      rows: withAgency.map((row) => ({
         ...row,
         earnings: earnings.get(row.account.userId) ?? { confirmed: '0', pending: '0' },
       })),
