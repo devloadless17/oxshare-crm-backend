@@ -73,6 +73,11 @@ import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
     Mt5AccountsService,
     SelfServiceGroups,
   ],
-  exports: [TradingService, Mt5BridgeClient],
+  /*
+   * `Mt5AccountsService` is exported for the products module, which asks it
+   * which groups the server actually has before letting an operator attach one
+   * to a product. That validation is the point of the products screen.
+   */
+  exports: [TradingService, Mt5BridgeClient, Mt5AccountsService],
 })
 export class TradingModule {}

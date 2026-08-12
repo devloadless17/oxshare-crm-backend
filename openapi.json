@@ -3932,6 +3932,427 @@
         ]
       }
     },
+    "/v1/admin/products": {
+      "get": {
+        "description": "A product with no groups cannot be opened by anybody — it is a name waiting for a group. Ordered by sortOrder then name, which is the order clients see.",
+        "operationId": "AdminCatalogueController_listProducts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProductDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every product, with the MT5 groups behind it",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "AdminCatalogueController_createProduct",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertProductDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Create a product",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/products/{id}": {
+      "put": {
+        "description": "Disabling stops it being offered and leaves every open account trading, the same rule a disabled currency follows.",
+        "operationId": "AdminCatalogueController_updateProduct",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertProductDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update a product",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "description": "Refused while an agency still sells it, naming the agencies. Disabling is almost always what is wanted instead.",
+        "operationId": "AdminCatalogueController_deleteProduct",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Delete a product",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/products/{id}/groups": {
+      "post": {
+        "description": "The group must exist on the server — the bridge is asked, and the same call supplies the currency, so a typo is refused here rather than at a client’s first account open. A group may back only one product.",
+        "operationId": "AdminCatalogueController_attachGroup",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachGroupDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Attach an MT5 group to a product",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/products/{id}/groups/{groupId}": {
+      "delete": {
+        "description": "Accounts already in that group keep trading. The catalogue says what may be sold, not what exists.",
+        "operationId": "AdminCatalogueController_detachGroup",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "groupId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Detach an MT5 group from a product",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/agencies": {
+      "get": {
+        "description": "A partner is appointed under one agency, and their clients may open that agency’s products and nothing else.",
+        "operationId": "AdminCatalogueController_listAgencies",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AgencyDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every agency (وكالة), with the products it sells",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "AdminCatalogueController_createAgency",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertAgencyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgencyDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Create an agency",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/agencies/{id}": {
+      "put": {
+        "description": "Disabling closes it to new applications and leaves its partners appointed.",
+        "operationId": "AdminCatalogueController_updateAgency",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertAgencyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgencyDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update an agency",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "description": "Refused while partners are appointed under it.",
+        "operationId": "AdminCatalogueController_deleteAgency",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Delete an agency",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/agencies/{id}/products": {
+      "put": {
+        "description": "The COMPLETE set, not a delta. This is the most consequential write here — it changes what every client under every partner on this agency may open — so the audit entry records the product names before and after, not their ids.",
+        "operationId": "AdminCatalogueController_setAgencyProducts",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetAgencyProductsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgencyDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Set the products an agency sells",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/auth/login": {
       "post": {
         "operationId": "AdminAuthController_login",
@@ -10301,6 +10722,214 @@
         "required": [
           "sentTo",
           "source"
+        ]
+      },
+      "ProductGroupDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ]
+          },
+          "mt5Group": {
+            "type": "string",
+            "example": "real\\Standard-USD",
+            "description": "The MT5 group path."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "Cached from MT5 when the group was attached. Anything a client is shown re-reads it live."
+          }
+        },
+        "required": [
+          "id",
+          "environment",
+          "mt5Group",
+          "currency"
+        ]
+      },
+      "ProductDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Standard"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "A disabled product stops being sold and keeps its accounts."
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 0
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProductGroupDto"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "enabled",
+          "sortOrder",
+          "groups"
+        ]
+      },
+      "UpsertProductDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Standard",
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000
+          },
+          "enabled": {
+            "type": "boolean",
+            "example": true
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 0,
+            "minimum": 0,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "name",
+          "enabled",
+          "sortOrder"
+        ]
+      },
+      "AttachGroupDto": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ]
+          },
+          "mt5Group": {
+            "type": "string",
+            "example": "real\\Standard-USD",
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "environment",
+          "mt5Group"
+        ]
+      },
+      "AgencyDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Gold Agency",
+            "description": "وكالة — the package a partner sells under."
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "Read by an applicant deciding which agency to request. Worth writing well."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "A disabled agency stops taking applications and keeps its partners."
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 0
+          },
+          "productIds": {
+            "description": "The products this agency sells.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "enabled",
+          "sortOrder",
+          "productIds"
+        ]
+      },
+      "UpsertAgencyDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Gold Agency",
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000
+          },
+          "enabled": {
+            "type": "boolean",
+            "example": true
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 0,
+            "minimum": 0,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "name",
+          "enabled",
+          "sortOrder"
+        ]
+      },
+      "SetAgencyProductsDto": {
+        "type": "object",
+        "properties": {
+          "productIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "productIds"
         ]
       },
       "AdminLoginDto": {

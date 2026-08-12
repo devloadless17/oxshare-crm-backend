@@ -20,6 +20,7 @@ import { WalletModule } from './modules/wallet/wallet.module';
 import { TradingModule } from './modules/trading/trading.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { ProductsModule } from './modules/products/products.module';
 import { ComplianceModule } from './modules/compliance/compliance.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { HealthModule } from './modules/health/health.module';
@@ -80,6 +81,7 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     PaymentsModule,
     ComplianceModule,
     SettingsModule,
+    ProductsModule,
     AdminModule,
   ],
   providers: [

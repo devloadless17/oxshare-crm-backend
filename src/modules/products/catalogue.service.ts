@@ -1,0 +1,369 @@
+import { Injectable } from '@nestjs/common';
+import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import { ProductsStore, type AgencyRow, type ProductRow } from '../../store/products.store';
+import { AdminAuditService } from '../admin/admin-audit.service';
+import { Mt5AccountsService } from '../trading/mt5/mt5-accounts.service';
+import type { Actor } from '../../common/security/actor';
+import type { AgencyDto, ProductDto, PublicAgencyDto } from './dto/catalogue.dto';
+
+/**
+ * The catalogue: products, the MT5 groups behind them, and the agencies (وكالة)
+ * that sell them.
+ *
+ * ## Every write is audited, because every write is commercial
+ *
+ * Attaching a group to a product decides what a client's account is opened in;
+ * putting a product on an agency decides what a whole partner's book may sell.
+ * Neither leaves a trace anywhere else — the account rows that result look
+ * ordinary — so this log is the only place the decision is recorded.
+ */
+@Injectable()
+export class CatalogueService {
+  constructor(
+    private readonly store: ProductsStore,
+    private readonly audit: AdminAuditService,
+    private readonly mt5: Mt5AccountsService,
+  ) {}
+
+  /* ── Products ─────────────────────────────────────────────────────────── */
+
+  async listProducts(): Promise<ProductDto[]> {
+    return (await this.store.listProducts()).map(toProductDto);
+  }
+
+  async createProduct(
+    input: { name: string; description?: string | null; enabled: boolean; sortOrder: number },
+    actor: Actor,
+  ): Promise<ProductDto> {
+    const row = await this.store.createProduct({
+      name: input.name.trim(),
+      description: emptyToNull(input.description),
+      enabled: input.enabled,
+      sortOrder: input.sortOrder,
+    });
+
+    this.audit.record(actor.id, 'product.create', 'trading_products', row.id, {
+      name: row.name,
+      enabled: row.enabled,
+    });
+    return toProductDto(row);
+  }
+
+  async updateProduct(
+    id: string,
+    input: { name: string; description?: string | null; enabled: boolean; sortOrder: number },
+    actor: Actor,
+  ): Promise<ProductDto> {
+    const before = (await this.store.listProducts()).find((product) => product.id === id);
+    if (!before) throw new NotFoundError('Product not found.');
+
+    const row = await this.store.updateProduct(id, {
+      name: input.name.trim(),
+      description: emptyToNull(input.description),
+      enabled: input.enabled,
+      sortOrder: input.sortOrder,
+    });
+    if (!row) throw new NotFoundError('Product not found.');
+
+    /*
+     * Disabling is called out separately from the field diff.
+     *
+     * It is the only edit here that changes what clients can do TODAY — the
+     * product stops being offered the moment it saves — and an auditor scanning
+     * for "when did Standard stop being sold" should not have to read a diff to
+     * find it.
+     */
+    const changed: Record<string, { before: unknown; after: unknown }> = {};
+    for (const field of ['name', 'description', 'enabled', 'sortOrder'] as const) {
+      if (before[field] !== row[field])
+        changed[field] = { before: before[field], after: row[field] };
+    }
+
+    this.audit.record(actor.id, 'product.update', 'trading_products', id, {
+      changed,
+      withdrawn: before.enabled && !row.enabled,
+    });
+    return toProductDto(row);
+  }
+
+  async deleteProduct(id: string, actor: Actor): Promise<void> {
+    const before = (await this.store.listProducts()).find((product) => product.id === id);
+    if (!before) throw new NotFoundError('Product not found.');
+
+    /*
+     * The database would refuse this anyway — `agency_products.product_id` is
+     * ON DELETE RESTRICT — but a foreign-key violation reaches the operator as
+     * a 500 with a constraint name in it. Naming the agencies is the difference
+     * between "something went wrong" and "remove it from Gold Agency first".
+     */
+    const agencies = await this.store.listAgencies();
+    const selling = agencies.filter((agency) => agency.productIds.includes(id));
+    if (selling.length > 0) {
+      throw new ValidationError(
+        `This product is sold by ${selling.map((agency) => agency.name).join(', ')}. ` +
+          'Remove it from those agencies first, or disable it instead — disabling stops it being ' +
+          'sold and leaves open accounts alone.',
+      );
+    }
+
+    const deleted = await this.store.deleteProduct(id);
+    if (!deleted) throw new NotFoundError('Product not found.');
+
+    this.audit.record(actor.id, 'product.delete', 'trading_products', id, {
+      name: before.name,
+      // The groups go with it via cascade, and this is where they are readable
+      // afterwards — the rows themselves are gone.
+      groups: before.groups.map((group) => `${group.environment}:${group.mt5Group}`),
+    });
+  }
+
+  /* ── A product's MT5 groups ───────────────────────────────────────────── */
+
+  async attachGroup(
+    productId: string,
+    input: { environment: 'live' | 'demo'; mt5Group: string },
+    actor: Actor,
+  ): Promise<ProductDto> {
+    const products = await this.store.listProducts();
+    const product = products.find((candidate) => candidate.id === productId);
+    if (!product) throw new NotFoundError('Product not found.');
+
+    /*
+     * ── The group must EXIST on the server, and we ask ───────────────────────
+     *
+     * This is the check the whole screen is for. A mistyped path is stored
+     * happily by Postgres and fails at the client's first account open, with an
+     * MT5 return code that names neither the field nor the reason. Asking the
+     * bridge costs one round trip on an action performed a handful of times a
+     * year.
+     *
+     * The CURRENCY comes back from the same call, which is why this is not just
+     * a validation: it is where the cached currency is filled in, from the
+     * server rather than from a form field somebody could get wrong.
+     */
+    const onServer = await this.mt5.listGroupsForClients();
+    const match = onServer.find(
+      (group) => group.name.toLowerCase() === input.mt5Group.trim().toLowerCase(),
+    );
+    if (!match) {
+      throw new ValidationError(
+        `MT5 does not report a group called "${input.mt5Group.trim()}". Choose one from the list — ` +
+          'if the group is new, the broker may not have granted this manager account access to it.',
+      );
+    }
+
+    const claimed = await this.store.claimedGroups();
+    if (claimed.some((group) => group.toLowerCase() === match.name.toLowerCase())) {
+      throw new ValidationError(
+        `"${match.name}" already belongs to another product. A group can back only one product — ` +
+          'otherwise "which product is this account under" has two answers, and that decides ' +
+          'whose commission it pays.',
+      );
+    }
+
+    // The server's spelling, never the caller's: a casing difference must not
+    // reach MT5, and this is the last place both are in hand.
+    await this.store.addGroup({
+      productId,
+      environment: input.environment,
+      mt5Group: match.name,
+      currency: match.currency,
+    });
+
+    this.audit.record(actor.id, 'product.group_attach', 'trading_products', productId, {
+      product: product.name,
+      environment: input.environment,
+      mt5Group: match.name,
+      currency: match.currency,
+    });
+
+    const groups = await this.store.groupsOf(productId);
+    return toProductDto({ ...product, groups });
+  }
+
+  async detachGroup(productId: string, groupId: string, actor: Actor): Promise<ProductDto> {
+    const products = await this.store.listProducts();
+    const product = products.find((candidate) => candidate.id === productId);
+    if (!product) throw new NotFoundError('Product not found.');
+
+    const group = product.groups.find((candidate) => candidate.id === groupId);
+    if (!group) throw new NotFoundError('That group is not attached to this product.');
+
+    const removed = await this.store.removeGroup(productId, groupId);
+    if (!removed) throw new NotFoundError('That group is not attached to this product.');
+
+    /*
+     * Detaching does NOT touch the accounts already in that group. They keep
+     * trading, and they keep the group recorded on `trading_accounts.mt5_group`
+     * — the catalogue says what may be SOLD, not what exists. Recorded here
+     * because that distinction is exactly what somebody will query later.
+     */
+    this.audit.record(actor.id, 'product.group_detach', 'trading_products', productId, {
+      product: product.name,
+      environment: group.environment,
+      mt5Group: group.mt5Group,
+    });
+
+    return toProductDto({ ...product, groups: await this.store.groupsOf(productId) });
+  }
+
+  /* ── Agencies ─────────────────────────────────────────────────────────── */
+
+  async listAgencies(): Promise<AgencyDto[]> {
+    return (await this.store.listAgencies()).map(toAgencyDto);
+  }
+
+  /**
+   * The agencies an applicant may choose from, with product NAMES spelled out.
+   *
+   * Disabled agencies are absent: an applicant should not be able to apply to a
+   * programme that is closed, and showing it greyed out invites the question
+   * "when does it reopen", which nobody here can answer.
+   */
+  async listOpenAgencies(): Promise<PublicAgencyDto[]> {
+    const [agencies, products] = await Promise.all([
+      this.store.listAgencies(),
+      this.store.listProducts(),
+    ]);
+    const nameOf = new Map(products.map((product) => [product.id, product.name]));
+
+    return agencies
+      .filter((agency) => agency.enabled)
+      .map((agency) => ({
+        id: agency.id,
+        name: agency.name,
+        description: agency.description,
+        products: agency.productIds
+          .map((id) => nameOf.get(id))
+          .filter((name): name is string => Boolean(name)),
+      }));
+  }
+
+  async createAgency(
+    input: { name: string; description?: string | null; enabled: boolean; sortOrder: number },
+    actor: Actor,
+  ): Promise<AgencyDto> {
+    const row = await this.store.createAgency({
+      name: input.name.trim(),
+      description: emptyToNull(input.description),
+      enabled: input.enabled,
+      sortOrder: input.sortOrder,
+    });
+
+    this.audit.record(actor.id, 'agency.create', 'agencies', row.id, {
+      name: row.name,
+      enabled: row.enabled,
+    });
+    return toAgencyDto(row);
+  }
+
+  async updateAgency(
+    id: string,
+    input: { name: string; description?: string | null; enabled: boolean; sortOrder: number },
+    actor: Actor,
+  ): Promise<AgencyDto> {
+    const before = (await this.store.listAgencies()).find((agency) => agency.id === id);
+    if (!before) throw new NotFoundError('Agency not found.');
+
+    const row = await this.store.updateAgency(id, {
+      name: input.name.trim(),
+      description: emptyToNull(input.description),
+      enabled: input.enabled,
+      sortOrder: input.sortOrder,
+    });
+    if (!row) throw new NotFoundError('Agency not found.');
+
+    const changed: Record<string, { before: unknown; after: unknown }> = {};
+    for (const field of ['name', 'description', 'enabled', 'sortOrder'] as const) {
+      if (before[field] !== row[field])
+        changed[field] = { before: before[field], after: row[field] };
+    }
+
+    this.audit.record(actor.id, 'agency.update', 'agencies', id, { changed });
+    return toAgencyDto(row);
+  }
+
+  async deleteAgency(id: string, actor: Actor): Promise<void> {
+    const before = (await this.store.listAgencies()).find((agency) => agency.id === id);
+    if (!before) throw new NotFoundError('Agency not found.');
+
+    /*
+     * `ib_accounts.agency_id` is ON DELETE RESTRICT, so Postgres refuses this
+     * once a partner is appointed under it. Same reasoning as the product
+     * check: the constraint is the guarantee, this is the sentence.
+     */
+    const deleted = await this.store.deleteAgency(id).catch(() => {
+      throw new ValidationError(
+        'Partners are appointed under this agency. Move them to another one first, or disable ' +
+          'it — disabling stops new applications and leaves the partners in place.',
+      );
+    });
+    if (!deleted) throw new NotFoundError('Agency not found.');
+
+    this.audit.record(actor.id, 'agency.delete', 'agencies', id, { name: before.name });
+  }
+
+  async setAgencyProducts(id: string, productIds: string[], actor: Actor): Promise<AgencyDto> {
+    const agencies = await this.store.listAgencies();
+    const before = agencies.find((agency) => agency.id === id);
+    if (!before) throw new NotFoundError('Agency not found.');
+
+    const products = await this.store.listProducts();
+    const known = new Set(products.map((product) => product.id));
+    const unknown = productIds.filter((productId) => !known.has(productId));
+    if (unknown.length > 0) {
+      throw new ValidationError('One of those products does not exist. Reload and try again.');
+    }
+
+    // De-duplicated: the join table's composite key would reject a repeat with
+    // a constraint error, and a repeated checkbox is a client bug, not an
+    // operator's intent.
+    const unique = [...new Set(productIds)];
+    await this.store.setAgencyProducts(id, unique);
+
+    /*
+     * Recorded as BEFORE and AFTER name lists, not ids.
+     *
+     * This is the single most consequential write in the module — it changes
+     * what every client under every partner on this agency may open — and a
+     * row of uuids is unreadable to whoever comes looking a year later.
+     */
+    const nameOf = new Map(products.map((product) => [product.id, product.name]));
+    this.audit.record(actor.id, 'agency.products_set', 'agencies', id, {
+      agency: before.name,
+      before: before.productIds.map((productId) => nameOf.get(productId) ?? productId),
+      after: unique.map((productId) => nameOf.get(productId) ?? productId),
+    });
+
+    return toAgencyDto({ ...before, productIds: unique });
+  }
+}
+
+function toProductDto(row: ProductRow): ProductDto {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    enabled: row.enabled,
+    sortOrder: row.sortOrder,
+    groups: row.groups,
+  };
+}
+
+function toAgencyDto(row: AgencyRow): AgencyDto {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    enabled: row.enabled,
+    sortOrder: row.sortOrder,
+    productIds: row.productIds,
+  };
+}
+
+/** A blank description is "not set", not a description that is empty. */
+function emptyToNull(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}

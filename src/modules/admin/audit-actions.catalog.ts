@@ -176,6 +176,32 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'kyc_config.step_delete', label: 'KYC step deleted', group: 'Configuration' },
   { action: 'platform_link.set', label: 'Download link changed', group: 'Configuration' },
   /*
+   * ── The catalogue: what is sold, and who may sell it ─────────────────────
+   *
+   * Configuration by category and commercial by consequence. Attaching a group
+   * to a product decides what a client's account is actually opened in, and
+   * `agency.products_set` decides what every client under every partner on that
+   * agency may open — neither leaves a trace on the rows that result, which all
+   * look like ordinary accounts. This log is the only record of the decision.
+   */
+  { action: 'product.create', label: 'Product created', group: 'Configuration' },
+  { action: 'product.update', label: 'Product changed', group: 'Configuration' },
+  { action: 'product.delete', label: 'Product deleted', group: 'Configuration' },
+  {
+    action: 'product.group_attach',
+    label: 'MT5 group attached to a product',
+    group: 'Configuration',
+  },
+  {
+    action: 'product.group_detach',
+    label: 'MT5 group detached from a product',
+    group: 'Configuration',
+  },
+  { action: 'agency.create', label: 'Agency created', group: 'Configuration' },
+  { action: 'agency.update', label: 'Agency changed', group: 'Configuration' },
+  { action: 'agency.delete', label: 'Agency deleted', group: 'Configuration' },
+  { action: 'agency.products_set', label: "An agency's products changed", group: 'Configuration' },
+  /*
    * Trading terms. Configuration rather than Money for the same reason as the
    * currencies below — no balance moves — but it is the entry an auditor comes
    * looking for after the fact: the leverage ladder, the per-client account
