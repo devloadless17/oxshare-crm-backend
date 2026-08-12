@@ -59,11 +59,21 @@ function buildResolver(options: {
 
 let socketSeq = 0;
 
-/** A socket that records what it was asked to do. */
-function fakeSocket(cookie?: string) {
+const PORTAL_ORIGIN = 'https://portal.oxshare.com';
+const ADMIN_ORIGIN = 'https://admin.oxshare.com';
+
+/**
+ * A socket that records what it was asked to do.
+ *
+ * The origin defaults to the admin console's because that is the ordinary
+ * case; the tests that care pass their own.
+ */
+function fakeSocket(cookie?: string, origin: string | null = ADMIN_ORIGIN) {
   return {
     id: `socket-${++socketSeq}`,
-    handshake: { headers: { cookie } },
+    // `null` means the header is ABSENT — a default parameter cannot express
+    // that, because passing `undefined` is exactly what triggers the default.
+    handshake: { headers: { cookie, origin: origin ?? undefined } },
     data: {} as Record<string, unknown>,
     rooms: [] as string[],
     emitted: [] as string[],
@@ -83,7 +93,11 @@ function fakeSocket(cookie?: string) {
 }
 
 function buildGateway(resolver: RealtimePrincipalResolver) {
-  const gateway = new NotificationsRealtimeGateway({ get: () => 'test' } as never, resolver);
+  const config = {
+    get: (key: string) =>
+      key === 'PORTAL_URL' ? PORTAL_ORIGIN : key === 'ADMIN_URL' ? ADMIN_ORIGIN : 'test',
+  };
+  const gateway = new NotificationsRealtimeGateway(config as never, resolver);
   const rooms = new Map<string, string[]>();
   // The Socket.IO server, reduced to what the gateway calls.
   (gateway as unknown as { server: unknown }).server = {
@@ -107,6 +121,131 @@ describe('parseCookieHeader', () => {
     expect(parseCookieHeader(undefined)).toEqual({});
     expect(parseCookieHeader('   ;  ; a=1')).toEqual({ a: '1' });
     expect(parseCookieHeader('t=aaa.bbb.ccc==')).toEqual({ t: 'aaa.bbb.ccc==' });
+  });
+
+  it('does not throw on a malformed percent escape', () => {
+    /*
+     * `decodeURIComponent('%')` throws a URIError, and this runs on a header an
+     * unauthenticated stranger controls, inside a promise Nest does not await.
+     * Throwing here was a one-request process kill.
+     *
+     * The raw value is kept: a cookie we cannot decode will not authenticate,
+     * and refusing it is already the right answer.
+     */
+    expect(() => parseCookieHeader('a=%')).not.toThrow();
+    expect(parseCookieHeader('a=%; b=fine')).toEqual({ a: '%', b: 'fine' });
+    expect(parseCookieHeader('t=%E0%A4%A')).toEqual({ t: '%E0%A4%A' });
+  });
+});
+
+describe('where a socket is allowed to come from', () => {
+  it('accepts each of the two configured app origins', async () => {
+    for (const origin of [PORTAL_ORIGIN, ADMIN_ORIGIN]) {
+      const { gateway } = buildGateway(buildResolver({ admin: { id: ADMIN_ID } }));
+      const socket = fakeSocket(`${ADMIN_COOKIE}=good`, origin);
+
+      await gateway.handleConnection(socket as never);
+
+      expect(socket.disconnected, origin).toBe(false);
+    }
+  });
+
+  it('refuses a SIBLING OxShare origin, which SameSite does not stop', async () => {
+    /*
+     * The reason this check exists at all. `session-cookies.ts` records that
+     * SameSite is computed on the registrable domain, so `promo.oxshare.com` is
+     * SAME-SITE as this API and the browser sends the session cookie with its
+     * handshake. Without an origin check, a page there could hold a socket as
+     * the reader and receive their notifications.
+     *
+     * `cors.origin` does not cover it: browsers do not CORS-check a WebSocket
+     * upgrade, so refusing an origin there withholds a header nothing reads.
+     */
+    const { gateway } = buildGateway(buildResolver({ admin: { id: ADMIN_ID } }));
+    const socket = fakeSocket(`${ADMIN_COOKIE}=good`, 'https://promo.oxshare.com');
+
+    await gateway.handleConnection(socket as never);
+
+    expect(socket.disconnected).toBe(true);
+    expect(socket.rooms).toEqual([]);
+  });
+
+  it('refuses a look-alike rather than matching on a suffix', async () => {
+    // `endsWith('.oxshare.com')` would admit the first of these and a domain
+    // regex would admit the second. Exact equality admits neither.
+    for (const origin of ['https://evil-oxshare.com', 'https://admin.oxshare.com.attacker.net']) {
+      const { gateway } = buildGateway(buildResolver({ admin: { id: ADMIN_ID } }));
+      const socket = fakeSocket(`${ADMIN_COOKIE}=good`, origin);
+
+      await gateway.handleConnection(socket as never);
+
+      expect(socket.disconnected, origin).toBe(true);
+    }
+  });
+
+  it('refuses a handshake carrying no Origin at all', async () => {
+    // The same call CsrfGuard makes: every browser sends one, so its absence is
+    // a non-browser client — which should not be holding a session cookie.
+    const { gateway } = buildGateway(buildResolver({ admin: { id: ADMIN_ID } }));
+    const socket = fakeSocket(`${ADMIN_COOKIE}=good`, null);
+
+    await gateway.handleConnection(socket as never);
+
+    expect(socket.disconnected).toBe(true);
+    expect(socket.rooms).toEqual([]);
+  });
+
+  it('checks the origin BEFORE doing any authentication work', async () => {
+    // An unauthenticated stranger must not be able to make this API verify a
+    // token — that is a free amplification primitive.
+    const resolver = buildResolver({ admin: { id: ADMIN_ID } });
+    const resolve = vi.spyOn(resolver, 'resolve');
+    const { gateway } = buildGateway(resolver);
+
+    await gateway.handleConnection(
+      fakeSocket(`${ADMIN_COOKIE}=good`, 'https://evil.test') as never,
+    );
+
+    expect(resolve).not.toHaveBeenCalled();
+  });
+});
+
+describe('nothing escapes the handshake', () => {
+  it('refuses rather than rejecting when the resolver throws', async () => {
+    /*
+     * Nest does not await `handleConnection`, so a rejection here is an
+     * unhandled rejection — which ends the process under Node's default. The
+     * input is a header an anonymous caller chose, so that is a remote kill.
+     */
+    const resolver = buildResolver({});
+    vi.spyOn(resolver, 'resolve').mockRejectedValue(new Error('the database went away'));
+    const { gateway } = buildGateway(resolver);
+    const socket = fakeSocket(`${ADMIN_COOKIE}=good`);
+
+    await expect(gateway.handleConnection(socket as never)).resolves.toBeUndefined();
+    expect(socket.disconnected).toBe(true);
+    expect(socket.emitted).toContain('unauthorized');
+  });
+
+  it('does not join a socket that went away while it was being authenticated', async () => {
+    /*
+     * A tab closed mid-handshake. `handleDisconnect` has already run by then,
+     * so joining leaves a room entry no disconnect will remove and arming the
+     * timer leaks it for a quarter of an hour — both per connection, so a
+     * flapping client compounds them.
+     */
+    const resolver = buildResolver({ admin: { id: ADMIN_ID } });
+    const socket = fakeSocket(`${ADMIN_COOKIE}=good`);
+    vi.spyOn(resolver, 'resolve').mockImplementation(() => {
+      socket.disconnected = true;
+      return Promise.resolve({ recipient: { kind: 'admin', id: ADMIN_ID }, expiresAt: null });
+    });
+    const { gateway } = buildGateway(resolver);
+
+    await gateway.handleConnection(socket as never);
+
+    expect(socket.join).not.toHaveBeenCalled();
+    expect(socket.rooms).toEqual([]);
   });
 });
 

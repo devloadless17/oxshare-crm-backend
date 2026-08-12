@@ -31,7 +31,20 @@ export interface RealtimePrincipal {
   expiresAt: number | null;
 }
 
-/** `cookie: a=1; b=2` → `{ a: '1', b: '2' }`. */
+/**
+ * `cookie: a=1; b=2` → `{ a: '1', b: '2' }`.
+ *
+ * Every value is decoded DEFENSIVELY. `decodeURIComponent` throws a `URIError`
+ * on a malformed escape — a bare `%` is enough — and the caller of this is an
+ * unauthenticated handshake, so a thrown error here is a header an anonymous
+ * stranger controls reaching an async path Nest does not await. That is a
+ * one-request process kill, which is why the raw value is kept rather than the
+ * error propagated: a cookie we cannot decode is a cookie that will not
+ * authenticate, and refusing it is already the right answer.
+ *
+ * The HTTP surface never had this exposure because `cookie-parser` does the
+ * same catch. Sockets do not go through it.
+ */
 export function parseCookieHeader(header: string | undefined): Record<string, string> {
   if (!header) return {};
   const jar: Record<string, string> = {};
@@ -39,8 +52,13 @@ export function parseCookieHeader(header: string | undefined): Record<string, st
     const separator = pair.indexOf('=');
     if (separator < 0) continue;
     const name = pair.slice(0, separator).trim();
-    const value = pair.slice(separator + 1).trim();
-    if (name) jar[name] = decodeURIComponent(value);
+    const raw = pair.slice(separator + 1).trim();
+    if (!name) continue;
+    try {
+      jar[name] = decodeURIComponent(raw);
+    } catch {
+      jar[name] = raw;
+    }
   }
   return jar;
 }

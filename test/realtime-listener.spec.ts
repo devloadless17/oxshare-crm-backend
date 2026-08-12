@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Client } from 'pg';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { NotificationsStore } from '../src/store/notifications.store';
@@ -203,4 +203,53 @@ describe('the gateway subscribes to the database', () => {
     const events = await waitFor(() => emitted, 2, 10_000);
     expect(events.map((e) => (e.payload as { kind: string }).kind)).toContain('after.drop');
   }, 30_000);
+
+  it('SETTLES after an error on a live connection, instead of churning forever', async () => {
+    /*
+     * Recovering once is not the same as recovering.
+     *
+     * pg emits `'error'` on a client for backend errors that do NOT close the
+     * socket, so a reconnect can be scheduled while the connection is still
+     * healthy — and `listen()` failing its `LISTEN` query after a successful
+     * connect reaches the same place. Replacing a healthy client means calling
+     * `end()` on it, and `end()` on a healthy client emits `'end'` (measured,
+     * not assumed). With the old client's handler still attached, that `'end'`
+     * scheduled the NEXT reconnect, which two seconds later tore down the
+     * healthy connection that had just replaced it: a permanent two-second
+     * cycle, with every event landing in a gap silently lost.
+     *
+     * The kill-based test above cannot see this, and that is not an oversight:
+     * `end()` on an ALREADY-DEAD client emits nothing, so the kill path never
+     * re-enters. The trigger has to be an error on a LIVE connection.
+     *
+     * The assertion is a RATE, not an outcome — the churning version still
+     * delivers events, just with holes.
+     */
+    const { gateway, emitted } = buildGateway();
+    await gateway.onModuleInit();
+
+    const logger = (gateway as unknown as { logger: { warn: (m: string) => void } }).logger;
+    const warn = vi.spyOn(logger, 'warn');
+    const reestablished = () => warn.mock.calls.filter(([m]) => /Re-establishing/.test(m)).length;
+
+    // Exactly what pg does for a backend error that leaves the socket usable.
+    const live = (gateway as unknown as { listener: Client }).listener;
+    live.emit('error', new Error('a backend error that did not close the connection'));
+
+    // One reconnect is correct and expected.
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+    const afterFirst = reestablished();
+    expect(afterFirst, 'the listener never rebuilt itself').toBeGreaterThan(0);
+
+    // Three more churn cycles' worth of quiet.
+    await new Promise((resolve) => setTimeout(resolve, 7_000));
+
+    expect(reestablished(), 'the listener is rebuilding itself on a loop').toBe(afterFirst);
+
+    // And it is genuinely still listening, not merely quiet.
+    emitted.length = 0;
+    await store.insert({ recipient: RECIPIENT, kind: 'after.settling', params: {} });
+    const events = await waitFor(() => emitted, 1);
+    expect(events.map((e) => (e.payload as { kind: string }).kind)).toContain('after.settling');
+  }, 45_000);
 });

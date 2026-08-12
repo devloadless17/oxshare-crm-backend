@@ -112,7 +112,18 @@ export class NotificationsService implements NotificationDispatchPort {
         held = heldByRole.get(admin.roleId) as string[];
       } else {
         held = await this.roles.resolvePermissions(admin.roleId, admin.permissions);
-        if (admin.roleId) heldByRole.set(admin.roleId, held);
+        /*
+         * Cache only the ROLE's answer, never the fallback.
+         *
+         * `resolvePermissions` returns the role's permissions when the role row
+         * exists and this admin's OWN `permissions` snapshot when it does not.
+         * The snapshot is per-person, so caching it under the role id would
+         * hand it to every other admin carrying that same dangling id — some
+         * included in a fan-out they should not be in, some silently dropped
+         * from one they should. The identity test is exact: `resolvePermissions`
+         * returns the snapshot array itself on the fallback path.
+         */
+        if (admin.roleId && held !== admin.permissions) heldByRole.set(admin.roleId, held);
       }
       if (!held.some((key) => normalizePermissionKey(key) === wanted)) continue;
 

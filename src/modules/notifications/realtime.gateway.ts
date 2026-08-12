@@ -40,6 +40,27 @@ function roomFor(recipient: NotificationRecipient): string {
 }
 
 /**
+ * The origins allowed to hold a socket, read at REQUEST time.
+ *
+ * Deliberately a function, not a constant. `@WebSocketGateway`'s options object
+ * is evaluated when this MODULE IS IMPORTED, which happens before
+ * `NestFactory.create` runs `ConfigModule.forRoot()` and loads `.env` into
+ * `process.env`. A constant here would therefore capture `undefined` and pin
+ * both origins to their localhost fallbacks in every deployment — invisible in
+ * development, where the fallbacks are correct, and a total CORS refusal of the
+ * polling transport in production.
+ *
+ * `main.ts` reads the same two variables safely because it runs inside
+ * `bootstrap()`, after the config has loaded.
+ */
+function allowedOrigins(): string[] {
+  return [
+    process.env['PORTAL_URL'] ?? 'http://localhost:3000',
+    process.env['ADMIN_URL'] ?? 'http://localhost:3002',
+  ];
+}
+
+/**
  * The realtime transport: Socket.IO, authenticated by session cookie, with one
  * room per principal.
  *
@@ -96,12 +117,19 @@ function roomFor(recipient: NotificationRecipient): string {
    * the API rather than through each app's `/api` rewrite, because a Next
    * rewrite does not proxy a WebSocket upgrade. That is also why both apps'
    * CSP `connect-src` names this origin.
+   *
+   * A CALLBACK, so the allowlist is read per request rather than captured when
+   * this module is imported — see `allowedOrigins`.
+   *
+   * This is the POLLING transport's protection only, and it is not what secures
+   * the socket. CORS is a browser-enforced rule on XHR; a WebSocket upgrade is
+   * not CORS-checked by browsers at all, so an origin refused here can still
+   * complete a `wss://` handshake. `handleConnection` is where the origin is
+   * actually enforced, for both transports.
    */
   cors: {
-    origin: [
-      process.env['PORTAL_URL'] ?? 'http://localhost:3000',
-      process.env['ADMIN_URL'] ?? 'http://localhost:3002',
-    ],
+    origin: (origin: string | undefined, callback: (err: Error | null, ok?: boolean) => void) =>
+      callback(null, !origin || allowedOrigins().includes(origin)),
     credentials: true,
   },
   /*
@@ -156,8 +184,59 @@ export class NotificationsRealtimeGateway
    * — an unauthenticated socket in no room receives nothing, but it still
    * holds a file descriptor and looks connected to the browser, which would
    * make an expired session indistinguishable from a quiet one.
+   *
+   * NOTHING is allowed to throw out of here. Nest does not await this promise,
+   * so a rejection becomes an unhandled rejection, and under Node's default
+   * that ends the process — from a header an anonymous caller chose.
    */
   async handleConnection(socket: Socket): Promise<void> {
+    try {
+      await this.admit(socket);
+    } catch (error) {
+      this.logger.error(
+        `Refusing a handshake that failed unexpectedly: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      socket.emit('unauthorized');
+      socket.disconnect(true);
+    }
+  }
+
+  private async admit(socket: Socket): Promise<void> {
+    /*
+     * ORIGIN FIRST, before any authentication work.
+     *
+     * This is the socket's half of the control `CsrfGuard.assertOriginAllowed`
+     * applies to every cookie-authenticated write, and it exists for exactly
+     * the reason recorded in `session-cookies.ts`: OxShare runs many sites on
+     * one registrable domain, so `SameSite=Lax` does NOT stop a sibling
+     * `*.oxshare.com` page — the browser considers it same-site and sends the
+     * session cookie. Without this check any such page could open a socket AS
+     * the reader and receive their notifications, which is precisely the
+     * cookie-tossing neighbour the HTTP guard was written to exclude.
+     *
+     * The gateway's `cors` option does not cover this. Browsers do not
+     * CORS-check a WebSocket upgrade, so `cors.origin` refusing an origin only
+     * withholds a response header the browser never consults on this path.
+     *
+     * Exact equality, never a suffix test — `endsWith('.oxshare.com')` also
+     * matches `evil-oxshare.com`. A handshake with no Origin at all is refused
+     * on the same reasoning the HTTP guard records: every browser sends one, so
+     * its absence is a non-browser client, and a non-browser client should not
+     * be holding a session cookie.
+     */
+    const origin = socket.handshake.headers.origin;
+    const allowed = [
+      this.config.get<string>('PORTAL_URL') ?? 'http://localhost:3000',
+      this.config.get<string>('ADMIN_URL') ?? 'http://localhost:3002',
+    ];
+    if (!origin || !allowed.includes(origin)) {
+      this.logger.warn(`Refused a socket from origin ${origin ?? '(absent)'}`);
+      socket.emit('unauthorized');
+      socket.disconnect(true);
+      return;
+    }
+
     const principal = await this.principals.resolve(socket.handshake.headers.cookie);
 
     if (!principal) {
@@ -167,6 +246,15 @@ export class NotificationsRealtimeGateway
       socket.disconnect(true);
       return;
     }
+
+    /*
+     * The socket may have gone during the authentication above — a tab closed,
+     * a network dropped. Joining a dead socket leaves an entry in the adapter's
+     * room map that no disconnect will ever remove, and arming its timer after
+     * `handleDisconnect` has already run leaks that timer for a quarter of an
+     * hour. Both are per-connection, so a flapping client compounds them.
+     */
+    if (socket.disconnected) return;
 
     const room = roomFor(principal.recipient);
     await socket.join(room);
@@ -242,12 +330,26 @@ export class NotificationsRealtimeGateway
     const client = new Client({ connectionString });
     this.listener = client;
 
+    /*
+     * Both handlers check that this client is STILL the live listener.
+     *
+     * Without that identity test, replacing the connection re-enters the
+     * reconnect: `end()` on the outgoing client emits `'end'`, whose handler
+     * schedules another reconnect, which two seconds later ends the healthy
+     * connection that just replaced it — and so on, permanently, tearing the
+     * listener down every two seconds and dropping every event that lands in
+     * the gaps. `stopped` guards shutdown but says nothing about replacement.
+     */
+    const isCurrent = () => this.listener === client;
+
     client.on('error', (error: Error) => {
+      if (!isCurrent()) return;
       this.logger.error(`LISTEN connection errored: ${error.message}`);
       this.scheduleReconnect();
     });
     client.on('end', () => {
-      if (!this.stopped) this.scheduleReconnect();
+      if (this.stopped || !isCurrent()) return;
+      this.scheduleReconnect();
     });
 
     client.on('notification', (message) => {
@@ -288,8 +390,19 @@ export class NotificationsRealtimeGateway
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void (async () => {
-        await this.listener?.end().catch(() => undefined);
+        /*
+         * Detach the outgoing client BEFORE ending it, and clear `listener`
+         * first so its handlers see themselves as stale. Ending a pg client
+         * emits `'end'`; a handler still attached would schedule the next
+         * reconnect and the loop would never settle.
+         */
+        const outgoing = this.listener;
         this.listener = null;
+        if (outgoing) {
+          outgoing.removeAllListeners();
+          await outgoing.end().catch(() => undefined);
+        }
+        if (this.stopped) return;
         this.logger.warn('Re-establishing the notification listener.');
         await this.listen();
       })();
