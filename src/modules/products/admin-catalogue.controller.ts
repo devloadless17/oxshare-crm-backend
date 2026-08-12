@@ -9,6 +9,7 @@ import { CatalogueService } from './catalogue.service';
 import {
   AgencyDto,
   AttachGroupDto,
+  AvailableGroupDto,
   ProductDto,
   SetAgencyProductsDto,
   UpsertAgencyDto,
@@ -58,6 +59,26 @@ export class AdminCatalogueController {
   @NotClientScoped('The product catalogue; contains no client data.')
   listProducts() {
     return this.catalogue.listProducts();
+  }
+
+  @Get('products/mt5-groups')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'MT5 groups available to attach, read live from the server',
+    description:
+      'Gated on settings.edit rather than trading.create, unlike GET /admin/mt5/groups. The two ' +
+      'read the same list for different jobs: that one is for opening an account, this one is ' +
+      'for building the catalogue, and an operator who configures products has no reason to hold ' +
+      'the power to open accounts.\n\n' +
+      'Groups another product already claims come back flagged rather than filtered out — "the ' +
+      'broker does not offer it" and "ECN already has it" are different problems.',
+  })
+  @ApiOkResponse({ type: [AvailableGroupDto] })
+  @NotClientScoped('MT5 server configuration; contains no client data.')
+  availableGroups() {
+    return this.catalogue.availableGroups();
   }
 
   @Post('products')

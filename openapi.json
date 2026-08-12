@@ -4029,6 +4029,37 @@
         ]
       }
     },
+    "/v1/admin/products/mt5-groups": {
+      "get": {
+        "description": "Gated on settings.edit rather than trading.create, unlike GET /admin/mt5/groups. The two read the same list for different jobs: that one is for opening an account, this one is for building the catalogue, and an operator who configures products has no reason to hold the power to open accounts.\n\nGroups another product already claims come back flagged rather than filtered out — \"the broker does not offer it\" and \"ECN already has it\" are different problems.",
+        "operationId": "AdminCatalogueController_availableGroups",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AvailableGroupDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "MT5 groups available to attach, read live from the server",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/products/{id}": {
       "put": {
         "description": "Disabling stops it being offered and leaves every open account trading, the same rule a disabled currency follows.",
@@ -10866,6 +10897,29 @@
           "enabled",
           "sortOrder",
           "groups"
+        ]
+      },
+      "AvailableGroupDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "real\\Standard-USD"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "Read live from the server."
+          },
+          "claimed": {
+            "type": "boolean",
+            "description": "True when another product already claims it. Shown disabled with the reason rather than hidden, so an operator can tell \"not offered\" from \"already taken\"."
+          }
+        },
+        "required": [
+          "name",
+          "currency",
+          "claimed"
         ]
       },
       "UpsertProductDto": {

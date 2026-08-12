@@ -57,6 +57,7 @@
   "GET /v1/admin/permissions",
   "GET /v1/admin/platforms",
   "GET /v1/admin/products",
+  "GET /v1/admin/products/mt5-groups",
   "GET /v1/admin/reconciliation",
   "GET /v1/admin/rejection-reasons",
   "GET /v1/admin/roles",

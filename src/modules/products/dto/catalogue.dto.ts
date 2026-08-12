@@ -97,6 +97,22 @@ export class AttachGroupDto {
   mt5Group: string;
 }
 
+/** One group the MT5 server reports, and whether a product already has it. */
+export class AvailableGroupDto {
+  @ApiProperty({ example: 'real\\Standard-USD' })
+  name: string;
+
+  @ApiProperty({ example: 'USD', description: 'Read live from the server.' })
+  currency: string;
+
+  @ApiProperty({
+    description:
+      'True when another product already claims it. Shown disabled with the reason rather than ' +
+      'hidden, so an operator can tell "not offered" from "already taken".',
+  })
+  claimed: boolean;
+}
+
 /* ── Agencies ─────────────────────────────────────────────────────────────── */
 
 export class AgencyDto {

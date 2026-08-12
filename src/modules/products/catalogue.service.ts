@@ -119,6 +119,29 @@ export class CatalogueService {
 
   /* ── A product's MT5 groups ───────────────────────────────────────────── */
 
+  /**
+   * What the operator picks from: every group the server reports, flagged with
+   * whether a product already claims it.
+   *
+   * Claimed groups are RETURNED, not filtered out. "This group is not offered
+   * by the broker" and "this group already belongs to ECN" are different
+   * problems with different fixes, and a list that silently omits the second
+   * makes an operator hunt for a group they can see in the manager terminal.
+   */
+  async availableGroups() {
+    const [onServer, claimed] = await Promise.all([
+      this.mt5.listGroupsForClients(),
+      this.store.claimedGroups(),
+    ]);
+    const taken = new Set(claimed.map((group) => group.toLowerCase()));
+
+    return onServer.map((group) => ({
+      name: group.name,
+      currency: group.currency,
+      claimed: taken.has(group.name.toLowerCase()),
+    }));
+  }
+
   async attachGroup(
     productId: string,
     input: { environment: 'live' | 'demo'; mt5Group: string },
