@@ -1,4 +1,4 @@
--- The Rival integration's config substrate — settings row + transaction columns.
+-- 0052: the Rival integration config substrate — settings row + transaction columns.
 --
 -- ⚠️ Hand-written, like every migration since 0027 (snapshots stop at 0026).
 -- Journal `when` must exceed MAX(created_at) in drizzle.__drizzle_migrations —

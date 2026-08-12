@@ -86,7 +86,13 @@ export async function startHttpTestApp(options: HttpTestOptions = {}): Promise<H
   // Same adapter as main.ts — the case-sensitive-routing setting is a security
   // control (common/api-prefix.ts), and a harness serving requests through a
   // differently-configured router would prove nothing about the real one.
-  const app = moduleRef.createNestApplication<NestExpressApplication>(createHttpAdapter());
+  // `rawBody: true` for the same mirroring reason: signed webhooks verify an
+  // HMAC over the exact bytes received, and a harness without it hands every
+  // webhook spec an undefined body — making "signature mismatch" untestable
+  // and, worse, testable wrongly.
+  const app = moduleRef.createNestApplication<NestExpressApplication>(createHttpAdapter(), {
+    rawBody: true,
+  });
 
   app.use(
     helmet({

@@ -35,6 +35,13 @@ export const ALERT_KINDS = {
   LOGIN_LOCKOUT: 'auth.login_lockout',
   /** An operator-controlled security control is switched OFF. */
   SECURITY_CONTROL_DISABLED: 'security.control_disabled',
+  /**
+   * Rival and the CRM disagree about a money movement — a deposit PAID there
+   * against a terminal row here, a reversal of settled funds, a payout state
+   * that contradicts ours. Money is sitting on the wrong side of a boundary
+   * until a human reconciles the two dashboards.
+   */
+  PAYMENT_STATE_MISMATCH: 'payments.state_mismatch',
 } as const;
 
 export type AlertKind = (typeof ALERT_KINDS)[keyof typeof ALERT_KINDS];
@@ -124,5 +131,9 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.LOGIN_LOCKOUT]: {
     severity: 'notify',
     rule: 'One lockout on the ADMIN surface is worth a look; a burst across several admin addresses is a credential-stuffing run in progress against accounts that can approve payouts. On the portal, treat a burst rather than a single occurrence — clients forget passwords.',
+  },
+  [ALERT_KINDS.PAYMENT_STATE_MISMATCH]: {
+    severity: 'page',
+    rule: 'Any occurrence. Client money is sitting on the wrong side of the Rival boundary — PAID there against a failed row here, or a reversal of settled funds — and nothing will move it until a human reconciles the two dashboards.',
   },
 };

@@ -1,5 +1,6 @@
 import { Body, Controller, HttpCode, HttpStatus, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiExcludeController, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { NoOriginCheck } from '../../../common/security/csrf.guard';
 import { BridgeSecretGuard } from './bridge-secret.guard';
 import { Mt5DealsService } from './mt5-deals.service';
 import { Mt5DealDto } from './dto/mt5-deal.dto';
@@ -28,6 +29,19 @@ import { Mt5DealDto } from './dto/mt5-deal.dto';
 @ApiTags('mt5')
 @ApiExcludeController()
 @Controller('webhooks/mt5')
+/*
+ * ⚠️ This decorator is what lets the bridge's POST through the global
+ * CsrfGuard, which refuses Origin-less writes by default. The bridge is a
+ * server: it sends no Origin header, so WITHOUT this every real delivery was
+ * answered 403 — an absence `csrf.spec.ts`'s webhook branch anticipated
+ * ("Whish and USDT arrive the same way") but no HTTP-chain test caught,
+ * because the unit tests exercised the guard and the controller separately.
+ * Found while wiring the Rival webhook, which shares the guard path.
+ */
+@NoOriginCheck(
+  'Server-to-server delivery from the MT5 bridge: authenticated by the shared secret and an ' +
+    'HMAC over the raw body. No browser, no cookie, no Origin.',
+)
 @UseGuards(BridgeSecretGuard)
 export class Mt5WebhooksController {
   constructor(private readonly deals: Mt5DealsService) {}

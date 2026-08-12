@@ -424,6 +424,67 @@ export class AdminMoneyController {
     return this.money.settleWithdrawal(id, req.admin, dto.providerRef);
   }
 
+  @Patch('withdrawals/:id/cancel')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended action, reused only when retrying that same one. The state ' +
+      'guards below make a REPLAYED CAUSE a no-op; this makes a replayed REQUEST one too ' +
+      '(PLATFORM-CONVENTIONS R-5.2).',
+  })
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('withdrawals.approve')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Cancel an APPROVED withdrawal — refunds the client, reasoned and emailed',
+    description:
+      'The "approved, then thought better of it" action. A payout already submitted to the ' +
+      'payment platform is cancelled THERE first; if the platform is already processing it ' +
+      '(paying the customer), this refuses with nothing changed — act on the outcome instead. ' +
+      'The reason follows FR-ADM-03: from the configurable list (or free text), recorded, and ' +
+      'emailed to the client.',
+  })
+  @ApiOkResponse({ type: WithdrawalRowDto })
+  @ScopedToClients('Predicate joins the state-machine UPDATE — reverses money already promised.')
+  @Audited('withdrawal.cancel')
+  cancelWithdrawal(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: WithdrawalRejectDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.money.cancelWithdrawal(id, req.admin, dto.reason, dto.reasonId);
+  }
+
+  @Post('withdrawals/:id/rival-submit')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description: 'A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).',
+  })
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('withdrawals.approve')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Retry submitting an approved withdrawal to the payment platform',
+    description:
+      'For rows whose submission definitively failed (the desk shows "needs attention"). Safe ' +
+      'under double-click: the claim column admits one in-flight create, and a submission ' +
+      'whose outcome is still unknown is left for reconciliation rather than retried — a ' +
+      'blind retry against a platform with no idempotency key on payouts is a double payment.',
+  })
+  @ApiOkResponse({ type: WithdrawalRowDto })
+  @ScopedToClients('Predicate joins the withdrawal lookup.')
+  @Audited('withdrawal.rival.submit')
+  retryRivalSubmission(
+    @Param('id', UuidParam) id: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.money.retryRivalSubmission(id, req.admin);
+  }
+
   // ── Ledger (ADM-13) ───────────────────────────────────────────────────────
   /*
    * MASTER ADMIN ONLY — narrowed from `ledger.view` when client scoping landed.

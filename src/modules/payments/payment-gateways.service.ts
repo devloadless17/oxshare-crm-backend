@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { ValidationError } from '../../common/errors/domain-errors';
-import { WhishProvider } from './whish.provider';
+import { PaymentIndeterminateError, ValidationError } from '../../common/errors/domain-errors';
+import { RivalClient } from './rival/rival.client';
+import { RivalConfigService } from './rival/rival-config.service';
 
 /**
  * The registry that maps a payment method KEY to the provider behind it.
@@ -13,18 +14,15 @@ import { WhishProvider } from './whish.provider';
  * file has a case for that key, which is what every reader had already started
  * asking instead.
  *
- * ## Why this exists rather than `if (key === 'whish')` at each call site
+ * ## `whish` now means "through Rival"
  *
- * `schema.ts` states the rule: "a screen that branches on `key === 'whish'` has
- * to be edited every time an operator adds a method, which is the thing making
- * these rows data instead of code was meant to avoid." The same applies on the
- * server.
- *
- * So `PaymentMethodsService` asks "is this gateway configured?" and
- * `TransactionsService` asks "is this a gateway at all, and start a payment on
- * it", and neither of them names Whish. Adding a second provider is a case in
- * ONE switch here, not a change to the deposit flow, the method list and the
- * callback route.
+ * The key stays `whish` — the operator-facing method and every stored
+ * `provider='whish'` row keep meaning "a Whish deposit" — but the code behind
+ * it talks to RIVAL, Loadless's own payments platform, where Whish is
+ * integrated once. This registry is the seam that made that swap one file:
+ * `TransactionsService` still asks "start a payment on this key" and never
+ * learns which platform answered. A future rail Rival adds (OMT, USDT) is a
+ * case here, not a change to the deposit flow.
  *
  * The key → provider mapping is deliberately explicit rather than dynamic: a
  * gateway is a money path, and "which code moves this client's money" should be
@@ -32,20 +30,27 @@ import { WhishProvider } from './whish.provider';
  */
 @Injectable()
 export class PaymentGateways {
-  constructor(private readonly whish: WhishProvider) {}
+  constructor(
+    private readonly rival: RivalClient,
+    private readonly rivalConfig: RivalConfigService,
+  ) {}
 
   /**
    * Is the provider behind this method usable on this deployment?
+   *
+   * Async now — the answer lives in `rival_settings`, not the environment,
+   * because the operator can enable and disable the platform connection from
+   * the settings screen without a deploy.
    *
    * An UNKNOWN key answers false rather than throwing. Callers pair this with
    * `isImplemented`, so an unknown key never reaches here as a gateway — but if
    * one did, throwing would take down the whole method list for every client
    * because of a single bad row.
    */
-  isConfigured(key: string): boolean {
+  async isConfigured(key: string): Promise<boolean> {
     switch (key) {
       case 'whish':
-        return this.whish.isConfigured();
+        return this.rivalConfig.isEnabled();
       default:
         return false;
     }
@@ -59,7 +64,7 @@ export class PaymentGateways {
    *   isImplemented  is there code that can talk to this provider?  — a fact
    *                  about the BUILD, true on every deployment.
    *   isConfigured   can THIS deployment reach it?                  — a fact
-   *                  about the ENVIRONMENT, false without the keys.
+   *                  about the CONFIGURATION, false without a Rival key.
    *
    * The FLOW is decided by the first, never the second. A method must not fall
    * back to the manual flow because a deployment is missing credentials — that
@@ -74,7 +79,14 @@ export class PaymentGateways {
   }
 
   /**
-   * Start a hosted payment and return the URL to send the client to.
+   * Start a hosted payment and return the URL to send the client to, plus
+   * Rival's `externalId` — the identifier every inbound event and poll will
+   * address this payment by. The caller stores it on the row immediately.
+   *
+   * `idempotencyKey` is our own transaction reference, so a retried request
+   * converges on ONE Rival payment rather than creating a second. No callback
+   * URLs: Rival owns the provider relationship, and it tells us what happened
+   * through the signed CRM webhook and the poll backstop.
    *
    * Throws for an unknown key — unlike `isConfigured`. By the time this is
    * called the method has already passed `assertUsable`, so an unimplemented
@@ -84,20 +96,33 @@ export class PaymentGateways {
   async startPayment(
     key: string,
     input: {
-      externalId: string;
       amount: string;
       currency: string;
       invoice: string;
-      successCallbackUrl: string;
-      failureCallbackUrl: string;
+      idempotencyKey: string;
       successRedirectUrl: string;
       failureRedirectUrl: string;
     },
-  ): Promise<{ paymentUrl: string }> {
+  ): Promise<{ paymentUrl: string; rivalExternalId: string }> {
     switch (key) {
       case 'whish': {
-        const collect = await this.whish.createCollect(input);
-        return { paymentUrl: collect.collectUrl };
+        const payment = await this.rival.createWhishPayment(input);
+        if (!payment.collectUrl) {
+          /*
+           * Created, but Rival could not mint the hosted page ("linkless
+           * orphan" in its vocabulary — Whish gave no usable answer). The
+           * payment EXISTS at Rival under our idempotency key, so this is
+           * indeterminate, not failed: the caller keeps the row pending and
+           * tags it with the externalId, and the poller re-creates with the
+           * same key — which Rival resolves to this payment and re-mints.
+           */
+          throw new PaymentIndeterminateError(
+            'The payment platform recorded the deposit but could not produce a payment page. ' +
+              'It will be retried automatically — do not create a second deposit.',
+            { rivalExternalId: payment.externalId },
+          );
+        }
+        return { paymentUrl: payment.collectUrl, rivalExternalId: payment.externalId };
       }
       default:
         throw new ValidationError(`No payment gateway is implemented for ${key}.`);
@@ -105,35 +130,33 @@ export class PaymentGateways {
   }
 
   /**
-   * Ask the provider what actually happened to a payment.
+   * Ask Rival what actually happened to a payment.
    *
-   * This is what settles a deposit. The callback that prompted the question is
-   * an unauthenticated GET and proves nothing; this answer is authoritative.
+   * Takes the RIVAL externalId, not our reference — Rival's read is addressed
+   * by its own identifier, which the caller stored at create.
    *
-   * `settled` is the caller's decision point: only `success` and `failed` are
-   * final. `pending` means the link is still payable — including after a failed
-   * attempt — so a failure callback is NOT the end of a payment.
+   * `settled` is the caller's decision point: only `PAID` and `FAILED` are
+   * final. Rival's `PENDING` covers "the client tried and failed but the link
+   * is still payable" — Rival already absorbed Whish's failed-attempt nuance —
+   * so its `FAILED`, unlike raw Whish's, genuinely is the end of the payment.
+   *
+   * `needsAttention` is surfaced and NEVER auto-credited: it means Rival saw
+   * the money and could not settle its own side, which is Rival's incident to
+   * resolve; crediting on it would move client money on an unsettled fact.
    */
   async checkPayment(
     key: string,
-    externalId: string,
-    currency: string,
-  ): Promise<{ settled: boolean; paid: boolean; rawStatus: string }> {
+    rivalExternalId: string,
+  ): Promise<{ settled: boolean; paid: boolean; rawStatus: string; needsAttention: boolean }> {
     switch (key) {
       case 'whish': {
-        const status = await this.whish.getStatus(externalId, currency);
-        const paid = status.collectStatus === 'success';
-        /*
-         * `refunded` counts as settled AND not paid. The money came and went;
-         * crediting it would hand a client a balance the operator no longer
-         * holds — and leaving it unsettled would have the reconciler chasing it
-         * forever.
-         */
-        const settled =
-          status.collectStatus === 'success' ||
-          status.collectStatus === 'failed' ||
-          status.collectStatus === 'refunded';
-        return { settled, paid, rawStatus: status.collectStatus };
+        const payment = await this.rival.getWhishPayment(rivalExternalId);
+        return {
+          settled: payment.status === 'PAID' || payment.status === 'FAILED',
+          paid: payment.status === 'PAID',
+          rawStatus: payment.status,
+          needsAttention: payment.needsAttention,
+        };
       }
       default:
         throw new ValidationError(`No payment gateway is implemented for ${key}.`);

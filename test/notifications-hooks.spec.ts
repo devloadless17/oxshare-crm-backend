@@ -124,7 +124,7 @@ describe('withdrawal decisions and their bell rows are one commit', () => {
       userId,
       currency: 'USD',
       amount: '100',
-      destination: 'somewhere',
+      destination: '+961 3 123 456',
       provider: 'whish',
     });
 
@@ -155,7 +155,7 @@ describe('withdrawal decisions and their bell rows are one commit', () => {
       userId,
       currency: 'USD',
       amount: '100',
-      destination: 'somewhere',
+      destination: '+961 3 123 456',
       provider: 'whish',
     });
 
@@ -188,8 +188,9 @@ describe('deposit settlement', () => {
   async function seedPendingDeposit(userId: string, reference: string): Promise<string> {
     const wallet = await wallets.getOrCreateWallet(userId, 'USD');
     const { rows } = await ctx.db.execute<{ id: string }>(sql`
-      INSERT INTO transactions (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref)
-      VALUES (${userId}, ${wallet.id}, 'deposit', '250.00000000', 'USD', 'pending', 'whish', ${reference})
+      INSERT INTO transactions (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref, rival_external_id)
+      VALUES (${userId}, ${wallet.id}, 'deposit', '250.00000000', 'USD', 'pending', 'whish', ${reference},
+              ${'rx-' + reference})
       RETURNING id
     `);
     return rows[0].id;

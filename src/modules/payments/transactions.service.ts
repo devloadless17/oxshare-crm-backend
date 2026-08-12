@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomBytes } from 'crypto';
-import { and, asc, count, desc, eq, gte, ne, sql, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, isNull, ne, sql, type SQLWrapper } from 'drizzle-orm';
 import {
   // Aliased: `this.paymentMethods` is the injected SERVICE, and an unaliased
   // import of the table would shadow it in every query below.
@@ -29,12 +29,14 @@ type TransactionRow = typeof transactions.$inferSelect;
  */
 export const MANUAL_ADMIN_PROVIDER = 'manual_admin';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
+import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { assertActorCan, type Actor } from '../../common/security/actor';
 import { money, toDecimal } from '../wallet/money';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
 import type { SortOrder } from '../../common/sorting';
 import { MoneyLimits } from '../../config/money-limits';
 import { PaymentMethodsService } from './payment-methods.service';
+import { wishDestinationIssue } from './rival/wish-phone';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { DRIZZLE_DB } from '../../database/database.module';
@@ -249,6 +251,18 @@ export class TransactionsService {
         `The maximum single withdrawal is ${max.toString()} ${params.currency}. ` +
           'Please split the request or contact support.',
       );
+    }
+
+    /*
+     * A whish withdrawal's destination is a phone number Rival will pay over
+     * Whish-to-Whish, validated NOW with Rival's own rules (wish-phone.ts):
+     * refusing at request time bounces the typo on the client in the moment
+     * they can fix it, instead of days later as a failed submission on an
+     * approval the admin cannot explain.
+     */
+    if (params.provider === 'whish') {
+      const issue = wishDestinationIssue(params.destination);
+      if (issue) throw new ValidationError(issue);
     }
 
     const db = this.db;
@@ -475,6 +489,9 @@ export class TransactionsService {
         requestedAt: transactions.createdAt,
         reviewedAt: transactions.reviewedAt,
         settledAt: transactions.settledAt,
+        rivalWithdrawalId: transactions.rivalWithdrawalId,
+        rivalSubmittedAt: transactions.rivalSubmittedAt,
+        rivalNeedsAttention: transactions.rivalNeedsAttention,
         userId: transactions.userId,
         userEmail: users.email,
         userFirstName: users.firstName,
@@ -536,6 +553,9 @@ export class TransactionsService {
       requestedAt: r.requestedAt,
       reviewedAt: r.reviewedAt,
       settledAt: r.settledAt,
+      rivalWithdrawalId: r.rivalWithdrawalId,
+      rivalSubmittedAt: r.rivalSubmittedAt,
+      rivalNeedsAttention: r.rivalNeedsAttention,
       user: {
         id: r.userId,
         email: r.userEmail,
@@ -1149,17 +1169,46 @@ export class TransactionsService {
     if (isGateway) {
       try {
         const started = await this.gateways.startPayment(paymentMethod.key, {
-          externalId: reference,
           amount: money(params.amount),
           currency,
           invoice: `Deposit ${reference}`,
-          successCallbackUrl: this.callbackUrl(paymentMethod.key, reference, 'success'),
-          failureCallbackUrl: this.callbackUrl(paymentMethod.key, reference, 'failure'),
+          /*
+           * Our reference as the idempotency key: a retried request converges
+           * on ONE Rival payment. No callback URLs any more — Rival owns the
+           * provider relationship and reports back through the signed CRM
+           * webhook and the poll backstop, never through an anonymous GET.
+           */
+          idempotencyKey: reference,
           successRedirectUrl: this.redirectUrl(paymentMethod.key, reference, 'success'),
           failureRedirectUrl: this.redirectUrl(paymentMethod.key, reference, 'failure'),
         });
         paymentUrl = started.paymentUrl;
+        /*
+         * Rival's externalId, stored the moment it is known. It is the ONLY
+         * key inbound webhook events address this payment by (their
+         * `transaction.id` is null on pending/failed), so a row without it is
+         * invisible to the event stream and settles by poll alone.
+         */
+        await this.db
+          .update(transactions)
+          .set({ rivalExternalId: started.rivalExternalId })
+          .where(eq(transactions.id, tx.id));
       } catch (error) {
+        if (error instanceof PaymentIndeterminateError) {
+          /*
+           * The create may have landed at Rival without a usable answer. If
+           * Rival got far enough to assign an externalId, keep it — the
+           * poller can then ask directly; without one, the poller replays the
+           * create under the same idempotency key and converges either way.
+           */
+          const externalId = error.details?.['rivalExternalId'];
+          if (typeof externalId === 'string' && externalId.length > 0) {
+            await this.db
+              .update(transactions)
+              .set({ rivalExternalId: externalId })
+              .where(eq(transactions.id, tx.id));
+          }
+        }
         if (!(error instanceof PaymentIndeterminateError)) {
           await this.db
             .update(transactions)
@@ -1205,25 +1254,6 @@ export class TransactionsService {
     };
   }
 
-  /**
-   * Where the PROVIDER calls us back.
-   *
-   * `API_PUBLIC_URL` rather than a request-derived host: a callback URL built
-   * from an inbound `Host` header is one a caller can influence, and this value
-   * is handed to a third party who will fetch it later. It must be a value the
-   * operator configured.
-   *
-   * The reference travels in the query string because Whish preserves custom
-   * parameters and sends no body — without it the callback says only "something
-   * happened" with no way to know what.
-   */
-  private callbackUrl(method: string, reference: string, outcome: 'success' | 'failure'): string {
-    const base = (this.config.get<string>('API_PUBLIC_URL') ?? '').replace(/\/+$/, '');
-    return `${base}/v1/payments/gateway/${method}/callback?reference=${encodeURIComponent(
-      reference,
-    )}&outcome=${outcome}`;
-  }
-
   /** Where the CLIENT's browser lands after paying. The portal, not the API. */
   private redirectUrl(method: string, reference: string, outcome: 'success' | 'failure'): string {
     const base = (this.config.get<string>('PORTAL_URL') ?? '').replace(/\/+$/, '');
@@ -1249,20 +1279,21 @@ export class TransactionsService {
   }
 
   /**
-   * Settle a gateway deposit by ASKING THE PROVIDER, never by trusting a
-   * callback.
+   * Settle a gateway deposit by ASKING THE PLATFORM, never by trusting the
+   * trigger.
    *
-   * ## The security boundary of the whole integration
+   * ## Still the security boundary, with a stronger trigger
    *
-   * The callback that triggers this is an unauthenticated GET with no body and
-   * no signature. Anybody who learns the URL can fire it. So it is treated as a
-   * NUDGE — "go and look" — and the provider's authenticated status answer is
-   * the only thing money is credited on. A callback-trusting implementation
-   * credits a wallet for whoever can guess a reference.
+   * The old trigger was Whish's unauthenticated GET; today it is either the
+   * client's browser landing on the portal, Rival's SIGNED webhook, or the
+   * poll backstop. The webhook is cryptographically verified — but this method
+   * keeps the ask-don't-trust shape anyway, because it costs one cheap read of
+   * Rival's stored state and means every trigger, however authenticated,
+   * converges on the same authoritative answer. Money is credited on Rival's
+   * status, never on the shape of whatever prompted the question.
    *
-   * Safe to call repeatedly, and called from two places for that reason: the
-   * callback, and the client's own browser landing back on the portal. Whichever
-   * arrives first settles it; the second is a no-op.
+   * Safe to call repeatedly, and called from three places for that reason.
+   * Whichever arrives first settles it; the rest are no-ops.
    *
    * Idempotency is the DATABASE's, twice over: the state transition is
    * conditional on the row still being pending, and `WalletService.post` is
@@ -1276,14 +1307,22 @@ export class TransactionsService {
       .where(and(eq(transactions.provider, method), eq(transactions.providerRef, reference)))
       .limit(1);
 
-    // Not found is not an error worth shouting about: a callback for a
+    // Not found is not an error worth shouting about: a status poll for a
     // reference this system never issued is noise, not an incident.
     if (!tx) throw new NotFoundError('No deposit matches that reference.');
 
     // Already settled — nothing to ask, nothing to do.
     if (tx.state !== 'pending') return { state: tx.state };
 
-    const result = await this.gateways.checkPayment(method, reference, tx.currency);
+    /*
+     * No Rival externalId means the create never confirmed — the row exists
+     * here and MAY exist at Rival. Nothing can be asked yet; the poller
+     * replays the create under the same idempotency key, which either adopts
+     * the orphan or mints the payment, and settlement proceeds from there.
+     */
+    if (!tx.rivalExternalId) return { state: tx.state };
+
+    const result = await this.gateways.checkPayment(method, tx.rivalExternalId);
 
     if (!result.settled) {
       /*
@@ -1386,6 +1425,147 @@ export class TransactionsService {
     });
 
     return { state: 'success' };
+  }
+
+  /**
+   * Recover the Rival externalId for a pending deposit whose create never
+   * confirmed — the poller's repair for the indeterminate-create case.
+   *
+   * The create is REPLAYED under the same idempotency key (our reference).
+   * Rival's documented replay semantics make this converge: an existing
+   * payment is returned unchanged, a linkless orphan is re-minted, and only if
+   * nothing exists is a fresh payment created. No client-visible effect either
+   * way — the row stays pending and simply becomes addressable.
+   */
+  async recoverRivalExternalId(txId: string): Promise<boolean> {
+    const [tx] = await this.db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, txId))
+      .limit(1);
+    if (!tx || tx.state !== 'pending' || tx.rivalExternalId || !tx.providerRef) return false;
+    if (tx.direction !== 'deposit' || !this.gateways.isImplemented(tx.provider)) return false;
+
+    try {
+      const started = await this.gateways.startPayment(tx.provider, {
+        amount: tx.amount,
+        currency: tx.currency,
+        invoice: `Deposit ${tx.providerRef}`,
+        idempotencyKey: tx.providerRef,
+        successRedirectUrl: this.redirectUrl(tx.provider, tx.providerRef, 'success'),
+        failureRedirectUrl: this.redirectUrl(tx.provider, tx.providerRef, 'failure'),
+      });
+      await this.db
+        .update(transactions)
+        .set({ rivalExternalId: started.rivalExternalId })
+        .where(and(eq(transactions.id, tx.id), isNull(transactions.rivalExternalId)));
+      return true;
+    } catch (error) {
+      if (error instanceof PaymentIndeterminateError) {
+        const externalId = error.details?.['rivalExternalId'];
+        if (typeof externalId === 'string' && externalId.length > 0) {
+          await this.db
+            .update(transactions)
+            .set({ rivalExternalId: externalId })
+            .where(and(eq(transactions.id, tx.id), isNull(transactions.rivalExternalId)));
+          return true;
+        }
+      }
+      this.logger.warn(
+        `Could not recover a Rival externalId for deposit ${txId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Apply one verified Rival deposit event — the webhook's and the poller's
+   * entry point, mapping the event onto the state machine and DELEGATING every
+   * actual settlement to `settleGatewayDeposit`, so there is exactly one code
+   * path that credits a deposit no matter which trigger fired.
+   *
+   * The return value is for the webhook's response mapping; every outcome
+   * except `unknown-reference` (503, Rival retries — the create/webhook race)
+   * and `pending` (also 503: the event says settled, Rival's stored state does
+   * not agree YET) answers 200.
+   *
+   * ## The two cases that flag a human instead of moving money
+   *
+   *  - `completed` against a TERMINALLY FAILED row: Rival holds the client's
+   *    money, our row says the deposit failed. Auto-crediting would resurrect
+   *    a terminal state; silently ignoring would strand real money. The row is
+   *    flagged and someone is paged.
+   *  - `reversed`, in any state: a reversal of settled client funds is a
+   *    compensating-entry decision a HUMAN makes (§6.4 — the ledger is
+   *    append-only and corrections are deliberate). The event is recorded, the
+   *    ledger is not touched.
+   */
+  async applyRivalDepositEvent(
+    rivalExternalId: string,
+    event: 'completed' | 'failed' | 'reversed',
+  ): Promise<
+    'applied' | 'duplicate' | 'stale' | 'pending' | 'needs-attention' | 'unknown-reference'
+  > {
+    const [tx] = await this.db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.rivalExternalId, rivalExternalId))
+      .limit(1);
+
+    // The create/webhook race: Rival's first delivery can outrun the UPDATE
+    // that stores the externalId. Answered as retryable — Rival's 60-second
+    // backoff comfortably outruns the race, and the poller sits behind it.
+    if (!tx) return 'unknown-reference';
+
+    if (event === 'reversed') {
+      await this.db
+        .update(transactions)
+        .set({ rivalNeedsAttention: true })
+        .where(eq(transactions.id, tx.id));
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.PAYMENT_STATE_MISMATCH,
+        'page',
+        'Rival reversed a deposit. The client wallet has NOT been debited — a compensating ' +
+          'entry is a human decision. Reconcile the transaction against the Rival dashboard.',
+        { transactionId: tx.id, rivalExternalId, state: tx.state },
+      );
+      return 'needs-attention';
+    }
+
+    if (tx.state === 'pending') {
+      const { state } = await this.settleGatewayDeposit(tx.provider, tx.providerRef ?? '');
+      return state === 'pending' ? 'pending' : 'applied';
+    }
+
+    if (event === 'completed') {
+      if (tx.state === 'success') return 'duplicate';
+      /*
+       * PAID at Rival, terminal-not-success here. Never resurrected: a state
+       * machine that can be argued backwards by an event replay is not a
+       * state machine. Flagged for the reconciliation an operator does with
+       * both dashboards open.
+       */
+      await this.db
+        .update(transactions)
+        .set({ rivalNeedsAttention: true })
+        .where(eq(transactions.id, tx.id));
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.PAYMENT_STATE_MISMATCH,
+        'page',
+        'Rival reports a deposit PAID against a CRM row that is terminally failed. The money ' +
+          'is at Rival and no wallet was credited — reconcile by hand.',
+        { transactionId: tx.id, rivalExternalId, state: tx.state },
+      );
+      return 'needs-attention';
+    }
+
+    // A `failed` event against a terminal row: at-least-once delivery echoing
+    // history. Never regress a terminal state.
+    return 'stale';
   }
 
   /**

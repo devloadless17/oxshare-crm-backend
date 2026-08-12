@@ -57,9 +57,9 @@
   "GET /v1/admin/roles",
   "GET /v1/admin/roles/export",
   "GET /v1/admin/security-settings",
-  "GET /v1/admin/settings/general",
   "GET /v1/admin/settings/rival",
   "GET /v1/admin/settings/smtp",
+  "GET /v1/admin/settings/trading",
   "GET /v1/admin/stats/kyc-trend",
   "GET /v1/admin/stats/overview",
   "GET /v1/admin/stats/registrations",
@@ -119,6 +119,7 @@
   "PATCH /v1/admin/users/{id}",
   "PATCH /v1/admin/users/{id}/status",
   "PATCH /v1/admin/withdrawals/{id}/approve",
+  "PATCH /v1/admin/withdrawals/{id}/cancel",
   "PATCH /v1/admin/withdrawals/{id}/reject",
   "PATCH /v1/admin/withdrawals/{id}/settle",
   "POST /v1/admin/api-keys",
@@ -151,6 +152,7 @@
   "POST /v1/admin/users/{id}/password-reset",
   "POST /v1/admin/wallets",
   "POST /v1/admin/wallets/credit",
+  "POST /v1/admin/withdrawals/{id}/rival-submit",
   "POST /v1/auth/change-password",
   "POST /v1/auth/forgot-password",
   "POST /v1/auth/login",
@@ -189,7 +191,7 @@
   "PUT /v1/admin/rejection-reasons/{id}",
   "PUT /v1/admin/roles/{id}",
   "PUT /v1/admin/security-settings/{key}",
-  "PUT /v1/admin/settings/general",
   "PUT /v1/admin/settings/rival",
-  "PUT /v1/admin/settings/smtp"
+  "PUT /v1/admin/settings/smtp",
+  "PUT /v1/admin/settings/trading"
 ]

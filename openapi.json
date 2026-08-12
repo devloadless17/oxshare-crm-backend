@@ -7380,6 +7380,108 @@
         ]
       }
     },
+    "/v1/admin/withdrawals/{id}/cancel": {
+      "patch": {
+        "description": "The \"approved, then thought better of it\" action. A payout already submitted to the payment platform is cancelled THERE first; if the platform is already processing it (paying the customer), this refuses with nothing changed — act on the outcome instead. The reason follows FR-ADM-03: from the configurable list (or free text), recorded, and emailed to the client.",
+        "operationId": "AdminMoneyController_cancelWithdrawal",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action, reused only when retrying that same one. The state guards below make a REPLAYED CAUSE a no-op; this makes a replayed REQUEST one too (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WithdrawalRejectDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalRowDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Cancel an APPROVED withdrawal — refunds the client, reasoned and emailed",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/withdrawals/{id}/rival-submit": {
+      "post": {
+        "description": "For rows whose submission definitively failed (the desk shows \"needs attention\"). Safe under double-click: the claim column admits one in-flight create, and a submission whose outcome is still unknown is left for reconciliation rather than retried — a blind retry against a platform with no idempotency key on payouts is a double payment.",
+        "operationId": "AdminMoneyController_retryRivalSubmission",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalRowDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Retry submitting an approved withdrawal to the payment platform",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/reconciliation": {
       "get": {
         "description": "The same check the hourly job runs: every wallet balance against the sum of its own ledger, and every confirmed accrual against the entry that should have credited it. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed.",
@@ -12481,6 +12583,21 @@
             "type": "string",
             "nullable": true
           },
+          "rivalWithdrawalId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The payment platform’s withdrawal id, once submitted. Null before."
+          },
+          "rivalSubmittedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true,
+            "description": "When the submission claim was taken. Set with no id = outcome being reconciled."
+          },
+          "rivalNeedsAttention": {
+            "type": "boolean",
+            "description": "A human must reconcile this row against the payment platform."
+          },
           "user": {
             "$ref": "#/components/schemas/WithdrawalUserDto"
           }
@@ -12492,6 +12609,7 @@
           "state",
           "provider",
           "requestedAt",
+          "rivalNeedsAttention",
           "user"
         ]
       },

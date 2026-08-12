@@ -638,6 +638,29 @@ export class WithdrawalRowDto {
   @ApiProperty() requestedAt: Date;
   @ApiPropertyOptional({ type: Date, nullable: true }) reviewedAt?: Date | null;
   @ApiPropertyOptional({ type: Date, nullable: true }) settledAt?: Date | null;
+  /*
+   * The Rival payout leg, for the desk's badges. `rivalWithdrawalId` set =
+   * submitted and awaiting Rival's decision; `rivalSubmittedAt` without an id
+   * = a submission whose outcome is being reconciled (do not resubmit);
+   * `rivalNeedsAttention` = a human must look — submission refused, or the
+   * two platforms' terminal states disagree.
+   */
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'The payment platform’s withdrawal id, once submitted. Null before.',
+  })
+  rivalWithdrawalId?: string | null;
+  @ApiPropertyOptional({
+    type: Date,
+    nullable: true,
+    description: 'When the submission claim was taken. Set with no id = outcome being reconciled.',
+  })
+  rivalSubmittedAt?: Date | null;
+  @ApiProperty({
+    description: 'A human must reconcile this row against the payment platform.',
+  })
+  rivalNeedsAttention: boolean;
   @ApiProperty({ type: WithdrawalUserDto }) user: WithdrawalUserDto;
 }
 

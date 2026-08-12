@@ -174,27 +174,6 @@ const envSchema = z
      */
     API_PUBLIC_URL: z.string().url().optional(),
 
-    WHISH_CHANNEL: z.string().min(1).optional(),
-    WHISH_SECRET: z.string().min(1).optional(),
-    /**
-     * The EXACT value Whish issued with the keys. Not "our website" loosely —
-     * Whish matches it against the credential pair and refuses a mismatch, so a
-     * plausible-looking substitution fails every call with an opaque code.
-     */
-    WHISH_WEBSITE_URL: z.string().url().optional(),
-    /**
-     * Sandbox or production, chosen explicitly rather than derived from
-     * NODE_ENV.
-     *
-     * Deriving it would mean a staging deployment — NODE_ENV=production by
-     * necessity — silently pointing at the LIVE money API. This has to be a
-     * decision somebody typed.
-     *
-     * Sandbox:    https://partner.api.sbx.whish.money/itel-service/api
-     * Production: https://api.whish.money/itel-service/api
-     */
-    WHISH_BASE_URL: z.string().url().optional(),
-
     /*
      * The Rival connection's DEVELOPMENT floor. Production config lives in the
      * `rival_settings` row (admin-editable, encrypted at rest), and the row
@@ -203,10 +182,15 @@ const envSchema = z
      * deployment without Rival simply has the whish deposit method
      * unavailable, which the methods list renders honestly.
      *
+     * No WHISH_* variables any more, and none may return: Whish credentials
+     * live inside Rival, once, for every Loadless merchant system. This CRM
+     * holds only a Rival company key.
+     *
      * `RIVAL_BASE_URL` includes the /v1 prefix, e.g.
      * https://staging.portal.rivalpayments.com/v1 — staging and production are
-     * different hosts, chosen explicitly, never derived from NODE_ENV (the
-     * WHISH_BASE_URL reasoning above, inherited).
+     * different hosts, chosen explicitly, never derived from NODE_ENV: a
+     * staging deployment is NODE_ENV=production by necessity, and deriving the
+     * money API's address from it would silently point staging at live money.
      */
     RIVAL_BASE_URL: z.string().url().optional(),
     RIVAL_API_KEY: z.string().min(1).optional(),
