@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq, inArray } from 'drizzle-orm';
+import { ConfigService } from '@nestjs/config';
+import { and, eq, gt, inArray, lte, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
 import { ibAccounts, ibAccruals, ibLevels, users } from '../../database/schema';
@@ -53,6 +54,15 @@ import {
  * All decision-making lives in the pure functions in `./commission.ts`. This
  * class only fetches, persists and moves money.
  */
+/**
+ * A day, and the reasoning is the reversal window rather than the number.
+ *
+ * Long enough that a bad deposit is caught by the desk's normal daily rhythm
+ * before the money becomes spendable; short enough that a partner is not
+ * chasing yesterday's commission. Override with IB_COMMISSION_HOLD_HOURS.
+ */
+const DEFAULT_HOLD_HOURS = 24;
+
 @Injectable()
 export class CommissionService implements CommissionAccrualPort {
   private readonly logger = new Logger(CommissionService.name);
@@ -62,7 +72,48 @@ export class CommissionService implements CommissionAccrualPort {
     private readonly wallets: WalletService,
     /** The partner's "commission credited" bell row, written with the credit. */
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
+    private readonly config: ConfigService,
   ) {}
+
+  /**
+   * How long an accrual must sit before it becomes spendable.
+   *
+   * ## This is the promise the class docblock makes and did not keep
+   *
+   * The two-step design says a commission is payable "once that deposit is
+   * settled and BEYOND REVERSAL". Nothing enforced the second half: the
+   * confirmation ran hourly over every pending row, so a commission was in the
+   * partner's wallet within the hour and a deposit reversed afterwards left
+   * them holding money recoverable only by a compensating entry.
+   *
+   * A window does not make reversal impossible — it makes it CHEAP. Inside the
+   * window the accrual is still just a row, and reversing it costs a status
+   * change and moves no money. Outside it, the same reversal is a debit against
+   * a balance the partner may already have withdrawn.
+   *
+   * Zero is honoured and means "pay immediately", which is what the system did
+   * before this existed. It is a legitimate choice for a broker whose deposits
+   * cannot be reversed, and it is not the default.
+   */
+  private holdHours(): number {
+    const raw = this.config.get<string>('IB_COMMISSION_HOLD_HOURS');
+    if (raw === undefined || raw.trim() === '') return DEFAULT_HOLD_HOURS;
+
+    const parsed = Number.parseInt(raw.trim(), 10);
+    /*
+     * A malformed value falls back to the default rather than to zero. The
+     * failure mode of a typo must not be "pay every commission instantly" —
+     * that is the one outcome nobody would choose deliberately.
+     */
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      this.logger.warn(
+        `IB_COMMISSION_HOLD_HOURS is "${raw}", which is not a whole number of hours. ` +
+          `Holding for the default ${DEFAULT_HOLD_HOURS}h instead.`,
+      );
+      return DEFAULT_HOLD_HOURS;
+    }
+    return parsed;
+  }
 
   /**
    * `CommissionAccrualPort` — the entry point payments calls, and the ONLY one
@@ -222,13 +273,27 @@ export class CommissionService implements CommissionAccrualPort {
    * accrual marked `confirmed` with no ledger entry behind it — or a credit with
    * no accrual pointing at it — is a state this system cannot reach.
    */
-  async confirmPending(limit = 500): Promise<{ confirmed: number; failed: number }> {
+  async confirmPending(limit = 500): Promise<{ confirmed: number; failed: number; held: number }> {
+    const hours = this.holdHours();
+    const payableFrom = new Date(Date.now() - hours * 3_600_000);
+
     const pending = await this.db
       .select()
       .from(ibAccruals)
-      .where(eq(ibAccruals.status, 'pending'))
+      .where(and(eq(ibAccruals.status, 'pending'), lte(ibAccruals.createdAt, payableFrom)))
       .orderBy(ibAccruals.createdAt)
       .limit(limit);
+
+    /*
+     * Counted separately and REPORTED, because "nothing was paid" has two very
+     * different causes: nobody earned anything, or everything earned is still
+     * maturing. An operator watching the log needs to tell them apart before
+     * concluding the engine has stopped.
+     */
+    const [{ held = 0 } = {}] = await this.db
+      .select({ held: sql<number>`count(*)::int` })
+      .from(ibAccruals)
+      .where(and(eq(ibAccruals.status, 'pending'), gt(ibAccruals.createdAt, payableFrom)));
 
     let confirmed = 0;
     let failed = 0;
@@ -321,7 +386,7 @@ export class CommissionService implements CommissionAccrualPort {
     if (confirmed > 0 || failed > 0) {
       this.logger.log(`Commission confirm run: ${confirmed} credited, ${failed} left pending.`);
     }
-    return { confirmed, failed };
+    return { confirmed, failed, held };
   }
 
   /**

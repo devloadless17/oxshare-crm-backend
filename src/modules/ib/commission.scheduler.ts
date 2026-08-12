@@ -38,10 +38,26 @@ export class CommissionScheduler {
 
   constructor(private readonly commissions: CommissionService) {}
 
-  @Cron(CronExpression.EVERY_HOUR, { name: 'ib.confirmAccruals' })
+  /*
+   * HOURLY by default, and settable — a broker running a four-hourly desk sets
+   * IB_COMMISSION_CONFIRM_CRON and gets a four-hourly payout run.
+   *
+   * Read from `process.env` rather than injected, because a decorator argument
+   * is evaluated when the class is DEFINED, before any container exists. That
+   * is the one place in this codebase where reaching for process.env directly
+   * is not a shortcut — ConfigService cannot be asked this early.
+   *
+   * The frequency is not a correctness control. Running it every four hours
+   * rather than every hour delays a payout; it cannot pay the wrong amount,
+   * because what is payable is decided by the hold window in the service and
+   * by the per-accrual idempotency guard, not by how often this fires.
+   */
+  @Cron(process.env.IB_COMMISSION_CONFIRM_CRON ?? CronExpression.EVERY_HOUR, {
+    name: 'ib.confirmAccruals',
+  })
   async confirm(): Promise<void> {
     try {
-      const { confirmed, failed } = await this.commissions.confirmPending();
+      const { confirmed, failed, held } = await this.commissions.confirmPending();
       if (failed > 0) {
         this.logger.warn(
           `${failed} commission accrual(s) could not be credited and remain pending; they will be ` +
@@ -50,6 +66,15 @@ export class CommissionScheduler {
       }
       if (confirmed > 0) {
         this.logger.log(`Credited ${confirmed} commission accrual(s).`);
+      }
+      /*
+       * Reported even when nothing was paid, because "0 credited" has two very
+       * different causes — nobody earned anything, or everything earned is
+       * still inside its maturation window — and an operator watching this log
+       * would otherwise read the second as the engine having stopped.
+       */
+      if (confirmed === 0 && held > 0) {
+        this.logger.log(`Nothing due yet: ${held} accrual(s) still maturing.`);
       }
     } catch (error) {
       /*

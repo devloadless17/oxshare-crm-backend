@@ -76,7 +76,20 @@ beforeAll(async () => {
     emailStubAs(),
     dispatch,
   );
-  commissions = new CommissionService(ctx.db, wallets, dispatch);
+  /*
+   * The maturation window is switched OFF for this spec, through the real
+   * config path rather than a special argument.
+   *
+   * These tests accrue and confirm in the same breath, and the default 24-hour
+   * hold would leave every accrual pending — the suite would fail against a
+   * system behaving exactly as designed. Setting the variable is what a
+   * deployment that pays immediately does, so this exercises a supported
+   * configuration rather than a test-only door.
+   *
+   * What the window itself does is covered in `commission.spec.ts`.
+   */
+  process.env.IB_COMMISSION_HOLD_HOURS = '0';
+  commissions = new CommissionService(ctx.db, wallets, dispatch, new ConfigService());
 }, 120_000);
 
 afterAll(async () => {
