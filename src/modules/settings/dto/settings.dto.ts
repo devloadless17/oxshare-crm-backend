@@ -1,80 +1,15 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
-  IsEmail,
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
-
-/* ── General ──────────────────────────────────────────────────────────────── */
-
-export class GeneralSettingsDto {
-  @ApiProperty({ example: 'OxShare', description: 'Shown in the portal header.' })
-  brandName: string;
-
-  @ApiPropertyOptional({
-    type: String,
-    nullable: true,
-    description: 'Where clients are told to write. Null when unset.',
-    example: 'support@oxshare.com',
-  })
-  supportEmail: string | null;
-
-  @ApiPropertyOptional({
-    type: String,
-    nullable: true,
-    description: 'Help centre or ticket portal. Null when unset.',
-    example: 'https://help.oxshare.com',
-  })
-  supportUrl: string | null;
-
-  @ApiPropertyOptional({
-    type: String,
-    nullable: true,
-    description: 'Shown to clients during planned downtime. Null shows nothing.',
-  })
-  maintenanceNotice: string | null;
-
-  @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
-  updatedAt: string | null;
-}
-
-export class UpdateGeneralSettingsDto {
-  @ApiProperty({ example: 'OxShare', minLength: 1, maxLength: 120 })
-  @IsString()
-  @MinLength(1)
-  @MaxLength(120)
-  brandName: string;
-
-  /*
-   * Nullable rather than merely optional, and the distinction is the contract:
-   * `null` CLEARS the value and an absent key would be ambiguous with it. Same
-   * reasoning as the empty-string-clears rule on platform links — an operator
-   * removing a support address should not have to find a separate control.
-   */
-  @ApiPropertyOptional({ type: String, nullable: true, example: 'support@oxshare.com' })
-  @IsOptional()
-  @IsEmail({}, { message: 'supportEmail must be a valid email address, or null to clear it.' })
-  @MaxLength(320)
-  supportEmail?: string | null;
-
-  @ApiPropertyOptional({ type: String, nullable: true, example: 'https://help.oxshare.com' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(2048)
-  supportUrl?: string | null;
-
-  @ApiPropertyOptional({ type: String, nullable: true })
-  @IsOptional()
-  @IsString()
-  @MaxLength(2000)
-  maintenanceNotice?: string | null;
-}
 
 /* ── SMTP ─────────────────────────────────────────────────────────────────── */
 
@@ -192,4 +127,75 @@ export class SmtpTestResultDto {
     description: 'Which configuration delivered the message.',
   })
   source: 'database' | 'environment';
+}
+
+/* ── Trading ──────────────────────────────────────────────────────────────── */
+
+export class TradingSettingsDto {
+  @ApiProperty({
+    example: [50, 100, 200, 500],
+    type: [Number],
+    description: 'The leverage ladder offered to clients, in the order they see it.',
+  })
+  leverages: number[];
+
+  @ApiProperty({ example: 5, description: 'Live accounts one client may open themselves.' })
+  maxLiveAccounts: number;
+
+  @ApiProperty({ example: 5, description: 'Demo accounts one client may open themselves.' })
+  maxDemoAccounts: number;
+
+  @ApiProperty({
+    example: '1000000.00000000',
+    description: 'Largest opening balance a demo account may be given. A decimal string.',
+  })
+  maxDemoDeposit: string;
+
+  @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
+  updatedAt: string | null;
+}
+
+export class UpdateTradingSettingsDto {
+  /**
+   * The ladder as the operator types it: `50,100,200,500`.
+   *
+   * A STRING rather than `number[]`, because this is a text box and the round
+   * trip should return what they typed. The service parses it and rejects a
+   * malformed one with a message naming the offending value — a silently
+   * dropped entry would remove a leverage from the offer with no trace.
+   */
+  @ApiProperty({ example: '50,100,200,500', maxLength: 200 })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  leverages: string;
+
+  /*
+   * ZERO IS ALLOWED and means "no new ones of this kind". It is not the same as
+   * switching self-service off, which is done by offering no groups: this stops
+   * new accounts while leaving existing ones tradeable.
+   *
+   * The ceiling is 100 rather than unbounded — an uncapped demo endpoint is a
+   * free account generator on the broker's own server, and "unlimited" is the
+   * value somebody picks when they have not thought about that.
+   */
+  @ApiProperty({ example: 5, minimum: 0, maximum: 100 })
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  maxLiveAccounts: number;
+
+  @ApiProperty({ example: 5, minimum: 0, maximum: 100 })
+  @IsInt()
+  @Min(0)
+  @Max(100)
+  maxDemoAccounts: number;
+
+  /** A decimal string, never a number — §6. */
+  @ApiProperty({ example: '1000000.00', description: 'Positive decimal string.' })
+  @IsString()
+  @Matches(/^\d+(\.\d{1,2})?$/, {
+    message: 'maxDemoDeposit must be a positive decimal with up to 2 places',
+  })
+  maxDemoDeposit: string;
 }

@@ -1,17 +1,17 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ValidationError } from '../../common/errors/domain-errors';
 import { sealSecret } from '../../common/security/secret-box';
 import { AppSettingsStore } from '../../store/app-settings.store';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
 import { SmtpConfigService } from '../email/smtp-config.service';
 import type {
-  GeneralSettingsDto,
   SmtpSettingsDto,
-  UpdateGeneralSettingsDto,
+  TradingSettingsDto,
   UpdateSmtpSettingsDto,
+  UpdateTradingSettingsDto,
 } from './dto/settings.dto';
+import { formatLeverages, parseLeverages, tradingTermsFrom } from '../../common/trading-terms';
 
 /**
  * Reads and writes the two singleton settings rows.
@@ -40,74 +40,6 @@ export class SettingsService {
     private readonly config: ConfigService,
     private readonly audit: AdminAuditService,
   ) {}
-
-  async getGeneral(): Promise<GeneralSettingsDto> {
-    const row = await this.store.getGeneral();
-    return {
-      brandName: row?.brandName ?? 'OxShare',
-      supportEmail: row?.supportEmail ?? null,
-      supportUrl: row?.supportUrl ?? null,
-      maintenanceNotice: row?.maintenanceNotice ?? null,
-      updatedAt: row?.updatedAt.toISOString() ?? null,
-    };
-  }
-
-  async setGeneral(dto: UpdateGeneralSettingsDto, actor: Actor): Promise<GeneralSettingsDto> {
-    const adminId = actor.id;
-    // Read BEFORE the write, because the log's job is answering "what did it
-    // used to be" and `setGeneral` overwrites the only copy.
-    const previous = await this.getGeneral();
-    /*
-     * `https:` only, and checked here rather than with `@IsUrl()`, for the
-     * reason `platform-links.service.ts` spells out: class-validator's isURL
-     * accepts `http:` and says nothing about `javascript:`, and this value
-     * becomes an `href` in a client's browser.
-     */
-    const supportUrl = emptyToNull(dto.supportUrl);
-    if (supportUrl !== null && !supportUrl.startsWith('https://')) {
-      throw new ValidationError(
-        'The support URL must start with https://. It becomes a link in every client’s ' +
-          'browser, where http can be rewritten in transit and other schemes are worse.',
-      );
-    }
-
-    const row = await this.store.setGeneral(
-      {
-        brandName: dto.brandName.trim(),
-        supportEmail: emptyToNull(dto.supportEmail),
-        supportUrl,
-        maintenanceNotice: emptyToNull(dto.maintenanceNotice),
-      },
-      adminId,
-    );
-
-    /*
-     * The fields that MOVED, before and after.
-     *
-     * None of these looks like money and all of them are seen by every client:
-     * the brand name, the support address a complaint goes to, and the
-     * maintenance banner. A support email repointed to somewhere an operator
-     * controls is a phishing surface with no other trace.
-     *
-     * The singleton has one row, so `subjectId` is the constant 'general'
-     * rather than an id — the same shape `kyc_config.reset` uses.
-     */
-    const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const field of ['brandName', 'supportEmail', 'supportUrl', 'maintenanceNotice'] as const) {
-      if (previous[field] !== row[field]) {
-        changed[field] = { before: previous[field], after: row[field] };
-      }
-    }
-    this.audit.record(actor.id, 'settings.general.update', 'app_settings', 'general', { changed });
-
-    return {
-      brandName: row.brandName,
-      supportEmail: row.supportEmail,
-      supportUrl: row.supportUrl,
-      maintenanceNotice: row.maintenanceNotice,
-      updatedAt: row.updatedAt.toISOString(),
-    };
-  }
 
   async getSmtp(): Promise<SmtpSettingsDto> {
     const row = await this.store.getSmtp();
@@ -234,6 +166,76 @@ export class SettingsService {
       source: 'database',
       updatedAt: row.updatedAt.toISOString(),
     };
+  }
+
+  /* ── Trading ──────────────────────────────────────────────────────────── */
+
+  async getTrading(): Promise<TradingSettingsDto> {
+    const row = await this.store.getTrading();
+    const terms = tradingTermsFrom(row, this.config.get<string>('MT5_CLIENT_LEVERAGES'));
+
+    return {
+      leverages: terms.leverages,
+      maxLiveAccounts: terms.maxLiveAccounts,
+      maxDemoAccounts: terms.maxDemoAccounts,
+      maxDemoDeposit: terms.maxDemoDeposit,
+      updatedAt: row?.updatedAt.toISOString() ?? null,
+    };
+  }
+
+  async setTrading(dto: UpdateTradingSettingsDto, actor: Actor): Promise<TradingSettingsDto> {
+    const previous = await this.getTrading();
+
+    /*
+     * Parsed here rather than in the DTO, and STRICTLY — `parseLeverages`
+     * throws on `50,1OO,200` instead of dropping the bad entry. A filter would
+     * turn a typo into a shorter offer the operator never chose, and they would
+     * find out from a client asking where 1:100 went.
+     *
+     * Re-formatted from the parsed list rather than stored raw, so what comes
+     * back is normalised: whitespace gone, duplicates collapsed, order kept.
+     */
+    const leverages = parseLeverages(dto.leverages);
+
+    const row = await this.store.setTrading(
+      {
+        leverages: formatLeverages(leverages),
+        maxLiveAccounts: dto.maxLiveAccounts,
+        maxDemoAccounts: dto.maxDemoAccounts,
+        maxDemoDeposit: dto.maxDemoDeposit,
+      },
+      actor.id,
+    );
+
+    /*
+     * Every field here is a COMMERCIAL control, so every change is recorded
+     * with both sides. Raising the demo ceiling or the account cap is the kind
+     * of change that gets noticed a month later in the broker's own reporting,
+     * and "who set this to a million and when" needs an answer.
+     *
+     * The leverage ladder is compared as text: the list is ordered, and a
+     * reorder is a real change to what a client is shown first.
+     */
+    const after: TradingSettingsDto = {
+      leverages,
+      maxLiveAccounts: row.maxLiveAccounts,
+      maxDemoAccounts: row.maxDemoAccounts,
+      maxDemoDeposit: row.maxDemoDeposit,
+      updatedAt: row.updatedAt.toISOString(),
+    };
+
+    const changed: Record<string, { before: unknown; after: unknown }> = {};
+    if (formatLeverages(previous.leverages) !== formatLeverages(after.leverages)) {
+      changed['leverages'] = { before: previous.leverages, after: after.leverages };
+    }
+    for (const field of ['maxLiveAccounts', 'maxDemoAccounts', 'maxDemoDeposit'] as const) {
+      if (previous[field] !== after[field]) {
+        changed[field] = { before: previous[field], after: after[field] };
+      }
+    }
+    this.audit.record(actor.id, 'settings.trading.update', 'app_settings', 'trading', { changed });
+
+    return after;
   }
 }
 

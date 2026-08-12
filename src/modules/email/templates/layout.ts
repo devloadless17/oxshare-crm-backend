@@ -173,6 +173,26 @@ export function p(text: string): string {
   return `        <p>${esc(text)}</p>`;
 }
 
+/**
+ * A paragraph that may contain MARKUP — the caller escapes its own values.
+ *
+ * `p()` escapes everything it is given, which is the right default and was
+ * quietly wrong for four templates: they passed `<strong>…</strong>` to it and
+ * clients received emails with the tags spelled out in the text. Nothing
+ * failed, nothing logged, and the mails had been going out that way for a
+ * while.
+ *
+ * The escaping default stays. This is the opt-out, named so the difference is
+ * visible at the call site, and it takes `innerHtml` for the same reason
+ * `panel()` does: a parameter called that is a parameter people escape into.
+ *
+ * ⚠️ Every interpolated value must go through `esc()`. Nothing here does it
+ * for you.
+ */
+export function pRich(innerHtml: string): string {
+  return `        <p>${innerHtml}</p>`;
+}
+
 /** Small print — expiry notices, "ignore this if it wasn't you". Escaped. */
 export function fine(text: string): string {
   return `        <p style="font-size: 12px; color: ${MUTED};">${esc(text)}</p>`;

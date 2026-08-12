@@ -1,4 +1,4 @@
-import { button, card, esc, p, panel, type RenderedEmail } from './layout';
+import { button, card, esc, p, pRich, panel, type RenderedEmail } from './layout';
 
 /**
  * Money an operator placed into a client's wallet by hand.
@@ -45,7 +45,7 @@ export function walletCredit(
           Funds have been added to your wallet
         </h2>
 ${p(`Hello ${esc(firstName) || 'Valued Client'},`)}
-${p(`<strong>${money}</strong> has been credited to your OxShare wallet by our team.`)}
+${pRich(`<strong>${money}</strong> has been credited to your OxShare wallet by our team.`)}
 ${panel(`<strong>Reason:</strong> ${esc(reason)}`)}
 ${p('The funds are available now. You can see the credit on your transactions page alongside your other activity.')}
 ${button(portalUrl, 'Go to Portal')}`),

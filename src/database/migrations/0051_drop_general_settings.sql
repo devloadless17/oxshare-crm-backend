@@ -1,0 +1,14 @@
+-- The General settings tab, removed.
+--
+-- `general_settings` held a brand name, a support email, a support URL and a
+-- maintenance notice. Every one of them was written by the settings screen and
+-- read by NOTHING: the portal header renders its own brand, no email template
+-- consulted the support address, and the maintenance notice was never rendered
+-- anywhere. An operator editing this form was changing a value with no effect,
+-- which is worse than the feature being absent — it looks like it works.
+--
+-- DROPPED rather than deprecated. Keeping a table nobody reads leaves the next
+-- person to work out whether it is dead, and the audit log already holds every
+-- change ever made to it: `settings.general.update` rows survive this, because
+-- the audit table is append-only and independent of the row it describes.
+DROP TABLE IF EXISTS "general_settings";

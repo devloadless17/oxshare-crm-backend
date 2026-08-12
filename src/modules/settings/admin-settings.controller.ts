@@ -9,28 +9,32 @@ import { Audited, NotAudited } from '../admin/guards/audited.decorator';
 import { EmailService } from '../email/email.service';
 import { SettingsService } from './settings.service';
 import {
-  GeneralSettingsDto,
   SmtpSettingsDto,
   SmtpTestResultDto,
-  UpdateGeneralSettingsDto,
+  TradingSettingsDto,
   UpdateSmtpSettingsDto,
+  UpdateTradingSettingsDto,
 } from './dto/settings.dto';
 
 /**
- * The settings screen's API — the General and Email tabs.
+ * The settings screen's API — the Trading and Email tabs.
  *
  * Platforms and the security controls are served by their own controllers
  * (`platforms/admin-platform-links.controller.ts`,
  * `admin/admin-security-settings.controller.ts`) and stay there. The frontend
- * groups four tabs into one screen; that is a presentation decision and is not a
- * reason to merge four independently-guarded resources behind one endpoint.
+ * groups the tabs into one screen; that is a presentation decision and is not a
+ * reason to merge independently-guarded resources behind one endpoint.
+ *
+ * A General tab lived here too — brand name, support contacts, a maintenance
+ * notice. It was removed with its table: nothing outside its own form ever read
+ * any of it, so every field was an operator changing a value with no effect.
  *
  * ── The two halves are guarded differently, on purpose ─────────────────────
  *
- * GENERAL is `settings.manage` — a brand name and a support address are routine
- * operational content, the same class as a download link, and the reasoning in
- * `admin-platform-links.controller.ts` applies unchanged: forcing a master admin
- * to edit a support email is how the master credential ends up shared.
+ * TRADING is `settings.view` / `settings.edit` — commercial dials, the same
+ * class as a download link, and the reasoning in
+ * `admin-platform-links.controller.ts` applies unchanged: forcing a master
+ * admin to edit a leverage list is how the master credential ends up shared.
  *
  * SMTP is `MasterAdminGuard`, matching the security controls rather than the
  * download links. Whoever controls the mail relay receives every
@@ -50,37 +54,56 @@ export class AdminSettingsController {
     private readonly email: EmailService,
   ) {}
 
-  /* ── General ────────────────────────────────────────────────────────────── */
+  /* ── Trading ────────────────────────────────────────────────────────────── */
 
-  @Get('general')
-  // PermissionsGuard, not AdminGuard: AdminGuard authenticates but does not read
-  // @RequirePermissions, so the pair below would declare a permission nothing
-  // enforced. `route-authorization.spec.ts` fails the build on exactly that.
+  /*
+   * `settings.view` / `settings.edit`, the same pair as General rather than the
+   * master-admin lock on SMTP.
+   *
+   * These are commercial dials — the leverage ladder, how many accounts a
+   * client may open, the demo ceiling — and the people who set them are the
+   * people who run the brokerage, not whoever holds the master credential.
+   * Requiring master here is how the master credential ends up shared, which is
+   * the argument `admin-platform-links.controller.ts` makes and this follows.
+   *
+   * They are not the same class as SMTP: nothing here is a path to an
+   * administrator account. The worst a bad value does is offer clients terms the
+   * broker did not intend, which the audit log attributes and an operator can
+   * reverse from the same screen.
+   */
+  @Get('trading')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('settings.view')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Brand name, support contacts and the maintenance notice' })
-  @ApiOkResponse({ type: GeneralSettingsDto })
-  @NotClientScoped('Operator branding and contact details; contains no client data.')
-  getGeneral() {
-    return this.settings.getGeneral();
+  @ApiOperation({
+    summary: 'The terms clients may open trading accounts on',
+    description:
+      'The leverage ladder, the per-client account caps and the largest demo opening balance. ' +
+      'Until the first save these are the defaults, seeded from MT5_CLIENT_LEVERAGES when that ' +
+      'variable is set.',
+  })
+  @ApiOkResponse({ type: TradingSettingsDto })
+  @NotClientScoped('Broker-wide trading terms; contains no client data.')
+  getTrading() {
+    return this.settings.getTrading();
   }
 
-  @Put('general')
+  @Put('trading')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('settings.edit')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Update the general settings',
+    summary: 'Update the trading terms',
     description:
-      'Null or an empty string clears an optional field. The support URL must be https — it ' +
-      'becomes a link in every client’s browser.',
+      'Leverages are a comma-separated list; a malformed entry is REFUSED rather than dropped, ' +
+      'so a typo cannot silently shorten the offer. An account cap of 0 stops new accounts of ' +
+      'that kind without touching the ones a client already holds.',
   })
-  @ApiOkResponse({ type: GeneralSettingsDto })
-  @NotClientScoped('Operator branding and contact details; contains no client data.')
-  @Audited('settings.general.update')
-  setGeneral(@Body() dto: UpdateGeneralSettingsDto, @Req() req: Request & { admin: Admin }) {
-    return this.settings.setGeneral(dto, req.admin);
+  @ApiOkResponse({ type: TradingSettingsDto })
+  @NotClientScoped('Broker-wide trading terms; contains no client data.')
+  @Audited('settings.trading.update')
+  setTrading(@Body() dto: UpdateTradingSettingsDto, @Req() req: Request & { admin: Admin }) {
+    return this.settings.setTrading(dto, req.admin);
   }
 
   /* ── Email / SMTP ───────────────────────────────────────────────────────── */

@@ -4,7 +4,7 @@ import { SettingsService } from './settings.service';
 import { AdminAuthModule } from '../admin/admin-auth.module';
 
 /**
- * The General and Email tabs of the admin settings screen.
+ * The Trading and Email tabs of the admin settings screen.
  *
  * `AdminAuthModule` is imported for the same reason every other admin-facing
  * module imports it — `AdminGuard`, `MasterAdminGuard` and `PermissionsGuard`

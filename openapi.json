@@ -3086,6 +3086,7 @@
     },
     "/v1/trading/accounts/self-service": {
       "get": {
+        "description": "The account types are the MT5 groups the broker sells online, with the currency read live from the server so the portal shows what an account will actually be denominated in. An environment with no types configured is switched off and the portal hides it.",
         "operationId": "TradingController_selfService",
         "parameters": [],
         "responses": {
@@ -3098,7 +3099,7 @@
             "cookie": []
           }
         ],
-        "summary": "Whether a client may open live and demo accounts themselves",
+        "summary": "What a client may open themselves: account types, currencies and leverages",
         "tags": [
           "trading"
         ]
@@ -3775,9 +3776,10 @@
         ]
       }
     },
-    "/v1/admin/settings/general": {
+    "/v1/admin/settings/trading": {
       "get": {
-        "operationId": "AdminSettingsController_getGeneral",
+        "description": "The leverage ladder, the per-client account caps and the largest demo opening balance. Until the first save these are the defaults, seeded from MT5_CLIENT_LEVERAGES when that variable is set.",
+        "operationId": "AdminSettingsController_getTrading",
         "parameters": [],
         "responses": {
           "200": {
@@ -3785,7 +3787,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GeneralSettingsDto"
+                  "$ref": "#/components/schemas/TradingSettingsDto"
                 }
               }
             }
@@ -3796,21 +3798,21 @@
             "cookie": []
           }
         ],
-        "summary": "Brand name, support contacts and the maintenance notice",
+        "summary": "The terms clients may open trading accounts on",
         "tags": [
           "admin"
         ]
       },
       "put": {
-        "description": "Null or an empty string clears an optional field. The support URL must be https — it becomes a link in every client’s browser.",
-        "operationId": "AdminSettingsController_setGeneral",
+        "description": "Leverages are a comma-separated list; a malformed entry is REFUSED rather than dropped, so a typo cannot silently shorten the offer. An account cap of 0 stops new accounts of that kind without touching the ones a client already holds.",
+        "operationId": "AdminSettingsController_setTrading",
         "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateGeneralSettingsDto"
+                "$ref": "#/components/schemas/UpdateTradingSettingsDto"
               }
             }
           }
@@ -3821,7 +3823,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GeneralSettingsDto"
+                  "$ref": "#/components/schemas/TradingSettingsDto"
                 }
               }
             }
@@ -3832,7 +3834,7 @@
             "cookie": []
           }
         ],
-        "summary": "Update the general settings",
+        "summary": "Update the trading terms",
         "tags": [
           "admin"
         ]
@@ -9543,6 +9545,15 @@
             "example": "Swing trading",
             "description": "Defaults to the client's own name."
           },
+          "group": {
+            "type": "string",
+            "maxLength": 128,
+            "example": "real\\Standard"
+          },
+          "leverage": {
+            "type": "number",
+            "example": 100
+          },
           "startingBalance": {
             "type": "string",
             "example": "10000.00",
@@ -10099,30 +10110,36 @@
           "data"
         ]
       },
-      "GeneralSettingsDto": {
+      "TradingSettingsDto": {
         "type": "object",
         "properties": {
-          "brandName": {
-            "type": "string",
-            "example": "OxShare",
-            "description": "Shown in the portal header."
+          "leverages": {
+            "example": [
+              50,
+              100,
+              200,
+              500
+            ],
+            "description": "The leverage ladder offered to clients, in the order they see it.",
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
           },
-          "supportEmail": {
-            "type": "string",
-            "nullable": true,
-            "description": "Where clients are told to write. Null when unset.",
-            "example": "support@oxshare.com"
+          "maxLiveAccounts": {
+            "type": "number",
+            "example": 5,
+            "description": "Live accounts one client may open themselves."
           },
-          "supportUrl": {
-            "type": "string",
-            "nullable": true,
-            "description": "Help centre or ticket portal. Null when unset.",
-            "example": "https://help.oxshare.com"
+          "maxDemoAccounts": {
+            "type": "number",
+            "example": 5,
+            "description": "Demo accounts one client may open themselves."
           },
-          "maintenanceNotice": {
+          "maxDemoDeposit": {
             "type": "string",
-            "nullable": true,
-            "description": "Shown to clients during planned downtime. Null shows nothing."
+            "example": "1000000.00000000",
+            "description": "Largest opening balance a demo account may be given. A decimal string."
           },
           "updatedAt": {
             "type": "string",
@@ -10131,35 +10148,43 @@
           }
         },
         "required": [
-          "brandName"
+          "leverages",
+          "maxLiveAccounts",
+          "maxDemoAccounts",
+          "maxDemoDeposit"
         ]
       },
-      "UpdateGeneralSettingsDto": {
+      "UpdateTradingSettingsDto": {
         "type": "object",
         "properties": {
-          "brandName": {
+          "leverages": {
             "type": "string",
-            "example": "OxShare",
-            "minLength": 1,
-            "maxLength": 120
+            "example": "50,100,200,500",
+            "maxLength": 200
           },
-          "supportEmail": {
-            "type": "string",
-            "nullable": true,
-            "example": "support@oxshare.com"
+          "maxLiveAccounts": {
+            "type": "number",
+            "example": 5,
+            "minimum": 0,
+            "maximum": 100
           },
-          "supportUrl": {
-            "type": "string",
-            "nullable": true,
-            "example": "https://help.oxshare.com"
+          "maxDemoAccounts": {
+            "type": "number",
+            "example": 5,
+            "minimum": 0,
+            "maximum": 100
           },
-          "maintenanceNotice": {
+          "maxDemoDeposit": {
             "type": "string",
-            "nullable": true
+            "example": "1000000.00",
+            "description": "Positive decimal string."
           }
         },
         "required": [
-          "brandName"
+          "leverages",
+          "maxLiveAccounts",
+          "maxDemoAccounts",
+          "maxDemoDeposit"
         ]
       },
       "SmtpSettingsDto": {

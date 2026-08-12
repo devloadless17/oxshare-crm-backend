@@ -1,12 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
-import { generalSettings, smtpSettings } from '../database/schema';
+import { smtpSettings, tradingSettings } from '../database/schema';
 
 /**
- * The two singleton settings rows — `general_settings` and `smtp_settings`.
+ * The singleton settings rows — `smtp_settings` and `trading_settings`.
  *
- * ONE store for both, unlike the rest of `store/`, because both tables are a
+ * ONE store for both, unlike the rest of `store/`, because each table is a
  * single row addressed the same way and neither will ever grow a query beyond
  * "read it" and "write it". Two near-identical files whose only difference is a
  * table name would be the more faithful convention and the less useful code.
@@ -26,15 +26,6 @@ import { generalSettings, smtpSettings } from '../database/schema';
  * value back into a password is `settings.service.ts`. A store that could
  * decrypt would put that capability behind every injection of the store.
  */
-
-export interface GeneralSettingsRow {
-  brandName: string;
-  supportEmail: string | null;
-  supportUrl: string | null;
-  maintenanceNotice: string | null;
-  updatedBy: string | null;
-  updatedAt: Date;
-}
 
 export interface SmtpSettingsRow {
   host: string;
@@ -57,40 +48,34 @@ export interface SmtpSettingsWrite {
   passwordCiphertext?: string | null;
 }
 
-export interface GeneralSettingsWrite {
-  brandName: string;
-  supportEmail: string | null;
-  supportUrl: string | null;
-  maintenanceNotice: string | null;
+/**
+ * The terms self-service account opening runs on.
+ *
+ * `leverages` is the raw CSV the operator typed, unparsed. The store's job is
+ * to move the column; deciding that `50,100` means two leverages belongs to the
+ * service, which is also where a malformed one has to produce an error somebody
+ * can act on.
+ */
+export interface TradingSettingsRow {
+  leverages: string;
+  maxLiveAccounts: number;
+  maxDemoAccounts: number;
+  /** A decimal string, never a number — see §6. */
+  maxDemoDeposit: string;
+  updatedBy: string | null;
+  updatedAt: Date;
+}
+
+export interface TradingSettingsWrite {
+  leverages: string;
+  maxLiveAccounts: number;
+  maxDemoAccounts: number;
+  maxDemoDeposit: string;
 }
 
 @Injectable()
 export class AppSettingsStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
-
-  async getGeneral(): Promise<GeneralSettingsRow | null> {
-    const [row] = await this.db.select().from(generalSettings).limit(1);
-    return row ?? null;
-  }
-
-  /**
-   * Upsert the single row.
-   *
-   * `onConflictDoUpdate` on the primary key, so the first save does not depend
-   * on a seed having run and a concurrent double-submit resolves to one row
-   * rather than a unique violation the operator has to interpret.
-   */
-  async setGeneral(values: GeneralSettingsWrite, updatedBy: string): Promise<GeneralSettingsRow> {
-    const [row] = await this.db
-      .insert(generalSettings)
-      .values({ ...values, id: true, updatedBy, updatedAt: new Date() })
-      .onConflictDoUpdate({
-        target: generalSettings.id,
-        set: { ...values, updatedBy, updatedAt: new Date() },
-      })
-      .returning();
-    return row;
-  }
 
   async getSmtp(): Promise<SmtpSettingsRow | null> {
     const [row] = await this.db.select().from(smtpSettings).limit(1);
@@ -127,6 +112,31 @@ export class AppSettingsStore {
           updatedBy,
           updatedAt: new Date(),
         },
+      })
+      .returning();
+    return row;
+  }
+
+  /**
+   * The trading terms, or null when nobody has set them.
+   *
+   * Null rather than a synthesised row, for the reason at the top of this file:
+   * the absence is information. The service turns it into the same numbers the
+   * column defaults carry, and the FIRST save writes a row rather than editing
+   * one nobody chose — which is what lets the audit log say what changed.
+   */
+  async getTrading(): Promise<TradingSettingsRow | null> {
+    const [row] = await this.db.select().from(tradingSettings).limit(1);
+    return row ?? null;
+  }
+
+  async setTrading(values: TradingSettingsWrite, updatedBy: string): Promise<TradingSettingsRow> {
+    const [row] = await this.db
+      .insert(tradingSettings)
+      .values({ ...values, id: true, updatedBy, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: tradingSettings.id,
+        set: { ...values, updatedBy, updatedAt: new Date() },
       })
       .returning();
     return row;

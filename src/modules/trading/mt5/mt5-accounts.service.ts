@@ -10,6 +10,9 @@ import { EmailService } from '../../email/email.service';
 import { assertActorCan } from '../../../common/security/actor';
 import type { AuthenticatedAdmin } from '../../admin/guards/admin.guard';
 import { NotFoundError, ValidationError } from '../../../common/errors/domain-errors';
+import { AppSettingsStore } from '../../../store/app-settings.store';
+import { ConfigService } from '@nestjs/config';
+import { tradingTermsFrom } from '../../../common/trading-terms';
 
 /**
  * How many accounts one live-balance request may cover.
@@ -21,30 +24,19 @@ import { NotFoundError, ValidationError } from '../../../common/errors/domain-er
 const MAX_LIVE_BALANCES = 25;
 
 /**
- * How many accounts one client may open per environment, unaided.
+ * Clamp demo funding to the configured ceiling.
  *
- * Generous on purpose — this is a brake on automated abuse, not a product
- * limit. A client who genuinely needs a sixth live account is a conversation
- * with support, not a number to raise here quietly.
+ * Capped rather than refused, so a fat-fingered extra zero still produces a
+ * working account. The ceiling itself is an operator setting — see
+ * `trading_settings` — because "how much practice money is useful practice" is
+ * a commercial judgement, and it lived here as a constant compiled into two
+ * apps for far too long.
  */
-const MAX_SELF_SERVICE_ACCOUNTS = 5;
-
-/**
- * The most practice money one demo account may be opened with.
- *
- * Demo balances are free to invent, which is the problem: a client who types
- * enough zeros gets an account whose position sizes bear no relation to
- * anything they would ever trade, and the practice is worthless. Capped rather
- * than refused, so a fat-fingered extra zero still produces a working account.
- */
-const MAX_DEMO_FUNDING = 1_000_000;
-
-/** Clamp demo funding to something a practice account can learn from. */
-function capDemoFunding(amount: string): string {
+function capDemoFunding(amount: string, ceiling: string): string {
   // Parsed ONLY to compare against the cap. The string is what is sent onward
   // when it is within range, so nothing that reaches MT5 has been through a
   // float unless it had to be.
-  return Number.parseFloat(amount) > MAX_DEMO_FUNDING ? String(MAX_DEMO_FUNDING) : amount;
+  return Number.parseFloat(amount) > Number.parseFloat(ceiling) ? ceiling : amount;
 }
 
 /**
@@ -81,7 +73,38 @@ export class Mt5AccountsService {
     private readonly bridge: Mt5BridgeClient,
     private readonly audit: AdminAuditService,
     private readonly email: EmailService,
+    private readonly settings: AppSettingsStore,
+    private readonly config: ConfigService,
   ) {}
+
+  /**
+   * The operator's trading terms, read fresh on each create.
+   *
+   * Not cached. A create is already several network round trips to the broker,
+   * so one indexed read of a single-row table costs nothing measurable — and an
+   * operator who lowers a cap because of an abuse incident should not have to
+   * wait out a TTL or restart the process for it to take effect.
+   */
+  private async terms() {
+    return tradingTermsFrom(
+      await this.settings.getTrading(),
+      this.config.get<string>('MT5_CLIENT_LEVERAGES'),
+    );
+  }
+
+  /**
+   * Groups straight from MT5, for the CLIENT-facing options endpoint.
+   *
+   * No actor and no permission check, unlike `listGroups` below, and the
+   * difference is what it is used for: that one hands an operator the broker's
+   * whole group structure to choose from, which is internal. This is called
+   * only to look up the CURRENCY of groups the broker has already decided to
+   * advertise, and the caller discards everything else.
+   */
+  async listGroupsForClients() {
+    this.assertBridge();
+    return await this.bridge.listGroups();
+  }
 
   /** The groups an account may be opened in, straight from MT5. */
   async listGroups(actor: AuthenticatedAdmin) {
@@ -238,6 +261,8 @@ export class Mt5AccountsService {
     userId: string;
     environment: 'live' | 'demo';
     group: string;
+    /** Validated against the offered ladder by the caller. */
+    leverage?: number;
     /** A label for the account. Defaults to the client's own name. */
     name?: string;
     /** DEMO only — refused on a live account rather than ignored. */
@@ -261,13 +286,20 @@ export class Mt5AccountsService {
     if (!client) throw new NotFoundError('Client not found.');
 
     /*
-     * A CAP on how many a client may open, and it is deliberately generous.
+     * A CAP on how many a client may open, set by the operator.
      *
      * Every account is a real row on the broker's server that somebody has to
      * administer, and this endpoint is reachable by anyone with a session — a
      * script could otherwise open thousands. Counted per environment so a
      * client experimenting with demos cannot lock themselves out of a live one.
+     *
+     * ZERO is a real setting and reads differently: nothing about the client's
+     * own account count explains it, so the message says the door is shut
+     * rather than that they have too many.
      */
+    const terms = await this.terms();
+    const cap = input.environment === 'live' ? terms.maxLiveAccounts : terms.maxDemoAccounts;
+
     const existing = await this.db
       .select({ id: tradingAccounts.id })
       .from(tradingAccounts)
@@ -278,9 +310,17 @@ export class Mt5AccountsService {
         ),
       );
 
-    if (existing.length >= MAX_SELF_SERVICE_ACCOUNTS) {
+    if (cap === 0) {
       throw new ValidationError(
-        `You already have ${existing.length} ${input.environment} accounts, which is the maximum. ` +
+        `New ${input.environment} accounts are not being opened online at the moment. ` +
+          'Please contact support.',
+      );
+    }
+
+    if (existing.length >= cap) {
+      throw new ValidationError(
+        `You already have ${existing.length} ${input.environment} ` +
+          `account${existing.length === 1 ? '' : 's'}, which is the maximum. ` +
           'Contact support if you need another.',
       );
     }
@@ -310,6 +350,7 @@ export class Mt5AccountsService {
       email: client.email,
       country: client.country ?? undefined,
       phone: client.phone ?? undefined,
+      leverage: input.leverage,
       externalId: client.id,
     });
 
@@ -326,7 +367,7 @@ export class Mt5AccountsService {
      */
     let funded = false;
     if (input.startingBalance && input.environment === 'demo') {
-      const capped = capDemoFunding(input.startingBalance);
+      const capped = capDemoFunding(input.startingBalance, terms.maxDemoDeposit);
       try {
         await this.bridge.balance({
           login: String(created.login),
@@ -380,6 +421,11 @@ export class Mt5AccountsService {
       created.leverage,
       created.masterPassword,
       created.investorPassword,
+      input.name?.trim() || undefined,
+      // What MT5 holds, not what was asked for: if funding failed this is '0'
+      // and the mail correctly omits the line rather than promising money that
+      // is not there.
+      snapshot?.balance ?? '0',
     );
 
     return {

@@ -57,8 +57,8 @@
   "GET /v1/admin/roles",
   "GET /v1/admin/roles/export",
   "GET /v1/admin/security-settings",
-  "GET /v1/admin/settings/general",
   "GET /v1/admin/settings/smtp",
+  "GET /v1/admin/settings/trading",
   "GET /v1/admin/stats/kyc-trend",
   "GET /v1/admin/stats/overview",
   "GET /v1/admin/stats/registrations",
@@ -186,6 +186,6 @@
   "PUT /v1/admin/rejection-reasons/{id}",
   "PUT /v1/admin/roles/{id}",
   "PUT /v1/admin/security-settings/{key}",
-  "PUT /v1/admin/settings/general",
-  "PUT /v1/admin/settings/smtp"
+  "PUT /v1/admin/settings/smtp",
+  "PUT /v1/admin/settings/trading"
 ]

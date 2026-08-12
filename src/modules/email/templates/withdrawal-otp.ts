@@ -1,4 +1,4 @@
-import { esc, fine, layout, p, type RenderedEmail } from './layout';
+import { esc, fine, layout, p, pRich, type RenderedEmail } from './layout';
 
 /**
  * The six digits that confirm one specific withdrawal.
@@ -41,7 +41,7 @@ export function withdrawalOtp(amount: string, currency: string, code: string): R
        * Of everything this product sends, the withdrawal OTP is the message
        * that must never be unreadable.
        */
-      `${p(`You asked to withdraw <strong>${money}</strong>.`)}
+      `${pRich(`You asked to withdraw <strong>${money}</strong>.`)}
 ${p('Enter this code to confirm it:')}
         <div style="margin: 24px 0; font-size: 32px; letter-spacing: 8px; font-weight: bold;">
           ${esc(code)}

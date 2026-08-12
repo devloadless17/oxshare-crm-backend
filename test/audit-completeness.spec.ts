@@ -30,7 +30,9 @@ import { desc, eq } from 'drizzle-orm';
  * `settings.general.update` — moved into the "recorded" block below, which is
  * the lifecycle their original note described: `it.fails` passes only while the
  * body throws, so fixing the routes turned those tests red and told whoever did
- * it to promote them.
+ * it to promote them. The settings one is now `settings.trading.update`: the
+ * General tab and its table were removed, and the trading terms are the write
+ * on that screen worth attributing.
  *
  * Each service now takes the acting admin from the controller (`req.admin`) the
  * way `admin-tags.service.ts` does, rather than reaching for a request — so a
@@ -329,20 +331,30 @@ describe('recorded: the feature modules', () => {
     expect(typeof details?.rateValue).toBe('string');
   });
 
-  it('settings.general.update — brand and platform config are attributable', async () => {
+  it('settings.trading.update — the terms clients are offered are attributable', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
-    const before = await countOf('settings.general.update');
+    const before = await countOf('settings.trading.update');
 
-    // PUT, not PATCH — the route is `@Put('general')`. The `it.fails` version
-    // sent PATCH, which no handler matches, so it threw on the status
-    // assertion and passed for that reason rather than for the missing audit
-    // row it claimed to be describing.
-    const res = await session.put('/v1/admin/settings/general', {
-      brandName: `Audit Brand ${Date.now() % 100000}`,
+    /*
+     * Took over from `settings.general.update`, which was removed with the
+     * General tab and its table. The reason for pinning it is stronger here:
+     * the leverage ladder, the per-client account caps and the demo funding
+     * ceiling are all limits somebody can raise, and the effect surfaces in the
+     * broker's own reporting weeks later.
+     *
+     * PUT, not PATCH — the route is `@Put('trading')`, and a PATCH matches no
+     * handler, which would make this pass on the status assertion rather than
+     * on the audit row it claims to be about.
+     */
+    const res = await session.put('/v1/admin/settings/trading', {
+      leverages: '50,100,200',
+      maxLiveAccounts: 4,
+      maxDemoAccounts: 6,
+      maxDemoDeposit: '500000',
     });
     expect([200, 201, 204]).toContain(res.status);
 
-    expect(await waitForCount('settings.general.update', before + 1)).toBe(before + 1);
+    expect(await waitForCount('settings.trading.update', before + 1)).toBe(before + 1);
   });
 });
 

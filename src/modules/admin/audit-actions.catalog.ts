@@ -175,7 +175,14 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'kyc_config.step_update', label: 'KYC step changed', group: 'Configuration' },
   { action: 'kyc_config.step_delete', label: 'KYC step deleted', group: 'Configuration' },
   { action: 'platform_link.set', label: 'Download link changed', group: 'Configuration' },
-  { action: 'settings.general.update', label: 'General settings changed', group: 'Configuration' },
+  /*
+   * Trading terms. Configuration rather than Money for the same reason as the
+   * currencies below — no balance moves — but it is the entry an auditor comes
+   * looking for after the fact: the leverage ladder, the per-client account
+   * caps and the demo funding ceiling are all limits somebody can raise, and
+   * the effect shows up in the broker's own reporting weeks later.
+   */
+  { action: 'settings.trading.update', label: 'Trading terms changed', group: 'Configuration' },
   /*
    * Currencies. Grouped as Configuration rather than Money, deliberately: these
    * change what the platform OFFERS, not what any client holds — no balance

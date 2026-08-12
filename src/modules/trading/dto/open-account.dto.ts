@@ -1,12 +1,19 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 
 /**
  * A client opening their own trading account.
  *
- * The MT5 GROUP, the leverage and the currency are absent on purpose — those are
- * the broker's to decide, and a client picking a group would be choosing their
- * own commission plan out of a dropdown. See `SelfServiceGroups`.
+ * The group and the leverage ARE the client's to choose, from a list the broker
+ * curates — an earlier version of this refused both on the grounds that picking
+ * a group means picking your own commission plan. That is true of the whole
+ * group tree and false of the two or three products a broker actually sells
+ * online. `SelfServiceGroups` holds the offer and validates every choice against
+ * it, which is the part that reasoning was protecting.
+ *
+ * The CURRENCY is still absent, and that one is not a policy: an MT5 group is
+ * denominated in one currency, so choosing the product chooses the currency. A
+ * separate field would imply the two vary independently.
  */
 export class OpenOwnAccountDto {
   @ApiProperty({
@@ -35,6 +42,36 @@ export class OpenOwnAccountDto {
   @IsString()
   @MaxLength(64)
   name?: string;
+
+  /**
+   * The account type, as an MT5 group path.
+   *
+   * VALIDATED against the list the broker offers for this environment — see
+   * `SelfServiceGroups.resolve`. The portal's dropdown is a convenience; that
+   * check is the control, because this field arrives from a browser and an
+   * unchecked group would let a client open an institutional account.
+   *
+   * Omitted means the first offered type, which is the common case when a
+   * broker sells exactly one.
+   */
+  @ApiPropertyOptional({ maxLength: 128, example: 'real\\Standard' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  group?: string;
+
+  /**
+   * Chosen from the offered ladder, not a free number.
+   *
+   * MT5 clamps to the group's own maximum regardless, so a free field would
+   * show the client one figure and give them another.
+   */
+  @ApiPropertyOptional({ example: 100 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(10_000)
+  leverage?: number;
 
   /**
    * Starting balance, DEMO ONLY.

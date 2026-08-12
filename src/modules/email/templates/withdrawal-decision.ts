@@ -1,4 +1,4 @@
-import { button, card, esc, p, panel, type RenderedEmail } from './layout';
+import { button, card, esc, p, pRich, panel, type RenderedEmail } from './layout';
 
 /**
  * The withdrawal verdict — sent, or declined with the reason and what happens
@@ -57,7 +57,7 @@ export function withdrawalDecision(
             `Your withdrawal of <strong>${money}</strong> has been processed and sent to your nominated destination.`,
           )
         : [
-            p(`Your withdrawal of <strong>${money}</strong> could not be processed.`),
+            pRich(`Your withdrawal of <strong>${money}</strong> could not be processed.`),
             reason ? panel(`<strong>Reason:</strong> ${esc(reason)}`) : '',
             p(
               `The ${money} has been returned to your balance, and you can submit a new request whenever you are ready.`,

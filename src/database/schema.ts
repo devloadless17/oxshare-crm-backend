@@ -787,9 +787,9 @@ export const securitySettings = pgTable('security_settings', {
 });
 
 /*
- * ── The two singleton settings rows ──────────────────────────────────────────
+ * ── The singleton settings rows ──────────────────────────────────────────────
  *
- * `general_settings` and `smtp_settings` are each ONE ROW, forever, enforced by
+ * `smtp_settings` and `trading_settings` are each ONE ROW, forever, enforced by
  * `id boolean PRIMARY KEY DEFAULT true CHECK (id)` — the only value that
  * satisfies both the check and the uniqueness of a primary key is `true`, so a
  * second row is a constraint violation rather than a convention somebody has to
@@ -802,37 +802,18 @@ export const securitySettings = pgTable('security_settings', {
  * which". The same reasoning says an SMTP port is an integer, a from-address is
  * a string, and neither belongs in a `text` column beside a boolean.
  *
- * TWO tables rather than one, for the reason the whole feature exists: the SMTP
- * row holds a CREDENTIAL and the general row does not. Separating them means the
- * encrypted column, its master-admin write guard, and its never-returned
- * response shape are properties of a table rather than of particular columns
- * within a table — so a future setting added to `general_settings` cannot
- * accidentally inherit or erode them.
+ * SEPARATE tables rather than one, for the reason the SMTP feature exists: that
+ * row holds a CREDENTIAL and the others do not. Keeping it alone means the
+ * encrypted column, its permission-guarded write and its never-returned
+ * response shape are properties of a TABLE rather than of particular columns
+ * within one — so a setting added elsewhere cannot inherit or erode them.
+ *
+ * A third table, `general_settings`, held a brand name, support contacts and a
+ * maintenance notice. It was removed along with its tab: nothing outside its
+ * own settings screen ever read it — not the portal header it claimed to feed,
+ * not one email template — so every field was an operator editing a value with
+ * no effect. See migration 0051.
  */
-export const generalSettings = pgTable(
-  'general_settings',
-  {
-    id: boolean('id')
-      .primaryKey()
-      .$default(() => true),
-    /** Shown in the portal header and used as the sender name fallback. */
-    brandName: varchar('brand_name', { length: 120 }).notNull().default('OxShare'),
-    /** Where a client is told to write. Not a sender — a destination. */
-    supportEmail: varchar('support_email', { length: 320 }),
-    /*
-     * Sized to match `platform_links.url` and for the same reason: these are real
-     * URLs that carry parameters, and a column that truncates one produces a link
-     * that 404s.
-     */
-    supportUrl: varchar('support_url', { length: 2048 }),
-    /** Free text shown to clients during planned downtime. Null = nothing shown. */
-    maintenanceNotice: text('maintenance_notice'),
-    updatedBy: uuid('updated_by'),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [check('general_settings_singleton', sql`${t.id}`)],
-);
-
 export const smtpSettings = pgTable(
   'smtp_settings',
   {
@@ -878,6 +859,62 @@ export const smtpSettings = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [check('smtp_settings_singleton', sql`${t.id}`)],
+);
+
+/*
+ * ── The terms a client may open an account on ────────────────────────────────
+ *
+ * A THIRD singleton, in the same shape as the two above, holding the numbers
+ * that bound self-service account opening: the leverage ladder, how many
+ * accounts of each kind one client may open, and the largest demo balance they
+ * may ask for.
+ *
+ * ## Why these moved out of the environment
+ *
+ * All four started as constants and env vars — `MT5_CLIENT_LEVERAGES` and a
+ * `MAX_DEMO_FUNDING` hardcoded in two files. Every one of them is a COMMERCIAL
+ * decision: which leverages to advertise is a regulatory question, how many demo
+ * accounts a client may spin up is an abuse question, and the maximum practice
+ * balance is a "what do we let people rehearse with" question. None is a
+ * deployment detail, and all of them are answered by whoever runs the brokerage
+ * rather than by whoever last edited a `.env` on the server.
+ *
+ * ## Why the leverage ladder is one text column
+ *
+ * It is an ORDERED LIST the operator types, `50,100,200,500`, and the order is
+ * the order the client sees. `integer[]` would model it more precisely and buy
+ * nothing: nothing queries into it, and the CSV is exactly what the operator
+ * typed, which is what should come back when they reopen the form.
+ */
+export const tradingSettings = pgTable(
+  'trading_settings',
+  {
+    id: boolean('id')
+      .primaryKey()
+      .$default(() => true),
+    /** The leverage ladder, in the operator's order. `50,100,200,500`. */
+    leverages: varchar('leverages', { length: 200 }).notNull().default('50,100,200,500'),
+    /*
+     * Per client, per environment. A cap of ZERO is meaningful and is not the
+     * same as self-service being off: it stops new accounts of that kind while
+     * leaving the ones a client already has alone. "Unlimited" is deliberately
+     * absent — an uncapped demo endpoint is a free account generator on the
+     * broker's own server.
+     */
+    maxLiveAccounts: integer('max_live_accounts').notNull().default(5),
+    maxDemoAccounts: integer('max_demo_accounts').notNull().default(5),
+    /*
+     * The largest opening balance a demo account may be given, as a decimal
+     * string like every other money column here. Practice money, but it is
+     * credited on the broker's server and it shows up in their reporting.
+     */
+    maxDemoDeposit: numeric('max_demo_deposit', { precision: 28, scale: 8 })
+      .notNull()
+      .default('1000000'),
+    updatedBy: uuid('updated_by'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check('trading_settings_singleton', sql`${t.id}`)],
 );
 
 /*

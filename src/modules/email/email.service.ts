@@ -282,6 +282,8 @@ export class EmailService {
     leverage: number,
     masterPassword: string,
     investorPassword: string,
+    accountName?: string,
+    balance?: string,
   ): Promise<void> {
     await this.send(
       email,
@@ -295,6 +297,8 @@ export class EmailService {
         masterPassword,
         investorPassword,
         this.portalUrl(),
+        accountName,
+        balance,
       ),
     );
   }

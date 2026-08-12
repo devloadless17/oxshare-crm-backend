@@ -1,4 +1,4 @@
-import { button, card, esc, p, panel, type RenderedEmail } from './layout';
+import { button, card, esc, p, pRich, panel, type RenderedEmail } from './layout';
 
 /**
  * The credentials for a trading account that has just been opened.
@@ -32,6 +32,10 @@ export function tradingAccountOpened(
   masterPassword: string,
   investorPassword: string,
   portalUrl: string,
+  /** The label the client chose, when they chose one. */
+  accountName?: string,
+  /** What the account actually holds — a funded demo, or nothing. */
+  balance?: string,
 ): RenderedEmail {
   const kind = environment === 'live' ? 'live' : 'demo';
 
@@ -47,11 +51,20 @@ ${p(
     : 'Your demo trading account has been opened. It holds practice money, so you can trade it without risk.',
 )}
 ${panel(
-  `<strong>Login:</strong> ${esc(login)}<br>` +
+  // The client's own label first when they gave one: it is how they will refer
+  // to this account, and a mail that opens with a number they have never seen
+  // is harder to place than one that opens with the name they typed.
+  (accountName ? `<strong>Name:</strong> ${esc(accountName)}<br>` : '') +
+    `<strong>Login:</strong> ${esc(login)}<br>` +
     `<strong>Currency:</strong> ${esc(currency)}<br>` +
-    `<strong>Leverage:</strong> 1:${esc(String(leverage))}`,
+    `<strong>Leverage:</strong> 1:${esc(String(leverage))}` +
+    // Only when there IS one. "Balance: 0.00" on a live account the client is
+    // about to fund reads as a problem rather than a fact.
+    (balance && Number.parseFloat(balance) > 0
+      ? `<br><strong>Starting balance:</strong> ${esc(balance)} ${esc(currency)}`
+      : ''),
 )}
-${p('<strong>Your passwords</strong>')}
+${pRich('<strong>Your passwords</strong>')}
 ${panel(
   `<strong>Master password:</strong> <code>${esc(masterPassword)}</code><br>` +
     '<span style="color:#6b7280;">Full access — places trades and manages the account.</span>' +
@@ -60,7 +73,7 @@ ${panel(
     '<span style="color:#6b7280;">Read-only — shows positions and history but cannot trade. ' +
     'This is the one to share if somebody needs to watch your account.</span>',
 )}
-${p(
+${pRich(
   'Please save these somewhere safe and delete this email. <strong>We do not keep a copy</strong> — ' +
     'if you lose them, an administrator has to set a new password for you.',
 )}
