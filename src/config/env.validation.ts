@@ -139,6 +139,31 @@ const envSchema = z
     REDIS_URL: z.string().url().optional(),
 
     /*
+     * ── Partner commission payout ───────────────────────────────────────────
+     *
+     * Both optional, and the defaults are the safe ones: hold for a day, run
+     * hourly. Declared here so `npm start` fails on a malformed cron rather
+     * than booting a scheduler that never fires — a payout job silently not
+     * running is the failure nobody notices until a partner asks.
+     *
+     * HOLD_HOURS stays a STRING on purpose. The service parses it and falls
+     * back to the default with a warning on anything it cannot read, because
+     * the failure mode of a typo must not be "pay every commission instantly";
+     * coercing here would turn that judgement into a boot crash instead.
+     */
+    IB_COMMISSION_HOLD_HOURS: z
+      .string()
+      .regex(/^\d+$/, 'IB_COMMISSION_HOLD_HOURS must be a whole number of hours, e.g. 24')
+      .optional(),
+    IB_COMMISSION_CONFIRM_CRON: z
+      .string()
+      .regex(
+        /^(\S+\s+){4,5}\S+$/,
+        'IB_COMMISSION_CONFIRM_CRON must be a cron expression, e.g. "0 0 */4 * * *"',
+      )
+      .optional(),
+
+    /*
      * ── Whish Money, the first real payment GATEWAY ─────────────────────────
      *
      * All four are optional TOGETHER, and that is the whole design: with any of
