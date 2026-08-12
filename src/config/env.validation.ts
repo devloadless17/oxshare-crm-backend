@@ -196,6 +196,23 @@ const envSchema = z
     WHISH_BASE_URL: z.string().url().optional(),
 
     /*
+     * The Rival connection's DEVELOPMENT floor. Production config lives in the
+     * `rival_settings` row (admin-editable, encrypted at rest), and the row
+     * wins WHOLE over these — see `RivalConfigService`. All three optional
+     * everywhere: unlike SMTP there is no boot-time chicken-and-egg, a
+     * deployment without Rival simply has the whish deposit method
+     * unavailable, which the methods list renders honestly.
+     *
+     * `RIVAL_BASE_URL` includes the /v1 prefix, e.g.
+     * https://staging.portal.rivalpayments.com/v1 — staging and production are
+     * different hosts, chosen explicitly, never derived from NODE_ENV (the
+     * WHISH_BASE_URL reasoning above, inherited).
+     */
+    RIVAL_BASE_URL: z.string().url().optional(),
+    RIVAL_API_KEY: z.string().min(1).optional(),
+    RIVAL_WEBHOOK_KEY: z.string().min(1).optional(),
+
+    /*
      * The §12.4 money bounds — validated HERE, at boot.
      *
      * `money-limits.ts` says these are "also validated at boot in

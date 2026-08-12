@@ -918,6 +918,53 @@ export const tradingSettings = pgTable(
 );
 
 /*
+ * The Rival connection — one row, forever, same singleton trick as above.
+ *
+ * Rival is Loadless's own payments platform; the CRM is one of its "companies"
+ * and holds a `tsk_…` API key. Whish is integrated once inside Rival, so no
+ * Whish credential exists anywhere in this schema.
+ *
+ * Two ciphertexts with one deliberate asymmetry:
+ *
+ *  - `apiKeyCiphertext` — OUR credential at Rival. Write-only: sealed on save,
+ *    opened only by `RivalConfigService` on the way to an outbound call, in no
+ *    response DTO ever.
+ *  - `webhookKeyCiphertext` — the credential Rival presents TO US on webhook
+ *    deliveries. SEALED, NOT HASHED, and that is a decision: it keys the
+ *    HMAC-SHA256 on inbound signatures, and verifying an HMAC needs the
+ *    plaintext. An argon2 hash — the treatment login secrets get — would make
+ *    verification impossible. AES-256-GCM at rest is the strongest storage
+ *    that leaves the key usable. It is minted HERE (shown to the operator
+ *    exactly once, then pasted into Rival's dashboard), never chosen by hand.
+ */
+export const rivalSettings = pgTable(
+  'rival_settings',
+  {
+    id: boolean('id')
+      .primaryKey()
+      .$default(() => true),
+    baseUrl: varchar('base_url', { length: 2048 }),
+    apiKeyCiphertext: text('api_key_ciphertext'),
+    webhookKeyCiphertext: text('webhook_key_ciphertext'),
+    /**
+     * sha256(key)[:8] — enough for a log line to distinguish "wrong key pasted
+     * into Rival" from "corrupt signature", useless for recovering the key.
+     */
+    webhookKeyFingerprint: varchar('webhook_key_fingerprint', { length: 8 }),
+    enabled: boolean('enabled').notNull().default(false),
+    /**
+     * Liveness, not ordering: bumped on every verified inbound event so the
+     * settings screen can answer "is the pipe alive". Event ordering is carried
+     * by the transaction state machine's conditional updates, never by this.
+     */
+    lastEventAt: timestamp('last_event_at', { withTimezone: true }),
+    updatedBy: uuid('updated_by'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check('rival_settings_singleton', sql`${t.id}`)],
+);
+
+/*
  * Failed sign-ins, per ACCOUNT — PLATFORM-CONVENTIONS R-3.5.
  *
  * `@nestjs/throttler` keys on the IP, which bounds one attacker on one address
@@ -1540,6 +1587,32 @@ export const transactions = pgTable(
     reviewedBy: uuid('reviewed_by'),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
     settledAt: timestamp('settled_at', { withTimezone: true }),
+    /*
+     * ── The Rival columns (migration 0050) ─────────────────────────────────
+     *
+     * Deposits and withdrawals route through Rival, Loadless's own payments
+     * platform — the CRM is a Rival "company", not a Whish merchant. These
+     * columns hold Rival's identifiers; `provider_ref` deliberately keeps OUR
+     * OX-reference, because the portal's status endpoint matches on it and it
+     * doubles as the idempotencyKey a retried create converges on.
+     *
+     * `rivalExternalId` is the ONLY reliable join key for inbound deposit
+     * events: the webhook's `reference` is "whish:<externalId>" and its
+     * `transaction.id` is null on pending/failed.
+     *
+     * `rivalSubmittedAt` is the withdrawal double-create CLAIM. Rival's
+     * withdrawal create has no idempotency key, so the claim is taken with a
+     * conditional UPDATE before calling out; the reconciler clears an orphaned
+     * claim or adopts an unrecorded creation by matching our `crm:<txId>` note.
+     *
+     * `rivalNeedsAttention` marks rows only a human may resolve — money PAID
+     * at Rival against a terminally-failed row, a reversal of settled funds,
+     * disagreeing terminal states. No event path ever clears it.
+     */
+    rivalExternalId: varchar('rival_external_id', { length: 40 }),
+    rivalWithdrawalId: varchar('rival_withdrawal_id', { length: 64 }),
+    rivalSubmittedAt: timestamp('rival_submitted_at', { withTimezone: true }),
+    rivalNeedsAttention: boolean('rival_needs_attention').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -1547,6 +1620,22 @@ export const transactions = pgTable(
     index('transactions_state_idx').on(t.state),
     index('transactions_created_at_idx').on(t.createdAt),
     uniqueIndex('transactions_provider_ref_uq').on(t.provider, t.providerRef),
+    // §6.3 for inbound Rival events: one CRM row per Rival payment/withdrawal,
+    // so a replayed or misrouted event can never touch a second row. Partial —
+    // manual methods and pre-Rival history carry no Rival identifier.
+    uniqueIndex('transactions_rival_external_id_uq')
+      .on(t.rivalExternalId)
+      .where(sql`${t.rivalExternalId} IS NOT NULL`),
+    uniqueIndex('transactions_rival_withdrawal_id_uq')
+      .on(t.rivalWithdrawalId)
+      .where(sql`${t.rivalWithdrawalId} IS NOT NULL`),
+    // The poller's two scans, partial so they index only in-flight rows.
+    index('transactions_rival_pending_idx')
+      .on(t.state)
+      .where(sql`${t.rivalExternalId} IS NOT NULL AND ${t.state} = 'pending'`),
+    index('transactions_rival_approved_idx')
+      .on(t.state)
+      .where(sql`${t.state} = 'approved' AND ${t.rivalSubmittedAt} IS NOT NULL`),
   ],
 );
 

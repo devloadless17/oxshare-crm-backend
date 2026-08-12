@@ -259,6 +259,24 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'settings.smtp.update', label: 'Mail server configuration changed', group: 'Security' },
 
   /*
+   * The Rival connection — same Security grouping as SMTP, sharper reason:
+   * the API key can create payouts against the company's Rival balance, and
+   * repointing the base URL redirects every payout instruction this system
+   * issues. The webhook-key rotation is the row an auditor wants when the
+   * money-event stream went quiet ("did the signing key change that day").
+   */
+  {
+    action: 'settings.rival.update',
+    label: 'Payments-platform (Rival) connection changed',
+    group: 'Security',
+  },
+  {
+    action: 'settings.rival.webhook_key.rotate',
+    label: 'Payments-platform (Rival) webhook key generated',
+    group: 'Security',
+  },
+
+  /*
    * ── Exports ───────────────────────────────────────────────────────────────
    *
    * The one group here that records READS rather than writes, and the exception

@@ -8,6 +8,7 @@ import { NotClientScoped } from '../admin/guards/client-scope.decorator';
 import { Audited, NotAudited } from '../admin/guards/audited.decorator';
 import { EmailService } from '../email/email.service';
 import { SettingsService } from './settings.service';
+import { RivalSettingsService } from './rival-settings.service';
 import {
   SmtpSettingsDto,
   SmtpTestResultDto,
@@ -15,6 +16,12 @@ import {
   UpdateSmtpSettingsDto,
   UpdateTradingSettingsDto,
 } from './dto/settings.dto';
+import {
+  RivalSettingsDto,
+  RivalTestResultDto,
+  RivalWebhookKeyDto,
+  UpdateRivalSettingsDto,
+} from './dto/rival-settings.dto';
 
 /**
  * The settings screen's API — the Trading and Email tabs.
@@ -52,6 +59,7 @@ export class AdminSettingsController {
   constructor(
     private readonly settings: SettingsService,
     private readonly email: EmailService,
+    private readonly rival: RivalSettingsService,
   ) {}
 
   /* ── Trading ────────────────────────────────────────────────────────────── */
@@ -184,5 +192,97 @@ export class AdminSettingsController {
   async testSmtp(@Req() req: Request & { admin: Admin }): Promise<SmtpTestResultDto> {
     const { source } = await this.email.sendTestEmail(req.admin.email);
     return { sentTo: req.admin.email, source };
+  }
+
+  /* ── Payments / Rival ───────────────────────────────────────────────────── */
+  /*
+   * Rival is Loadless's payments platform; the CRM is one of its "companies".
+   * Deposits and payouts route through it, so this credential pair is
+   * SMTP-tier sensitive with a sharper edge: the API key can create payout
+   * requests against the company balance, and whoever controls the base URL
+   * receives every payout instruction this system issues. Own permission
+   * keys (`settings.rival.*`), granted like `settings.smtp.*`.
+   */
+
+  @Get('rival')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.rival.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'The Rival payments-platform connection',
+    description:
+      'Neither stored secret is ever returned — `apiKeySet` and `webhookKeyFingerprint` report ' +
+      'existence and identity only. `source` is "environment" until the first save.',
+  })
+  @ApiOkResponse({ type: RivalSettingsDto })
+  @NotClientScoped('Operator payment-platform configuration; contains no client data.')
+  getRival() {
+    return this.rival.get();
+  }
+
+  @Put('rival')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.rival.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Update the Rival connection',
+    description:
+      'Omit `apiKey` or send null to keep the stored one, a string to replace it, or an empty ' +
+      'string to remove it. Encrypted at rest and never read back.',
+  })
+  @ApiOkResponse({ type: RivalSettingsDto })
+  @NotClientScoped('Operator payment-platform configuration; contains no client data.')
+  @Audited('settings.rival.update')
+  setRival(@Body() dto: UpdateRivalSettingsDto, @Req() req: Request & { admin: Admin }) {
+    return this.rival.set(dto, req.admin);
+  }
+
+  /**
+   * Mint (or rotate) the key Rival signs webhook deliveries with.
+   *
+   * The plaintext appears in THIS response and nowhere else, ever — the
+   * operator pastes it into Rival's dashboard, whose own CRM-config write is
+   * deliberately session-only so a leaked integration key cannot repoint the
+   * event stream. Rotation cuts over immediately: deliveries signed with the
+   * old key answer 401 (permanent to Rival) until the dashboard is updated,
+   * and the poll backstop makes that gap lossless.
+   */
+  @Post('rival/webhook-key')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.rival.edit')
+  @Throttle({ default: { ttl: 60_000, limit: 3 } })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Generate a new webhook signing key (shown exactly once)',
+    description:
+      'Replaces any previous key immediately. Copy it now — it is not retrievable; only its ' +
+      'fingerprint is shown afterwards.',
+  })
+  @ApiOkResponse({ type: RivalWebhookKeyDto })
+  @NotClientScoped('Operator payment-platform configuration; contains no client data.')
+  @Audited('settings.rival.webhook_key.rotate')
+  mintRivalWebhookKey(@Req() req: Request & { admin: Admin }) {
+    return this.rival.mintWebhookKey(req.admin);
+  }
+
+  @Post('rival/test')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.rival.edit')
+  @Throttle({ default: { ttl: 60_000, limit: 6 } })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Validate the stored Rival credentials',
+    description:
+      'Calls Rival with the stored key and returns what Rival believes our webhook ' +
+      'configuration is, beside the URL it should be — a mismatch between the two sides is ' +
+      'visible in one answer. A rejected key comes back as an error naming this screen.',
+  })
+  @ApiOkResponse({ type: RivalTestResultDto })
+  @NotClientScoped('Operator payment-platform configuration; contains no client data.')
+  @NotAudited(
+    'Changes nothing — it only verifies the configuration that settings.rival.update records.',
+  )
+  testRival() {
+    return this.rival.testConnection();
   }
 }
