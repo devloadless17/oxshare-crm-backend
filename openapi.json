@@ -1561,9 +1561,40 @@
         ]
       }
     },
+    "/v1/ib/agencies": {
+      "get": {
+        "description": "What an applicant chooses between, with the products each one carries spelled out by name. Disabled agencies are ABSENT rather than greyed out: nobody here can answer \"when does it reopen\", and offering a choice that will be refused is a poor way to learn it is closed.\n\nAn empty list means no programme is configured yet. The portal should let the client apply anyway — an agency is optional on the application, so a deployment that has not set them up still takes partners.",
+        "operationId": "IbController_openAgencies",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PublicAgencyDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The partner programmes (وكالة) open for application",
+        "tags": [
+          "ib"
+        ]
+      }
+    },
     "/v1/ib/apply": {
       "post": {
-        "description": "Requires a verified identity (KYC level 1). Refuses a second application while one is still awaiting review, and refuses outright if the client is already a partner.",
+        "description": "Requires a verified identity (KYC level 1). Refuses a second application while one is still awaiting review, and refuses outright if the client is already a partner. `agencyId` names the programme applied for and must be one GET /ib/agencies returned.",
         "operationId": "IbController_apply",
         "parameters": [],
         "requestBody": {
@@ -9076,9 +9107,47 @@
           "verifiedReferredCount"
         ]
       },
+      "PublicAgencyDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Gold Agency"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "products": {
+            "example": [
+              "Standard",
+              "ECN"
+            ],
+            "description": "Product NAMES, not ids — the applicant is reading, not selecting.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "products"
+        ]
+      },
       "CreateIbApplicationDto": {
         "type": "object",
         "properties": {
+          "agencyId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Which agency the applicant wants to be appointed under."
+          },
           "motivation": {
             "type": "string",
             "maxLength": 2000,
@@ -9107,6 +9176,11 @@
             "type": "string",
             "nullable": true,
             "description": "The partner who introduced them. Omitted or null means they deal direct."
+          },
+          "agencyId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Omitted grants the agency the applicant chose. Supply one to override it."
           }
         }
       },

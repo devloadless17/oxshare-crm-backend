@@ -22,6 +22,28 @@ export type IbApplicationStatusDto = (typeof IB_APPLICATION_STATUSES)[number];
  * `motivation` mandatory produces a paragraph written to satisfy a validator.
  */
 export class CreateIbApplicationDto {
+  /**
+   * The agency (وكالة) being applied for.
+   *
+   * OPTIONAL, like every other field here, and for a different reason than the
+   * rest: a deployment with no agencies configured must still take
+   * applications. Where agencies DO exist the portal makes this a required
+   * choice, because "which programme" is the one question an applicant is best
+   * placed to answer and a reviewer is not.
+   *
+   * Validated against the OPEN agencies on submit. A disabled one is refused
+   * rather than accepted-and-queued: the programme is closed, and letting the
+   * application sit means telling somebody later that the thing they applied
+   * for was never available.
+   */
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Which agency the applicant wants to be appointed under.',
+  })
+  @IsOptional()
+  @IsUUID()
+  agencyId?: string;
+
   @ApiPropertyOptional({
     maxLength: 2000,
     description: 'Why the client wants to introduce business. Shown to the reviewer verbatim.',
@@ -111,6 +133,23 @@ export class ApproveIbApplicationDto {
   @IsOptional()
   @IsUUID()
   parentIbUserId?: string;
+
+  /**
+   * Override the agency the applicant asked for.
+   *
+   * OMITTED means "grant what they applied for", which is the normal case and
+   * the safe default — approving a request while silently substituting a
+   * different programme is how you produce an angry partner. Supply a value
+   * only to appoint them somewhere else, which is an ordinary decision but
+   * should be a deliberate one.
+   */
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Omitted grants the agency the applicant chose. Supply one to override it.',
+  })
+  @IsOptional()
+  @IsUUID()
+  agencyId?: string;
 }
 
 /**

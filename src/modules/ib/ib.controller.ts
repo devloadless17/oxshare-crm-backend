@@ -8,6 +8,8 @@ import { IbApplicationsService } from './ib-applications.service';
 import { IbOverviewService } from './ib-overview.service';
 import { CreateIbApplicationDto, IbApplicationDto, IbStatusDto } from './dto/ib-application.dto';
 import { IbOverviewDto } from './dto/ib-overview.dto';
+import { PublicAgencyDto } from '../products/dto/catalogue.dto';
+import { ProductsStore } from '../../store/products.store';
 
 /**
  * The client's own view of the partner programme.
@@ -28,7 +30,34 @@ export class IbController {
   constructor(
     private readonly applications: IbApplicationsService,
     private readonly overview: IbOverviewService,
+    /*
+     * The `@Global()` store rather than `CatalogueService`, so this module does
+     * not have to import ProductsModule (and through it TradingModule) for one
+     * read. The shaping the DTO needs — product ids to product names — is two
+     * lines and lives below.
+     */
+    private readonly catalogue: ProductsStore,
   ) {}
+
+  /** Enabled agencies with their product names, for the applicant to read. */
+  private async listOpenAgencies(): Promise<PublicAgencyDto[]> {
+    const [agencies, products] = await Promise.all([
+      this.catalogue.listAgencies(),
+      this.catalogue.listProducts(),
+    ]);
+    const nameOf = new Map(products.map((product) => [product.id, product.name]));
+
+    return agencies
+      .filter((agency) => agency.enabled)
+      .map((agency) => ({
+        id: agency.id,
+        name: agency.name,
+        description: agency.description,
+        products: agency.productIds
+          .map((id) => nameOf.get(id))
+          .filter((name): name is string => Boolean(name)),
+      }));
+  }
 
   @Get('status')
   @ApiCookieAuth()
@@ -65,13 +94,32 @@ export class IbController {
     return this.overview.overviewFor(req.user.id);
   }
 
+  @Get('agencies')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'The partner programmes (وكالة) open for application',
+    description:
+      'What an applicant chooses between, with the products each one carries spelled out by ' +
+      'name. Disabled agencies are ABSENT rather than greyed out: nobody here can answer "when ' +
+      'does it reopen", and offering a choice that will be refused is a poor way to learn it is ' +
+      'closed.\n\n' +
+      'An empty list means no programme is configured yet. The portal should let the client ' +
+      'apply anyway — an agency is optional on the application, so a deployment that has not set ' +
+      'them up still takes partners.',
+  })
+  @ApiOkResponse({ type: [PublicAgencyDto] })
+  openAgencies() {
+    return this.listOpenAgencies();
+  }
+
   @Post('apply')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Apply to become a partner',
     description:
       'Requires a verified identity (KYC level 1). Refuses a second application while one is ' +
-      'still awaiting review, and refuses outright if the client is already a partner.',
+      'still awaiting review, and refuses outright if the client is already a partner. ' +
+      '`agencyId` names the programme applied for and must be one GET /ib/agencies returned.',
   })
   @ApiOkResponse({ type: IbApplicationDto })
   apply(@Req() req: Request & { user: User }, @Body() dto: CreateIbApplicationDto) {

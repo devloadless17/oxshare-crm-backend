@@ -82,6 +82,7 @@
   "GET /v1/auth/sessions",
   "GET /v1/currencies",
   "GET /v1/dashboard",
+  "GET /v1/ib/agencies",
   "GET /v1/ib/overview",
   "GET /v1/ib/status",
   "GET /v1/identity/me",

@@ -191,6 +191,13 @@ export class AdminIbController {
     return this.applications.approve(id, req.admin, req.admin.clientScope, {
       level: dto.level,
       parentIbUserId: dto.parentIbUserId ?? null,
+      /*
+       * `undefined` deliberately, not `?? null`. Undefined means "the reviewer
+       * did not say", and the service falls back to what the applicant asked
+       * for; null would mean "appoint them under no agency at all", which is a
+       * different decision and not the one an omitted field expresses.
+       */
+      agencyId: dto.agencyId,
     });
   }
 

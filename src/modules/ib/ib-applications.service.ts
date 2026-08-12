@@ -24,6 +24,7 @@ import { IbLevelsService } from './ib-levels.service';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import { EmailService } from '../email/email.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
+import { ProductsStore } from '../../store/products.store';
 import type { Actor } from '../../common/security/actor';
 import type { ClientScope } from '../../common/security/client-scope';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
@@ -76,6 +77,17 @@ export class IbApplicationsService {
      * `ib-applications.spec.ts`.
      */
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
+    /*
+     * The agency catalogue, reached through the `@Global()` STORE rather than
+     * through `CatalogueService`. Two reasons, and the second is the load-
+     * bearing one: this module would otherwise have to import ProductsModule,
+     * which imports TradingModule — a lot of graph for two reads — and the
+     * store needs no module wiring at all.
+     *
+     * APPENDED LAST, like the dispatcher above and for the same reason: this
+     * class is constructed positionally in `ib-applications.spec.ts`.
+     */
+    private readonly catalogue: ProductsStore,
   ) {}
 
   // ── the client's side ──────────────────────────────────────────────────────
@@ -123,7 +135,12 @@ export class IbApplicationsService {
    */
   async apply(
     userId: string,
-    input: { motivation?: string; expectedVolume?: string; website?: string },
+    input: {
+      motivation?: string;
+      expectedVolume?: string;
+      website?: string;
+      agencyId?: string;
+    },
   ): Promise<IbApplicationRow> {
     const existingAccount = await this.ib.findAccount(userId);
     if (existingAccount) {
@@ -153,9 +170,27 @@ export class IbApplicationsService {
       throw new ConflictError('You already have an application awaiting review.');
     }
 
+    /*
+     * The agency must be one that is actually OPEN.
+     *
+     * Checked here rather than only at approval, because the alternative is
+     * accepting an application against a closed programme and telling the
+     * applicant weeks later that what they asked for was never available. The
+     * portal offers only open agencies; this is the control behind that.
+     */
+    if (input.agencyId) {
+      const agencies = await this.catalogue.listAgencies();
+      if (!agencies.some((agency) => agency.id === input.agencyId && agency.enabled)) {
+        throw new ValidationError(
+          'That partner programme is not open for applications. Choose one from the list.',
+        );
+      }
+    }
+
     try {
       const created = await this.ib.createApplication({
         userId,
+        agencyId: input.agencyId ?? null,
         motivation: input.motivation ?? null,
         expectedVolume: input.expectedVolume ?? null,
         website: input.website ?? null,
@@ -251,7 +286,7 @@ export class IbApplicationsService {
     applicationId: string,
     actor: Actor,
     scope: ClientScope,
-    options: { level?: number; parentIbUserId?: string | null } = {},
+    options: { level?: number; parentIbUserId?: string | null; agencyId?: string | null } = {},
   ): Promise<IbAccountRow> {
     const reviewerId = actor.id;
     const application = await this.ib.findById(applicationId);
@@ -275,6 +310,35 @@ export class IbApplicationsService {
 
     if (parentIbUserId) {
       await this.assertParentHasRoom(parentIbUserId);
+    }
+
+    /*
+     * WHAT THE APPLICANT ASKED FOR, unless the reviewer says otherwise.
+     *
+     * The reviewer may override — an applicant who asked for Gold and is being
+     * appointed to Silver is an ordinary decision — but the default is the
+     * applicant's own choice, because approving a request and silently
+     * substituting a different programme is the version of this that produces
+     * an angry partner.
+     *
+     * `undefined` means "not specified by the reviewer" and falls back;
+     * explicit `null` means "appoint them under no agency", which is the only
+     * way to reach the pre-agency behaviour deliberately.
+     */
+    const agencyId =
+      options.agencyId === undefined ? (application.agencyId ?? null) : options.agencyId;
+
+    if (agencyId) {
+      const agencies = await this.catalogue.listAgencies();
+      if (!agencies.some((agency) => agency.id === agencyId)) {
+        throw new ValidationError('That agency does not exist. Reload and try again.');
+      }
+      /*
+       * A DISABLED agency is accepted here, unlike on apply. Closing a
+       * programme stops new applications; it does not invalidate the ones
+       * already in the queue, and refusing to approve them would strand every
+       * applicant who got in before the door shut.
+       */
     }
 
     const referralCode = await this.generateReferralCode();
@@ -303,6 +367,7 @@ export class IbApplicationsService {
           parentIbUserId,
           referralCode,
           applicationId,
+          agencyId,
         },
         tx,
       );
@@ -320,6 +385,15 @@ export class IbApplicationsService {
         applicationId,
         level,
         parentIbUserId,
+        /*
+         * Both what was asked for and what was granted. They are usually the
+         * same and the interesting case is when they are not — "I applied for
+         * Gold" is a dispute this row settles, and recording only the outcome
+         * would leave the request unrecoverable once the application is read
+         * back through a screen that shows the partner's current agency.
+         */
+        agencyId,
+        agencyRequested: application.agencyId ?? null,
       });
 
       /*

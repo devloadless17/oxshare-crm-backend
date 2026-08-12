@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { IbApplicationsService } from '../src/modules/ib/ib-applications.service';
 import { IbLevelsService } from '../src/modules/ib/ib-levels.service';
 import { IbStore } from '../src/store/ib.store';
+import { ProductsStore } from '../src/store/products.store';
 import { UsersStore } from '../src/store/users.store';
 import { ClientVisibilityService } from '../src/common/security/client-visibility.service';
 import type { EmailService } from '../src/modules/email/email.service';
@@ -50,6 +51,14 @@ beforeAll(async () => {
     email,
     auditStubAs(),
     notificationsStubAs(),
+    /*
+     * A REAL store on the test database, not a stub. The agency checks read it
+     * on every apply and approve, and the cases worth pinning here — an
+     * application against an agency that does not exist, an approval carrying
+     * the applicant's choice onto the partner row — are exactly the ones a stub
+     * returning `[]` would make unreachable.
+     */
+    new ProductsStore(ctx.db),
   );
 }, 120_000);
 
