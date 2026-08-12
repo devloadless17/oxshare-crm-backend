@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
@@ -9,6 +9,11 @@ import { positionStatusEnum } from '../../database/schema';
 import { TradingService } from './trading.service';
 import { TradingAccountDto } from './dto/trading-account.dto';
 import { PositionDto } from './dto/position.dto';
+import { OpenOwnAccountDto } from './dto/open-account.dto';
+import { Mt5AccountsService } from './mt5/mt5-accounts.service';
+import { SelfServiceGroups } from './mt5/self-service-groups';
+import { UsersStore } from '../../store/users.store';
+import { KycNotVerifiedError } from '../../common/errors/domain-errors';
 
 /**
  * The client's own trading accounts.
@@ -40,7 +45,81 @@ import { PositionDto } from './dto/position.dto';
 @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
 @Controller('trading')
 export class TradingController {
-  constructor(private readonly trading: TradingService) {}
+  constructor(
+    private readonly trading: TradingService,
+    private readonly mt5Accounts: Mt5AccountsService,
+    private readonly selfServiceGroups: SelfServiceGroups,
+    private readonly users: UsersStore,
+  ) {}
+
+  /**
+   * Open a trading account for the signed-in client.
+   *
+   * ## Why this is not behind KycVerifiedGuard
+   *
+   * The guard is all-or-nothing and this route is not: a LIVE account holds
+   * real money and needs a verified client, a DEMO account holds practice money
+   * and is how somebody decides whether verification is worth their time.
+   * Gating both would put the paperwork before the reason to do it, and gating
+   * neither would open real accounts to unverified strangers.
+   *
+   * So the check happens below, on the environment, and the refusal reuses the
+   * guard's own error type — the portal already branches on that code to show
+   * the verification prompt, and inventing a second shape here would mean it
+   * silently did not.
+   *
+   * ## The response carries the passwords, once
+   *
+   * MT5 returns them at creation and nothing stores them. The portal must show
+   * them immediately; there is no second chance and no "resend".
+   */
+  @Post('accounts')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Open a trading account — live requires a verified identity, demo does not',
+    description:
+      "The MT5 group, leverage and currency are the broker's configuration, not the client's " +
+      'choice. Returns the master and investor passwords once; they are never stored.',
+  })
+  async openAccount(@Body() dto: OpenOwnAccountDto, @Req() req: Request & { user: User }) {
+    if (dto.environment === 'live') {
+      const user = await this.users.findById(req.user.id);
+      if ((user?.verificationLevel ?? 0) < 1) {
+        throw new KycNotVerifiedError(
+          'Your identity must be verified before you can open a live account. ' +
+            'You can open a demo account now and verify later.',
+        );
+      }
+    }
+
+    // Resolved BEFORE the bridge call, so an environment the broker has not
+    // switched on is refused without touching MT5.
+    const group = this.selfServiceGroups.resolve(dto.environment);
+
+    return await this.mt5Accounts.createOwnAccount({
+      userId: req.user.id,
+      environment: dto.environment,
+      group,
+    });
+  }
+
+  /**
+   * Which environments this deployment lets a client open unaided.
+   *
+   * The portal needs it to decide whether to draw the buttons at all. Without
+   * it the only way to discover that live accounts are switched off is to press
+   * the button and read the refusal, which is a poor way to learn that a
+   * feature is not for you.
+   */
+  @Get('accounts/self-service')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Whether a client may open live and demo accounts themselves' })
+  selfService() {
+    return {
+      live: this.selfServiceGroups.isEnabled('live'),
+      demo: this.selfServiceGroups.isEnabled('demo'),
+    };
+  }
 
   @Get('accounts')
   @ApiCookieAuth()

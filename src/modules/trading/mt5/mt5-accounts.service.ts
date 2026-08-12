@@ -6,6 +6,7 @@ import type { Db } from '../../../database/db';
 import { tradingAccounts, users } from '../../../database/schema';
 import { Mt5BridgeClient } from './mt5-bridge.client';
 import { AdminAuditService } from '../../admin/admin-audit.service';
+import { EmailService } from '../../email/email.service';
 import { assertActorCan } from '../../../common/security/actor';
 import type { AuthenticatedAdmin } from '../../admin/guards/admin.guard';
 import { NotFoundError, ValidationError } from '../../../common/errors/domain-errors';
@@ -20,6 +21,15 @@ import { NotFoundError, ValidationError } from '../../../common/errors/domain-er
 const MAX_LIVE_BALANCES = 25;
 
 /**
+ * How many accounts one client may open per environment, unaided.
+ *
+ * Generous on purpose — this is a brake on automated abuse, not a product
+ * limit. A client who genuinely needs a sixth live account is a conversation
+ * with support, not a number to raise here quietly.
+ */
+const MAX_SELF_SERVICE_ACCOUNTS = 5;
+
+/**
  * Opening MT5 accounts and moving their balances, from the back office.
  *
  * ## Why this is not in AdminHoldingsService
@@ -29,6 +39,13 @@ const MAX_LIVE_BALANCES = 25;
  * time out, and each method has to answer "what is true if the far side
  * succeeded and we never heard". Mixing the two would put that question in a
  * file where most methods do not have it.
+ *
+ ## Credentials are emailed, never returned
+ *
+ * Neither create method puts a password in its response. MT5 issues them once
+ * and nothing stores them, so the mail to the client is the only copy that will
+ * ever exist — see `tradingAccountOpened`. A response carrying them would be
+ * read by whoever pressed the button, which on the admin path is staff.
  *
  * ## MT5 is the source of truth for balance; we are for identity
  *
@@ -45,6 +62,7 @@ export class Mt5AccountsService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly bridge: Mt5BridgeClient,
     private readonly audit: AdminAuditService,
+    private readonly email: EmailService,
   ) {}
 
   /** The groups an account may be opened in, straight from MT5. */
@@ -138,11 +156,31 @@ export class Mt5AccountsService {
     );
 
     /*
-     * The passwords are returned ONCE and stored nowhere — the same contract
-     * the API-key screen uses, for the same reason: a credential that can be
-     * re-read is a credential that leaks twice. The console must show them now
-     * or never.
+     * THE PASSWORDS GO TO THE CLIENT AND NOWHERE ELSE.
+     *
+     * An earlier version returned them here so the console could display them.
+     * That is wrong however carefully the dialog is built: the account's owner
+     * is the only person who should ever hold its trading password, and the
+     * response to this call is read by a member of STAFF. It would also sit in
+     * their browser's memory, in any error reporting the console loads, and in
+     * whatever they pasted it into to pass it on.
+     *
+     * Awaited rather than fired and forgotten — this mail is the only copy that
+     * will ever exist. `send()` still swallows SMTP failure and logs it, so a
+     * blip does not roll back a real MT5 account; the log names the login, and
+     * an operator resets the password deliberately.
      */
+    await this.email.sendTradingAccountOpenedEmail(
+      client.email,
+      client.firstName,
+      String(created.login),
+      input.environment,
+      created.currency,
+      created.leverage,
+      created.masterPassword,
+      created.investorPassword,
+    );
+
     return {
       id: row.id,
       login: String(created.login),
@@ -150,8 +188,124 @@ export class Mt5AccountsService {
       currency: created.currency,
       leverage: created.leverage,
       environment: input.environment,
-      masterPassword: created.masterPassword,
-      investorPassword: created.investorPassword,
+      /*
+       * Reported so the console can tell the operator where the credentials
+       * went — "sent to ada@example.com" is actionable, and silence after a
+       * successful create reads as though something was forgotten.
+       */
+      credentialsSentTo: client.email,
+    };
+  }
+
+  /**
+   * A CLIENT opening their own account.
+   *
+   * ## Not `createAccount` with a different caller
+   *
+   * That one takes a group and an admin, and checks `trading.create`. This one
+   * has no actor with permissions, cannot be handed a group — see
+   * `SelfServiceGroups` — and answers to a different rule about who may open
+   * what. Sharing an entry point would mean one method whose every line asks
+   * "is this an operator or a client", which is how the group check eventually
+   * gets skipped for one of them.
+   *
+   * ## KYC gates LIVE and not demo
+   *
+   * A live account holds real money and is a regulated relationship, so it
+   * needs a verified client. A demo account holds practice money and is how
+   * somebody decides whether to bother verifying at all — gating it would put
+   * the paperwork before the reason to do it.
+   */
+  async createOwnAccount(input: { userId: string; environment: 'live' | 'demo'; group: string }) {
+    this.assertBridge();
+
+    const [client] = await this.db
+      .select({
+        id: users.id,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        country: users.country,
+        phone: users.phone,
+      })
+      .from(users)
+      .where(eq(users.id, input.userId))
+      .limit(1);
+
+    if (!client) throw new NotFoundError('Client not found.');
+
+    /*
+     * A CAP on how many a client may open, and it is deliberately generous.
+     *
+     * Every account is a real row on the broker's server that somebody has to
+     * administer, and this endpoint is reachable by anyone with a session — a
+     * script could otherwise open thousands. Counted per environment so a
+     * client experimenting with demos cannot lock themselves out of a live one.
+     */
+    const existing = await this.db
+      .select({ id: tradingAccounts.id })
+      .from(tradingAccounts)
+      .where(
+        and(
+          eq(tradingAccounts.userId, client.id),
+          eq(tradingAccounts.environment, input.environment),
+        ),
+      );
+
+    if (existing.length >= MAX_SELF_SERVICE_ACCOUNTS) {
+      throw new ValidationError(
+        `You already have ${existing.length} ${input.environment} accounts, which is the maximum. ` +
+          'Contact support if you need another.',
+      );
+    }
+
+    const created = await this.bridge.createAccount({
+      group: input.group,
+      name: `${client.firstName} ${client.lastName}`.trim(),
+      email: client.email,
+      country: client.country ?? undefined,
+      phone: client.phone ?? undefined,
+      externalId: client.id,
+    });
+
+    const [row] = await this.db
+      .insert(tradingAccounts)
+      .values({
+        userId: client.id,
+        login: String(created.login),
+        environment: input.environment,
+        currency: created.currency,
+        leverage: created.leverage,
+        balance: '0',
+        status: 'active',
+      })
+      .returning();
+
+    this.logger.log(
+      `Client ${client.id} opened their own MT5 account ${created.login} (${created.group})`,
+    );
+
+    // To the client's registered address, not into this response — see the note
+    // on the admin path above. It applies here for an additional reason: the
+    // browser making this call is not necessarily the client's own.
+    await this.email.sendTradingAccountOpenedEmail(
+      client.email,
+      client.firstName,
+      String(created.login),
+      input.environment,
+      created.currency,
+      created.leverage,
+      created.masterPassword,
+      created.investorPassword,
+    );
+
+    return {
+      id: row.id,
+      login: String(created.login),
+      environment: input.environment,
+      currency: created.currency,
+      leverage: created.leverage,
+      credentialsSentTo: client.email,
     };
   }
 

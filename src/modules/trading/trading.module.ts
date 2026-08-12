@@ -8,6 +8,7 @@ import { AdminAuthModule } from '../admin/admin-auth.module';
 import { Mt5WebhooksController } from './mt5/mt5-webhooks.controller';
 import { Mt5AccountsController } from './mt5/mt5-accounts.controller';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
+import { SelfServiceGroups } from './mt5/self-service-groups';
 import { Mt5DealsService } from './mt5/mt5-deals.service';
 import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
 
@@ -70,6 +71,7 @@ import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
     Mt5DealsService,
     Mt5BridgeClient,
     Mt5AccountsService,
+    SelfServiceGroups,
   ],
   exports: [TradingService, Mt5BridgeClient],
 })

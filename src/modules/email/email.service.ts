@@ -10,6 +10,7 @@ import {
   partnerDecision,
   depositOutcome,
   walletCredit,
+  tradingAccountOpened,
   withdrawalDecision,
   withdrawalOtp,
   passwordReset,
@@ -250,6 +251,51 @@ export class EmailService {
       email,
       'wallet credit email',
       walletCredit(firstName, amount, currency, reason, this.portalUrl()),
+    );
+  }
+
+  /**
+   * The credentials for a newly opened trading account.
+   *
+   * ## AWAITED, unlike the decision mails above
+   *
+   * Those describe something that already happened and can be re-derived from
+   * the CRM if the mail is lost. This one carries the ONLY copy of two
+   * passwords that exist nowhere else — not in our database, not in the API
+   * response, not in MT5 in a readable form. Firing it and forgetting would
+   * mean the caller reports success while the client has an account they cannot
+   * log into.
+   *
+   * `send()` still swallows and logs the failure rather than throwing, so the
+   * account is not rolled back over an SMTP blip — but the caller has waited
+   * for the attempt, and the log line names the login so an operator can reset
+   * it deliberately.
+   *
+   * The passwords are never logged (R-6.3).
+   */
+  async sendTradingAccountOpenedEmail(
+    email: string,
+    firstName: string,
+    login: string,
+    environment: 'live' | 'demo',
+    currency: string,
+    leverage: number,
+    masterPassword: string,
+    investorPassword: string,
+  ): Promise<void> {
+    await this.send(
+      email,
+      `trading account ${login} credentials`,
+      tradingAccountOpened(
+        firstName,
+        login,
+        environment,
+        currency,
+        leverage,
+        masterPassword,
+        investorPassword,
+        this.portalUrl(),
+      ),
     );
   }
 

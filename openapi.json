@@ -3025,6 +3025,35 @@
       }
     },
     "/v1/trading/accounts": {
+      "post": {
+        "description": "The MT5 group, leverage and currency are the broker's configuration, not the client's choice. Returns the master and investor passwords once; they are never stored.",
+        "operationId": "TradingController_openAccount",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenOwnAccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Open a trading account — live requires a verified identity, demo does not",
+        "tags": [
+          "trading"
+        ]
+      },
       "get": {
         "description": "The whole list, unpaginated — a client holds a handful of accounts rather than a growing log. Balances are decimal STRINGS (§6.1) and are the CRM-held figure, not MT5 equity: there is no bridge, so equity, margin and open positions are deliberately absent rather than fabricated.",
         "operationId": "TradingController_myAccounts",
@@ -3050,6 +3079,26 @@
           }
         ],
         "summary": "The signed-in client's trading accounts, live first then demo",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/v1/trading/accounts/self-service": {
+      "get": {
+        "operationId": "TradingController_selfService",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Whether a client may open live and demo accounts themselves",
         "tags": [
           "trading"
         ]
@@ -9475,6 +9524,22 @@
           "total",
           "page",
           "limit"
+        ]
+      },
+      "OpenOwnAccountDto": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ],
+            "description": "live requires a verified identity and holds real money; demo is practice money and needs no verification."
+          }
+        },
+        "required": [
+          "environment"
         ]
       },
       "TradingAccountDto": {
