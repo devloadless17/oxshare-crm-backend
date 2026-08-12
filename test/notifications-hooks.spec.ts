@@ -15,7 +15,6 @@ import type { AdminClientScopesStore } from '../src/store/admin-client-scopes.st
 import type { ClientVisibilityService } from '../src/common/security/client-visibility.service';
 import type { PaymentGateways } from '../src/modules/payments/payment-gateways.service';
 import { auditStubAs } from './audit-stub';
-import { commissionStubAs } from './commission-stub';
 import { emailStubAs } from './email-stub';
 import { gatewayStub } from './gateway-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
@@ -70,7 +69,6 @@ beforeAll(async () => {
       new MoneyLimits(new ConfigService()),
     ),
     currencies,
-    commissionStubAs(),
     gateway as unknown as PaymentGateways,
     new ConfigService(),
     emailStubAs(),

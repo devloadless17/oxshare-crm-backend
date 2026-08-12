@@ -36,6 +36,16 @@ export const LEDGER_REFERENCE = {
    * eventually have drifted.
    */
   transfer: 'transfer',
+  /**
+   * A CLOSED POSITION — the event a partner is actually paid on.
+   *
+   * Commission used to key off `transaction`, because it accrued on deposits.
+   * That was the bug: a deposit is not revenue, so the broker was paying a
+   * share of the client's own money. Earnings now key off the trade that
+   * produced them, which is also what makes an accrual traceable to the
+   * position an auditor is asking about.
+   */
+  position: 'position',
 } as const;
 
 export type LedgerReferenceType = (typeof LEDGER_REFERENCE)[keyof typeof LEDGER_REFERENCE];

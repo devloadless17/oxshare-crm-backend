@@ -7,7 +7,6 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { MoneyLimits } from '../src/config/money-limits';
 import { auditStubAs } from './audit-stub';
-import { commissionStubAs } from './commission-stub';
 import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
 import { gatewayStubAs } from './gateway-stub';
@@ -58,7 +57,6 @@ beforeAll(async () => {
     new MoneyLimits(new ConfigService()),
     methods,
     currencies,
-    commissionStubAs(),
     gatewayStubAs(),
     new ConfigService(),
     emailStubAs(),

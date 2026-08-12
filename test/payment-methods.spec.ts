@@ -10,7 +10,6 @@ import { MoneyLimits } from '../src/config/money-limits';
 import { toDecimal } from '../src/modules/wallet/money';
 import type { Actor } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
-import { commissionStubAs } from './commission-stub';
 import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
 import { gatewayStub } from './gateway-stub';
@@ -75,7 +74,6 @@ beforeAll(async () => {
     new MoneyLimits(new ConfigService()),
     methods,
     currencies,
-    commissionStubAs(),
     asGateways,
     new ConfigService(),
     emailStubAs(),

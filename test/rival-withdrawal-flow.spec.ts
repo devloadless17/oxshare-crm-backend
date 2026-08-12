@@ -12,7 +12,6 @@ import { AuditLogStore } from '../src/store/audit-log.store';
 import { UsersStore } from '../src/store/users.store';
 import { MoneyLimits } from '../src/config/money-limits';
 import { auditStubAs } from './audit-stub';
-import { commissionStubAs } from './commission-stub';
 import { emailStubAs } from './email-stub';
 import { notificationsStub, notificationsStubAs } from './notifications-stub';
 import { gatewayStubAs } from './gateway-stub';
@@ -63,7 +62,6 @@ beforeAll(async () => {
       new MoneyLimits(new ConfigService()),
     ),
     currencies,
-    commissionStubAs(),
     gatewayStubAs(),
     new ConfigService(),
     emailStubAs(),

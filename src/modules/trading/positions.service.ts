@@ -1,0 +1,155 @@
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { and, eq } from 'drizzle-orm';
+import Decimal from 'decimal.js';
+import { DRIZZLE_DB } from '../../database/database.module';
+import type { Db } from '../../database/db';
+import { positions, tradingAccounts } from '../../database/schema';
+import {
+  COMMISSION_ACCRUAL,
+  type CommissionAccrualPort,
+} from '../../common/provisioning/commission-accrual.port';
+import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+
+/**
+ * Open positions, and what happens when one closes.
+ *
+ * ## Why closing is a SERVICE and not an UPDATE
+ *
+ * Closing a position is the moment the broker's revenue on that trade becomes
+ * final, and therefore the moment a partner earns. Anything that can close a
+ * position without paying the partner is a silent underpayment — so the two are
+ * one method, and the accrual is not optional.
+ *
+ * The deal feed is not built yet; when it is, it calls `close` rather than
+ * writing the row, for exactly that reason.
+ *
+ * ## What the broker earns, and what it does not
+ *
+ * `brokerRevenue` is COMMISSION + SWAP: the two amounts the house actually
+ * keeps. It is emphatically not the client's profit — a client winning does not
+ * cost the partner their commission, and a client losing does not enrich them.
+ * Tying partner pay to client losses is the incentive nobody should build.
+ *
+ * Both are stored as they arrive from the platform, where a charge to the
+ * client is NEGATIVE. The house's earning is the magnitude, so they are summed
+ * and the sign dropped once — a swap credited TO the client is revenue the
+ * house did not keep and is floored at zero rather than subtracted from the
+ * commission.
+ */
+@Injectable()
+export class PositionsService {
+  private readonly logger = new Logger(PositionsService.name);
+
+  constructor(
+    @Inject(DRIZZLE_DB) private readonly db: Db,
+    @Inject(COMMISSION_ACCRUAL) private readonly commissions: CommissionAccrualPort,
+  ) {}
+
+  /** Every open position on one client's accounts, newest first. */
+  async openFor(userId: string) {
+    return await this.db
+      .select()
+      .from(positions)
+      .where(and(eq(positions.userId, userId), eq(positions.status, 'open')))
+      .orderBy(positions.openedAt);
+  }
+
+  async open(input: {
+    userId: string;
+    tradingAccountId: string;
+    ticket: string;
+    symbol: string;
+    side: 'buy' | 'sell';
+    volume: string;
+    openPrice: string;
+    currency: string;
+  }) {
+    const [account] = await this.db
+      .select({ id: tradingAccounts.id, userId: tradingAccounts.userId })
+      .from(tradingAccounts)
+      .where(eq(tradingAccounts.id, input.tradingAccountId))
+      .limit(1);
+
+    if (!account) throw new NotFoundError('Trading account not found.');
+    /*
+     * The account must belong to the client the position is being opened for.
+     * Without this, a caller could hang a position off somebody else's account
+     * and the commission would be paid to the wrong partner — the attribution
+     * is read from the position's `userId`.
+     */
+    if (account.userId !== input.userId) {
+      throw new ValidationError('That trading account belongs to a different client.');
+    }
+
+    const [row] = await this.db
+      .insert(positions)
+      .values({ ...input, status: 'open', openedAt: new Date() })
+      .returning();
+
+    return row;
+  }
+
+  /** Move the live numbers on an open position. Pays nobody — nothing is final. */
+  async update(
+    positionId: string,
+    changes: { closePrice?: string; profit?: string; swap?: string; commission?: string },
+  ) {
+    const [row] = await this.db
+      .update(positions)
+      .set({ ...changes, updatedAt: new Date() })
+      .where(and(eq(positions.id, positionId), eq(positions.status, 'open')))
+      .returning();
+
+    if (!row) throw new NotFoundError('No open position with that id.');
+    return row;
+  }
+
+  /**
+   * Close a position and accrue whatever partners are owed on it.
+   *
+   * The accrual is awaited but its failure does NOT fail the close: by the time
+   * it runs the trade is over and the client's balance is already what it is.
+   * A commission problem is recoverable — the accrual can be replayed, and the
+   * port's own contract is that it never throws — where a close rolled back
+   * because a partner could not be paid is a position that reopens itself.
+   */
+  async close(
+    positionId: string,
+    final: { closePrice: string; profit: string; swap: string; commission: string },
+  ) {
+    const [row] = await this.db
+      .update(positions)
+      .set({ ...final, status: 'closed', closedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(positions.id, positionId), eq(positions.status, 'open')))
+      .returning();
+
+    /*
+     * CONDITIONAL on it still being open, so the check and the write are one
+     * statement. Two closes racing cannot both succeed, and the second is a
+     * no-op rather than a second accrual for one trade.
+     */
+    if (!row) throw new NotFoundError('No open position with that id.');
+
+    const brokerRevenue = Decimal.max(
+      new Decimal(row.commission ?? '0').abs().plus(new Decimal(row.swap ?? '0').abs()),
+      0,
+    ).toFixed(8);
+
+    const accrued = await this.commissions.accrueForClosedPosition({
+      positionId: row.id,
+      clientUserId: row.userId,
+      brokerRevenue,
+      lots: row.volume,
+      currency: row.currency,
+    });
+
+    if (accrued > 0) {
+      this.logger.log(
+        `Position ${row.ticket} closed: broker revenue ${brokerRevenue} ${row.currency}, ` +
+          `${accrued} accrual(s) written.`,
+      );
+    }
+
+    return row;
+  }
+}

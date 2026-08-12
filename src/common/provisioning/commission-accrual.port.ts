@@ -41,6 +41,27 @@ export interface CommissionAccrualPort {
    * important half; a missing accrual is recoverable by re-running the
    * pipeline, and an implementation logs and returns 0 rather than propagating.
    */
+  /**
+   * "This trade closed — accrue whatever partners are owed for it."
+   *
+   * The ONLY event that pays a revenue share, because it is the only one that
+   * carries revenue: `brokerRevenue` is what the house kept on the trade. A
+   * deposit is the client's own money and pays nothing — see `calculate`.
+   *
+   * Same no-throw contract as the deposit hook below: by the time this runs the
+   * position is already closed and the client's balance already settled, so a
+   * commission failure must not roll that back or report the close as failed.
+   */
+  accrueForClosedPosition(position: {
+    positionId: string;
+    clientUserId: string;
+    /** What the broker earned on this trade — its commission plus swap. */
+    brokerRevenue: string;
+    /** Lots traded, for `per_lot` levels. */
+    lots: string;
+    currency: string;
+  }): Promise<number>;
+
   accrueForSettledDeposit(deposit: {
     transactionId: string;
     clientUserId: string;

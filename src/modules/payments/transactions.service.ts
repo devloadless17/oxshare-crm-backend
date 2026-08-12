@@ -43,10 +43,7 @@ import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { ConfigService } from '@nestjs/config';
 import { EmailService } from '../email/email.service';
-import {
-  COMMISSION_ACCRUAL,
-  type CommissionAccrualPort,
-} from '../../common/provisioning/commission-accrual.port';
+import {} from '../../common/provisioning/commission-accrual.port';
 import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
@@ -188,19 +185,17 @@ export class TransactionsService {
      */
     private readonly currencies: CurrenciesService,
     /*
-     * Partner commissions, behind a PORT rather than the IB module.
+     * The commission port is NO LONGER INJECTED, and the parameter is gone
+     * rather than left unused.
      *
-     * Injecting the token keeps the graph acyclic: importing `IbModule` here
-     * would close a cycle, because both modules depend on `WalletModule`. See
-     * `common/provisioning/commission-accrual.port.ts` for the full reasoning —
-     * it is the same shape identity uses to open wallets without importing the
-     * wallet module.
+     * Payments used to accrue on a settled deposit, which paid a partner a
+     * share of the client's own money. Partners are paid on closed positions
+     * now, and nothing in this file earns anybody anything.
      *
-     * APPENDED LAST, for the reason the two parameters above record: this class
-     * is constructed positionally in the test suite, so inserting a parameter
-     * in the middle silently shifts every one after it.
+     * The port and its binding survive in `ib.module.ts` for CPA — a fixed
+     * amount per qualified client, which legitimately triggers on a deposit —
+     * so re-consuming it later is one parameter, not new plumbing.
      */
-    @Inject(COMMISSION_ACCRUAL) private readonly commissions: CommissionAccrualPort,
     /*
      * The hosted payment providers, and the config the callback URLs are built
      * from. APPENDED LAST for the reason every parameter above records: this
@@ -1413,16 +1408,16 @@ export class TransactionsService {
     }
 
     /*
-     * The partner commission this deposit earns, accrued AFTER the credit and
-     * outside its transaction — the same ordering and the same no-throw port as
-     * `creditDeposit`. The client's money landing is the important half.
+     * NO COMMISSION IS ACCRUED HERE, and it must not be re-added as a share.
+     *
+     * A deposit is not revenue. The money still belongs to the client and is a
+     * liability against it, so paying a partner a percentage handed them the
+     * BROKER's funds — $700 on a $1,000 deposit at 70%, while the client kept
+     * the right to withdraw all $1,000. Unbounded, and it scaled with volume.
+     *
+     * Partners are paid on CLOSED POSITIONS, from the broker’s own earning on
+     * the trade. See `CommissionService.accrueForClosedPosition`.
      */
-    await this.commissions.accrueForSettledDeposit({
-      transactionId: tx.id,
-      clientUserId: tx.userId,
-      amount: tx.amount,
-      currency: tx.currency,
-    });
 
     return { state: 'success' };
   }
@@ -1653,25 +1648,16 @@ export class TransactionsService {
     });
 
     /*
-     * The partner commission this deposit earns, accrued AFTER the client's own
-     * credit and outside its transaction.
+     * NO COMMISSION IS ACCRUED HERE, and it must not be re-added as a share.
      *
-     * Order matters: the client's money landing is the important half. The port
-     * contract is explicitly no-throw and idempotent, so a commission failure
-     * cannot roll back — or fail — a deposit that has already credited. A
-     * missing accrual is recoverable by re-running the pipeline; a reversed
-     * deposit is a support incident.
+     * A deposit is not revenue. The money still belongs to the client and is a
+     * liability against it, so paying a partner a percentage handed them the
+     * BROKER's funds — $700 on a $1,000 deposit at 70%, while the client kept
+     * the right to withdraw all $1,000. Unbounded, and it scaled with volume.
      *
-     * Awaited rather than fire-and-forget: this writes `pending` rows only and
-     * moves no money, so it is cheap, and awaiting means a caller that has just
-     * settled a deposit can immediately read the accruals it caused.
+     * Partners are paid on CLOSED POSITIONS, from the broker’s own earning on
+     * the trade. See `CommissionService.accrueForClosedPosition`.
      */
-    await this.commissions.accrueForSettledDeposit({
-      transactionId: tx.id,
-      clientUserId: params.userId,
-      amount: params.amount,
-      currency: params.currency,
-    });
 
     return { transaction: tx, replayed: false as const };
     // NOTE: kept as two steps deliberately — the credit is idempotent on

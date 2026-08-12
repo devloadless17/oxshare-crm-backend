@@ -24,6 +24,35 @@ import {
  * paths carry most of the weight below.
  */
 
+/**
+ * A closed trade on which the BROKER kept 1000 — spread markup plus its own
+ * commission. This is the only base a revenue share may be taken of.
+ *
+ * The fixture used to be a DEPOSIT of the same size, which is what made the
+ * old numbers look reasonable and be wrong: 70% of a deposit is 70% of the
+ * client's own money.
+ */
+const DEAL: RevenueEvent = {
+  grossAmount: '1000.00000000',
+  currency: 'USD',
+  source: 'deal',
+  lots: '10',
+};
+
+/**
+ * A deal WITHOUT lots — the shape `checkPlausible` guards.
+ *
+ * The share test only applies where a share was taken, so per-lot events are
+ * deliberately outside it: a rebate can exceed the broker's revenue on one
+ * trade without being an error.
+ */
+const SHARE_BASE: RevenueEvent = {
+  grossAmount: '1000.00000000',
+  currency: 'USD',
+  source: 'deal',
+};
+
+/** The same size, from the source a share may NOT be taken of. */
 const DEPOSIT: RevenueEvent = {
   grossAmount: '1000.00000000',
   currency: 'USD',
@@ -151,7 +180,7 @@ describe('calculate', () => {
       { ibUserId: 'ib-1', depth: 2, level: 1 },
     ];
     const result = calculate(
-      DEPOSIT,
+      DEAL,
       chain,
       terms([
         { level: 1, rateValue: '5.0000' },
@@ -170,7 +199,7 @@ describe('calculate', () => {
    */
   it('keeps full precision on a fractional rate', () => {
     const result = calculate(
-      { grossAmount: '12345678901234567.89', currency: 'USD', source: 'deposit' },
+      { grossAmount: '12345678901234567.89', currency: 'USD', source: 'deal' },
       [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
       terms([{ level: 1, rateValue: '2.5000' }]),
     );
@@ -182,9 +211,21 @@ describe('calculate', () => {
    * would pay a plausible wrong number; treating it as a flat amount would pay
    * the same on a $10 deposit as on a $10,000 one.
    */
-  it('refuses a per_lot level on a deposit, and says why', () => {
+  it('pays per_lot as a rate TIMES the lots, not a percentage', () => {
     const result = calculate(
-      DEPOSIT,
+      DEAL,
+      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
+      terms([{ level: 1, payoutModel: 'per_lot', rateValue: '2.5000' }]),
+    );
+    // 2.50 per lot × 10 lots. A percentage would have paid 25.00 of the 1000.
+    expect(result.accruals).toEqual([
+      { ibUserId: 'ib-1', depth: 1, level: 1, amount: '25.00000000' },
+    ]);
+  });
+
+  it('refuses a per_lot level when the event carries no lots, and says why', () => {
+    const result = calculate(
+      { grossAmount: '1000.00000000', currency: 'USD', source: 'deal' },
       [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
       terms([{ level: 1, payoutModel: 'per_lot', rateValue: '2.5000' }]),
     );
@@ -192,9 +233,27 @@ describe('calculate', () => {
     expect(result.skippedReason).toContain('per_lot');
   });
 
-  it('pays nothing for a disabled level, and says why', () => {
+  /*
+   * THE REGRESSION THIS FILE EXISTS TO HOLD.
+   *
+   * A revenue share of a deposit paid 70% of the client's own money to their
+   * partner — of the broker's funds, since a deposit is a liability. It ran in
+   * production shape and the plausibility guard could not catch it, because a
+   * share smaller than its base is what a CORRECT share looks like.
+   */
+  it('refuses to take a share of a deposit, whatever the rate', () => {
     const result = calculate(
       DEPOSIT,
+      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
+      terms([{ level: 1, payoutModel: 'revenue_share', rateValue: '70.0000' }]),
+    );
+    expect(result.accruals).toEqual([]);
+    expect(result.skippedReason).toContain('deposit');
+  });
+
+  it('pays nothing for a disabled level, and says why', () => {
+    const result = calculate(
+      DEAL,
       [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
       terms([{ level: 1, enabled: false }]),
     );
@@ -203,7 +262,7 @@ describe('calculate', () => {
   });
 
   it('pays nothing when the level has no configured terms', () => {
-    const result = calculate(DEPOSIT, [{ ibUserId: 'ib-1', depth: 1, level: 7 }], terms([]));
+    const result = calculate(DEAL, [{ ibUserId: 'ib-1', depth: 1, level: 7 }], terms([]));
     expect(result.accruals).toEqual([]);
     expect(result.skippedReason).toContain('no configured terms');
   });
@@ -216,7 +275,7 @@ describe('calculate', () => {
   it('pays nothing on a non-positive base', () => {
     for (const gross of ['0', '-500.00000000']) {
       const result = calculate(
-        { grossAmount: gross, currency: 'USD', source: 'deposit' },
+        { grossAmount: gross, currency: 'USD', source: 'deal' },
         [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
         terms([{ level: 1 }]),
       );
@@ -226,7 +285,7 @@ describe('calculate', () => {
 
   it('skips a leg that rounds to nothing rather than writing an empty accrual', () => {
     const result = calculate(
-      { grossAmount: '0.00000001', currency: 'USD', source: 'deposit' },
+      { grossAmount: '0.00000001', currency: 'USD', source: 'deal' },
       [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
       // 0.00000001 × 0.0001% is far below the 8dp the ledger stores.
       terms([{ level: 1, rateValue: '0.0001' }]),
@@ -236,7 +295,7 @@ describe('calculate', () => {
 
   it('pays one earner while skipping another in the same chain', () => {
     const result = calculate(
-      DEPOSIT,
+      DEAL,
       [
         { ibUserId: 'ib-2', depth: 1, level: 2 },
         { ibUserId: 'ib-1', depth: 2, level: 1 },
@@ -259,14 +318,14 @@ describe('checkPlausible', () => {
    * rather than a bug, and that nothing else in the pipeline would question.
    */
   it('refuses a total that exceeds the revenue it is a share of', () => {
-    const verdict = checkPlausible(DEPOSIT, [
+    const verdict = checkPlausible(SHARE_BASE, [
       { ibUserId: 'ib-1', depth: 1, level: 1, amount: '70000.00000000' },
     ]);
     expect(verdict.ok).toBe(false);
   });
 
   it('accepts a normal split of the same deposit', () => {
-    const verdict = checkPlausible(DEPOSIT, [
+    const verdict = checkPlausible(SHARE_BASE, [
       { ibUserId: 'ib-2', depth: 1, level: 2, amount: '100.00000000' },
       { ibUserId: 'ib-1', depth: 2, level: 1, amount: '50.00000000' },
     ]);
@@ -278,7 +337,7 @@ describe('checkPlausible', () => {
    * can still sum past it, which is the case a per-accrual check would miss.
    */
   it('refuses when the legs are individually fine but together exceed the base', () => {
-    const verdict = checkPlausible(DEPOSIT, [
+    const verdict = checkPlausible(SHARE_BASE, [
       { ibUserId: 'ib-2', depth: 1, level: 2, amount: '600.00000000' },
       { ibUserId: 'ib-1', depth: 2, level: 1, amount: '600.00000000' },
     ]);
@@ -286,7 +345,7 @@ describe('checkPlausible', () => {
   });
 
   it('accepts a total exactly equal to the base', () => {
-    const verdict = checkPlausible(DEPOSIT, [
+    const verdict = checkPlausible(SHARE_BASE, [
       { ibUserId: 'ib-1', depth: 1, level: 1, amount: '1000.00000000' },
     ]);
     expect(verdict.ok).toBe(true);

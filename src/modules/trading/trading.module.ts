@@ -10,6 +10,7 @@ import { Mt5AccountsController } from './mt5/mt5-accounts.controller';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
 import { SelfServiceGroups } from './mt5/self-service-groups';
 import { Mt5DealsService } from './mt5/mt5-deals.service';
+import { PositionsService } from './positions.service';
 import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
 
 /**
@@ -69,6 +70,7 @@ import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
     TradingService,
     DashboardService,
     Mt5DealsService,
+    PositionsService,
     Mt5BridgeClient,
     Mt5AccountsService,
     SelfServiceGroups,
@@ -78,6 +80,6 @@ import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
    * which groups the server actually has before letting an operator attach one
    * to a product. That validation is the point of the products screen.
    */
-  exports: [TradingService, Mt5BridgeClient, Mt5AccountsService],
+  exports: [TradingService, Mt5BridgeClient, Mt5AccountsService, PositionsService],
 })
 export class TradingModule {}

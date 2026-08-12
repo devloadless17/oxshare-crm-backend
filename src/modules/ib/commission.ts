@@ -23,13 +23,13 @@ import { money, toDecimal } from '../wallet/money';
  * `deal` source and `poolFor` gains a branch — the chain resolution and the
  * split below do not change.
  *
- * ## `per_lot` cannot be honoured yet, and this file refuses rather than guesses
+ * ## Both payout models work, and each has its own base
  *
- * `ib_levels.payout_model` allows `per_lot`, whose rate is an amount per
- * standard lot. A deposit has no lot count — nothing in this database does —
- * so there is no honest number to compute. `calculate` returns an empty accrual
- * set with a stated reason instead of silently treating the rate as a
- * percentage, which would pay a wrong figure that looks correct.
+ * `revenue_share` takes a percentage of the BROKER'S revenue on a closed trade.
+ * `per_lot` pays a fixed amount per standard lot. Neither can be computed from
+ * a deposit, and `calculate` refuses one rather than inventing a base — see the
+ * deposit branch, which exists because taking 70% of a client's own deposit was
+ * live and losing the broker money on every funded account.
  */
 
 /** How many rungs earnings travel. Matches ARCHITECTURE: resolution stops at L2. */
@@ -105,10 +105,26 @@ export interface RevenueEvent {
   grossAmount: string;
   currency: string;
   /**
-   * Where the revenue came from. One value today; a deal feed adds `'deal'`
-   * here and a branch in `poolFor`, and nothing else in this file moves.
+   * Where the revenue came from.
+   *
+   * ## `'deposit'` is no longer a revenue event, and must not become one again
+   *
+   * It was, and it was wrong in a way that cost the broker money on every
+   * client: a deposit is not revenue. The money still belongs to the client and
+   * is recorded as a liability against it, so paying a partner 70% of a $1,000
+   * deposit hands them $700 of the BROKER's money while the client keeps the
+   * right to withdraw all $1,000. Unbounded, and it scales with deposit volume.
+   *
+   * The value survives for CPA — a FIXED amount per qualified client, which is
+   * a real model — and for nothing else. A percentage of a deposit is not a
+   * model any brokerage runs.
    */
-  source: 'deposit';
+  source: 'deposit' | 'deal';
+  /**
+   * Lots traded, for `per_lot`. Present on a deal and absent on anything else,
+   * which is exactly why `per_lot` could never be honoured before.
+   */
+  lots?: string;
 }
 
 /** One rung's terms, as configured on `ib_levels`. */
@@ -172,6 +188,32 @@ export function calculate(
   const skipped: string[] = [];
 
   for (const entry of chain) {
+    /*
+     * ── A REVENUE SHARE OF A DEPOSIT IS NOT A COMMISSION ──────────────────
+     *
+     * This is the bug this branch exists to close, and it was live: with a
+     * level at 70% revenue share, a client depositing 1000 paid their partner
+     * 700 — of the broker's own money, since the deposit is a LIABILITY. The
+     * client still owns it and can withdraw it, so the broker is simply down
+     * 700 per deposit, unbounded and scaling with volume.
+     *
+     * The plausibility guard did not catch it because 700 is less than 1000; a
+     * share smaller than its base is exactly what a correct share looks like.
+     * The error is not the size, it is the BASE.
+     *
+     * A percentage may only be taken of what the broker EARNED, which arrives
+     * on a closed trade. A broker who wants to pay for a funded client wants
+     * CPA — a fixed sum per qualifying deposit — which is a different model
+     * with a different column, not this one with a different basis.
+     */
+    if (event.source === 'deposit') {
+      skipped.push(
+        'a revenue share cannot be taken of a deposit — the money is the client’s, ' +
+          'not the broker’s revenue. Commission is earned on closed trades.',
+      );
+      continue;
+    }
+
     const rung = terms.get(entry.level);
 
     if (!rung) {
@@ -187,22 +229,21 @@ export function calculate(
       skipped.push(`level ${entry.level} is disabled`);
       continue;
     }
-    /*
-     * `per_lot` has no honest answer here — see the file note. Refusing is the
-     * whole point: treating the rate as a percentage would pay a plausible
-     * wrong number, and treating it as a flat amount would pay the same figure
-     * on a $10 deposit as on a $10,000 one.
-     */
-    if (rung.payoutModel === 'per_lot') {
-      skipped.push(
-        `level ${entry.level} is per_lot, which needs a lot count that a ${event.source} does not carry`,
-      );
-      continue;
-    }
-
     const rate = toDecimal(rung.rateValue);
     if (!rate.isPositive()) {
       skipped.push(`level ${entry.level} has a non-positive rate`);
+      continue;
+    }
+
+    /*
+     * `per_lot` needs a lot count, and only a deal carries one. Refusing when
+     * it is absent remains the right answer — treating the rate as a
+     * percentage would pay a plausible wrong number.
+     */
+    if (rung.payoutModel === 'per_lot' && event.lots === undefined) {
+      skipped.push(
+        `level ${entry.level} is per_lot, which needs a lot count that a ${event.source} does not carry`,
+      );
       continue;
     }
 
@@ -219,7 +260,21 @@ export function calculate(
      * dust-sized leg taking down the accrual of every legitimate earner in the
      * same statement. Skipping here is what keeps the two consistent.
      */
-    const amount = money(gross.times(rate).dividedBy(100));
+    /*
+     * The two models take DIFFERENT bases, and conflating them is the bug this
+     * engine shipped with:
+     *
+     *   revenue_share  rate is a PERCENTAGE of `grossAmount`, which for a deal
+     *                  is what the BROKER earned on it — its commission and
+     *                  swap, never the client's volume or balance.
+     *   per_lot        rate is an AMOUNT per lot, multiplied by the lots
+     *                  traded. The base is size, not money.
+     */
+    const amount =
+      rung.payoutModel === 'per_lot'
+        ? money(rate.times(toDecimal(event.lots ?? '0')))
+        : money(gross.times(rate).dividedBy(100));
+
     if (toDecimal(amount).isZero()) continue;
 
     accruals.push({
@@ -259,14 +314,40 @@ export function checkPlausible(
     new Decimal(0),
   );
 
-  if (total.greaterThan(gross)) {
-    return {
-      ok: false,
-      reason:
-        `Total commission ${money(total)} exceeds the ${event.source}'s own value ` +
-        `${money(gross)}. A share cannot exceed the thing it is a share OF, so this is a rate ` +
-        'unit error rather than a large event. Nothing has been accrued.',
-    };
+  /*
+   * A per-lot payout is NOT a share of the revenue and is not bounded by it —
+   * a broker may legitimately pay $7/lot on a trade it earned $5 on, buying
+   * volume at a loss on that trade. Checking it against `grossAmount` would
+   * refuse a correct configuration.
+   *
+   * It is not left unguarded: the size of a per-lot payout is bounded by the
+   * lots, and an absurd rate is caught by the same ceiling the settings screen
+   * enforces. What this guard exists for is the UNIT error on a percentage —
+   * `70` meaning 70× rather than 70% — which only applies to revenue_share.
+   */
+  if (event.lots !== undefined) return { ok: true };
+
+  /*
+   * The check applies to SHARES, not to per-lot rebates.
+   *
+   * A per-lot payout is not a share of anything — it is a rate times a volume,
+   * and it can legitimately exceed the broker's revenue on a single trade (a
+   * rebate deal that loses money on scalpers is a commercial choice, not an
+   * arithmetic error). Applying the share test to it would refuse a correct
+   * payout, so per-lot events are checked against a much cruder bound: the rate
+   * itself is validated on the level, and anything beyond that is the
+   * operator's decision.
+   */
+  if (event.source !== 'deal' || event.lots === undefined) {
+    if (total.greaterThan(gross)) {
+      return {
+        ok: false,
+        reason:
+          `Total commission ${money(total)} exceeds the ${event.source}'s own value ` +
+          `${money(gross)}. A share cannot exceed the thing it is a share OF, so this is a rate ` +
+          'unit error rather than a large event. Nothing has been accrued.',
+      };
+    }
   }
 
   return { ok: true };

@@ -155,6 +155,149 @@ export class CommissionService implements CommissionAccrualPort {
    * `executor` lets the caller run this inside their own transaction, so the
    * deposit's own state change and the accrual it causes commit together.
    */
+  /**
+   * Accrue on a CLOSED POSITION — the only thing that earns a partner anything.
+   *
+   * ## The base is the BROKER's revenue, never the client's money
+   *
+   * `brokerRevenue` is what the broker took on this trade: its commission and
+   * swap. It is not the client's volume, not their profit, and emphatically not
+   * their balance or deposit. A partner's revenue share is a share of what the
+   * house earned, so the house can never pay out more than it took in.
+   *
+   * `lots` rides alongside for `per_lot` levels, which are paid on SIZE rather
+   * than on money and are therefore not bounded by the revenue — a broker may
+   * buy volume at a loss on a single trade, deliberately.
+   *
+   * ## Nothing is paid on an unprofitable-to-the-broker trade
+   *
+   * A zero or negative `brokerRevenue` accrues nothing rather than a negative
+   * amount: a clawback is a deliberate compensating entry, not a side effect of
+   * a quiet trade.
+   */
+  async accrueForClosedPosition(position: {
+    positionId: string;
+    clientUserId: string;
+    brokerRevenue: string;
+    lots: string;
+    currency: string;
+  }): Promise<number> {
+    /*
+     * The NO-THROW half of the port contract, and the reason it wraps rather
+     * than being folded into the body below.
+     *
+     * By the time this runs the position is closed and the client's balance is
+     * already settled. A commission failure must not roll that back or report
+     * the close as failed — the accrual is recoverable by re-running the
+     * pipeline, and the position is not.
+     */
+    try {
+      return await this.accrueForPosition(position);
+    } catch (error) {
+      this.logger.error(
+        `Commission accrual failed for position ${position.positionId}; the position is closed ` +
+          `and unaffected, and this is re-runnable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return 0;
+    }
+  }
+
+  private async accrueForPosition(position: {
+    positionId: string;
+    clientUserId: string;
+    /** The broker's own earning on this trade — commission plus swap. */
+    brokerRevenue: string;
+    /** Lots traded, for per_lot levels. */
+    lots: string;
+    currency: string;
+  }): Promise<number> {
+    /*
+     * Read from the CLIENT rather than taken as a parameter, for the reason the
+     * deposit path gives below: attribution is written once at registration and
+     * is permanent, so a caller must not be able to name the partner who gets
+     * paid.
+     */
+    const [client] = await this.db
+      .select({ referredBy: users.referredByIbUserId })
+      .from(users)
+      .where(eq(users.id, position.clientUserId))
+      .limit(1);
+
+    if (!client?.referredBy) return 0; // Not referred — nobody earns. Not an error.
+
+    const chainNodes = await this.loadChain(this.db, client.referredBy);
+    const chain = resolveChain(client.referredBy, (id) => chainNodes.get(id));
+    if (chain.length === 0) return 0;
+
+    const terms = await this.loadTerms(
+      this.db,
+      chain.map((entry) => entry.level),
+    );
+
+    const event: RevenueEvent = {
+      grossAmount: position.brokerRevenue,
+      currency: position.currency,
+      source: 'deal',
+      lots: position.lots,
+    };
+
+    const result = calculate(event, chain, terms);
+    if (result.skippedReason) {
+      this.logger.warn(
+        `Commission partially skipped for position ${position.positionId}: ${result.skippedReason}`,
+      );
+    }
+    if (result.accruals.length === 0) return 0;
+
+    const plausible = checkPlausible(event, result.accruals);
+    if (!plausible.ok) {
+      this.logger.error(
+        `Refusing commission for position ${position.positionId}: ${plausible.reason}`,
+      );
+      return 0;
+    }
+
+    const inserted = await this.db
+      .insert(ibAccruals)
+      .values(
+        result.accruals.map((accrual) => ({
+          ibUserId: accrual.ibUserId,
+          clientUserId: position.clientUserId,
+          /*
+           * Keyed on the POSITION. With the accrual's own unique index over
+           * (sourceType, sourceId, ibUserId) this makes re-processing a closed
+           * position a no-op — which a redelivered deal feed will do routinely.
+           */
+          sourceType: LEDGER_REFERENCE.position,
+          sourceId: position.positionId,
+          depth: accrual.depth,
+          level: accrual.level,
+          rateValue: terms.get(accrual.level)?.rateValue ?? '0',
+          baseAmount: position.brokerRevenue,
+          amount: accrual.amount,
+          currency: position.currency,
+        })),
+      )
+      .onConflictDoNothing({
+        target: [ibAccruals.sourceType, ibAccruals.sourceId, ibAccruals.ibUserId],
+      })
+      .returning({ id: ibAccruals.id });
+
+    return inserted.length;
+  }
+
+  /**
+   * @deprecated A DEPOSIT IS NOT REVENUE, and this must not be re-enabled as a
+   * percentage.
+   *
+   * It paid a share of the client's own money: on a $1,000 deposit at 70% the
+   * partner received $700 of the BROKER's funds while the client kept the right
+   * to withdraw all $1,000. Unbounded, and it scaled with deposit volume.
+   *
+   * Kept — unwired — because CPA is a real model that triggers on a deposit: a
+   * FIXED amount per qualified client. Whoever builds that starts here and pays
+   * a flat sum, never a percentage.
+   */
   async accrueForDeposit(
     deposit: {
       transactionId: string;
