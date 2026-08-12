@@ -162,17 +162,18 @@ const PUBLIC_ROUTES: Record<string, string> = {
    *
    * ⚠️ The reason this is safe is NOT that the request is verified. It is that
    * the request is treated as a NUDGE and never as evidence: the handler reads
-   * nothing from the query string, credits nothing, and only asks the provider
-   * over an authenticated server-to-server call what the payment's status
-   * actually is. Anyone on the internet may hit this route; the worst they
-   * achieve is making us re-ask Whish about a payment reference.
+   * nothing until a bearer key WE minted and an HMAC over the exact raw bytes
+   * both verify, inside a ±300s window, behind a single-use replay nonce —
+   * and even then, money moves only on Rival's authenticated stored state,
+   * never on the event's own say-so.
    *
-   * It always answers 200, including for an unknown reference, so it cannot be
-   * used to enumerate which references exist.
+   * This replaced the anonymous GET callback the direct Whish integration
+   * carried: same greppable-surface rule, far stronger authentication.
    */
-  'GET /payments/gateway/:method/callback':
-    'The gateway returns the payer here. Untrusted by design — settles ONLY from an ' +
-    'authenticated getStatus() call, reads nothing from the URL, and always answers 200.',
+  'POST /payments/rival/webhook':
+    'Rival delivers signed CRM events here (bearer + HMAC over raw bytes + replay nonce, ' +
+    'verified before parsing). Response codes are shaped to its retry policy; settlement ' +
+    'still re-reads Rival’s stored state.',
 
   /*
    * Payment-method brand marks. Open because the deposit screen renders them,

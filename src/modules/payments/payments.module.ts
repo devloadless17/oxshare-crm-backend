@@ -13,11 +13,14 @@ import { CurrenciesModule } from '../currencies/currencies.module';
 import { WithdrawalOtpService } from './withdrawal-otp.service';
 import { SecuritySettingsService } from '../admin/security-settings.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
-import { PaymentCallbacksController } from './payment-callbacks.controller';
 import { PaymentGateways } from './payment-gateways.service';
-import { WhishProvider } from './whish.provider';
+import { RivalModule } from './rival/rival.module';
+import { RivalWebhookController } from './rival/rival-webhook.controller';
+import { RivalWebhookService } from './rival/rival-webhook.service';
+import { RivalWithdrawalsService } from './rival/rival-withdrawals.service';
+import { RivalPollScheduler } from './rival/rival-poll.scheduler';
 
-/** Whish · USDT · deposits · withdrawals · OTP · provider callbacks */
+/** Deposits · withdrawals · OTP · the Rival platform connection */
 @Module({
   // CurrenciesModule so the money paths can refuse an unknown or DISABLED
   // currency at runtime — the check that replaced the old `'USD' | 'USDT'`
@@ -33,15 +36,25 @@ import { WhishProvider } from './whish.provider';
    * move the MT5 leg of a transfer. The dependency runs one way — trading does
    * not import payments — so there is no cycle.
    */
-  imports: [WalletModule, IdentityModule, CurrenciesModule, AdminAuthModule, TradingModule],
+  // `RivalModule` is the platform substrate (client + config), shared with
+  // SettingsModule for the test-connection call — one-way arrows both ways.
+  imports: [
+    WalletModule,
+    IdentityModule,
+    CurrenciesModule,
+    AdminAuthModule,
+    TradingModule,
+    RivalModule,
+  ],
   /*
-   * `PaymentCallbacksController` is UNAUTHENTICATED, uniquely in this module and
-   * deliberately: a payment gateway calls it server-to-server with no credential
-   * of any kind. It is a separate file rather than an exception inside
-   * `PaymentsController` so that the unauthenticated surface of this system
-   * stays greppable — see the note in it for why that is safe.
+   * `RivalWebhookController` carries no session auth, uniquely in this module
+   * and deliberately: Rival calls it server-to-server, authenticated by a
+   * minted bearer key plus an HMAC over the raw body — verified before
+   * parsing, replay-blocked by nonce. It is a separate file rather than an
+   * exception inside `PaymentsController` so that the low-auth surface of this
+   * system stays greppable — see its class comment.
    */
-  controllers: [PaymentsController, PaymentCallbacksController, AdminPaymentMethodsController],
+  controllers: [PaymentsController, RivalWebhookController, AdminPaymentMethodsController],
   /*
    * `SecuritySettingsService` and `AdminAuditService` are provided here rather
    * than imported from AdminModule, deliberately: importing the admin module
@@ -65,14 +78,15 @@ import { WhishProvider } from './whish.provider';
     AdminAuditService,
     /*
      * The hosted-gateway seam. `PaymentGateways` is the registry every caller
-     * talks to; `WhishProvider` is the one implementation behind it today.
-     *
-     * Nothing outside this module names Whish — adding a second provider is a
-     * case in one switch, not a change to the deposit flow, the method list and
-     * the callback route.
+     * talks to; behind it sits Rival — Loadless's own payments platform, where
+     * Whish is integrated once. Nothing outside this module names either:
+     * a second rail is a case in one switch, not a change to the deposit flow,
+     * the method list or the webhook route.
      */
     PaymentGateways,
-    WhishProvider,
+    RivalWebhookService,
+    RivalWithdrawalsService,
+    RivalPollScheduler,
   ],
   /*
    * `PaymentsService` is gone from this list, and it was an empty
@@ -80,6 +94,8 @@ import { WhishProvider } from './whish.provider';
    * survived the module's whole life without gaining a method. The real work is
    * in the three services beside it.
    */
-  exports: [TransactionsService, TransfersService, PaymentMethodsService],
+  // `RivalWithdrawalsService` is exported for AdminModule: the approve hook
+  // and the desk's cancel/retry actions live behind admin routes.
+  exports: [TransactionsService, TransfersService, PaymentMethodsService, RivalWithdrawalsService],
 })
 export class PaymentsModule {}

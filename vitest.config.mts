@@ -74,8 +74,18 @@ export default defineConfig({
       // with a live deal webhook and no Redis for its single-use replay markers
       // (§8.4, R-5.3). Nothing here CONNECTS — the client is lazy and every
       // test injects a fake — this only satisfies the boot-time coupling, which
-      // is exactly the check that would otherwise be untested.
+      // is exactly the check that would otherwise be untested. (One exception
+      // opts INTO the real connection: rival-webhook-http.spec.ts exercises the
+      // replay nonce against the compose Redis, because a faked SET NX proves
+      // nothing about the one atomic command the guarantee rests on.)
       REDIS_URL: 'redis://localhost:6379',
+      /*
+       * The secret-box key, so HTTP suites can seed encrypted settings rows
+       * (SMTP passwords, the Rival API and webhook keys) and the app can open
+       * them. Unit suites that exercise sealing pass their own key explicitly
+       * and are unaffected.
+       */
+      APP_ENCRYPTION_KEY: 'test-only-encryption-key-at-least-32-chars-long',
     },
 
     // One container, shared connection: money tests must observe each other's

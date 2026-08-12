@@ -93,7 +93,14 @@ export class PaymentMethodsService {
       .where(eq(paymentMethods.enabled, true))
       .orderBy(asc(paymentMethods.sortOrder), asc(paymentMethods.key));
 
-    return rows.filter((row) => this.isConfigured(row)).map((row) => this.withEffectiveBounds(row));
+    // `isConfigured` reads the Rival settings row now, so the filter is
+    // resolved before filtering — sequential, because the answer is cached
+    // after the first gateway row and a client holds a handful of methods.
+    const available: typeof rows = [];
+    for (const row of rows) {
+      if (await this.isConfigured(row)) available.push(row);
+    }
+    return available.map((row) => this.withEffectiveBounds(row));
   }
 
   /**
@@ -155,7 +162,7 @@ export class PaymentMethodsService {
    * manual method by definition, and there is nothing about it a deployment can
    * fail to configure.
    */
-  private isConfigured(row: PaymentMethodRow): boolean {
+  private async isConfigured(row: PaymentMethodRow): Promise<boolean> {
     if (this.gateways.isImplemented(row.key)) return this.gateways.isConfigured(row.key);
     return true;
   }
@@ -186,7 +193,7 @@ export class PaymentMethodsService {
     if (!row.enabled) {
       throw new ValidationError(`${row.name} is not currently available. Choose another method.`);
     }
-    if (!this.isConfigured(row)) {
+    if (!(await this.isConfigured(row))) {
       /*
        * Reachable only if an operator enabled a gateway this deployment holds no
        * credentials for, since `listAvailable` hides those. The message says

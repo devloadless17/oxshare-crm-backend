@@ -80,6 +80,16 @@ export class AuditLogStore {
       .values({
         actorId: data.actorId,
         actorEmail: data.actorEmail,
+        /*
+         * ⚠️ This line was MISSING while the interface above advertised the
+         * field: `uploads.controller.ts` passed `actorKind: 'client'` for a
+         * client reading their own KYC document, the insert dropped it, and
+         * the column's default recorded every such read as an ADMIN's — a
+         * false statement in the one record that must not contain any, and
+         * precisely the D-47 shape (kept, unreadable — here: sent, unwritten).
+         * Undefined still falls through to the database default.
+         */
+        actorKind: data.actorKind,
         action: data.action,
         subjectType: data.subjectType,
         subjectId: data.subjectId,

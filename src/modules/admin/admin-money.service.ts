@@ -22,6 +22,7 @@ import { enumQuery } from '../../common/query-params';
 import { ledgerEntryTypeEnum } from '../../database/schema';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import { CurrenciesService } from '../currencies/currencies.service';
+import { RivalWithdrawalsService } from '../payments/rival/rival-withdrawals.service';
 import type { ClientScope } from '../../common/security/client-scope';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 
@@ -56,6 +57,8 @@ export class AdminMoneyService {
     private readonly currencies: CurrenciesService,
     /** Bell rows for the client. Same append-last rule as `currencies` above. */
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
+    /** The Rival payout leg. Appended LAST — the positional-construction rule. */
+    private readonly rivalWithdrawals: RivalWithdrawalsService,
   ) {}
 
   /**
@@ -338,7 +341,113 @@ export class AdminMoneyService {
     // FR-CORE-08 "email on success/failure" begins at approval: this is the
     // first decision the client can be told about.
     void this.emailWithdrawalDecision(row, 'approved');
+    /*
+     * The Rival submission, POST-COMMIT and detached: the approval is a fact
+     * the moment its transaction commits, and a Rival outage must not turn a
+     * successful approval into an error on the admin's screen. `submitApproved`
+     * never throws, claims before it creates (Rival's withdrawal API has no
+     * idempotency key), and no-ops for non-whish rows — a needs-attention flag
+     * on the desk is the failure surface.
+     */
+    void this.rivalWithdrawals.submitApproved(row.id);
     return row;
+  }
+
+  /**
+   * Cancel an APPROVED withdrawal — "approved, then thought better of it".
+   *
+   * FR-ADM-03's shape holds even though this is not a rejection: the reason
+   * comes from the configurable list (or free text), is recorded, and is
+   * emailed — a client whose payout was pulled back after "approved" is owed
+   * a sentence more than a status flip.
+   *
+   * `withdrawals.approve`, not `.settle`: cancelling un-does an approval, so
+   * it belongs to the power that made it. The refund path (`markFailed`) is
+   * settle-gated internally and SYSTEM-actored there for webhooks — here the
+   * ACTING ADMIN is the actor, so their audit row carries their name.
+   * `assertActorCan` inside `markFailed` still runs against this actor, which
+   * makes the effective requirement approve+settle — acceptable strictness on
+   * an action that reverses money already promised.
+   *
+   * Two shapes, decided by `RivalWithdrawalsService.cancelApproved`:
+   * never-submitted cancels locally; submitted asks Rival FIRST and refuses
+   * cleanly if the payout is already being processed (its 409) — "cancelled
+   * here, paid there" is the split-brain this integration exists to prevent.
+   */
+  async cancelWithdrawal(
+    id: string,
+    actor: AuthenticatedAdmin,
+    reason?: string,
+    reasonId?: string,
+  ) {
+    assertActorCan(actor, 'withdrawals.approve', 'cancel an approved withdrawal');
+    await this.assertWithdrawalVisible(id, actor.clientScope);
+
+    let effectiveReason = reason?.trim();
+    if (reasonId) {
+      const configured = await this.rejectionReasons.findById(reasonId);
+      if (!configured) throw new NotFoundError('Rejection reason not found.');
+      effectiveReason = effectiveReason
+        ? `${configured.label} — ${effectiveReason}`
+        : configured.label;
+    }
+    if (!effectiveReason) {
+      throw new ValidationError('A cancellation reason (reasonId or reason text) is required.');
+    }
+
+    const current = await this.transactions.getById(id);
+    // Rival first: if the payout can no longer be stopped this throws and
+    // NOTHING local changes — the desk is told to act on the outcome instead.
+    await this.rivalWithdrawals.cancelApproved({
+      id: current.id,
+      rivalWithdrawalId: current.rivalWithdrawalId,
+      rivalSubmittedAt: current.rivalSubmittedAt,
+    });
+
+    const row = await this.transactions.markFailed(
+      id,
+      effectiveReason,
+      actor,
+      async (tx, failed) => {
+        await this.audit.recordWithin(tx, actor.id, 'withdrawal.cancel', 'transaction', id, {
+          amount: failed.amount,
+          currency: failed.currency,
+          reason: effectiveReason,
+          rivalWithdrawalId: current.rivalWithdrawalId,
+        });
+        await this.notifications.notify(
+          {
+            recipient: { kind: 'client', id: failed.userId },
+            kind: 'withdrawal.rejected',
+            params: {
+              transactionId: failed.id,
+              amount: failed.amount,
+              currency: failed.currency,
+              reason: effectiveReason ?? '',
+            },
+          },
+          tx,
+        );
+      },
+    );
+    void this.emailWithdrawalDecision(row, 'rejected', effectiveReason);
+    return row;
+  }
+
+  /**
+   * Re-run the Rival submission for a row whose first attempt definitively
+   * failed. Safe under double-click and races: the claim column admits one
+   * in-flight create, and a still-held claim (the indeterminate case) makes
+   * this a no-op until the reconciler resolves it.
+   */
+  async retryRivalSubmission(id: string, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'withdrawals.approve', 'retry a payout submission');
+    await this.assertWithdrawalVisible(id, actor.clientScope);
+    this.audit.record(actor.id, 'withdrawal.rival.submit', 'transaction', id, {
+      retriedBy: 'admin',
+    });
+    await this.rivalWithdrawals.submitApproved(id);
+    return this.transactions.getById(id);
   }
   async rejectWithdrawal(
     id: string,

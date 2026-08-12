@@ -1,10 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
-import { smtpSettings, tradingSettings } from '../database/schema';
+import { rivalSettings, smtpSettings, tradingSettings } from '../database/schema';
 
 /**
- * The singleton settings rows — `smtp_settings` and `trading_settings`.
+ * The singleton settings rows — `smtp_settings`, `trading_settings` and
+ * `rival_settings`.
  *
  * ONE store for both, unlike the rest of `store/`, because each table is a
  * single row addressed the same way and neither will ever grow a query beyond
@@ -71,6 +73,30 @@ export interface TradingSettingsWrite {
   maxLiveAccounts: number;
   maxDemoAccounts: number;
   maxDemoDeposit: string;
+}
+
+export interface RivalSettingsRow {
+  baseUrl: string | null;
+  apiKeyCiphertext: string | null;
+  webhookKeyCiphertext: string | null;
+  webhookKeyFingerprint: string | null;
+  enabled: boolean;
+  lastEventAt: Date | null;
+  updatedBy: string | null;
+  updatedAt: Date;
+}
+
+/**
+ * A write to the Rival row. An `undefined` ciphertext leaves the stored one
+ * untouched — the same three-state contract `SmtpSettingsWrite` carries, for
+ * the same reason: an operator toggling `enabled` must not wipe a credential.
+ */
+export interface RivalSettingsWrite {
+  baseUrl: string | null;
+  enabled: boolean;
+  apiKeyCiphertext?: string | null;
+  webhookKeyCiphertext?: string | null;
+  webhookKeyFingerprint?: string | null;
 }
 
 @Injectable()
@@ -140,5 +166,59 @@ export class AppSettingsStore {
       })
       .returning();
     return row;
+  }
+
+  async getRival(): Promise<RivalSettingsRow | null> {
+    const [row] = await this.db.select().from(rivalSettings).limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * Upsert the single Rival row. Each ciphertext follows the SMTP password's
+   * contract: `undefined` leaves the stored value alone, `null` removes it, a
+   * string replaces it. The webhook key and its fingerprint always travel
+   * together — a fingerprint describing a key that was just replaced would
+   * send an operator chasing a mismatch that does not exist.
+   */
+  async setRival(values: RivalSettingsWrite, updatedBy: string): Promise<RivalSettingsRow> {
+    const { apiKeyCiphertext, webhookKeyCiphertext, webhookKeyFingerprint, ...rest } = values;
+    const touchesApiKey = apiKeyCiphertext !== undefined;
+    const touchesWebhookKey = webhookKeyCiphertext !== undefined;
+
+    const [row] = await this.db
+      .insert(rivalSettings)
+      .values({
+        ...rest,
+        id: true,
+        apiKeyCiphertext: apiKeyCiphertext ?? null,
+        webhookKeyCiphertext: webhookKeyCiphertext ?? null,
+        webhookKeyFingerprint: webhookKeyFingerprint ?? null,
+        updatedBy,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: rivalSettings.id,
+        set: {
+          ...rest,
+          ...(touchesApiKey ? { apiKeyCiphertext } : {}),
+          ...(touchesWebhookKey ? { webhookKeyCiphertext, webhookKeyFingerprint } : {}),
+          updatedBy,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return row;
+  }
+
+  /**
+   * Bump the liveness stamp on a verified inbound event.
+   *
+   * A bare UPDATE, not an upsert: an event verified against a stored webhook
+   * key proves the row exists. `sql\`now()\`` rather than `new Date()` so the
+   * stamp is the database's clock — the same clock `updated_at` defaults use —
+   * and two app instances cannot disagree about which event was "latest".
+   */
+  async touchRivalLastEvent(): Promise<void> {
+    await this.db.update(rivalSettings).set({ lastEventAt: sql`now()` });
   }
 }

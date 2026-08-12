@@ -285,6 +285,45 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'settings.smtp.update', label: 'Mail server configuration changed', group: 'Security' },
 
   /*
+   * The Rival connection — same Security grouping as SMTP, sharper reason:
+   * the API key can create payouts against the company's Rival balance, and
+   * repointing the base URL redirects every payout instruction this system
+   * issues. The webhook-key rotation is the row an auditor wants when the
+   * money-event stream went quiet ("did the signing key change that day").
+   */
+  {
+    action: 'settings.rival.update',
+    label: 'Payments-platform (Rival) connection changed',
+    group: 'Security',
+  },
+  {
+    action: 'settings.rival.webhook_key.rotate',
+    label: 'Payments-platform (Rival) webhook key generated',
+    group: 'Security',
+  },
+
+  /*
+   * The Rival withdrawal choreography. `withdrawal.rival.submit` is the row an
+   * auditor follows from a CRM approval to the payout request at Rival (it
+   * carries the Rival id — or the refusal); `withdrawal.rival.reject` is
+   * Rival's refusal landing back as a refund; `withdrawal.cancel` is the
+   * operator pulling an approved payout back before Rival pays it. All three
+   * are the money-out trail between the two systems, beside the existing
+   * approve/reject/settle rows.
+   */
+  {
+    action: 'withdrawal.rival.submit',
+    label: 'Withdrawal submitted to the payment platform',
+    group: 'Compliance',
+  },
+  {
+    action: 'withdrawal.rival.reject',
+    label: 'Withdrawal refused by the payment platform (refunded)',
+    group: 'Compliance',
+  },
+  { action: 'withdrawal.cancel', label: 'Approved withdrawal cancelled', group: 'Compliance' },
+
+  /*
    * ── Exports ───────────────────────────────────────────────────────────────
    *
    * The one group here that records READS rather than writes, and the exception

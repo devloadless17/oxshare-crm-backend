@@ -310,6 +310,14 @@
       {
         "key": "settings.security.edit",
         "label": "Change the Security Controls"
+      },
+      {
+        "key": "settings.rival.view",
+        "label": "View the Payments-Platform (Rival) Tab"
+      },
+      {
+        "key": "settings.rival.edit",
+        "label": "Change the Payments-Platform (Rival) Connection"
       }
     ]
   },
