@@ -533,20 +533,39 @@ async function main() {
   });
 
   await step('partner applications', async () => {
-    const states = ['pending', 'pending', 'approved', 'rejected'];
+    /*
+     * NEVER 'approved', and the omission is the point.
+     *
+     * Approving an application CREATES the partner account, atomically, in the
+     * same transaction — so an approved application with no `ib_accounts` row
+     * is a state the running system cannot reach. Seeding one produced exactly
+     * that: 250 "approved partners" in the review queue and 5 on the partners
+     * page, which reads as a bug in the app and was a bug in this script.
+     *
+     * A seeder may only write states the system itself can produce. Approval
+     * has a consequence, so it is not this script's to fake — and creating 250
+     * real partner accounts would put 250 strangers in the commission tree.
+     */
+    const states = ['pending', 'pending', 'pending', 'rejected'];
     return insertMany(
       'ib_applications',
-      ['id', 'user_id', 'motivation', 'expected_volume', 'status', 'submitted_at'],
+      ['id', 'user_id', 'motivation', 'expected_volume', 'status', 'rejection_reason', 'submitted_at'],
       userIds
         .filter((_, at) => at % 20 === 0)
-        .map((userId, at) => [
-          randomUUID(),
-          userId,
-          'Created by the load-test seeder.',
-          `${(at + 1) * 10} lots / month`,
-          pick(states, at),
-          dateFor(at, 300),
-        ]),
+        .map((userId, at) => {
+          const status = pick(states, at);
+          return [
+            randomUUID(),
+            userId,
+            'Created by the load-test seeder.',
+            `${(at + 1) * 10} lots / month`,
+            status,
+            // A rejected application the client can read a reason on, because
+            // the portal renders it and a blank one renders as nothing.
+            status === 'rejected' ? 'Insufficient trading history at this time.' : null,
+            dateFor(at, 300),
+          ];
+        }),
       // `ib_applications_one_pending_uq` allows one pending row per user.
       { onConflict: 'ON CONFLICT DO NOTHING' },
     );
