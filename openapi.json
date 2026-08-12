@@ -1561,6 +1561,68 @@
         ]
       }
     },
+    "/v1/ib/commissions": {
+      "get": {
+        "description": "The other half of the dashboard totals. Those read the LEDGER — money actually paid — so a partner whose accruals are still maturing sees zero there with no way to tell \"nothing earned\" from \"earned, not yet released\". Each row carries its status, so the two numbers explain each other.\n\n`source: position` is a closed trade, which is the only thing that pays a revenue share. `transaction` rows are historical — commission is no longer earned on deposits.",
+        "operationId": "IbController_commissions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IbCommissionRowDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every commission this partner has earned, newest first",
+        "tags": [
+          "ib"
+        ]
+      }
+    },
+    "/v1/ib/positions": {
+      "get": {
+        "description": "DIRECT clients only. A sub-partner’s clients are somebody else’s book — this partner earns on them through the chain, but listing them here would hand one partner a view of another’s client list.\n\nOpen positions only: a closed trade already appears in the commission list as the thing it produced.",
+        "operationId": "IbController_positions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IbClientPositionDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Open trades belonging to this partner's direct clients",
+        "tags": [
+          "ib"
+        ]
+      }
+    },
     "/v1/ib/agencies": {
       "get": {
         "description": "What an applicant chooses between, with the products each one carries spelled out by name. Disabled agencies are ABSENT rather than greyed out: nobody here can answer \"when does it reopen\", and offering a choice that will be refused is a poor way to learn it is closed.\n\nAn empty list means no programme is configured yet. The portal should let the client apply anyway — an agency is optional on the application, so a deployment that has not set them up still takes partners.",
@@ -9376,6 +9438,122 @@
           "verifiedReferredCount"
         ]
       },
+      "IbCommissionRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clientName": {
+            "type": "string",
+            "description": "The client whose activity earned it."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "position",
+              "transaction"
+            ],
+            "description": "What produced it. `position` is a closed trade — the only source that pays a revenue share. `transaction` rows are historical: commission is no longer earned on deposits."
+          },
+          "baseAmount": {
+            "type": "string",
+            "description": "The base it was calculated from — the broker's revenue on the trade."
+          },
+          "rateValue": {
+            "type": "string",
+            "description": "Percentage under revenue share; amount per lot under per-lot."
+          },
+          "amount": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "reversed"
+            ]
+          },
+          "depth": {
+            "type": "number",
+            "description": "1 is a direct client; 2 is a sub-partner's client."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "confirmedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When it was credited. Null while it is still maturing."
+          }
+        },
+        "required": [
+          "id",
+          "clientName",
+          "source",
+          "baseAmount",
+          "rateValue",
+          "amount",
+          "currency",
+          "status",
+          "depth",
+          "createdAt"
+        ]
+      },
+      "IbClientPositionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clientName": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "buy",
+              "sell"
+            ]
+          },
+          "volume": {
+            "type": "string",
+            "description": "Lots."
+          },
+          "openPrice": {
+            "type": "string"
+          },
+          "profit": {
+            "type": "string",
+            "nullable": true,
+            "description": "Floating, and it moves. Shown because a partner asks \"is my book alive\", not so they can act on it — they have no control over a client’s trade."
+          },
+          "openedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "clientName",
+          "symbol",
+          "side",
+          "volume",
+          "openPrice",
+          "openedAt"
+        ]
+      },
       "PublicAgencyDto": {
         "type": "object",
         "properties": {
@@ -10905,6 +11083,11 @@
             "example": "1000000.00000000",
             "description": "Largest opening balance a demo account may be given. A decimal string."
           },
+          "ibMaxRevenueSharePct": {
+            "type": "string",
+            "example": "50.00",
+            "description": "The most of its revenue the broker pays partners. IB level rates are each a share of the FULL revenue and therefore add up; this caps the chain total and scales it pro rata."
+          },
           "updatedAt": {
             "type": "string",
             "nullable": true,
@@ -10915,7 +11098,8 @@
           "leverages",
           "maxLiveAccounts",
           "maxDemoAccounts",
-          "maxDemoDeposit"
+          "maxDemoDeposit",
+          "ibMaxRevenueSharePct"
         ]
       },
       "UpdateTradingSettingsDto": {
@@ -10942,13 +11126,19 @@
             "type": "string",
             "example": "1000000.00",
             "description": "Positive decimal string."
+          },
+          "ibMaxRevenueSharePct": {
+            "type": "string",
+            "example": "50.00",
+            "description": "Percent, 0 to 100."
           }
         },
         "required": [
           "leverages",
           "maxLiveAccounts",
           "maxDemoAccounts",
-          "maxDemoDeposit"
+          "maxDemoDeposit",
+          "ibMaxRevenueSharePct"
         ]
       },
       "SmtpSettingsDto": {

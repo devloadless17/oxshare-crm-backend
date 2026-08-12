@@ -179,6 +179,7 @@ export class SettingsService {
       maxLiveAccounts: terms.maxLiveAccounts,
       maxDemoAccounts: terms.maxDemoAccounts,
       maxDemoDeposit: terms.maxDemoDeposit,
+      ibMaxRevenueSharePct: terms.ibMaxRevenueSharePct,
       updatedAt: row?.updatedAt.toISOString() ?? null,
     };
   }
@@ -203,6 +204,7 @@ export class SettingsService {
         maxLiveAccounts: dto.maxLiveAccounts,
         maxDemoAccounts: dto.maxDemoAccounts,
         maxDemoDeposit: dto.maxDemoDeposit,
+        ibMaxRevenueSharePct: dto.ibMaxRevenueSharePct,
       },
       actor.id,
     );
@@ -221,6 +223,7 @@ export class SettingsService {
       maxLiveAccounts: row.maxLiveAccounts,
       maxDemoAccounts: row.maxDemoAccounts,
       maxDemoDeposit: row.maxDemoDeposit,
+      ibMaxRevenueSharePct: row.ibMaxRevenueSharePct,
       updatedAt: row.updatedAt.toISOString(),
     };
 
@@ -228,7 +231,13 @@ export class SettingsService {
     if (formatLeverages(previous.leverages) !== formatLeverages(after.leverages)) {
       changed['leverages'] = { before: previous.leverages, after: after.leverages };
     }
-    for (const field of ['maxLiveAccounts', 'maxDemoAccounts', 'maxDemoDeposit'] as const) {
+    for (const field of [
+      'maxLiveAccounts',
+      'maxDemoAccounts',
+      'maxDemoDeposit',
+      // The broker's own margin — the single most consequential number here.
+      'ibMaxRevenueSharePct',
+    ] as const) {
       if (previous[field] !== after[field]) {
         changed[field] = { before: previous[field], after: after[field] };
       }

@@ -7,7 +7,7 @@ import { User } from '../../store/users.store';
 import { IbApplicationsService } from './ib-applications.service';
 import { IbOverviewService } from './ib-overview.service';
 import { CreateIbApplicationDto, IbApplicationDto, IbStatusDto } from './dto/ib-application.dto';
-import { IbOverviewDto } from './dto/ib-overview.dto';
+import { IbClientPositionDto, IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
 import { PublicAgencyDto } from '../products/dto/catalogue.dto';
 import { ProductsStore } from '../../store/products.store';
 
@@ -92,6 +92,39 @@ export class IbController {
   @ApiOkResponse({ type: IbOverviewDto })
   overviewForMe(@Req() req: Request & { user: User }) {
     return this.overview.overviewFor(req.user.id);
+  }
+
+  @Get('commissions')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Every commission this partner has earned, newest first',
+    description:
+      'The other half of the dashboard totals. Those read the LEDGER — money actually paid — so ' +
+      'a partner whose accruals are still maturing sees zero there with no way to tell "nothing ' +
+      'earned" from "earned, not yet released". Each row carries its status, so the two numbers ' +
+      'explain each other.\n\n' +
+      '`source: position` is a closed trade, which is the only thing that pays a revenue share. ' +
+      '`transaction` rows are historical — commission is no longer earned on deposits.',
+  })
+  @ApiOkResponse({ type: [IbCommissionRowDto] })
+  commissions(@Req() req: Request & { user: User }) {
+    return this.overview.commissionsFor(req.user.id);
+  }
+
+  @Get('positions')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Open trades belonging to this partner's direct clients",
+    description:
+      'DIRECT clients only. A sub-partner’s clients are somebody else’s book — this partner ' +
+      'earns on them through the chain, but listing them here would hand one partner a view of ' +
+      'another’s client list.\n\n' +
+      'Open positions only: a closed trade already appears in the commission list as the thing ' +
+      'it produced.',
+  })
+  @ApiOkResponse({ type: [IbClientPositionDto] })
+  positions(@Req() req: Request & { user: User }) {
+    return this.overview.clientPositionsFor(req.user.id);
   }
 
   @Get('agencies')

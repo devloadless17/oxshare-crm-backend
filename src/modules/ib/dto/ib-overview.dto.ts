@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IB_PAYOUT_MODELS, type IbPayoutModel } from './ib-level.dto';
 
 /**
@@ -148,4 +148,78 @@ export class IbOverviewDto {
     description: 'How many referred clients have completed KYC — the ones who can actually fund.',
   })
   verifiedReferredCount: number;
+}
+
+/**
+ * One commission entry, as a partner reads it.
+ *
+ * ## `status` is the difference between a claim and money
+ *
+ * `pending` is earned and not yet payable — it is inside the maturation window
+ * and no balance has moved. `confirmed` means it has been credited to the
+ * wallet and the ledger entry exists. A table that showed only the amount
+ * would let a partner add up a total they cannot spend, which is precisely the
+ * confusion the two-step design exists to avoid.
+ */
+export class IbCommissionRowDto {
+  @ApiProperty({ format: 'uuid' }) id: string;
+
+  @ApiProperty({ description: 'The client whose activity earned it.' })
+  clientName: string;
+
+  @ApiProperty({
+    enum: ['position', 'transaction'],
+    description:
+      'What produced it. `position` is a closed trade — the only source that pays a revenue ' +
+      'share. `transaction` rows are historical: commission is no longer earned on deposits.',
+  })
+  source: string;
+
+  @ApiProperty({
+    description: "The base it was calculated from — the broker's revenue on the trade.",
+  })
+  baseAmount: string;
+
+  @ApiProperty({ description: 'Percentage under revenue share; amount per lot under per-lot.' })
+  rateValue: string;
+
+  @ApiProperty() amount: string;
+  @ApiProperty() currency: string;
+
+  @ApiProperty({ enum: ['pending', 'confirmed', 'reversed'] })
+  status: string;
+
+  @ApiProperty({ description: "1 is a direct client; 2 is a sub-partner's client." })
+  depth: number;
+
+  @ApiProperty({ format: 'date-time' }) createdAt: Date;
+
+  @ApiPropertyOptional({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description: 'When it was credited. Null while it is still maturing.',
+  })
+  confirmedAt: Date | null;
+}
+
+/** One open trade belonging to a client this partner introduced. */
+export class IbClientPositionDto {
+  @ApiProperty({ format: 'uuid' }) id: string;
+  @ApiProperty() clientName: string;
+  @ApiProperty() symbol: string;
+  @ApiProperty({ enum: ['buy', 'sell'] }) side: string;
+  @ApiProperty({ description: 'Lots.' }) volume: string;
+  @ApiProperty() openPrice: string;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'Floating, and it moves. Shown because a partner asks "is my book alive", not so they can ' +
+      'act on it — they have no control over a client’s trade.',
+  })
+  profit: string | null;
+
+  @ApiProperty({ format: 'date-time' }) openedAt: Date;
 }

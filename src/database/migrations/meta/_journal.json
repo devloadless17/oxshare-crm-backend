@@ -379,6 +379,13 @@
       "when": 1787061972600,
       "tag": "0053_products_and_agencies",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1787061973600,
+      "tag": "0054_ib_revenue_cap",
+      "breakpoints": true
     }
   ]
 }

@@ -351,6 +351,9 @@ describe('recorded: the feature modules', () => {
       maxLiveAccounts: 4,
       maxDemoAccounts: 6,
       maxDemoDeposit: '500000',
+      // Required since the broker's revenue cap arrived. A PUT missing it is a
+      // 400, and the audit row this test is about never gets written.
+      ibMaxRevenueSharePct: '50.00',
     });
     expect([200, 201, 204]).toContain(res.status);
 

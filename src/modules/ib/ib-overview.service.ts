@@ -3,10 +3,18 @@ import Decimal from 'decimal.js';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { ibAccounts, ibLevels, ledgerEntries, users, wallets } from '../../database/schema';
+import {
+  ibAccounts,
+  ibAccruals,
+  ibLevels,
+  ledgerEntries,
+  positions,
+  users,
+  wallets,
+} from '../../database/schema';
 import { NotFoundError } from '../../common/errors/domain-errors';
 import { CommissionService } from './commission.service';
-import type { IbOverviewDto } from './dto/ib-overview.dto';
+import type { IbClientPositionDto, IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
 
 /**
  * The ledger entry types that represent PARTNER income.
@@ -285,6 +293,100 @@ export class IbOverviewService {
       level: row.level,
       active: row.active,
       since: row.since,
+    }));
+  }
+
+  /**
+   * Every commission this partner has earned, newest first.
+   *
+   * ## Why the CLAIM is shown and not only the credit
+   *
+   * The dashboard totals read the LEDGER — money actually paid — so a partner
+   * whose accruals are still maturing sees zero there with no way to tell
+   * "nothing earned" from "earned, not yet released". This table is the other
+   * half: every row with its status, so the two numbers explain each other
+   * instead of appearing to contradict each other.
+   *
+   * Scoped by `ib_user_id`, which the accrual already carries — so it needs no
+   * join back through the chain and cannot widen to somebody else's earnings
+   * if that chain were ever mis-resolved.
+   */
+  async commissionsFor(userId: string, limit = 200): Promise<IbCommissionRowDto[]> {
+    const rows = await this.db
+      .select({
+        id: ibAccruals.id,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        source: ibAccruals.sourceType,
+        baseAmount: ibAccruals.baseAmount,
+        rateValue: ibAccruals.rateValue,
+        amount: ibAccruals.amount,
+        currency: ibAccruals.currency,
+        status: ibAccruals.status,
+        depth: ibAccruals.depth,
+        createdAt: ibAccruals.createdAt,
+        confirmedAt: ibAccruals.confirmedAt,
+      })
+      .from(ibAccruals)
+      .innerJoin(users, eq(users.id, ibAccruals.clientUserId))
+      .where(eq(ibAccruals.ibUserId, userId))
+      .orderBy(desc(ibAccruals.createdAt))
+      .limit(limit);
+
+    return rows.map(({ firstName, lastName, ...row }) => ({
+      ...row,
+      clientName: displayName(firstName, lastName),
+    }));
+  }
+
+  /**
+   * The open trades of the clients this partner introduced.
+   *
+   * DIRECT clients only. A sub-partner's clients are somebody else's book —
+   * this partner earns on them through the chain, but "which of MY clients is
+   * trading" is the question here, and widening it would hand one partner a
+   * view of another's client list.
+   *
+   * Open positions only: a closed trade is history, and it already appears in
+   * the commission table as the thing it produced.
+   */
+  async clientPositionsFor(userId: string, limit = 200): Promise<IbClientPositionDto[]> {
+    const clients = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.referredByIbUserId, userId));
+
+    if (clients.length === 0) return [];
+
+    const rows = await this.db
+      .select({
+        id: positions.id,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        symbol: positions.symbol,
+        side: positions.side,
+        volume: positions.volume,
+        openPrice: positions.openPrice,
+        profit: positions.profit,
+        openedAt: positions.openedAt,
+      })
+      .from(positions)
+      .innerJoin(users, eq(users.id, positions.userId))
+      .where(
+        and(
+          inArray(
+            positions.userId,
+            clients.map((client) => client.id),
+          ),
+          eq(positions.status, 'open'),
+        ),
+      )
+      .orderBy(desc(positions.openedAt))
+      .limit(limit);
+
+    return rows.map(({ firstName, lastName, ...row }) => ({
+      ...row,
+      clientName: displayName(firstName, lastName),
     }));
   }
 }

@@ -52,6 +52,13 @@ const SHARE_BASE: RevenueEvent = {
   source: 'deal',
 };
 
+/** A deal with no lot count — the shape a revenue share is taken of. */
+const DEAL_NO_LOTS: RevenueEvent = {
+  grossAmount: '1000.00000000',
+  currency: 'USD',
+  source: 'deal',
+};
+
 /** The same size, from the source a share may NOT be taken of. */
 const DEPOSIT: RevenueEvent = {
   grossAmount: '1000.00000000',
@@ -349,5 +356,79 @@ describe('checkPlausible', () => {
       { ibUserId: 'ib-1', depth: 1, level: 1, amount: '1000.00000000' },
     ]);
     expect(verdict.ok).toBe(true);
+  });
+});
+
+describe("the broker's revenue cap", () => {
+  /*
+   * The defect this exists to prevent, in one test: the shipped ladder was
+   * Master 70% and Sub 30%, and each rung takes its share of the FULL revenue.
+   * A two-level chain therefore paid out 100% and the house kept nothing —
+   * silently, since `checkPlausible` only refuses totals GREATER than the base.
+   */
+  it('scales a chain that would pay out everything the broker earned', () => {
+    const result = calculate(
+      DEAL_NO_LOTS,
+      [
+        { ibUserId: 'master', depth: 2, level: 1 },
+        { ibUserId: 'sub', depth: 1, level: 2 },
+      ],
+      terms([
+        { level: 1, payoutModel: 'revenue_share', rateValue: '70.0000' },
+        { level: 2, payoutModel: 'revenue_share', rateValue: '30.0000' },
+      ]),
+      '50',
+    );
+
+    const total = result.accruals.reduce((sum, a) => sum + Number(a.amount), 0);
+    // 1000 of revenue, capped at 50% — the broker keeps 500 whatever the ladder says.
+    expect(total).toBeCloseTo(500, 8);
+    expect(result.skippedReason).toContain('cap');
+  });
+
+  it('keeps the ladder’s proportions when it scales', () => {
+    const result = calculate(
+      DEAL_NO_LOTS,
+      [
+        { ibUserId: 'master', depth: 2, level: 1 },
+        { ibUserId: 'sub', depth: 1, level: 2 },
+      ],
+      terms([
+        { level: 1, payoutModel: 'revenue_share', rateValue: '70.0000' },
+        { level: 2, payoutModel: 'revenue_share', rateValue: '30.0000' },
+      ]),
+      '50',
+    );
+
+    const master = result.accruals.find((a) => a.ibUserId === 'master');
+    const sub = result.accruals.find((a) => a.ibUserId === 'sub');
+    // 70:30 before, 70:30 after — everyone earns less, nobody is zeroed.
+    expect(Number(master?.amount)).toBeCloseTo(350, 8);
+    expect(Number(sub?.amount)).toBeCloseTo(150, 8);
+  });
+
+  it('leaves a chain that already fits alone', () => {
+    const result = calculate(
+      DEAL_NO_LOTS,
+      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
+      terms([{ level: 1, payoutModel: 'revenue_share', rateValue: '30.0000' }]),
+      '50',
+    );
+    expect(result.accruals[0]?.amount).toBe('300.00000000');
+    expect(result.skippedReason).toBeUndefined();
+  });
+
+  /*
+   * A per-lot rebate is not a share of anything, so the cap does not apply: a
+   * broker may deliberately buy volume at a loss on a single trade.
+   */
+  it('does not cap a per_lot payout', () => {
+    const result = calculate(
+      DEAL,
+      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
+      terms([{ level: 1, payoutModel: 'per_lot', rateValue: '200.0000' }]),
+      '50',
+    );
+    expect(result.accruals[0]?.amount).toBe('2000.00000000');
   });
 });

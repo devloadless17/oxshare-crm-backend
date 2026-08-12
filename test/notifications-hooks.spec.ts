@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { CommissionService } from '../src/modules/ib/commission.service';
+import { AppSettingsStore } from '../src/store/app-settings.store';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { MoneyLimits } from '../src/config/money-limits';
@@ -87,7 +88,18 @@ beforeAll(async () => {
    * What the window itself does is covered in `commission.spec.ts`.
    */
   process.env.IB_COMMISSION_HOLD_HOURS = '0';
-  commissions = new CommissionService(ctx.db, wallets, dispatch, new ConfigService());
+  /*
+   * A REAL settings store on the test database. With no row written it reports
+   * the column defaults, so the broker cap is the default 50% — which is what
+   * a fresh deployment has, and therefore what these tests should run against.
+   */
+  commissions = new CommissionService(
+    ctx.db,
+    wallets,
+    dispatch,
+    new ConfigService(),
+    new AppSettingsStore(ctx.db),
+  );
 }, 120_000);
 
 afterAll(async () => {

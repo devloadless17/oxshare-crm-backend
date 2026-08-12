@@ -64,6 +64,8 @@ export interface TradingSettingsRow {
   maxDemoAccounts: number;
   /** A decimal string, never a number — see §6. */
   maxDemoDeposit: string;
+  /** The most of its revenue the broker will pay partners, as a percentage. */
+  ibMaxRevenueSharePct: string;
   updatedBy: string | null;
   updatedAt: Date;
 }
@@ -73,6 +75,7 @@ export interface TradingSettingsWrite {
   maxLiveAccounts: number;
   maxDemoAccounts: number;
   maxDemoDeposit: string;
+  ibMaxRevenueSharePct: string;
 }
 
 export interface RivalSettingsRow {

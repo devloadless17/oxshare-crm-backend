@@ -172,6 +172,14 @@ export function calculate(
   event: RevenueEvent,
   chain: ChainEntry[],
   terms: Map<number, LevelTerms>,
+  /**
+   * The most of this event's revenue that may go to partners, as a percentage.
+   *
+   * The broker's margin, guaranteed by arithmetic rather than by everyone
+   * remembering to keep the ladder under 100. Omitted means uncapped, which is
+   * what the pure unit tests use — every production caller passes it.
+   */
+  maxSharePct?: string,
 ): CommissionResult {
   if (chain.length === 0) return { accruals: [] };
 
@@ -283,6 +291,43 @@ export function calculate(
       level: entry.level,
       amount,
     });
+  }
+
+  /*
+   * ── THE BROKER'S FLOOR ───────────────────────────────────────────────────
+   *
+   * Each rung's rate is a share of the FULL revenue, so the rates ADD UP: a
+   * two-level chain at 70 + 30 pays out everything the house earned and leaves
+   * it nothing on that client. `checkPlausible` cannot catch it either — it
+   * refuses totals GREATER than the revenue, and exactly 100% is not greater.
+   *
+   * So the total is capped here and scaled PRO RATA, which keeps the ladder's
+   * proportions intact: a rung worth twice another still earns twice as much,
+   * everyone simply earns less. The alternative — paying the rungs in order
+   * until the pool runs out — would silently zero the deepest partner, who
+   * would have no way to know why.
+   *
+   * Applied to SHARES only. A per-lot payout is not a share of the revenue and
+   * may legitimately exceed it; capping it would refuse a rebate the broker
+   * chose to offer.
+   */
+  if (maxSharePct !== undefined && event.lots === undefined) {
+    const cap = toDecimal(maxSharePct);
+    if (cap.isPositive()) {
+      const ceiling = gross.times(cap).dividedBy(100);
+      const total = accruals.reduce((sum, a) => sum.plus(toDecimal(a.amount)), new Decimal(0));
+
+      if (total.greaterThan(ceiling)) {
+        const factor = ceiling.dividedBy(total);
+        for (const accrual of accruals) {
+          accrual.amount = money(toDecimal(accrual.amount).times(factor));
+        }
+        skipped.push(
+          `chain total ${money(total)} exceeded the broker's ${maxSharePct}% cap; ` +
+            `scaled to ${money(ceiling)}`,
+        );
+      }
+    }
   }
 
   return {

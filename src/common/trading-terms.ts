@@ -30,6 +30,14 @@ export interface TradingTerms {
   maxDemoAccounts: number;
   /** A decimal string, never a number — §6. */
   maxDemoDeposit: string;
+  /**
+   * The broker's floor: the most of its revenue that may reach partners.
+   *
+   * Enforced in `calculate`, not merely displayed. `ib_levels` rates are each a
+   * share of the FULL revenue and therefore add up, so without this a
+   * two-level ladder at 70 + 30 pays out everything the house earned.
+   */
+  ibMaxRevenueSharePct: string;
 }
 
 /** A conventional retail ladder, matching the column default. */
@@ -41,6 +49,7 @@ export const DEFAULT_TRADING_TERMS: TradingTerms = {
   maxLiveAccounts: 5,
   maxDemoAccounts: 5,
   maxDemoDeposit: '1000000',
+  ibMaxRevenueSharePct: '50',
 };
 
 /**
@@ -70,6 +79,7 @@ export function tradingTermsFrom(
     maxLiveAccounts: row.maxLiveAccounts,
     maxDemoAccounts: row.maxDemoAccounts,
     maxDemoDeposit: row.maxDemoDeposit,
+    ibMaxRevenueSharePct: row.ibMaxRevenueSharePct,
   };
 }
 

@@ -1,5 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AppSettingsStore } from '../../store/app-settings.store';
+import { tradingTermsFrom } from '../../common/trading-terms';
 import { and, eq, gt, inArray, lte, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
@@ -73,6 +75,7 @@ export class CommissionService implements CommissionAccrualPort {
     /** The partner's "commission credited" bell row, written with the credit. */
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
     private readonly config: ConfigService,
+    private readonly settings: AppSettingsStore,
   ) {}
 
   /**
@@ -95,6 +98,22 @@ export class CommissionService implements CommissionAccrualPort {
    * before this existed. It is a legitimate choice for a broker whose deposits
    * cannot be reversed, and it is not the default.
    */
+  /**
+   * The broker's floor, read fresh on every accrual.
+   *
+   * Not cached: an operator who lowers this after noticing they are paying out
+   * too much should see the next trade honour it, not wait out a TTL. One
+   * indexed read of a single-row table against a calculation that already
+   * touches four tables is not the cost worth optimising.
+   */
+  private async maxSharePct(): Promise<string> {
+    const terms = tradingTermsFrom(
+      await this.settings.getTrading(),
+      this.config.get<string>('MT5_CLIENT_LEVERAGES'),
+    );
+    return terms.ibMaxRevenueSharePct;
+  }
+
   private holdHours(): number {
     const raw = this.config.get<string>('IB_COMMISSION_HOLD_HOURS');
     if (raw === undefined || raw.trim() === '') return DEFAULT_HOLD_HOURS;
@@ -241,7 +260,7 @@ export class CommissionService implements CommissionAccrualPort {
       lots: position.lots,
     };
 
-    const result = calculate(event, chain, terms);
+    const result = calculate(event, chain, terms, await this.maxSharePct());
     if (result.skippedReason) {
       this.logger.warn(
         `Commission partially skipped for position ${position.positionId}: ${result.skippedReason}`,
@@ -337,7 +356,7 @@ export class CommissionService implements CommissionAccrualPort {
       source: 'deposit',
     };
 
-    const result = calculate(event, chain, terms);
+    const result = calculate(event, chain, terms, await this.maxSharePct());
 
     if (result.skippedReason) {
       /*

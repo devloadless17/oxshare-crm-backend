@@ -912,6 +912,18 @@ export const tradingSettings = pgTable(
     maxDemoDeposit: numeric('max_demo_deposit', { precision: 28, scale: 8 })
       .notNull()
       .default('1000000'),
+    /**
+     * The most of its revenue the broker will pay out to partners, as a
+     * percentage — the floor under its own margin.
+     *
+     * `ib_levels` rates are each a share of the FULL revenue and therefore
+     * additive: 70 + 30 across two rungs pays out everything the house earned.
+     * This caps the chain's total and scales it pro rata to fit, so the
+     * guarantee holds however many rungs somebody adds later.
+     */
+    ibMaxRevenueSharePct: numeric('ib_max_revenue_share_pct', { precision: 5, scale: 2 })
+      .notNull()
+      .default('50'),
     updatedBy: uuid('updated_by'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

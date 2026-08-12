@@ -151,6 +151,14 @@ export class TradingSettingsDto {
   })
   maxDemoDeposit: string;
 
+  @ApiProperty({
+    example: '50.00',
+    description:
+      'The most of its revenue the broker pays partners. IB level rates are each a share of the ' +
+      'FULL revenue and therefore add up; this caps the chain total and scales it pro rata.',
+  })
+  ibMaxRevenueSharePct: string;
+
   @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
   updatedAt: string | null;
 }
@@ -198,4 +206,15 @@ export class UpdateTradingSettingsDto {
     message: 'maxDemoDeposit must be a positive decimal with up to 2 places',
   })
   maxDemoDeposit: string;
+
+  /**
+   * 0–100. Zero is legal and means partners earn nothing — a broker winding a
+   * programme down without deleting the ladder underneath it.
+   */
+  @ApiProperty({ example: '50.00', description: 'Percent, 0 to 100.' })
+  @IsString()
+  @Matches(/^(100(\.0{1,2})?|\d{1,2}(\.\d{1,2})?)$/, {
+    message: 'ibMaxRevenueSharePct must be a percentage between 0 and 100',
+  })
+  ibMaxRevenueSharePct: string;
 }
