@@ -6,6 +6,7 @@ import { AdminNotificationsController } from './admin-notifications.controller';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
 import { NotificationsRealtimeGateway } from './realtime.gateway';
+import { RealtimePrincipalResolver } from './realtime.principal';
 
 /**
  * The in-app notification feed — the implementation behind
@@ -27,6 +28,7 @@ import { NotificationsRealtimeGateway } from './realtime.gateway';
   providers: [
     NotificationsService,
     NotificationsRealtimeGateway,
+    RealtimePrincipalResolver,
     { provide: NOTIFICATION_DISPATCH, useExisting: NotificationsService },
   ],
   exports: [NotificationsService, NotificationsRealtimeGateway, NOTIFICATION_DISPATCH],

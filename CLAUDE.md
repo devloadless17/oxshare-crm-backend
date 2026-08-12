@@ -181,6 +181,30 @@ moving `FOR UPDATE` across a new boundary would cost real risk. `test/di-wiring.
 each money service from the real module graph, which the hand-constructed money specs cannot. `database/db.ts` exports an `Executor` type so a store method can join a
 caller's transaction.
 
+## Realtime — a second listener, on purpose
+
+The WebSocket does **not** run on :3001. `REALTIME_ENGINE=uws` (the default) runs Socket.IO on
+uWebSockets.js, which owns its own TCP listener, so the socket is on **`REALTIME_PORT`, 3003**.
+`REALTIME_ENGINE=node` attaches it to the API port instead and is the one-variable revert.
+`common/realtime/realtime-io.adapter.ts` is the entire seam — nothing above it knows which engine
+is running.
+
+**In production the realtime origin must share the API's HOSTNAME.** Cookies ignore the port, so a
+different port is fine; `__Host-` cookies are host-scoped by design, so a realtime *subdomain*
+would receive no cookie and every handshake would be refused with nothing to explain why. Route
+`wss://api…` to the realtime port at the ingress.
+
+`modules/notifications/realtime.gateway.ts` holds the rooms (`admin:<id>` / `client:<id>` — the
+kind is part of the name so two audiences cannot collide on a shared uuid) and the Postgres
+`LISTEN`. **The bus is the database, not the application**: `pg_notify` fires from an AFTER INSERT
+trigger (migration 0047) and is delivered only on COMMIT, so a rolled-back money transaction
+cannot announce itself. That also removes the need for a Redis adapter — every instance LISTENs.
+
+`realtime.principal.ts` authenticates the handshake by calling `AdminAuthenticator.authenticate`
+and `JwtStrategy.validate` — the same objects the HTTP guards use. Do not re-implement those
+checks for sockets; that is how two authorization paths drift until one is missing an enforcement
+point. Sockets close at token expiry (15-minute ceiling) so the reconnect re-authenticates.
+
 ## Validation
 
 The global `ValidationPipe` (`whitelist`, `transform`) only validates where a **DTO class**

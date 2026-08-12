@@ -7,17 +7,9 @@ import {
   Post,
   Query,
   Req,
-  Sse,
   UseGuards,
 } from '@nestjs/common';
-import {
-  ApiCookieAuth,
-  ApiExcludeEndpoint,
-  ApiOkResponse,
-  ApiOperation,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Admin } from '../../store/admins.store';
 import { AnyAdmin, PermissionsGuard } from '../admin/guards/admin.guard';
@@ -25,8 +17,6 @@ import { NotAudited } from '../admin/guards/audited.decorator';
 import { NotClientScoped } from '../admin/guards/client-scope.decorator';
 import { decodeCursor } from '../../common/pagination';
 import { NotificationsService } from './notifications.service';
-import { NotificationsRealtimeGateway } from './realtime.gateway';
-import { notificationStream } from './notification-stream';
 import {
   NotificationDto,
   NotificationListResponseDto,
@@ -54,32 +44,7 @@ import {
 @Controller('admin/notifications')
 @UseGuards(PermissionsGuard)
 export class AdminNotificationsController {
-  constructor(
-    private readonly notifications: NotificationsService,
-    private readonly realtime: NotificationsRealtimeGateway,
-  ) {}
-
-  /**
-   * The live stream — the operator's bell, without waiting for a poll.
-   *
-   * Same transport and same reasoning as the portal's (see that controller),
-   * and the same fifteen-minute server-side close. That close matters more
-   * here: `AdminGuard` re-reads `admins.status` on every request precisely so
-   * a suspension bites on the NEXT one, and a stream held open indefinitely
-   * would be a session with no next request. Ending it forces a reconnect
-   * through the full guard chain, so a suspended operator's bell goes quiet
-   * within the window rather than at token expiry.
-   */
-  @Sse('stream')
-  @AnyAdmin('Streams the actor’s OWN feed; every frame is filtered to their id before it is sent.')
-  @ApiExcludeEndpoint()
-  @NotClientScoped(
-    'Carries no client data — an id and a kind slug, for a row the reader already owns.',
-  )
-  stream(@Req() req: Request & { admin: Admin }) {
-    const recipient = { kind: 'admin' as const, id: req.admin.id };
-    return notificationStream(this.realtime.streamFor(recipient), recipient);
-  }
+  constructor(private readonly notifications: NotificationsService) {}
 
   @Get()
   @AnyAdmin(

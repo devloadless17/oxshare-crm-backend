@@ -7,25 +7,15 @@ import {
   Post,
   Query,
   Req,
-  Sse,
   UseGuards,
 } from '@nestjs/common';
-import {
-  ApiCookieAuth,
-  ApiExcludeEndpoint,
-  ApiOkResponse,
-  ApiOperation,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { decodeCursor } from '../../common/pagination';
 import { NotificationsService } from './notifications.service';
-import { NotificationsRealtimeGateway } from './realtime.gateway';
-import { notificationStream } from './notification-stream';
 import {
   NotificationDto,
   NotificationListResponseDto,
@@ -45,32 +35,7 @@ import {
 @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
 @Controller('notifications')
 export class NotificationsController {
-  constructor(
-    private readonly notifications: NotificationsService,
-    private readonly realtime: NotificationsRealtimeGateway,
-  ) {}
-
-  /**
-   * The live stream — the client's bell, without waiting for a poll.
-   *
-   * `@Sse` rather than a socket: this channel only ever pushes server→client,
-   * which is what Server-Sent Events are for. It costs no dependency, needs no
-   * CSP change (`connect-src 'self'` already covers it, because the portal
-   * proxies `/api` through its own origin), and the browser reconnects on its
-   * own when the server ends the stream — which it does every fifteen minutes,
-   * deliberately, so the session is re-authenticated. See
-   * `notification-stream.ts`.
-   *
-   * Excluded from the OpenAPI document: `openapi-typescript` has no shape for
-   * an event stream, and generating one would put a lie in `types.gen.ts`. The
-   * frontends consume this with `EventSource`, not the typed client.
-   */
-  @Sse('stream')
-  @ApiExcludeEndpoint()
-  stream(@Req() req: Request & { user: User }) {
-    const recipient = { kind: 'client' as const, id: req.user.id };
-    return notificationStream(this.realtime.streamFor(recipient), recipient);
-  }
+  constructor(private readonly notifications: NotificationsService) {}
 
   @Get()
   @ApiCookieAuth()

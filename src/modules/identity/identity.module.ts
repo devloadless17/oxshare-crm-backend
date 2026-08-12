@@ -50,6 +50,23 @@ import { StoredFilesService } from '../../common/uploads/stored-files.service';
     // to write to disk, rather than a second copy that drifts.
     StoredFilesService,
   ],
-  exports: [AuthService, JwtAuthGuard, EmailVerifiedGuard, KycVerifiedGuard, StoredFilesService],
+  exports: [
+    AuthService,
+    JwtAuthGuard,
+    EmailVerifiedGuard,
+    KycVerifiedGuard,
+    StoredFilesService,
+    /*
+     * Exported for the WebSocket handshake, which has no HTTP guard to run.
+     *
+     * `RealtimePrincipalResolver` calls `JwtStrategy.validate` directly, and
+     * deliberately so: the strategy owns the token-kind, suspension,
+     * revoked-family and password-change checks, and a socket lives for minutes
+     * with the same authority as a request. Re-implementing those checks for
+     * sockets is how two authorization paths drift until one is missing an
+     * enforcement point.
+     */
+    JwtStrategy,
+  ],
 })
 export class IdentityModule {}

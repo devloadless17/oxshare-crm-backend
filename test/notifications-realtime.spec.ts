@@ -1,13 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from 'pg';
-import { firstValueFrom, take, toArray } from 'rxjs';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { NotificationsStore } from '../src/store/notifications.store';
-import {
-  NotificationsRealtimeGateway,
-  type NotificationEvent,
-} from '../src/modules/notifications/realtime.gateway';
-import { notificationStream } from '../src/modules/notifications/notification-stream';
+import type { NotificationEvent } from '../src/modules/notifications/realtime.gateway';
 
 /**
  * Real-time delivery, against real Postgres — because the guarantee this
@@ -155,78 +150,5 @@ describe('the database announces a notification when it becomes real', () => {
     // No row was written, so nobody is told. A trigger on INSERT would
     // otherwise turn every at-least-once redelivery into a second buzz.
     expect(heard).toEqual([]);
-  });
-});
-
-describe('the gateway routes an announcement to the right connection', () => {
-  it('delivers only the events addressed to that recipient', async () => {
-    const gateway = new NotificationsRealtimeGateway({
-      get: () => 'test',
-    } as never);
-
-    const received = firstValueFrom(gateway.streamFor(CLIENT_A).pipe(take(1), toArray()));
-
-    // B's event must not reach A's stream, whatever order they arrive in.
-    gateway.publish({ id: 'n-b', recipientKind: 'client', recipientId: CLIENT_B.id, kind: 'x' });
-    gateway.publish({ id: 'n-a', recipientKind: 'client', recipientId: CLIENT_A.id, kind: 'y' });
-
-    expect((await received).map((e) => e.id)).toEqual(['n-a']);
-  });
-
-  it('does not cross the two audiences, even on a shared uuid', async () => {
-    /*
-     * An admin id and a client id are drawn from different tables and could
-     * coincide. The pair must match on BOTH columns — the same ownership rule
-     * the store's WHERE clause enforces, asserted here because the stream
-     * bypasses that query entirely.
-     */
-    const gateway = new NotificationsRealtimeGateway({ get: () => 'test' } as never);
-    const sharedId = CLIENT_A.id;
-
-    const received = firstValueFrom(
-      gateway.streamFor({ kind: 'admin', id: sharedId }).pipe(take(1), toArray()),
-    );
-
-    gateway.publish({
-      id: 'for-client',
-      recipientKind: 'client',
-      recipientId: sharedId,
-      kind: 'x',
-    });
-    gateway.publish({ id: 'for-admin', recipientKind: 'admin', recipientId: sharedId, kind: 'y' });
-
-    expect((await received).map((e) => e.id)).toEqual(['for-admin']);
-  });
-});
-
-describe('the SSE frame shape', () => {
-  it('opens with a ping, so the browser knows the stream is live before any event', async () => {
-    const gateway = new NotificationsRealtimeGateway({ get: () => 'test' } as never);
-    const frames = firstValueFrom(
-      notificationStream(gateway.streamFor(CLIENT_A), CLIENT_A).pipe(take(1), toArray()),
-    );
-
-    expect((await frames)[0].type).toBe('ping');
-  });
-
-  it('sends the id and kind, never the params', async () => {
-    const gateway = new NotificationsRealtimeGateway({ get: () => 'test' } as never);
-    const frames = firstValueFrom(
-      notificationStream(gateway.streamFor(CLIENT_A), CLIENT_A).pipe(take(2), toArray()),
-    );
-
-    gateway.publish({
-      id: 'n-1',
-      recipientKind: 'client',
-      recipientId: CLIENT_A.id,
-      kind: 'kyc.approved',
-    });
-
-    const notification = (await frames).find((f) => f.type === 'notification');
-    expect(notification?.data).toEqual({
-      id: 'n-1',
-      kind: 'kyc.approved',
-      at: expect.any(String),
-    });
   });
 });

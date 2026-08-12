@@ -30,6 +30,17 @@ const envSchema = z
     PORTAL_URL: z.string().url().default('http://localhost:3000'),
     ADMIN_URL: z.string().url().default('http://localhost:3002'),
 
+    /*
+     * Realtime (WebSocket) transport. See common/realtime/realtime-io.adapter.ts.
+     *
+     * `uws` runs Socket.IO on uWebSockets.js and needs its OWN port, because
+     * Nest serves HTTP through Express and one port has one listener. Setting
+     * `node` attaches the socket to the API port instead — the one-variable
+     * revert if the native engine ever misbehaves.
+     */
+    REALTIME_ENGINE: z.enum(['uws', 'node']).default('uws'),
+    REALTIME_PORT: z.coerce.number().int().min(1).max(65535).default(3003),
+
     DATABASE_URL: z.string().url().optional(),
 
     /*

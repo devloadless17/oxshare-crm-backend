@@ -8,6 +8,7 @@ import { VALIDATION_PIPE_OPTIONS } from './common/validation.config';
 import { buildSwaggerConfig } from './common/swagger-config';
 import { applyApiPrefix, createHttpAdapter } from './common/api-prefix';
 import { JsonLogger } from './common/logging/json.logger';
+import { RealtimeIoAdapter, type RealtimeEngine } from './common/realtime/realtime-io.adapter';
 import { trustedProxyHops } from './common/security/client-ip';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
@@ -160,6 +161,23 @@ async function bootstrap() {
     await runSeeds();
   }
 
+  /*
+   * The realtime engine, chosen before listen so the gateway is created on it.
+   *
+   * Nest builds the Socket.IO server the first time a gateway initialises, so
+   * this must be installed BEFORE `app.listen` — registering the adapter after
+   * would leave the gateway on the default engine while every log line claimed
+   * otherwise.
+   */
+  const realtimePort = Number(process.env['REALTIME_PORT'] ?? 3003);
+  app.useWebSocketAdapter(
+    new RealtimeIoAdapter(
+      app,
+      (process.env['REALTIME_ENGINE'] as RealtimeEngine) ?? 'uws',
+      realtimePort,
+    ),
+  );
+
   const port = process.env['PORT'] ?? 3001;
   await app.listen(port);
 
@@ -168,6 +186,7 @@ async function bootstrap() {
     console.log(`📚 Swagger docs at       http://localhost:${port}/api/docs`);
   }
   console.log(`❤️  Health check at      http://localhost:${port}/health`);
+  console.log(`⚡ Realtime socket on    http://localhost:${realtimePort}/realtime`);
 }
 
 void bootstrap();
