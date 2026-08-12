@@ -2,6 +2,7 @@ import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ValidationError } from '../../../common/errors/domain-errors';
 import { AppSettingsStore } from '../../../store/app-settings.store';
+import { ProductsStore, type OfferedGroup } from '../../../store/products.store';
 import { tradingTermsFrom, type TradingTerms } from '../../../common/trading-terms';
 
 /**
@@ -36,6 +37,7 @@ export class SelfServiceGroups implements OnModuleInit {
   constructor(
     private readonly config: ConfigService,
     private readonly settings: AppSettingsStore,
+    private readonly products: ProductsStore,
   ) {}
 
   /**
@@ -46,34 +48,77 @@ export class SelfServiceGroups implements OnModuleInit {
    * and "not built" look identical from the browser, and there is nothing to
    * grep for. One line at startup is the thing anyone would look at first.
    */
-  onModuleInit(): void {
-    const live = this.groupsFor('live');
-    const demo = this.groupsFor('demo');
+  async onModuleInit(): Promise<void> {
+    await this.importLegacyEnvGroups();
 
-    if (live.length === 0 && demo.length === 0) {
+    const products = await this.products.listProducts();
+    const configured = products.filter((product) => product.groups.length > 0);
+
+    if (configured.length === 0) {
       this.logger.warn(
-        'Self-service account opening is OFF for both environments: neither ' +
-          'MT5_CLIENT_GROUPS_LIVE nor MT5_CLIENT_GROUPS_DEMO is set. The portal will show no ' +
-          '"Open account" button. Set them to the groups the broker sells online, ' +
-          'comma-separated.',
+        'Self-service account opening is OFF: no product has an MT5 group attached. The portal ' +
+          'will show no "Open account" button. Add one at Settings, choosing from the groups the ' +
+          'bridge reports.',
       );
       return;
     }
 
-    this.logger.log(
-      `Self-service account opening: live=[${live.join(', ') || 'OFF'}], ` +
-        `demo=[${demo.join(', ') || 'OFF'}]`,
-    );
+    for (const product of configured) {
+      const live = product.groups.filter((group) => group.environment === 'live').length;
+      const demo = product.groups.filter((group) => group.environment === 'demo').length;
+      this.logger.log(
+        `Product "${product.name}"${product.enabled ? '' : ' (disabled)'}: ` +
+          `${live} live group(s), ${demo} demo group(s)`,
+      );
+    }
   }
 
   /**
-   * The groups offered for an environment, in the order the broker listed them.
+   * Carry `MT5_CLIENT_GROUPS_*` into the product catalogue, once.
    *
-   * Reads the plural variable, falling back to the singular one this replaced.
-   * A deployment configured before the list existed keeps working rather than
-   * silently losing its self-service.
+   * ## Why this runs in the app and not in the migration
+   *
+   * A migration cannot read a `.env` file, and the groups a deployment offers
+   * live in one. So 0052 creates an empty "Standard" product and this fills it
+   * on the first boot after the upgrade — the import stays beside the code that
+   * knows how to parse the variable.
+   *
+   * It is a no-op the moment ANY product has a group, so it cannot re-add one
+   * an operator deliberately removed. That is also why it does not run
+   * per-product: "this product has no groups yet" is a normal state an operator
+   * passes through on the way to configuring one.
+   *
+   * The currency is left EMPTY. It is read live from MT5 wherever a client sees
+   * it, and writing a guessed 'USD' here would put an unverified currency on a
+   * settings screen where it reads as fact.
    */
-  groupsFor(environment: 'live' | 'demo'): string[] {
+  private async importLegacyEnvGroups(): Promise<void> {
+    const legacy = (['live', 'demo'] as const).flatMap((environment) =>
+      this.legacyEnvGroups(environment).map((mt5Group) => ({ environment, mt5Group })),
+    );
+    if (legacy.length === 0) return;
+
+    const products = await this.products.listProducts();
+    if (products.length === 0) return;
+    if (products.some((product) => product.groups.length > 0)) return;
+
+    const target = products[0];
+    for (const { environment, mt5Group } of legacy) {
+      try {
+        await this.products.addGroup({ productId: target.id, environment, mt5Group, currency: '' });
+        this.logger.log(
+          `Imported ${environment} group "${mt5Group}" from the environment into product ` +
+            `"${target.name}". Set its currency on the products screen.`,
+        );
+      } catch {
+        // Another instance won the race, or the group is already claimed by a
+        // product. Both mean the catalogue already says what this was saying.
+      }
+    }
+  }
+
+  /** The retired environment variables, still read for the one-time import. */
+  private legacyEnvGroups(environment: 'live' | 'demo'): string[] {
     const suffix = environment === 'live' ? 'LIVE' : 'DEMO';
     const raw =
       this.config.get<string>(`MT5_CLIENT_GROUPS_${suffix}`) ??
@@ -86,23 +131,30 @@ export class SelfServiceGroups implements OnModuleInit {
       .filter(Boolean);
   }
 
-  /** Whether self-service is switched on for an environment — for the UI. */
-  isEnabled(environment: 'live' | 'demo'): boolean {
-    return this.groupsFor(environment).length > 0;
+  /**
+   * What THIS client may open in an environment.
+   *
+   * Per-client, which an environment variable could never be: a client under an
+   * introducing broker is offered their partner's agency's products, and a
+   * client under nobody is offered every enabled product.
+   */
+  async offeredTo(userId: string, environment: 'live' | 'demo'): Promise<OfferedGroup[]> {
+    return await this.products.offeredTo(userId, environment);
   }
 
   /**
-   * Validate a client's chosen group, or pick the first offered one.
+   * Validate a client's chosen group, or pick the first they are offered.
    *
    * ## The check is the whole point of this method
    *
-   * `group` arrives from a browser. Without validating it against the offered
-   * list, a client could name ANY group on the broker's server — including an
-   * institutional one with terms nobody agreed to sell them. The portal's
-   * dropdown is a convenience; this is the control.
+   * `group` arrives from a browser. Without validating it against what this
+   * client is offered, they could name ANY group the catalogue knows —
+   * including one belonging to another partner's agency, whose commission would
+   * then be paid to somebody who introduced nobody. The portal's dropdown is a
+   * convenience; this is the control.
    */
-  resolve(environment: 'live' | 'demo', requested?: string): string {
-    const offered = this.groupsFor(environment);
+  async resolve(userId: string, environment: 'live' | 'demo', requested?: string): Promise<string> {
+    const offered = await this.offeredTo(userId, environment);
 
     if (offered.length === 0) {
       throw new ValidationError(
@@ -112,7 +164,7 @@ export class SelfServiceGroups implements OnModuleInit {
       );
     }
 
-    if (!requested) return offered[0];
+    if (!requested) return offered[0].mt5Group;
 
     /*
      * Case-insensitive, because MT5 group paths are and a browser round trip
@@ -120,12 +172,14 @@ export class SelfServiceGroups implements OnModuleInit {
      * spelling, which is what gets sent onward — never the caller's, so a
      * casing difference cannot reach the server.
      */
-    const match = offered.find((group) => group.toLowerCase() === requested.trim().toLowerCase());
+    const match = offered.find(
+      (option) => option.mt5Group.toLowerCase() === requested.trim().toLowerCase(),
+    );
     if (!match) {
       throw new ValidationError('That account type is not available. Choose one from the list.');
     }
 
-    return match;
+    return match.mt5Group;
   }
 
   /**

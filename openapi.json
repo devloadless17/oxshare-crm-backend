@@ -3086,7 +3086,7 @@
     },
     "/v1/trading/accounts/self-service": {
       "get": {
-        "description": "The account types are the MT5 groups the broker sells online, with the currency read live from the server so the portal shows what an account will actually be denominated in. An environment with no types configured is switched off and the portal hides it.",
+        "description": "Per-client, not per-deployment. A client introduced by a partner is offered that partner’s agency’s products; a client who came in directly is offered every enabled product. Currencies are read live from MT5, so the portal shows what an account will actually be denominated in. An environment with no types is switched off and the portal hides it.",
         "operationId": "TradingController_selfService",
         "parameters": [],
         "responses": {
@@ -3099,7 +3099,7 @@
             "cookie": []
           }
         ],
-        "summary": "What a client may open themselves: account types, currencies and leverages",
+        "summary": "What THIS client may open: account types, currencies and leverages",
         "tags": [
           "trading"
         ]

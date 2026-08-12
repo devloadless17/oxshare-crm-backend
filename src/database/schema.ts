@@ -13,6 +13,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -1165,6 +1166,164 @@ export const transferStateEnum = pgEnum('transfer_state', ['pending', 'settled',
 
 export const tradingEnvironmentEnum = pgEnum('trading_environment', ['live', 'demo']);
 
+/*
+ * ── What the broker SELLS, and who is allowed to sell it ─────────────────────
+ *
+ * Four tables for what used to be one comma-separated environment variable. The
+ * shape follows MT5's, and the direction of containment is not a preference:
+ *
+ *     Agency (وكالة)   name, description
+ *       └─ Products     "Standard", "ECN"
+ *            └─ Groups  demo\Standard-USD · real\Standard-USD · real\Standard-EUR
+ *                 └─ Accounts
+ *
+ * A GROUP is the MT5 object — `MTConGroup`, a path like `real\Standard-USD` —
+ * and it is a LEAF. An account points at exactly one group, and a group fixes
+ * one currency and one environment, so a group cannot contain anything. The
+ * moment "Standard" is sold in EUR as well as USD that is two groups and still
+ * one product. Product → groups, one to many, never the reverse.
+ *
+ * A PRODUCT is the sellable thing: what the portal calls an account type and
+ * what a client recognises.
+ *
+ * An AGENCY is the package a partner is appointed under. A partner is approved
+ * against one agency, and their clients may open that agency's products and
+ * nothing else.
+ *
+ * ## Why the agency carries the products rather than the partner
+ *
+ * The first design hung products off each partner individually. That is the
+ * same information written once per partner: every new currency variant means
+ * re-touching every partner, and an applicant on the portal is shown an empty
+ * form rather than what they are applying for. An agency is the reusable noun
+ * both problems were asking for.
+ *
+ * ## Why the partner link is here and not on the group
+ *
+ * Brokers who let MT5 compute rebates cut a group per partner, with the markup
+ * in `MTConGroup.Commissions` — there the partner link MUST be to a group.
+ * This system computes commission itself, from `ib_levels.rate_value` into
+ * `ib_accruals`, so the group carries nothing partner-specific and the link is
+ * commercial: what this partner may sell. If commission ever moves to MT5-side
+ * tables, this decision has to be revisited — two partners selling "Standard"
+ * would then genuinely need two groups.
+ */
+export const tradingProducts = pgTable('trading_products', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  /** What the client sees. "Standard", "ECN", "Raw Spread". */
+  name: varchar('name', { length: 80 }).notNull().unique(),
+  /** Shown to a client choosing, and to an applicant reading an agency. */
+  description: text('description'),
+  /**
+   * A disabled product stops being OFFERED and keeps its accounts trading.
+   *
+   * The same rule as a disabled currency or a disabled IB level: retiring a
+   * product must never reach into accounts that are already open, because the
+   * client did nothing and their positions are real.
+   */
+  enabled: boolean('enabled').notNull().default(true),
+  /*
+   * There is deliberately NO `is_public` column.
+   *
+   * A draft had one, to make a product agency-exclusive — invisible to clients
+   * who walked in off the website. The rule is simpler than that: a client
+   * under an introducing broker sees exactly their agency's products, and a
+   * client under nobody sees ALL of them. `enabled` is the only thing that
+   * takes a product out of circulation.
+   *
+   * Worth knowing before adding the flag back: it would create a fourth state
+   * ("exists, enabled, and yet nobody unattached can see it") that an operator
+   * looking at an empty portal has no way to diagnose from this table.
+   */
+  /** The order a client sees them in. Ties broken by name. */
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const tradingProductGroups = pgTable(
+  'trading_product_groups',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    productId: uuid('product_id')
+      .notNull()
+      .references(() => tradingProducts.id, { onDelete: 'cascade' }),
+    environment: tradingEnvironmentEnum('environment').notNull(),
+    /**
+     * The MT5 group path. Sized to match `trading_accounts.mt5_group`.
+     *
+     * Validated against what the server actually reports when an operator picks
+     * it — the bridge lists real groups, so a typo is caught on the settings
+     * screen rather than at a client's first account open.
+     */
+    mt5Group: varchar('mt5_group', { length: 100 }).notNull(),
+    /**
+     * Cached from MT5 at assignment, and NOT the authority.
+     *
+     * The group's currency lives on the server and can be changed there without
+     * telling us. This column exists so the picker can order and label without
+     * a bridge round trip; anything a client is shown re-reads it live.
+     */
+    currency: varchar('currency', { length: 10 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /*
+     * ONE product per group, platform-wide.
+     *
+     * Two products claiming the same group would make "which product is this
+     * account under" unanswerable from the account — and that question is what
+     * decides whose commission it pays.
+     */
+    unique('trading_product_groups_group_unique').on(t.mt5Group),
+    /* One group per product per environment per currency: offering a client two
+       rows that both say "Standard · USD · demo" is a choice with no meaning. */
+    unique('trading_product_groups_slot_unique').on(t.productId, t.environment, t.currency),
+    index('trading_product_groups_product_idx').on(t.productId),
+  ],
+);
+
+export const agencies = pgTable('agencies', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  /** وكالة — the package a partner is appointed under. */
+  name: varchar('name', { length: 80 }).notNull().unique(),
+  /** Read by an applicant deciding which one to request. Worth writing well. */
+  description: text('description'),
+  /**
+   * A disabled agency stops accepting APPLICATIONS and keeps its partners.
+   *
+   * Same reasoning as the product above, one level up: closing a programme to
+   * new partners is routine, and expelling the partners already in it is not
+   * the same act.
+   */
+  enabled: boolean('enabled').notNull().default(true),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const agencyProducts = pgTable(
+  'agency_products',
+  {
+    agencyId: uuid('agency_id')
+      .notNull()
+      .references(() => agencies.id, { onDelete: 'cascade' }),
+    /*
+     * `restrict`, deliberately asymmetric with the cascade above. Deleting an
+     * AGENCY is a decision about a programme and takes its own rows with it;
+     * deleting a PRODUCT an agency still sells is a mistake, and the partners
+     * beneath it would silently lose what they were appointed to sell.
+     */
+    productId: uuid('product_id')
+      .notNull()
+      .references(() => tradingProducts.id, { onDelete: 'restrict' }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.agencyId, t.productId] }),
+    index('agency_products_product_idx').on(t.productId),
+  ],
+);
+
 /** A trading account an operator has suspended stops accepting transfers. */
 export const tradingAccountStatusEnum = pgEnum('trading_account_status', [
   'active',
@@ -1924,6 +2083,17 @@ export const ibApplications = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * The agency (وكالة) being applied for.
+     *
+     * NULLABLE, and null means "applied before agencies existed". Backfilling
+     * the old rows with a guess would put words in an applicant's mouth about
+     * the one thing this row records — what they asked for.
+     *
+     * `restrict` on delete: an agency with applications against it, decided or
+     * not, is part of a record somebody may have to justify later.
+     */
+    agencyId: uuid('agency_id').references(() => agencies.id, { onDelete: 'restrict' }),
     /** Why they want it, in their words. Free text; the reviewer reads it. */
     motivation: text('motivation'),
     /** Self-reported, unverified, and labelled as such on both screens. */
@@ -1997,6 +2167,19 @@ export const ibAccounts = pgTable(
     level: integer('level')
       .notNull()
       .references(() => ibLevels.level, { onDelete: 'restrict', onUpdate: 'cascade' }),
+    /**
+     * The agency this partner was appointed under, and so what they may sell.
+     *
+     * Their clients are offered this agency's products and nothing else; a
+     * client under no partner is offered every enabled product. That is the
+     * whole resolution rule, and it lives on this one column.
+     *
+     * NULLABLE because partners approved before agencies existed have none.
+     * Such a partner's clients fall back to the full catalogue rather than to
+     * an empty list — the alternative silently stops their clients opening
+     * accounts, which is a punishment for an operator's unfinished migration.
+     */
+    agencyId: uuid('agency_id').references(() => agencies.id, { onDelete: 'restrict' }),
     /** NULL means they deal with the broker directly — the top of a chain. */
     parentIbUserId: uuid('parent_ib_user_id'),
     /**
@@ -2037,6 +2220,9 @@ export const ibAccounts = pgTable(
        on every approval to enforce `ibLevels.maxDirectPartners`. */
     index('ib_accounts_parent_idx').on(t.parentIbUserId),
     index('ib_accounts_level_idx').on(t.level),
+    /* "Which partners are on this agency?" — asked before an operator is
+       allowed to delete or disable one. */
+    index('ib_accounts_agency_idx').on(t.agencyId),
   ],
 );
 

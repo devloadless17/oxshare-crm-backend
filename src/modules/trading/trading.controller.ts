@@ -95,10 +95,11 @@ export class TradingController {
     /*
      * Both resolved BEFORE the bridge call, and both VALIDATE rather than
      * merely default. `group` arrives from a browser: unchecked, a client could
-     * name any group on the broker's server. An environment the broker has not
-     * switched on is refused here without touching MT5.
+     * name any group the catalogue knows — including one belonging to another
+     * partner's agency. Resolved for THIS client, so what they are allowed to
+     * open is decided by their own introducing broker and not by the request.
      */
-    const group = this.selfServiceGroups.resolve(dto.environment, dto.group);
+    const group = await this.selfServiceGroups.resolve(req.user.id, dto.environment, dto.group);
     const leverage = await this.selfServiceGroups.resolveLeverage(dto.leverage);
 
     return await this.mt5Accounts.createOwnAccount({
@@ -122,49 +123,54 @@ export class TradingController {
   @Get('accounts/self-service')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'What a client may open themselves: account types, currencies and leverages',
+    summary: 'What THIS client may open: account types, currencies and leverages',
     description:
-      'The account types are the MT5 groups the broker sells online, with the currency read ' +
-      'live from the server so the portal shows what an account will actually be denominated ' +
-      'in. An environment with no types configured is switched off and the portal hides it.',
+      'Per-client, not per-deployment. A client introduced by a partner is offered that ' +
+      'partner’s agency’s products; a client who came in directly is offered every enabled ' +
+      'product. Currencies are read live from MT5, so the portal shows what an account will ' +
+      'actually be denominated in. An environment with no types is switched off and the portal ' +
+      'hides it.',
   })
-  async selfService() {
+  async selfService(@Req() req: Request & { user: { id: string } }) {
     /*
-     * Currencies come from MT5 rather than from configuration.
+     * Currencies come from MT5 rather than from the catalogue.
      *
-     * A group's currency is set on the server and can be changed there without
-     * telling us. Listing it in our own config would eventually show a client
-     * USD on an account that is opened in EUR — and they would find out from
-     * their first deposit.
+     * `trading_product_groups.currency` is a cache for the admin picker, and a
+     * group's currency is set on the server where it can change without telling
+     * us. Trusting the cached copy would eventually show a client USD on an
+     * account that opens in EUR — and they would find out from their first
+     * deposit.
      *
-     * A group MT5 will not describe is still OFFERED, with an empty currency:
-     * the broker put it in the list deliberately, and hiding it because one
-     * lookup failed would silently remove a product.
+     * A group MT5 will not describe is still OFFERED, with the cached currency
+     * as the fallback: an operator put it in a product deliberately, and hiding
+     * it because one lookup failed would silently withdraw a product.
      */
-    const known = new Map<string, { currency: string }>();
+    const known = new Map<string, string>();
     try {
       for (const group of await this.mt5Accounts.listGroupsForClients()) {
-        known.set(group.name.toLowerCase(), { currency: group.currency });
+        known.set(group.name.toLowerCase(), group.currency);
       }
     } catch {
-      // The bridge is down. Types are still listed, without currencies, so the
-      // page renders and the choice is still the broker's.
+      // The bridge is down. Types are still listed, on cached currencies, so
+      // the page renders and the choice is still the broker's.
     }
 
-    const describe = (environment: 'live' | 'demo') =>
-      this.selfServiceGroups.groupsFor(environment).map((group) => ({
-        group,
-        currency: known.get(group.toLowerCase())?.currency ?? '',
+    const describe = async (environment: 'live' | 'demo') =>
+      (await this.selfServiceGroups.offeredTo(req.user.id, environment)).map((option) => ({
+        group: option.mt5Group,
+        currency: known.get(option.mt5Group.toLowerCase()) ?? option.currency,
+        product: option.productName,
       }));
+
+    const [liveTypes, demoTypes] = await Promise.all([describe('live'), describe('demo')]);
 
     /*
      * The CAPS travel with the offer.
      *
      * The portal already knows how many accounts the client holds — it is
      * rendering them — so sending the limits lets it stop offering a button
-     * that the create endpoint would refuse. Same reasoning as `live`/`demo`
-     * above: discovering a limit by pressing a button and reading a refusal is
-     * a poor way to learn what you are allowed.
+     * that the create endpoint would refuse. Discovering a limit by pressing a
+     * button and reading a refusal is a poor way to learn what you are allowed.
      *
      * `maxDemoDeposit` is here for the funding box's own hint and its `max`
      * attribute. It used to be a constant duplicated in the portal, which meant
@@ -174,10 +180,13 @@ export class TradingController {
     const terms = await this.selfServiceGroups.terms();
 
     return {
-      live: this.selfServiceGroups.isEnabled('live'),
-      demo: this.selfServiceGroups.isEnabled('demo'),
-      liveTypes: describe('live'),
-      demoTypes: describe('demo'),
+      // Derived from the offer rather than asked separately: "this client has
+      // somewhere to open a live account" and "live account types exist for
+      // this client" are the same fact, and two sources for it drift.
+      live: liveTypes.length > 0,
+      demo: demoTypes.length > 0,
+      liveTypes,
+      demoTypes,
       leverages: terms.leverages,
       maxLiveAccounts: terms.maxLiveAccounts,
       maxDemoAccounts: terms.maxDemoAccounts,

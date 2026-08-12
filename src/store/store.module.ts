@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { AdminClientScopesStore } from './admin-client-scopes.store';
 import { ApiKeysStore } from './api-keys.store';
 import { AppSettingsStore } from './app-settings.store';
+import { ProductsStore } from './products.store';
 import { ClientTagsStore } from './client-tags.store';
 import { AdminsStore, InvitesStore } from './admins.store';
 import { AuditLogStore } from './audit-log.store';
@@ -21,6 +22,7 @@ const STORES = [
   AdminsStore,
   ApiKeysStore,
   AppSettingsStore,
+  ProductsStore,
   ClientTagsStore,
   InvitesStore,
   AuditLogStore,
