@@ -30,6 +30,24 @@ const MAX_LIVE_BALANCES = 25;
 const MAX_SELF_SERVICE_ACCOUNTS = 5;
 
 /**
+ * The most practice money one demo account may be opened with.
+ *
+ * Demo balances are free to invent, which is the problem: a client who types
+ * enough zeros gets an account whose position sizes bear no relation to
+ * anything they would ever trade, and the practice is worthless. Capped rather
+ * than refused, so a fat-fingered extra zero still produces a working account.
+ */
+const MAX_DEMO_FUNDING = 1_000_000;
+
+/** Clamp demo funding to something a practice account can learn from. */
+function capDemoFunding(amount: string): string {
+  // Parsed ONLY to compare against the cap. The string is what is sent onward
+  // when it is within range, so nothing that reaches MT5 has been through a
+  // float unless it had to be.
+  return Number.parseFloat(amount) > MAX_DEMO_FUNDING ? String(MAX_DEMO_FUNDING) : amount;
+}
+
+/**
  * Opening MT5 accounts and moving their balances, from the back office.
  *
  * ## Why this is not in AdminHoldingsService
@@ -216,7 +234,15 @@ export class Mt5AccountsService {
    * somebody decides whether to bother verifying at all — gating it would put
    * the paperwork before the reason to do it.
    */
-  async createOwnAccount(input: { userId: string; environment: 'live' | 'demo'; group: string }) {
+  async createOwnAccount(input: {
+    userId: string;
+    environment: 'live' | 'demo';
+    group: string;
+    /** A label for the account. Defaults to the client's own name. */
+    name?: string;
+    /** DEMO only — refused on a live account rather than ignored. */
+    startingBalance?: string;
+  }) {
     this.assertBridge();
 
     const [client] = await this.db
@@ -259,14 +285,71 @@ export class Mt5AccountsService {
       );
     }
 
+    /*
+     * REFUSED rather than ignored on a live account.
+     *
+     * Silently dropping a number somebody typed into a funding box is the worst
+     * available behaviour: they believe the account is funded, and find out it
+     * is not by trying to trade. The portal does not show the field for live,
+     * so reaching this means a hand-made request — which deserves an answer
+     * rather than a shrug.
+     */
+    if (input.startingBalance && input.environment !== 'demo') {
+      throw new ValidationError(
+        'A live account cannot be opened with a starting balance. Fund it from your wallet ' +
+          'once it is open.',
+      );
+    }
+
     const created = await this.bridge.createAccount({
       group: input.group,
-      name: `${client.firstName} ${client.lastName}`.trim(),
+      // The client's own name when they did not choose one — that is what MT5
+      // expects in this field and what makes a row in the manager terminal
+      // identifiable.
+      name: input.name?.trim() || `${client.firstName} ${client.lastName}`.trim(),
       email: client.email,
       country: client.country ?? undefined,
       phone: client.phone ?? undefined,
       externalId: client.id,
     });
+
+    /*
+     * Funded AFTER creation, because MT5 has no "open with a balance" — an
+     * account is created empty and credited by a dealer operation, which is the
+     * same call the back office uses.
+     *
+     * Failure here does NOT fail the request. The account exists on the broker's
+     * server and rolling it back is not possible; reporting an error would leave
+     * the client believing they have nothing when they have an unfunded account.
+     * It is logged and the real balance is read back below, so what the portal
+     * shows is what MT5 holds rather than what we hoped it would.
+     */
+    let funded = false;
+    if (input.startingBalance && input.environment === 'demo') {
+      const capped = capDemoFunding(input.startingBalance);
+      try {
+        await this.bridge.balance({
+          login: String(created.login),
+          amount: capped,
+          type: 'balance',
+          comment: 'Demo starting balance',
+          // The MT5 login is unique and this credit happens exactly once per
+          // account, so it is a stable key for the one operation it names.
+          idempotencyKey: `demo-funding-${created.login}`,
+        });
+        funded = true;
+      } catch (error) {
+        this.logger.error(
+          `Opened demo account ${created.login} but could not fund it with ${capped}: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    // Read back rather than assumed: if funding failed, the row must say 0.
+    const snapshot = funded
+      ? await this.bridge.getAccount(String(created.login)).catch(() => null)
+      : null;
 
     const [row] = await this.db
       .insert(tradingAccounts)
@@ -276,7 +359,7 @@ export class Mt5AccountsService {
         environment: input.environment,
         currency: created.currency,
         leverage: created.leverage,
-        balance: '0',
+        balance: snapshot?.balance ?? '0',
         status: 'active',
       })
       .returning();
@@ -305,6 +388,7 @@ export class Mt5AccountsService {
       environment: input.environment,
       currency: created.currency,
       leverage: created.leverage,
+      balance: snapshot?.balance ?? '0',
       credentialsSentTo: client.email,
     };
   }

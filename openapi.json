@@ -9536,6 +9536,17 @@
               "demo"
             ],
             "description": "live requires a verified identity and holds real money; demo is practice money and needs no verification."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "example": "Swing trading",
+            "description": "Defaults to the client's own name."
+          },
+          "startingBalance": {
+            "type": "string",
+            "example": "10000.00",
+            "description": "Demo accounts only. Positive decimal string, capped by the API."
           }
         },
         "required": [

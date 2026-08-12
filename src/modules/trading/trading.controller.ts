@@ -100,6 +100,8 @@ export class TradingController {
       userId: req.user.id,
       environment: dto.environment,
       group,
+      name: dto.name,
+      startingBalance: dto.startingBalance,
     });
   }
 
