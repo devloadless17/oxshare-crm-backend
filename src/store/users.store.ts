@@ -177,6 +177,27 @@ export class UsersStore {
   }
 
   /**
+   * How many clients this partner introduced.
+   *
+   * A COUNT rather than a list: the partner profile shows the figure beside
+   * their earnings, and the clients themselves are already reachable through
+   * the client list filtered by referrer. Fetching rows to call `.length` on
+   * them would grow with a partner's book to render one number.
+   *
+   * Unscoped by design, like `IbStore.findDirectPartners` and for the same
+   * reason — the subject has already been checked visible, and a count filtered
+   * by the reader's own tags would under-report a partner's book without
+   * saying so.
+   */
+  async countReferredBy(ibUserId: string): Promise<number> {
+    const [{ value }] = await this.db
+      .select({ value: count() })
+      .from(users)
+      .where(eq(users.referredByIbUserId, ibUserId));
+    return value;
+  }
+
+  /**
    * A client, if this ADMINISTRATOR may see them — the scoped `findById`.
    *
    * DELIBERATELY A DIFFERENT NAME rather than an optional argument on

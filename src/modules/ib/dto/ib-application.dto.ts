@@ -262,3 +262,66 @@ export class SetIbActiveDto {
   @IsBoolean()
   active: boolean;
 }
+
+/** A person named on the partner tab — the parent, or one of the line below. */
+export class IbPartnerPersonDto {
+  @ApiProperty() userId: string;
+  @ApiProperty() email: string;
+  @ApiProperty({ type: 'string', nullable: true }) firstName: string | null;
+  @ApiProperty({ type: 'string', nullable: true }) lastName: string | null;
+}
+
+/** One partner directly beneath this one, with their rung. */
+export class IbSubPartnerRowDto extends IbPartnerPersonDto {
+  @ApiProperty() level: number;
+  @ApiProperty() levelName: string;
+  @ApiProperty() referralCode: string;
+  @ApiProperty() active: boolean;
+  @ApiProperty() approvedAt: Date;
+}
+
+/** Confirmed and pending totals, as decimal strings (§6.1). */
+export class IbPartnerEarningsDto {
+  @ApiProperty({ type: 'string', example: '73.50000000' }) confirmed: string;
+  @ApiProperty({ type: 'string', example: '0.00000000' }) pending: string;
+}
+
+/**
+ * One partner's standing — `GET /admin/ib/partners/:userId`.
+ *
+ * The shape the client profile's partner tab renders. Everything here is a fact
+ * about the SUBJECT: which rung they stand on and what it pays, what they may
+ * sell, who placed them, who they placed, and what it has earned.
+ *
+ * The response is `null` for a client who is not a partner. Nest describes that
+ * as this type regardless, so a client MUST null-check before reading it — the
+ * generated type says `IbPartnerDetailDto`, not `IbPartnerDetailDto | null`,
+ * which is the one place this contract is weaker than the runtime.
+ */
+export class IbPartnerDetailDto {
+  @ApiProperty() userId: string;
+  @ApiProperty() level: number;
+  @ApiProperty({ type: 'string', nullable: true }) levelName: string | null;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'The rung’s percentage of the broker’s revenue. A decimal string, never a number.',
+  })
+  rateValue: string | null;
+  @ApiProperty() referralCode: string;
+  @ApiProperty({ description: 'A suspended partner keeps their code and tree, and stops earning.' })
+  active: boolean;
+  @ApiProperty() approvedAt: Date;
+  @ApiProperty({ type: 'string', nullable: true }) agencyId: string | null;
+  @ApiProperty({ type: 'string', nullable: true }) agencyName: string | null;
+  @ApiProperty({
+    type: [String],
+    description: 'What the agency lets them sell. Empty means the full catalogue.',
+  })
+  products: string[];
+  @ApiProperty({ type: IbPartnerPersonDto, nullable: true })
+  parent: IbPartnerPersonDto | null;
+  @ApiProperty({ type: [IbSubPartnerRowDto] }) directPartners: IbSubPartnerRowDto[];
+  @ApiProperty({ description: 'How many clients they introduced.' }) referredClientCount: number;
+  @ApiProperty({ type: IbPartnerEarningsDto }) earnings: IbPartnerEarningsDto;
+}

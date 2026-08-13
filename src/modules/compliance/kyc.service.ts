@@ -266,6 +266,13 @@ export class KycService {
     if (!finalSub.addressProof?.filePath)
       throw new ValidationError('Proof of address is required.');
 
+    /*
+     * Read BEFORE the update below overwrites it — this is what tells a first
+     * submission from a client returning to fix one, and the update sets
+     * `status` to 'submitted' unconditionally.
+     */
+    const wasRejected = finalSub.status === 'rejected';
+
     // A resubmission after rejection starts a fresh review — stale rejection
     // data must not follow it into the admin queue.
     const submitted = await this.kycStore.update(userId, {
@@ -282,10 +289,21 @@ export class KycService {
      * per-item ping. No dedupe key: submission is client-driven, not retried
      * by any machine, and a genuine resubmission after rejection SHOULD ring
      * again.
+     *
+     * A RESUBMISSION says so, as a distinct kind. The two are different pieces
+     * of work: a first submission is an unknown client to assess from scratch,
+     * while a resubmission is a review already done once where a reviewer needs
+     * only to check the fields they themselves asked to be corrected — and it
+     * carries an expectation the client is waiting on, having already been
+     * refused once. A queue that renders both identically hides that, and the
+     * resubmissions are the ones that go stale.
      */
     void this.notifications.notifyAdminsWithPermission(
       'kyc.review',
-      { kind: 'admin.kyc.submitted', params: { userId } },
+      {
+        kind: wasRejected ? 'admin.kyc.resubmitted' : 'admin.kyc.submitted',
+        params: { userId },
+      },
       { subjectClientId: userId },
     );
 

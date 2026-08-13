@@ -4,6 +4,7 @@ import { TransfersService } from '../src/modules/payments/transfers.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { auditStubAs } from './audit-stub';
+import { notificationsStubAs } from './notifications-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -22,8 +23,16 @@ let wallets: WalletService;
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
   wallets = new WalletService(ctx.db);
-  // (wallets, currencies, db) — the order the constructor declares.
-  transfers = new TransfersService(wallets, new CurrenciesService(ctx.db, auditStubAs()), ctx.db);
+  // (wallets, currencies, db, notifications) — the order the constructor
+  // declares. The notification port is stubbed: `settle` rings the client's
+  // bell, and whether that row actually lands is asserted against real data in
+  // `notifications-hooks.spec.ts` rather than here.
+  transfers = new TransfersService(
+    wallets,
+    new CurrenciesService(ctx.db, auditStubAs()),
+    ctx.db,
+    notificationsStubAs(),
+  );
 }, 120_000);
 
 afterAll(async () => {

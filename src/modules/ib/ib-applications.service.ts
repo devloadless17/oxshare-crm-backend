@@ -767,6 +767,95 @@ export class IbApplicationsService {
   }
 
   /**
+   * ONE partner, in full — the profile screen's partner tab.
+   *
+   * ## Why this exists beside `listPartners`
+   *
+   * The list answers "who are our partners"; a client profile asks "what is
+   * THIS person's standing", and the two need different shapes. Reaching the
+   * second through the first meant paging the whole partner list in the browser
+   * and filtering it, which is a read that grows with the platform to answer a
+   * question about one row.
+   *
+   * Returns null rather than throwing when the client is not a partner. Every
+   * client profile asks this — the tab only renders for a partner — so "no
+   * partner account" is the ordinary answer, not an error. The CALLER decides
+   * what a missing partner means, exactly as `statusFor` does on the portal.
+   *
+   * ## Scope is checked on the SUBJECT, not on their line
+   *
+   * `assertVisible` 404s a client outside the reader's tags, which is the same
+   * refusal `GET /admin/clients/:id` gives and for the same reason — a scoped
+   * admin must not be able to enumerate the client base they were denied.
+   *
+   * Their sub-partners and their parent are then returned WHOLE. Filtering
+   * those by the reader's own scope would under-report a partner's line without
+   * saying so — "two sub-partners" when there are five is a number an operator
+   * would act on. The relationships are facts about the subject, and the
+   * subject is one they are already entitled to see.
+   */
+  async partnerDetailFor(userId: string, scope: ClientScope) {
+    await this.visibility.assertVisible(userId, scope);
+
+    const account = await this.ib.findAccount(userId);
+    if (!account) return null;
+
+    const [level, directPartners, earningsMap, referredCount, agencies, products] =
+      await Promise.all([
+        this.levels.findOne(account.level),
+        this.ib.findDirectPartners(userId),
+        this.ib.earningsByPartner([userId]),
+        this.users.countReferredBy(userId),
+        account.agencyId ? this.catalogue.listAgencies() : Promise.resolve([]),
+        account.agencyId ? this.catalogue.listProducts() : Promise.resolve([]),
+      ]);
+
+    const agency = agencies.find((entry) => entry.id === account.agencyId) ?? null;
+    const productName = new Map(products.map((product) => [product.id, product.name]));
+
+    /*
+     * The PARENT as a person, not a uuid. `parentIbUserId` is the only field on
+     * the account that names somebody, and a screen that printed the id would
+     * send an operator to the client list to resolve it by hand.
+     */
+    const parent = account.parentIbUserId
+      ? ((await this.users.findById(account.parentIbUserId)) ?? null)
+      : null;
+
+    return {
+      userId,
+      level: account.level,
+      levelName: level?.name ?? null,
+      /* The rung's own rate, so the profile can say what this partner is paid
+         rather than only which rung they stand on. */
+      rateValue: level?.rateValue ?? null,
+      referralCode: account.referralCode,
+      active: account.active,
+      approvedAt: account.approvedAt,
+      agencyId: account.agencyId,
+      agencyName: agency?.name ?? null,
+      /* Names, not ids — this is read by a person. Empty when they are on no
+         agency, which means their clients are offered the full catalogue. */
+      products: (agency?.productIds ?? [])
+        .map((id) => productName.get(id))
+        .filter((name): name is string => Boolean(name)),
+      parent: parent
+        ? {
+            userId: parent.id,
+            email: parent.email,
+            firstName: parent.firstName ?? null,
+            lastName: parent.lastName ?? null,
+          }
+        : null,
+      directPartners,
+      /* How many CLIENTS they introduced — the other half of a partner's line,
+         and the number the earnings are a consequence of. */
+      referredClientCount: referredCount,
+      earnings: earningsMap.get(userId) ?? { confirmed: '0', pending: '0' },
+    };
+  }
+
+  /**
    * The COMMISSION LEDGER — every accrual, filterable and paged.
    *
    * The read that did not exist. The engine wrote `ib_accruals` on every settled

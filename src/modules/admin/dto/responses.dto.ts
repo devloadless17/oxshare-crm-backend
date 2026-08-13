@@ -1043,3 +1043,70 @@ export class AdminProfileNameDto {
   @ApiProperty({ example: 'Ada Lovelace' })
   name: string;
 }
+
+/**
+ * One row on the client profile's Positions tab.
+ *
+ * Prices carry more decimals than money and both cross as STRINGS — §6.1 for
+ * the money, and for the prices because a JPY pair quotes to 3 places while
+ * most others quote to 5, so there is no single float that round-trips them.
+ */
+export class ClientPositionRowDto {
+  @ApiProperty() id: string;
+  @ApiProperty() ticket: string;
+  @ApiProperty() symbol: string;
+  @ApiProperty({ enum: ['buy', 'sell'] }) side: string;
+  @ApiProperty({ type: 'string', example: '0.2000', description: 'Lots.' }) volume: string;
+  @ApiProperty({ type: 'string' }) openPrice: string;
+  @ApiProperty({ type: 'string', nullable: true, description: 'NULL while open.' })
+  closePrice: string | null;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      'The FLOATING result while `status` is open, and the REALISED one once closed. One ' +
+      'column, two meanings, disambiguated by `status` — label it accordingly.',
+  })
+  profit: string | null;
+  @ApiProperty({ type: 'string', nullable: true }) swap: string | null;
+  @ApiProperty({ type: 'string', nullable: true }) commission: string | null;
+  @ApiProperty() currency: string;
+  @ApiProperty({ enum: ['open', 'closed'] }) status: string;
+  @ApiProperty() openedAt: Date;
+  @ApiProperty({ type: Date, nullable: true }) closedAt: Date | null;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'The account it was traded on. NULL until MT5 issues a login.',
+  })
+  login: string | null;
+}
+
+export class ClientPositionsPageDto {
+  @ApiProperty({ type: [ClientPositionRowDto] }) rows: ClientPositionRowDto[];
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() limit: number;
+}
+
+/** One movement of a client's money, in either direction. */
+export class ClientTransactionRowDto {
+  @ApiProperty() id: string;
+  @ApiProperty({ enum: ['deposit', 'withdrawal', 'transfer'] }) direction: string;
+  @ApiProperty() state: string;
+  @ApiProperty({ type: 'string', example: '250.00000000', description: 'A decimal string (§6.1).' })
+  amount: string;
+  @ApiProperty() currency: string;
+  @ApiProperty({ type: 'string', nullable: true }) methodKey: string | null;
+  @ApiProperty({ type: 'string', nullable: true }) provider: string | null;
+  @ApiProperty({ type: 'string', nullable: true }) providerRef: string | null;
+  @ApiProperty() createdAt: Date;
+  @ApiProperty({ type: Date, nullable: true }) settledAt: Date | null;
+}
+
+export class ClientTransactionsPageDto {
+  @ApiProperty({ type: [ClientTransactionRowDto] }) rows: ClientTransactionRowDto[];
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() limit: number;
+}

@@ -12,6 +12,10 @@ import { CurrenciesService } from '../currencies/currencies.service';
 import { WalletService } from '../wallet/wallet.service';
 import { money, toDecimal } from '../wallet/money';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
+import {
+  NOTIFICATION_DISPATCH,
+  type NotificationDispatchPort,
+} from '../../common/provisioning/notification-dispatch.port';
 
 type Db = ReturnType<typeof getDb>;
 
@@ -55,6 +59,8 @@ export class TransfersService {
     private readonly wallets: WalletService,
     private readonly currencies: CurrenciesService,
     @Inject(DRIZZLE_DB) private readonly db: Db,
+    @Inject(NOTIFICATION_DISPATCH)
+    private readonly notifications: NotificationDispatchPort,
   ) {}
 
   /**
@@ -301,6 +307,47 @@ export class TransfersService {
     });
 
     this.logger.log(`Transfer ${transfer.id} settled (${transfer.direction}).`);
+
+    /*
+     * Tell the client their money arrived.
+     *
+     * A transfer is the one money movement here that is genuinely ASYNCHRONOUS
+     * from the client's point of view: they submit it, the wallet leg moves
+     * immediately, and the account leg lands only when the bridge confirms.
+     * Between those two moments their money is visibly in neither place, which
+     * is the state that generates support tickets. This is the message that
+     * closes it.
+     *
+     * `direction` travels so the copy can say which way it went — "funded" and
+     * "returned to your wallet" are different sentences, and one catalogue entry
+     * that said "transfer completed" for both would be the vaguest possible
+     * answer to "where is my money".
+     *
+     * OUTSIDE the transaction, deliberately, and this one is worth being exact
+     * about: passing `tx` would join the notification to the money movement, and
+     * `notify` in that mode is documented to FAIL THE CALLER on error. A
+     * settlement that has already moved a wallet balance and an MT5 balance must
+     * not roll back because a bell row was too long — the two legs are not
+     * symmetric and the account leg is not ours to undo. Post-commit, the port
+     * never throws.
+     *
+     * Keyed on the transfer id, so the at-least-once callers that reach `settle`
+     * — the bridge webhook, a retried job — ring once. The state guard inside
+     * the transaction already makes a second settle a no-op, but that guard
+     * returns quietly and execution still arrives here.
+     */
+    void this.notifications.notify({
+      recipient: { kind: 'client', id: transfer.userId },
+      kind: 'transfer.completed',
+      params: {
+        transferId: transfer.id,
+        direction: transfer.direction,
+        amount: transfer.amount,
+        currency: transfer.currency,
+      },
+      dedupeKey: `transfer.completed:${transfer.id}`,
+    });
+
     return this.findOne(transfer.id);
   }
 

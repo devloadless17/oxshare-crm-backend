@@ -239,7 +239,15 @@ describe('createInvite', () => {
      * as a client".
      */
     const clientCase = build({ existingClient: { id: 'user-1', email: 'taken@oxshare.com' } });
-    const adminCase = build({ existingAdmin: { id: 'admin-9', email: 'taken@oxshare.com' } });
+    /*
+     * `as Admin`, and the cast is the honest shape. `createInvite` reaches
+     * exactly the address on this stub — the collision is decided on it alone —
+     * so spelling out a full Admin row would state six values the assertion
+     * does not depend on, which reads as though it did.
+     */
+    const adminCase = build({
+      existingAdmin: { id: 'admin-9', email: 'taken@oxshare.com' } as Admin,
+    });
 
     const clientErr = await clientCase.service
       .createInvite('taken@oxshare.com', 'X', MASTER, undefined, ['kyc.review'])

@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, desc, eq, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { tradingAccounts, users, wallets } from '../../database/schema';
+import { positions, tradingAccounts, transactions, users, wallets } from '../../database/schema';
 import {
   clientScopePredicate,
   UNRESTRICTED,
@@ -586,5 +586,131 @@ export class AdminHoldingsService {
       .orderBy(desc(tradingAccounts.createdAt), desc(tradingAccounts.id))
       .limit(limit)
       .offset(offset);
+  }
+
+  // ── One client's trading activity ─────────────────────────────────────────
+
+  /**
+   * A client's POSITIONS, open or closed, newest first.
+   *
+   * ## Read locally, not from the bridge
+   *
+   * The obvious alternative is to resolve the client's logins and ask MT5 for
+   * their open trades. It is the wrong source for a page render, for three
+   * reasons that all bite at once: the bridge is not reachable in development
+   * (`assertBridge` refuses), a profile view would then depend on a third
+   * party's latency and uptime, and the answer would disagree with every other
+   * screen in this console — the partner dashboard, the commission engine and
+   * the accrual ledger all read `positions`.
+   *
+   * That table IS the system's record of a trade. The bridge's job is to keep
+   * it current; a screen's job is to read it. Fetching around it would make the
+   * profile the one place showing a number nothing else can reconcile against.
+   *
+   * ## Scope in the WHERE clause
+   *
+   * `clientScopePredicate` on `positions.user_id`, so an out-of-scope client's
+   * trades never enter the result — the same shape as the wallet and trading
+   * account lists above, and for the same reason: filtering after the fact
+   * leaks the row count.
+   */
+  async listClientPositions(filter: {
+    userId: string;
+    status?: 'open' | 'closed';
+    page?: number;
+    limit?: number;
+    scope?: ClientScope;
+  }) {
+    const page = Math.max(1, filter.page ?? 1);
+    const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
+    const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, positions.userId);
+
+    const where = and(
+      eq(positions.userId, filter.userId),
+      ...(filter.status ? [eq(positions.status, filter.status)] : []),
+      ...(scoped ? [scoped] : []),
+    );
+
+    const rows = await this.db
+      .select({
+        id: positions.id,
+        ticket: positions.ticket,
+        symbol: positions.symbol,
+        side: positions.side,
+        volume: positions.volume,
+        openPrice: positions.openPrice,
+        closePrice: positions.closePrice,
+        /* Floating while open, realised once closed — one column, two meanings,
+           decided by `status`. The screen labels it accordingly. */
+        profit: positions.profit,
+        swap: positions.swap,
+        commission: positions.commission,
+        currency: positions.currency,
+        status: positions.status,
+        openedAt: positions.openedAt,
+        closedAt: positions.closedAt,
+        login: tradingAccounts.login,
+      })
+      .from(positions)
+      .innerJoin(tradingAccounts, eq(tradingAccounts.id, positions.tradingAccountId))
+      .where(where)
+      .orderBy(desc(positions.openedAt), desc(positions.id))
+      .limit(limit)
+      .offset((page - 1) * limit);
+
+    const [{ value: total = 0 } = {}] = await this.db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(positions)
+      .where(where);
+
+    return { rows, total, page, limit };
+  }
+
+  /**
+   * A client's TRANSACTIONS — every movement of their money, newest first.
+   *
+   * Deliberately unfiltered by direction: deposits, withdrawals and transfers
+   * are one history from the operator's side, and splitting them across three
+   * requests would make "what happened to this client's balance" a question
+   * answered by reading three lists in parallel and merging them by eye.
+   */
+  async listClientTransactions(filter: {
+    userId: string;
+    page?: number;
+    limit?: number;
+    scope?: ClientScope;
+  }) {
+    const page = Math.max(1, filter.page ?? 1);
+    const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
+    const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, transactions.userId);
+
+    const where = and(eq(transactions.userId, filter.userId), ...(scoped ? [scoped] : []));
+
+    const rows = await this.db
+      .select({
+        id: transactions.id,
+        direction: transactions.direction,
+        state: transactions.state,
+        /* §6.1 — a decimal STRING all the way to the screen. */
+        amount: transactions.amount,
+        currency: transactions.currency,
+        methodKey: transactions.methodKey,
+        provider: transactions.provider,
+        providerRef: transactions.providerRef,
+        createdAt: transactions.createdAt,
+        settledAt: transactions.settledAt,
+      })
+      .from(transactions)
+      .where(where)
+      .orderBy(desc(transactions.createdAt), desc(transactions.id))
+      .limit(limit)
+      .offset((page - 1) * limit);
+
+    const [{ value: total = 0 } = {}] = await this.db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(transactions)
+      .where(where);
+
+    return { rows, total, page, limit };
   }
 }

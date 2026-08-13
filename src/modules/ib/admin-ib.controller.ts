@@ -35,6 +35,7 @@ import {
   ChangeIbLevelDto,
   IbAccountDto,
   IbApplicationDto,
+  IbPartnerDetailDto,
   IB_APPLICATION_STATUSES,
   ReassignIbParentDto,
   RejectIbApplicationDto,
@@ -351,6 +352,34 @@ export class AdminIbController {
     await streamCsv(res, 'ib-partners', chosen, this.exports.ibPartnerColumns, (offset, limit) =>
       this.exports.ibPartnerBatch(req.admin, offset, limit),
     );
+  }
+
+  /**
+   * ONE partner, in full — what the client profile's partner tab renders.
+   *
+   * Declared AFTER `partners/export` and before `partners/:userId/*`, which is
+   * the same routing constraint the export above records: a literal segment
+   * that follows a parameterised one is unreachable.
+   */
+  @Get('partners/:userId')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'One partner’s standing, their line and their earnings',
+    description:
+      'The partner account joined to its level and agency, the partner above them, the partners ' +
+      'directly beneath them, how many clients they introduced, and their confirmed and pending ' +
+      'earnings. Answers `null` when the client is not a partner — every client profile asks, ' +
+      'and most clients are not one, so that is an ordinary answer rather than a 404.',
+  })
+  @ApiOkResponse({ type: IbPartnerDetailDto })
+  @ScopedToClients('Checks the SUBJECT with assertVisible; out-of-scope 404s like a missing one.')
+  partnerDetail(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('userId', ParseUUIDPipe) userId: string,
+  ) {
+    return this.applications.partnerDetailFor(userId, req.admin.clientScope);
   }
 
   @Patch('partners/:userId/level')

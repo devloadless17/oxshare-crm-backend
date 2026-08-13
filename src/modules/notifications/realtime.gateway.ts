@@ -11,12 +11,21 @@ import { Client } from 'pg';
 import { RealtimePrincipalResolver } from './realtime.principal';
 import type { NotificationRecipient } from '../../store/notifications.store';
 
-/** What the Postgres trigger sends. Deliberately tiny — see migration 0047. */
+/**
+ * What the Postgres trigger sends — see migrations 0047 and 0061.
+ *
+ * `params` is OPTIONAL and that is a contract, not laziness: the trigger drops
+ * it when the payload would exceed `pg_notify`'s 8000-byte limit (an unbounded
+ * rejection reason is the realistic case). A consumer must therefore treat its
+ * absence as normal and fall back to generic copy, which is the same path an
+ * unrecognised `kind` already takes in both frontends.
+ */
 export interface NotificationEvent {
   id: string;
   recipientKind: 'client' | 'admin';
   recipientId: string;
   kind: string;
+  params?: Record<string, unknown>;
 }
 
 /** The one namespace both apps connect to. See the class note on why one. */
@@ -297,10 +306,27 @@ export class NotificationsRealtimeGateway
     this.expiryTimers.set(socket.id, timer);
   }
 
-  /** Emit one event into its recipient's room. */
+  /**
+   * Emit one event into its recipient's room.
+   *
+   * `params` rides along so the browser can TOAST the event on arrival —
+   * "Deposit of $500.00 succeeded" — rather than fetching the row first and
+   * showing the toast visibly later than the thing it announces. It is passed
+   * through only when the trigger sent it (migration 0061); `undefined` is
+   * omitted from the emitted object rather than sent as an explicit null, so a
+   * listener's `params ?? fallback` reads correctly.
+   *
+   * The room is the permission boundary: it holds exactly the sockets of the
+   * principal this row names, authenticated at the handshake. So `params`
+   * reaches the one reader `GET /notifications` would have served it to.
+   */
   publish(event: NotificationEvent): void {
     const room = roomFor({ kind: event.recipientKind, id: event.recipientId });
-    this.server?.to(room).emit(NOTIFICATION_EVENT, { id: event.id, kind: event.kind });
+    this.server?.to(room).emit(NOTIFICATION_EVENT, {
+      id: event.id,
+      kind: event.kind,
+      ...(event.params ? { params: event.params } : {}),
+    });
   }
 
   /** How many sockets a principal currently holds. For tests and diagnostics. */

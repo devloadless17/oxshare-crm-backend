@@ -1,4 +1,14 @@
-import { aliasedTable, and, count, desc, eq, inArray, sql, type SQLWrapper } from 'drizzle-orm';
+import {
+  aliasedTable,
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  sql,
+  type SQLWrapper,
+} from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -280,6 +290,44 @@ export class IbStore {
       .from(ibAccounts)
       .where(eq(ibAccounts.parentIbUserId, parentUserId));
     return value;
+  }
+
+  /**
+   * The partners placed DIRECTLY under this one, with the person and the rung.
+   *
+   * `countDirectPartners` above answers "how many" for the placement rule; this
+   * answers "who" for the profile screen, and they are deliberately separate —
+   * the count runs on every approval and has no business fetching rows.
+   *
+   * Not paged. A partner's direct line is a handful of people by construction:
+   * the ladder is two rungs deep, so anyone with sub-partners has them at the
+   * only level below their own. If that stops being true the screen will want
+   * paging, and this signature is where it goes.
+   *
+   * UNSCOPED, and the caller is where scope is applied. The parent has already
+   * been checked visible by the time this runs, and filtering the children by
+   * the reader's own tag scope would silently under-report a partner's line —
+   * "you have two sub-partners" when they have five is worse than the panel
+   * saying it is scoped.
+   */
+  async findDirectPartners(parentUserId: string) {
+    return this.db
+      .select({
+        userId: ibAccounts.userId,
+        level: ibAccounts.level,
+        levelName: ibLevels.name,
+        referralCode: ibAccounts.referralCode,
+        active: ibAccounts.active,
+        approvedAt: ibAccounts.approvedAt,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+      })
+      .from(ibAccounts)
+      .innerJoin(users, eq(users.id, ibAccounts.userId))
+      .innerJoin(ibLevels, eq(ibLevels.level, ibAccounts.level))
+      .where(eq(ibAccounts.parentIbUserId, parentUserId))
+      .orderBy(asc(ibAccounts.level), desc(ibAccounts.approvedAt));
   }
 
   /**

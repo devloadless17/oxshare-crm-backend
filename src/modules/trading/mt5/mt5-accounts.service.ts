@@ -14,6 +14,10 @@ import { NotFoundError, ValidationError } from '../../../common/errors/domain-er
 import { AppSettingsStore } from '../../../store/app-settings.store';
 import { ConfigService } from '@nestjs/config';
 import { tradingTermsFrom } from '../../../common/trading-terms';
+import {
+  NOTIFICATION_DISPATCH,
+  type NotificationDispatchPort,
+} from '../../../common/provisioning/notification-dispatch.port';
 
 /**
  * How many accounts one live-balance request may cover.
@@ -76,6 +80,14 @@ export class Mt5AccountsService {
     private readonly email: EmailService,
     private readonly settings: AppSettingsStore,
     private readonly config: ConfigService,
+    /*
+     * The TOKEN from `common/`, not `NotificationsService` — the port recipe
+     * every domain module here follows, and `NotificationsModule` is `@Global`
+     * so this needs no import to resolve. Required rather than optional: unlike
+     * `AuthService`, nothing hand-constructs this service.
+     */
+    @Inject(NOTIFICATION_DISPATCH)
+    private readonly notifications: NotificationDispatchPort,
   ) {}
 
   /**
@@ -438,6 +450,60 @@ export class Mt5AccountsService {
       // and the mail correctly omits the line rather than promising money that
       // is not there.
       snapshot?.balance ?? '0',
+    );
+
+    /*
+     * Both sides of the event, from the one place that knows it happened.
+     *
+     * The CLIENT's bell matters here because the credentials went to their
+     * mailbox and nothing on screen said so: this call returns
+     * `credentialsSentTo` and the portal renders it once, so a client who
+     * navigated away — or whose mail is slow — had no in-app record that the
+     * account exists. No password or login secret travels in `params`; the
+     * login number is public-facing (it is on every statement) and the
+     * credentials remain email-only, which is the whole point of the note above.
+     *
+     * The ADMIN kind is `opened`, not `requested`, because that is what
+     * occurred. This path is self-service and completes immediately — there is
+     * no approval queue and nobody has to act — so naming it "requested" would
+     * put a work item in an operator's bell that they cannot action and cannot
+     * clear. It is informational: dealing desks want to know when live accounts
+     * appear on their groups.
+     *
+     * `trading.view` holds it, matching the screen it links to, and the fan-out
+     * IS scope-filtered on the subject (unlike registration): by the time a
+     * client opens an account they have been through intake, so a territoried
+     * admin who cannot see the client should not be told about their account.
+     *
+     * Post-write and never-throws, and `void` rather than awaited: the account
+     * is already open at MT5 and the row already committed, so no failure here
+     * may propagate into a response that would suggest otherwise.
+     */
+    void this.notifications.notify({
+      recipient: { kind: 'client', id: client.id },
+      kind: 'trading_account.opened',
+      params: {
+        login: String(created.login),
+        environment: input.environment,
+        currency: created.currency,
+        leverage: created.leverage,
+      },
+      dedupeKey: `trading_account.opened:${row.id}`,
+    });
+
+    void this.notifications.notifyAdminsWithPermission(
+      'trading.view',
+      {
+        kind: 'admin.trading_account.opened',
+        params: {
+          userId: client.id,
+          login: String(created.login),
+          environment: input.environment,
+          currency: created.currency,
+        },
+        dedupeKey: `admin.trading_account.opened:${row.id}`,
+      },
+      { subjectClientId: client.id },
     );
 
     return {

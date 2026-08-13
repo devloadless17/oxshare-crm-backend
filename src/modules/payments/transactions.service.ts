@@ -1239,6 +1239,47 @@ export class TransactionsService {
       }
     }
 
+    /*
+     * Ring the bells of whoever will have to ACTION this — manual methods only.
+     *
+     * A manual declaration ("I sent a bank transfer, reference X") settles by an
+     * admin checking the bank and crediting the wallet: there is no deposit
+     * approval route, so `POST /admin/wallets/credit` is the action and
+     * `wallets.credit` is the permission that can take it. Until somebody looks,
+     * the client's money is sitting in a real bank account against a row nobody
+     * has been told about — which is exactly the case that used to be found only
+     * when the client chased it.
+     *
+     * A GATEWAY deposit rings nothing, deliberately. It settles from the signed
+     * webhook (or the poll backstop) with no human in the path, so a bell would
+     * announce a queue item that does not exist and train operators to ignore
+     * the ones that do. The client still hears about it — `deposit.succeeded`
+     * fires on settlement.
+     *
+     * Post-write and never-throws, like the withdrawal fan-out above: the row is
+     * already committed, and the polled queue badge stays the durable signal.
+     * The dedupe key is the transaction id, so a retried request that converged
+     * on one row also converges on one bell.
+     */
+    if (!isGateway) {
+      void this.notifications.notifyAdminsWithPermission(
+        'wallets.credit',
+        {
+          kind: 'admin.deposit.submitted',
+          params: {
+            transactionId: tx.id,
+            userId: tx.userId,
+            amount: tx.amount,
+            currency: tx.currency,
+            method: paymentMethod.key,
+            reference,
+          },
+          dedupeKey: `admin.deposit.submitted:${tx.id}`,
+        },
+        { subjectClientId: tx.userId },
+      );
+    }
+
     return {
       id: tx.id,
       reference,

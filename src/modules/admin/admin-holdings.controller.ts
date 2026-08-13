@@ -6,7 +6,7 @@
 // @ApiTags('admin') is repeated here so Swagger groups them as one tag and the
 // generated types.gen.ts stays one coherent surface.
 
-import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, ParseUUIDPipe, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { AdminHoldingsService } from './admin-holdings.service';
@@ -14,7 +14,12 @@ import { TRADING_ACCOUNT_SORT_COLUMNS, WALLET_SORT_COLUMNS } from './admin-holdi
 import { AdminExportService } from './admin-export.service';
 import { AdminAuditService } from './admin-audit.service';
 import { exportFormat, streamCsv } from '../../common/export/export-response';
-import { TradingAccountListResponseDto, WalletListResponseDto } from './dto/responses.dto';
+import {
+  ClientPositionsPageDto,
+  ClientTransactionsPageDto,
+  TradingAccountListResponseDto,
+  WalletListResponseDto,
+} from './dto/responses.dto';
 import {
   PermissionsGuard,
   RequirePermissions,
@@ -321,5 +326,90 @@ export class AdminHoldingsController {
       },
       req.admin,
     );
+  }
+
+  // ── One client's trading activity ─────────────────────────────────────────
+
+  /**
+   * A client's positions — the profile's Positions tab.
+   *
+   * Read from the `positions` TABLE rather than from the MT5 bridge, and the
+   * service records why: the bridge is unreachable in development, a profile
+   * render would inherit a third party's latency, and every other screen in
+   * this console — the partner dashboard, the commission engine, the accrual
+   * ledger — reads this same table. Asking elsewhere would make the profile the
+   * one place showing a figure nothing else can reconcile against.
+   */
+  @Get('clients/:id/positions')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('trading.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'One client’s positions, open or closed',
+    description:
+      'Newest first, joined to the account they were traded on. `profit` is the FLOATING result ' +
+      'while a position is open and the REALISED one once it has closed — one column, ' +
+      'disambiguated by `status`. Prices and money are strings (§6.1).',
+  })
+  @ApiOkResponse({ type: ClientPositionsPageDto })
+  @ApiQuery({ name: 'status', required: false, enum: ['open', 'closed'] })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ScopedToClients(
+    'AdminHoldingsService.listClientPositions applies clientScopePredicate to positions.user_id, in the WHERE clause.',
+  )
+  listClientPositions(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.holdings.listClientPositions({
+      userId: id,
+      // Anything that is not one of the two known values is treated as "no
+      // filter" rather than refused: a stray query string should not 400 a
+      // read-only screen.
+      status: status === 'open' || status === 'closed' ? status : undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+      scope: req.admin.clientScope,
+    });
+  }
+
+  /**
+   * A client's transactions — every movement of their money, newest first.
+   *
+   * All directions in ONE list. Deposits, withdrawals and transfers are a
+   * single history from the operator's side, and splitting them would make
+   * "what happened to this balance" a question answered by merging three lists
+   * by eye.
+   */
+  @Get('clients/:id/transactions')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('wallets.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'One client’s money movements, all directions',
+    description: '`amount` is a decimal string (§6.1), never a number.',
+  })
+  @ApiOkResponse({ type: ClientTransactionsPageDto })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ScopedToClients(
+    'AdminHoldingsService.listClientTransactions applies clientScopePredicate to transactions.user_id, in the WHERE clause.',
+  )
+  listClientTransactions(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.holdings.listClientTransactions({
+      userId: id,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+      scope: req.admin.clientScope,
+    });
   }
 }
