@@ -49,6 +49,8 @@ let theirsId: string;
 let liveAccountId: string;
 let demoAccountId: string;
 let noLoginAccountId: string;
+/** An account owned by the OUT-OF-SCOPE client — the scope regression target. */
+let theirAccountId: string;
 
 interface AccountRow {
   id: string;
@@ -102,7 +104,13 @@ beforeAll(async () => {
      * fixture as `admin-wallets.spec.ts`: without it every scope assertion
      * below was refused before any scoping happened.
      */
-    .values({ name: 'TA Scoped', permissions: ['clients.view', 'trading.view'] })
+    .values({
+      name: 'TA Scoped',
+      // The write keys too, so the scope regression below exercises create /
+      // fund / live-read for a client OUTSIDE the territory — the leak the
+      // 13 Aug scoped walk found (routes declared scoped, enforced nothing).
+      permissions: ['clients.view', 'trading.view', 'trading.create', 'trading.deposit'],
+    })
     .returning();
   const [scopedAdmin] = await db
     .insert(admins)
@@ -220,14 +228,18 @@ beforeAll(async () => {
     .returning();
   noLoginAccountId = noLogin.id;
 
-  await db.insert(tradingAccounts).values({
-    userId: theirsId,
-    login: '00055555',
-    environment: 'live',
-    currency: 'USD',
-    balance: '42.00000000',
-    status: 'active',
-  });
+  const [theirAccount] = await db
+    .insert(tradingAccounts)
+    .values({
+      userId: theirsId,
+      login: '00055555',
+      environment: 'live',
+      currency: 'USD',
+      balance: '42.00000000',
+      status: 'active',
+    })
+    .returning();
+  theirAccountId = theirAccount.id;
 }, 180_000);
 
 afterAll(async () => {
@@ -506,5 +518,71 @@ describe('the CSV export', () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.get('/v1/admin/trading-accounts/export?environment=paper');
     expect(res.status).toBe(400);
+  });
+});
+
+describe('scope: the write and live routes refuse an out-of-scope client (13 Aug walk)', () => {
+  /*
+   * These four routes DECLARED `@ScopedToClients` and enforced nothing — a
+   * scoped desk could open, fund and read live balances on any client's MT5
+   * account, and `createAccount` returned the client's email in
+   * `credentialsSentTo`. The fix scopes on the OWNING client in the WHERE
+   * clause, resolved BEFORE the bridge, so an out-of-scope target is a 404
+   * even with MT5 unconfigured (which it is here). 404, never 403 — a 403
+   * would confirm the account is real (D-45).
+   *
+   * The bridge is unconfigured in tests, so an IN-scope call would proceed to
+   * `assertBridge()` and fail there; that is why these assert the OUT-of-scope
+   * refusal (404, before the bridge) rather than an in-scope success. The
+   * in-scope path is covered by the list/read tests above and the live walk.
+   */
+  it('create: 404 for a client outside the territory, not a bridge error', async () => {
+    const session = await actingAs(ctx, 'admin', SCOPED);
+    const res = await session.post('/v1/admin/trading-accounts', {
+      userId: theirsId,
+      group: 'real\\Standard',
+      environment: 'demo',
+    });
+    expect(res.status, `create answered ${res.status}`).toBe(404);
+    expect(res.status).not.toBe(403);
+    // The email-disclosure oracle is closed: no client contact leaks in the body.
+    expect(res.text).not.toContain('ta-theirs@oxshare-e2e.test');
+  });
+
+  it('fund: 404 on an out-of-scope account, before the bridge is consulted', async () => {
+    const session = await actingAs(ctx, 'admin', SCOPED);
+    const res = await session.post(`/v1/admin/trading-accounts/${theirAccountId}/balance`, {
+      amount: '10.00000000',
+      direction: 'deposit',
+      comment: 'scope probe',
+    });
+    expect(res.status, `fund answered ${res.status}`).toBe(404);
+    expect(res.status).not.toBe(403);
+  });
+
+  it('live snapshot: 404 on an out-of-scope account', async () => {
+    const session = await actingAs(ctx, 'admin', SCOPED);
+    const res = await session.get(`/v1/admin/trading-accounts/${theirAccountId}/live`);
+    expect(res.status, `live answered ${res.status}`).toBe(404);
+    expect(res.status).not.toBe(403);
+  });
+
+  it('live balances: an out-of-scope account id is silently dropped, never returned', async () => {
+    // Batch route: out-of-scope ids fall out of the result rather than 404 the
+    // whole call. The scope predicate is in the WHERE; with the bridge down it
+    // returns {} regardless, and the key point is the id is NOT present.
+    const session = await actingAs(ctx, 'admin', SCOPED);
+    const res = await session.post('/v1/admin/trading-accounts/live-balances', {
+      accountIds: [theirAccountId],
+    });
+    expect(res.status).toBe(200);
+    expect(body(res)).not.toHaveProperty(theirAccountId);
+  });
+
+  it('a MASTER admin still reaches the same out-of-scope account, proving it exists', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`/v1/admin/trading-accounts?userId=${theirsId}&limit=10`);
+    expect(res.status).toBe(200);
+    expect(body(res).items.length).toBeGreaterThanOrEqual(1);
   });
 });

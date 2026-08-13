@@ -24,7 +24,7 @@
 -- GUARDED on the column still existing, so this file is idempotent like the
 -- `DROP … IF EXISTS` statements below it. A bare UPDATE fails with
 -- `column "payout_model" does not exist` the second time it runs — which is not
--- hypothetical: this migration was renumbered from 0055 to 0059 to land after
+-- hypothetical: this migration was renumbered (0055 → 0059 → 0060) to land after
 -- upstream's intake work, and a fresh `when` makes drizzle re-apply it to any
 -- database that already had the original.
 DO $$

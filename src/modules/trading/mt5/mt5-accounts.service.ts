@@ -8,6 +8,7 @@ import { Mt5BridgeClient } from './mt5-bridge.client';
 import { AdminAuditService } from '../../admin/admin-audit.service';
 import { EmailService } from '../../email/email.service';
 import { assertActorCan } from '../../../common/security/actor';
+import { clientScopePredicate } from '../../../common/security/client-scope';
 import type { AuthenticatedAdmin } from '../../admin/guards/admin.guard';
 import { NotFoundError, ValidationError } from '../../../common/errors/domain-errors';
 import { AppSettingsStore } from '../../../store/app-settings.store';
@@ -140,8 +141,18 @@ export class Mt5AccountsService {
     actor: AuthenticatedAdmin,
   ) {
     assertActorCan(actor, 'trading.create', 'open a trading account');
-    this.assertBridge();
 
+    /*
+     * Visibility BEFORE the bridge. The territory predicate joins the WHERE, so
+     * a scoped admin opening an account for a client OUTSIDE their tags gets no
+     * row and the same 404 as a client that does not exist (D-45: never
+     * fetch-then-filter, never a distinguishable 403 that would confirm the
+     * client banks here). This was MISSING — the route declared itself scoped
+     * and enforced nothing, so a scoped desk with `trading.create` could open a
+     * real live MT5 account for any client and get their email back in
+     * `credentialsSentTo`. Resolved before `assertBridge()` because "not your
+     * client" is true whether or not MT5 is reachable.
+     */
     const [client] = await this.db
       .select({
         id: users.id,
@@ -152,10 +163,11 @@ export class Mt5AccountsService {
         phone: users.phone,
       })
       .from(users)
-      .where(eq(users.id, input.userId))
+      .where(and(eq(users.id, input.userId), clientScopePredicate(actor.clientScope, users.id)))
       .limit(1);
 
     if (!client) throw new NotFoundError('Client not found.');
+    this.assertBridge();
 
     const created = await this.bridge.createAccount({
       group: input.group,
@@ -468,15 +480,24 @@ export class Mt5AccountsService {
       input.direction === 'deposit' ? 'trading.deposit' : 'trading.withdraw',
       `${input.direction} on a trading account`,
     );
-    this.assertBridge();
 
+    // Scope on the OWNING client, BEFORE the bridge: a scoped admin cannot move
+    // money on an account whose client is outside their territory — the
+    // predicate joins the WHERE, so an out-of-scope account is a 404, never a
+    // 403 (D-45), and the refusal does not depend on MT5 being reachable.
     const [account] = await this.db
       .select()
       .from(tradingAccounts)
-      .where(eq(tradingAccounts.id, input.accountId))
+      .where(
+        and(
+          eq(tradingAccounts.id, input.accountId),
+          clientScopePredicate(actor.clientScope, tradingAccounts.userId),
+        ),
+      )
       .limit(1);
 
     if (!account) throw new NotFoundError('Trading account not found.');
+    this.assertBridge();
     if (!account.login) {
       throw new ValidationError('That account has no MT5 login, so it cannot be funded.');
     }
@@ -596,10 +617,19 @@ export class Mt5AccountsService {
     // cannot reach MT5 right now".
     if (!this.bridge.isConfigured) return {};
 
+    // Scope on the owning client: out-of-scope account ids simply do not come
+    // back, the same as ids that name no account — a scoped desk reads live
+    // balances only for its own territory's accounts, even though the ids
+    // arrive in the request body rather than from a list it already filtered.
     const rows = await this.db
       .select({ id: tradingAccounts.id, login: tradingAccounts.login })
       .from(tradingAccounts)
-      .where(inArray(tradingAccounts.id, accountIds));
+      .where(
+        and(
+          inArray(tradingAccounts.id, accountIds),
+          clientScopePredicate(actor.clientScope, tradingAccounts.userId),
+        ),
+      );
 
     const balances: Record<string, string> = {};
 
@@ -636,15 +666,21 @@ export class Mt5AccountsService {
    */
   async liveSnapshot(accountId: string, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'trading.view', 'read a live MT5 balance');
-    this.assertBridge();
 
+    // Scope before the bridge: out-of-scope is a 404 whether or not MT5 answers.
     const [account] = await this.db
       .select()
       .from(tradingAccounts)
-      .where(and(eq(tradingAccounts.id, accountId)))
+      .where(
+        and(
+          eq(tradingAccounts.id, accountId),
+          clientScopePredicate(actor.clientScope, tradingAccounts.userId),
+        ),
+      )
       .limit(1);
 
     if (!account) throw new NotFoundError('Trading account not found.');
+    this.assertBridge();
     if (!account.login) return null;
 
     return await this.bridge.getAccount(account.login);

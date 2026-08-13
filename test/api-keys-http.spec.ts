@@ -9,7 +9,15 @@ import {
   type HttpTestContext,
 } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, apiKeys, roles } from '../src/database/schema';
+import {
+  adminClientTagScopes,
+  admins,
+  apiKeys,
+  clientTagAssignments,
+  clientTags,
+  roles,
+  users,
+} from '../src/database/schema';
 import { hashApiKey } from '../src/common/security/api-key';
 
 /**
@@ -30,6 +38,10 @@ import { hashApiKey } from '../src/common/security/api-key';
 
 const MASTER = { email: 'apikey-master@oxshare.com', password: 'admin-password-123' };
 const SUB = { email: 'apikey-sub@oxshare.com', password: 'admin-password-123' };
+const SCOPED = { email: 'apikey-scoped@oxshare.com', password: 'admin-password-123' };
+
+let inScopeClientId: string;
+let outScopeClientId: string;
 
 let ctx: HttpTestContext;
 
@@ -61,24 +73,79 @@ beforeAll(async () => {
     })
     .returning();
 
-  await ctx.db.db.insert(admins).values([
-    {
-      email: MASTER.email,
-      passwordHash: hash,
-      name: 'API Key Master',
-      role: 'master_admin',
-      roleId: masterRole.id,
-      permissions: ALL_PERMISSIONS,
-    },
-    {
-      email: SUB.email,
-      passwordHash: hash,
-      name: 'API Key Sub',
-      role: 'sub_admin',
-      roleId: limitedRole.id,
-      permissions: ['clients.view'],
-    },
-  ]);
+  // A tag-scoped admin who may mint keys — the escalation case (#7). Holds
+  // clients.view + apikeys.create, and is confined to one tag.
+  const [scopedRole] = await ctx.db.db
+    .insert(roles)
+    .values({
+      name: 'API Key Scoped',
+      description: 'Reads clients, mints keys, confined to a territory.',
+      permissions: ['clients.view', 'apikeys.create'],
+      isSystem: false,
+    })
+    .returning();
+
+  const [, , scopedAdmin] = await ctx.db.db
+    .insert(admins)
+    .values([
+      {
+        email: MASTER.email,
+        passwordHash: hash,
+        name: 'API Key Master',
+        role: 'master_admin',
+        roleId: masterRole.id,
+        permissions: ALL_PERMISSIONS,
+      },
+      {
+        email: SUB.email,
+        passwordHash: hash,
+        name: 'API Key Sub',
+        role: 'sub_admin',
+        roleId: limitedRole.id,
+        permissions: ['clients.view'],
+      },
+      {
+        email: SCOPED.email,
+        passwordHash: hash,
+        name: 'API Key Scoped',
+        role: 'sub_admin',
+        roleId: scopedRole.id,
+        permissions: ['clients.view', 'apikeys.create'],
+        seesUntriaged: false,
+      },
+    ])
+    .returning();
+
+  const [tag] = await ctx.db.db
+    .insert(clientTags)
+    .values({ slug: 'apikey-territory', label: 'API Key Territory' })
+    .returning();
+  await ctx.db.db
+    .insert(adminClientTagScopes)
+    .values({ adminId: scopedAdmin.id, tagId: tag.id, createdBy: scopedAdmin.id });
+
+  const [mine] = await ctx.db.db
+    .insert(users)
+    .values({
+      email: 'apikey-mine@oxshare-e2e.test',
+      passwordHash: 'x',
+      firstName: 'InScope',
+      lastName: 'Client',
+    })
+    .returning();
+  await ctx.db.db.insert(clientTagAssignments).values({ userId: mine.id, tagId: tag.id });
+  inScopeClientId = mine.id;
+
+  const [theirs] = await ctx.db.db
+    .insert(users)
+    .values({
+      email: 'apikey-theirs@oxshare-e2e.test',
+      passwordHash: 'x',
+      firstName: 'OutOfScope',
+      lastName: 'Client',
+    })
+    .returning();
+  outScopeClientId = theirs.id;
 }, 180_000);
 
 afterAll(async () => {
@@ -196,6 +263,57 @@ describe('authenticating with a key', () => {
     const { plaintext } = await issueKey({ name: 'Narrow', permissions: ['clients.view'] });
 
     await anonymous(ctx).get('/v1/admin/audit-log').set('X-API-Key', plaintext).expect(403);
+  });
+
+  it('INHERITS the creator’s territory — a scoped admin cannot mint an unrestricted key (#7)', async () => {
+    /*
+     * The escalation the 13 Aug scoped walk found: a key authenticated as
+     * unrestricted regardless of who created it, so a tag-scoped admin holding
+     * `apikeys.create` could mint a key that read the whole client base. The
+     * fix snapshots the creator's territory onto the key (migration 0059). The
+     * key here is minted by an admin confined to one tag, so it must see the
+     * in-scope client and 404 the out-of-scope one — the same 404 the creator
+     * themselves would get, never a 403.
+     */
+    const scoped = await actingAs(ctx, 'admin', SCOPED);
+    const issued = await scoped
+      .post('/v1/admin/api-keys', { name: 'Scoped reader', permissions: ['clients.view'] })
+      .expect(201);
+    const key = issued.body.plaintext as string;
+
+    const mine = await anonymous(ctx)
+      .get(`/v1/admin/clients/${inScopeClientId}`)
+      .set('X-API-Key', key)
+      .expect(200);
+    expect(mine.body.email).toBe('apikey-mine@oxshare-e2e.test');
+
+    // The whole point: the out-of-scope client is a 404 to the key, exactly as
+    // to its scoped creator — the territory did not launder away through it.
+    await anonymous(ctx)
+      .get(`/v1/admin/clients/${outScopeClientId}`)
+      .set('X-API-Key', key)
+      .expect(404);
+
+    // And the list is narrowed, not just the by-id route.
+    const list = await anonymous(ctx)
+      .get('/v1/admin/clients?q=oxshare-e2e.test&limit=100')
+      .set('X-API-Key', key)
+      .expect(200);
+    const emails = (list.body.items as { email: string }[]).map((c) => c.email);
+    expect(emails).toContain('apikey-mine@oxshare-e2e.test');
+    expect(emails).not.toContain('apikey-theirs@oxshare-e2e.test');
+  });
+
+  it('a MASTER-minted key stays unrestricted — the reporting-job case is unchanged', async () => {
+    const { plaintext } = await issueKey({ name: 'Reporting', permissions: ['clients.view'] });
+    const list = await anonymous(ctx)
+      .get('/v1/admin/clients?q=oxshare-e2e.test&limit=100')
+      .set('X-API-Key', plaintext)
+      .expect(200);
+    const emails = (list.body.items as { email: string }[]).map((c) => c.email);
+    // Sees BOTH — no territory confines a key an unrestricted admin minted.
+    expect(emails).toContain('apikey-mine@oxshare-e2e.test');
+    expect(emails).toContain('apikey-theirs@oxshare-e2e.test');
   });
 
   it('refuses a made-up key', async () => {

@@ -97,12 +97,28 @@ export class ApiKeysService {
 
     const plaintext = `${API_KEY_TOKEN_PREFIX}${randomBytes(API_KEY_SECRET_BYTES).toString('base64url')}`;
 
+    /*
+     * Snapshot the creator's TERRITORY onto the key (D-45 / #7). A key
+     * authenticates with this scope, not with unrestricted sight, so a
+     * tag-scoped admin cannot mint a key that escapes their territory. Empty
+     * tags means unrestricted, so an unrestricted admin's key still sees the
+     * whole book — the reporting-job case. Snapshot, not a live join: the key
+     * keeps its territory when the creator's changes and after the creator is
+     * deleted (`createdBy` is `set null`), mirroring `admin_invites`.
+     */
+    const scopedTagIds = actor.clientScope.unrestricted ? null : [...actor.clientScope.tagIds];
+    const seesUntriaged = actor.clientScope.unrestricted
+      ? true
+      : (actor.clientScope.includesUntriaged ?? false);
+
     const row = await this.store.create({
       name,
       secretHash: hashApiKey(plaintext),
       prefix: plaintext.slice(0, API_KEY_STORED_PREFIX_LENGTH),
       permissions: input.permissions,
       createdBy: actor.id,
+      scopedTagIds,
+      seesUntriaged,
       expiresAt: input.expiresAt,
     });
 

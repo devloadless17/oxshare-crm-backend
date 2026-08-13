@@ -1,16 +1,4 @@
-import {
-  and,
-  asc,
-  count,
-  desc,
-  eq,
-  inArray,
-  not,
-  or,
-  sql,
-  SQL,
-  type SQLWrapper,
-} from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNull, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
 import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
 import { buildCursorPage, pageSize, type CursorPosition } from '../common/pagination';
 import type { SortOrder } from '../common/sorting';
@@ -21,13 +9,51 @@ import { auditLog } from '../database/schema';
 import { currentClientIp } from '../common/logging/request-context';
 
 /**
- * Subject types whose `subjectId` is a CLIENT's user id — the rows that carry
- * client identity into the trail and therefore follow the reader's scope:
- * `'user'` (tag assign/unassign, status changes) and `'kyc_submission'` (the
- * queue is keyed on the client's own id). `'kyc_document'` is deliberately NOT
- * here: its subject is the file's random uuid, which names no one.
+ * Subject types whose `subjectId` is itself a CLIENT's user id — the rows that
+ * name a client in the SUBJECT and therefore follow the reader's scope:
+ * `'user'` (tag assign/unassign, status changes), `'kyc_submission'` (keyed on
+ * the client's own id), and `'ib_account'` (a partner IS a user, so
+ * ib.approve / level_change / parent_change / suspend all carry the client's
+ * id as the subject). `'kyc_document'` is deliberately NOT here: its subject is
+ * the file's random uuid, which names no one.
+ *
+ * ⚠️ This is only HALF of "which rows name a client". Money and trading rows
+ * carry the client's id in `details`, not the subject — see
+ * `auditRowClientId()`. Adding a type here without teaching that function is
+ * how the D-54 fix leaked money-audit rows to scoped readers (13 Aug walk).
  */
-export const CLIENT_SUBJECT_TYPES = ['user', 'kyc_submission'] as const;
+export const CLIENT_SUBJECT_TYPES = ['user', 'kyc_submission', 'ib_account'] as const;
+
+/** A Postgres regex literal matching the canonical uuid shape. */
+const UUID_SHAPE = sql`'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`;
+
+/**
+ * The CLIENT this audit row concerns, wherever the id lives — or NULL when it
+ * concerns no client (a role edit, a settings change, an admin action).
+ *
+ * The trail is scoped on THIS expression, not on `subjectId` alone, because a
+ * row names its client in one of three places:
+ *   - the SUBJECT, for `CLIENT_SUBJECT_TYPES` (uuid-shape-guarded);
+ *   - `details.clientId`, for `trading_account` rows (the subject is the MT5
+ *     account uuid, which is not a client id);
+ *   - `details.userId`, for `transaction` and `wallet` rows (the subject is the
+ *     transaction / wallet uuid).
+ * Every branch guards the uuid shape, so a malformed value yields NULL and the
+ * row FAILS CLOSED (hidden from a scoped reader) rather than aborting the query
+ * — the recoverable way to be wrong about the record that must not leak.
+ */
+function auditRowClientId(): SQL {
+  return sql`(CASE
+    WHEN ${auditLog.subjectType} IN ('user', 'kyc_submission', 'ib_account')
+         AND ${auditLog.subjectId} ~* ${UUID_SHAPE} THEN ${auditLog.subjectId}::uuid
+    WHEN ${auditLog.subjectType} = 'trading_account'
+         AND ${auditLog.details}->>'clientId' ~* ${UUID_SHAPE}
+         THEN (${auditLog.details}->>'clientId')::uuid
+    WHEN ${auditLog.subjectType} IN ('transaction', 'wallet')
+         AND ${auditLog.details}->>'userId' ~* ${UUID_SHAPE}
+         THEN (${auditLog.details}->>'userId')::uuid
+  END)`;
+}
 
 // D-21: admin action log — actor, action, subject, details, timestamp.
 // First Postgres-backed store: entries survive backend restarts. Append-only
@@ -160,22 +186,20 @@ export class AuditLogStore {
     if (filter.actorId) conditions.push(eq(auditLog.actorId, filter.actorId));
     if (filter.scope && !filter.scope.unrestricted) {
       /*
-       * Keep a row if its subject is NOT a client, or if that client is inside
-       * the reader's territory. The predicate lives in the WHERE clause, never
-       * fetch-then-filter — the D-45 rule, for the D-45 reason.
-       *
-       * `subjectId` is varchar and the scope join needs a uuid, so the cast is
-       * wrapped in a CASE on a uuid shape: CASE is evaluation-ordered, which a
-       * bare `AND` is not — Postgres may reorder — and a single malformed row
-       * would otherwise abort every scoped read of the log. A non-uuid subject
-       * on a client-subject row FAILS CLOSED (hidden), which is the recoverable
-       * way to be wrong about the one record that must not leak.
+       * Keep a row if it names no client, or if that client is inside the
+       * reader's territory. The predicate lives in the WHERE clause, never
+       * fetch-then-filter — the D-45 rule, for the D-45 reason — and it reads
+       * the client id from wherever the row keeps it (`auditRowClientId`), so
+       * money and trading rows scope the same as tag and KYC rows. The intake
+       * grant is honoured too: a row about an untagged client is visible to a
+       * reader who holds `sees_untriaged` (`clientScopePredicate` adds that
+       * branch), so completing a triage does not blank its own audit trail.
        */
-      const inScope = clientScopePredicate(
-        filter.scope,
-        sql`(CASE WHEN ${auditLog.subjectId} ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN ${auditLog.subjectId}::uuid END)`,
-      );
-      const scoped = or(not(inArray(auditLog.subjectType, [...CLIENT_SUBJECT_TYPES])), inScope);
+      const rowClientId = auditRowClientId();
+      const inScope = clientScopePredicate(filter.scope, rowClientId);
+      // `inScope` is defined for a restricted scope, but keep the guard so a
+      // future unrestricted-with-tags shape cannot silently drop the NULL branch.
+      const scoped = inScope ? or(isNull(rowClientId), inScope) : undefined;
       if (scoped) conditions.push(scoped);
     }
     /*

@@ -44,7 +44,16 @@ export class AdminClientScopesStore {
    * `seesUntriaged` comes from the ADMIN row the caller already holds (D-60) —
    * this store owns only the territory table.
    */
-  async scopeFor(adminId: string, seesUntriaged = false): Promise<ClientScope> {
+  /*
+   * `seesUntriaged` is REQUIRED — there is deliberately no default. It used to
+   * default to `false`, and two callers (the notification fan-out and KYC
+   * document delivery) took that default rather than reading the admin row they
+   * already held, so an intake-granted admin silently lost sight of untagged
+   * clients in exactly those two paths while the guard saw them correctly. A
+   * default that is safe in one caller and wrong in another is the footgun; the
+   * caller holds the admin row, so the caller passes the flag. D-60.
+   */
+  async scopeFor(adminId: string, seesUntriaged: boolean): Promise<ClientScope> {
     return scopeOf(await this.tagIdsFor(adminId), seesUntriaged);
   }
 

@@ -559,7 +559,10 @@ export class UploadsController {
    * real, which is the enumeration this route is most exposed to.
    */
   private async assertDocumentInScope(admin: Admin, fileName: string): Promise<void> {
-    const scope = await this.scopes.scopeFor(admin.id);
+    // The admin's own intake grant (D-60), not a default — an intake-granted
+    // reviewer must reach an untagged client's DOCUMENTS, not just the
+    // submission row.
+    const scope = await this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false);
     if (scope.unrestricted) return;
 
     const owner = await this.kyc.ownerOfDocument(fileName);

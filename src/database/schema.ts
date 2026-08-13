@@ -429,6 +429,19 @@ export const apiKeys = pgTable(
      */
     createdBy: uuid('created_by').references(() => admins.id, { onDelete: 'set null' }),
     /**
+     * The creator's TERRITORY, snapshot at creation (migration 0059). A key
+     * authenticates with this scope, not with unrestricted sight — otherwise a
+     * tag-scoped admin could mint a key that reads the whole client base and
+     * launder their scope away. An empty/NULL list means unrestricted, so a key
+     * from an unrestricted admin still sees the whole book (the reporting-job
+     * case). A column, never a live join to the creator: the key must not
+     * change territory when its creator does, nor break when they are deleted —
+     * exactly the reasoning behind `admin_invites.scoped_tag_ids`.
+     */
+    scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
+    /** The creator's intake grant, snapshot with the territory above (D-60). */
+    seesUntriaged: boolean('sees_untriaged').notNull().default(true),
+    /**
      * NULL means no expiry. Stated rather than defaulted to a date, because a
      * key that silently stops working at 3am is worse than one an operator
      * chose to make permanent.
