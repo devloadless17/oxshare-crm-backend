@@ -13,12 +13,34 @@ import { ApiProperty } from '@nestjs/swagger';
 // NUMERIC(28,8) does not survive a JS number, so money crosses this boundary as a
 // decimal string and the generated TypeScript must say `string`.
 
-const CURRENCIES = ['USD', 'USDT'] as const;
-
+/*
+ * ── `currency` IS A CODE, NOT AN ENUM ────────────────────────────────────────
+ *
+ * This declared `enum: ['USD', 'USDT']`, which reintroduced the very thing the
+ * schema deliberately removed: currencies were a `pgEnum` once, and that made
+ * "what money can this platform hold" a deploy. They are a TABLE now — see the
+ * note on `currencies` in schema.ts — and an operator adds one from the admin
+ * screen.
+ *
+ * The cost was not theoretical. The portal aliased the generated union as
+ * `WalletCurrency`, its wallet carousel typed its entries by it, and a client
+ * holding six wallets could only ever be shown two — the dashboard counted six
+ * from the same endpoint, so the two screens disagreed about the same client.
+ *
+ * A plain string, described by where the valid values come from. The foreign
+ * key on `wallets.currency` is what actually constrains it, and
+ * `CurrenciesService.assertUsable` is what refuses an unknown or disabled one
+ * on every write path.
+ */
 export class WalletDto {
   @ApiProperty() id: string;
   @ApiProperty() userId: string;
-  @ApiProperty({ enum: CURRENCIES }) currency: (typeof CURRENCIES)[number];
+  @ApiProperty({
+    description:
+      'A currency CODE from `GET /currencies`, not a fixed set — currencies are operator data.',
+    example: 'USD',
+  })
+  currency: string;
 
   @ApiProperty({ type: 'string', example: '700.00000000', description: 'Decimal string (§6.1).' })
   balance: string;
@@ -63,7 +85,8 @@ export class LedgerEntryDto {
   entryType: string;
   @ApiProperty() referenceType: string;
   @ApiProperty() referenceId: string;
-  @ApiProperty({ enum: ['USD', 'USDT'] }) currency: string;
+  @ApiProperty({ description: 'A currency code — see WalletDto.', example: 'USD' })
+  currency: string;
   @ApiProperty() createdAt: Date;
 }
 

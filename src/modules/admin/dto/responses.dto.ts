@@ -639,7 +639,8 @@ export class WithdrawalRowDto {
     description: 'Monetary value — always a string, never a number',
   })
   amount: string;
-  @ApiProperty({ enum: ['USD', 'USDT'] }) currency: string;
+  // A CODE, not a fixed set — currencies are operator data (see WalletDto).
+  @ApiProperty({ description: 'A currency code.', example: 'USD' }) currency: string;
   @ApiProperty({
     enum: ['pending', 'approved', 'success', 'failure', 'rejected'],
   })

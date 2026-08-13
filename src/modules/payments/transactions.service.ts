@@ -272,6 +272,27 @@ export class TransactionsService {
      */
     methodKey: string;
   }) {
+    /*
+     * The CURRENCY, checked against the catalogue rather than against a list in
+     * a DTO.
+     *
+     * `@IsIn(['USD','USDT'])` used to do this at the edge, which refused a
+     * withdrawal in any currency an operator had added since — EUR, GBP, AED and
+     * TRY were all enabled and all unspendable. Currencies stopped being a
+     * `pgEnum` for exactly that reason; the DTO was the last copy of the old
+     * closed set.
+     *
+     * `assertUsable` is the stronger check the edge could not make: it refuses
+     * an unknown code AND a DISABLED one, against what is actually on offer.
+     * The `wallets_currency_currencies_code_fk` foreign key catches an unknown
+     * code again below if a caller ever skips this — but a foreign key cannot
+     * tell "disabled" from "available", which is why this runs first.
+     */
+    // The NORMALISED code is what the rest of this method uses: `assertUsable`
+    // upper-cases and trims, so 'usd' and 'USD' cannot become two currencies on
+    // the rows this writes.
+    const currency = await this.currencies.assertUsable(params.currency);
+
     const amount = toDecimal(params.amount);
     if (!amount.isPositive()) throw new ValidationError('Withdrawal amount must be positive.');
 
@@ -287,11 +308,11 @@ export class TransactionsService {
     const min = this.limits.minWithdrawal();
     const max = this.limits.maxWithdrawal();
     if (amount.lessThan(min)) {
-      throw new ValidationError(`The minimum withdrawal is ${min.toString()} ${params.currency}.`);
+      throw new ValidationError(`The minimum withdrawal is ${min.toString()} ${currency}.`);
     }
     if (amount.greaterThan(max)) {
       throw new ValidationError(
-        `The maximum single withdrawal is ${max.toString()} ${params.currency}. ` +
+        `The maximum single withdrawal is ${max.toString()} ${currency}. ` +
           'Please split the request or contact support.',
       );
     }
@@ -350,7 +371,7 @@ export class TransactionsService {
         and(
           eq(transactions.userId, params.userId),
           eq(transactions.direction, 'withdrawal'),
-          eq(transactions.currency, params.currency),
+          eq(transactions.currency, currency),
           gte(transactions.createdAt, since),
           ne(transactions.state, 'rejected'),
         ),
@@ -358,7 +379,7 @@ export class TransactionsService {
     const already = recent.reduce((sum, row) => sum.plus(toDecimal(row.amount)), toDecimal('0'));
     if (already.plus(amount).greaterThan(dayCap)) {
       throw new ValidationError(
-        `This would exceed the ${dayCap.toString()} ${params.currency} rolling 24-hour ` +
+        `This would exceed the ${dayCap.toString()} ${currency} rolling 24-hour ` +
           `withdrawal limit — ${already.toString()} has already been requested in that window.`,
       );
     }
@@ -387,7 +408,7 @@ export class TransactionsService {
      */
     return db
       .transaction(async (dbTx) => {
-        const wallet = await this.wallets.getOrCreateWallet(params.userId, params.currency, dbTx);
+        const wallet = await this.wallets.getOrCreateWallet(params.userId, currency, dbTx);
         const [row] = await dbTx
           .insert(transactions)
           .values({
@@ -395,7 +416,7 @@ export class TransactionsService {
             walletId: wallet.id,
             direction: 'withdrawal',
             amount: money(amount),
-            currency: params.currency,
+            currency: currency,
             state: 'pending',
             /*
              * `provider` carries the method key, and the new
@@ -424,7 +445,7 @@ export class TransactionsService {
         await this.wallets.post(
           {
             userId: params.userId,
-            currency: params.currency,
+            currency: currency,
             amount: amount.negated(),
             entryType: 'withdrawal',
             referenceType: LEDGER_REFERENCE.transaction,
@@ -891,7 +912,11 @@ export class TransactionsService {
 
     const [rows, [counted]] = await Promise.all([
       this.db
-        .select({ tx: transactions, methodName: paymentMethodsTable.name })
+        .select({
+          tx: transactions,
+          methodName: paymentMethodsTable.name,
+          withdrawalMethodName: withdrawalPaymentMethods.name,
+        })
         .from(transactions)
         /*
          * LEFT join, and it has to be left: `method_key` is null for every
@@ -904,6 +929,25 @@ export class TransactionsService {
          * becomes either.
          */
         .leftJoin(paymentMethodsTable, eq(paymentMethodsTable.key, transactions.methodKey))
+        /*
+         * ⚠️ THE SECOND JOIN, and its absence was a live bug.
+         *
+         * Deposits name their rail through `method_key` → `payment_methods`.
+         * Withdrawals name theirs through `withdrawal_method_key` →
+         * `withdrawal_payment_methods` (migration 0062), a different column into
+         * a different table — so a client's own transaction list resolved every
+         * withdrawal's method to NULL and rendered it as an empty cell. The
+         * money was right, the state was right, and the row simply would not say
+         * how it had been paid out.
+         *
+         * One row can never match both: `method_key` is null on a withdrawal and
+         * `withdrawal_method_key` is null on a deposit, which is why coalescing
+         * them below is unambiguous rather than a guess about precedence.
+         */
+        .leftJoin(
+          withdrawalPaymentMethods,
+          eq(withdrawalPaymentMethods.key, transactions.withdrawalMethodKey),
+        )
         .where(where)
         /*
          * A TIE-BREAKER on `id`, and it is not cosmetic.
@@ -925,12 +969,21 @@ export class TransactionsService {
       /*
        * `methodName` is flattened onto the row rather than nested, so the shape
        * a frontend reads is the transaction it already knows plus one field.
-       * Null where there was no method — see the join note above.
+       *
+       * ONE field for both rails: the client is asking "how did this money
+       * move", and that is the same question whether it came in through a
+       * payment method or went out through a payout method. Exposing two
+       * nullable fields would make every consumer write the same coalesce, and
+       * the transactions screen would eventually get it wrong for one direction.
+       *
+       * Still null for a manual admin credit, which went through no method at
+       * all — `provider` reads `manual_admin` there and the portal branches on
+       * that one value by name.
        */
-      items: rows.map(({ tx, methodName }) => ({
+      items: rows.map(({ tx, methodName, withdrawalMethodName }) => ({
         ...tx,
         amount: money(tx.amount),
-        methodName: methodName ?? null,
+        methodName: methodName ?? withdrawalMethodName ?? null,
       })),
       total: counted?.value ?? 0,
       page,
