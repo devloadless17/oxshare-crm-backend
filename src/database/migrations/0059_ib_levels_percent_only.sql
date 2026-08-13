@@ -20,7 +20,22 @@
 --
 -- No rows were affected on the database this was written against — both levels
 -- were already revenue_share. The statement is here for every other one.
-UPDATE "ib_levels" SET "enabled" = false WHERE "payout_model" = 'per_lot';--> statement-breakpoint
+--
+-- GUARDED on the column still existing, so this file is idempotent like the
+-- `DROP … IF EXISTS` statements below it. A bare UPDATE fails with
+-- `column "payout_model" does not exist` the second time it runs — which is not
+-- hypothetical: this migration was renumbered from 0055 to 0059 to land after
+-- upstream's intake work, and a fresh `when` makes drizzle re-apply it to any
+-- database that already had the original.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'ib_levels' AND column_name = 'payout_model'
+  ) THEN
+    UPDATE "ib_levels" SET "enabled" = false WHERE "payout_model" = 'per_lot';
+  END IF;
+END $$;--> statement-breakpoint
 
 ALTER TABLE "ib_levels" DROP COLUMN IF EXISTS "payout_model";--> statement-breakpoint
 
