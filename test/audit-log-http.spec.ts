@@ -2,7 +2,15 @@ import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, roles, users } from '../src/database/schema';
+import {
+  adminClientTagScopes,
+  admins,
+  auditLog,
+  clientTagAssignments,
+  clientTags,
+  roles,
+  users,
+} from '../src/database/schema';
 
 /**
  * What the admin action log ACTUALLY SERVES — not what it stores.
@@ -233,5 +241,118 @@ describe('the actions that previously left no trace', () => {
     );
     expect(row, 'discarding the KYC configuration left no trace').toBeDefined();
     expect(row?.actorEmail).toBe(MASTER.email);
+  });
+});
+
+describe('client-subject rows follow the reader’s scope — D-54, resolved', () => {
+  /*
+   * The exposure D-54 recorded: most audit rows are about ADMINS, but the KYC
+   * decisions and tag actions write the CLIENT's own id as the subject — so a
+   * tag-scoped sub-admin holding `audit.view` could read decisions about
+   * clients outside their territory. Resolved (owner, 13 Aug 2026): rows whose
+   * subject is a client follow the reader's scope, in the WHERE clause; rows
+   * about admins stay visible to every `audit.view` holder, and the export
+   * takes the same path as the list so it cannot be the way around the filter.
+   */
+  const SCOPED = { email: 'audit-http-scoped@oxshare.com', password: 'admin-password-123' };
+
+  it('hides out-of-territory client rows, keeps admin-subject rows, leaves the master whole', async () => {
+    const db = ctx.db.db;
+    const passwords = new PasswordService();
+
+    const [tag] = await db
+      .insert(clientTags)
+      .values({ slug: 'audit-scope-e2e', label: 'Audit Scope' })
+      .returning();
+    const [inScope] = await db
+      .insert(users)
+      .values({
+        email: 'audit-in-scope@oxshare-e2e.test',
+        passwordHash: 'x',
+        firstName: 'In',
+        lastName: 'Scope',
+      })
+      .returning();
+    const [outScope] = await db
+      .insert(users)
+      .values({
+        email: 'audit-out-scope@oxshare-e2e.test',
+        passwordHash: 'x',
+        firstName: 'Out',
+        lastName: 'Scope',
+      })
+      .returning();
+    await db.insert(clientTagAssignments).values({ userId: inScope.id, tagId: tag.id });
+
+    const [scopedAdmin] = await db
+      .insert(admins)
+      .values({
+        email: SCOPED.email,
+        passwordHash: await passwords.hash(SCOPED.password),
+        name: 'Audit Scoped Reader',
+        permissions: ['audit.view'],
+        status: 'active',
+      })
+      .returning();
+    await db
+      .insert(adminClientTagScopes)
+      .values({ adminId: scopedAdmin.id, tagId: tag.id, createdBy: scopedAdmin.id });
+
+    // Straight into the table: this file otherwise tests what the API serves,
+    // but HOW the rows landed is not the property under test here.
+    await db.insert(auditLog).values([
+      {
+        actorId: scopedAdmin.id,
+        actorEmail: SCOPED.email,
+        action: 'kyc.approve',
+        subjectType: 'kyc_submission',
+        subjectId: inScope.id,
+      },
+      {
+        actorId: scopedAdmin.id,
+        actorEmail: SCOPED.email,
+        action: 'kyc.approve',
+        subjectType: 'kyc_submission',
+        subjectId: outScope.id,
+      },
+      {
+        actorId: scopedAdmin.id,
+        actorEmail: SCOPED.email,
+        action: 'client_tag.assign',
+        subjectType: 'user',
+        subjectId: outScope.id,
+      },
+      {
+        actorId: scopedAdmin.id,
+        actorEmail: SCOPED.email,
+        action: 'admin.update',
+        subjectType: 'admin',
+        subjectId: scopedAdmin.id,
+      },
+    ]);
+
+    const scoped = await actingAs(ctx, 'admin', SCOPED);
+    const res = await scoped.get('/v1/admin/audit-log?limit=100');
+    expect(res.status).toBe(200);
+    const visible = rows(res.body);
+
+    expect(
+      visible.some((r) => r.subjectId === inScope.id),
+      'a row about a client INSIDE the territory disappeared',
+    ).toBe(true);
+    expect(
+      visible.some((r) => r.subjectId === outScope.id),
+      'a row naming a client OUTSIDE the territory leaked to a scoped reader',
+    ).toBe(false);
+    expect(
+      visible.some((r) => r.subjectType === 'admin' && r.subjectId === scopedAdmin.id),
+      'an admin-subject row was over-filtered — the trail about administrators is not client data',
+    ).toBe(true);
+
+    // The unrestricted reader still sees everything, including the rows the
+    // scoped reader must not.
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const everything = rows((await master.get('/v1/admin/audit-log?limit=100')).body);
+    expect(everything.some((r) => r.subjectId === outScope.id)).toBe(true);
   });
 });

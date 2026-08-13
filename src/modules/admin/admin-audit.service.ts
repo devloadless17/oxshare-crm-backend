@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Admin, AdminsStore } from '../../store/admins.store';
+import { AdminsStore } from '../../store/admins.store';
+import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { AuthorizationError } from '../../common/errors/domain-errors';
 import { AUDIT_SORT_COLUMNS, AuditLogStore, DEFAULT_AUDIT_SORT } from '../../store/audit-log.store';
 import { sortKey, sortOrder } from '../../common/sorting';
@@ -108,7 +109,7 @@ export class AdminAuditService {
    * inventing an `audit.view` key here would let a sub-admin be granted it.
    */
   listAuditLog(
-    actor: Admin,
+    actor: AuthenticatedAdmin,
     query: {
       page?: string;
       limit?: string;
@@ -145,6 +146,8 @@ export class AdminAuditService {
     const order = sortOrder(query.order);
 
     return this.auditLog.findAll({
+      // D-54, resolved: client-subject rows follow the reader's territory.
+      scope: actor.clientScope,
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '25', 10) || 25,
       // R-2.4. An audit trail with a gap is worse than none, because it is

@@ -118,3 +118,21 @@ export function assertActorCan(actor: Actor, permission: string, action: string)
     `${actor.email} cannot ${action}: the ${permission} permission is required.`,
   );
 }
+
+/**
+ * ANY-of, matching `@RequirePermissions(...keys)` at the edge — the guard has
+ * always been any-of (`required.some`), and a service that re-asserts a SINGLE
+ * key against a route that accepts two turns one of the route's own grants
+ * into a refusal nobody can explain from the permission matrix.
+ */
+export function assertActorCanAny(
+  actor: Actor,
+  permissions: readonly string[],
+  action: string,
+): void {
+  if (permissions.some((permission) => actorHasPermission(actor, permission))) return;
+
+  throw new AuthorizationError(
+    `${actor.email} cannot ${action}: one of ${permissions.join(', ')} is required.`,
+  );
+}
