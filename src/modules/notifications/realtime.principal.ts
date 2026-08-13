@@ -80,43 +80,61 @@ export class RealtimePrincipalResolver {
    * signed-out laptop), and an exception here would be logged as a server
    * fault on every one of them.
    */
-  async resolve(cookieHeader: string | undefined): Promise<RealtimePrincipal | null> {
+  async resolve(
+    cookieHeader: string | undefined,
+    /**
+     * Which APP opened this socket — the handshake `Origin`, already validated
+     * against the allowlist by the gateway before this is called.
+     *
+     * `'admin'` and `'client'` rather than the raw URL, so the gateway owns the
+     * comparison and this owns the consequence.
+     */
+    surface: 'admin' | 'client',
+  ): Promise<RealtimePrincipal | null> {
     const cookies = parseCookieHeader(cookieHeader);
 
     /*
-     * ADMIN FIRST, and the two are never both tried against one socket.
+     * ── THE SURFACE DECIDES, NOT COOKIE PRESENCE ───────────────────────────
      *
-     * R-3.1 keeps the surfaces separate: a portal token must be worthless on
-     * the admin surface and vice versa. The cookie NAMES already separate
-     * them, so presence decides which authenticator runs — and a browser
-     * holding both (a developer signed into each app) gets the admin identity
-     * on the admin app's socket and the client identity on the portal's,
-     * because each app connects with its own origin and its own cookie.
+     * This used to try the ADMIN cookie first and fall through to the client
+     * one, on the reasoning that "each app connects with its own origin and its
+     * own cookie". That reasoning was WRONG, and the bug it caused was visible:
+     * cookies are scoped by HOST AND NOT BY PORT, so a developer signed into
+     * both apps on localhost has one cookie jar. The portal's handshake carried
+     * the admin cookie, this resolved it as an admin, and the portal's socket
+     * joined `admin:<id>` — so a client's own browser received the admin work
+     * queue's notifications ("a client requested a withdrawal") and NONE of
+     * their own. The portal rendered them as the generic "Notification" toast,
+     * because its catalogue rightly knows no `admin.*` kind.
+     *
+     * The same collision exists in production wherever the two apps sit on one
+     * registrable domain and the cookies reach the API host together — the very
+     * arrangement `session-cookies.ts` already warns about for `SameSite=Lax`.
+     *
+     * The origin is the only thing that says which APP is asking, so it is what
+     * chooses the authenticator. R-3.1 is upheld more strictly than before: a
+     * portal socket is now never even offered the admin authenticator, so an
+     * admin session cannot silently become a portal socket's identity.
      */
-    const adminToken = readSessionCookie(cookies, COOKIE_BASES.adminAccess);
-    if (adminToken) {
+    if (surface === 'admin') {
+      const adminToken = readSessionCookie(cookies, COOKIE_BASES.adminAccess);
+      if (!adminToken) return null;
       const admin = await this.authenticateAdmin(cookies);
-      if (admin) {
-        return {
-          recipient: { kind: 'admin', id: admin.id },
-          expiresAt: this.expiryOf(adminToken, 'ADMIN_JWT_SECRET'),
-        };
-      }
-      return null;
+      if (!admin) return null;
+      return {
+        recipient: { kind: 'admin', id: admin.id },
+        expiresAt: this.expiryOf(adminToken, 'ADMIN_JWT_SECRET'),
+      };
     }
 
     const clientToken = readSessionCookie(cookies, COOKIE_BASES.clientAccess);
-    if (clientToken) {
-      const userId = await this.authenticateClient(clientToken);
-      if (userId) {
-        return {
-          recipient: { kind: 'client', id: userId },
-          expiresAt: this.expiryOf(clientToken, 'JWT_ACCESS_SECRET'),
-        };
-      }
-    }
-
-    return null;
+    if (!clientToken) return null;
+    const userId = await this.authenticateClient(clientToken);
+    if (!userId) return null;
+    return {
+      recipient: { kind: 'client', id: userId },
+      expiresAt: this.expiryOf(clientToken, 'JWT_ACCESS_SECRET'),
+    };
   }
 
   private async authenticateAdmin(

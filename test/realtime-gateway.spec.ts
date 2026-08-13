@@ -140,13 +140,26 @@ describe('parseCookieHeader', () => {
 
 describe('where a socket is allowed to come from', () => {
   it('accepts each of the two configured app origins', async () => {
-    for (const origin of [PORTAL_ORIGIN, ADMIN_ORIGIN]) {
-      const { gateway } = buildGateway(buildResolver({ admin: { id: ADMIN_ID } }));
-      const socket = fakeSocket(`${ADMIN_COOKIE}=good`, origin);
+    /*
+     * Each origin with ITS OWN cookie. The origin decides the surface now, so
+     * looping both with an admin cookie asserted the bug this suite exists to
+     * prevent: an admin session admitted on the portal's socket.
+     */
+    const cases = [
+      { origin: PORTAL_ORIGIN, cookie: `${CLIENT_COOKIE}=good`, room: `client:${CLIENT_ID}` },
+      { origin: ADMIN_ORIGIN, cookie: `${ADMIN_COOKIE}=good`, room: `admin:${ADMIN_ID}` },
+    ];
+
+    for (const { origin, cookie, room } of cases) {
+      const { gateway } = buildGateway(
+        buildResolver({ admin: { id: ADMIN_ID }, client: { id: CLIENT_ID } }),
+      );
+      const socket = fakeSocket(cookie, origin);
 
       await gateway.handleConnection(socket as never);
 
       expect(socket.disconnected, origin).toBe(false);
+      expect(socket.rooms, origin).toEqual([room]);
     }
   });
 
@@ -288,11 +301,63 @@ describe('who is allowed to hold a socket', () => {
 
   it('puts a client in the CLIENT room for their id', async () => {
     const { gateway } = buildGateway(buildResolver({ client: { id: CLIENT_ID } }));
-    const socket = fakeSocket(`${CLIENT_COOKIE}=good`);
+    // PORTAL_ORIGIN explicitly: `fakeSocket` defaults to the admin origin, and
+    // the surface is decided by the origin rather than by which cookie is
+    // present — a client cookie arriving on the admin socket is refused.
+    const socket = fakeSocket(`${CLIENT_COOKIE}=good`, PORTAL_ORIGIN);
 
     await gateway.handleConnection(socket as never);
 
     expect(socket.rooms).toEqual([`client:${CLIENT_ID}`]);
+  });
+
+  /*
+   * ── THE BUG A CLIENT ACTUALLY SAW ────────────────────────────────────────
+   *
+   * A client requested a withdrawal and their own browser toasted the word
+   * "Notification" — the portal's generic fallback, because its catalogue
+   * rightly knows no `admin.*` kind.
+   *
+   * The cause was here. The resolver tried the ADMIN cookie first regardless of
+   * which app the socket came from, and in development both apps are on
+   * localhost — where cookies are shared across ports. An operator with the
+   * console open in another tab therefore carried an admin cookie into the
+   * PORTAL's handshake, resolved as an admin, and joined `admin:<id>`. Their
+   * browser then received the admin work queue ("a client requested a
+   * withdrawal") and none of their own events.
+   *
+   * The toast was the visible half. The half that matters is that a client's
+   * browser was being handed another party's notifications.
+   */
+  it('resolves a PORTAL socket as the client even when an admin cookie rides along', async () => {
+    const resolver = buildResolver({ admin: { id: ADMIN_ID }, client: { id: CLIENT_ID } });
+    const { gateway } = buildGateway(resolver);
+    // Both cookies, portal origin — a developer with the console open in
+    // another tab, which is every developer.
+    const socket = fakeSocket(`${ADMIN_COOKIE}=good; ${CLIENT_COOKIE}=good`, PORTAL_ORIGIN);
+
+    await gateway.handleConnection(socket as never);
+
+    expect(socket.rooms).toEqual([`client:${CLIENT_ID}`]);
+    expect(socket.rooms).not.toContain(`admin:${ADMIN_ID}`);
+    expect(socket.disconnected).toBe(false);
+  });
+
+  it('refuses a PORTAL socket carrying only an admin cookie', async () => {
+    /*
+     * The other direction of the same rule. An admin session is not a portal
+     * identity, so the handshake is refused rather than admitted as whoever the
+     * admin happens to be — R-3.1, a portal token must be worthless on the
+     * admin surface and vice versa.
+     */
+    const resolver = buildResolver({ admin: { id: ADMIN_ID }, client: null });
+    const { gateway } = buildGateway(resolver);
+    const socket = fakeSocket(`${ADMIN_COOKIE}=good`, PORTAL_ORIGIN);
+
+    await gateway.handleConnection(socket as never);
+
+    expect(socket.disconnected).toBe(true);
+    expect(socket.rooms).toEqual([]);
   });
 
   it('never tries the portal cookie once an admin cookie is present — R-3.1', async () => {

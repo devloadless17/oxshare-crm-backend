@@ -77,19 +77,70 @@ describe('the database announces a notification when it becomes real', () => {
     expect(event.id).toBeTruthy();
   });
 
-  it('carries NO notification body — only what a listener needs to route it', async () => {
+  it('carries the params a toast interpolates', async () => {
+    /*
+     * REVERSED from 0047, by migration 0061, and the reason is on the wire's
+     * own terms rather than a relaxation of it.
+     *
+     * 0047 sent routing fields only and argued the reader should refetch. That
+     * was right for a bell badge and is not enough for a toast: with `{id,
+     * kind}` alone the browser can render a title from its kind catalogue but
+     * not a single number, so every toast would be generic or would arrive
+     * visibly after the event it announces.
+     *
+     * The privacy objection still holds and is still satisfied: the gateway
+     * emits into `<kind>:<id>`, the room holding exactly the sockets of the
+     * principal this row names, so `params` reaches the one reader the
+     * permission-checked endpoint would have served it to.
+     */
     heard = [];
     await store.insert({
       recipient: CLIENT_A,
       kind: 'withdrawal.rejected',
-      // A rejection reason is arbitrary-length free text and must not ride the
-      // 8000-byte NOTIFY channel — nor travel outside a permission-checked
-      // read. The reader refetches the feed instead.
-      params: { reason: 'A very long operator explanation that has no business on the wire' },
+      params: { reason: 'Destination account name does not match', amount: '250.00000000' },
     });
 
     const [event] = await waitForEvents(1);
-    expect(JSON.stringify(event)).not.toContain('operator explanation');
+    expect(event.params).toMatchObject({
+      reason: 'Destination account name does not match',
+      amount: '250.00000000',
+    });
+    expect(Object.keys(event).sort()).toEqual([
+      'id',
+      'kind',
+      'params',
+      'recipientId',
+      'recipientKind',
+    ]);
+  });
+
+  it('drops params rather than failing when they would burst the NOTIFY limit', async () => {
+    /*
+     * ⚠️ The failure this guards is not a missing toast — it is a rolled-back
+     * WITHDRAWAL.
+     *
+     * `pg_notify` refuses a payload over 8000 bytes, and the trigger runs
+     * inside the caller's transaction. A rejection reason long enough to burst
+     * it would raise 22023 from the trigger and abort the money movement the
+     * notification was announcing.
+     *
+     * So 0061 builds the payload twice and falls back to 0047's slim form. An
+     * over-long reason degrades to the generic toast — which both frontends
+     * already render, because it is what they must do for an unknown `kind`
+     * anyway — instead of taking the transaction down with it.
+     */
+    heard = [];
+    await store.insert({
+      recipient: CLIENT_A,
+      kind: 'withdrawal.rejected',
+      // Past the 6000-byte budget the trigger allows params, well under the
+      // column's own limit — the row must still be written.
+      params: { reason: 'x'.repeat(7000) },
+    });
+
+    const [event] = await waitForEvents(1);
+    expect(event, 'the insert must still announce, without params').toBeDefined();
+    expect(event.params).toBeUndefined();
     expect(Object.keys(event).sort()).toEqual(['id', 'kind', 'recipientId', 'recipientKind']);
   });
 

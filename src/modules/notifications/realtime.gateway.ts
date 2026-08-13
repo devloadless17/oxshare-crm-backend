@@ -235,18 +235,31 @@ export class NotificationsRealtimeGateway
      * be holding a session cookie.
      */
     const origin = socket.handshake.headers.origin;
-    const allowed = [
-      this.config.get<string>('PORTAL_URL') ?? 'http://localhost:3000',
-      this.config.get<string>('ADMIN_URL') ?? 'http://localhost:3002',
-    ];
-    if (!origin || !allowed.includes(origin)) {
+    const portalUrl = this.config.get<string>('PORTAL_URL') ?? 'http://localhost:3000';
+    const adminUrl = this.config.get<string>('ADMIN_URL') ?? 'http://localhost:3002';
+    if (!origin || (origin !== portalUrl && origin !== adminUrl)) {
       this.logger.warn(`Refused a socket from origin ${origin ?? '(absent)'}`);
       socket.emit('unauthorized');
       socket.disconnect(true);
       return;
     }
 
-    const principal = await this.principals.resolve(socket.handshake.headers.cookie);
+    /*
+     * The ORIGIN decides which surface this socket belongs to, and the
+     * principal resolver is given that answer rather than guessing from which
+     * cookies happen to be present.
+     *
+     * Cookies are scoped by host and NOT by port, so a browser signed into both
+     * apps sends both session cookies on either app's handshake — which is how
+     * the portal's socket used to be authenticated as an admin and joined the
+     * admin room. See the note in `realtime.principal.ts`.
+     *
+     * Safe to derive here because the check above has already refused anything
+     * that is not exactly one of the two configured origins.
+     */
+    const surface = origin === adminUrl ? 'admin' : 'client';
+
+    const principal = await this.principals.resolve(socket.handshake.headers.cookie, surface);
 
     if (!principal) {
       // The client is told WHY, so the frontend can stop retrying a connection
