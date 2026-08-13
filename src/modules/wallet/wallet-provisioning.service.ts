@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { WalletsStore } from '../../store/wallets.store';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { WalletService, type Executor } from './wallet.service';
 
@@ -14,16 +15,26 @@ import { WalletService, type Executor } from './wallet.service';
  *                 /wallet grew new rows at a moment the client associates with
  *                 identity checks rather than with money.
  *
- *                 The cost, stated: two rows per client today instead of one,
- *                 and enabling a THIRD currency later does not retroactively
- *                 open wallets for existing clients. `getOrCreateWallet` on the
- *                 read and write paths is what covers them, and it is why this
- *                 is safe to leave rather than backfill.
+ *   CURRENCY      a wallet in the NEWLY ENABLED currency, for every existing
+ *   ENABLED      client — `openWalletForAllClients`.
  *
- *   KYC APPROVAL  the same call, run again. Approval is the moment a client is
- *                 cleared to move money, so it is the natural place to catch up
- *                 anyone who registered before a currency was enabled. It adds
- *                 only what is missing.
+ * ## The third moment is new, and it reverses what this comment used to say
+ *
+ * This block used to argue that enabling a currency later "does not
+ * retroactively open wallets for existing clients", and that leaving it to
+ * `getOrCreateWallet` on the money paths was "safe rather than backfill".
+ *
+ * It is not safe, because the wallet SCREEN is a read path that lists what
+ * exists rather than what is offered. A client who registered when only USD and
+ * USDT were enabled saw exactly those two for as long as they never transacted
+ * in anything else — while the platform's own currency screen said it offered
+ * six. Lazy creation covers the money paths and leaves the screen wrong, and the
+ * screen is where a client forms their idea of what they can hold.
+ *
+ * The claim was also self-contradicting: the KYC-APPROVAL catch-up it described
+ * as the safety net WAS NEVER WIRED. `KycService.approve` does not touch
+ * wallets and never has, so the one mechanism named as covering this case did
+ * not exist. Backfilling on enable is what the sentence was promising.
  *
  * ## Never fatal to the thing that triggered it
  *
@@ -44,6 +55,18 @@ export class WalletProvisioningService {
   constructor(
     private readonly wallets: WalletService,
     private readonly currencies: CurrenciesService,
+    /*
+     * The set-based backfill, shared with `CurrenciesService`.
+     *
+     * In the store rather than here because those two cannot reach each other —
+     * `WalletModule` imports `CurrenciesModule`, and closing that loop hangs
+     * Nest's bootstrap rather than failing. See the foot of
+     * `wallet-provisioning.port.ts`.
+     *
+     * APPENDED LAST: this class is constructed positionally in its own spec, so
+     * a new parameter in the middle would silently rebind the two above.
+     */
+    private readonly walletsStore: WalletsStore,
   ) {}
 
   /**
@@ -118,6 +141,50 @@ export class WalletProvisioningService {
         `Could not open wallets for user ${userId}: ${String(error)}`,
         error instanceof Error ? error.stack : undefined,
       );
+    }
+  }
+
+  /**
+   * One currency, opened for every existing client. Returns how many were added.
+   *
+   * ## ONE STATEMENT, not a loop over clients
+   *
+   * `openAllEnabledWallets` loops because it runs for a single user over a
+   * handful of currencies. This runs for a single currency over EVERY user, and
+   * the same shape would be one round trip per client — hundreds of thousands on
+   * a real platform, inside an admin request that has already committed.
+   *
+   * `INSERT … SELECT … ON CONFLICT DO NOTHING` is the same idempotence
+   * `getOrCreateWallet` relies on, expressed set-wise: it adds exactly the
+   * missing rows, takes no row locks on wallets that already exist, and is safe
+   * to run twice.
+   *
+   * ## Every user, with no status filter, and that is deliberate
+   *
+   * Not just active clients. A suspended or unverified client still has a wallet
+   * list, and giving them the row now is what stops the same gap reappearing the
+   * day they are reinstated — the balance is zero and a zero wallet grants
+   * nothing. Filtering here would trade a harmless row for a second backfill
+   * nobody remembers to run.
+   */
+  async openWalletForAllClients(currency: string): Promise<number> {
+    try {
+      const count = await this.walletsStore.openForAllClients(currency);
+      this.logger.log(`Backfilled ${count} ${currency} wallet(s) for existing clients.`);
+      return count;
+    } catch (error) {
+      /*
+       * Swallowed and logged, like the two above and for the same reason: the
+       * currency update that triggered this is already committed. Telling the
+       * operator their enable FAILED would invite them to do it again, which
+       * changes nothing and backfills nothing — the currency is already enabled.
+       * A log line names the currency, and re-enabling is not the repair.
+       */
+      this.logger.error(
+        `Could not backfill ${currency} wallets: ${String(error)}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      return 0;
     }
   }
 }

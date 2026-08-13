@@ -1,3 +1,4 @@
+import { WalletsStore } from '../src/store/wallets.store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { AuthService } from '../src/modules/identity/auth.service';
@@ -52,7 +53,8 @@ beforeAll(async () => {
     // now covers — see the last describe block.
     new WalletProvisioningService(
       new WalletService(ctx.db),
-      new CurrenciesService(ctx.db, auditStubAs()),
+      new CurrenciesService(ctx.db, auditStubAs(), new WalletsStore(ctx.db)),
+      new WalletsStore(ctx.db),
     ),
   );
 }, 120_000);
@@ -115,8 +117,8 @@ beforeEach(async () => {
   await ctx.db.execute(sql`DELETE FROM users`);
   await ctx.db.execute(sql`DELETE FROM ib_levels`);
   await ctx.db.execute(sql`
-    INSERT INTO ib_levels (level, name, payout_model, rate_value, enabled)
-    VALUES (1, 'Master Partner', 'revenue_share', 70.0000, true)
+    INSERT INTO ib_levels (level, name, rate_value, enabled)
+    VALUES (1, 'Master Partner', 70.0000, true)
   `);
 });
 

@@ -15,6 +15,7 @@ import { RolesStore } from './roles.store';
 import { SecuritySettingsStore } from './security-settings.store';
 import { StatsStore } from './stats.store';
 import { UsersStore } from './users.store';
+import { WalletsStore } from './wallets.store';
 import { ClientVisibilityService } from '../common/security/client-visibility.service';
 
 const STORES = [
@@ -35,6 +36,7 @@ const STORES = [
   SecuritySettingsStore,
   StatsStore,
   UsersStore,
+  WalletsStore,
   /*
    * Not a store, but it belongs in this @Global() module for the same reason
    * the stores do: it is a thin scope-aware wrapper over UsersStore that FOUR

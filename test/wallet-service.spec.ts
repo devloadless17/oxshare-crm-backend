@@ -1,3 +1,4 @@
+import { WalletsStore } from '../src/store/wallets.store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -24,7 +25,8 @@ beforeAll(async () => {
   wallets = new WalletService(ctx.db);
   provisioning = new WalletProvisioningService(
     wallets,
-    new CurrenciesService(ctx.db, auditStubAs()),
+    new CurrenciesService(ctx.db, auditStubAs(), new WalletsStore(ctx.db)),
+    new WalletsStore(ctx.db),
   );
 }, 120_000);
 
@@ -413,8 +415,8 @@ describe('provisioning', () => {
       sql`SELECT currency FROM wallets WHERE user_id = ${userId} ORDER BY currency`,
     );
     // The two the platform ships with. An operator adding a third changes this
-    // for clients who register AFTERWARDS — existing ones are covered by
-    // getOrCreateWallet on every money path.
+    // for clients who register afterwards; existing ones are caught up by
+    // `openWalletForAllClients` when the currency is enabled — see below.
     expect(rows.map((r) => r.currency)).toEqual(['USD', 'USDT']);
   });
 
@@ -455,3 +457,82 @@ describe('provisioning', () => {
     await expect(provisioning.openAllEnabledWallets(userId)).resolves.toBeUndefined();
   });
 });
+
+/*
+ * The gap that produced clients holding USD and USDT long after four more
+ * currencies were live: registration opens what is enabled AT THAT MOMENT, and
+ * nothing ever revisited the decision.
+ */
+describe('backfilling a newly enabled currency', () => {
+  /*
+   * Back to the two the platform ships with.
+   *
+   * The outer `beforeEach` resets `enabled` but does not REMOVE a currency a
+   * test added, so without this the AED row below survives into the next test
+   * and `openAllEnabledWallets` quietly opens three wallets where the assertion
+   * expects two. Inner hooks run after outer ones, so the wallets referencing
+   * these rows are already gone by the time this deletes them.
+   */
+  beforeEach(async () => {
+    await ctx.db.execute(sql`DELETE FROM currencies WHERE code NOT IN ('USD', 'USDT')`);
+  });
+
+  it('opens the new currency on clients who registered before it existed', async () => {
+    const before = await makeUser('backfill-existing@test.local');
+    await provisioning.openAllEnabledWallets(before);
+    expect(await currenciesOf(before)).toEqual(['USD', 'USDT']);
+
+    await ctx.db.execute(sql`
+      INSERT INTO currencies (code, name, symbol, decimals, enabled, is_default, sort_order)
+      VALUES ('AED', 'UAE Dirham', 'د.إ', 2, true, false, 9)
+      ON CONFLICT (code) DO UPDATE SET enabled = true`);
+
+    const opened = await provisioning.openWalletForAllClients('AED');
+
+    expect(opened).toBe(1);
+    expect(await currenciesOf(before)).toEqual(['AED', 'USD', 'USDT']);
+  });
+
+  it('is idempotent — a second run adds nothing and reports nothing', async () => {
+    const userId = await makeUser('backfill-twice@test.local');
+    await provisioning.openAllEnabledWallets(userId);
+
+    expect(await provisioning.openWalletForAllClients('USD')).toBe(0);
+    expect(await currenciesOf(userId)).toEqual(['USD', 'USDT']);
+  });
+
+  it('leaves an existing balance untouched', async () => {
+    const userId = await makeUser('backfill-funded@test.local');
+    await wallets.post({
+      userId,
+      currency: 'USD',
+      amount: '250.00000000',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: 'backfill-funded',
+    });
+
+    await provisioning.openWalletForAllClients('USD');
+
+    // ON CONFLICT DO NOTHING, not an upsert that resets the row — a backfill
+    // that zeroed a funded wallet would be the worst possible bug in this file.
+    expect(await balanceOf(userId)).toBe('250.00000000');
+  });
+
+  it('NEVER throws, even for a currency that does not exist', async () => {
+    /*
+     * `wallets.currency` is a foreign key onto `currencies.code`, so this is a
+     * constraint violation rather than an empty result. The currency update that
+     * triggers a backfill has already committed, so reporting it as failed would
+     * invite an operator to re-enable something that is already enabled.
+     */
+    await expect(provisioning.openWalletForAllClients('ZZZ')).resolves.toBe(0);
+  });
+});
+
+async function currenciesOf(userId: string): Promise<string[]> {
+  const { rows } = await ctx.db.execute<{ currency: string }>(
+    sql`SELECT currency FROM wallets WHERE user_id = ${userId} ORDER BY currency`,
+  );
+  return rows.map((r) => r.currency);
+}

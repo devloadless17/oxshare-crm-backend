@@ -1,5 +1,6 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, asc, eq, ne } from 'drizzle-orm';
+import { WalletsStore } from '../../store/wallets.store';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
 import { currencies } from '../../database/schema';
@@ -35,7 +36,44 @@ export class CurrenciesService {
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly audit: AdminAuditService,
+    /*
+     * Opens the new currency's wallet on every existing client.
+     *
+     * The STORE, not `WalletProvisioningService` and not the provisioning port.
+     * `WalletModule` imports this module, so depending on anything it binds
+     * closes a cycle — and that cycle does not throw, it HANGS Nest's
+     * bootstrap. See the note at the foot of `wallet-provisioning.port.ts`.
+     *
+     * `StoreModule` is @Global and is depended upon by modules rather than the
+     * reverse, so this adds no edge. Same route `AuthService` takes to IbStore.
+     */
+    private readonly walletsStore: WalletsStore,
   ) {}
+
+  private readonly logger = new Logger(CurrenciesService.name);
+
+  /**
+   * Give every existing client a wallet in a currency that has just started
+   * being offered.
+   *
+   * Swallows and logs, and that is the whole reason this wrapper exists. The
+   * currency write it follows is ALREADY COMMITTED — telling an operator their
+   * enable failed would invite them to do it again, which changes nothing
+   * (the currency is already enabled) and backfills nothing. A log line naming
+   * the currency is actionable; a 500 on a successful write is not.
+   */
+  private async backfillWallets(code: string): Promise<void> {
+    try {
+      const opened = await this.walletsStore.openForAllClients(code);
+      this.logger.log(`Opened ${opened} ${code} wallet(s) for existing clients.`);
+    } catch (error) {
+      this.logger.error(
+        `${code} is enabled but its wallets could not be backfilled: ${String(error)}. ` +
+          'Existing clients will get one on the next money path that touches it.',
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+  }
 
   /**
    * The single normalisation point.
@@ -166,6 +204,19 @@ export class CurrenciesService {
       enabled: row.enabled,
       isDefault: row.isDefault,
     });
+
+    /*
+     * A currency created ALREADY ENABLED — which is the default — is offered
+     * from this moment, so existing clients get their wallet now rather than
+     * only the clients who register after it.
+     *
+     * Created disabled, nothing happens: enabling it later goes through
+     * `update`, which backfills there. The two paths cover the same rule from
+     * both directions, which is why neither says "and the other one handles it".
+     */
+    if (row.enabled) {
+      await this.backfillWallets(row.code);
+    }
     return row;
   }
 
@@ -218,6 +269,25 @@ export class CurrenciesService {
         .returning();
       return updated;
     });
+
+    /*
+     * A currency that has just BECOME enabled gets a wallet on every existing
+     * client — the moment the platform starts offering it is the moment the
+     * promise is made.
+     *
+     * Guarded on the TRANSITION, not on `row.enabled`: a rename or a sort-order
+     * nudge on an already-enabled currency must not re-run this. It is
+     * idempotent, so a repeat would be harmless, but it would also be a full
+     * table scan on every edit of an unrelated field.
+     *
+     * Outside the transaction above, and after it: the backfill is a large
+     * insert and holding the currency row's lock across it would block every
+     * concurrent read of the catalogue for its duration. It cannot fail the
+     * update either — see the port's contract.
+     */
+    if (!current.enabled && row.enabled) {
+      await this.backfillWallets(normalised);
+    }
 
     /*
      * Only the fields that MOVED, with what they were.
