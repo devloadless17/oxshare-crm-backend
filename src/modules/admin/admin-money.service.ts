@@ -265,6 +265,8 @@ export class AdminMoneyService {
   async listWithdrawals(
     query: {
       state?: string;
+      /** Free text over the client's email and name — see `listForAdmin`. */
+      q?: string;
       page?: string;
       limit?: string;
       cursor?: string;
@@ -293,6 +295,7 @@ export class AdminMoneyService {
     return this.transactions.listForAdmin({
       scope: actor.clientScope,
       state: query.state,
+      q: query.q,
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '25', 10) || 25,
       // R-2.4. This is a work queue an admin reads while clients keep

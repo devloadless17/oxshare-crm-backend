@@ -403,6 +403,8 @@ export class IbApplicationsService {
       status?: IbApplicationStatus;
       page?: number;
       limit?: number;
+      /** Free text over the applicant's email and name — see the store. */
+      q?: string;
       sort?: string;
       order?: string;
     },
@@ -414,6 +416,7 @@ export class IbApplicationsService {
       status: filter.status,
       page,
       limit,
+      q: filter.q,
       scope,
       // R-2.5. An unrecognised key is a 400 naming the allowed ones, never a
       // silent fallback — a sort the server ignored is a lie the UI tells.

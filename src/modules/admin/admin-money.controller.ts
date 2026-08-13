@@ -171,6 +171,12 @@ export class AdminMoneyController {
    * parameters on a call that legitimately passes none.
    */
   @ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description:
+      'Search the client’s email and name — the same columns the KYC and partner queues search.',
+  })
   @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
@@ -187,6 +193,7 @@ export class AdminMoneyController {
   listWithdrawals(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('state') state?: string,
+    @Query('q') q?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
@@ -199,6 +206,7 @@ export class AdminMoneyController {
         // behind a cast, so an unrecognised value came back as a 500 carrying a
         // database error. Checked against the schema's own value list instead.
         state: enumQuery(state, transactionStateEnum.enumValues, 'state'),
+        q,
         page,
         limit,
         cursor,

@@ -89,6 +89,12 @@ export class AdminIbController {
    * that legitimately passes none.
    */
   @ApiQuery({ name: 'status', required: false, enum: IB_APPLICATION_STATUSES })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description:
+      'Search the applicant’s email and name — the same three columns the KYC queue searches.',
+  })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_APPLICATION_SORT_COLUMNS) })
@@ -97,6 +103,7 @@ export class AdminIbController {
   list(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('status') status?: string,
+    @Query('q') q?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('sort') sort?: string,
@@ -107,6 +114,7 @@ export class AdminIbController {
         // `ib_application_status` is a Postgres enum, so an unrecognised value
         // would error in the database rather than at the edge.
         status: parseStatus(status),
+        q,
         page: parsePositive(page),
         limit: parsePositive(limit),
         // Validated in the service against the allowlist, which is where the

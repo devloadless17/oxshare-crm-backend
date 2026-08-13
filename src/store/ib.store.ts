@@ -5,7 +5,9 @@ import {
   count,
   desc,
   eq,
+  ilike,
   inArray,
+  or,
   sql,
   type SQLWrapper,
 } from 'drizzle-orm';
@@ -187,12 +189,32 @@ export class IbStore {
     page: number;
     limit: number;
     scope?: ClientScope;
+    /**
+     * Free-text search over the APPLICANT — email, first name, last name.
+     *
+     * The same three columns the KYC queue searches, deliberately: both are
+     * review queues of people, an operator moves between them, and a search box
+     * that matched different fields on each would be a trap rather than a
+     * feature. It does NOT search `motivation` — matching free text the
+     * applicant wrote would surface rows for words they used in passing.
+     */
+    q?: string;
     /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
     sort?: IbApplicationSortKey;
     order?: SortOrder;
   }) {
     const scope = filter.scope ?? UNRESTRICTED;
     const visible = clientScopePredicate(scope, users.id);
+
+    /*
+     * In the WHERE clause, so it narrows the RESULT SET rather than the page.
+     * Filtering fetched rows would leave the total counting everything and the
+     * pager offering pages that render empty — see the note on `scoped`.
+     */
+    const term = filter.q?.trim() ? `%${filter.q.trim()}%` : undefined;
+    const matches = term
+      ? or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))
+      : undefined;
 
     const sortKey: IbApplicationSortKey = filter.sort ?? DEFAULT_IB_APPLICATION_SORT;
     const direction = filter.order ?? 'desc';
@@ -201,6 +223,7 @@ export class IbStore {
     const where = and(
       filter.status ? eq(ibApplications.status, filter.status) : undefined,
       visible,
+      matches,
     );
 
     const rows = await this.db

@@ -1,6 +1,19 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomBytes } from 'crypto';
-import { and, asc, count, desc, eq, gte, isNull, ne, sql, type SQLWrapper } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gte,
+  ilike,
+  isNull,
+  ne,
+  or,
+  sql,
+  type SQLWrapper,
+} from 'drizzle-orm';
 import {
   // Aliased: `this.paymentMethods` is the injected SERVICE, and an unaliased
   // import of the table would shadow it in every query below.
@@ -474,6 +487,19 @@ export class TransactionsService {
     cursor?: CursorPosition;
     /** Row-level visibility. Admin callers pass the actor's; defaults to open. */
     scope?: ClientScope;
+    /**
+     * Free-text search over the CLIENT — email, first name, last name.
+     *
+     * The same three columns the KYC and partner queues search. An operator
+     * moves between these screens, and a box that matched different fields on
+     * each would be a trap rather than a feature.
+     *
+     * Not the amount, and not the provider reference: both are exact-match
+     * lookups where a substring gives confidently wrong results — `100` would
+     * match 1,001.00 — and neither is what somebody chasing a client's payout
+     * types first.
+     */
+    q?: string;
     /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
     sort?: WithdrawalSortKey;
     order?: SortOrder;
@@ -511,6 +537,18 @@ export class TransactionsService {
      * exact decimal string the row held, and `::numeric` is what compares it at
      * full precision against a `NUMERIC(28,8)` column.
      */
+    /*
+     * In the WHERE clause, so it narrows the RESULT SET and therefore the
+     * counts and the cursor with it. Filtering fetched rows would leave the
+     * total describing something else and the pager offering empty pages.
+     */
+    const term = filter.q?.trim() ? `%${filter.q.trim()}%` : undefined;
+    if (term) {
+      conditions.push(
+        or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))!,
+      );
+    }
+
     if (filter.cursor) {
       const comparator = direction === 'asc' ? sql`>` : sql`<`;
       const cast =
@@ -586,9 +624,18 @@ export class TransactionsService {
       .limit(limit + 1)
       .offset(usingCursor ? 0 : (page - 1) * limit);
 
+    /*
+     * JOINED TO `users`, because `where` may reference their columns.
+     *
+     * The predicate is shared with the rows query above — that is the point of
+     * building it once — and the search matches on the client's name and email.
+     * Without the join this counts against a table that has no `users` in
+     * scope and Postgres rejects the whole statement.
+     */
     const [{ value: total }] = await db
       .select({ value: sql<number>`count(*)::int` })
       .from(transactions)
+      .innerJoin(users, eq(transactions.userId, users.id))
       .where(where);
 
     /*
@@ -601,9 +648,24 @@ export class TransactionsService {
      */
     const countConditions = [eq(transactions.direction, 'withdrawal')];
     if (scoped) countConditions.push(scoped);
+    /*
+     * The SEARCH narrows these; the STATE filter does not.
+     *
+     * Two filters on different axes. The tabs exist to show how big each state
+     * is, so applying the active state to them would make every tab but one
+     * read zero. The search is the reader's current subject — if they are
+     * looking at one client, a Pending badge counting all 8,571 rows describes
+     * a queue they are not looking at, and they would act on it.
+     */
+    if (term) {
+      countConditions.push(
+        or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))!,
+      );
+    }
     const countRows = await db
       .select({ state: transactions.state, value: sql<number>`count(*)::int` })
       .from(transactions)
+      .innerJoin(users, eq(transactions.userId, users.id))
       .where(and(...countConditions))
       .groupBy(transactions.state);
     const counts: Record<string, number> = { all: 0 };
