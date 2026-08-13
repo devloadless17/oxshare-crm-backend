@@ -349,10 +349,32 @@ export class AdminMoneyController {
       '(PLATFORM-CONVENTIONS R-5.2).',
   })
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('withdrawals.approve')
+  /*
+   * `withdrawals.settle`, NOT `withdrawals.approve` — and the change is
+   * deliberate rather than a typo beside the reject route below.
+   *
+   * This action now PAYS: it takes a withdrawal from pending straight to
+   * `success`, because approval and settlement were two steps with nothing
+   * between them on a platform that has no automated payout rail (see
+   * `TransactionsService.approve`). Since one click now releases money, it is
+   * gated on the permission that always meant "may complete a payout".
+   *
+   * What that gives up, stated plainly: the segregation of duties this pair of
+   * permissions used to express — "two people must be involved in a payout" —
+   * is gone, because there is only one action left to hold. What it keeps is
+   * AUTHORITY: an operator holding only `withdrawals.approve` can no longer
+   * move money out at all, where before they could take the first of the two
+   * steps. Rejecting still needs only `withdrawals.approve`, which is right —
+   * refusing a withdrawal returns money to the client and releases nothing.
+   */
+  @RequirePermissions('withdrawals.settle')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Approve a pending withdrawal — funds stay on hold until settlement',
+    summary: 'Approve a pending withdrawal and record it as paid',
+    description:
+      'One step: the withdrawal moves from pending to success with `settledAt` stamped. No ' +
+      'balance changes — the debit posted when the client requested it. Requires ' +
+      '`withdrawals.settle`, because this releases the payout.',
   })
   @ApiOkResponse({ type: WithdrawalRowDto })
   @ScopedToClients('Predicate joins the state-machine UPDATE ... WHERE id = ? AND state = ?.')

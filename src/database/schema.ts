@@ -1498,6 +1498,51 @@ export const paymentMethods = pgTable(
 );
 
 /**
+ * The rails a client may be PAID OUT through — migration 0062.
+ *
+ * ## Why this is not `payment_methods`
+ *
+ * A deposit method and a withdrawal method look alike and are not the same
+ * thing. `payment_methods` describes how money comes IN: it carries a currency,
+ * it is what `requestDeposit` reads to choose gateway-versus-manual, and its
+ * rows are wired to Rival's provider keys. Paying OUT asks a different question
+ * — what destination the client must supply, and whether the desk will send to
+ * that rail today — and the two answers move independently. A shared table with
+ * a `direction` column would mean enabling a deposit rail silently enables a
+ * payout rail, which is a mistake discovered when money leaves.
+ *
+ * ## No admin surface, deliberately
+ *
+ * Seeded (Whish Money) and edited with SQL. The set is one row and changes at
+ * the pace of commercial agreements rather than operations, and a CRUD screen
+ * for a single row is a screen that exists to be wrong. `enabled` takes a rail
+ * out of service without deleting history — which the RESTRICT on
+ * `transactions.withdrawal_method_key` also enforces.
+ */
+export const withdrawalPaymentMethods = pgTable(
+  'withdrawal_payment_methods',
+  {
+    /** A stable machine key — 'whish'. Never renamed; it is written onto rows. */
+    key: varchar('key', { length: 40 }).primaryKey(),
+    name: varchar('name', { length: 80 }).notNull(),
+    /**
+     * Sized for a real URL, like `payment_methods.logo_url`.
+     *
+     * NULL is legitimate: the portal renders a generic wallet mark for it, so a
+     * rail is never blocked on artwork. The seed leaves it null rather than
+     * pointing at a file nobody has uploaded — a broken image reads as a bug,
+     * while the fallback reads as a method without a logo.
+     */
+    logoUrl: varchar('logo_url', { length: 2048 }),
+    enabled: boolean('enabled').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('withdrawal_payment_methods_enabled_sort_idx').on(t.enabled, t.sortOrder)],
+);
+
+/**
  * Money the platform holds for a client.
  *
  * One per client per currency, opened for every ENABLED currency at
@@ -1761,6 +1806,22 @@ export const transactions = pgTable(
     methodKey: varchar('method_key', { length: 40 }).references(() => paymentMethods.key, {
       onDelete: 'restrict',
     }),
+    /**
+     * The `withdrawal_payment_methods.key` this went out through — migration 0062.
+     *
+     * A SEPARATE column from `methodKey` above, which points at a different
+     * table and belongs to deposits. One column cannot carry two foreign keys,
+     * and widening either reference to tolerate both tables would remove the
+     * only thing that makes it meaningful.
+     *
+     * Nullable: withdrawals written before 0062 have no method to name, and
+     * backfilling them would invent a fact about money that already moved.
+     * Those rows carry `provider`, which is what the admin list falls back to.
+     */
+    withdrawalMethodKey: varchar('withdrawal_method_key', { length: 40 }).references(
+      () => withdrawalPaymentMethods.key,
+      { onDelete: 'restrict' },
+    ),
     provider: varchar('provider', { length: 50 }).notNull(),
     /**
      * The provider's own reference — or, for a manual method, the one the

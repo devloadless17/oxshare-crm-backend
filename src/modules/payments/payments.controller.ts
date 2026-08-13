@@ -35,6 +35,7 @@ import {
   RequestWithdrawalDto,
   RequestWithdrawalOtpDto,
   TransactionDto,
+  WithdrawalMethodDto,
   WithdrawalOtpResponseDto,
 } from './dto/withdrawal.dto';
 import { WithdrawalOtpService, type WithdrawalIntent } from './withdrawal-otp.service';
@@ -182,6 +183,27 @@ export class PaymentsController {
     });
   }
 
+  /**
+   * The payout rails on offer.
+   *
+   * Authenticated but NOT KYC-gated, unlike the withdrawal itself: this is the
+   * operator's own list of methods, identical for every client, and refusing it
+   * to an unverified client would leave the withdrawal screen unable to explain
+   * what it is asking for. The money rule stays on the action.
+   */
+  @Get('withdrawal-methods')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'The withdrawal methods currently on offer',
+    description:
+      'Enabled rails only, in display order. The `key` is what POST /payments/withdrawals ' +
+      'takes as `methodKey`.',
+  })
+  @ApiOkResponse({ type: [WithdrawalMethodDto] })
+  async listWithdrawalMethods() {
+    return await this.transactions.listWithdrawalMethods();
+  }
+
   @Post('withdrawals')
   @UseGuards(KycVerifiedGuard)
   @Idempotent()
@@ -230,7 +252,7 @@ export class PaymentsController {
       amount: dto.amount,
       currency: dto.currency,
       destination: dto.destination,
-      provider: dto.provider,
+      methodKey: dto.methodKey,
     });
   }
 
@@ -279,7 +301,10 @@ export class PaymentsController {
       amount: dto.amount,
       currency: dto.currency,
       destination: dto.destination,
-      provider: dto.provider,
+      // The chosen RAIL is part of what the code authorises, exactly as the
+      // provider string was: a code issued for a Whish payout must not
+      // authorise the same amount going out over a different method.
+      provider: dto.methodKey,
     };
   }
 

@@ -7,8 +7,29 @@ import { IsIn, IsNotEmpty, IsNumberString, IsOptional, IsString, Matches } from 
 // portal can generate types instead of hand-writing them.
 
 const CURRENCIES = ['USD', 'USDT'] as const;
-const PROVIDERS = ['whish', 'usdt'] as const;
 const DIRECTIONS = ['deposit', 'withdrawal'] as const;
+
+/**
+ * The payout rail, as a KEY rather than an enum — migration 0062.
+ *
+ * This was `@IsIn(['whish', 'usdt'])`. The rails are data now
+ * (`withdrawal_payment_methods`), so a closed union here would mean adding a
+ * payout method required a deploy, and — worse — that the DTO and the table
+ * could disagree about what exists. The service checks the key against the
+ * table and refuses anything absent or disabled, which is a stronger check than
+ * this layer could make: it validates against what is actually on offer rather
+ * than against what the code was compiled knowing about.
+ *
+ * So the validation here is deliberately only "a non-empty string". The
+ * authority is `TransactionsService.requestWithdrawal`.
+ */
+const METHOD_KEY_DESCRIPTION =
+  'A `withdrawal_payment_methods.key` from GET /payments/withdrawal-methods. ' +
+  'Rejected if unknown or disabled.';
+
+const DESTINATION_DESCRIPTION =
+  'Where the money goes, in the form the chosen method requires. For Whish Money this is the ' +
+  "recipient's phone number, validated against Whish's own rules at request time.";
 
 /**
  * DERIVED from the column, not restated.
@@ -35,6 +56,33 @@ const STATES = transactionStateEnum.enumValues;
  * in any of them. That is what stops a code obtained for a small transfer to the
  * client's own account being spent on a large one to somebody else's.
  */
+/**
+ * One payout rail, as the portal's method picker needs it.
+ *
+ * Three fields and no more. There is no `enabled` because the endpoint returns
+ * only enabled rails — sending a flag the client must then filter on is how a
+ * disabled method ends up rendered by the one screen that forgot to check.
+ */
+export class WithdrawalMethodDto {
+  @ApiProperty({ example: 'whish', description: 'Send this back as `methodKey`.' })
+  key: string;
+
+  @ApiProperty({ example: 'Whish Money', description: "The operator's own name for the rail." })
+  name: string;
+
+  /**
+   * Explicitly `type: String, nullable: true` — reflection cannot see through a
+   * union, and an unannotated `string | null` generates `Record<string, never>`
+   * in the portal's types, making the field unreadable. The same trap
+   * `TransactionDto` documents at length.
+   *
+   * Null is normal: the portal renders a generic wallet mark for a rail with no
+   * artwork, so a method is never blocked on a logo.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true })
+  logoUrl?: string | null;
+}
+
 export class RequestWithdrawalOtpDto {
   @ApiProperty({ type: 'string', example: '300.00000000' })
   @IsNumberString()
@@ -44,14 +92,15 @@ export class RequestWithdrawalOtpDto {
   @IsIn(CURRENCIES)
   currency: (typeof CURRENCIES)[number];
 
-  @ApiProperty({ description: 'Payout target, e.g. an IBAN or a USDT address.' })
+  @ApiProperty({ description: DESTINATION_DESCRIPTION })
   @IsString()
   @IsNotEmpty()
   destination: string;
 
-  @ApiProperty({ enum: PROVIDERS })
-  @IsIn(PROVIDERS)
-  provider: (typeof PROVIDERS)[number];
+  @ApiProperty({ description: METHOD_KEY_DESCRIPTION, example: 'whish' })
+  @IsString()
+  @IsNotEmpty()
+  methodKey: string;
 }
 
 export class RequestWithdrawalDto {
@@ -67,14 +116,15 @@ export class RequestWithdrawalDto {
   @IsIn(CURRENCIES)
   currency: (typeof CURRENCIES)[number];
 
-  @ApiProperty({ description: 'Payout target, e.g. an IBAN or a USDT address.' })
+  @ApiProperty({ description: DESTINATION_DESCRIPTION })
   @IsString()
   @IsNotEmpty()
   destination: string;
 
-  @ApiProperty({ enum: PROVIDERS })
-  @IsIn(PROVIDERS)
-  provider: (typeof PROVIDERS)[number];
+  @ApiProperty({ description: METHOD_KEY_DESCRIPTION, example: 'whish' })
+  @IsString()
+  @IsNotEmpty()
+  methodKey: string;
 
   /**
    * The six-digit code from the confirmation email (FR-CORE-08).

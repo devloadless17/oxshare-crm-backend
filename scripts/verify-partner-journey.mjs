@@ -160,7 +160,9 @@ async function main() {
       if (applicationId) {
         ok('resuming the pending application', applicationId);
       } else {
+        const agency = await ensureAgency({ db, sql, one });
         const application = await ibService.apply(partner.id, {
+          agencyId: agency.id,
           motivation: 'Created by verify-partner-journey.',
         });
         applicationId = application.id;
@@ -312,3 +314,22 @@ main().catch((error) => {
   console.error(`\n${error?.stack ?? error}`);
   process.exitCode = 1;
 });
+
+/**
+ * The agency to appoint partners under, created if the platform has none.
+ *
+ * An agency is REQUIRED on both apply and approve now — a partner without one
+ * would have clients offered the entire catalogue — so a fixture that omits it
+ * fails at the first application. Reuses an enabled agency when one exists
+ * rather than adding a second every run.
+ */
+async function ensureAgency({ db, sql, one }) {
+  const existing = await one`SELECT id, name FROM agencies WHERE enabled = true ORDER BY sort_order, name LIMIT 1`;
+  if (existing) return existing;
+
+  const created = await one`
+    INSERT INTO agencies (name, description, enabled)
+    VALUES ('Default Agency', 'Created by a seeding script — an agency is required to appoint a partner.', true)
+    RETURNING id, name`;
+  return created;
+}

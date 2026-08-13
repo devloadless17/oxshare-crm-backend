@@ -2118,6 +2118,43 @@
         ]
       }
     },
+    "/v1/admin/ib/partners/{userId}": {
+      "get": {
+        "description": "The partner account joined to its level and agency, the partner above them, the partners directly beneath them, how many clients they introduced, and their confirmed and pending earnings. Answers `null` when the client is not a partner — every client profile asks, and most clients are not one, so that is an ordinary answer rather than a 404.",
+        "operationId": "AdminIbController_partnerDetail",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbPartnerDetailDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "One partner’s standing, their line and their earnings",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ib/partners/{userId}/level": {
       "patch": {
         "description": "The target level must be ENABLED — a disabled one takes no share, so placing somebody on it stops their earnings silently rather than demoting them visibly.",
@@ -2552,6 +2589,37 @@
           }
         ],
         "summary": "Declare an incoming deposit and get the reference to quote on the transfer",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/v1/payments/withdrawal-methods": {
+      "get": {
+        "description": "Enabled rails only, in display order. The `key` is what POST /payments/withdrawals takes as `methodKey`.",
+        "operationId": "PaymentsController_listWithdrawalMethods",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WithdrawalMethodDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The withdrawal methods currently on offer",
         "tags": [
           "payments"
         ]
@@ -7769,6 +7837,7 @@
     },
     "/v1/admin/withdrawals/{id}/approve": {
       "patch": {
+        "description": "One step: the withdrawal moves from pending to success with `settledAt` stamped. No balance changes — the debit posted when the client requested it. Requires `withdrawals.settle`, because this releases the payout.",
         "operationId": "AdminMoneyController_approveWithdrawal",
         "parameters": [
           {
@@ -7806,7 +7875,7 @@
             "cookie": []
           }
         ],
-        "summary": "Approve a pending withdrawal — funds stay on hold until settlement",
+        "summary": "Approve a pending withdrawal and record it as paid",
         "tags": [
           "admin"
         ]
@@ -8409,6 +8478,124 @@
           }
         ],
         "summary": "Export the filtered trading-account list as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/clients/{id}/positions": {
+      "get": {
+        "description": "Newest first, joined to the account they were traded on. `profit` is the FLOATING result while a position is open and the REALISED one once it has closed — one column, disambiguated by `status`. Prices and money are strings (§6.1).",
+        "operationId": "AdminHoldingsController_listClientPositions",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "open",
+                "closed"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientPositionsPageDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "One client’s positions, open or closed",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/clients/{id}/transactions": {
+      "get": {
+        "description": "`amount` is a decimal string (§6.1), never a number.",
+        "operationId": "AdminHoldingsController_listClientTransactions",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientTransactionsPageDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "One client’s money movements, all directions",
         "tags": [
           "admin"
         ]
@@ -9587,7 +9774,7 @@
           "agencyId": {
             "type": "string",
             "format": "uuid",
-            "description": "Which agency the applicant wants to be appointed under."
+            "description": "Which agency the applicant wants to be appointed under. Required — it decides what they may sell, and there is no \"any\" option."
           },
           "motivation": {
             "type": "string",
@@ -9603,7 +9790,10 @@
             "type": "string",
             "maxLength": 2048
           }
-        }
+        },
+        "required": [
+          "agencyId"
+        ]
       },
       "ApproveIbApplicationDto": {
         "type": "object",
@@ -9621,7 +9811,7 @@
           "agencyId": {
             "type": "string",
             "format": "uuid",
-            "description": "Omitted grants the agency the applicant chose. Supply one to override it."
+            "description": "Omitted grants the agency the applicant chose. Required when the application carries none — a partner cannot be approved without an agency."
           }
         }
       },
@@ -9637,6 +9827,178 @@
             "description": "The reviewer's own words, appended to the label."
           }
         }
+      },
+      "IbPartnerPersonDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string",
+            "nullable": true
+          },
+          "lastName": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "userId",
+          "email",
+          "firstName",
+          "lastName"
+        ]
+      },
+      "IbSubPartnerRowDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string",
+            "nullable": true
+          },
+          "lastName": {
+            "type": "string",
+            "nullable": true
+          },
+          "level": {
+            "type": "number"
+          },
+          "levelName": {
+            "type": "string"
+          },
+          "referralCode": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "approvedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userId",
+          "email",
+          "firstName",
+          "lastName",
+          "level",
+          "levelName",
+          "referralCode",
+          "active",
+          "approvedAt"
+        ]
+      },
+      "IbPartnerEarningsDto": {
+        "type": "object",
+        "properties": {
+          "confirmed": {
+            "type": "string",
+            "example": "73.50000000"
+          },
+          "pending": {
+            "type": "string",
+            "example": "0.00000000"
+          }
+        },
+        "required": [
+          "confirmed",
+          "pending"
+        ]
+      },
+      "IbPartnerDetailDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "level": {
+            "type": "number"
+          },
+          "levelName": {
+            "type": "string",
+            "nullable": true
+          },
+          "rateValue": {
+            "type": "string",
+            "nullable": true,
+            "description": "The rung’s percentage of the broker’s revenue. A decimal string, never a number."
+          },
+          "referralCode": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean",
+            "description": "A suspended partner keeps their code and tree, and stops earning."
+          },
+          "approvedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "agencyId": {
+            "type": "string",
+            "nullable": true
+          },
+          "agencyName": {
+            "type": "string",
+            "nullable": true
+          },
+          "products": {
+            "description": "What the agency lets them sell. Empty means the full catalogue.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "parent": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/IbPartnerPersonDto"
+              }
+            ]
+          },
+          "directPartners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IbSubPartnerRowDto"
+            }
+          },
+          "referredClientCount": {
+            "type": "number",
+            "description": "How many clients they introduced."
+          },
+          "earnings": {
+            "$ref": "#/components/schemas/IbPartnerEarningsDto"
+          }
+        },
+        "required": [
+          "userId",
+          "level",
+          "levelName",
+          "rateValue",
+          "referralCode",
+          "active",
+          "approvedAt",
+          "agencyId",
+          "agencyName",
+          "products",
+          "parent",
+          "directPartners",
+          "referredClientCount",
+          "earnings"
+        ]
       },
       "ChangeIbLevelDto": {
         "type": "object",
@@ -9906,6 +10268,29 @@
           "paymentUrl"
         ]
       },
+      "WithdrawalMethodDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "whish",
+            "description": "Send this back as `methodKey`."
+          },
+          "name": {
+            "type": "string",
+            "example": "Whish Money",
+            "description": "The operator's own name for the rail."
+          },
+          "logoUrl": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "key",
+          "name"
+        ]
+      },
       "RequestWithdrawalDto": {
         "type": "object",
         "properties": {
@@ -9922,14 +10307,12 @@
           },
           "destination": {
             "type": "string",
-            "description": "Payout target, e.g. an IBAN or a USDT address."
+            "description": "Where the money goes, in the form the chosen method requires. For Whish Money this is the recipient's phone number, validated against Whish's own rules at request time."
           },
-          "provider": {
+          "methodKey": {
             "type": "string",
-            "enum": [
-              "whish",
-              "usdt"
-            ]
+            "description": "A `withdrawal_payment_methods.key` from GET /payments/withdrawal-methods. Rejected if unknown or disabled.",
+            "example": "whish"
           },
           "otp": {
             "type": "string",
@@ -9941,7 +10324,7 @@
           "amount",
           "currency",
           "destination",
-          "provider"
+          "methodKey"
         ]
       },
       "TransactionDto": {
@@ -10056,21 +10439,19 @@
           },
           "destination": {
             "type": "string",
-            "description": "Payout target, e.g. an IBAN or a USDT address."
+            "description": "Where the money goes, in the form the chosen method requires. For Whish Money this is the recipient's phone number, validated against Whish's own rules at request time."
           },
-          "provider": {
+          "methodKey": {
             "type": "string",
-            "enum": [
-              "whish",
-              "usdt"
-            ]
+            "description": "A `withdrawal_payment_methods.key` from GET /payments/withdrawal-methods. Rejected if unknown or disabled.",
+            "example": "whish"
           }
         },
         "required": [
           "amount",
           "currency",
           "destination",
-          "provider"
+          "methodKey"
         ]
       },
       "WithdrawalOtpResponseDto": {
@@ -13497,6 +13878,10 @@
           "provider": {
             "type": "string"
           },
+          "methodName": {
+            "type": "string",
+            "example": "Whish Money"
+          },
           "providerRef": {
             "type": "string",
             "nullable": true
@@ -13548,6 +13933,7 @@
           "currency",
           "state",
           "provider",
+          "methodName",
           "requestedAt",
           "rivalNeedsAttention",
           "user"
@@ -14286,6 +14672,206 @@
         "required": [
           "items",
           "nextCursor",
+          "total",
+          "page",
+          "limit"
+        ]
+      },
+      "ClientPositionRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "buy",
+              "sell"
+            ]
+          },
+          "volume": {
+            "type": "string",
+            "example": "0.2000",
+            "description": "Lots."
+          },
+          "openPrice": {
+            "type": "string"
+          },
+          "closePrice": {
+            "type": "string",
+            "nullable": true,
+            "description": "NULL while open."
+          },
+          "profit": {
+            "type": "string",
+            "nullable": true,
+            "description": "The FLOATING result while `status` is open, and the REALISED one once closed. One column, two meanings, disambiguated by `status` — label it accordingly."
+          },
+          "swap": {
+            "type": "string",
+            "nullable": true
+          },
+          "commission": {
+            "type": "string",
+            "nullable": true
+          },
+          "currency": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed"
+            ]
+          },
+          "openedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "closedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "string",
+            "nullable": true,
+            "description": "The account it was traded on. NULL until MT5 issues a login."
+          }
+        },
+        "required": [
+          "id",
+          "ticket",
+          "symbol",
+          "side",
+          "volume",
+          "openPrice",
+          "closePrice",
+          "profit",
+          "swap",
+          "commission",
+          "currency",
+          "status",
+          "openedAt",
+          "closedAt",
+          "login"
+        ]
+      },
+      "ClientPositionsPageDto": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientPositionRowDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "rows",
+          "total",
+          "page",
+          "limit"
+        ]
+      },
+      "ClientTransactionRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal",
+              "transfer"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string",
+            "example": "250.00000000",
+            "description": "A decimal string (§6.1)."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "methodKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true
+          },
+          "providerRef": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "settledAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "direction",
+          "state",
+          "amount",
+          "currency",
+          "methodKey",
+          "provider",
+          "providerRef",
+          "createdAt",
+          "settledAt"
+        ]
+      },
+      "ClientTransactionsPageDto": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientTransactionRowDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "rows",
           "total",
           "page",
           "limit"

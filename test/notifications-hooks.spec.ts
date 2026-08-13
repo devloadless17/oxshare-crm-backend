@@ -148,7 +148,7 @@ describe('withdrawal decisions and their bell rows are one commit', () => {
       currency: 'USD',
       amount: '100',
       destination: '+961 3 123 456',
-      provider: 'whish',
+      methodKey: 'whish',
     });
 
     // The same callback shape AdminMoneyService passes.
@@ -179,7 +179,7 @@ describe('withdrawal decisions and their bell rows are one commit', () => {
       currency: 'USD',
       amount: '100',
       destination: '+961 3 123 456',
-      provider: 'whish',
+      methodKey: 'whish',
     });
 
     await expect(

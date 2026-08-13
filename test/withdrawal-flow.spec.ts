@@ -97,7 +97,7 @@ function request(userId: string, amount = '100') {
     currency: 'USD',
     amount,
     destination: '+961 3 123 456',
-    provider: 'whish',
+    methodKey: 'whish',
   });
 }
 

@@ -8,6 +8,7 @@ import {
   tradingAccounts,
   transactions,
   users,
+  withdrawalPaymentMethods,
 } from '../../database/schema';
 import type { ListTransactionsQueryDto } from './dto/transaction-query.dto';
 
@@ -217,12 +218,46 @@ export class TransactionsService {
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
   ) {}
 
+  /**
+   * The payout rails on offer — what the portal's method picker renders.
+   *
+   * ENABLED only, ordered by `sort_order` then name, which is exactly the index
+   * migration 0062 creates. Disabled rails are omitted rather than shown
+   * greyed: a client cannot act on the difference, and a method they can see
+   * but not choose reads as a fault in the page.
+   *
+   * The list is presentation. `requestWithdrawal` re-checks the key against the
+   * same table and refuses anything absent or disabled, so hiding a rail here
+   * is never what stops it being used (R-4.3).
+   */
+  async listWithdrawalMethods() {
+    const rows = await this.db
+      .select({
+        key: withdrawalPaymentMethods.key,
+        name: withdrawalPaymentMethods.name,
+        logoUrl: withdrawalPaymentMethods.logoUrl,
+      })
+      .from(withdrawalPaymentMethods)
+      .where(eq(withdrawalPaymentMethods.enabled, true))
+      .orderBy(asc(withdrawalPaymentMethods.sortOrder), asc(withdrawalPaymentMethods.name));
+    return rows;
+  }
+
   async requestWithdrawal(params: {
     userId: string;
     amount: string;
     currency: Currency;
     destination: string;
-    provider: string;
+    /**
+     * A `withdrawal_payment_methods.key` — the rail the client chose.
+     *
+     * This replaced a `provider` string the client sent from a closed union
+     * (`'whish' | 'usdt'`). The rails are DATA now (migration 0062), so the set
+     * a client may choose from is a table the desk controls rather than a union
+     * a deploy controls, and the check below is against what is actually
+     * enabled rather than against what the code was compiled knowing about.
+     */
+    methodKey: string;
   }) {
     const amount = toDecimal(params.amount);
     if (!amount.isPositive()) throw new ValidationError('Withdrawal amount must be positive.');
@@ -249,13 +284,31 @@ export class TransactionsService {
     }
 
     /*
+     * The rail must exist and be ENABLED, read live rather than trusted.
+     *
+     * The client sends a key; this is the only thing standing between that key
+     * and a payout instruction, so a disabled rail is refused here rather than
+     * merely hidden from the picker. Hiding it in the portal is presentation;
+     * this is the rule (R-4.3 — every precondition checked in the service, so a
+     * future admin tool or job satisfies the same one).
+     */
+    const [method] = await this.db
+      .select()
+      .from(withdrawalPaymentMethods)
+      .where(eq(withdrawalPaymentMethods.key, params.methodKey))
+      .limit(1);
+    if (!method || !method.enabled) {
+      throw new ValidationError('That withdrawal method is not available.');
+    }
+
+    /*
      * A whish withdrawal's destination is a phone number Rival will pay over
      * Whish-to-Whish, validated NOW with Rival's own rules (wish-phone.ts):
      * refusing at request time bounces the typo on the client in the moment
      * they can fix it, instead of days later as a failed submission on an
      * approval the admin cannot explain.
      */
-    if (params.provider === 'whish') {
+    if (method.key === 'whish') {
       const issue = wishDestinationIssue(params.destination);
       if (issue) throw new ValidationError(issue);
     }
@@ -331,7 +384,20 @@ export class TransactionsService {
             amount: money(amount),
             currency: params.currency,
             state: 'pending',
-            provider: params.provider,
+            /*
+             * `provider` carries the method key, and the new
+             * `withdrawalMethodKey` carries it again as a real foreign key.
+             *
+             * That is not redundancy worth removing. `provider` is half of
+             * `UNIQUE(provider, provider_ref)` — the §6.3 idempotency guarantee
+             * for replayed payment callbacks — so it has to stay populated and
+             * has to keep meaning "which rail" to the reconciler. The foreign
+             * key is what makes the rail a referenced row rather than a string,
+             * which is what lets the admin list join its display name and what
+             * stops a method with history being deleted.
+             */
+            provider: method.key,
+            withdrawalMethodKey: method.key,
             destination: params.destination,
           })
           .returning();
@@ -491,9 +557,30 @@ export class TransactionsService {
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
+        withdrawalMethodKey: transactions.withdrawalMethodKey,
+        /*
+         * The rail's DISPLAY name, resolved server-side so the desk and the
+         * client read the same words and a renamed method is renamed in both at
+         * once — the rule `TransactionDto.methodName` already states for
+         * deposits.
+         *
+         * Null for every withdrawal written before migration 0062, which named
+         * no method. The admin column falls back to `provider` for those rather
+         * than showing a blank cell.
+         */
+        withdrawalMethodName: withdrawalPaymentMethods.name,
       })
       .from(transactions)
       .innerJoin(users, eq(transactions.userId, users.id))
+      /*
+       * LEFT, never inner: the column is nullable for pre-0062 rows, and an
+       * inner join would silently drop every historical withdrawal from the
+       * queue — a filter nobody asked for, applied to money.
+       */
+      .leftJoin(
+        withdrawalPaymentMethods,
+        eq(transactions.withdrawalMethodKey, withdrawalPaymentMethods.key),
+      )
       .where(where)
       .orderBy(orderBy(sortColumn), orderBy(transactions.id))
       .limit(limit + 1)
@@ -552,6 +639,15 @@ export class TransactionsService {
       provider: r.provider,
       providerRef: r.providerRef,
       destination: r.destination,
+      /*
+       * The rail's display NAME, falling back to the raw `provider` key.
+       *
+       * The fallback is what keeps historical rows honest: a withdrawal written
+       * before migration 0062 names no method, and rendering an em dash there
+       * would say "no method" about money that certainly went out through one.
+       * `provider` is the only record those rows have of it.
+       */
+      methodName: r.withdrawalMethodName ?? r.provider,
       rejectionReason: r.rejectionReason,
       requestedAt: r.requestedAt,
       reviewedAt: r.reviewedAt,
@@ -806,14 +902,56 @@ export class TransactionsService {
     return row;
   }
 
+  /**
+   * Approve a withdrawal AND record it as paid, in one step.
+   *
+   * ## Why approval and settlement are now one action
+   *
+   * They used to be two: `approved` authorised the payout and `settle` recorded
+   * that the provider had sent it, gated on a second permission so that "two
+   * people must be involved in a payout" could be expressed. That separation
+   * described a flow this platform does not run — there is no automated payout
+   * rail, so nothing happened between the two steps except an operator clicking
+   * again. What it produced in practice was a queue full of `approved`
+   * withdrawals that were already paid in the real world and never marked, and
+   * two states a desk had to reconcile by memory.
+   *
+   * So an approval now means the money has gone: state `success`, `settledAt`
+   * stamped. The `approved` state remains in the enum because rows already sit
+   * in it — `settle` below still closes those — but nothing enters it any more.
+   *
+   * ## The control that replaced the two-person rule
+   *
+   * The permission, not the step count. The controller gates this on
+   * `withdrawals.settle` rather than `withdrawals.approve`: holding the weaker
+   * permission no longer lets anybody release funds, so who may move money out
+   * is still a deliberate grant. That is a real reduction in control and is
+   * recorded as such — segregation of duties is gone; authority over payout is
+   * not.
+   *
+   * Still the §8.7 conditional transition from `pending`, so a double-clicked
+   * button cannot pay twice.
+   */
   async approve(id: string, adminId: string, withinTx?: WithinTransaction) {
     // Wrapped in a transaction it did not previously need, so `withinTx` — the
     // admin audit row — commits with the state change or not at all (R-6.5).
     return this.db.transaction(async (dbTx) => {
+      const now = new Date();
       const row = await this.transition(
         id,
         'pending',
-        { state: 'approved', reviewedBy: adminId, reviewedAt: new Date() },
+        {
+          /*
+           * Straight to `success`. NO BALANCE CHANGE, and that is the point of
+           * debiting on request: the money left the wallet when the client
+           * asked, so this records the payout rather than performing it. The
+           * same reasoning `settle` documents — it is inherited, not dropped.
+           */
+          state: 'success',
+          reviewedBy: adminId,
+          reviewedAt: now,
+          settledAt: now,
+        },
         dbTx,
       );
       if (!row) {

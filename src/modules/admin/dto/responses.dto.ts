@@ -645,6 +645,20 @@ export class WithdrawalRowDto {
   })
   state: string;
   @ApiProperty() provider: string;
+  /**
+   * What to CALL the payout rail on screen — 'Whish Money'.
+   *
+   * Resolved server-side from `withdrawal_payment_methods.name`, so a renamed
+   * method is renamed everywhere at once and the desk never reads a machine
+   * key. NOT optional and never null: it falls back to `provider` for rows
+   * written before migration 0062, which named no method — an em dash there
+   * would claim money went out through nothing.
+   *
+   * Deliberately NOT a translated label, for the reason `TransactionDto`
+   * records: it is the operator's own name for their own rail — a brand, which
+   * does not translate.
+   */
+  @ApiProperty({ example: 'Whish Money' }) methodName: string;
   @ApiPropertyOptional({ type: String, nullable: true }) providerRef?: string | null;
   @ApiPropertyOptional({ type: String, nullable: true }) destination?: string | null;
   @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;

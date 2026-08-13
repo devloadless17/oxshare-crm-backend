@@ -79,6 +79,15 @@ const REVIEWER: Actor = {
   permissions: ALL_PERMISSIONS,
 };
 
+/**
+ * The agency every application is submitted against.
+ *
+ * A mutable holder rather than a `let`, so the helpers below can close over it
+ * once instead of taking it as a parameter each of the forty-odd call sites
+ * would then have to thread through.
+ */
+const AGENCY = { id: '' };
+
 /** Verified by default — the unverified case is a test of its own. */
 async function makeClient(email: string, verificationLevel = 1): Promise<string> {
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
@@ -114,13 +123,30 @@ beforeEach(async () => {
     VALUES (1, 'Master Partner', 70.0000, true),
            (2, 'Sub Partner', 30.0000, true)
   `);
+
+  /*
+   * An OPEN agency, because an application without one is refused now.
+   *
+   * Recreated per test rather than once in `beforeAll`: the rows above are
+   * cleared wholesale each time, and an agency surviving that while the
+   * applications referencing it do not is the kind of half-reset fixture that
+   * makes one test depend on another having run.
+   */
+  await ctx.db.execute(sql`DELETE FROM agencies`);
+  const agency = await ctx.db.execute<{ id: string }>(sql`
+    INSERT INTO agencies (name, enabled) VALUES ('Test Agency', true) RETURNING id
+  `);
+  AGENCY.id = agency.rows[0].id;
 });
 
 describe('applying', () => {
   it('accepts an application from a verified client', async () => {
     const userId = await makeClient('applicant@test.local');
 
-    const application = await service.apply(userId, { motivation: 'I have an audience.' });
+    const application = await service.apply(userId, {
+      agencyId: AGENCY.id,
+      motivation: 'I have an audience.',
+    });
 
     expect(application.status).toBe('pending');
     expect(application.motivation).toBe('I have an audience.');
@@ -129,7 +155,9 @@ describe('applying', () => {
   it('refuses an unverified client, and says what to do about it', async () => {
     const userId = await makeClient('unverified@test.local', 0);
 
-    await expect(service.apply(userId, {})).rejects.toThrow(/identity must be verified/i);
+    await expect(service.apply(userId, { agencyId: AGENCY.id })).rejects.toThrow(
+      /identity must be verified/i,
+    );
   });
 
   /*
@@ -143,7 +171,9 @@ describe('applying', () => {
     const userId = await makeClient('email-unverified@test.local');
     await ctx.db.execute(sql`UPDATE users SET email_verified = false WHERE id = ${userId}`);
 
-    await expect(service.apply(userId, {})).rejects.toThrow(/verify your email/i);
+    await expect(service.apply(userId, { agencyId: AGENCY.id })).rejects.toThrow(
+      /verify your email/i,
+    );
   });
 
   /*
@@ -155,32 +185,66 @@ describe('applying', () => {
     const userId = await makeClient('neither@test.local', 0);
     await ctx.db.execute(sql`UPDATE users SET email_verified = false WHERE id = ${userId}`);
 
-    await expect(service.apply(userId, {})).rejects.toThrow(/verify your email/i);
+    await expect(service.apply(userId, { agencyId: AGENCY.id })).rejects.toThrow(
+      /verify your email/i,
+    );
+  });
+
+  /*
+   * ── An agency is REQUIRED, at both gates ─────────────────────────────────
+   *
+   * A partner with no agency has clients offered the ENTIRE product catalogue.
+   * That is the broadest grant the system makes, and it used to be reachable by
+   * leaving a field blank on a form — while every other aspect of the same
+   * grant (rung, parent, rate) was chosen deliberately.
+   */
+  it('refuses an application with no agency', async () => {
+    const userId = await makeClient('no-agency@test.local');
+
+    await expect(service.apply(userId, {})).rejects.toThrow(/choose the partner programme/i);
+  });
+
+  it('refuses an application against an agency that is closed', async () => {
+    const userId = await makeClient('closed-agency@test.local');
+    await ctx.db.execute(sql`UPDATE agencies SET enabled = false WHERE id = ${AGENCY.id}`);
+
+    /*
+     * Refused on SUBMIT rather than queued and refused at review. The
+     * programme is shut; letting the application sit means telling somebody
+     * weeks later that what they asked for was never available.
+     */
+    await expect(service.apply(userId, { agencyId: AGENCY.id })).rejects.toThrow(
+      /not open for applications/i,
+    );
   });
 
   it('refuses a second application while one is pending', async () => {
     const userId = await makeClient('double@test.local');
-    await service.apply(userId, {});
+    await service.apply(userId, { agencyId: AGENCY.id });
 
-    await expect(service.apply(userId, {})).rejects.toThrow(/already have an application/i);
+    await expect(service.apply(userId, { agencyId: AGENCY.id })).rejects.toThrow(
+      /already have an application/i,
+    );
   });
 
   it('allows re-applying after a rejection', async () => {
     const userId = await makeClient('rejected-then@test.local');
-    const first = await service.apply(userId, {});
+    const first = await service.apply(userId, { agencyId: AGENCY.id });
     await service.reject(first.id, REVIEWER, UNRESTRICTED, { reason: 'Application is unclear' });
 
-    const second = await service.apply(userId, {});
+    const second = await service.apply(userId, { agencyId: AGENCY.id });
     expect(second.status).toBe('pending');
     expect(second.id).not.toBe(first.id);
   });
 
   it('refuses somebody who is already a partner', async () => {
     const userId = await makeClient('already@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
     await service.approve(application.id, REVIEWER, UNRESTRICTED);
 
-    await expect(service.apply(userId, {})).rejects.toThrow(/already a partner/i);
+    await expect(service.apply(userId, { agencyId: AGENCY.id })).rejects.toThrow(
+      /already a partner/i,
+    );
   });
 });
 
@@ -193,7 +257,7 @@ describe('status', () => {
     expect(before.application).toBeNull();
     expect(before.account).toBeNull();
 
-    const application = await service.apply(turned, {});
+    const application = await service.apply(turned, { agencyId: AGENCY.id });
     await service.reject(application.id, REVIEWER, UNRESTRICTED, {
       reason: 'Expected volume does not meet the programme minimum',
       note: 'Reapply once trading regularly.',
@@ -227,12 +291,12 @@ describe('status', () => {
     const middle = await makeClient('chain-middle@test.local');
 
     const topAccount = await service.approve(
-      (await service.apply(top, {})).id,
+      (await service.apply(top, { agencyId: AGENCY.id })).id,
       REVIEWER,
       UNRESTRICTED,
     );
     const middleAccount = await service.approve(
-      (await service.apply(middle, {})).id,
+      (await service.apply(middle, { agencyId: AGENCY.id })).id,
       REVIEWER,
       UNRESTRICTED,
       { parentIbUserId: topAccount.userId },
@@ -261,12 +325,12 @@ describe('status', () => {
     const middle = await makeClient('enforced-middle@test.local');
 
     const topAccount = await service.approve(
-      (await service.apply(top, {})).id,
+      (await service.apply(top, { agencyId: AGENCY.id })).id,
       REVIEWER,
       UNRESTRICTED,
     );
     const middleAccount = await service.approve(
-      (await service.apply(middle, {})).id,
+      (await service.apply(middle, { agencyId: AGENCY.id })).id,
       REVIEWER,
       UNRESTRICTED,
       { parentIbUserId: topAccount.userId },
@@ -277,7 +341,7 @@ describe('status', () => {
       sql`UPDATE users SET referred_by_ib_user_id = ${middleAccount.userId} WHERE id = ${client}`,
     );
 
-    await expect(service.apply(client, {})).rejects.toThrow(/deepest level/i);
+    await expect(service.apply(client, { agencyId: AGENCY.id })).rejects.toThrow(/deepest level/i);
   });
 
   /*
@@ -288,7 +352,7 @@ describe('status', () => {
   it('leaves a client under a level-1 partner eligible', async () => {
     const top = await makeClient('room-top@test.local');
     const topAccount = await service.approve(
-      (await service.apply(top, {})).id,
+      (await service.apply(top, { agencyId: AGENCY.id })).id,
       REVIEWER,
       UNRESTRICTED,
     );
@@ -325,9 +389,69 @@ describe('status', () => {
 });
 
 describe('approval', () => {
+  /*
+   * The approval half of the agency rule, and the case that actually bites: an
+   * application submitted BEFORE an agency was required carries none, and the
+   * ~691 already in the queue are all like that. The reviewer must choose one
+   * — a decision they were previously making implicitly, as "everything".
+   */
+  it('refuses to approve an application that carries no agency', async () => {
+    const userId = await makeClient('legacy-applicant@test.local');
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
+    // The shape of a pre-requirement row, which `apply` can no longer produce.
+    await ctx.db.execute(
+      sql`UPDATE ib_applications SET agency_id = NULL WHERE id = ${application.id}`,
+    );
+
+    await expect(service.approve(application.id, REVIEWER, UNRESTRICTED)).rejects.toThrow(
+      /cannot be approved without one/i,
+    );
+  });
+
+  it('lets the reviewer supply the agency an old application lacks', async () => {
+    const userId = await makeClient('legacy-fixed@test.local');
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
+    await ctx.db.execute(
+      sql`UPDATE ib_applications SET agency_id = NULL WHERE id = ${application.id}`,
+    );
+
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+      agencyId: AGENCY.id,
+    });
+
+    expect(account.agencyId).toBe(AGENCY.id);
+  });
+
+  it('refuses an explicit null, which used to mean "under no agency"', async () => {
+    const userId = await makeClient('explicit-null@test.local');
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
+
+    /*
+     * `null` was the deliberate way to reach the pre-agency behaviour. It is
+     * refused now — the escape hatch and the accident led to the same place,
+     * and that place grants the whole catalogue.
+     */
+    await expect(
+      service.approve(application.id, REVIEWER, UNRESTRICTED, { agencyId: null }),
+    ).rejects.toThrow(/cannot be approved without one/i);
+  });
+
+  it('approves against a CLOSED agency, unlike apply', async () => {
+    const userId = await makeClient('closed-at-review@test.local');
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
+    await ctx.db.execute(sql`UPDATE agencies SET enabled = false WHERE id = ${AGENCY.id}`);
+
+    /*
+     * Closing a programme stops NEW applications; it does not strand the ones
+     * already in the queue. The asymmetry with `apply` is deliberate.
+     */
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED);
+    expect(account.agencyId).toBe(AGENCY.id);
+  });
+
   it('places a partner with no parent at the shallowest enabled level', async () => {
     const userId = await makeClient('direct@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
 
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED);
 
@@ -338,11 +462,11 @@ describe('approval', () => {
 
   it('places a partner with a parent one level below them', async () => {
     const parentId = await makeClient('the-parent@test.local');
-    const parentApp = await service.apply(parentId, {});
+    const parentApp = await service.apply(parentId, { agencyId: AGENCY.id });
     await service.approve(parentApp.id, REVIEWER, UNRESTRICTED);
 
     const childId = await makeClient('the-child@test.local');
-    const childApp = await service.apply(childId, {});
+    const childApp = await service.apply(childId, { agencyId: AGENCY.id });
     const child = await service.approve(childApp.id, REVIEWER, UNRESTRICTED, {
       parentIbUserId: parentId,
     });
@@ -357,11 +481,11 @@ describe('approval', () => {
     await ctx.db.execute(sql`UPDATE ib_levels SET enabled = false WHERE level = 2`);
 
     const parentId = await makeClient('deep-parent@test.local');
-    const parentApp = await service.apply(parentId, {});
+    const parentApp = await service.apply(parentId, { agencyId: AGENCY.id });
     await service.approve(parentApp.id, REVIEWER, UNRESTRICTED);
 
     const childId = await makeClient('too-deep@test.local');
-    const childApp = await service.apply(childId, {});
+    const childApp = await service.apply(childId, { agencyId: AGENCY.id });
 
     await expect(
       service.approve(childApp.id, REVIEWER, UNRESTRICTED, { parentIbUserId: parentId }),
@@ -375,12 +499,12 @@ describe('approval', () => {
    */
   it('refuses a parent who is suspended', async () => {
     const parentId = await makeClient('suspended-parent@test.local');
-    const parentApp = await service.apply(parentId, {});
+    const parentApp = await service.apply(parentId, { agencyId: AGENCY.id });
     await service.approve(parentApp.id, REVIEWER, UNRESTRICTED);
     await ctx.db.execute(sql`UPDATE ib_accounts SET active = false WHERE user_id = ${parentId}`);
 
     const childId = await makeClient('orphan@test.local');
-    const childApp = await service.apply(childId, {});
+    const childApp = await service.apply(childId, { agencyId: AGENCY.id });
 
     await expect(
       service.approve(childApp.id, REVIEWER, UNRESTRICTED, { parentIbUserId: parentId }),
@@ -389,7 +513,7 @@ describe('approval', () => {
 
   it('refuses when a second reviewer already decided — the WHERE clause, not the pre-read', async () => {
     const userId = await makeClient('raced@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
 
     await service.approve(application.id, REVIEWER, UNRESTRICTED);
 
@@ -400,7 +524,7 @@ describe('approval', () => {
 
   it('creates no account when the transition loses the race', async () => {
     const userId = await makeClient('atomic@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
 
     // Somebody else rejects it first. The approve below must leave NOTHING
     // behind — an account without an approved application is a partner nobody
@@ -415,7 +539,7 @@ describe('approval', () => {
 
   it('refuses approval when no level is enabled', async () => {
     const userId = await makeClient('no-ladder@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
     await ctx.db.execute(sql`UPDATE ib_levels SET enabled = false`);
 
     await expect(service.approve(application.id, REVIEWER, UNRESTRICTED)).rejects.toThrow(
@@ -425,7 +549,7 @@ describe('approval', () => {
 
   it('issues referral codes from an unambiguous alphabet', async () => {
     const userId = await makeClient('code@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED);
 
     // No 0/O, no 1/I/L — these are dictated over the phone and typed by
@@ -437,7 +561,7 @@ describe('approval', () => {
 describe('rejection', () => {
   it('refuses a rejection with no reason at all', async () => {
     const userId = await makeClient('no-reason@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
 
     await expect(service.reject(application.id, REVIEWER, UNRESTRICTED, {})).rejects.toThrow(
       /needs a reason/i,
@@ -446,7 +570,7 @@ describe('rejection', () => {
 
   it('accepts a bare note without a configured label', async () => {
     const userId = await makeClient('note-only@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
 
     const rejected = await service.reject(application.id, REVIEWER, UNRESTRICTED, {
       note: 'Duplicate of an earlier application.',
@@ -456,7 +580,7 @@ describe('rejection', () => {
 
   it('records who decided and when', async () => {
     const userId = await makeClient('recorded@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
 
     const rejected = await service.reject(application.id, REVIEWER, UNRESTRICTED, {
       reason: 'Application is incomplete or unclear',
@@ -521,7 +645,7 @@ describe('the cycle guard', () => {
 describe('the decision email', () => {
   it('sends the referral code on approval', async () => {
     const userId = await makeClient('approved-mail@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
 
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED);
     // Fire-and-forget, so it is not awaited by the caller. One turn is enough
@@ -538,7 +662,7 @@ describe('the decision email', () => {
 
   it('sends the COMPOSED reason on rejection, not its parts', async () => {
     const userId = await makeClient('rejected-mail@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
 
     await service.reject(application.id, REVIEWER, UNRESTRICTED, {
       reason: 'Application is incomplete or unclear',
@@ -558,7 +682,7 @@ describe('the decision email', () => {
 
   it('sends nothing when the decision was refused', async () => {
     const userId = await makeClient('no-mail@test.local');
-    const application = await service.apply(userId, {});
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
     await service.approve(application.id, REVIEWER, UNRESTRICTED);
     /*
      * Wait for the APPROVAL's email before clearing.

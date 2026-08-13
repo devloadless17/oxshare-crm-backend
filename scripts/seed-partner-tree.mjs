@@ -190,6 +190,15 @@ async function main() {
       (await import('../dist/modules/ib/ib-applications.service.js')).IbApplicationsService,
     );
 
+    /*
+     * An agency, before anything applies. Required on both apply and approve
+     * now — a partner without one would have clients offered the entire
+     * catalogue — so this has to exist before step 2 rather than being
+     * discovered there.
+     */
+    const agency = await ensureAgency({ db, sql, one });
+    ok('agency', `${agency.name}`);
+
     // ── 1. The new partner ────────────────────────────────────────────────
     console.log('\n=== 1. create hazimehsen1 and verify them ===');
     const partnerId = await ensureVerifiedUser(
@@ -218,7 +227,10 @@ async function main() {
       if (applicationId) {
         ok('resuming the pending application', applicationId);
       } else {
-        applicationId = (await ib.apply(partnerId, { motivation: 'Created by seed-partner-tree.' }))
+        applicationId = (await ib.apply(partnerId, {
+          agencyId: agency.id,
+          motivation: 'Created by seed-partner-tree.',
+        }))
           .id;
         ok('application submitted', applicationId);
       }
@@ -231,6 +243,7 @@ async function main() {
        * it the day a rung is inserted.
        */
       account = await ib.approve(applicationId, actor, UNRESTRICTED, {
+        agencyId: agency.id,
         parentIbUserId: parentAccount.user_id,
       });
       ok('approved', `level ${account.level}, code ${account.referralCode}`);
@@ -528,3 +541,22 @@ main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+
+/**
+ * The agency to appoint partners under, created if the platform has none.
+ *
+ * An agency is REQUIRED on both apply and approve now — a partner without one
+ * would have clients offered the entire catalogue — so a fixture that omits it
+ * fails at the first application. Reuses an enabled agency when one exists
+ * rather than adding a second every run.
+ */
+async function ensureAgency({ db, sql, one }) {
+  const existing = await one`SELECT id, name FROM agencies WHERE enabled = true ORDER BY sort_order, name LIMIT 1`;
+  if (existing) return existing;
+
+  const created = await one`
+    INSERT INTO agencies (name, description, enabled)
+    VALUES ('Default Agency', 'Created by a seeding script — an agency is required to appoint a partner.', true)
+    RETURNING id, name`;
+  return created;
+}

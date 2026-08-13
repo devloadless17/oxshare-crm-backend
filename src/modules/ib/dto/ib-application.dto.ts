@@ -36,13 +36,21 @@ export class CreateIbApplicationDto {
    * application sit means telling somebody later that the thing they applied
    * for was never available.
    */
-  @ApiPropertyOptional({
+  /*
+   * REQUIRED. It was optional, and a blank field appointed a partner whose
+   * clients are offered the whole catalogue — the broadest grant in the system,
+   * reached by omission. `IsUUID` alone now carries the requirement; the
+   * service repeats it, because a DTO protects a ROUTE and the rule has to hold
+   * for anything that calls the service directly.
+   */
+  @ApiProperty({
     format: 'uuid',
-    description: 'Which agency the applicant wants to be appointed under.',
+    description:
+      'Which agency the applicant wants to be appointed under. Required — it decides what they ' +
+      'may sell, and there is no "any" option.',
   })
-  @IsOptional()
   @IsUUID()
-  agencyId?: string;
+  agencyId: string;
 
   @ApiPropertyOptional({
     maxLength: 2000,
@@ -198,10 +206,21 @@ export class ApproveIbApplicationDto {
    * different programme is how you produce an angry partner. Supply a value
    * only to appoint them somewhere else, which is an ordinary decision but
    * should be a deliberate one.
+   *
+   * STILL OPTIONAL, unlike the applicant's own field, and the asymmetry is the
+   * point: omitting it falls back to the application's agency rather than to
+   * "none". The service refuses when BOTH are absent — which is how the ~691
+   * applications submitted before an agency was required get approved: the
+   * reviewer must supply one here, because there is nothing to fall back to.
+   *
+   * `null` is no longer a way to appoint somebody under no agency. It is
+   * refused like an omission with nothing behind it.
    */
   @ApiPropertyOptional({
     format: 'uuid',
-    description: 'Omitted grants the agency the applicant chose. Supply one to override it.',
+    description:
+      'Omitted grants the agency the applicant chose. Required when the application carries none — ' +
+      'a partner cannot be approved without an agency.',
   })
   @IsOptional()
   @IsUUID()

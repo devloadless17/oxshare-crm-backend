@@ -313,9 +313,18 @@ export class AdminMoneyService {
    * retried; an unrecorded payout cannot be un-made.
    */
   async approveWithdrawal(id: string, actor: AuthenticatedAdmin) {
-    // R-4.3: asserted HERE, not only in the guard. A guard runs on an HTTP
-    // request; this method is what a queued job would call.
-    assertActorCan(actor, 'withdrawals.approve', 'approve a withdrawal');
+    /*
+     * R-4.3: asserted HERE, not only in the guard. A guard runs on an HTTP
+     * request; this method is what a queued job would call.
+     *
+     * `withdrawals.settle`, matching the controller. Approval now PAYS — it
+     * takes the row straight to `success` — so the permission that gates it is
+     * the one that has always meant "may complete a payout". Leaving this on
+     * `withdrawals.approve` while the route required `settle` would be worse
+     * than either choice alone: the guard and the service would disagree, and
+     * the service is the half a job runs against.
+     */
+    assertActorCan(actor, 'withdrawals.settle', 'approve and pay a withdrawal');
     await this.assertWithdrawalVisible(id, actor.clientScope);
 
     const row = await this.transactions.approve(id, actor.id, async (tx, approved) => {
@@ -328,7 +337,16 @@ export class AdminMoneyService {
       await this.notifications.notify(
         {
           recipient: { kind: 'client', id: approved.userId },
-          kind: 'withdrawal.approved',
+          /*
+           * `withdrawal.paid`, not `withdrawal.approved`.
+           *
+           * The row is `success` by the time this runs, so telling the client
+           * their withdrawal was "approved" would announce an intermediate
+           * state that no longer exists and leave them waiting for a second
+           * message that is never coming. Both kinds are in the portal's
+           * catalogue; historical rows keep the old one.
+           */
+          kind: 'withdrawal.paid',
           params: {
             transactionId: approved.id,
             amount: approved.amount,

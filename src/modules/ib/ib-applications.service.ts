@@ -332,13 +332,35 @@ export class IbApplicationsService {
      * applicant weeks later that what they asked for was never available. The
      * portal offers only open agencies; this is the control behind that.
      */
-    if (input.agencyId) {
-      const agencies = await this.catalogue.listAgencies();
-      if (!agencies.some((agency) => agency.id === input.agencyId && agency.enabled)) {
-        throw new ValidationError(
-          'That partner programme is not open for applications. Choose one from the list.',
-        );
-      }
+    /*
+     * ── AN AGENCY IS REQUIRED, not optional ──────────────────────────────────
+     *
+     * The agency decides what a partner may sell, and a partner appointed
+     * without one has clients offered the ENTIRE catalogue — the broadest
+     * permission in the system, reached by leaving a field blank. That is the
+     * wrong default for a grant that is otherwise reviewed line by line.
+     *
+     * This used to be optional so that a broker who had not configured any
+     * agencies could still recruit. The trade is now explicit and goes the
+     * other way: with no agency open, nobody can apply, and the operator is
+     * told to configure one. A programme nobody has defined is not something an
+     * applicant should be able to join by omission.
+     *
+     * Enforced HERE as well as at approval, because accepting an application
+     * against nothing and discovering it weeks later is the failure this whole
+     * block exists to prevent.
+     */
+    if (!input.agencyId) {
+      throw new ValidationError(
+        'Choose the partner programme you are applying for. An application cannot be submitted without one.',
+      );
+    }
+
+    const agencies = await this.catalogue.listAgencies();
+    if (!agencies.some((agency) => agency.id === input.agencyId && agency.enabled)) {
+      throw new ValidationError(
+        'That partner programme is not open for applications. Choose one from the list.',
+      );
     }
 
     try {
@@ -522,25 +544,48 @@ export class IbApplicationsService {
      * substituting a different programme is the version of this that produces
      * an angry partner.
      *
-     * `undefined` means "not specified by the reviewer" and falls back;
-     * explicit `null` means "appoint them under no agency", which is the only
-     * way to reach the pre-agency behaviour deliberately.
+     * `undefined` means "not specified by the reviewer" and falls back to what
+     * the applicant asked for.
      */
     const agencyId =
       options.agencyId === undefined ? (application.agencyId ?? null) : options.agencyId;
 
-    if (agencyId) {
-      const agencies = await this.catalogue.listAgencies();
-      if (!agencies.some((agency) => agency.id === agencyId)) {
-        throw new ValidationError('That agency does not exist. Reload and try again.');
-      }
-      /*
-       * A DISABLED agency is accepted here, unlike on apply. Closing a
-       * programme stops new applications; it does not invalidate the ones
-       * already in the queue, and refusing to approve them would strand every
-       * applicant who got in before the door shut.
-       */
+    /*
+     * ── NO AGENCY, NO PARTNER ────────────────────────────────────────────────
+     *
+     * `null` used to be reachable here and meant "appoint them under no
+     * agency" — the pre-agency behaviour, kept deliberately. It is refused now,
+     * on both routes into this value: a reviewer who passes null explicitly,
+     * and an older application that carries none.
+     *
+     * The reason is what a null agency GRANTS. Their clients are offered the
+     * entire product catalogue, which is the broadest permission the system
+     * has, and it was reachable by omitting a field on a form. Every other
+     * aspect of this grant — the rung, the parent, the rate — is chosen; this
+     * one defaulted to "everything".
+     *
+     * The cost is real and is the point: the ~691 applications already in the
+     * queue carry no agency, so a reviewer must now CHOOSE one for each rather
+     * than approving it blank. That is a decision they were always making
+     * implicitly.
+     */
+    if (!agencyId) {
+      throw new ValidationError(
+        'Choose the agency to appoint this partner under. A partner cannot be approved without one — ' +
+          'their clients would be offered the entire product catalogue.',
+      );
     }
+
+    const agencies = await this.catalogue.listAgencies();
+    if (!agencies.some((agency) => agency.id === agencyId)) {
+      throw new ValidationError('That agency does not exist. Reload and try again.');
+    }
+    /*
+     * A DISABLED agency is accepted here, unlike on apply. Closing a programme
+     * stops new applications; it does not invalidate the ones already in the
+     * queue, and refusing to approve them would strand every applicant who got
+     * in before the door shut.
+     */
 
     const referralCode = await this.generateReferralCode();
 

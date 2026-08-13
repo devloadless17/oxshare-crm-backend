@@ -120,7 +120,7 @@ async function makeApprovedWithdrawal(amount = '100'): Promise<{
     amount,
     currency: 'USD',
     destination: '+961 3 123 456',
-    provider: 'whish',
+    methodKey: 'whish',
   });
   await transactions.approve(requested.id, '00000000-0000-4000-8000-000000000001');
   return { txId: requested.id, userId };
@@ -406,7 +406,7 @@ describe('the request-time destination gate (Rival’s own rules, applied early)
         amount: '50',
         currency: 'USD',
         destination: 'my whish account',
-        provider: 'whish',
+        methodKey: 'whish',
       }),
     ).rejects.toThrow(/phone number/i);
 
@@ -418,7 +418,7 @@ describe('the request-time destination gate (Rival’s own rules, applied early)
         amount: '50',
         currency: 'USD',
         destination: '9617075183',
-        provider: 'whish',
+        methodKey: 'whish',
       }),
     ).rejects.toThrow(/Lebanese/i);
 
@@ -429,7 +429,7 @@ describe('the request-time destination gate (Rival’s own rules, applied early)
         amount: '50',
         currency: 'USD',
         destination: '+961 3 123 456',
-        provider: 'whish',
+        methodKey: 'whish',
       }),
     ).resolves.toBeTruthy();
     await expect(
@@ -438,7 +438,7 @@ describe('the request-time destination gate (Rival’s own rules, applied early)
         amount: '50',
         currency: 'USD',
         destination: '+49 170 1234567',
-        provider: 'whish',
+        methodKey: 'whish',
       }),
     ).resolves.toBeTruthy();
   });

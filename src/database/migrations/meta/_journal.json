@@ -435,6 +435,13 @@
       "when": 1787090002000,
       "tag": "0061_notification_payload_params",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1787090003000,
+      "tag": "0062_withdrawal_payment_methods",
+      "breakpoints": true
     }
   ]
 }
