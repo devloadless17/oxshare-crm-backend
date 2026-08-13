@@ -407,6 +407,13 @@
       "when": 1787070600000,
       "tag": "0057_untriaged_is_a_state",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1787074800000,
+      "tag": "0058_intake_granted_by_default",
+      "breakpoints": true
     }
   ]
 }

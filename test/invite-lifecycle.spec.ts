@@ -530,6 +530,8 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
 
   it('treats an EMPTY territory list as absent — unrestricted was never a choice made', async () => {
     // And therefore needs no admins.scope: nothing visibility-shaped was set.
+    // The intake grant resolves to its DEFAULT — true, because this inviter
+    // (unrestricted) can grant it (0058: restriction is the explicit act).
     const h = build();
     await h.service.createInvite(
       'new@oxshare.com',
@@ -541,7 +543,23 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
       [],
     );
     expect(h.invites.create).toHaveBeenCalledWith(
-      expect.objectContaining({ scopedTagIds: undefined, seesUntriaged: false }),
+      expect.objectContaining({ scopedTagIds: undefined, seesUntriaged: true }),
+    );
+  });
+
+  it('defaults the intake grant to FALSE for an inviter who cannot grant it', async () => {
+    // A scoped inviter without the grant must not hand out sight of the pool
+    // through a default they never chose — the default bends to the subset
+    // rule rather than around it.
+    const h = build();
+    const scoped: AuthenticatedAdmin = {
+      ...SCOPER,
+      clientScope: { unrestricted: false, tagIds: ['tag-1'], includesUntriaged: false },
+      seesUntriaged: false,
+    };
+    await h.service.createInvite('new@oxshare.com', 'New', scoped, undefined, ['kyc.review']);
+    expect(h.invites.create).toHaveBeenCalledWith(
+      expect.objectContaining({ seesUntriaged: false }),
     );
   });
 

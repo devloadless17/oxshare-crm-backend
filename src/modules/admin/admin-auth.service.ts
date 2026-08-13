@@ -368,11 +368,20 @@ export class AdminAuthService {
     }
     if (maskedFields !== undefined) this.rbac.assertMaskAllowed(actor, maskedFields);
     if (scopedTagIds !== undefined) await this.rbac.assertScopable(actor, scopedTagIds);
-    if (seesUntriaged && !actor.clientScope.unrestricted && !actor.seesUntriaged) {
+    /*
+     * The intake grant defaults to TRUE (0058) — restriction is the explicit
+     * act — EXCEPT when the inviter cannot grant it: a scoped actor without
+     * the grant themselves must not hand out sight of the pool implicitly
+     * through a default, and asking for it explicitly is refused. The default
+     * is the system's, not a choice, so it needs no `admins.scope`.
+     */
+    const actorCanGrantIntake = actor.clientScope.unrestricted || actor.seesUntriaged === true;
+    if (seesUntriaged && !actorCanGrantIntake) {
       throw new AuthorizationError(
         'You cannot grant sight of the intake pool: you do not see it yourself.',
       );
     }
+    const resolvedSeesUntriaged = seesUntriaged ?? actorCanGrantIntake;
 
     const invitedBy = actor.id;
 
@@ -386,7 +395,7 @@ export class AdminAuthService {
       permissions: grantedPermissions,
       maskedFields,
       scopedTagIds,
-      seesUntriaged: seesUntriaged ?? false,
+      seesUntriaged: resolvedSeesUntriaged,
       invitedBy,
       expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h
     });

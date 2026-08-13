@@ -65,15 +65,17 @@ export const UNRESTRICTED: ClientScope = Object.freeze({
 });
 
 /**
- * `includesUntriaged` narrows the empty-means-unrestricted rule, deliberately:
- * an admin with NO territory tags but the intake grant is an INTAKE-ONLY
- * admin — they see exactly the clients nobody has triaged yet, not everyone.
- * D-10's permissive default still holds for the admin with neither.
+ * The intake grant is ADDITIVE, never restrictive: it widens a SCOPED admin's
+ * view to include the untriaged pool, and it means nothing to an unrestricted
+ * one. Empty territory means unrestricted, full stop — pure D-10.
+ *
+ * (An earlier revision read "no tags + grant" as an intake-ONLY admin. That
+ * died the moment the grant became TRUE BY DEFAULT (0058): every unrestricted
+ * admin carried it, so every unrestricted admin — masters included — silently
+ * became intake-only. A default must never be the thing that restricts.)
  */
 export function scopeOf(tagIds: readonly string[], includesUntriaged = false): ClientScope {
-  return tagIds.length === 0 && !includesUntriaged
-    ? UNRESTRICTED
-    : { unrestricted: false, tagIds, includesUntriaged };
+  return tagIds.length === 0 ? UNRESTRICTED : { unrestricted: false, tagIds, includesUntriaged };
 }
 
 /**

@@ -8,21 +8,27 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  * D-60, final form — "new client" is a DERIVED STATE, not a tag.
  *
  * "Untriaged" means exactly "carries no tag assignments", honoured by
- * `clientScopePredicate` as an OR-branch for admins holding the
- * `sees_untriaged` grant. A materialised intake tag was tried and reverted
- * (migrations 0055–0057): stored derived state needed three guards to stay
- * true and still allowed an ORPHAN CLASS — remove a client's last territory
- * tag and nobody scoped could see them. Under the derived model that client
- * RETURNS to intake instead: every client is always either in a territory or
- * in intake, and an invisible client cannot exist.
+ * `clientScopePredicate` as an ADDITIVE OR-branch for scoped admins holding
+ * the `sees_untriaged` grant (TRUE BY DEFAULT since 0058 — restriction is the
+ * explicit act). The grant never restricts: an admin with no territories is
+ * unrestricted regardless of it, pure D-10 — the earlier "intake-only" reading
+ * of that shape died when the default flipped, because a default must never be
+ * the thing that restricts.
  *
- * Against real Postgres, because the property IS the SQL the predicate emits.
+ * The decisive property stays: every client is always either in a territory
+ * or in intake — an invisible client cannot exist. Against real Postgres,
+ * because the property IS the SQL the predicate emits.
  */
 
 let ctx: MoneyTestContext;
 let territoryTagId: string;
+/** A second territory nobody is assigned to — the clean INTAKE LENS: a scoped
+ *  admin holding it plus the grant sees exactly the untriaged pool. */
+let emptyTagId: string;
 let taggedClientId: string;
 let untaggedClientId: string;
+
+const intakeLens = () => scopeOf([emptyTagId], true);
 
 async function visibleTo(scope: ReturnType<typeof scopeOf>): Promise<string[]> {
   const predicate = clientScopePredicate(scope, users.id);
@@ -38,6 +44,11 @@ beforeAll(async () => {
     .values({ slug: 'levant-desk', label: 'Levant Desk' })
     .returning();
   territoryTagId = territory.id;
+  const [empty] = await ctx.db
+    .insert(clientTags)
+    .values({ slug: 'empty-desk', label: 'Empty Desk' })
+    .returning();
+  emptyTagId = empty.id;
 
   const [tagged] = await ctx.db
     .insert(users)
@@ -68,18 +79,15 @@ afterAll(async () => {
 });
 
 describe('the intake pool is a derived state (D-60)', () => {
-  it('an intake-only admin sees exactly the untriaged clients', async () => {
-    // The grant with NO territory tags is intake-only, not unrestricted —
-    // the deliberate narrowing of D-10's empty-means-unrestricted rule.
-    const scope = scopeOf([], true);
-    expect(scope.unrestricted).toBe(false);
-
-    const visible = await visibleTo(scope);
-    expect(visible).toContain(untaggedClientId);
-    expect(visible).not.toContain(taggedClientId);
+  it('the grant is ADDITIVE — with no territories it changes nothing (pure D-10)', () => {
+    // The default-true world's load-bearing rule: every unrestricted admin
+    // carries the grant, so it must never be the thing that restricts.
+    expect(scopeOf([], true)).toBe(UNRESTRICTED);
+    expect(scopeOf([], false)).toBe(UNRESTRICTED);
+    expect(clientScopePredicate(UNRESTRICTED, users.id)).toBeUndefined();
   });
 
-  it('a territory admin with the grant sees both pools; without it, only the territory', async () => {
+  it('a scoped admin with the grant sees their territory PLUS the untriaged pool', async () => {
     const withGrant = await visibleTo(scopeOf([territoryTagId], true));
     expect(withGrant).toContain(taggedClientId);
     expect(withGrant).toContain(untaggedClientId);
@@ -89,22 +97,25 @@ describe('the intake pool is a derived state (D-60)', () => {
     expect(withoutGrant).not.toContain(untaggedClientId);
   });
 
+  it('the intake lens sees exactly the untriaged: the grant never leaks other territories', async () => {
+    const lens = await visibleTo(intakeLens());
+    expect(lens).toContain(untaggedClientId);
+    expect(lens).not.toContain(taggedClientId);
+  });
+
   it('no orphan class: a client whose last tag is removed RETURNS to intake', async () => {
     /*
-     * The decisive property of the derived model, and the one the tag model
-     * could not give: between territories, a client is in intake — never
-     * invisible. The union of "any territory admin" and "any intake admin"
-     * covers every client at every moment.
+     * The decisive property, and the one the materialised-tag design could
+     * not give: between territories a client is in intake — never invisible.
+     * The union of territory admins and grant holders covers every client at
+     * every moment.
      */
     await ctx.db
       .delete(clientTagAssignments)
       .where(eq(clientTagAssignments.userId, taggedClientId));
 
-    const intake = await visibleTo(scopeOf([], true));
-    expect(intake).toContain(taggedClientId);
-
-    const territory = await visibleTo(scopeOf([territoryTagId], false));
-    expect(territory).not.toContain(taggedClientId);
+    expect(await visibleTo(intakeLens())).toContain(taggedClientId);
+    expect(await visibleTo(scopeOf([territoryTagId], false))).not.toContain(taggedClientId);
   });
 
   it('assigning any tag ends the intake state by definition', async () => {
@@ -112,16 +123,8 @@ describe('the intake pool is a derived state (D-60)', () => {
       .insert(clientTagAssignments)
       .values({ userId: untaggedClientId, tagId: territoryTagId });
 
-    const intake = await visibleTo(scopeOf([], true));
-    expect(intake).not.toContain(untaggedClientId);
-
-    const territory = await visibleTo(scopeOf([territoryTagId], false));
-    expect(territory).toContain(untaggedClientId);
-  });
-
-  it('neither tags nor the grant means unrestricted, exactly as before (D-10)', () => {
-    expect(scopeOf([], false)).toBe(UNRESTRICTED);
-    expect(clientScopePredicate(UNRESTRICTED, users.id)).toBeUndefined();
+    expect(await visibleTo(intakeLens())).not.toContain(untaggedClientId);
+    expect(await visibleTo(scopeOf([territoryTagId], false))).toContain(untaggedClientId);
   });
 
   it('fails CLOSED if a restricted scope ever arrives empty-handed', async () => {

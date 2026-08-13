@@ -260,7 +260,7 @@ export const admins = pgTable('admins', {
    * Only meaningful for a SCOPED admin — an unrestricted admin sees everything
    * regardless. Honoured as an OR-branch in `clientScopePredicate`.
    */
-  seesUntriaged: boolean('sees_untriaged').notNull().default(false),
+  seesUntriaged: boolean('sees_untriaged').notNull().default(true),
   /*
    * Password recovery, INITIATED BY ANOTHER MASTER ADMIN — never self-service.
    * See DECISIONS D-44.
@@ -361,7 +361,7 @@ export const adminInvites = pgTable('admin_invites', {
    */
   scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
   /** D-60 — intake grant chosen at invite time, for the same window reason. */
-  seesUntriaged: boolean('sees_untriaged').notNull().default(false),
+  seesUntriaged: boolean('sees_untriaged').notNull().default(true),
   invitedBy: uuid('invited_by').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   accepted: boolean('accepted').notNull().default(false),

@@ -693,6 +693,17 @@ export async function runSeeds(): Promise<void> {
         .insert(adminClientTagScopes)
         .values({ adminId: restrictedId, tagId: alphaTagId, createdBy: restrictedId })
         .onConflictDoNothing();
+      /*
+       * The intake grant is TRUE BY DEFAULT (migration 0058) — restriction is
+       * the explicit act. This fixture IS the explicit act: its purpose is to
+       * prove both directions of visibility, so it must NOT see the untagged
+       * pool. Re-asserted every boot, because the e2e suite depends on it the
+       * way it depends on the alpha scope above.
+       */
+      await db
+        .update(admins)
+        .set({ seesUntriaged: false })
+        .where(eq(admins.email, 'e2e-restricted@oxshare.com'));
     }
   }
 
