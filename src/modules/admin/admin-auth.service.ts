@@ -19,6 +19,8 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
+import { assertActorCan } from '../../common/security/actor';
+import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { AdminRbacService } from './admin-rbac.service';
 import { randomUUID } from 'crypto';
 import { refuseReset, RESET_TOKEN_TTL_MS } from './admin-reset';
@@ -259,7 +261,7 @@ export class AdminAuthService {
   async createInvite(
     rawEmail: string,
     name: string,
-    actor: Admin,
+    actor: AuthenticatedAdmin,
     roleId?: string,
     permissions?: string[],
     /*
@@ -344,6 +346,34 @@ export class AdminAuthService {
       grantedPermissions = role.permissions;
     }
     await this.rbac.assertGrantable(actor, grantedPermissions ?? ['kyc.review', 'admins.view']);
+
+    /*
+     * Visibility at INVITE time runs the same three guards as `updateAdmin` —
+     * the invite path used to check permissions only, so an `admins.create`
+     * holder could hand out a territory, a mask or the intake grant that the
+     * edit path would refuse them. One rulebook, both doors:
+     * - setting any visibility field needs `admins.scope`;
+     * - the mask obeys the superset rule (you cannot un-hide what is hidden
+     *   from you);
+     * - the territory obeys the subset rule via `assertScopable`;
+     * - the intake grant cannot be handed out by a scoped actor who does not
+     *   hold it themselves.
+     * An EMPTY scope list is normalised to absent — at invite it can only mean
+     * "unrestricted", and storing `[]` would read as a choice that was never
+     * made.
+     */
+    if (scopedTagIds !== undefined && scopedTagIds.length === 0) scopedTagIds = undefined;
+    if (maskedFields !== undefined || scopedTagIds !== undefined || seesUntriaged !== undefined) {
+      assertActorCan(actor, 'admins.scope', "choose an invitee's client visibility");
+    }
+    if (maskedFields !== undefined) this.rbac.assertMaskAllowed(actor, maskedFields);
+    if (scopedTagIds !== undefined) await this.rbac.assertScopable(actor, scopedTagIds);
+    if (seesUntriaged && !actor.clientScope.unrestricted && !actor.seesUntriaged) {
+      throw new AuthorizationError(
+        'You cannot grant sight of the intake pool: you do not see it yourself.',
+      );
+    }
+
     const invitedBy = actor.id;
 
     const token = uuidv4();
