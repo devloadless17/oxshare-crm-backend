@@ -1,0 +1,36 @@
+-- Drop `ib_applications.expected_volume`.
+--
+-- Hand-written rather than generated, matching 0027 onwards.
+--
+-- ── What it was, and why it is going ───────────────────────────────────────
+--
+-- A number the applicant TYPED, stored as varchar(120) because it was never
+-- measured against anything. It was asked on the partner application form,
+-- carried through to the review queue as a column, and included in the CSV
+-- export.
+--
+-- No decision was ever taken from it. The portal stopped asking when the
+-- application form was cut back to one choice and one button — motivation,
+-- expected volume and website all went, on the reasoning that a reviewer
+-- decides from the ACCOUNT and a paragraph typed to get past a form adds
+-- nothing they would weigh. Every row written since carries NULL.
+--
+-- So the column is null for everything recent and unverifiable for everything
+-- older, which is worse than not having it: a figure sitting in a review queue
+-- invites a reviewer to weigh a claim nobody checked, and its own UI label
+-- ("self-reported") existed to warn them off the thing the column was for.
+--
+-- ── DROP, not deprecate ────────────────────────────────────────────────────
+--
+-- Nothing reads it. Unlike `agency_id`, which is nullable for a real reason —
+-- applications predating agencies genuinely have none, and that absence is now
+-- refused at approval rather than silently granted — this column's absence
+-- carries no meaning worth keeping. Leaving it would preserve free text nobody
+-- validated on a table that records what somebody asked for.
+--
+-- IRREVERSIBLE in the sense that matters: the historical values are gone. They
+-- are self-reported claims against applications that were decided years of
+-- product-time ago, and the decisions themselves — status, reason, reviewer —
+-- are untouched. What an applicant guessed their volume would be is not part of
+-- the record anybody has to justify later.
+ALTER TABLE "ib_applications" DROP COLUMN IF EXISTS "expected_volume";

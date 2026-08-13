@@ -138,7 +138,7 @@ export class IbStore {
 
   async createApplication(
     values: Pick<IbApplicationRow, 'userId'> &
-      Partial<Pick<IbApplicationRow, 'motivation' | 'expectedVolume' | 'website' | 'agencyId'>>,
+      Partial<Pick<IbApplicationRow, 'motivation' | 'website' | 'agencyId'>>,
   ): Promise<IbApplicationRow> {
     const [row] = await this.db.insert(ibApplications).values(values).returning();
     return row;

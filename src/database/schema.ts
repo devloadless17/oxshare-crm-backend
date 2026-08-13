@@ -2290,8 +2290,17 @@ export const ibApplications = pgTable(
     agencyId: uuid('agency_id').references(() => agencies.id, { onDelete: 'restrict' }),
     /** Why they want it, in their words. Free text; the reviewer reads it. */
     motivation: text('motivation'),
-    /** Self-reported, unverified, and labelled as such on both screens. */
-    expectedVolume: varchar('expected_volume', { length: 120 }),
+    /*
+     * `expected_volume` was here — self-reported free text, asked on the
+     * application form and shown as a column on the review queue.
+     *
+     * Dropped, not deprecated. It was a number the applicant TYPED, stored as
+     * text because it was never measured, and no decision was ever taken from
+     * it: the portal stopped asking when the application form was cut back to
+     * one choice and one button, so every row written since carries NULL. A
+     * column that is null for new rows and unverifiable for old ones is worse
+     * than no column — it invites a reviewer to weigh a claim nobody checked.
+     */
     website: varchar('website', { length: 2048 }),
     status: ibApplicationStatusEnum('status').notNull().default('pending'),
     /**

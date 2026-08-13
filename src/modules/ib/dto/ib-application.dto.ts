@@ -16,32 +16,35 @@ export type IbApplicationStatusDto = (typeof IB_APPLICATION_STATUSES)[number];
 /**
  * What a client sends to apply.
  *
- * Every field is optional. The application is a request to be considered, not a
- * form to be passed — the reviewer's decision rests on the account behind it
- * (verified identity, activity) far more than on free text, and making
- * `motivation` mandatory produces a paragraph written to satisfy a validator.
+ * The AGENCY is required and everything else is optional, and the split is the
+ * whole design. An application is a request to be considered, not a form to be
+ * passed: the reviewer decides from the account behind it — verified identity,
+ * real activity — far more than from free text, and a mandatory `motivation`
+ * only produces a paragraph written to satisfy a validator.
+ *
+ * "Which programme" is the exception because it is not evidence, it is the
+ * REQUEST. It decides what the partner may sell, the applicant is the only one
+ * who can answer it, and leaving it blank used to grant the whole catalogue.
+ *
+ * `expectedVolume` was here too, and went with the column — a figure the
+ * applicant typed that nobody measured and no decision ever turned on. See
+ * migration 0063.
  */
 export class CreateIbApplicationDto {
   /**
-   * The agency (وكالة) being applied for.
+   * The agency (وكالة) being applied for. REQUIRED.
    *
-   * OPTIONAL, like every other field here, and for a different reason than the
-   * rest: a deployment with no agencies configured must still take
-   * applications. Where agencies DO exist the portal makes this a required
-   * choice, because "which programme" is the one question an applicant is best
-   * placed to answer and a reviewer is not.
+   * It was optional, so that a deployment with no agencies configured could
+   * still take applications — and a blank field appointed a partner whose
+   * clients are offered the whole catalogue, the broadest grant in the system,
+   * reached by omission. `IsUUID` alone now carries the requirement; the
+   * service repeats it, because a DTO protects a ROUTE and the rule has to hold
+   * for anything calling the service directly.
    *
    * Validated against the OPEN agencies on submit. A disabled one is refused
    * rather than accepted-and-queued: the programme is closed, and letting the
    * application sit means telling somebody later that the thing they applied
    * for was never available.
-   */
-  /*
-   * REQUIRED. It was optional, and a blank field appointed a partner whose
-   * clients are offered the whole catalogue — the broadest grant in the system,
-   * reached by omission. `IsUUID` alone now carries the requirement; the
-   * service repeats it, because a DTO protects a ROUTE and the rule has to hold
-   * for anything that calls the service directly.
    */
   @ApiProperty({
     format: 'uuid',
@@ -61,15 +64,6 @@ export class CreateIbApplicationDto {
   @Length(0, 2000)
   motivation?: string;
 
-  @ApiPropertyOptional({
-    maxLength: 120,
-    description: 'Self-reported and unverified. Labelled as such on the review screen.',
-  })
-  @IsOptional()
-  @IsString()
-  @Length(0, 120)
-  expectedVolume?: string;
-
   @ApiPropertyOptional({ maxLength: 2048 })
   @IsOptional()
   @IsString()
@@ -81,7 +75,6 @@ export class IbApplicationDto {
   @ApiProperty() id: string;
   @ApiProperty() userId: string;
   @ApiProperty({ type: 'string', nullable: true }) motivation: string | null;
-  @ApiProperty({ type: 'string', nullable: true }) expectedVolume: string | null;
   @ApiProperty({ type: 'string', nullable: true }) website: string | null;
   @ApiProperty({ enum: IB_APPLICATION_STATUSES }) status: IbApplicationStatusDto;
   @ApiProperty({

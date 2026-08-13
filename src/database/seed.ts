@@ -422,7 +422,17 @@ export async function runSeeds(): Promise<void> {
    */
   const partnerReasons = [
     'Insufficient trading or introducing experience',
-    'Expected volume does not meet the programme minimum',
+    /*
+     * Was 'Expected volume does not meet the programme minimum', which named a
+     * field that no longer exists — `expected_volume` went with migration 0063,
+     * so a reviewer choosing this reason could no longer point at the figure it
+     * refers to, and the applicant could not know what they had claimed.
+     *
+     * Seeds are ON CONFLICT DO NOTHING, so a database that already holds the
+     * old label keeps it. Editing it out of the catalogue is an operator's
+     * decision, not a migration's.
+     */
+    'Introducing volume does not meet the programme minimum',
     'Unable to verify the website or business details provided',
     'Application is incomplete or unclear',
     'Does not meet the eligibility criteria for this programme',

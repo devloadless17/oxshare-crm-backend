@@ -252,7 +252,6 @@ export class IbApplicationsService {
     userId: string,
     input: {
       motivation?: string;
-      expectedVolume?: string;
       website?: string;
       agencyId?: string;
     },
@@ -368,7 +367,6 @@ export class IbApplicationsService {
         userId,
         agencyId: input.agencyId ?? null,
         motivation: input.motivation ?? null,
-        expectedVolume: input.expectedVolume ?? null,
         website: input.website ?? null,
       });
 

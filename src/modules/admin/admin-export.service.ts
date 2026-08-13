@@ -419,13 +419,6 @@ export class AdminExportService {
     { header: 'Last name', value: (r) => r.user.lastName },
     { header: 'Verification level', value: (r) => r.user.verificationLevel },
     { header: 'Status', value: (r) => r.application.status },
-    /*
-     * Self-reported free text, NOT a monetary column — `expected_volume` is
-     * `varchar(120)` holding whatever the applicant typed. It is emitted
-     * verbatim, and the CSV escaping is what makes an applicant-supplied string
-     * safe in a spreadsheet.
-     */
-    { header: 'Expected volume', value: (r) => r.application.expectedVolume },
     { header: 'Website', value: (r) => r.application.website },
     { header: 'Motivation', value: (r) => r.application.motivation },
     { header: 'Rejection reason', value: (r) => r.application.rejectionReason },
@@ -625,7 +618,6 @@ export interface IbApplicationExportRow {
     userId: string;
     status: 'pending' | 'approved' | 'rejected';
     motivation: string | null;
-    expectedVolume: string | null;
     website: string | null;
     rejectionReason: string | null;
     submittedAt: Date;

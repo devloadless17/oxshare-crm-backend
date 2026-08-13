@@ -549,7 +549,7 @@ async function main() {
     const states = ['pending', 'pending', 'pending', 'rejected'];
     return insertMany(
       'ib_applications',
-      ['id', 'user_id', 'motivation', 'expected_volume', 'status', 'rejection_reason', 'submitted_at'],
+      ['id', 'user_id', 'motivation', 'status', 'rejection_reason', 'submitted_at'],
       userIds
         .filter((_, at) => at % 20 === 0)
         .map((userId, at) => {

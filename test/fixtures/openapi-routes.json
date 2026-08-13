@@ -102,6 +102,7 @@
   "GET /v1/payments/methods",
   "GET /v1/payments/transactions",
   "GET /v1/payments/transfers",
+  "GET /v1/payments/withdrawal-methods",
   "GET /v1/platforms",
   "GET /v1/trading/accounts",
   "GET /v1/trading/accounts/self-service",
