@@ -75,6 +75,8 @@ export interface Admin {
    * person's own answer. See `RolesStore.resolveMaskedFields`.
    */
   maskedFields?: string[];
+  /** D-60 — sees the intake pool: clients with no tag assignments yet. */
+  seesUntriaged?: boolean;
   /**
    * The cutoff that invalidates access tokens issued before it.
    *
@@ -107,6 +109,8 @@ export interface AdminInvite {
    */
   maskedFields?: string[];
   scopedTagIds?: string[];
+  /** D-60 — intake grant chosen at invite time, applied on acceptance. */
+  seesUntriaged?: boolean;
   invitedBy: string;
   expiresAt: Date;
   accepted: boolean;

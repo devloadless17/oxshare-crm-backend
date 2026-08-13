@@ -36,6 +36,15 @@ export interface ClientScope {
    */
   unrestricted: boolean;
   tagIds: readonly string[];
+  /**
+   * D-60 — this scoped actor also sees the INTAKE pool: clients with no tag
+   * assignments at all. "Untriaged" is the derived state of carrying no tags
+   * (deliberately not a tag — see the schema note on `admins.sees_untriaged`),
+   * so the grant is a flag beside the territory list, not another tagId.
+   * Meaningless when `unrestricted` is true. Optional so hand-built fixtures
+   * stay valid; absent reads as false.
+   */
+  includesUntriaged?: boolean;
 }
 
 /**
@@ -49,10 +58,22 @@ export interface ClientScope {
  * The cost of that choice is a real window at invite time, which is why
  * `admin_invites.scoped_tag_ids` exists — see the schema comment.
  */
-export const UNRESTRICTED: ClientScope = Object.freeze({ unrestricted: true, tagIds: [] });
+export const UNRESTRICTED: ClientScope = Object.freeze({
+  unrestricted: true,
+  tagIds: [],
+  includesUntriaged: false,
+});
 
-export function scopeOf(tagIds: readonly string[]): ClientScope {
-  return tagIds.length === 0 ? UNRESTRICTED : { unrestricted: false, tagIds };
+/**
+ * `includesUntriaged` narrows the empty-means-unrestricted rule, deliberately:
+ * an admin with NO territory tags but the intake grant is an INTAKE-ONLY
+ * admin — they see exactly the clients nobody has triaged yet, not everyone.
+ * D-10's permissive default still holds for the admin with neither.
+ */
+export function scopeOf(tagIds: readonly string[], includesUntriaged = false): ClientScope {
+  return tagIds.length === 0 && !includesUntriaged
+    ? UNRESTRICTED
+    : { unrestricted: false, tagIds, includesUntriaged };
 }
 
 /**
@@ -85,15 +106,28 @@ export function clientScopePredicate(
   if (scope.unrestricted) return undefined;
 
   /*
-   * Unreachable: `scopeOf` maps an empty list to UNRESTRICTED, so a restricted
-   * scope always has at least one tag. It is here because if that ever stops
-   * being true, this must FAIL CLOSED. An empty `IN ()` is a SQL syntax error
-   * and an omitted predicate would show every client — of the two ways to be
-   * wrong, showing nothing is the recoverable one.
+   * D-60 — the intake branch: a client with NO tag assignments at all is in
+   * the intake pool, and this actor has been granted sight of it. Derived, not
+   * stored: "untriaged" cannot drift, cannot be deleted, and a client whose
+   * last tag is removed RETURNS here rather than becoming invisible to every
+   * scoped admin — the orphan class the materialised-tag design allowed.
    */
-  if (scope.tagIds.length === 0) return sql`false`;
+  const untriaged = scope.includesUntriaged
+    ? sql`NOT EXISTS (
+        SELECT 1 FROM ${clientTagAssignments} intake_a
+        WHERE intake_a.user_id = ${clientIdColumn}
+      )`
+    : undefined;
 
-  return sql`EXISTS (
+  /*
+   * FAIL CLOSED when the scope carries neither tags nor the intake grant —
+   * `scopeOf` maps that shape to UNRESTRICTED, so reaching here means the
+   * invariant broke, and of the two ways to be wrong, showing nothing is the
+   * recoverable one. (An empty `IN ()` would also be a SQL syntax error.)
+   */
+  if (scope.tagIds.length === 0) return untriaged ?? sql`false`;
+
+  const territory = sql`EXISTS (
     SELECT 1 FROM ${clientTagAssignments} scope_a
     WHERE scope_a.user_id = ${clientIdColumn}
       AND scope_a.tag_id IN (${sql.join(
@@ -101,4 +135,6 @@ export function clientScopePredicate(
         sql`, `,
       )})
   )`;
+
+  return untriaged ? sql`(${territory} OR ${untriaged})` : territory;
 }

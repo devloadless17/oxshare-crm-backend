@@ -273,6 +273,8 @@ export class AdminAuthService {
      */
     maskedFields?: string[],
     scopedTagIds?: string[],
+    /** D-60 — the intake grant, chosen at invite time for the window reason above. */
+    seesUntriaged?: boolean,
   ) {
     /*
      * One canonical spelling from here down.
@@ -354,6 +356,7 @@ export class AdminAuthService {
       permissions: grantedPermissions,
       maskedFields,
       scopedTagIds,
+      seesUntriaged: seesUntriaged ?? false,
       invitedBy,
       expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h
     });
@@ -407,6 +410,9 @@ export class AdminAuthService {
       // Carried from the invite. Without it the mask was always the role's
       // default and the inviter's choice was silently discarded.
       maskedFields: invite.maskedFields,
+      // D-60 — same carry, same reason: the intake grant is part of the
+      // visibility the inviter chose.
+      seesUntriaged: invite.seesUntriaged,
       status: 'active',
     });
 

@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsIn, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsOptional, IsString } from 'class-validator';
 
 // Request DTOs for role and admin-user management.
 // See the note in ./auth.dto.ts for why these moved out of the controller.
@@ -126,6 +126,14 @@ export class UpdateAdminDto {
   @IsArray()
   @IsOptional()
   scopedTagIds?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin.',
+  })
+  @IsBoolean()
+  @IsOptional()
+  seesUntriaged?: boolean;
 }
 
 /**

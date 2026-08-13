@@ -191,32 +191,12 @@ export class AdminTagsService {
         tagId,
         slug: tag.slug,
       });
-
-      /*
-       * Assigning a real tag IS the triage — D-60. A client carrying the
-       * `new-client` intake tag leaves it the moment an operator places them
-       * in any other tag, in one gesture: "carries new-client" then always
-       * means exactly "not yet triaged", with no forgotten second step
-       * leaving intake admins watching clients that already have a home.
-       *
-       * Audited against the ACTOR — their assignment caused the removal —
-       * with the trigger named, so the trail reads as one event, not two.
-       */
-      if (!tag.isSystem) {
-        const intake = await this.tags.findBySlug(ClientTagsStore.NEW_CLIENT_SLUG);
-        if (intake && intake.id !== tagId) {
-          const removed = await this.tags.unassign(clientId, intake.id);
-          if (removed) {
-            this.audit.record(actor.id, 'client_tag.unassign', 'user', clientId, {
-              tagId: intake.id,
-              slug: intake.slug,
-              reason: 'triaged',
-              triggeredBy: tag.slug,
-            });
-          }
-        }
-      }
     }
+    /*
+     * Nothing else to do for intake — D-60, final form. "Untriaged" is the
+     * DERIVED state of carrying no tags, so this assignment has already ended
+     * it by existing. No second tag to remove, no second audit row to write.
+     */
     return this.tags.tagsForClient(clientId);
   }
 

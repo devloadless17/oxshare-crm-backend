@@ -11723,6 +11723,9 @@
               "$ref": "#/components/schemas/AdminScopeTagDto"
             }
           },
+          "seesUntriaged": {
+            "type": "boolean"
+          },
           "avatarUrl": {
             "type": "string",
             "nullable": true,
@@ -11747,6 +11750,7 @@
           "status",
           "maskedFields",
           "scopedTags",
+          "seesUntriaged",
           "createdAt"
         ]
       },
@@ -11798,6 +11802,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "seesUntriaged": {
+            "type": "boolean",
+            "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin."
           }
         },
         "required": [
@@ -13196,6 +13204,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "seesUntriaged": {
+            "type": "boolean",
+            "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin."
           }
         }
       },

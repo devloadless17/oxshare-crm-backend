@@ -2,7 +2,7 @@ import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { adminClientTagScopes, admins, roles, users } from '../src/database/schema';
+import { adminClientTagScopes, admins, roles, users, clientTags } from '../src/database/schema';
 
 /**
  * ADM-14 tagging and the row-level client visibility built on it, END TO END.
@@ -429,87 +429,32 @@ describe('deleting a tag that is somebody’s territory', () => {
   });
 });
 
-describe('the intake tag is load-bearing — D-60', () => {
-  it('refuses to delete a SYSTEM tag, with the reason', async () => {
-    /*
-     * The scope FK protects a tag once somebody's territory references it;
-     * `new-client` is load-bearing BEFORE that moment, because registration
-     * itself attaches it. Deleting it would silently turn intake back into a
-     * pool only unrestricted admins can see.
-     */
+describe('system tags — the generic guard D-60 left behind', () => {
+  /*
+   * "New client" itself is a DERIVED state now, not a tag (see
+   * `untriaged-intake.spec.ts` — the tag design was reverted by migration
+   * 0057). What survives is the generic mechanism it proved: a tag the
+   * PRODUCT depends on can be marked `is_system` and cannot be deleted,
+   * while its label stays editable and per-client unassignment stays
+   * allowed. No system tag ships today; the guard is proven against one
+   * inserted directly, so whoever mints the next one inherits it working.
+   */
+  it('refuses to delete a system tag with the reason, and serves isSystem on the wire', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
-    const list = (await session.get(TAGS)).body as { id: string; slug: string }[];
-    const intake = list.find((tag) => tag.slug === 'new-client');
-    expect(intake, 'migration 0055 did not seed the new-client tag').toBeDefined();
+    const db = ctx.db.db;
+    const [systemTag] = await db
+      .insert(clientTags)
+      .values({ slug: 'system-probe', label: 'System Probe', isSystem: true })
+      .returning();
 
-    const res = await session.del(`${TAGS}/${intake!.id}`);
+    const list = (await session.get(TAGS)).body as { slug: string; isSystem: boolean }[];
+    expect(list.find((tag) => tag.slug === 'system-probe')?.isSystem).toBe(true);
+
+    const res = await session.del(`${TAGS}/${systemTag.id}`);
     expect(res.status).toBe(409);
     expect((res.body as { message: string }).message).toMatch(/system tag/i);
-  });
 
-  it('serves isSystem on the wire, so the console can disable the delete where the operator looks', async () => {
-    const session = await actingAs(ctx, 'admin', MASTER);
-    const list = (await session.get(TAGS)).body as { slug: string; isSystem: boolean }[];
-    expect(list.find((tag) => tag.slug === 'new-client')?.isSystem).toBe(true);
-    expect(list.filter((tag) => tag.slug !== 'new-client').every((t) => t.isSystem === false)).toBe(
-      true,
-    );
-  });
-
-  it('triages in ONE gesture: assigning a real tag removes new-client, audited as one event', async () => {
-    const session = await actingAs(ctx, 'admin', MASTER);
-    const db = ctx.db.db;
-
-    const [client] = await db
-      .insert(users)
-      .values({
-        email: 'triage-target@oxshare-e2e.test',
-        passwordHash: 'x',
-        firstName: 'Triage',
-        lastName: 'Target',
-      })
-      .returning();
-    const list = (await session.get(TAGS)).body as { id: string; slug: string }[];
-    const intake = list.find((tag) => tag.slug === 'new-client')!;
-    // The client arrives carrying the intake tag, as registration leaves them.
-    await session.post(`${CLIENTS}/${client.id}/tags/${intake.id}`);
-
-    // A territory tag to triage them into. The slug is DERIVED from the label.
-    const created = await session.post(TAGS, { label: 'Triage Desk' });
-    expect(created.status).toBe(201);
-    const desk = created.body as { id: string };
-    const after = await session.post(`${CLIENTS}/${client.id}/tags/${desk.id}`);
-
-    const slugs = (after.body as { slug: string }[]).map((tag) => tag.slug);
-    expect(slugs, 'the intake tag survived the triage').not.toContain('new-client');
-    expect(slugs).toContain('triage-desk');
-  });
-
-  it('does NOT remove new-client when the assignment was a no-op replay', async () => {
-    // Replaying the same assignment must not fire the triage side-effect —
-    // the audit trail would describe a removal that never had a cause.
-    const session = await actingAs(ctx, 'admin', MASTER);
-    const db = ctx.db.db;
-    const [client] = await db
-      .insert(users)
-      .values({
-        email: 'triage-replay@oxshare-e2e.test',
-        passwordHash: 'x',
-        firstName: 'Replay',
-        lastName: 'Target',
-      })
-      .returning();
-    const list = (await session.get(TAGS)).body as { id: string; slug: string }[];
-    const intake = list.find((tag) => tag.slug === 'new-client')!;
-    const desk = list.find((tag) => tag.slug === 'triage-desk')!;
-
-    // Tag with the desk FIRST, then intake, then replay the desk assignment.
-    await session.post(`${CLIENTS}/${client.id}/tags/${desk.id}`);
-    await session.post(`${CLIENTS}/${client.id}/tags/${intake.id}`);
-    const replay = await session.post(`${CLIENTS}/${client.id}/tags/${desk.id}`);
-
-    const slugs = (replay.body as { slug: string }[]).map((tag) => tag.slug);
-    // The replay created nothing, so it triaged nothing.
-    expect(slugs).toContain('new-client');
+    // Ordinary tags are unaffected by the flag's existence.
+    expect(list.filter((tag) => tag.slug !== 'system-probe').every((t) => !t.isSystem)).toBe(true);
   });
 });

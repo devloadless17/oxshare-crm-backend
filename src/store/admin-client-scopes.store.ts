@@ -39,9 +39,13 @@ export class AdminClientScopesStore {
     return rows.map((r) => r.tagId);
   }
 
-  /** The resolved scope, with the empty-means-unrestricted rule applied once. */
-  async scopeFor(adminId: string): Promise<ClientScope> {
-    return scopeOf(await this.tagIdsFor(adminId));
+  /**
+   * The resolved scope, with the empty-means-unrestricted rule applied once.
+   * `seesUntriaged` comes from the ADMIN row the caller already holds (D-60) —
+   * this store owns only the territory table.
+   */
+  async scopeFor(adminId: string, seesUntriaged = false): Promise<ClientScope> {
+    return scopeOf(await this.tagIdsFor(adminId), seesUntriaged);
   }
 
   /** The scope with tag names attached, for the admin directory and the modal. */

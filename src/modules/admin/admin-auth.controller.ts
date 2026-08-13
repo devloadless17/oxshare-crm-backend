@@ -186,6 +186,7 @@ export class AdminAuthController {
       dto.permissions,
       dto.maskedFields,
       dto.scopedTagIds,
+      dto.seesUntriaged,
     );
   }
 

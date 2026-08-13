@@ -59,13 +59,6 @@ const toTag = (r: TagColumns): ClientTag => ({
  */
 @Injectable()
 export class ClientTagsStore {
-  /**
-   * The intake territory — D-60. Attached to every registration by
-   * `AuthService.register`, guaranteed to exist by migration 0055, removed by
-   * an operator when the client is triaged into a real territory.
-   */
-  static readonly NEW_CLIENT_SLUG = 'new-client';
-
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
   /**

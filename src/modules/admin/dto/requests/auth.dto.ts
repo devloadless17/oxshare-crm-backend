@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsArray,
+  IsBoolean,
   IsEmail,
   IsNotEmpty,
   IsOptional,
@@ -108,6 +109,14 @@ export class InviteDto {
   @IsArray()
   @IsOptional()
   scopedTagIds?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin.',
+  })
+  @IsBoolean()
+  @IsOptional()
+  seesUntriaged?: boolean;
 }
 
 export class AcceptInviteDto {

@@ -4,7 +4,6 @@ import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import { UsersStore, User } from '../../store/users.store';
 import { IbStore } from '../../store/ib.store';
-import { ClientTagsStore } from '../../store/client-tags.store';
 import {
   WALLET_PROVISIONING,
   type WalletProvisioningPort,
@@ -128,15 +127,6 @@ export class AuthService {
     @Optional()
     @Inject(WALLET_PROVISIONING)
     private readonly walletProvisioning?: WalletProvisioningPort,
-    /*
-     * Attaches the D-60 intake tag at registration. A STORE from the @Global
-     * StoreModule for the same cycle reason as `ib` above, and OPTIONAL for
-     * the same positional-construction reason: the suite's hand-built
-     * `new AuthService(...)` calls stay valid, and registration proceeds
-     * untagged (silently) without it.
-     */
-    @Optional()
-    private readonly clientTags?: ClientTagsStore,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -214,33 +204,13 @@ export class AuthService {
     await this.walletProvisioning?.openAllEnabledWallets(user.id);
 
     /*
-     * The intake tag — D-60. Under row-level scoping (D-45) an untagged client
-     * is invisible to every tag-scoped admin, so a fresh registration would
-     * otherwise sit in a pool only unrestricted admins can see. Tagging them
-     * `new-client` at birth makes intake a TERRITORY: scope the intake team to
-     * this tag and they see every registrant; triage is the ordinary tag UI.
-     *
-     * Non-fatal on purpose, like the wallets above: the tag row is guaranteed
-     * by migration 0055, but if an operator deleted it, creating the account
-     * must not fail over its tagging — the client lands in the unrestricted
-     * pool and the warning says why.
+     * Registration deliberately does NOT tag the client — D-60, final form.
+     * "New / untriaged" is the DERIVED state of carrying no tag assignments,
+     * honoured by `clientScopePredicate` for admins holding the
+     * `sees_untriaged` grant. A materialised intake tag was tried and reverted
+     * (migrations 0055–0057): stored derived state needed guards to stay true
+     * and still allowed an orphan class the derived state cannot express.
      */
-    try {
-      const intake = await this.clientTags?.findBySlug(ClientTagsStore.NEW_CLIENT_SLUG);
-      if (intake) {
-        await this.clientTags?.assign(user.id, intake.id, null);
-      } else if (this.clientTags) {
-        this.logger.warn(
-          `The '${ClientTagsStore.NEW_CLIENT_SLUG}' intake tag does not exist — ` +
-            `${user.email} registered untagged and is visible only to unrestricted admins.`,
-        );
-      }
-    } catch (error) {
-      this.logger.warn(
-        `Could not attach the intake tag to ${user.email}: ` +
-          `${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
 
     // The verification link is a bearer credential. It is emailed and never
     // written to stdout — it used to be console.logged in every environment.

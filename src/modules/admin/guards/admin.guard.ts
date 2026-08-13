@@ -318,7 +318,9 @@ export class AdminAuthenticator {
     // territory or hiding a field must take effect on the next request, not
     // whenever a 15-minute token happens to expire.
     const [clientScope, storedMask] = await Promise.all([
-      this.scopes.scopeFor(admin.id),
+      // D-60: the intake grant rides the admin row; the territory rides its
+      // own table. `scopeOf` combines them under one unrestricted rule.
+      this.scopes.scopeFor(admin.id, admin.seesUntriaged),
       this.roles.resolveMaskedFields(admin.roleId, admin.maskedFields),
     ]);
 
