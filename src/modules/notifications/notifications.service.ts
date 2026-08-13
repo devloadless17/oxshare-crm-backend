@@ -128,7 +128,10 @@ export class NotificationsService implements NotificationDispatchPort {
       if (!held.some((key) => normalizePermissionKey(key) === wanted)) continue;
 
       if (subjectClientId) {
-        const scope = await this.scopes.scopeFor(admin.id);
+        // Pass the admin's OWN intake grant (D-60) — omitting it treated an
+        // intake-granted admin as restricted and dropped their bell for an
+        // untagged client's event.
+        const scope = await this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false);
         if (!scope.unrestricted) {
           /*
            * Visibility applied at WRITE time: an out-of-scope admin never

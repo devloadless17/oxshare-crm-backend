@@ -33,8 +33,12 @@ import type { ApiKeyListRow, ApiKeyRow } from '../../store/api-keys.store';
  * narrowly; `apikeys.view` and `apikeys.revoke` are safe to spread, and revoking
  * quickly is what you want when a key leaks.
  *
- * `assertGrantable` still bounds what a key may carry, so a holder cannot mint
- * one more powerful than themselves.
+ * `assertGrantable` bounds the PERMISSIONS a key may carry, and migration 0059
+ * bounds its TERRITORY: a key is minted with a snapshot of its creator's client
+ * scope, so a tag-scoped admin cannot mint a key that reads outside their tags.
+ * Between the two, a holder cannot mint a key more powerful than themselves in
+ * either dimension — the earlier "unrestricted in territory" gap is closed
+ * (found by the 13 Aug scoped walk, #7).
  */
 /*
  * `@NotClientScoped` is declared PER METHOD below, not once on the class.

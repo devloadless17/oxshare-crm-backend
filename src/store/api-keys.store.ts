@@ -22,6 +22,10 @@ export interface ApiKeyRow {
   prefix: string;
   permissions: string[];
   createdBy: string | null;
+  /** The creator's territory, snapshot at creation. `null`/`[]` = unrestricted. */
+  scopedTagIds: string[] | null;
+  /** The creator's intake grant, snapshot with the territory (D-60). */
+  seesUntriaged: boolean;
   expiresAt: Date | null;
   revokedAt: Date | null;
   lastUsedAt: Date | null;
@@ -39,6 +43,9 @@ export interface ApiKeyCreate {
   prefix: string;
   permissions: string[];
   createdBy: string;
+  /** The creator's territory, snapshot at creation — see the row comment. */
+  scopedTagIds: string[] | null;
+  seesUntriaged: boolean;
   expiresAt: Date | null;
 }
 
@@ -111,6 +118,8 @@ export class ApiKeysStore {
         prefix: apiKeys.prefix,
         permissions: apiKeys.permissions,
         createdBy: apiKeys.createdBy,
+        scopedTagIds: apiKeys.scopedTagIds,
+        seesUntriaged: apiKeys.seesUntriaged,
         expiresAt: apiKeys.expiresAt,
         revokedAt: apiKeys.revokedAt,
         lastUsedAt: apiKeys.lastUsedAt,

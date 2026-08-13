@@ -19,7 +19,7 @@ import {
   RequirePermissions,
   type AuthenticatedAdmin,
 } from '../../admin/guards/admin.guard';
-import { ScopedToClients } from '../../admin/guards/client-scope.decorator';
+import { NotClientScoped, ScopedToClients } from '../../admin/guards/client-scope.decorator';
 import { Audited, NotAudited } from '../../admin/guards/audited.decorator';
 
 /**
@@ -59,7 +59,7 @@ export class Mt5AccountsController {
   @RequirePermissions('trading.create')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'MT5 groups an account may be opened in, read live from the server' })
-  @ScopedToClients('Reads MT5 server configuration. No client rows are involved.')
+  @NotClientScoped('Reads MT5 server configuration. No client rows are involved.')
   listGroups(@Req() req: Request & { admin: AuthenticatedAdmin }) {
     return this.accounts.listGroups(req.admin);
   }

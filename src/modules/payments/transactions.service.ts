@@ -504,12 +504,20 @@ export class TransactionsService {
       .from(transactions)
       .where(where);
 
-    // Per-state counts over the full set, so admin tab counts stay correct
-    // regardless of the active filter.
+    /*
+     * Per-state counts over the full set — deliberately ignoring the STATE
+     * filter (the desk tabs must show every state's size regardless of the
+     * active tab) but NEVER the SCOPE. This aggregated without the scope
+     * predicate once, and the row a scoped admin could not see still moved
+     * their nav badge and tab counts: aggregate intelligence about clients
+     * outside their territory, found live by the 13 Aug scoped walk.
+     */
+    const countConditions = [eq(transactions.direction, 'withdrawal')];
+    if (scoped) countConditions.push(scoped);
     const countRows = await db
       .select({ state: transactions.state, value: sql<number>`count(*)::int` })
       .from(transactions)
-      .where(eq(transactions.direction, 'withdrawal'))
+      .where(and(...countConditions))
       .groupBy(transactions.state);
     const counts: Record<string, number> = { all: 0 };
     for (const row of countRows) {

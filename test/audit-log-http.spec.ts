@@ -332,6 +332,48 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
         subjectType: 'admin',
         subjectId: scopedAdmin.id,
       },
+      /*
+       * The money and trading rows the first D-54 fix MISSED (found by the
+       * 13 Aug scoped walk). Each names a client OUTSIDE the territory, but not
+       * in `subjectId`:
+       *  - `ib_account` keeps it in the subject (a partner IS a user);
+       *  - `transaction` / `wallet` keep it in `details.userId`;
+       *  - `trading_account` keeps it in `details.clientId` (subject is the
+       *    MT5 account uuid). `auditRowClientId()` reads all three.
+       */
+      {
+        actorId: scopedAdmin.id,
+        actorEmail: SCOPED.email,
+        action: 'ib.approve',
+        subjectType: 'ib_account',
+        subjectId: outScope.id,
+      },
+      {
+        actorId: scopedAdmin.id,
+        actorEmail: SCOPED.email,
+        action: 'wallet.credit',
+        subjectType: 'transaction',
+        subjectId: '11111111-2222-3333-4444-555555555555',
+        details: { userId: outScope.id, amount: '500.00000000' },
+      },
+      {
+        actorId: scopedAdmin.id,
+        actorEmail: SCOPED.email,
+        action: 'trading_account.create',
+        subjectType: 'trading_account',
+        subjectId: '99999999-8888-7777-6666-555555555555',
+        details: { clientId: outScope.id },
+      },
+      // The in-scope side of the money path, to prove the filter keeps as well
+      // as drops — a wallet credit for the reader's OWN client must remain.
+      {
+        actorId: scopedAdmin.id,
+        actorEmail: SCOPED.email,
+        action: 'wallet.credit',
+        subjectType: 'transaction',
+        subjectId: '22222222-3333-4444-5555-666666666666',
+        details: { userId: inScope.id, amount: '10.00000000' },
+      },
     ]);
 
     const scoped = await actingAs(ctx, 'admin', SCOPED);
@@ -350,6 +392,22 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
     expect(
       visible.some((r) => r.subjectType === 'admin' && r.subjectId === scopedAdmin.id),
       'an admin-subject row was over-filtered — the trail about administrators is not client data',
+    ).toBe(true);
+    // The money / trading / ib rows that name the out-of-scope client anywhere
+    // — subject OR details — must all be gone.
+    expect(
+      visible.some(
+        (r) =>
+          r.subjectId === '11111111-2222-3333-4444-555555555555' ||
+          r.subjectId === '99999999-8888-7777-6666-555555555555' ||
+          (r.subjectType === 'ib_account' && r.subjectId === outScope.id),
+      ),
+      'a money/trading/ib row naming an out-of-scope client in its details leaked',
+    ).toBe(false);
+    // …but the reader's OWN client's wallet credit stays visible.
+    expect(
+      visible.some((r) => r.subjectId === '22222222-3333-4444-5555-666666666666'),
+      'an in-scope wallet credit was over-filtered',
     ).toBe(true);
 
     // The unrestricted reader still sees everything, including the rows the

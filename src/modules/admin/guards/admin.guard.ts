@@ -27,7 +27,7 @@ import { normalizePermissionKey } from '../../../common/security/actor';
 import { AdminClientScopesStore } from '../../../store/admin-client-scopes.store';
 import { RefreshTokensService } from '../../../common/security/refresh-tokens.service';
 import { ClientFieldsService } from '../client-fields.service';
-import { UNRESTRICTED, type ClientScope } from '../../../common/security/client-scope';
+import { scopeOf, type ClientScope } from '../../../common/security/client-scope';
 import { EMPTY_MASK, type FieldMask } from '../../../common/security/field-mask';
 
 /*
@@ -320,7 +320,7 @@ export class AdminAuthenticator {
     const [clientScope, storedMask] = await Promise.all([
       // D-60: the intake grant rides the admin row; the territory rides its
       // own table. `scopeOf` combines them under one unrestricted rule.
-      this.scopes.scopeFor(admin.id, admin.seesUntriaged),
+      this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false),
       this.roles.resolveMaskedFields(admin.roleId, admin.maskedFields),
     ]);
 
@@ -409,24 +409,25 @@ export class AdminAuthenticator {
     };
 
     /*
-     * A key is UNRESTRICTED IN TERRITORY but fully permission-checked, and that
-     * combination is a deliberate limit worth stating.
+     * A key authenticates with the TERRITORY it was minted with (migration
+     * 0059), not with unrestricted sight. It used to be unrestricted regardless
+     * of who created it, so a tag-scoped admin holding `apikeys.create` could
+     * mint a key that read the whole client base and launder their scope away
+     * (#7, found by the 13 Aug scoped walk). `scopeOf` maps an empty/absent tag
+     * list back to UNRESTRICTED, so a key from an unrestricted admin still sees
+     * the whole book — the reporting-job case is unchanged. The snapshot lives
+     * on the key, never a live join to the creator, so it neither drifts with
+     * the creator's scope nor breaks when they are deleted.
      *
-     * Client scoping is a property of an admin_client_tag_scopes row keyed by
-     * admin id; a key has no such row and inventing one would be inventing a
-     * territory nobody chose. So a key sees every client its permissions allow
-     * it to read. That is correct for the integrations this feature exists for
-     * — a reporting job over the whole book — and it is why issuing a key is
-     * master-admin-only and why `assertGrantable` bounds what one may hold.
-     *
-     * If per-key territory is ever wanted, it belongs as a scope column on this
-     * table feeding `clientScope` here, NOT as a join to the creator's scope:
-     * the key would then silently change territory when its creator did.
+     * The field MASK stays empty: masking is a per-admin display concern and a
+     * key is a machine reader, not a screen. Territory is access (which rows
+     * exist to it at all); a mask is presentation (which columns a person is
+     * shown). The escalation was in the first, so that is what this closes.
      */
     return {
       ...identity,
       permissions,
-      clientScope: UNRESTRICTED,
+      clientScope: scopeOf(row.scopedTagIds ?? [], row.seesUntriaged),
       fieldMask: EMPTY_MASK,
     };
   }
