@@ -12053,6 +12053,10 @@
           "description": {
             "type": "string"
           },
+          "isSystem": {
+            "type": "boolean",
+            "description": "A tag the platform itself assigns (new-client intake, D-60). Undeletable; label and colour editable; un-assigning from a client is how they are triaged out of it."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -12062,6 +12066,7 @@
           "id",
           "slug",
           "label",
+          "isSystem",
           "createdAt"
         ]
       },
@@ -12468,6 +12473,10 @@
           "description": {
             "type": "string"
           },
+          "isSystem": {
+            "type": "boolean",
+            "description": "A tag the platform itself assigns (new-client intake, D-60). Undeletable; label and colour editable; un-assigning from a client is how they are triaged out of it."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -12481,6 +12490,7 @@
           "id",
           "slug",
           "label",
+          "isSystem",
           "createdAt",
           "clientCount"
         ]

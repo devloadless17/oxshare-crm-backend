@@ -428,3 +428,88 @@ describe('deleting a tag that is somebody’s territory', () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe('the intake tag is load-bearing — D-60', () => {
+  it('refuses to delete a SYSTEM tag, with the reason', async () => {
+    /*
+     * The scope FK protects a tag once somebody's territory references it;
+     * `new-client` is load-bearing BEFORE that moment, because registration
+     * itself attaches it. Deleting it would silently turn intake back into a
+     * pool only unrestricted admins can see.
+     */
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const list = (await session.get(TAGS)).body as { id: string; slug: string }[];
+    const intake = list.find((tag) => tag.slug === 'new-client');
+    expect(intake, 'migration 0055 did not seed the new-client tag').toBeDefined();
+
+    const res = await session.del(`${TAGS}/${intake!.id}`);
+    expect(res.status).toBe(409);
+    expect((res.body as { message: string }).message).toMatch(/system tag/i);
+  });
+
+  it('serves isSystem on the wire, so the console can disable the delete where the operator looks', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const list = (await session.get(TAGS)).body as { slug: string; isSystem: boolean }[];
+    expect(list.find((tag) => tag.slug === 'new-client')?.isSystem).toBe(true);
+    expect(list.filter((tag) => tag.slug !== 'new-client').every((t) => t.isSystem === false)).toBe(
+      true,
+    );
+  });
+
+  it('triages in ONE gesture: assigning a real tag removes new-client, audited as one event', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const db = ctx.db.db;
+
+    const [client] = await db
+      .insert(users)
+      .values({
+        email: 'triage-target@oxshare-e2e.test',
+        passwordHash: 'x',
+        firstName: 'Triage',
+        lastName: 'Target',
+      })
+      .returning();
+    const list = (await session.get(TAGS)).body as { id: string; slug: string }[];
+    const intake = list.find((tag) => tag.slug === 'new-client')!;
+    // The client arrives carrying the intake tag, as registration leaves them.
+    await session.post(`${CLIENTS}/${client.id}/tags/${intake.id}`);
+
+    // A territory tag to triage them into. The slug is DERIVED from the label.
+    const created = await session.post(TAGS, { label: 'Triage Desk' });
+    expect(created.status).toBe(201);
+    const desk = created.body as { id: string };
+    const after = await session.post(`${CLIENTS}/${client.id}/tags/${desk.id}`);
+
+    const slugs = (after.body as { slug: string }[]).map((tag) => tag.slug);
+    expect(slugs, 'the intake tag survived the triage').not.toContain('new-client');
+    expect(slugs).toContain('triage-desk');
+  });
+
+  it('does NOT remove new-client when the assignment was a no-op replay', async () => {
+    // Replaying the same assignment must not fire the triage side-effect —
+    // the audit trail would describe a removal that never had a cause.
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const db = ctx.db.db;
+    const [client] = await db
+      .insert(users)
+      .values({
+        email: 'triage-replay@oxshare-e2e.test',
+        passwordHash: 'x',
+        firstName: 'Replay',
+        lastName: 'Target',
+      })
+      .returning();
+    const list = (await session.get(TAGS)).body as { id: string; slug: string }[];
+    const intake = list.find((tag) => tag.slug === 'new-client')!;
+    const desk = list.find((tag) => tag.slug === 'triage-desk')!;
+
+    // Tag with the desk FIRST, then intake, then replay the desk assignment.
+    await session.post(`${CLIENTS}/${client.id}/tags/${desk.id}`);
+    await session.post(`${CLIENTS}/${client.id}/tags/${intake.id}`);
+    const replay = await session.post(`${CLIENTS}/${client.id}/tags/${desk.id}`);
+
+    const slugs = (replay.body as { slug: string }[]).map((tag) => tag.slug);
+    // The replay created nothing, so it triaged nothing.
+    expect(slugs).toContain('new-client');
+  });
+});

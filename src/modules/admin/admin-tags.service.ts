@@ -119,6 +119,26 @@ export class AdminTagsService {
     if (!tag) throw new NotFoundError('Tag not found.');
 
     /*
+     * A SYSTEM tag cannot be deleted at all — the product itself writes it.
+     *
+     * The scope guard below protects a tag once somebody's territory
+     * references it; `new-client` (D-60) is load-bearing BEFORE that moment,
+     * because registration attaches it. Deleting it would silently turn
+     * intake back into a pool only unrestricted admins can see. Same pattern
+     * as the four mandated KYC steps: label and colour stay editable,
+     * existence is not negotiable. Un-assigning it from a client stays
+     * allowed — that is triage, not deletion.
+     */
+    if (tag.isSystem) {
+      throw new ConflictError(
+        `"${tag.label}" is a system tag — the platform assigns it automatically ` +
+          '(new registrations land in it), so it cannot be deleted. Its label and ' +
+          'colour can be edited, and removing it from individual clients is how ' +
+          'they are triaged out of it.',
+      );
+    }
+
+    /*
      * A tag that is somebody's TERRITORY cannot be deleted.
      *
      * The database enforces this too (`admin_client_tag_scopes.tag_id` is ON
@@ -171,6 +191,31 @@ export class AdminTagsService {
         tagId,
         slug: tag.slug,
       });
+
+      /*
+       * Assigning a real tag IS the triage — D-60. A client carrying the
+       * `new-client` intake tag leaves it the moment an operator places them
+       * in any other tag, in one gesture: "carries new-client" then always
+       * means exactly "not yet triaged", with no forgotten second step
+       * leaving intake admins watching clients that already have a home.
+       *
+       * Audited against the ACTOR — their assignment caused the removal —
+       * with the trigger named, so the trail reads as one event, not two.
+       */
+      if (!tag.isSystem) {
+        const intake = await this.tags.findBySlug(ClientTagsStore.NEW_CLIENT_SLUG);
+        if (intake && intake.id !== tagId) {
+          const removed = await this.tags.unassign(clientId, intake.id);
+          if (removed) {
+            this.audit.record(actor.id, 'client_tag.unassign', 'user', clientId, {
+              tagId: intake.id,
+              slug: intake.slug,
+              reason: 'triaged',
+              triggeredBy: tag.slug,
+            });
+          }
+        }
+      }
     }
     return this.tags.tagsForClient(clientId);
   }

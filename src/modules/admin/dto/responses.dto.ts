@@ -245,6 +245,12 @@ export class ClientTagDto {
   @ApiProperty() label: string;
   @ApiPropertyOptional() color?: string;
   @ApiPropertyOptional() description?: string;
+  @ApiProperty({
+    description:
+      'A tag the platform itself assigns (new-client intake, D-60). Undeletable; label and ' +
+      'colour editable; un-assigning from a client is how they are triaged out of it.',
+  })
+  isSystem: boolean;
   @ApiProperty() createdAt: Date;
 }
 

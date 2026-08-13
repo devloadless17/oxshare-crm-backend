@@ -471,6 +471,13 @@ export const clientTags = pgTable(
     label: varchar('label', { length: 100 }).notNull(),
     /** Chip colour token for the admin UI. Presentation, hence nullable. */
     color: varchar('color', { length: 32 }),
+    /**
+     * A tag the PRODUCT depends on — `new-client` (D-60) is attached by
+     * registration itself. Deletion is refused for system tags (the scope FK
+     * only protects a tag once a territory references it); label and colour
+     * stay editable, and un-assigning from a client stays allowed (triage).
+     */
+    isSystem: boolean('is_system').notNull().default(false),
     description: text('description'),
     createdBy: uuid('created_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

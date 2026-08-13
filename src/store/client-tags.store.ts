@@ -10,6 +10,8 @@ export interface ClientTag {
   label: string;
   color?: string;
   description?: string;
+  /** A tag the product depends on — undeletable. See schema. */
+  isSystem: boolean;
   createdAt: Date;
 }
 
@@ -33,6 +35,7 @@ type TagColumns = {
   label: string;
   color: string | null;
   description: string | null;
+  isSystem: boolean;
   createdAt: Date;
 };
 
@@ -42,6 +45,7 @@ const toTag = (r: TagColumns): ClientTag => ({
   label: r.label,
   color: r.color ?? undefined,
   description: r.description ?? undefined,
+  isSystem: r.isSystem,
   createdAt: r.createdAt,
 });
 
@@ -79,6 +83,7 @@ export class ClientTagsStore {
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
+        isSystem: clientTags.isSystem,
         createdAt: clientTags.createdAt,
         // LEFT JOIN + count of the joined key, so a tag nobody carries reports
         // 0 rather than vanishing from the list.
@@ -155,6 +160,7 @@ export class ClientTagsStore {
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
+        isSystem: clientTags.isSystem,
         createdAt: clientTags.createdAt,
       })
       .from(clientTagAssignments)
@@ -183,6 +189,7 @@ export class ClientTagsStore {
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
+        isSystem: clientTags.isSystem,
         createdAt: clientTags.createdAt,
       })
       .from(clientTagAssignments)
