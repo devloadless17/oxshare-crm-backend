@@ -102,6 +102,9 @@ beforeAll(async () => {
          */
         'wallets.view',
         'trading.view',
+        // Granted so the reconciliation case below proves the refusal is about
+        // the reader's TERRITORY, not a missing permission.
+        'reconciliation.view',
       ],
     })
     .returning();
@@ -272,6 +275,32 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.get(`/v1/admin/clients/${theirsId}/tags`);
     expect(res.status).toBe(200);
+  });
+});
+
+describe('reconciliation is a whole-platform control, refused to a scoped admin (#2)', () => {
+  /*
+   * `GET /admin/reconciliation` names every client with a wallet discrepancy.
+   * There is no coherent scoped version — "balanced over your territory" does
+   * not answer whether the ledger balances — so a scoped admin holding
+   * `reconciliation.view` is refused rather than shown a slice or the whole
+   * client list. The refusal is about the READER'S territory, not any client,
+   * so it is a 403 that names no one (not the 404 the per-client routes use).
+   */
+  it('refuses a scoped admin who holds reconciliation.view — 403, not a slice', async () => {
+    const session = await actingAs(ctx, 'admin', SCOPED);
+    const res = await session.get('/v1/admin/reconciliation');
+    expect(res.status, `reconciliation answered ${res.status} for a scoped admin`).toBe(403);
+    // The body must not carry a discrepancy list — refused before the report runs.
+    expect(res.body).not.toHaveProperty('walletDiscrepancies');
+  });
+
+  it('runs the whole report for an unrestricted admin', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get('/v1/admin/reconciliation');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('walletDiscrepancies');
+    expect(res.body).toHaveProperty('balanced');
   });
 });
 

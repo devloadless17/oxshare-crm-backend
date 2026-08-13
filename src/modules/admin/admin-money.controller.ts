@@ -13,6 +13,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -487,23 +488,28 @@ export class AdminMoneyController {
 
   // ── Ledger (ADM-13) ───────────────────────────────────────────────────────
   /*
-   * MASTER ADMIN ONLY — narrowed from `ledger.view` when client scoping landed.
+   * A WHOLE-PLATFORM control, reachable only by an UNRESTRICTED admin.
    *
    * This report names clients (`WalletDiscrepancy.userId`) and there is no
    * correct way to scope it. Restricting it to a sub-admin's territory would
-   * produce a reconciliation that reports "balanced" over a subset, which is
-   * the exact opposite of what a reconciliation is for — an operator would read
-   * a clean report and conclude the ledger agrees, having been shown a slice.
-   * Leaving it unscoped would hand a scoped sub-admin the ids of clients they
-   * were specifically denied.
+   * report "balanced" over a subset — the opposite of what a reconciliation is
+   * for, since an operator would read a clean report and conclude the whole
+   * ledger agrees, having been shown a slice. Leaving it unscoped would hand a
+   * scoped sub-admin the ids of clients they were specifically denied.
    *
-   * So it is neither scoped nor left open: it moves to the one role that is
-   * unrestricted by definition, and the answer stays whole.
+   * The old resolution was "master admin only", which the permission rework
+   * dissolved — `reconciliation.view` is now an ordinary grantable key, so the
+   * leak reopened (finding #2, 13 Aug scoped walk). The answer that survives
+   * the master role's removal is a property of the READER, not a role: the
+   * report stays WHOLE, and only an admin who can see the whole platform may
+   * run it. A scoped admin is refused with a 403 that names no client — the
+   * refusal is about the reader's own territory, not any target, so it is not
+   * an enumeration oracle. `assertUnrestricted` is the same check the
+   * reconciliation over a fragment would fail on its own terms.
    *
-   * CONSEQUENCE, stated because it is a removal: any sub-admin who held
-   * `ledger.view` could reach this and no longer can. `GET /admin/ledger` is
-   * unaffected — that one IS scoped, and a filtered ledger is a coherent thing
-   * to look at in a way a filtered reconciliation is not.
+   * `GET /admin/ledger` is unaffected — that one IS scoped, and a filtered
+   * ledger is a coherent thing to look at in a way a filtered reconciliation
+   * is not.
    */
   @Get('reconciliation')
   @UseGuards(PermissionsGuard)
@@ -515,13 +521,22 @@ export class AdminMoneyController {
       'The same check the hourly job runs: every wallet balance against the sum of its own ' +
       'ledger, and every confirmed accrual against the entry that should have credited it. ' +
       'Read-only — a discrepancy is reported, never repaired, because an automatic correction ' +
-      'would write a compensating entry for a cause nobody has diagnosed.',
+      'would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an ' +
+      'admin scoped to a client territory is refused, because a reconciliation over a fragment ' +
+      'is meaningless and the full report names clients outside their territory.',
   })
   @ApiOkResponse({ type: ReconciliationReportDto })
   @NotClientScoped(
-    'Gated on reconciliation.view and deliberately NOT client-scoped: a reconciliation reporting "balanced" over a subset of clients is the opposite of what a reconciliation is for.',
+    'Whole-platform integrity control, not a per-client read. The report is unscoped by nature; access is refused to a scoped admin (assertUnrestricted below) rather than sliced, so it never reports "balanced" over a subset and never leaks out-of-territory client ids.',
   )
-  reconcile() {
+  reconcile(@Req() req: Request & { admin: AuthenticatedAdmin }) {
+    if (!req.admin.clientScope.unrestricted) {
+      throw new ForbiddenException(
+        'Reconciliation is a whole-platform integrity control. Your account is scoped to a ' +
+          'client territory, and a reconciliation over part of the ledger cannot answer whether ' +
+          'the ledger balances. Ask an administrator without a territory to run it.',
+      );
+    }
     return this.reconciliation.run();
   }
 

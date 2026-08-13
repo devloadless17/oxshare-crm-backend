@@ -230,6 +230,28 @@ describe('createInvite', () => {
     expect(h.invites.create).not.toHaveBeenCalled();
   });
 
+  it('gives an INDISTINGUISHABLE refusal for a client and an admin collision (#6)', async () => {
+    /*
+     * The membership-oracle fix: an admin holding `admins.create` but not
+     * `admins.view` must not be able to tell a CLIENT address from an existing
+     * ADMIN one by trying to invite it. Both refusals carry the same message,
+     * so a probe learns only "already in use", never "this address banks here
+     * as a client".
+     */
+    const clientCase = build({ existingClient: { id: 'user-1', email: 'taken@oxshare.com' } });
+    const adminCase = build({ existingAdmin: { id: 'admin-9', email: 'taken@oxshare.com' } });
+
+    const clientErr = await clientCase.service
+      .createInvite('taken@oxshare.com', 'X', MASTER, undefined, ['kyc.review'])
+      .catch((e: Error) => e.message);
+    const adminErr = await adminCase.service
+      .createInvite('taken@oxshare.com', 'X', MASTER, undefined, ['kyc.review'])
+      .catch((e: Error) => e.message);
+
+    expect(clientErr).toBe(adminErr);
+    expect(clientErr).not.toMatch(/client/i);
+  });
+
   it('checks the client directory with the NORMALISED address', async () => {
     // Every other guard on this path compares the lower-cased spelling; a
     // client lookup on the raw input would be the one that missed

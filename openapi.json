@@ -5274,7 +5274,6 @@
                 "email",
                 "firstName",
                 "status",
-                "type",
                 "verificationLevel",
                 "country"
               ],
@@ -5438,7 +5437,6 @@
                 "email",
                 "firstName",
                 "status",
-                "type",
                 "verificationLevel",
                 "country"
               ],
@@ -8029,7 +8027,7 @@
     },
     "/v1/admin/reconciliation": {
       "get": {
-        "description": "The same check the hourly job runs: every wallet balance against the sum of its own ledger, and every confirmed accrual against the entry that should have credited it. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed.",
+        "description": "The same check the hourly job runs: every wallet balance against the sum of its own ledger, and every confirmed accrual against the entry that should have credited it. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an admin scoped to a client territory is refused, because a reconciliation over a fragment is meaningless and the full report names clients outside their territory.",
         "operationId": "AdminMoneyController_reconcile",
         "parameters": [],
         "responses": {
@@ -9263,13 +9261,23 @@
           "ineligibleReason": {
             "type": "string",
             "nullable": true
+          },
+          "ineligibleCode": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "unverified",
+              "chain_full"
+            ],
+            "description": "Machine-readable counterpart to ineligibleReason. `unverified` — identity not verified yet. `chain_full` — the partner who introduced them is already on the deepest enabled level, so there is no rung to place them on. Null when eligible."
           }
         },
         "required": [
           "account",
           "application",
           "eligible",
-          "ineligibleReason"
+          "ineligibleReason",
+          "ineligibleCode"
         ]
       },
       "IbLevelSummaryDto": {
@@ -9283,30 +9291,16 @@
             "type": "string",
             "example": "Master Partner"
           },
-          "payoutModel": {
-            "type": "string",
-            "enum": [
-              "revenue_share",
-              "per_lot"
-            ]
-          },
           "rateValue": {
             "type": "string",
             "example": "70.0000",
-            "description": "A percentage under revenue_share, an amount per lot under per_lot — read `payoutModel` before rendering it. A decimal string, never a number."
-          },
-          "maxDirectPartners": {
-            "type": "number",
-            "nullable": true,
-            "description": "How many direct partners this level may recruit. Null means unlimited."
+            "description": "The percentage of the broker’s revenue on a closed trade that this rung takes. A decimal string, never a number (§6.1)."
           }
         },
         "required": [
           "level",
           "name",
-          "payoutModel",
-          "rateValue",
-          "maxDirectPartners"
+          "rateValue"
         ]
       },
       "IbEarningsDto": {
@@ -9694,23 +9688,10 @@
             "type": "string",
             "example": "Master Partner"
           },
-          "payoutModel": {
-            "type": "string",
-            "enum": [
-              "revenue_share",
-              "per_lot"
-            ]
-          },
           "rateValue": {
             "type": "string",
             "example": "70.0000",
-            "description": "A percentage of the pool under revenue_share, an amount per lot under per_lot. A decimal string, never a number (§6.1)."
-          },
-          "maxDirectPartners": {
-            "type": "number",
-            "nullable": true,
-            "example": null,
-            "description": "How many partners this level may recruit directly. Null means unlimited."
+            "description": "The percentage of the broker’s revenue on a closed trade that this rung takes. A decimal string, never a number (§6.1)."
           },
           "enabled": {
             "type": "boolean",
@@ -9728,9 +9709,7 @@
         "required": [
           "level",
           "name",
-          "payoutModel",
           "rateValue",
-          "maxDirectPartners",
           "enabled",
           "createdAt",
           "updatedAt"
@@ -9743,36 +9722,23 @@
             "type": "number",
             "example": 3,
             "minimum": 1,
-            "maximum": 10
+            "maximum": 10,
+            "description": "Omit to append one below the deepest existing level."
           },
           "name": {
             "type": "string",
             "example": "Sub Partner"
           },
-          "payoutModel": {
-            "type": "string",
-            "enum": [
-              "revenue_share",
-              "per_lot"
-            ],
-            "default": "revenue_share"
-          },
           "rateValue": {
             "type": "string",
             "example": "30.0000"
           },
-          "maxDirectPartners": {
-            "type": "number",
-            "nullable": true,
-            "description": "Omit or send null for unlimited."
-          },
           "enabled": {
             "type": "boolean",
-            "default": true
+            "description": "Defaults to true."
           }
         },
         "required": [
-          "level",
           "name",
           "rateValue"
         ]
@@ -9784,20 +9750,9 @@
             "type": "string",
             "example": "Sub Partner"
           },
-          "payoutModel": {
-            "type": "string",
-            "enum": [
-              "revenue_share",
-              "per_lot"
-            ]
-          },
           "rateValue": {
             "type": "string",
             "example": "30.0000"
-          },
-          "maxDirectPartners": {
-            "type": "number",
-            "nullable": true
           },
           "enabled": {
             "type": "boolean"

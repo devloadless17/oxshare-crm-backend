@@ -289,33 +289,34 @@ export class AdminAuthService {
      */
     const email = rawEmail.toLowerCase();
 
-    if (await this.admins.findByEmail(email)) {
-      throw new ConflictError('An admin with this email already exists.');
-    }
-
     /*
-     * A CLIENT may not be invited as an administrator.
+     * ONE refusal for "already taken", whether by an admin OR a client (#6).
      *
-     * `admins` and `users` are separate tables with separate unique constraints,
-     * so nothing stopped one address existing in both — and accepting the invite
-     * would have succeeded, quietly producing one person holding a client
-     * account that trades and an admin account that approves withdrawals. That
-     * is a segregation-of-duties break, not a data-integrity one: the same human
-     * could file a deposit and confirm it, or request a payout and release it.
+     * These used to answer differently — "an admin with this email exists" vs
+     * "this email belongs to a client account" — so an admin holding
+     * `admins.create` but not `admins.view` could tell a CLIENT address from an
+     * admin one by trying to invite it: a membership oracle over the client
+     * base. The two cases now return the SAME message, so a probe learns only
+     * "this address is already in use by some account here" — which an admin
+     * manager may know about admin addresses anyway — and never that a given
+     * email banks here as a CLIENT.
      *
-     * Refused HERE rather than at accept time for the same reason as the
-     * outstanding-invite check below: the failure belongs with the administrator
-     * who can do something about it, at the moment they can. Failing at accept
-     * would strand a real person on a dead link with no explanation.
-     *
-     * The message deliberately does NOT confirm which client — an admin holding
-     * `users.create` but no `admins.view` would otherwise learn whether a given
-     * address banks here by trying to invite it.
+     * A CLIENT may still not be invited as an administrator, and that is the
+     * point of the second check: `admins` and `users` are separate tables with
+     * separate unique constraints, so nothing stopped one address existing in
+     * both — and accepting the invite would quietly produce one person holding
+     * a client account that trades AND an admin account that approves
+     * withdrawals, a segregation-of-duties break (the same human could file a
+     * deposit and confirm it). Refused HERE rather than at accept time so the
+     * failure lands on the administrator who can act on it, not on an invitee
+     * stranded on a dead link.
      */
+    const IN_USE = 'This email address is already in use and cannot be invited.';
+    if (await this.admins.findByEmail(email)) {
+      throw new ConflictError(IN_USE);
+    }
     if (await this.users.findByEmail(email)) {
-      throw new ConflictError(
-        'This email belongs to a client account. An administrator must use a different address.',
-      );
+      throw new ConflictError(IN_USE);
     }
     /*
      * One live invite per address.

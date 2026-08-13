@@ -505,6 +505,11 @@ export class IbApplicationsService {
     const parentIbUserId = options.parentIbUserId ?? null;
 
     if (parentIbUserId) {
+      // The chosen parent is scoped too (#5): a scoped admin approving an
+      // application may only place the new partner under a parent inside their
+      // own territory — an out-of-scope parent is a 404 before
+      // `assertParentHasRoom` can leak its exists/suspended/full state.
+      await this.visibility.assertVisible(parentIbUserId, scope);
       await this.assertParentHasRoom(parentIbUserId);
     }
 
@@ -860,6 +865,17 @@ export class IbApplicationsService {
     if (!account) throw new NotFoundError('That partner does not exist.');
 
     if (parentIbUserId) {
+      /*
+       * The NEW PARENT is scoped too (#5, the 13 Aug scoped walk). Without this
+       * a scoped admin could graft their partner under a partner OUTSIDE their
+       * territory, and `assertParentHasRoom` below answers "does not exist" vs
+       * "is suspended" vs "is full" distinguishably — a small state oracle over
+       * out-of-territory partners. Resolved first, so an out-of-scope parent is
+       * a 404 (same as one that does not exist) before any of those branches
+       * can speak, and a scoped desk can only reassign within its own territory.
+       */
+      await this.visibility.assertVisible(parentIbUserId, scope);
+
       if (await this.wouldCreateCycle(userId, parentIbUserId)) {
         throw new ValidationError(
           'That partner already sits beneath this one, so the change would create a loop in the ' +

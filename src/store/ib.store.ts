@@ -391,7 +391,23 @@ export class IbStore {
     sort?: IbAccrualSortKey;
     order?: SortOrder;
   }) {
-    const visible = clientScopePredicate(filter.scope ?? UNRESTRICTED, ibAccruals.ibUserId);
+    /*
+     * Rows are scoped on the PARTNER (`ib_user_id`): a scoped admin sees the
+     * accruals of a partner in their territory. But each accrual ALSO names the
+     * CLIENT whose deposit generated it, and that client may be OUTSIDE the
+     * reader's territory — so a scoped desk reviewing an in-scope partner's
+     * commissions was shown out-of-scope clients' names and emails (#4, the
+     * 13 Aug scoped walk).
+     *
+     * The fix is the field-mask philosophy (RBAC-03): keep the row and its
+     * AMOUNTS — the partner's earning is legitimately theirs to review — but
+     * NULL the out-of-scope client's identity. The amounts a partner earned are
+     * not PII; the client who generated them is. `clientInScope` is computed in
+     * SQL from the same predicate every other surface uses, and the masking is
+     * applied in the mapper below, so it cannot be forgotten by a later select.
+     */
+    const scope = filter.scope ?? UNRESTRICTED;
+    const visible = clientScopePredicate(scope, ibAccruals.ibUserId);
     const where = and(
       visible,
       ...(filter.ibUserId ? [eq(ibAccruals.ibUserId, filter.ibUserId)] : []),
@@ -410,9 +426,15 @@ export class IbStore {
     const partner = aliasedTable(users, 'partner_user');
     const client = aliasedTable(users, 'client_user');
 
-    const rows = await this.db
+    // True when the client on the row is inside the reader's territory. An
+    // unrestricted reader has no predicate, so every row is in scope.
+    const clientScope = clientScopePredicate(scope, client.id);
+    const clientInScopeExpr = clientScope ? sql<boolean>`(${clientScope})` : sql<boolean>`true`;
+
+    const rawRows = await this.db
       .select({
         accrual: ibAccruals,
+        clientInScope: clientInScopeExpr,
         partner: {
           id: partner.id,
           email: partner.email,
@@ -436,6 +458,24 @@ export class IbStore {
       .orderBy(...orderTerms(sortColumn, ibAccruals.id, direction))
       .limit(filter.limit)
       .offset((filter.page - 1) * filter.limit);
+
+    /*
+     * Mask the out-of-scope client's IDENTITY and strip the internal flag. The
+     * `id` is kept (an opaque uuid names no one and the row still needs a key);
+     * email and name — the PII the finding names — become null, and
+     * `clientMasked` tells the screen to render "client outside your territory"
+     * rather than a blank that reads as missing data. The accrual amounts are
+     * untouched: the partner earned them and may review them.
+     */
+    const rows = rawRows.map(({ clientInScope, ...row }) =>
+      clientInScope
+        ? { ...row, clientMasked: false }
+        : {
+            ...row,
+            client: { id: row.client.id, email: null, firstName: null, lastName: null },
+            clientMasked: true,
+          },
+    );
 
     const [{ value: total }] = await this.db
       .select({ value: count() })

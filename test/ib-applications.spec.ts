@@ -8,7 +8,7 @@ import { ProductsStore } from '../src/store/products.store';
 import { UsersStore } from '../src/store/users.store';
 import { ClientVisibilityService } from '../src/common/security/client-visibility.service';
 import type { EmailService } from '../src/modules/email/email.service';
-import { UNRESTRICTED } from '../src/common/security/client-scope';
+import { scopeOf, UNRESTRICTED } from '../src/common/security/client-scope';
 import type { Actor } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
 import { notificationsStubAs } from './notifications-stub';
@@ -103,6 +103,10 @@ beforeEach(async () => {
   await ctx.db.execute(sql`UPDATE users SET referred_by_ib_user_id = NULL`);
   await ctx.db.execute(sql`DELETE FROM ib_accounts`);
   await ctx.db.execute(sql`DELETE FROM ib_applications`);
+  // Territory rows reference users; clear them (and the tags) before the users
+  // they point at — the scope test below assigns a tag to a partner.
+  await ctx.db.execute(sql`DELETE FROM client_tag_assignments`);
+  await ctx.db.execute(sql`DELETE FROM client_tags`);
   await ctx.db.execute(sql`DELETE FROM users`);
   await ctx.db.execute(sql`DELETE FROM ib_levels`);
   await ctx.db.execute(sql`
@@ -640,6 +644,42 @@ describe('managing a live partner', () => {
     const freed = await service.reassignParent(child, null, UNRESTRICTED, REVIEWER);
     // null is a real value, not an omission — it means top of a chain.
     expect(freed.parentIbUserId).toBeNull();
+  });
+
+  it('refuses a NEW PARENT outside the actor’s territory — a 404, not a state oracle (#5)', async () => {
+    /*
+     * The child is in the actor's territory; the proposed new parent is NOT.
+     * Reassigning must fail as "not found" — the same answer as a parent that
+     * does not exist — before `assertParentHasRoom` can leak whether that
+     * out-of-scope partner exists, is suspended, or is full. Without the scope
+     * check on the parent, a scoped admin could both graft their partner under
+     * an out-of-territory one and probe its state.
+     */
+    const [, child] = await makePair();
+    const outsider = await makeClient('mgmt-out-of-scope@test.local');
+    await store.createAccount({ userId: outsider, level: 1, referralCode: 'MGMTOOS1' });
+
+    // A territory containing the CHILD but not the outsider parent.
+    const { rows: tagRows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO client_tags (slug, label) VALUES ('ib-scope-mine', 'IB Scope Mine') RETURNING id
+    `);
+    const tagId = tagRows[0].id;
+    await ctx.db.execute(sql`
+      INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${child}, ${tagId})
+    `);
+    const scope = scopeOf([tagId], false);
+
+    await expect(service.reassignParent(child, outsider, scope, REVIEWER)).rejects.toThrow(
+      /not.*(found|exist)/i,
+    );
+    // Unchanged: the child still has its original parent.
+    const stillChild = await store.findAccount(child);
+    expect(stillChild?.parentIbUserId).not.toBe(outsider);
+
+    // And an unrestricted actor CAN make the same move, proving the refusal was
+    // about territory, not the parent being invalid.
+    const moved = await service.reassignParent(child, outsider, UNRESTRICTED, REVIEWER);
+    expect(moved.parentIbUserId).toBe(outsider);
   });
 
   /*
