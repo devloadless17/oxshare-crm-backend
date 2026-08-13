@@ -52,24 +52,39 @@ export class IbLevelsService {
     return enabled.length;
   }
 
-  async create(dto: CreateIbLevelDto, actor: Actor) {
-    const existing = await this.findOne(dto.level);
-    if (existing) throw new ConflictError(`Level ${dto.level} already exists.`);
+  /** One below the deepest rung, or 1 on an empty ladder. */
+  private async nextLevel(): Promise<number> {
+    const [row] = await this.db
+      .select({ deepest: sql<number | null>`max(${ibLevels.level})` })
+      .from(ibLevels);
+    return (row?.deepest ?? 0) + 1;
+  }
 
-    const payoutModel = dto.payoutModel ?? 'revenue_share';
+  async create(dto: CreateIbLevelDto, actor: Actor) {
+    /*
+     * OMITTED means "append to the bottom", which is what the console now sends.
+     *
+     * `max(level) + 1` over every row rather than `count + 1`: a ladder with a
+     * gap in it — level 3 deleted from 1,2,3,4 — would otherwise re-mint a
+     * number that is already taken and fail on the primary key. Reusing the gap
+     * deliberately is still possible by passing `level` explicitly.
+     */
+    const level = dto.level ?? (await this.nextLevel());
+
+    const existing = await this.findOne(level);
+    if (existing) throw new ConflictError(`Level ${level} already exists.`);
+
     const enabled = dto.enabled ?? true;
 
-    this.assertRateIsSane(payoutModel, dto.rateValue);
-    if (enabled) await this.assertShareFits(payoutModel, dto.rateValue, null);
+    this.assertRateIsSane(dto.rateValue);
+    if (enabled) await this.assertShareFits(dto.rateValue, null);
 
     const [row] = await this.db
       .insert(ibLevels)
       .values({
-        level: dto.level,
+        level,
         name: dto.name.trim(),
-        payoutModel,
         rateValue: dto.rateValue,
-        maxDirectPartners: dto.maxDirectPartners ?? null,
         enabled,
       })
       .returning();
@@ -82,9 +97,7 @@ export class IbLevelsService {
      */
     this.audit.record(actor.id, 'ib_level.create', 'ib_level', String(row.level), {
       name: row.name,
-      payoutModel: row.payoutModel,
       rateValue: row.rateValue,
-      maxDirectPartners: row.maxDirectPartners,
       enabled: row.enabled,
     });
     return row;
@@ -94,22 +107,17 @@ export class IbLevelsService {
     const current = await this.findOne(level);
     if (!current) throw new NotFoundError(`Level ${level} does not exist.`);
 
-    const payoutModel = dto.payoutModel ?? current.payoutModel;
     const rateValue = dto.rateValue ?? current.rateValue;
     const enabled = dto.enabled ?? current.enabled;
 
-    this.assertRateIsSane(payoutModel, rateValue);
-    if (enabled) await this.assertShareFits(payoutModel, rateValue, level);
+    this.assertRateIsSane(rateValue);
+    if (enabled) await this.assertShareFits(rateValue, level);
 
     const [row] = await this.db
       .update(ibLevels)
       .set({
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
-        ...(dto.payoutModel !== undefined ? { payoutModel: dto.payoutModel } : {}),
         ...(dto.rateValue !== undefined ? { rateValue: dto.rateValue } : {}),
-        ...(dto.maxDirectPartners !== undefined
-          ? { maxDirectPartners: dto.maxDirectPartners }
-          : {}),
         ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
         updatedAt: new Date(),
       })
@@ -128,13 +136,7 @@ export class IbLevelsService {
      * `rateValue` is a decimal string on both sides (§6.1).
      */
     const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const field of [
-      'name',
-      'payoutModel',
-      'rateValue',
-      'maxDirectPartners',
-      'enabled',
-    ] as const) {
+    for (const field of ['name', 'rateValue', 'enabled'] as const) {
       if (current[field] !== row[field]) {
         changed[field] = { before: current[field], after: row[field] };
       }
@@ -181,9 +183,7 @@ export class IbLevelsService {
      */
     this.audit.record(actor.id, 'ib_level.delete', 'ib_level', String(level), {
       name: current.name,
-      payoutModel: current.payoutModel,
       rateValue: current.rateValue,
-      maxDirectPartners: current.maxDirectPartners,
       enabled: current.enabled,
     });
     return { level, deleted: true };
@@ -285,11 +285,17 @@ export class IbLevelsService {
    * is not a percentage" and "these four levels add up to 130%" are different
    * mistakes, and one message covering both explains neither.
    */
-  private assertRateIsSane(payoutModel: string, rateValue: string): void {
+  private assertRateIsSane(rateValue: string): void {
     const rate = new Decimal(rateValue);
     if (rate.isNegative()) throw new ValidationError('A rate cannot be negative.');
 
-    if (payoutModel === 'revenue_share' && rate.greaterThan(MAX_TOTAL_SHARE)) {
+    /*
+     * Unconditional since 0055. This used to fire only for `revenue_share`,
+     * because a per-lot rate is an AMOUNT and 150 per lot is not absurd. Every
+     * rate is a percentage now, so a value above 100 is a unit error every
+     * time — the operator meant 70, not 7000.
+     */
+    if (rate.greaterThan(MAX_TOTAL_SHARE)) {
       throw new ValidationError(
         `A revenue share cannot exceed 100% — ${rate.toString()} was given.`,
       );
@@ -310,16 +316,13 @@ export class IbLevelsService {
    * The message names the CURRENT TOTAL and the room left, because "that does
    * not fit" without a number sends the operator to a spreadsheet.
    */
-  private async assertShareFits(
-    payoutModel: string,
-    rateValue: string,
-    excludeLevel: number | null,
-  ): Promise<void> {
-    if (payoutModel !== 'revenue_share') return;
-
-    const others = (await this.listEnabled()).filter(
-      (l) => l.payoutModel === 'revenue_share' && l.level !== excludeLevel,
-    );
+  private async assertShareFits(rateValue: string, excludeLevel: number | null): Promise<void> {
+    /*
+     * EVERY enabled level counts toward the total since 0055. This used to
+     * exempt per-lot rungs — they took no share of the pool, so they could not
+     * exhaust it — and with the model gone there is nothing to exempt.
+     */
+    const others = (await this.listEnabled()).filter((l) => l.level !== excludeLevel);
     const used = others.reduce((sum, l) => sum.plus(new Decimal(l.rateValue)), new Decimal(0));
     const total = used.plus(new Decimal(rateValue));
 

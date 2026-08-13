@@ -3,7 +3,6 @@ import {
   ArrayNotEmpty,
   IsArray,
   IsBoolean,
-  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -13,8 +12,12 @@ import {
   Min,
 } from 'class-validator';
 
-export const IB_PAYOUT_MODELS = ['revenue_share', 'per_lot'] as const;
-export type IbPayoutModel = (typeof IB_PAYOUT_MODELS)[number];
+/*
+ * `IB_PAYOUT_MODELS` / `IbPayoutModel` are gone with migration 0055, which
+ * dropped the `ib_payout_model` column and its enum type. A rate is a
+ * percentage of the broker's revenue and nothing else, so there is no model to
+ * name.
+ */
 
 /**
  * One rung of the payout ladder.
@@ -35,25 +38,14 @@ export class IbLevelDto {
   @ApiProperty({ example: 'Master Partner' })
   name: string;
 
-  @ApiProperty({ enum: IB_PAYOUT_MODELS })
-  payoutModel: IbPayoutModel;
-
   @ApiProperty({
     type: 'string',
     example: '70.0000',
     description:
-      'A percentage of the pool under revenue_share, an amount per lot under per_lot. A decimal ' +
+      'The percentage of the broker’s revenue on a closed trade that this rung takes. A decimal ' +
       'string, never a number (§6.1).',
   })
   rateValue: string;
-
-  @ApiProperty({
-    type: 'number',
-    nullable: true,
-    example: null,
-    description: 'How many partners this level may recruit directly. Null means unlimited.',
-  })
-  maxDirectPartners: number | null;
 
   @ApiProperty({ description: 'A disabled level takes no share and accepts no new partners.' })
   enabled: boolean;
@@ -64,36 +56,48 @@ export class IbLevelDto {
 
 export class CreateIbLevelDto {
   /**
-   * The level number, chosen by the operator rather than auto-assigned.
+   * The level number — OPTIONAL, and appended to the bottom when omitted.
    *
-   * Auto-incrementing would make "add a level" mean "append to the bottom",
-   * which is right most of the time and impossible to undo when it is not.
-   * Capped at 10 because a payout chain deeper than that is a pyramid, and the
+   * This used to be required, on the reasoning that auto-incrementing makes
+   * "add a level" mean "append to the bottom", which is right most of the time
+   * and impossible to undo when it is not.
+   *
+   * The console no longer asks. A ladder is read top-down and a rung's number is
+   * its POSITION in that ladder, not a property an operator has an opinion
+   * about — and the form made them supply one before they had named the thing.
+   * Appending is what they meant every time; the field's real job was to let
+   * them get it wrong.
+   *
+   * Still accepted, because it is the only way to fill a gap left by a delete,
+   * and because removing it from the contract would break any caller that sends
+   * it. Capped at 10: a payout chain deeper than that is a pyramid, and the
    * resolver walks it per commission calculation.
    */
-  @ApiProperty({ example: 3, minimum: 1, maximum: 10 })
+  @ApiPropertyOptional({
+    example: 3,
+    minimum: 1,
+    maximum: 10,
+    description: 'Omit to append one below the deepest existing level.',
+  })
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(10)
-  level: number;
+  level?: number;
 
   @ApiProperty({ example: 'Sub Partner' })
   @IsString()
   @Length(1, 80)
   name: string;
 
-  @ApiPropertyOptional({ enum: IB_PAYOUT_MODELS, default: 'revenue_share' })
-  @IsOptional()
-  @IsIn(IB_PAYOUT_MODELS)
-  payoutModel?: IbPayoutModel;
-
   /**
    * A decimal string with at most four places, matching NUMERIC(12,4).
    *
    * `@IsString` plus a pattern rather than `@IsNumber`: the moment this is
    * parsed as a number it has been through a float, which is the thing §6.1
-   * exists to prevent. The service checks the RANGE, because what counts as
-   * valid depends on `payoutModel` and a decorator cannot see it.
+   * exists to prevent. The service checks the RANGE — a percentage above 100 is
+   * a unit error — because a decorator cannot also see the other enabled levels
+   * it has to fit beside.
    */
   @ApiProperty({ type: 'string', example: '30.0000' })
   @IsString()
@@ -102,17 +106,12 @@ export class CreateIbLevelDto {
   })
   rateValue: string;
 
-  @ApiPropertyOptional({
-    type: 'number',
-    nullable: true,
-    description: 'Omit or send null for unlimited.',
-  })
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  maxDirectPartners?: number | null;
-
-  @ApiPropertyOptional({ default: true })
+  /*
+   * No `default:` here either — `openapi-typescript` emits any property
+   * carrying one as REQUIRED, which is right for a response and wrong for a
+   * request body. Defaults to true; see the service.
+   */
+  @ApiPropertyOptional({ description: 'Defaults to true.' })
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
@@ -130,11 +129,6 @@ export class UpdateIbLevelDto {
   @Length(1, 80)
   name?: string;
 
-  @ApiPropertyOptional({ enum: IB_PAYOUT_MODELS })
-  @IsOptional()
-  @IsIn(IB_PAYOUT_MODELS)
-  payoutModel?: IbPayoutModel;
-
   @ApiPropertyOptional({ type: 'string', example: '30.0000' })
   @IsOptional()
   @IsString()
@@ -142,12 +136,6 @@ export class UpdateIbLevelDto {
     message: 'rateValue must be a decimal string with at most four decimal places, e.g. "30.0000"',
   })
   rateValue?: string;
-
-  @ApiPropertyOptional({ type: 'number', nullable: true })
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  maxDirectPartners?: number | null;
 
   @ApiPropertyOptional()
   @IsOptional()

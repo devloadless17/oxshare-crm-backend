@@ -147,7 +147,19 @@ describe('every sortable column can be seeked and ordered by an index', () => {
     email: 'email',
     firstName: 'first_name',
     status: 'status',
-    type: 'type',
+    /*
+     * `type` is NOT here any more, and the allowlist no longer carries it.
+     *
+     * The column it sorted — `users.type` — is a label nothing maintained, and
+     * the list now DERIVES the type from `ib_accounts` and
+     * `referred_by_ib_user_id` instead (see `DERIVED_CLIENT_TYPE`). Sorting by
+     * the stale column would order the screen by values it no longer displays,
+     * and sorting by the derived CASE would fall back to a sort over every
+     * client — which is exactly what this suite exists to refuse.
+     *
+     * Making it sortable again means an index on that expression, and this
+     * assertion is where that has to be proved.
+     */
     verificationLevel: 'verification_level',
     // Not the bare column: it is nullable, and `(country, id) < (?, ?)` is
     // UNKNOWN rather than false for every null row, so those clients would

@@ -132,9 +132,7 @@ export class IbOverviewService {
       .select({
         level: ibLevels.level,
         name: ibLevels.name,
-        payoutModel: ibLevels.payoutModel,
         rateValue: ibLevels.rateValue,
-        maxDirectPartners: ibLevels.maxDirectPartners,
       })
       .from(ibLevels)
       .where(eq(ibLevels.level, level))

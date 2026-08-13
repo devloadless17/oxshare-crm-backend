@@ -40,9 +40,9 @@ beforeEach(async () => {
   // ladder rather than from whatever the previous one left.
   await ctx.db.execute(sql`DELETE FROM ib_levels`);
   await ctx.db.execute(sql`
-    INSERT INTO ib_levels (level, name, payout_model, rate_value, max_direct_partners, enabled)
-    VALUES (1, 'Master Partner', 'revenue_share', 70.0000, NULL, true),
-           (2, 'Sub Partner', 'revenue_share', 30.0000, NULL, true)
+    INSERT INTO ib_levels (level, name, rate_value, enabled)
+    VALUES (1, 'Master Partner', 70.0000, true),
+           (2, 'Sub Partner', 30.0000, true)
   `);
 });
 
@@ -108,32 +108,38 @@ describe('the revenue-share ceiling', () => {
   });
 });
 
-describe('per_lot levels', () => {
-  it('are not bound by the percentage ceiling', async () => {
-    // A per-lot rate is an amount, not a share. Adding $5 to a 100% ladder is
-    // not a contradiction — summing them would be the bug.
+/*
+ * The `per_lot levels` block that stood here is gone with migration 0055. Both
+ * its cases asserted that a per-lot rate escaped the percentage ceiling — that
+ * it could be $5000 on a full ladder without contradiction — and neither has
+ * anything to describe now that every rate IS a percentage.
+ *
+ * What replaces them is the rule that took over: with one model, EVERY enabled
+ * level counts toward the 100% total, and a rate above 100 is a unit error
+ * rather than a plausible amount.
+ */
+describe('every level counts toward the ceiling', () => {
+  it('refuses a rate above 100, which can only be a unit error', async () => {
     await expect(
-      levels.create(
-        { level: 3, name: 'Rebate', payoutModel: 'per_lot', rateValue: '5.0000' },
-        ACTOR,
-      ),
-    ).resolves.toBeDefined();
+      levels.create({ level: 3, name: 'Rebate', rateValue: '5000.0000' }, ACTOR),
+    ).rejects.toThrow(/cannot exceed 100%/);
   });
 
-  it('do not count toward the percentage total of other levels', async () => {
-    await levels.create(
-      {
-        level: 3,
-        name: 'Rebate',
-        payoutModel: 'per_lot',
-        rateValue: '5000.0000',
-      },
-      ACTOR,
-    );
-    // The percentage half is still bounded: 70 + 30 is full.
+  it('counts a new level against the levels already enabled', async () => {
+    // 70 + 30 is full, so there is no room for a third rung of any size.
     await expect(
-      levels.create({ level: 4, name: 'Fourth', rateValue: '1.0000' }, ACTOR),
+      levels.create({ level: 3, name: 'Third', rateValue: '1.0000' }, ACTOR),
     ).rejects.toThrow(/would total 101/);
+  });
+
+  it('appends below the deepest rung when no level is given', async () => {
+    await levels.remove(2, ACTOR);
+
+    const created = await levels.create({ name: 'Appended', rateValue: '10.0000' }, ACTOR);
+
+    // 1 is the deepest remaining, so this lands on 2 — not on `count + 1`,
+    // which would collide the moment the ladder has a gap in it.
+    expect(created.level).toBe(2);
   });
 });
 
@@ -234,8 +240,8 @@ describe('reordering the ladder', () => {
 
   it('handles a three-level rotation, where a naive swap would collide', async () => {
     await ctx.db.execute(sql`
-      INSERT INTO ib_levels (level, name, payout_model, rate_value, enabled)
-      VALUES (3, 'Third', 'per_lot', 2.5000, true)
+      INSERT INTO ib_levels (level, name, rate_value, enabled)
+      VALUES (3, 'Third', 2.5000, true)
     `);
 
     // 3 → 1, 1 → 2, 2 → 3. Every row moves, so any single-phase renumber hits

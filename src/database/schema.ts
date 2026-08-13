@@ -2050,28 +2050,30 @@ export const refreshTokens = pgTable(
 // The introducing-broker programme. Rebuilt from zero after the commission
 // engine was removed — see migration 0028 for what left and why.
 
-/**
- * How a level is paid. Checked against several forex-CRM vendors: brokers run
- * fixed per-lot rebates OR revenue-share percentages, and many run both across
- * different programmes. A schema that assumed one of them would need a
- * migration on a table partners reference the first time the business changed
- * its mind, so the choice is a column from day one.
+/*
+ * ── `ib_payout_model` IS GONE, and so is `max_direct_partners` (0055) ────────
  *
- *   revenue_share  `rateValue` is a PERCENTAGE of the commission pool. The
- *                  enabled levels must total <= 100 between them.
- *   per_lot        `rateValue` is an AMOUNT per standard lot, in the platform's
- *                  default currency. Levels do not compete for a pool, so there
- *                  is no cross-level ceiling — the total is whatever the
- *                  operator configured, and a per-lot ladder that costs more
- *                  than the spread earns is a commercial mistake this table
- *                  cannot detect.
+ * The enum offered `revenue_share` and `per_lot`, on the reasoning that brokers
+ * run both and a schema assuming one would need a migration the first time the
+ * business changed its mind.
  *
- * CPA (a one-off payment per funded client) is deliberately ABSENT. It is a
- * third model, it is real, and it is not a per-level rate — it is a per-client
- * event with its own qualification rules. Adding it as a third enum value would
- * make `rateValue` mean three things and none of them clearly.
+ * This platform runs one. A partner's commission is cut from what the BROKER
+ * EARNED on a closed position — its commission and swap — which is a percentage
+ * of revenue by definition. `per_lot` priced a rebate on SIZE instead, so the
+ * same `rateValue` meant 70% under one model and $70 per lot under the other:
+ * one column with two units, on the number that decides what every partner is
+ * paid. No level was ever configured per-lot, and the branch existed only to be
+ * got wrong.
+ *
+ * `max_direct_partners` went with it. It capped how many partners a rung could
+ * recruit directly, was defaulted to unlimited, and was never set — a rule the
+ * ladder does not otherwise express, enforced at one call site, that an operator
+ * had to answer on every level they created.
+ *
+ * `rateValue` now means exactly one thing: a percentage of the broker's revenue
+ * on the trade. CPA stays deliberately absent for the reason it always was — it
+ * is a per-client event with its own qualification rules, not a per-level rate.
  */
-export const ibPayoutModelEnum = pgEnum('ib_payout_model', ['revenue_share', 'per_lot']);
 
 /**
  * The payout ladder: how many levels deep earnings travel, and what each takes.
@@ -2123,28 +2125,23 @@ export const ibLevels = pgTable('ib_levels', {
   /** 1 is the partner closest to the broker; higher numbers sit further down. */
   level: integer('level').primaryKey(),
   name: varchar('name', { length: 80 }).notNull(),
-  payoutModel: ibPayoutModelEnum('payout_model').notNull().default('revenue_share'),
   /**
-   * The rate, whose UNIT depends on `payoutModel` — a percentage for
-   * revenue_share, an amount per lot for per_lot.
+   * The rung's share, as a PERCENTAGE of what the broker earned on the trade.
    *
-   * One column rather than two nullable ones, because a level has exactly one
-   * rate and a pair where one is always null invites reading the wrong one.
-   * The model is what disambiguates, and it is NOT NULL.
+   * One unit, always. This used to mean a percentage under `revenue_share` and
+   * an amount per lot under `per_lot` — one column with two units, on the number
+   * that decides what every partner is paid. See the note above the table.
    *
-   * 12,4 rather than 5,2: it has to hold a percentage like 30.00 AND a per-lot
-   * amount, and per-lot rates are quoted in cents at the low end. Four decimals
-   * so a $2.5000 rebate and a 2.5% share both survive without rounding.
+   * 12,4 rather than 5,2 is now more room than a percentage needs, and it stays:
+   * narrowing a NUMERIC on a live column buys nothing and would rewrite the
+   * table. Four decimals let a 2.5% share and a 33.3333% one both survive
+   * without rounding.
+   *
+   * The enabled levels must total <= 100 between them — `assertShareFits` — and
+   * the broker's own cap (`ibMaxRevenueSharePct`) scales them pro rata on top of
+   * that, so the house cannot be paid out entirely by a full ladder.
    */
   rateValue: numeric('rate_value', { precision: 12, scale: 4 }).notNull().default('0'),
-  /**
-   * How many partners this level may recruit directly. NULL means unlimited.
-   *
-   * Checked at approval, when a parent is assigned. Nullable rather than a
-   * sentinel like 0 or -1, because "no limit" is genuinely the absence of a
-   * limit and a magic number invites an off-by-one at every read.
-   */
-  maxDirectPartners: integer('max_direct_partners'),
   /**
    * A disabled level stops NEW partners being placed at it and takes no share.
    * Existing partners at that level keep their placement — the same reasoning

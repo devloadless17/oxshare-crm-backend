@@ -1,5 +1,4 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IB_PAYOUT_MODELS, type IbPayoutModel } from './ib-level.dto';
 
 /**
  * The partner's own dashboard, in one response.
@@ -100,23 +99,20 @@ export class IbSubPartnerDto {
 export class IbLevelSummaryDto {
   @ApiProperty({ example: 1 }) level: number;
   @ApiProperty({ example: 'Master Partner' }) name: string;
-  @ApiProperty({ enum: IB_PAYOUT_MODELS }) payoutModel: IbPayoutModel;
 
+  /*
+   * `payoutModel` and `maxDirectPartners` went with migration 0055. The rate
+   * has ONE unit now, so a client no longer has to read a second field before
+   * it can render the first.
+   */
   @ApiProperty({
     type: 'string',
     example: '70.0000',
     description:
-      'A percentage under revenue_share, an amount per lot under per_lot — read `payoutModel` ' +
-      'before rendering it. A decimal string, never a number.',
+      'The percentage of the broker’s revenue on a closed trade that this rung takes. A decimal ' +
+      'string, never a number (§6.1).',
   })
   rateValue: string;
-
-  @ApiProperty({
-    type: 'number',
-    nullable: true,
-    description: 'How many direct partners this level may recruit. Null means unlimited.',
-  })
-  maxDirectPartners: number | null;
 }
 
 /**

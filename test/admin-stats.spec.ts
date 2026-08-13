@@ -279,8 +279,8 @@ beforeAll(async () => {
    * with a message about a level rather than about the fixture.
    */
   await db.execute(sql`
-    INSERT INTO ib_levels (level, name, payout_model, rate_value)
-    SELECT 1, 'Stats Level', 'revenue_share', '10'
+    INSERT INTO ib_levels (level, name, rate_value)
+    SELECT 1, 'Stats Level', '10'
     WHERE NOT EXISTS (SELECT 1 FROM ib_levels)
   `);
 

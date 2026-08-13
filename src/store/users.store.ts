@@ -3,7 +3,13 @@ import type { CursorPosition } from '../common/pagination';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { clientTagAssignments, clientTags, kycSubmissions, users } from '../database/schema';
+import {
+  clientTagAssignments,
+  clientTags,
+  ibAccounts,
+  kycSubmissions,
+  users,
+} from '../database/schema';
 import {
   clientScopePredicate,
   UNRESTRICTED,
@@ -39,10 +45,48 @@ export const CLIENT_SORT_COLUMNS = {
   email: users.email,
   firstName: users.firstName,
   status: users.status,
-  type: users.type,
   verificationLevel: users.verificationLevel,
   country: sql`coalesce(${users.country}, '')`,
 } as const;
+
+/**
+ * A client's type, DERIVED — never read from `users.type`.
+ *
+ * ## The column was a label nothing maintained
+ *
+ * `users.type` is an enum of individual / referral / partner, written once at
+ * registration as the literal `'individual'` and never updated by anything:
+ * approving a partner creates an `ib_accounts` row and leaves the label alone,
+ * and resolving a referral code writes `referred_by_ib_user_id` and leaves it
+ * alone too. On the database this was written against it read 20,032 individual,
+ * 1 referral, 1 partner — against 7 real partners and 9 real referrals, both of
+ * those being seed rows that happened to be inserted with a value.
+ *
+ * That is what made the console disagree with itself: the partners screen reads
+ * `ib_accounts` and found 7, while the clients screen filtered on this column
+ * and found 1. Same question, two answers, and the one a person would check
+ * first was the wrong one.
+ *
+ * ## Derived, so there is nothing to keep in sync
+ *
+ * A partner IS a row in `ib_accounts`; a referral IS an attributed client. Both
+ * are already the authority everywhere else — `SELECT FROM ib_accounts` is how
+ * the rest of this codebase answers "is this person a partner", with no second
+ * half to forget. Reading the same way here means the label cannot drift,
+ * because there is no label.
+ *
+ * PARTNER WINS over referral when both are true, and that combination is
+ * ordinary rather than exotic: a partner introduced by another partner is
+ * exactly what a two-rung ladder produces. Their own account is the more
+ * specific fact and the one an operator is looking for.
+ */
+export const DERIVED_CLIENT_TYPE = sql<'individual' | 'referral' | 'partner'>`
+  CASE
+    WHEN EXISTS (SELECT 1 FROM ${ibAccounts} WHERE ${ibAccounts.userId} = ${users.id})
+      THEN 'partner'
+    WHEN ${users.referredByIbUserId} IS NOT NULL THEN 'referral'
+    ELSE 'individual'
+  END`;
 
 export type ClientSortKey = keyof typeof CLIENT_SORT_COLUMNS;
 
@@ -289,7 +333,12 @@ export class UsersStore {
     const direction = filter.order ?? 'desc';
     const sortColumn: SQLWrapper = CLIENT_SORT_COLUMNS[sortKey];
 
-    if (filter.type) conditions.push(eq(users.type, filter.type as 'individual'));
+    /*
+     * Filtered on the DERIVED type, so this screen and the partner screens
+     * cannot disagree about who is a partner. Filtering `users.type` returned 1
+     * against the 7 rows `ib_accounts` actually holds — see DERIVED_CLIENT_TYPE.
+     */
+    if (filter.type) conditions.push(sql`${DERIVED_CLIENT_TYPE} = ${filter.type}`);
     if (filter.status) conditions.push(eq(users.status, filter.status as 'active'));
     if (typeof filter.level === 'number' && !Number.isNaN(filter.level)) {
       conditions.push(eq(users.verificationLevel, filter.level));
@@ -434,7 +483,7 @@ export class UsersStore {
       email: users.email,
       firstName: users.firstName,
       lastName: users.lastName,
-      type: users.type,
+      type: DERIVED_CLIENT_TYPE,
       status: users.status,
       emailVerified: users.emailVerified,
       verificationLevel: users.verificationLevel,
