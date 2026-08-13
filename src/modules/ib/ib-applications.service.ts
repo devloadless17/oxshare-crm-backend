@@ -28,6 +28,7 @@ import { ProductsStore } from '../../store/products.store';
 import type { Actor } from '../../common/security/actor';
 import type { ClientScope } from '../../common/security/client-scope';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import type { IbIneligibleCode } from './dto/ib-application.dto';
 
 /**
  * The verification level a client must hold before they may apply.
@@ -49,6 +50,22 @@ const REQUIRED_VERIFICATION_LEVEL = 1;
  */
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 8;
+
+/**
+ * What a client is told when the ladder has no rung left beneath the partner
+ * who introduced them.
+ *
+ * Worded for the CLIENT, unlike the sentence `resolveLevel` throws at a
+ * reviewer. That one ends "Add a level or choose a different parent", which are
+ * two things an applicant cannot do and would read as instructions.
+ *
+ * It names the cause without blaming the introducer: their placement is an
+ * operator's decision, not something the client's contact did wrong.
+ */
+const CHAIN_FULL_REASON =
+  'The partner programme has no space beneath the partner who introduced you — they are ' +
+  'already on its deepest level, so there is no rung left to place you on. Contact support ' +
+  'if you would like to join the programme another way.';
 
 /**
  * Partner applications and the accounts they grant.
@@ -107,6 +124,8 @@ export class IbApplicationsService {
     eligible: boolean;
     /** Why not, in a sentence the portal can show verbatim. Null when eligible. */
     ineligibleReason: string | null;
+    /** WHICH requirement is unmet, for chrome the sentence cannot carry. */
+    ineligibleCode: IbIneligibleCode | null;
   }> {
     const [account, application, user] = await Promise.all([
       this.ib.findAccount(userId),
@@ -115,6 +134,22 @@ export class IbApplicationsService {
     ]);
 
     const verified = (user?.verificationLevel ?? 0) >= REQUIRED_VERIFICATION_LEVEL;
+
+    /*
+     * The second requirement, and the one that used to be discovered too late.
+     *
+     * `resolveLevel` has always refused to place a partner beneath a parent who
+     * is on the deepest enabled rung — but only at APPROVAL, which meant a
+     * client in that position was shown the application form, filled it in,
+     * waited, and was then rejected for a fact that was already knowable the
+     * moment they opened the screen. Asking it here is what turns that into an
+     * explanation before the effort rather than a refusal after it.
+     *
+     * Skipped entirely for somebody who is already a partner: `account` wins on
+     * the portal, so computing an eligibility they cannot act on is a query for
+     * a field nothing reads.
+     */
+    const chainFull = account ? false : await this.introducerChainIsFull(user?.referredByIbUserId);
 
     /*
      * The agency NAMES, resolved once for both halves.
@@ -151,11 +186,59 @@ export class IbApplicationsService {
       application: application
         ? { ...application, agencyName: agencyOf(application.agencyId)?.name ?? null }
         : null,
-      eligible: verified,
-      ineligibleReason: verified
-        ? null
-        : 'Your identity must be verified before you can apply to the partner programme.',
+      /*
+       * Verification is reported FIRST when both are unmet.
+       *
+       * Not arbitrary: it is the one the client can do something about. Leading
+       * with "there is no room beneath your introducer" to somebody who also has
+       * not verified would hand them a dead end when the actionable step is
+       * sitting right there — and if the operator later adds a level, the dead
+       * end was never true.
+       */
+      eligible: verified && !chainFull,
+      ineligibleReason: !verified
+        ? 'Your identity must be verified before you can apply to the partner programme.'
+        : chainFull
+          ? CHAIN_FULL_REASON
+          : null,
+      ineligibleCode: !verified ? 'unverified' : chainFull ? 'chain_full' : null,
     };
+  }
+
+  /**
+   * Would a partner beneath this client's introducer have a rung to stand on?
+   *
+   * The same question `resolveLevel` asks at approval, asked early so the portal
+   * can explain rather than present a form that is already refused. Both read
+   * `listEnabled()` and compare against the introducer's level, so they cannot
+   * give different answers about the same ladder.
+   *
+   * FALSE — meaning "not full", so carry on — in every uncertain case:
+   *
+   *  - No introducer. They joined unattributed and would be placed at the top
+   *    enabled level, which is the one case the ladder always has room for.
+   *  - The introducer is not a partner. Nothing constrains the placement, and a
+   *    reviewer is free to appoint them anywhere.
+   *  - No levels are enabled at all. `resolveLevel` refuses that with its own
+   *    sentence naming the real problem — an empty ladder is an operator
+   *    misconfiguration, and reporting it to the client as "no room beneath your
+   *    introducer" would send them to support with the wrong story.
+   *
+   * The bias is deliberate: a false positive here HIDES the application form
+   * from somebody entitled to it, which is worse than a refusal they can be
+   * given a reason for.
+   */
+  private async introducerChainIsFull(introducerId: string | null | undefined): Promise<boolean> {
+    if (!introducerId) return false;
+
+    const [introducer, enabled] = await Promise.all([
+      this.ib.findAccount(introducerId),
+      this.levels.listEnabled(),
+    ]);
+
+    if (!introducer || enabled.length === 0) return false;
+
+    return !enabled.some((level) => level.level > introducer.level);
   }
 
   /**
@@ -182,10 +265,49 @@ export class IbApplicationsService {
     const user = await this.users.findById(userId);
     if (!user) throw new NotFoundError('Account not found.');
 
+    /*
+     * A VERIFIED ADDRESS, checked here as well as at the guard.
+     *
+     * `IbController` carries `EmailVerifiedGuard`, so an HTTP caller cannot
+     * reach this method unverified — and that is exactly why the check is worth
+     * repeating rather than assuming. The guard protects a ROUTE; this protects
+     * the RULE. Anything that calls the service directly — a script, a seeder, a
+     * future admin path, the next controller somebody adds without remembering
+     * the decorator — bypasses the guard entirely and would create a partner
+     * account for an address nobody has proved they own.
+     *
+     * That matters more here than on an ordinary screen: a partner is PAID, and
+     * the referral code is the instrument. An unverified address is one a
+     * stranger may have typed.
+     *
+     * Ordered before the identity check because it is the earlier step in
+     * onboarding — telling someone to finish KYC when they have not yet clicked
+     * the link in their inbox sends them to a wizard they cannot complete.
+     */
+    if (!user.emailVerified) {
+      throw new ValidationError(
+        'Please verify your email address before you apply to the partner programme.',
+      );
+    }
+
     if (user.verificationLevel < REQUIRED_VERIFICATION_LEVEL) {
       throw new ValidationError(
         'Your identity must be verified before you can apply to the partner programme.',
       );
+    }
+
+    /*
+     * The same refusal the portal already renders, enforced rather than assumed.
+     *
+     * `statusFor` hides the form for this client, but hiding a form is a UX
+     * decision and not a control: the endpoint is reachable directly, and a
+     * stale tab still holds a form that was valid when it loaded. Without this
+     * the application is accepted and then sits in the review queue as work that
+     * can only ever end in a rejection — which is precisely the outcome the
+     * eligibility check exists to prevent, moved from the client to a reviewer.
+     */
+    if (await this.introducerChainIsFull(user.referredByIbUserId)) {
+      throw new ValidationError(CHAIN_FULL_REASON);
     }
 
     /*
@@ -863,24 +985,23 @@ export class IbApplicationsService {
     return below.level;
   }
 
-  /** `maxDirectPartners`, enforced at the moment a parent is assigned. */
+  /**
+   * The chosen parent is real and not suspended.
+   *
+   * It also enforced `ib_levels.max_direct_partners` — a cap on how many
+   * partners a rung could recruit directly — until migration 0055 dropped that
+   * column. The cap was defaulted to unlimited, never set, and asked of an
+   * operator on every level they created; it is gone, and this keeps the two
+   * checks that were doing real work.
+   *
+   * The NAME is unchanged on purpose: "has room" still reads correctly at the
+   * call site, and a partner who is suspended has no room for anybody.
+   */
   private async assertParentHasRoom(parentIbUserId: string): Promise<void> {
     const parent = await this.ib.findAccount(parentIbUserId);
     if (!parent) throw new ValidationError('The chosen parent partner does not exist.');
     if (!parent.active) {
       throw new ValidationError('The chosen parent partner is suspended.');
-    }
-
-    const level = await this.levels.findOne(parent.level);
-    const max = level?.maxDirectPartners ?? null;
-    if (max === null) return;
-
-    const held = await this.ib.countDirectPartners(parentIbUserId);
-    if (held >= max) {
-      throw new ValidationError(
-        `That partner already holds ${held} of their ${max} direct partners. Choose a different ` +
-          'parent or raise the limit on their level.',
-      );
     }
   }
 

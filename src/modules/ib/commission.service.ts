@@ -618,7 +618,6 @@ export class CommissionService implements CommissionAccrualPort {
         row.level,
         {
           level: row.level,
-          payoutModel: row.payoutModel,
           rateValue: row.rateValue,
           enabled: row.enabled,
         },

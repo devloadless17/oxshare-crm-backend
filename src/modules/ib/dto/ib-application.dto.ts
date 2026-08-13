@@ -136,7 +136,38 @@ export class IbStatusDto {
   @ApiProperty({ type: IbApplicationDto, nullable: true }) application: IbApplicationDto | null;
   @ApiProperty() eligible: boolean;
   @ApiProperty({ type: 'string', nullable: true }) ineligibleReason: string | null;
+  /**
+   * WHICH requirement is unmet, as a token rather than a sentence.
+   *
+   * `ineligibleReason` stays the thing a client reads, and it stays the API's
+   * to word — the portal must not keep a second copy of these sentences to
+   * drift. But the two reasons need different CHROME: an unverified client gets
+   * "Verify your identity first" and a button to /kyc, while a client whose
+   * introducer is already on the deepest rung has nothing to verify and nowhere
+   * to be sent, so that same button is an instruction they cannot follow.
+   *
+   * A code rather than matching on the sentence, because string-matching a
+   * human-facing message is broken by the first rewording — and the reword is
+   * exactly what nobody remembers to check.
+   *
+   * Null when eligible, and the union is open-ended on purpose: a portal that
+   * does not recognise a future code falls back to the plain sentence, which is
+   * always safe to show.
+   */
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    enum: ['unverified', 'chain_full'],
+    description:
+      'Machine-readable counterpart to ineligibleReason. `unverified` — identity not verified ' +
+      'yet. `chain_full` — the partner who introduced them is already on the deepest enabled ' +
+      'level, so there is no rung to place them on. Null when eligible.',
+  })
+  ineligibleCode: IbIneligibleCode | null;
 }
+
+/** @see IbStatusDto.ineligibleCode */
+export type IbIneligibleCode = 'unverified' | 'chain_full';
 
 export class ApproveIbApplicationDto {
   @ApiPropertyOptional({

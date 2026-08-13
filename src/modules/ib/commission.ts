@@ -130,8 +130,13 @@ export interface RevenueEvent {
 /** One rung's terms, as configured on `ib_levels`. */
 export interface LevelTerms {
   level: number;
-  payoutModel: 'revenue_share' | 'per_lot';
-  /** Percentage under revenue_share; amount-per-lot under per_lot. */
+  /**
+   * The rung's share, as a PERCENTAGE of the broker's revenue on the trade.
+   *
+   * One unit. `payoutModel` used to sit beside this and decide whether the
+   * number meant 70% or $70-per-lot; migration 0055 removed it, because a
+   * commission cut from what the broker earned is a percentage by definition.
+   */
   rateValue: string;
   enabled: boolean;
 }
@@ -244,18 +249,6 @@ export function calculate(
     }
 
     /*
-     * `per_lot` needs a lot count, and only a deal carries one. Refusing when
-     * it is absent remains the right answer — treating the rate as a
-     * percentage would pay a plausible wrong number.
-     */
-    if (rung.payoutModel === 'per_lot' && event.lots === undefined) {
-      skipped.push(
-        `level ${entry.level} is per_lot, which needs a lot count that a ${event.source} does not carry`,
-      );
-      continue;
-    }
-
-    /*
      * ROUNDED FIRST, then tested for zero — and that order is the whole point.
      *
      * `money()` fixes the value at the 8 decimal places the column stores. A
@@ -269,19 +262,14 @@ export function calculate(
      * same statement. Skipping here is what keeps the two consistent.
      */
     /*
-     * The two models take DIFFERENT bases, and conflating them is the bug this
-     * engine shipped with:
+     * ONE base, and it is what the BROKER earned on the trade — its commission
+     * and swap, never the client's volume, profit or balance.
      *
-     *   revenue_share  rate is a PERCENTAGE of `grossAmount`, which for a deal
-     *                  is what the BROKER earned on it — its commission and
-     *                  swap, never the client's volume or balance.
-     *   per_lot        rate is an AMOUNT per lot, multiplied by the lots
-     *                  traded. The base is size, not money.
+     * There used to be a second: `per_lot` multiplied the rate by lots traded,
+     * pricing a rebate on size rather than on money. Migration 0055 removed the
+     * model, so `rateValue` has exactly one meaning and this has one branch.
      */
-    const amount =
-      rung.payoutModel === 'per_lot'
-        ? money(rate.times(toDecimal(event.lots ?? '0')))
-        : money(gross.times(rate).dividedBy(100));
+    const amount = money(gross.times(rate).dividedBy(100));
 
     if (toDecimal(amount).isZero()) continue;
 
@@ -307,11 +295,22 @@ export function calculate(
    * until the pool runs out — would silently zero the deepest partner, who
    * would have no way to know why.
    *
-   * Applied to SHARES only. A per-lot payout is not a share of the revenue and
-   * may legitimately exceed it; capping it would refuse a rebate the broker
-   * chose to offer.
+   * ── It applies to EVERY leg, and that took two fixes to get right ──────────
+   *
+   * The condition used to read `event.lots === undefined`, exempting any event
+   * that carried a lot count. Every real commission carries one:
+   * `CommissionService` sets `lots: position.lots` on the deal event, and a deal
+   * is the only source that pays since deposits stopped being revenue. So the
+   * broker's floor was bypassed on every commission the running system produced,
+   * while every test of it passed by using a fixture with no lots.
+   *
+   * The exemption was meant for the per-lot PAYOUT — a rebate priced on size is
+   * not a share of revenue and may legitimately exceed it — so it was narrowed
+   * to the per-accrual model. Migration 0055 then removed the model entirely:
+   * every leg is a percentage of the broker's revenue now, so every leg is
+   * capped, and the distinction is gone with the thing it distinguished.
    */
-  if (maxSharePct !== undefined && event.lots === undefined) {
+  if (maxSharePct !== undefined && accruals.length > 0) {
     const cap = toDecimal(maxSharePct);
     if (cap.isPositive()) {
       const ceiling = gross.times(cap).dividedBy(100);
@@ -326,6 +325,37 @@ export function calculate(
           `chain total ${money(total)} exceeded the broker's ${maxSharePct}% cap; ` +
             `scaled to ${money(ceiling)}`,
         );
+
+        /*
+         * ── DROP WHAT SCALED AWAY ─────────────────────────────────────────
+         *
+         * The same rule the per-leg rounding above enforces, re-applied because
+         * SCALING can recreate exactly what that guard removed: a cap of 0 —
+         * which the settings DTO permits, meaning "partners earn nothing" —
+         * takes every leg to `0.00000000`, and a small enough cap does it to the
+         * smallest leg alone.
+         *
+         * `ib_accruals_amount_positive` is a CHECK constraint, so a zero row
+         * does not store a harmless nothing: it refuses the INSERT, and the
+         * service inserts every earner on the trade in ONE statement. One
+         * dust-sized leg would take down the commission of every legitimate
+         * earner beside it.
+         *
+         * Filtered rather than clamped to a minimum: a leg worth less than the
+         * column can represent is worth nothing, and inventing a satoshi to keep
+         * the row would pay a number the cap says is not owed.
+         */
+        const survivors = accruals.filter((accrual) => !toDecimal(accrual.amount).isZero());
+        if (survivors.length !== accruals.length) {
+          skipped.push(
+            `${accruals.length - survivors.length} leg(s) scaled below the storable minimum ` +
+              'and were dropped',
+          );
+        }
+        return {
+          accruals: survivors,
+          skippedReason: skipped.length > 0 ? skipped.join('; ') : undefined,
+        };
       }
     }
   }

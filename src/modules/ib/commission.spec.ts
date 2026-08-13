@@ -14,7 +14,7 @@ import {
  *
  * Every assertion here covers a case with a WRONG answer that pays real money
  * and does not throw: a suspended partner still earning, a cycle hanging the
- * payout walk, a `per_lot` rate silently treated as a percentage, a unit error
+ * payout walk, a rate applied to the wrong base, a unit error
  * paying seventy times a deposit. None of these surface as errors — they
  * surface as a balance somebody has to claw back.
  *
@@ -80,7 +80,6 @@ function terms(entries: Partial<LevelTerms>[]): Map<number, LevelTerms> {
     entries.map((entry) => {
       const full: LevelTerms = {
         level: entry.level ?? 1,
-        payoutModel: entry.payoutModel ?? 'revenue_share',
         rateValue: entry.rateValue ?? '10.0000',
         enabled: entry.enabled ?? true,
       };
@@ -214,31 +213,12 @@ describe('calculate', () => {
   });
 
   /*
-   * `per_lot` REFUSES rather than guessing. Treating the rate as a percentage
-   * would pay a plausible wrong number; treating it as a flat amount would pay
-   * the same on a $10 deposit as on a $10,000 one.
+   * The two `per_lot` cases that stood here are gone with migration 0055: the
+   * model was removed, `rateValue` has one unit, and a rate can no longer be
+   * "silently treated as a percentage" because a percentage is all it can be.
+   * The LOT COUNT still rides on the event — `checkPlausible` reads it — so the
+   * fixtures keep carrying one.
    */
-  it('pays per_lot as a rate TIMES the lots, not a percentage', () => {
-    const result = calculate(
-      DEAL,
-      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
-      terms([{ level: 1, payoutModel: 'per_lot', rateValue: '2.5000' }]),
-    );
-    // 2.50 per lot × 10 lots. A percentage would have paid 25.00 of the 1000.
-    expect(result.accruals).toEqual([
-      { ibUserId: 'ib-1', depth: 1, level: 1, amount: '25.00000000' },
-    ]);
-  });
-
-  it('refuses a per_lot level when the event carries no lots, and says why', () => {
-    const result = calculate(
-      { grossAmount: '1000.00000000', currency: 'USD', source: 'deal' },
-      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
-      terms([{ level: 1, payoutModel: 'per_lot', rateValue: '2.5000' }]),
-    );
-    expect(result.accruals).toEqual([]);
-    expect(result.skippedReason).toContain('per_lot');
-  });
 
   /*
    * THE REGRESSION THIS FILE EXISTS TO HOLD.
@@ -252,7 +232,7 @@ describe('calculate', () => {
     const result = calculate(
       DEPOSIT,
       [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
-      terms([{ level: 1, payoutModel: 'revenue_share', rateValue: '70.0000' }]),
+      terms([{ level: 1, rateValue: '70.0000' }]),
     );
     expect(result.accruals).toEqual([]);
     expect(result.skippedReason).toContain('deposit');
@@ -374,8 +354,8 @@ describe("the broker's revenue cap", () => {
         { ibUserId: 'sub', depth: 1, level: 2 },
       ],
       terms([
-        { level: 1, payoutModel: 'revenue_share', rateValue: '70.0000' },
-        { level: 2, payoutModel: 'revenue_share', rateValue: '30.0000' },
+        { level: 1, rateValue: '70.0000' },
+        { level: 2, rateValue: '30.0000' },
       ]),
       '50',
     );
@@ -394,8 +374,8 @@ describe("the broker's revenue cap", () => {
         { ibUserId: 'sub', depth: 1, level: 2 },
       ],
       terms([
-        { level: 1, payoutModel: 'revenue_share', rateValue: '70.0000' },
-        { level: 2, payoutModel: 'revenue_share', rateValue: '30.0000' },
+        { level: 1, rateValue: '70.0000' },
+        { level: 2, rateValue: '30.0000' },
       ]),
       '50',
     );
@@ -411,7 +391,7 @@ describe("the broker's revenue cap", () => {
     const result = calculate(
       DEAL_NO_LOTS,
       [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
-      terms([{ level: 1, payoutModel: 'revenue_share', rateValue: '30.0000' }]),
+      terms([{ level: 1, rateValue: '30.0000' }]),
       '50',
     );
     expect(result.accruals[0]?.amount).toBe('300.00000000');
@@ -419,16 +399,248 @@ describe("the broker's revenue cap", () => {
   });
 
   /*
-   * A per-lot rebate is not a share of anything, so the cap does not apply: a
-   * broker may deliberately buy volume at a loss on a single trade.
+   * ── THE REGRESSION THIS BLOCK EXISTS FOR ──────────────────────────────────
+   *
+   * The cap was gated on `event.lots === undefined`, so any event carrying a lot
+   * count skipped it. Every real commission carries one — `CommissionService`
+   * sets `lots: position.lots` on the deal event, and a deal is the only source
+   * that pays since deposits stopped being revenue.
+   *
+   * So the broker's floor was bypassed on every commission the running system
+   * produced, and the tests above all passed because they used a fixture with no
+   * lots. `DEAL` here is the shape production actually sends.
    */
-  it('does not cap a per_lot payout', () => {
+  it('caps a revenue share on a deal that CARRIES lots', () => {
     const result = calculate(
       DEAL,
-      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
-      terms([{ level: 1, payoutModel: 'per_lot', rateValue: '200.0000' }]),
+      [
+        { ibUserId: 'master', depth: 2, level: 1 },
+        { ibUserId: 'sub', depth: 1, level: 2 },
+      ],
+      terms([
+        { level: 1, rateValue: '70.0000' },
+        { level: 2, rateValue: '30.0000' },
+      ]),
       '50',
     );
-    expect(result.accruals[0]?.amount).toBe('2000.00000000');
+
+    expect(result.accruals.find((a) => a.ibUserId === 'master')?.amount).toBe('350.00000000');
+    expect(result.accruals.find((a) => a.ibUserId === 'sub')?.amount).toBe('150.00000000');
+    expect(result.skippedReason).toContain('cap');
+  });
+
+  /*
+   * The two mixed-model cases that stood here are gone with migration 0055.
+   * They pinned which legs counted toward the ceiling when a chain held a
+   * revenue share above a per-lot rebate; with one model left, every leg counts
+   * and there is no mixture to get wrong.
+   *
+   * What replaces them is the property those tests were really protecting: a
+   * chain that fits is paid in full, and one that does not is scaled — both
+   * covered above and in `the numbers` below.
+   */
+  it('leaves a two-rung chain alone when it fits inside the cap', () => {
+    const result = calculate(
+      DEAL,
+      [
+        { ibUserId: 'master', depth: 2, level: 1 },
+        { ibUserId: 'sub', depth: 1, level: 2 },
+      ],
+      terms([
+        { level: 1, rateValue: '30.0000' },
+        { level: 2, rateValue: '10.0000' },
+      ]),
+      '50',
+    );
+
+    // 300 + 100 = 400, inside the 500 ceiling, so neither leg moves.
+    expect(result.accruals.find((a) => a.ibUserId === 'master')?.amount).toBe('300.00000000');
+    expect(result.accruals.find((a) => a.ibUserId === 'sub')?.amount).toBe('100.00000000');
+    expect(result.skippedReason).toBeUndefined();
+  });
+});
+
+/**
+ * The arithmetic itself, at the scale the column stores.
+ *
+ * The engine's job is one multiplication and one division per leg, and every
+ * bug this suite has caught lived in the EDGES of that: which base, which
+ * rounding, which legs count toward the cap. These pin the numbers.
+ */
+describe('the numbers', () => {
+  const chain = (level: number): ChainEntry[] => [{ ibUserId: 'ib-1', depth: 1, level }];
+
+  /** Broker revenue × rate% → the partner's share, at 8dp. */
+  const share = (
+    grossAmount: string,
+    rateValue: string,
+    maxSharePct?: string,
+  ): string | undefined =>
+    calculate(
+      { grossAmount, currency: 'USD', source: 'deal', lots: '1' },
+      chain(1),
+      terms([{ level: 1, rateValue }]),
+      maxSharePct,
+    ).accruals[0]?.amount;
+
+  it.each([
+    ['1000.00000000', '70.0000', '700.00000000'],
+    ['1000.00000000', '30.0000', '300.00000000'],
+    ['1000.00000000', '100.0000', '1000.00000000'],
+    ['1000.00000000', '0.5000', '5.00000000'],
+    ['0.00000001', '50.0000', '0.00000001'],
+    ['33.33000000', '33.3300', '11.10888900'],
+    // Seventeen significant digits — `Number()` is already wrong before the
+    // multiplication, which is why nothing here touches one.
+    ['12345678901.23456789', '10.0000', '1234567890.12345679'],
+  ])('takes %s at %s%% → %s', (gross, rate, expected) => {
+    expect(share(gross, rate)).toBe(expected);
+  });
+
+  it.each([
+    // ceiling 500: the 70% leg alone exceeds it and scales to the whole ceiling.
+    ['70.0000', '50', '500.00000000'],
+    // ceiling 800: 70% is 700, under it, so it is paid in full.
+    ['70.0000', '80', '700.00000000'],
+    // A cap of 100 is not a no-op to reach — it is exactly the total, and
+    // `greaterThan` must not fire on equality.
+    ['100.0000', '100', '1000.00000000'],
+  ])('a %s%% rate under a %s%% broker cap pays %s', (rate, cap, expected) => {
+    expect(share('1000.00000000', rate, cap)).toBe(expected);
+  });
+
+  /*
+   * A cap of 0 is a REAL setting, not a misconfiguration to be ignored: the
+   * settings DTO validates `ibMaxRevenueSharePct` as 0–100, so an operator can
+   * switch partner payouts off entirely and this is how they do it.
+   *
+   * What must NOT happen is a zero-amount accrual reaching the insert.
+   * `ib_accruals_amount_positive` is a CHECK, and the service writes every
+   * earner on a trade in one statement — so a single zero row refuses the whole
+   * batch, including the legs that were owed something.
+   */
+  it('pays nobody under a cap of zero, and returns no rows rather than zero rows', () => {
+    const result = calculate(
+      DEAL,
+      [
+        { ibUserId: 'a', depth: 1, level: 1 },
+        { ibUserId: 'b', depth: 2, level: 2 },
+      ],
+      terms([
+        { level: 1, rateValue: '70.0000' },
+        { level: 2, rateValue: '30.0000' },
+      ]),
+      '0',
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.skippedReason).toContain('dropped');
+  });
+
+  it('drops only the leg that scales away, keeping the one that survives', () => {
+    const result = calculate(
+      { grossAmount: '1000.00000000', currency: 'USD', source: 'deal', lots: '1' },
+      [
+        { ibUserId: 'big', depth: 1, level: 1 },
+        { ibUserId: 'dust', depth: 2, level: 2 },
+      ],
+      terms([
+        { level: 1, rateValue: '99.9999' },
+        { level: 2, rateValue: '0.0001' },
+      ]),
+      '0.00001',
+    );
+
+    /*
+     * The ceiling is 0.0001 against a 1000.0000 total, so the factor is ~1e-7.
+     * The 0.0001% leg is worth 0.001 before scaling and rounds to nothing after
+     * it; the 99.9999% leg survives. Every returned row must be storable.
+     */
+    expect(result.accruals.every((a) => Number(a.amount) > 0)).toBe(true);
+    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['big']);
+  });
+
+  it('ignores a negative cap, which the settings layer cannot produce', () => {
+    // `cap.isPositive()` is false only below zero — decimal.js treats +0 as
+    // positive, which is what makes the zero case above a real cap. Pinned
+    // because the two read alike and behave oppositely.
+    expect(share('1000.00000000', '70.0000', '-10')).toBe('700.00000000');
+  });
+
+  it('never pays more than the ceiling, however many rungs share it', () => {
+    const result = calculate(
+      DEAL,
+      [
+        { ibUserId: 'a', depth: 1, level: 1 },
+        { ibUserId: 'b', depth: 2, level: 2 },
+      ],
+      terms([
+        { level: 1, rateValue: '55.5500' },
+        { level: 2, rateValue: '44.4500' },
+      ]),
+      '37',
+    );
+
+    /*
+     * The invariant, asserted as a SUM rather than per leg: rounding each scaled
+     * leg to 8dp independently could push the total a dust above the ceiling,
+     * and the broker's floor is a promise about the total.
+     */
+    const total = result.accruals.reduce((sum, a) => sum + Number(a.amount), 0);
+    expect(total).toBeLessThanOrEqual(370);
+    expect(total).toBeCloseTo(370, 6);
+  });
+
+  it('pays each rung its OWN rate before any cap applies', () => {
+    const result = calculate(
+      DEAL,
+      [
+        { ibUserId: 'sub', depth: 1, level: 2 },
+        { ibUserId: 'master', depth: 2, level: 1 },
+      ],
+      terms([
+        { level: 1, rateValue: '12.5000' },
+        { level: 2, rateValue: '7.2500' },
+      ]),
+      '90',
+    );
+
+    // 1000 × 12.5% and 1000 × 7.25%. Together 197.50, well inside the 900
+    // ceiling, so neither moves — the ladder is what decides, not the cap.
+    expect(result.accruals.find((a) => a.ibUserId === 'master')?.amount).toBe('125.00000000');
+    expect(result.accruals.find((a) => a.ibUserId === 'sub')?.amount).toBe('72.50000000');
+    expect(result.skippedReason).toBeUndefined();
+  });
+
+  /*
+   * LOTS DO NOT ENTER THE ARITHMETIC, and that is worth pinning now that they
+   * once did. The event still carries a lot count — `checkPlausible` reads it,
+   * and the deal feed supplies it — but with `per_lot` gone the only base is the
+   * broker's revenue. A trade of 2.5 lots and one of 250 pay the same on the
+   * same revenue.
+   */
+  it('ignores the lot count entirely', () => {
+    const small = calculate(
+      { grossAmount: '400.00000000', currency: 'USD', source: 'deal', lots: '2.5' },
+      chain(1),
+      terms([{ level: 1, rateValue: '25.0000' }]),
+      '50',
+    );
+    const large = calculate(
+      { grossAmount: '400.00000000', currency: 'USD', source: 'deal', lots: '250' },
+      chain(1),
+      terms([{ level: 1, rateValue: '25.0000' }]),
+      '50',
+    );
+
+    expect(small.accruals[0]?.amount).toBe('100.00000000');
+    expect(large.accruals[0]?.amount).toBe(small.accruals[0]?.amount);
+  });
+
+  it('rounds a half up at the eighth decimal rather than truncating', () => {
+    // 0.000000125 → the stored scale has to resolve the ninth digit somehow,
+    // and silently dropping it would lose a partner money on every trade.
+    const result = share('0.00000025', '50.0000');
+    expect(result).toBe('0.00000013');
   });
 });

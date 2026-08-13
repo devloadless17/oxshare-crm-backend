@@ -91,14 +91,24 @@ async function makeClient(email: string, verificationLevel = 1): Promise<string>
 
 beforeEach(async () => {
   sendPartnerDecisionEmail.mockClear();
+  /*
+   * Attribution is cleared BEFORE the partners it points at.
+   *
+   * `users.referred_by_ib_user_id` is a real foreign key onto
+   * `ib_accounts.user_id`, so deleting the accounts first fails on any suite
+   * that attributed a client to a partner — which the chain-depth cases below
+   * are the first to do. Nulling the column is the only order that works: the
+   * users rows are deleted two statements later anyway, so nothing survives it.
+   */
+  await ctx.db.execute(sql`UPDATE users SET referred_by_ib_user_id = NULL`);
   await ctx.db.execute(sql`DELETE FROM ib_accounts`);
   await ctx.db.execute(sql`DELETE FROM ib_applications`);
   await ctx.db.execute(sql`DELETE FROM users`);
   await ctx.db.execute(sql`DELETE FROM ib_levels`);
   await ctx.db.execute(sql`
-    INSERT INTO ib_levels (level, name, payout_model, rate_value, max_direct_partners, enabled)
-    VALUES (1, 'Master Partner', 'revenue_share', 70.0000, NULL, true),
-           (2, 'Sub Partner', 'revenue_share', 30.0000, NULL, true)
+    INSERT INTO ib_levels (level, name, rate_value, enabled)
+    VALUES (1, 'Master Partner', 70.0000, true),
+           (2, 'Sub Partner', 30.0000, true)
   `);
 });
 
@@ -116,6 +126,32 @@ describe('applying', () => {
     const userId = await makeClient('unverified@test.local', 0);
 
     await expect(service.apply(userId, {})).rejects.toThrow(/identity must be verified/i);
+  });
+
+  /*
+   * `EmailVerifiedGuard` on IbController already stops an HTTP caller, which is
+   * why this is asserted at the SERVICE: a script, a seeder or the next
+   * controller added without the decorator bypasses the guard entirely, and a
+   * partner is paid — the referral code is an instrument, and an unverified
+   * address is one a stranger may have typed.
+   */
+  it('refuses a client whose email address is not verified', async () => {
+    const userId = await makeClient('email-unverified@test.local');
+    await ctx.db.execute(sql`UPDATE users SET email_verified = false WHERE id = ${userId}`);
+
+    await expect(service.apply(userId, {})).rejects.toThrow(/verify your email/i);
+  });
+
+  /*
+   * Email comes FIRST when both are outstanding. Telling somebody to finish KYC
+   * before they have clicked the link in their inbox sends them into a wizard
+   * they cannot complete.
+   */
+  it('names the email step before the identity step when both are outstanding', async () => {
+    const userId = await makeClient('neither@test.local', 0);
+    await ctx.db.execute(sql`UPDATE users SET email_verified = false WHERE id = ${userId}`);
+
+    await expect(service.apply(userId, {})).rejects.toThrow(/verify your email/i);
   });
 
   it('refuses a second application while one is pending', async () => {
@@ -173,6 +209,114 @@ describe('status', () => {
     const status = await service.statusFor(userId);
     expect(status.eligible).toBe(false);
     expect(status.ineligibleReason).toMatch(/verified/i);
+    expect(status.ineligibleCode).toBe('unverified');
+  });
+
+  /*
+   * The ladder in these fixtures is two rungs deep, so a client introduced by a
+   * level-2 partner has nowhere to stand. That used to be discovered at APPROVAL
+   * — `resolveLevel` refused it — which meant the client filled the form in and
+   * waited to be told a fact that was knowable when they opened the screen.
+   */
+  it('refuses a client whose introducer is already on the deepest level', async () => {
+    const top = await makeClient('chain-top@test.local');
+    const middle = await makeClient('chain-middle@test.local');
+
+    const topAccount = await service.approve(
+      (await service.apply(top, {})).id,
+      REVIEWER,
+      UNRESTRICTED,
+    );
+    const middleAccount = await service.approve(
+      (await service.apply(middle, {})).id,
+      REVIEWER,
+      UNRESTRICTED,
+      { parentIbUserId: topAccount.userId },
+    );
+    expect(middleAccount.level).toBe(2);
+
+    const client = await makeClient('chain-bottom@test.local');
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${middleAccount.userId} WHERE id = ${client}`,
+    );
+
+    const status = await service.statusFor(client);
+    expect(status.eligible).toBe(false);
+    expect(status.ineligibleCode).toBe('chain_full');
+    expect(status.ineligibleReason).toMatch(/deepest level/i);
+  });
+
+  /*
+   * Hiding the form is not the control. The endpoint is reachable directly and a
+   * stale tab still holds a form that was valid when it loaded — without this,
+   * the application lands in the review queue as work that can only ever end in
+   * a rejection.
+   */
+  it('refuses the application itself, not only the form', async () => {
+    const top = await makeClient('enforced-top@test.local');
+    const middle = await makeClient('enforced-middle@test.local');
+
+    const topAccount = await service.approve(
+      (await service.apply(top, {})).id,
+      REVIEWER,
+      UNRESTRICTED,
+    );
+    const middleAccount = await service.approve(
+      (await service.apply(middle, {})).id,
+      REVIEWER,
+      UNRESTRICTED,
+      { parentIbUserId: topAccount.userId },
+    );
+
+    const client = await makeClient('enforced-bottom@test.local');
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${middleAccount.userId} WHERE id = ${client}`,
+    );
+
+    await expect(service.apply(client, {})).rejects.toThrow(/deepest level/i);
+  });
+
+  /*
+   * The bias that matters: a false positive HIDES the form from somebody
+   * entitled to it. A client under a level-1 partner still has rung 2 free, and
+   * an unattributed client is the case the ladder always has room for.
+   */
+  it('leaves a client under a level-1 partner eligible', async () => {
+    const top = await makeClient('room-top@test.local');
+    const topAccount = await service.approve(
+      (await service.apply(top, {})).id,
+      REVIEWER,
+      UNRESTRICTED,
+    );
+    expect(topAccount.level).toBe(1);
+
+    const client = await makeClient('room-bottom@test.local');
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${topAccount.userId} WHERE id = ${client}`,
+    );
+
+    const status = await service.statusFor(client);
+    expect(status.eligible).toBe(true);
+    expect(status.ineligibleCode).toBeNull();
+  });
+
+  /*
+   * There is deliberately no "introducer is not a partner" case here.
+   *
+   * `users.referred_by_ib_user_id` is a foreign key onto `ib_accounts.user_id`,
+   * so an attribution to a non-partner cannot be written at all — the setup for
+   * that test fails on the constraint rather than on the assertion. The service
+   * still handles the shape defensively (`if (!introducer) return false`),
+   * because the store returns null for a row it cannot find and a check that
+   * assumed otherwise would fail closed, hiding the form from an entitled
+   * client. It is unreachable, not unconsidered.
+   */
+  it('leaves an unattributed client eligible', async () => {
+    const client = await makeClient('unattributed@test.local');
+
+    const status = await service.statusFor(client);
+    expect(status.eligible).toBe(true);
+    expect(status.ineligibleCode).toBeNull();
   });
 });
 
@@ -220,23 +364,23 @@ describe('approval', () => {
     ).rejects.toThrow(/deepest enabled level/i);
   });
 
-  it('enforces maxDirectPartners on the parent’s level', async () => {
-    await ctx.db.execute(sql`UPDATE ib_levels SET max_direct_partners = 1 WHERE level = 1`);
-
-    const parentId = await makeClient('full-parent@test.local');
+  /*
+   * The `maxDirectPartners` case that stood here is gone with migration 0055,
+   * which dropped the column. What `assertParentHasRoom` still enforces — the
+   * parent exists, and is not suspended — is covered below.
+   */
+  it('refuses a parent who is suspended', async () => {
+    const parentId = await makeClient('suspended-parent@test.local');
     const parentApp = await service.apply(parentId, {});
     await service.approve(parentApp.id, REVIEWER, UNRESTRICTED);
+    await ctx.db.execute(sql`UPDATE ib_accounts SET active = false WHERE user_id = ${parentId}`);
 
-    const firstChild = await makeClient('child-one@test.local');
-    const firstApp = await service.apply(firstChild, {});
-    await service.approve(firstApp.id, REVIEWER, UNRESTRICTED, { parentIbUserId: parentId });
-
-    const secondChild = await makeClient('child-two@test.local');
-    const secondApp = await service.apply(secondChild, {});
+    const childId = await makeClient('orphan@test.local');
+    const childApp = await service.apply(childId, {});
 
     await expect(
-      service.approve(secondApp.id, REVIEWER, UNRESTRICTED, { parentIbUserId: parentId }),
-    ).rejects.toThrow(/already holds 1 of their 1/i);
+      service.approve(childApp.id, REVIEWER, UNRESTRICTED, { parentIbUserId: parentId }),
+    ).rejects.toThrow(/suspended/i);
   });
 
   it('refuses when a second reviewer already decided — the WHERE clause, not the pre-read', async () => {
@@ -498,19 +642,21 @@ describe('managing a live partner', () => {
     expect(freed.parentIbUserId).toBeNull();
   });
 
-  it('enforces maxDirectPartners on reassignment, not only on approval', async () => {
-    // The pair's child is what occupies the parent's single slot. It is never
-    // named again — that occupancy is the whole subject of the assertion below.
+  /*
+   * The reassignment half of the `maxDirectPartners` pair, gone with 0055 for
+   * the same reason. The check it exercised — that a reassignment goes through
+   * the same guard an approval does — is still worth holding, so it is asserted
+   * on the rule that survived.
+   */
+  it('refuses a reassignment onto a SUSPENDED parent, as an approval would', async () => {
     const [parent] = await makePair();
-    await ctx.db.execute(sql`UPDATE ib_levels SET max_direct_partners = 1 WHERE level = 1`);
+    await ctx.db.execute(sql`UPDATE ib_accounts SET active = false WHERE user_id = ${parent}`);
 
     const another = await makeClient('mgmt-another@test.local');
     await store.createAccount({ userId: another, level: 2, referralCode: 'MGMTANOT' });
 
-    // `parent` already holds `child`. A reassignment fills a slot exactly as an
-    // approval does, so it has to be checked in both places.
     await expect(service.reassignParent(another, parent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /already holds 1 of their 1/i,
+      /suspended/i,
     );
   });
 
