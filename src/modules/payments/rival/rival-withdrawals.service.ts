@@ -87,6 +87,19 @@ export class RivalWithdrawalsService {
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
   ) {}
 
+  /**
+   * Whether the AUTOMATED payout rail is switched on.
+   *
+   * Exposed so the approval path can refuse to run its one-step "approve means
+   * paid" flow while this is live. The two are incompatible by construction:
+   * `submitApprovedInner` claims rows in state `approved`, and one-step
+   * approval never produces one — so the withdrawal would be marked paid and
+   * never submitted to Rival. See `AdminMoneyService.approveWithdrawal`.
+   */
+  async isAutomatedPayoutEnabled(): Promise<boolean> {
+    return await this.config.isEnabled();
+  }
+
   /* ── submit on approval ─────────────────────────────────────────────────── */
 
   /**

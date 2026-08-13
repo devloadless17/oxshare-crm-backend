@@ -47,7 +47,6 @@ export { walletCredit } from './wallet-credit';
 export { tradingAccountOpened } from './trading-account-opened';
 export { depositOutcome } from './deposit-outcome';
 export { withdrawalDecision } from './withdrawal-decision';
-export { withdrawalOtp } from './withdrawal-otp';
 export { adminInvite } from './admin-invite';
 export { adminPasswordReset } from './admin-password-reset';
 export { smtpTest } from './smtp-test';

@@ -1,12 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { transactionStateEnum } from '../../../database/schema';
-import { IsIn, IsNotEmpty, IsNumberString, IsOptional, IsString, Matches } from 'class-validator';
+import { IsNotEmpty, IsNumberString, IsString } from 'class-validator';
 
 // Request + response DTOs for the client-facing payments surface.
 // Moved out of payments.controller.ts so the shapes reach /api/docs-json and the
 // portal can generate types instead of hand-writing them.
 
-const CURRENCIES = ['USD', 'USDT'] as const;
 const DIRECTIONS = ['deposit', 'withdrawal'] as const;
 
 /**
@@ -48,15 +47,6 @@ const DESTINATION_DESCRIPTION =
 const STATES = transactionStateEnum.enumValues;
 
 /**
- * The withdrawal a confirmation code is being requested FOR — FR-CORE-08.
- *
- * The same four money fields as the withdrawal itself, because the code is bound
- * to all of them: `withdrawal-otp.service.ts` hashes them into the Redis key, so
- * a code issued against this payload cannot authorise a withdrawal that differs
- * in any of them. That is what stops a code obtained for a small transfer to the
- * client's own account being spent on a large one to somebody else's.
- */
-/**
  * One payout rail, as the portal's method picker needs it.
  *
  * Three fields and no more. There is no `enabled` because the endpoint returns
@@ -83,25 +73,12 @@ export class WithdrawalMethodDto {
   logoUrl?: string | null;
 }
 
-export class RequestWithdrawalOtpDto {
-  @ApiProperty({ type: 'string', example: '300.00000000' })
-  @IsNumberString()
-  amount: string;
-
-  @ApiProperty({ enum: CURRENCIES })
-  @IsIn(CURRENCIES)
-  currency: (typeof CURRENCIES)[number];
-
-  @ApiProperty({ description: DESTINATION_DESCRIPTION })
-  @IsString()
-  @IsNotEmpty()
-  destination: string;
-
-  @ApiProperty({ description: METHOD_KEY_DESCRIPTION, example: 'whish' })
-  @IsString()
-  @IsNotEmpty()
-  methodKey: string;
-}
+/*
+ * `RequestWithdrawalOtpDto` and `WithdrawalOtpResponseDto` are GONE with the
+ * withdrawal confirmation code — see the note in `payments.controller.ts`.
+ * Nothing issues or verifies one, so the shapes described an endpoint that no
+ * longer exists.
+ */
 
 export class RequestWithdrawalDto {
   /**
@@ -112,9 +89,22 @@ export class RequestWithdrawalDto {
   @IsNumberString()
   amount: string;
 
-  @ApiProperty({ enum: CURRENCIES })
-  @IsIn(CURRENCIES)
-  currency: (typeof CURRENCIES)[number];
+  /*
+   * A CODE, validated by the service against the catalogue — the same argument
+   * `withdrawalMethodKey` above makes, for the same reason.
+   *
+   * This was `@IsIn(['USD','USDT'])`, which refused a withdrawal in any currency
+   * the operator had added since: EUR, GBP, AED and TRY were all enabled and all
+   * unspendable. `CurrenciesService.assertUsable` refuses an unknown code AND a
+   * disabled one, against what is actually on offer — a stronger check than a
+   * closed list here could make, and one that cannot go stale.
+   */
+  @ApiProperty({
+    description: 'A currency CODE from `GET /currencies`. Validated against the catalogue.',
+    example: 'USD',
+  })
+  @IsString()
+  currency: string;
 
   @ApiProperty({ description: DESTINATION_DESCRIPTION })
   @IsString()
@@ -126,43 +116,13 @@ export class RequestWithdrawalDto {
   @IsNotEmpty()
   methodKey: string;
 
-  /**
-   * The six-digit code from the confirmation email (FR-CORE-08).
-   *
-   * OPTIONAL in the DTO and REQUIRED by the handler when the control is on. It
-   * has to be optional here because the operator can switch the OTP off
-   * (security_settings), and a `@IsNotEmpty()` would then refuse every
-   * withdrawal for a control that is not in force. The handler decides, so there
-   * is exactly one place that knows whether a code is needed.
+  /*
+   * The `otp` field is GONE. Nothing verifies a confirmation code any more, so
+   * accepting one would be a field the API reads and ignores — and with
+   * `whitelist` on the global ValidationPipe, a portal still sending it would
+   * have it stripped rather than honoured, which is the confusing half of
+   * leaving it in.
    */
-  @ApiPropertyOptional({
-    description: 'Six-digit confirmation code. Required while the withdrawal OTP control is on.',
-    example: '482913',
-  })
-  @IsOptional()
-  @IsString()
-  @Matches(/^\d{6}$/, { message: 'The confirmation code is six digits.' })
-  otp?: string;
-}
-
-/**
- * The answer to "send me a code for this withdrawal".
- *
- * `required` is a BOOLEAN rather than something the caller infers from the
- * message, because the operator can switch the OTP control off and the portal
- * has to know which of two things just happened. Reading it out of prose would
- * make a copy edit break the withdrawal flow.
- */
-export class WithdrawalOtpResponseDto {
-  @ApiProperty({ example: 'A confirmation code has been sent to your email address.' })
-  message: string;
-
-  @ApiProperty({
-    description:
-      'False when the operator has the withdrawal-OTP control switched off; the withdrawal may ' +
-      'then be submitted without a code.',
-  })
-  required: boolean;
 }
 
 export class TransactionDto {
@@ -174,7 +134,7 @@ export class TransactionDto {
   @ApiProperty({ type: 'string', example: '300.00000000', description: 'Decimal string (§6.1).' })
   amount: string;
 
-  @ApiProperty({ enum: CURRENCIES }) currency: (typeof CURRENCIES)[number];
+  @ApiProperty({ description: 'A currency code.', example: 'USD' }) currency: string;
   @ApiProperty({ enum: STATES }) state: (typeof STATES)[number];
 
   /**
@@ -211,11 +171,25 @@ export class TransactionDto {
   methodKey?: string | null;
 
   /**
-   * What to CALL that method on screen — 'Whish Money', 'Bank transfer'.
+   * What to CALL the rail on screen — 'Whish Money', 'Bank transfer'.
    *
-   * Resolved server-side from `payment_methods.name` so a client and an operator
-   * read the same words, and so a renamed method is renamed everywhere at once.
-   * Null wherever `methodKey` is null.
+   * Resolved server-side so a client and an operator read the same words, and so
+   * a renamed method is renamed everywhere at once.
+   *
+   * ## It covers BOTH directions, and `methodKey` above does not
+   *
+   * A deposit's name comes from `payment_methods` via `methodKey`; a
+   * withdrawal's comes from `withdrawal_payment_methods` via
+   * `withdrawal_method_key`, which is a different column into a different table
+   * and is NOT exposed on this DTO. So `methodName` is populated on rows where
+   * `methodKey` is null, and reading "null wherever `methodKey` is null" — as
+   * this comment used to say — is how a screen ends up rendering an empty
+   * method on every withdrawal.
+   *
+   * One field rather than two because the client is asking one question: how
+   * did this money move. Null remains for a MANUAL ADMIN CREDIT, which went
+   * through no rail at all — `provider` reads `manual_admin` there, and it is
+   * the only value a screen should need to recognise by name.
    *
    * Deliberately NOT a translated label. It is the operator's own name for their
    * own method — a brand, which does not translate — and inventing an English

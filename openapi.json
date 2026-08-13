@@ -1711,6 +1711,15 @@
             }
           },
           {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Search the applicant’s email and name — the same three columns the KYC queue searches.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "page",
             "required": false,
             "in": "query",
@@ -2667,44 +2676,6 @@
           }
         ],
         "summary": "Request a withdrawal — requires KYC level 1; reserves the amount on hold",
-        "tags": [
-          "payments"
-        ]
-      }
-    },
-    "/v1/payments/withdrawals/otp": {
-      "post": {
-        "description": "The code is bound to the exact amount, currency, destination and provider supplied here. Changing any of them before submitting makes the code invalid, which is what stops a code obtained for a small withdrawal from authorising a large one.",
-        "operationId": "PaymentsController_sendWithdrawalOtp",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RequestWithdrawalOtpDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WithdrawalOtpResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Send a confirmation code for one specific withdrawal (FR-CORE-08)",
         "tags": [
           "payments"
         ]
@@ -7541,6 +7512,15 @@
             }
           },
           {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Search the client’s email and name — the same columns the KYC and partner queues search.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "page",
             "required": false,
             "in": "query",
@@ -9369,10 +9349,6 @@
             "type": "string",
             "nullable": true
           },
-          "expectedVolume": {
-            "type": "string",
-            "nullable": true
-          },
           "website": {
             "type": "string",
             "nullable": true
@@ -9412,7 +9388,6 @@
           "id",
           "userId",
           "motivation",
-          "expectedVolume",
           "website",
           "status",
           "rejectionReason",
@@ -9780,11 +9755,6 @@
             "type": "string",
             "maxLength": 2000,
             "description": "Why the client wants to introduce business. Shown to the reviewer verbatim."
-          },
-          "expectedVolume": {
-            "type": "string",
-            "maxLength": 120,
-            "description": "Self-reported and unverified. Labelled as such on the review screen."
           },
           "website": {
             "type": "string",
@@ -10300,10 +10270,8 @@
           },
           "currency": {
             "type": "string",
-            "enum": [
-              "USD",
-              "USDT"
-            ]
+            "description": "A currency CODE from `GET /currencies`. Validated against the catalogue.",
+            "example": "USD"
           },
           "destination": {
             "type": "string",
@@ -10313,11 +10281,6 @@
             "type": "string",
             "description": "A `withdrawal_payment_methods.key` from GET /payments/withdrawal-methods. Rejected if unknown or disabled.",
             "example": "whish"
-          },
-          "otp": {
-            "type": "string",
-            "description": "Six-digit confirmation code. Required while the withdrawal OTP control is on.",
-            "example": "482913"
           }
         },
         "required": [
@@ -10353,10 +10316,8 @@
           },
           "currency": {
             "type": "string",
-            "enum": [
-              "USD",
-              "USDT"
-            ]
+            "description": "A currency code.",
+            "example": "USD"
           },
           "state": {
             "type": "string",
@@ -10421,54 +10382,6 @@
           "currency",
           "state",
           "createdAt"
-        ]
-      },
-      "RequestWithdrawalOtpDto": {
-        "type": "object",
-        "properties": {
-          "amount": {
-            "type": "string",
-            "example": "300.00000000"
-          },
-          "currency": {
-            "type": "string",
-            "enum": [
-              "USD",
-              "USDT"
-            ]
-          },
-          "destination": {
-            "type": "string",
-            "description": "Where the money goes, in the form the chosen method requires. For Whish Money this is the recipient's phone number, validated against Whish's own rules at request time."
-          },
-          "methodKey": {
-            "type": "string",
-            "description": "A `withdrawal_payment_methods.key` from GET /payments/withdrawal-methods. Rejected if unknown or disabled.",
-            "example": "whish"
-          }
-        },
-        "required": [
-          "amount",
-          "currency",
-          "destination",
-          "methodKey"
-        ]
-      },
-      "WithdrawalOtpResponseDto": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string",
-            "example": "A confirmation code has been sent to your email address."
-          },
-          "required": {
-            "type": "boolean",
-            "description": "False when the operator has the withdrawal-OTP control switched off; the withdrawal may then be submitted without a code."
-          }
-        },
-        "required": [
-          "message",
-          "required"
         ]
       },
       "TransactionPageDto": {
@@ -10677,10 +10590,8 @@
           },
           "currency": {
             "type": "string",
-            "enum": [
-              "USD",
-              "USDT"
-            ]
+            "description": "A currency CODE from `GET /currencies`, not a fixed set — currencies are operator data.",
+            "example": "USD"
           },
           "balance": {
             "type": "string",
@@ -10751,10 +10662,8 @@
           },
           "currency": {
             "type": "string",
-            "enum": [
-              "USD",
-              "USDT"
-            ]
+            "description": "A currency code — see WalletDto.",
+            "example": "USD"
           },
           "createdAt": {
             "format": "date-time",
@@ -13860,10 +13769,8 @@
           },
           "currency": {
             "type": "string",
-            "enum": [
-              "USD",
-              "USDT"
-            ]
+            "description": "A currency code.",
+            "example": "USD"
           },
           "state": {
             "type": "string",

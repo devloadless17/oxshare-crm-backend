@@ -12,7 +12,6 @@ import {
   walletCredit,
   tradingAccountOpened,
   withdrawalDecision,
-  withdrawalOtp,
   passwordReset,
   smtpTest,
   verifyEmail,
@@ -303,24 +302,12 @@ export class EmailService {
     );
   }
 
-  /**
-   * The six digits that confirm one specific withdrawal.
-   *
-   * AWAITED by its caller, unlike the decision mails above — the client is
-   * sitting in front of a form waiting for a code, so "sent" has to mean sent.
-   * Failure is still swallowed and logged by `send()`; the controller answers
-   * with `required: true` regardless, and the client can request another.
-   *
-   * The code itself is never logged (R-6.3).
+  /*
+   * `sendWithdrawalOtpEmail` and its `withdrawal-otp` template are GONE with
+   * the withdrawal confirmation code — nothing issues a code, so nothing has
+   * one to mail. The withdrawal DECISION emails below are unaffected: a client
+   * is still told when a payout is approved or refused.
    */
-  async sendWithdrawalOtpEmail(
-    email: string,
-    amount: string,
-    currency: string,
-    code: string,
-  ): Promise<void> {
-    await this.send(email, 'withdrawal confirmation code', withdrawalOtp(amount, currency, code));
-  }
 
   async sendAdminInviteEmail(email: string, name: string, inviteUrl: string): Promise<void> {
     await this.send(email, 'admin invite email', adminInvite(name, inviteUrl));

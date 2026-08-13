@@ -1,4 +1,5 @@
-import { button, card, esc, p, type RenderedEmail } from './layout';
+import { button, card, esc, p, pRich, type RenderedEmail } from './layout';
+import { displayMoney } from '../../../common/money-display';
 
 /**
  * The deposit verdict — credited, or failed with what to do next.
@@ -24,15 +25,22 @@ export function depositOutcome(
   portalUrl: string,
 ): RenderedEmail {
   const succeeded = outcome === 'succeeded';
-  const money = `${esc(amount)} ${esc(currency)}`;
+  // Formatted for a reader, escaped because it is composed into markup — see
+  // `displayMoney`. This read "100.00000000 USD" where the portal says "$100.00".
+  const money = esc(displayMoney(amount, currency));
 
+  /*
+   * `pRich` for the two sentences carrying `<strong>`, `p` for the one that does
+   * not. `p()` escapes its input, so passing markup to it printed the tags
+   * literally — the same bug the withdrawal template had, in both branches here.
+   */
   const body = succeeded
-    ? p(
+    ? pRich(
         `Your deposit of <strong>${money}</strong> has been confirmed and credited to your wallet. ` +
           `The funds are available now.`,
       )
     : [
-        p(
+        pRich(
           `Your deposit of <strong>${money}</strong> could not be completed and no funds were taken by OxShare.`,
         ),
         p(

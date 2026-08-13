@@ -14,7 +14,7 @@ import { sortKey, sortOrder } from '../../common/sorting';
 import { WalletService } from '../wallet/wallet.service';
 import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
-import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
 import { decodeCursor } from '../../common/pagination';
@@ -329,6 +329,34 @@ export class AdminMoneyService {
      */
     assertActorCan(actor, 'withdrawals.settle', 'approve and pay a withdrawal');
     await this.assertWithdrawalVisible(id, actor.clientScope);
+
+    /*
+     * ⚠️ ONE-STEP APPROVAL AND THE RIVAL PAYOUT RAIL ARE INCOMPATIBLE.
+     *
+     * Approval now goes straight to `success`. The Rival submission below
+     * claims rows in state `approved` — a state this path no longer produces —
+     * so with Rival enabled the withdrawal would be marked PAID and never
+     * actually submitted for payout. The client's balance is already debited,
+     * so nothing would look wrong until they asked where their money was.
+     *
+     * Refused LOUDLY rather than left to fail silently. Rival is off by
+     * default and off in this deployment, so this costs nothing today; the
+     * check exists because turning it on is a settings toggle, and the failure
+     * it would otherwise cause is invisible and expensive.
+     *
+     * Resolving this properly is a product decision, not a code one: either the
+     * automated rail goes (approval is the payout) or the two steps come back
+     * for whish withdrawals (approval authorises, Rival pays, settlement
+     * confirms). Both are small changes; guessing between them is not.
+     */
+    if (await this.rivalWithdrawals.isAutomatedPayoutEnabled()) {
+      throw new MoneyRuleError(
+        'The automated payout rail is enabled, which the one-step approval flow does not ' +
+          'support: a withdrawal approved here would be recorded as paid without being sent ' +
+          'for payout. Disable the Rival payout integration, or restore the two-step ' +
+          'approve-then-settle flow, before approving withdrawals.',
+      );
+    }
 
     const row = await this.transactions.approve(id, actor.id, async (tx, approved) => {
       await this.audit.recordWithin(tx, actor.id, 'withdrawal.approve', 'transaction', id, {

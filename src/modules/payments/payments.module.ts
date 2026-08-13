@@ -10,7 +10,6 @@ import { WalletModule } from '../wallet/wallet.module';
 import { TradingModule } from '../trading/trading.module';
 import { IdentityModule } from '../identity/identity.module';
 import { CurrenciesModule } from '../currencies/currencies.module';
-import { WithdrawalOtpService } from './withdrawal-otp.service';
 import { SecuritySettingsService } from '../admin/security-settings.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import { PaymentGateways } from './payment-gateways.service';
@@ -73,7 +72,7 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
      * the broker's server, and what settles or fails the row afterwards.
      */
     TransferExecutor,
-    WithdrawalOtpService,
+    // `WithdrawalOtpService` is gone with the withdrawal confirmation code.
     SecuritySettingsService,
     AdminAuditService,
     /*

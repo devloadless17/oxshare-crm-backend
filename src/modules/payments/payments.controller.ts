@@ -2,8 +2,6 @@ import {
   Body,
   Controller,
   Get,
-  HttpCode,
-  HttpStatus,
   Param,
   Post,
   Query,
@@ -11,7 +9,6 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
 import {
   ApiCookieAuth,
   ApiCreatedResponse,
@@ -31,18 +28,7 @@ import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { KycVerifiedGuard } from '../identity/guards/kyc-verified.guard';
 import { User } from '../../store/users.store';
 import { TransactionsService } from './transactions.service';
-import {
-  RequestWithdrawalDto,
-  RequestWithdrawalOtpDto,
-  TransactionDto,
-  WithdrawalMethodDto,
-  WithdrawalOtpResponseDto,
-} from './dto/withdrawal.dto';
-import { WithdrawalOtpService, type WithdrawalIntent } from './withdrawal-otp.service';
-import { SecuritySettingsService } from '../admin/security-settings.service';
-import { SECURITY_SWITCHES } from '../../store/security-settings.store';
-import { EmailService } from '../email/email.service';
-import { ValidationError } from '../../common/errors/domain-errors';
+import { RequestWithdrawalDto, TransactionDto, WithdrawalMethodDto } from './dto/withdrawal.dto';
 import { DepositRequestDto, RequestDepositDto } from './dto/deposit.dto';
 import { ListTransactionsQueryDto, TransactionPageDto } from './dto/transaction-query.dto';
 import { TransfersService } from './transfers.service';
@@ -75,9 +61,11 @@ export class PaymentsController {
   constructor(
     private readonly transactions: TransactionsService,
     private readonly paymentMethods: PaymentMethodsService,
-    private readonly otp: WithdrawalOtpService,
-    private readonly securitySettings: SecuritySettingsService,
-    private readonly email: EmailService,
+    /*
+     * `WithdrawalOtpService`, `SecuritySettingsService` and `EmailService` are
+     * no longer injected: the only thing this controller used them for was
+     * issuing and verifying the withdrawal confirmation code, which is gone.
+     */
     private readonly transfers: TransfersService,
     private readonly transferExecutor: TransferExecutor,
   ) {}
@@ -222,31 +210,27 @@ export class PaymentsController {
   @ApiCreatedResponse({ type: TransactionDto })
   async requestWithdrawal(@Body() dto: RequestWithdrawalDto, @Req() req: Request & { user: User }) {
     /*
-     * FR-CORE-08 / FR-IND-05 — the email OTP gate.
+     * ── THE EMAIL CONFIRMATION CODE IS GONE ────────────────────────────────
      *
-     * AT THE EDGE, not in the service, and that is a considered exception to
-     * R-4.3 rather than an oversight. R-4.3 puts authorization in the service
-     * because a queued job has no controller and no guard, and a permission
-     * check must still run for it. An OTP is not that kind of check: it proves
-     * that a HUMAN WITH MAILBOX ACCESS initiated this specific request, which is
-     * meaningless for a job and impossible for one to satisfy. It belongs with
-     * CSRF and the idempotency key — transport-level proof of intent. The money
-     * rules that a job WOULD have to satisfy (KYC level, balance, the §12.4
-     * limits) stay in `transactions.service.ts` where R-4.3 wants them.
+     * FR-CORE-08 / FR-IND-05 put an OTP in front of every withdrawal: a code
+     * emailed to the account address and bound by HMAC to the exact amount,
+     * currency, destination and method, so a code obtained for a small payout
+     * could not authorise a large one. It was removed at the operator's
+     * request, along with the two-step form that collected it.
+     *
+     * WHY IT COULD NOT SIMPLY BE LEFT SWITCHED OFF. The control was gated on
+     * `security_settings.withdrawal_otp`, which DEFAULTS TO TRUE when no row
+     * exists — deliberately, so a fresh deployment fails safe. The seed writes
+     * `false`, but any database where that seed had not run refused every
+     * withdrawal from the one-step form with "A confirmation code is
+     * required", and there is no admin screen for the switch (the Security tab
+     * was removed), so it could only be corrected with SQL.
+     *
+     * What is still enforced here: KYC level 1 (`KycVerifiedGuard`), the
+     * idempotency key, CSRF, and every money rule in
+     * `transactions.service.ts` — the balance, the §12.4 per-request and
+     * rolling-24h caps, and the rail check.
      */
-    if (await this.securitySettings.isEnabled(SECURITY_SWITCHES.withdrawalOtp)) {
-      if (!dto.otp) {
-        throw new ValidationError(
-          'A confirmation code is required. Request one, then submit this withdrawal with the ' +
-            'code from your email.',
-          { otpRequired: true },
-        );
-      }
-      // Bound to THIS withdrawal — see withdrawal-otp.service.ts. A code issued
-      // for a different amount, destination or provider does not verify here.
-      await this.otp.verify(this.intentOf(req.user.id, dto), dto.otp);
-    }
-
     return await this.transactions.requestWithdrawal({
       userId: req.user.id,
       amount: dto.amount,
@@ -256,57 +240,12 @@ export class PaymentsController {
     });
   }
 
-  @Post('withdrawals/otp')
-  @UseGuards(KycVerifiedGuard)
-  @HttpCode(HttpStatus.OK)
-  // 3 sends per 15 minutes per USER is enforced in the service (R-3.7); this is
-  // the per-IP bound in front of it, because the service limit needs a session
-  // and this route sends mail to an address we hold.
-  @Throttle({ default: { ttl: 900_000, limit: 10 } })
-  @ApiCookieAuth()
-  @ApiOperation({
-    summary: 'Send a confirmation code for one specific withdrawal (FR-CORE-08)',
-    description:
-      'The code is bound to the exact amount, currency, destination and provider supplied here. ' +
-      'Changing any of them before submitting makes the code invalid, which is what stops a code ' +
-      'obtained for a small withdrawal from authorising a large one.',
-  })
-  @ApiOkResponse({ type: WithdrawalOtpResponseDto })
-  async sendWithdrawalOtp(
-    @Body() dto: RequestWithdrawalOtpDto,
-    @Req() req: Request & { user: User },
-  ) {
-    if (!(await this.securitySettings.isEnabled(SECURITY_SWITCHES.withdrawalOtp))) {
-      // Answered rather than 404'd, so the portal's flow is identical whether or
-      // not the control is on — the client simply is not asked for a code.
-      return { message: 'Withdrawal confirmation is not required.', required: false };
-    }
-
-    const code = await this.otp.issue(this.intentOf(req.user.id, dto));
-    // The code goes to the mailbox and NOWHERE else — not this response body,
-    // not a log line (R-6.3). `void` because a slow SMTP server must not hold
-    // the request open; a failure is logged inside the service.
-    void this.email.sendWithdrawalOtpEmail(req.user.email, dto.amount, dto.currency, code);
-
-    return {
-      message: 'A confirmation code has been sent to your email address. It expires in 5 minutes.',
-      required: true,
-    };
-  }
-
-  /** One spelling of the intent, so issue and verify cannot disagree. */
-  private intentOf(userId: string, dto: RequestWithdrawalOtpDto): WithdrawalIntent {
-    return {
-      userId,
-      amount: dto.amount,
-      currency: dto.currency,
-      destination: dto.destination,
-      // The chosen RAIL is part of what the code authorises, exactly as the
-      // provider string was: a code issued for a Whish payout must not
-      // authorise the same amount going out over a different method.
-      provider: dto.methodKey,
-    };
-  }
+  /*
+   * `POST /payments/withdrawals/otp` and its `intentOf` helper are GONE with
+   * the confirmation code — see the note in `requestWithdrawal` above. The
+   * portal no longer has a step to call them from, and an endpoint that issues
+   * a code nothing will ever verify is a mail send with no purpose.
+   */
 
   /**
    * The signed-in client's own transactions, filtered and ordered by the

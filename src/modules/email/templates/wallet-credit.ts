@@ -1,4 +1,5 @@
 import { button, card, esc, p, pRich, panel, type RenderedEmail } from './layout';
+import { displayMoney } from '../../../common/money-display';
 
 /**
  * Money an operator placed into a client's wallet by hand.
@@ -31,13 +32,21 @@ export function walletCredit(
   portalUrl: string,
 ): RenderedEmail {
   /*
-   * The amount is interpolated as the STRING it arrived as, never reformatted.
-   * It is a NUMERIC(28,8) decimal string (§6.1); running it through
-   * `Number()` or `toLocaleString` here to prettify it would be the one place
-   * in the system where a balance is rounded on its way to the person who owns
-   * it.
+   * FORMATTED for display, and the rule this replaces is still honoured.
+   *
+   * The previous note refused to reformat, on the grounds that `Number()` or
+   * `toLocaleString` here "would be the one place in the system where a balance
+   * is rounded on its way to the person who owns it". The COERCION half of that
+   * is exactly right and is why neither is used: `displayMoney` rounds with
+   * decimal.js and never converts to a float.
+   *
+   * What the rule got wrong is the conclusion. Refusing to format did not
+   * protect the client, it emailed them "500.00000000 USD" while their wallet
+   * screen said "$500.00" — two renderings of one credit, and the reader has to
+   * decide whether they match. The ledger keeps all eight places; this is the
+   * last inch before a sentence.
    */
-  const money = `${esc(amount)} ${esc(currency)}`;
+  const money = esc(displayMoney(amount, currency));
 
   return {
     subject: 'Funds Added to Your Wallet — OxShare',

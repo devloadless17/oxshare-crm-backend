@@ -1,4 +1,5 @@
 import { button, card, esc, p, pRich, panel, type RenderedEmail } from './layout';
+import { displayMoney } from '../../../common/money-display';
 
 /**
  * The withdrawal verdict — sent, or declined with the reason and what happens
@@ -37,7 +38,14 @@ export function withdrawalDecision(
   portalUrl: string,
   reason?: string,
 ): RenderedEmail {
-  const money = `${esc(amount)} ${esc(currency)}`;
+  /*
+   * FORMATTED, not the raw column value — see `displayMoney`. This read
+   * "11.00000000 USD" in a client's inbox while the portal showed them "$11.00"
+   * for the same withdrawal. Still escaped: the currency code reaches here from
+   * a database row, and a template that escapes everything except the one field
+   * somebody will eventually make editable is a template with a hole in it.
+   */
+  const money = esc(displayMoney(amount, currency));
 
   const heading = {
     approved: 'Your withdrawal has been approved',
@@ -46,14 +54,28 @@ export function withdrawalDecision(
   }[decision];
   const headingColor = decision === 'rejected' ? '#b42318' : '#047857';
 
+  /*
+   * ⚠️ `pRich`, NOT `p` — and using `p` here was a live bug in the client's
+   * inbox.
+   *
+   * `p()` escapes everything it is given, which is the correct default and
+   * exactly wrong for a string that already contains markup: the approved and
+   * paid messages arrived reading literally
+   * "Your withdrawal of <strong>11.00000000 USD</strong> has been approved",
+   * tags and all. `pRich` takes pre-composed HTML and the caller escapes its own
+   * values — which is what `money` above does.
+   *
+   * The rejected branch below already used `pRich` correctly, which is why only
+   * two of the three messages were affected and the bug survived.
+   */
   const body =
     decision === 'approved'
-      ? p(
+      ? pRich(
           `Your withdrawal of <strong>${money}</strong> has been approved and is being processed. ` +
             `You will receive a confirmation email once the funds have been sent.`,
         )
       : decision === 'paid'
-        ? p(
+        ? pRich(
             `Your withdrawal of <strong>${money}</strong> has been processed and sent to your nominated destination.`,
           )
         : [

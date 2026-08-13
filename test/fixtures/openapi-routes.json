@@ -199,7 +199,6 @@
   "POST /v1/payments/deposits",
   "POST /v1/payments/transfers",
   "POST /v1/payments/withdrawals",
-  "POST /v1/payments/withdrawals/otp",
   "POST /v1/trading/accounts",
   "PUT /v1/admin/agencies/{id}",
   "PUT /v1/admin/agencies/{id}/products",
