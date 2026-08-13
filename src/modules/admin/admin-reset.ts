@@ -37,6 +37,53 @@ import type { Admin } from '../../store/admins.store';
  *     self-reset here would turn a stolen session into a permanent one without
  *     ever proving knowledge of the password.
  */
+/**
+ * The upward-reach test shared by EVERY admin-management act — D-59, resolved
+ * (owner, 13 Aug 2026): nobody may edit, suspend, re-scope or demote an
+ * administrator who holds a permission they do not hold themselves.
+ *
+ * This is how "no one can touch the super admin" is expressed without
+ * resurrecting a special tier: the full-access admin outranks everyone, so
+ * nobody below reaches them; EQUALS are peers (two Administrators can rescue
+ * each other, so a locked-out top admin never needs the database); and the
+ * ladder is closed in every direction — you cannot demote your way past
+ * someone, because you cannot touch them at all.
+ *
+ * Sets, not counts: two admins can hold the same NUMBER of permissions and
+ * still not be peers.
+ */
+export function targetOutranksActor(
+  actor: Pick<Admin, 'permissions'>,
+  target: Pick<Admin, 'permissions'>,
+): boolean {
+  const held = new Set(actor.permissions);
+  return target.permissions.some((p) => !held.has(p));
+}
+
+/**
+ * The MANAGEMENT rule (edit/suspend) — deliberately weaker than the reset
+ * rule above, and the difference is the act.
+ *
+ * Reset is impersonation, so it refuses on ANY key the actor lacks: authority
+ * over an account is authority over everything it can do. Management is not
+ * impersonation — suspending or renaming a KYC reviewer does not hand you
+ * `kyc.review` — so refusing every LATERAL case (disjoint permission sets)
+ * would only mean the admin-manager needs a copy of every key in the building.
+ *
+ * What must be unreachable is the account ABOVE you: one that holds everything
+ * you hold and more. That is the super admin from any lesser seat, and it is a
+ * set comparison, not a tier — equals stay peers (two full-access admins can
+ * rescue each other), and the full-access admin supersedes everyone.
+ */
+export function targetSupersedesActor(
+  actor: Pick<Admin, 'permissions'>,
+  target: Pick<Admin, 'permissions'>,
+): boolean {
+  const targetHeld = new Set(target.permissions);
+  const containsActor = actor.permissions.every((p) => targetHeld.has(p));
+  return containsActor && targetOutranksActor(actor, target);
+}
+
 export type ResetRefusal =
   'self' | 'target-outranks-actor' | 'target-is-master' | 'actor-not-permitted';
 
@@ -81,9 +128,8 @@ export function refuseReset(
    */
   if (!actor.permissions.includes('admins.reset')) return 'actor-not-permitted';
 
-  const held = new Set(actor.permissions);
-  const reachesHigher = target.permissions.some((p) => !held.has(p));
-  return reachesHigher ? 'target-outranks-actor' : null;
+  // One definition of "outranks" for every management act — see above.
+  return targetOutranksActor(actor, target) ? 'target-outranks-actor' : null;
 }
 
 /**

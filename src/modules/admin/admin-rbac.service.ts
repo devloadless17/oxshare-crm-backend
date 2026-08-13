@@ -23,6 +23,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
+import { targetSupersedesActor } from './admin-reset';
 import { assertActorCan, normalizePermissionKey } from '../../common/security/actor';
 import { ClientFieldsService } from './client-fields.service';
 import { ClientTagsStore } from '../../store/client-tags.store';
@@ -443,6 +444,19 @@ export class AdminRbacService {
     if (!admin) throw new NotFoundError('Admin not found.');
 
     /*
+     * NOBODY MANAGES UPWARDS — D-59, resolved (owner, 13 Aug 2026).
+     *
+     * An administrator who holds a permission you do not is out of your reach:
+     * not renamable, not demotable, not maskable, not scopeable. This is how
+     * "no one can edit the super admin" is expressed without a special tier —
+     * the full-access admin outranks everyone, equals stay peers (so two
+     * Administrators can rescue each other), and demotion-as-sabotage is
+     * closed the same way reset-as-takeover was (admin-reset.ts, D-44).
+     * Compared on RESOLVED permissions, role over snapshot, both normalised.
+     */
+    await this.assertActorOutranks(actor, admin, 'edit');
+
+    /*
      * VISIBILITY is access, so it lives under the same three guards as
      * permissions rather than beside them.
      *
@@ -551,6 +565,33 @@ export class AdminRbacService {
     return await this.sanitize(updated);
   }
 
+  /**
+   * The D-59 upward-reach guard, on RESOLVED permissions.
+   *
+   * The target's raw row may carry a stale snapshot while their ROLE is the
+   * live truth, so both sides are resolved the way the guard resolves the
+   * actor's — and normalised, because `KYC.Review` and `kyc.review` are one
+   * key everywhere else in this system.
+   */
+  private async assertActorOutranks(actor: Pick<Admin, 'permissions'>, target: Admin, act: string) {
+    const targetPermissions = await this.roles.resolvePermissions(
+      target.roleId,
+      target.permissions,
+    );
+    const normalize = (keys: string[]) => keys.map((k) => AdminRbacService.normalizeKey(k));
+    if (
+      targetSupersedesActor(
+        { permissions: normalize(actor.permissions) },
+        { permissions: normalize(targetPermissions) },
+      )
+    ) {
+      throw new AuthorizationError(
+        `You cannot ${act} an administrator whose access supersedes yours: ` +
+          'they hold everything you hold, and more.',
+      );
+    }
+  }
+
   // ─── Admin suspension (admins.suspend) ─────────────────────────────────────
   /**
    * FR-RBAC-07's "manage" half — and the missing end of R-3.3's revocation story.
@@ -581,6 +622,10 @@ export class AdminRbacService {
     if (actor.id === id) {
       throw new AuthorizationError('You cannot change your own account status.');
     }
+    // Nobody suspends upwards either — D-59. Suspension of a superior is the
+    // bluntest takeover there is: the account that outranks you stops being
+    // able to answer.
+    await this.assertActorOutranks(actor, admin, 'suspend or reactivate');
     /*
      * Suspending the last administrator who can manage the directory leaves
      * nobody able to reinstate anybody — the master admin used to be the way
