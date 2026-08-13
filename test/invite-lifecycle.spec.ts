@@ -239,7 +239,7 @@ describe('createInvite', () => {
      * as a client".
      */
     const clientCase = build({ existingClient: { id: 'user-1', email: 'taken@oxshare.com' } });
-    const adminCase = build({ existingAdmin: { id: 'admin-9', email: 'taken@oxshare.com' } });
+    const adminCase = build({ existingAdmin: { ...SUB_ADMIN, email: 'taken@oxshare.com' } });
 
     const clientErr = await clientCase.service
       .createInvite('taken@oxshare.com', 'X', MASTER, undefined, ['kyc.review'])
