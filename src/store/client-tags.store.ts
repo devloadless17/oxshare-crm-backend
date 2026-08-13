@@ -55,6 +55,13 @@ const toTag = (r: TagColumns): ClientTag => ({
  */
 @Injectable()
 export class ClientTagsStore {
+  /**
+   * The intake territory — D-60. Attached to every registration by
+   * `AuthService.register`, guaranteed to exist by migration 0055, removed by
+   * an operator when the client is triaged into a real territory.
+   */
+  static readonly NEW_CLIENT_SLUG = 'new-client';
+
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
   /**
@@ -201,7 +208,12 @@ export class ClientTagsStore {
    * Returns whether a row was actually created, so the caller can skip an audit
    * entry for a no-op rather than recording an event that did not happen.
    */
-  async assign(userId: string, tagId: string, assignedBy: string): Promise<boolean> {
+  /**
+   * `assignedBy: null` is the SYSTEM assigning — registration attaching the
+   * intake tag (D-60). The column was nullable from day one; the signature
+   * just never admitted it.
+   */
+  async assign(userId: string, tagId: string, assignedBy: string | null): Promise<boolean> {
     const inserted = await this.db
       .insert(clientTagAssignments)
       .values({ userId, tagId, assignedBy })
