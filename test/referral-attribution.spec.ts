@@ -53,7 +53,7 @@ beforeAll(async () => {
     // now covers — see the last describe block.
     new WalletProvisioningService(
       new WalletService(ctx.db),
-      new CurrenciesService(ctx.db, auditStubAs(), new WalletsStore(ctx.db)),
+      new CurrenciesService(ctx.db, auditStubAs()),
       new WalletsStore(ctx.db),
     ),
   );

@@ -1,4 +1,3 @@
-import { WalletsStore } from '../src/store/wallets.store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
@@ -43,7 +42,7 @@ let otherUserId: string;
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
-  const currencies = new CurrenciesService(ctx.db, auditStubAs(), new WalletsStore(ctx.db));
+  const currencies = new CurrenciesService(ctx.db, auditStubAs());
   wallets = new WalletService(ctx.db);
   methods = new PaymentMethodsService(
     ctx.db,

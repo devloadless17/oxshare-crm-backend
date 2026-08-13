@@ -1,4 +1,3 @@
-import { WalletsStore } from '../src/store/wallets.store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { TransfersService } from '../src/modules/payments/transfers.service';
@@ -24,11 +23,7 @@ beforeAll(async () => {
   ctx = await startMoneyTestDb();
   wallets = new WalletService(ctx.db);
   // (wallets, currencies, db) — the order the constructor declares.
-  transfers = new TransfersService(
-    wallets,
-    new CurrenciesService(ctx.db, auditStubAs(), new WalletsStore(ctx.db)),
-    ctx.db,
-  );
+  transfers = new TransfersService(wallets, new CurrenciesService(ctx.db, auditStubAs()), ctx.db);
 }, 120_000);
 
 afterAll(async () => {

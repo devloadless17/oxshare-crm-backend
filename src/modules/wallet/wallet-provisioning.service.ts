@@ -15,26 +15,30 @@ import { WalletService, type Executor } from './wallet.service';
  *                 /wallet grew new rows at a moment the client associates with
  *                 identity checks rather than with money.
  *
- *   CURRENCY      a wallet in the NEWLY ENABLED currency, for every existing
- *   ENABLED      client — `openWalletForAllClients`.
+ *   A SCRIPT      a wallet in ONE currency, for every existing client —
+ *                 `openWalletForAllClients`, reached only from
+ *                 `scripts/backfill-wallets.mjs`.
  *
- * ## The third moment is new, and it reverses what this comment used to say
+ * ## Enabling a currency does NOT open wallets, and that was decided twice
  *
- * This block used to argue that enabling a currency later "does not
- * retroactively open wallets for existing clients", and that leaving it to
- * `getOrCreateWallet` on the money paths was "safe rather than backfill".
+ * `CurrenciesService` called `openWalletForAllClients` on create and on enable
+ * for exactly one commit. The argument for it still holds on its own terms: the
+ * wallet SCREEN lists what exists rather than what is offered, so a client who
+ * registered when only USD and USDT were live sees those two for as long as they
+ * never transact in anything else, while the currency screen says six are
+ * offered.
  *
- * It is not safe, because the wallet SCREEN is a read path that lists what
- * exists rather than what is offered. A client who registered when only USD and
- * USDT were enabled saw exactly those two for as long as they never transacted
- * in anything else — while the platform's own currency screen said it offered
- * six. Lazy creation covers the money paths and leaves the screen wrong, and the
- * screen is where a client forms their idea of what they can hold.
+ * It was removed at the operator's request, and the cost is why: adding one
+ * currency wrote a row per client — tens of thousands here — inside the request
+ * that saved the form. A configuration change should not be a bulk write against
+ * the money tables. So the operation stayed and its TRIGGER went: an operator
+ * runs the script when they mean to, and nothing happens by side effect.
  *
- * The claim was also self-contradicting: the KYC-APPROVAL catch-up it described
- * as the safety net WAS NEVER WIRED. `KycService.approve` does not touch
- * wallets and never has, so the one mechanism named as covering this case did
- * not exist. Backfilling on enable is what the sentence was promising.
+ * Worth recording, because the comment here once claimed otherwise: the
+ * KYC-APPROVAL catch-up this block used to name as the safety net WAS NEVER
+ * WIRED. `KycService.approve` does not touch wallets and never has. Lazy
+ * creation through `getOrCreateWallet` on the money paths is the real fallback,
+ * and it is a real one — it just does not cover the list screen.
  *
  * ## Never fatal to the thing that triggered it
  *

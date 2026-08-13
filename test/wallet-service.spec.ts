@@ -25,7 +25,7 @@ beforeAll(async () => {
   wallets = new WalletService(ctx.db);
   provisioning = new WalletProvisioningService(
     wallets,
-    new CurrenciesService(ctx.db, auditStubAs(), new WalletsStore(ctx.db)),
+    new CurrenciesService(ctx.db, auditStubAs()),
     new WalletsStore(ctx.db),
   );
 }, 120_000);
@@ -459,11 +459,19 @@ describe('provisioning', () => {
 });
 
 /*
- * The gap that produced clients holding USD and USDT long after four more
- * currencies were live: registration opens what is enabled AT THAT MOMENT, and
- * nothing ever revisited the decision.
+ * The bulk backfill — `scripts/backfill-wallets.mjs` and nothing else.
+ *
+ * It closes the gap that produced clients holding USD and USDT long after four
+ * more currencies were live: registration opens what is enabled AT THAT MOMENT
+ * and nothing revisits the decision. It briefly ran automatically when a
+ * currency was enabled; that trigger was removed, because adding one currency
+ * should not write a row per client inside the request that saved the form.
+ *
+ * The operation is still worth holding to its guarantees — it is run by hand
+ * against real balances, which makes "never touches an existing one" the
+ * assertion that matters most here.
  */
-describe('backfilling a newly enabled currency', () => {
+describe('the bulk wallet backfill', () => {
   /*
    * Back to the two the platform ships with.
    *

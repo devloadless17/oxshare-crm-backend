@@ -6,22 +6,28 @@ import type { Db } from '../database/db';
 /**
  * Wallet reads and writes that belong to no single module.
  *
- * ## Why this is a store rather than a method on WalletProvisioningService
+ * ## Its one caller is a SCRIPT
  *
- * The backfill below has exactly two callers — `CurrenciesService`, when a
- * currency becomes enabled, and `WalletProvisioningService`, which wraps it in
- * the never-throws contract its siblings hold. Those two cannot reach each
- * other: `WalletModule` imports `CurrenciesModule` (provisioning asks it which
- * currencies are enabled), so a `CurrenciesService` that depended on anything
- * `WalletModule` binds closes the loop.
+ * `openForAllClients` is reached through `WalletProvisioningService`, which
+ * wraps it in the never-throws contract its siblings hold, and that method is
+ * called from `scripts/backfill-wallets.mjs` and nowhere else. Nothing in the
+ * request path opens wallets in bulk — see the note in `CurrenciesService`,
+ * which called it on enable for exactly one commit before the trigger was
+ * removed.
  *
- * That is not a theoretical objection. Injecting the provisioning PORT into
+ * ## Why it is a store even so
+ *
+ * Left here rather than folded back into `WalletProvisioningService` because
+ * that is where it can be reached from either side. `WalletModule` imports
+ * `CurrenciesModule` (provisioning asks it which currencies are enabled), so
+ * anything the currency side needs from `WalletModule` closes a loop — and that
+ * is not a theoretical objection: injecting the provisioning PORT into
  * `CurrenciesService` was tried first, on the reasoning that `WalletModule` is
  * `@Global()` so the token is visible without an import. The token is visible;
- * the INSTANTIATION still is not. Nest hung on
- * `createApplicationContext` — no error, no stack, just an unsettled promise and
- * a process that exits when the event loop drains. A cycle that fails loudly is
- * a bad afternoon; this one fails as a hang, which is why the route matters.
+ * the INSTANTIATION still is not. Nest hung on `createApplicationContext` — no
+ * error, no stack, just an unsettled promise and a process that exits when the
+ * event loop drains. A cycle that fails loudly is a bad afternoon; this one
+ * fails as a hang.
  *
  * `StoreModule` is `@Global()` AND is depended upon by modules rather than the
  * reverse, so reaching it from either side adds no edge at all. It is the same

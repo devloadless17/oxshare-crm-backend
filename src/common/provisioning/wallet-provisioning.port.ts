@@ -34,24 +34,26 @@ export interface WalletProvisioningPort {
 }
 
 /*
- * ── Why the currency BACKFILL is not on this port ────────────────────────────
+ * ── Why the bulk BACKFILL is not on this port ────────────────────────────────
  *
- * Enabling a currency opens that wallet for every existing client, and the
- * obvious home for it was another method here — `CurrenciesService` would inject
- * the same token `AuthService` does.
+ * Opening one currency's wallet for every existing client lives on
+ * `WalletsStore`, not here, and the reason is worth keeping even though nothing
+ * in the request path calls it any more (the trigger on currency-enable was
+ * removed; `scripts/backfill-wallets.mjs` is the only caller).
  *
- * It does not work, and it fails in the worst way. `WalletModule` imports
+ * Putting it on this port meant `CurrenciesService` injecting the same token
+ * `AuthService` does — and that fails in the worst way. `WalletModule` imports
  * `CurrenciesModule` (provisioning asks it which currencies are enabled), so
  * binding the currency side to a token `WalletModule` provides closes the loop.
  * `WalletModule` being `@Global()` makes the token VISIBLE but does not make the
- * instantiation orderable: Nest hung on `createApplicationContext` with no
- * error and no stack — just an unsettled promise and a process that exits when
- * the event loop drains.
+ * instantiation orderable: Nest hung on `createApplicationContext` with no error
+ * and no stack — just an unsettled promise and a process that exits when the
+ * event loop drains.
  *
- * The backfill lives on `WalletsStore` instead, in the `@Global()` `StoreModule`
- * that both sides already depend upon, so it adds no edge in either direction.
- * The port stays for the one capability that genuinely needs the wallet MODULE's
- * knowledge of enabled currencies.
+ * `StoreModule` is `@Global()` and is depended upon by modules rather than the
+ * reverse, so it adds no edge in either direction. The port stays for the one
+ * capability that genuinely needs the wallet MODULE's knowledge of which
+ * currencies are enabled.
  */
 
 /**

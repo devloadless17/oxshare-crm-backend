@@ -1,4 +1,3 @@
-import { WalletsStore } from '../src/store/wallets.store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
@@ -57,7 +56,7 @@ beforeAll(async () => {
     {} as unknown as ClientVisibilityService,
   );
 
-  const currencies = new CurrenciesService(ctx.db, auditStubAs(), new WalletsStore(ctx.db));
+  const currencies = new CurrenciesService(ctx.db, auditStubAs());
   gateway = gatewayStub();
   transactions = new TransactionsService(
     wallets,

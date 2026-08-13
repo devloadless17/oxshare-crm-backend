@@ -1,4 +1,3 @@
-import { WalletsStore } from '../src/store/wallets.store';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
@@ -58,7 +57,7 @@ const ADMIN: Actor = {
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
-  const currencies = new CurrenciesService(ctx.db, auditStubAs(), new WalletsStore(ctx.db));
+  const currencies = new CurrenciesService(ctx.db, auditStubAs());
   wallets = new WalletService(ctx.db);
   gateways = gatewayStub();
   const asGateways = gateways as unknown as PaymentGateways;
