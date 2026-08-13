@@ -2,7 +2,7 @@ import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { adminClientTagScopes, admins, roles, users } from '../src/database/schema';
+import { adminClientTagScopes, admins, roles, users, clientTags } from '../src/database/schema';
 
 /**
  * ADM-14 tagging and the row-level client visibility built on it, END TO END.
@@ -83,6 +83,10 @@ beforeAll(async () => {
       role: 'sub_admin',
       roleId: scopedRole.id,
       permissions: [],
+      // Explicitly restricted from intake (the 0058 default is TRUE) - this
+      // fixture proves territory isolation, and untagged fixture clients
+      // would otherwise be visible through the intake branch.
+      seesUntriaged: false,
       status: 'active',
     })
     .returning();
@@ -426,5 +430,35 @@ describe('deleting a tag that is somebody’s territory', () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.del(`${TAGS}/${betaTagId}`);
     expect(res.status).toBe(200);
+  });
+});
+
+describe('system tags — the generic guard D-60 left behind', () => {
+  /*
+   * "New client" itself is a DERIVED state now, not a tag (see
+   * `untriaged-intake.spec.ts` — the tag design was reverted by migration
+   * 0057). What survives is the generic mechanism it proved: a tag the
+   * PRODUCT depends on can be marked `is_system` and cannot be deleted,
+   * while its label stays editable and per-client unassignment stays
+   * allowed. No system tag ships today; the guard is proven against one
+   * inserted directly, so whoever mints the next one inherits it working.
+   */
+  it('refuses to delete a system tag with the reason, and serves isSystem on the wire', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const db = ctx.db.db;
+    const [systemTag] = await db
+      .insert(clientTags)
+      .values({ slug: 'system-probe', label: 'System Probe', isSystem: true })
+      .returning();
+
+    const list = (await session.get(TAGS)).body as { slug: string; isSystem: boolean }[];
+    expect(list.find((tag) => tag.slug === 'system-probe')?.isSystem).toBe(true);
+
+    const res = await session.del(`${TAGS}/${systemTag.id}`);
+    expect(res.status).toBe(409);
+    expect((res.body as { message: string }).message).toMatch(/system tag/i);
+
+    // Ordinary tags are unaffected by the flag's existence.
+    expect(list.filter((tag) => tag.slug !== 'system-probe').every((t) => !t.isSystem)).toBe(true);
   });
 });

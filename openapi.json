@@ -11723,6 +11723,9 @@
               "$ref": "#/components/schemas/AdminScopeTagDto"
             }
           },
+          "seesUntriaged": {
+            "type": "boolean"
+          },
           "avatarUrl": {
             "type": "string",
             "nullable": true,
@@ -11747,6 +11750,7 @@
           "status",
           "maskedFields",
           "scopedTags",
+          "seesUntriaged",
           "createdAt"
         ]
       },
@@ -11798,6 +11802,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "seesUntriaged": {
+            "type": "boolean",
+            "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin. DEFAULTS TO TRUE — restriction is the explicit act; an inviter who does not see the pool cannot grant it, and their default resolves to false."
           }
         },
         "required": [
@@ -12053,6 +12061,10 @@
           "description": {
             "type": "string"
           },
+          "isSystem": {
+            "type": "boolean",
+            "description": "A tag the platform itself assigns (new-client intake, D-60). Undeletable; label and colour editable; un-assigning from a client is how they are triaged out of it."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -12062,6 +12074,7 @@
           "id",
           "slug",
           "label",
+          "isSystem",
           "createdAt"
         ]
       },
@@ -12468,6 +12481,10 @@
           "description": {
             "type": "string"
           },
+          "isSystem": {
+            "type": "boolean",
+            "description": "A tag the platform itself assigns (new-client intake, D-60). Undeletable; label and colour editable; un-assigning from a client is how they are triaged out of it."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -12481,6 +12498,7 @@
           "id",
           "slug",
           "label",
+          "isSystem",
           "createdAt",
           "clientCount"
         ]
@@ -13186,6 +13204,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "seesUntriaged": {
+            "type": "boolean",
+            "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin. DEFAULTS TO TRUE — restriction is the explicit act; an inviter who does not see the pool cannot grant it, and their default resolves to false."
           }
         }
       },

@@ -1,4 +1,6 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
+import type { AuthenticatedAdmin } from '../src/modules/admin/guards/admin.guard';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -52,7 +54,7 @@ function configWith(overrides: Record<string, string> = {}) {
   } as unknown as ConfigService;
 }
 
-const MASTER: Admin = {
+const MASTER: AuthenticatedAdmin = {
   id: 'master-1',
   email: 'admin@oxshare.com',
   name: 'Master',
@@ -60,10 +62,12 @@ const MASTER: Admin = {
   role: 'master_admin',
   status: 'active',
   permissions: ALL_PERMISSIONS,
+  clientScope: UNRESTRICTED,
+  fieldMask: [],
   createdAt: new Date(),
 };
 
-const SUB_ADMIN: Admin = {
+const SUB_ADMIN: AuthenticatedAdmin = {
   ...MASTER,
   id: 'sub-1',
   email: 'sub@oxshare.com',
@@ -165,8 +169,8 @@ function build(
     roles as unknown as RolesStore,
     audit as unknown as AdminAuditService,
     new ClientFieldsService(),
-    // ClientTagsStore — the invite paths under test do not touch client tags.
-    {} as never,
+    // ClientTagsStore — assertScopable at INVITE time resolves the tag ids.
+    { findByIds: vi.fn().mockResolvedValue([{ id: 'tag-1' }]) } as never,
     /*
      * AdminClientScopesStore. `describeFor` is reached because `sanitize` now
      * reports each admin's territory, and acceptInvite returns a sanitized
@@ -453,4 +457,126 @@ describe('acceptInvite', () => {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
+  /*
+   * The invite path used to check permissions only, so an `admins.create`
+   * holder could hand out a territory, a mask or the intake grant that the
+   * edit path would refuse them. One rulebook, both doors.
+   */
+  const SCOPER: AuthenticatedAdmin = {
+    ...MASTER,
+    id: 'scoper-1',
+    email: 'scoper@oxshare.com',
+    role: 'sub_admin',
+    permissions: ['admins.create', 'admins.scope', 'kyc.review', 'admins.view'],
+  };
+
+  it('refuses a territory from an inviter without admins.scope', async () => {
+    const h = build();
+    await expect(
+      h.service.createInvite(
+        'new@oxshare.com',
+        'New',
+        SUB_ADMIN, // holds admins.create but NOT admins.scope
+        undefined,
+        ['kyc.review'],
+        undefined,
+        ['tag-1'],
+      ),
+    ).rejects.toThrow(AuthorizationError);
+    expect(h.invites.create).not.toHaveBeenCalled();
+  });
+
+  it('holds the mask to the SUPERSET rule: you cannot invite sight you do not have', async () => {
+    const h = build();
+    const masked: AuthenticatedAdmin = { ...SCOPER, fieldMask: ['client.phone'] };
+    await expect(
+      h.service.createInvite(
+        'new@oxshare.com',
+        'New',
+        masked,
+        undefined,
+        ['kyc.review'],
+        // Reveals the phone the inviter cannot see themselves.
+        ['client.email'],
+      ),
+    ).rejects.toThrow(AuthorizationError);
+    expect(h.invites.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses the intake grant from a scoped inviter who does not hold it', async () => {
+    const h = build();
+    const scoped: AuthenticatedAdmin = {
+      ...SCOPER,
+      clientScope: { unrestricted: false, tagIds: ['tag-1'], includesUntriaged: false },
+      seesUntriaged: false,
+    };
+    await expect(
+      h.service.createInvite(
+        'new@oxshare.com',
+        'New',
+        scoped,
+        undefined,
+        ['kyc.review'],
+        undefined,
+        undefined,
+        true,
+      ),
+    ).rejects.toThrow(AuthorizationError);
+    expect(h.invites.create).not.toHaveBeenCalled();
+  });
+
+  it('treats an EMPTY territory list as absent — unrestricted was never a choice made', async () => {
+    // And therefore needs no admins.scope: nothing visibility-shaped was set.
+    // The intake grant resolves to its DEFAULT — true, because this inviter
+    // (unrestricted) can grant it (0058: restriction is the explicit act).
+    const h = build();
+    await h.service.createInvite(
+      'new@oxshare.com',
+      'New',
+      SUB_ADMIN,
+      undefined,
+      ['kyc.review'],
+      undefined,
+      [],
+    );
+    expect(h.invites.create).toHaveBeenCalledWith(
+      expect.objectContaining({ scopedTagIds: undefined, seesUntriaged: true }),
+    );
+  });
+
+  it('defaults the intake grant to FALSE for an inviter who cannot grant it', async () => {
+    // A scoped inviter without the grant must not hand out sight of the pool
+    // through a default they never chose — the default bends to the subset
+    // rule rather than around it.
+    const h = build();
+    const scoped: AuthenticatedAdmin = {
+      ...SCOPER,
+      clientScope: { unrestricted: false, tagIds: ['tag-1'], includesUntriaged: false },
+      seesUntriaged: false,
+    };
+    await h.service.createInvite('new@oxshare.com', 'New', scoped, undefined, ['kyc.review']);
+    expect(h.invites.create).toHaveBeenCalledWith(
+      expect.objectContaining({ seesUntriaged: false }),
+    );
+  });
+
+  it('stores the full visibility choice for the acceptance to carry', async () => {
+    const h = build();
+    await h.service.createInvite(
+      'new@oxshare.com',
+      'New',
+      SCOPER,
+      undefined,
+      ['kyc.review'],
+      undefined,
+      ['tag-1'],
+      true,
+    );
+    expect(h.invites.create).toHaveBeenCalledWith(
+      expect.objectContaining({ scopedTagIds: ['tag-1'], seesUntriaged: true }),
+    );
+  });
 });

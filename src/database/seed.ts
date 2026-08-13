@@ -12,7 +12,7 @@ import {
   securitySettings,
   users,
 } from './schema';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { DEFAULT_KYC_STEPS } from '../store/kyc-config.store';
 import permissionsCatalog from '../config/permissions.json';
 
@@ -211,6 +211,36 @@ export async function runSeeds(): Promise<void> {
       permissions: ALL_PERMISSIONS,
     })
     .onConflictDoNothing({ target: admins.email });
+
+  /*
+   * The attach the two comments above promise — made HERE, because it used to
+   * live only in migration 0045, which on a FRESH database runs before these
+   * rows exist. A new environment therefore seeded both accounts with a
+   * full-access snapshot and `roleId` NULL: access resolved (the snapshot
+   * fallback), but editing the Administrator role silently did not touch the
+   * seeded admins, contradicting the comments beside the inserts.
+   *
+   * `WHERE roleId IS NULL` keeps it one-shot: an operator who later moves
+   * either account onto a narrower role must not be re-widened on the next
+   * boot — the same fingerprint discipline the permission-backfill migrations
+   * follow.
+   */
+  const [administratorRole] = await db
+    .select({ id: roles.id })
+    .from(roles)
+    .where(eq(roles.name, 'Administrator'))
+    .limit(1);
+  if (administratorRole) {
+    await db
+      .update(admins)
+      .set({ roleId: administratorRole.id })
+      .where(
+        and(
+          inArray(admins.email, ['admin@oxshare.com', 'e2e-admin@oxshare.com']),
+          isNull(admins.roleId),
+        ),
+      );
+  }
 
   await db
     .insert(users)
@@ -663,6 +693,17 @@ export async function runSeeds(): Promise<void> {
         .insert(adminClientTagScopes)
         .values({ adminId: restrictedId, tagId: alphaTagId, createdBy: restrictedId })
         .onConflictDoNothing();
+      /*
+       * The intake grant is TRUE BY DEFAULT (migration 0058) — restriction is
+       * the explicit act. This fixture IS the explicit act: its purpose is to
+       * prove both directions of visibility, so it must NOT see the untagged
+       * pool. Re-asserted every boot, because the e2e suite depends on it the
+       * way it depends on the alpha scope above.
+       */
+      await db
+        .update(admins)
+        .set({ seesUntriaged: false })
+        .where(eq(admins.email, 'e2e-restricted@oxshare.com'));
     }
   }
 

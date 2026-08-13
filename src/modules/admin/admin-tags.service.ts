@@ -119,6 +119,26 @@ export class AdminTagsService {
     if (!tag) throw new NotFoundError('Tag not found.');
 
     /*
+     * A SYSTEM tag cannot be deleted at all — the product itself writes it.
+     *
+     * The scope guard below protects a tag once somebody's territory
+     * references it; `new-client` (D-60) is load-bearing BEFORE that moment,
+     * because registration attaches it. Deleting it would silently turn
+     * intake back into a pool only unrestricted admins can see. Same pattern
+     * as the four mandated KYC steps: label and colour stay editable,
+     * existence is not negotiable. Un-assigning it from a client stays
+     * allowed — that is triage, not deletion.
+     */
+    if (tag.isSystem) {
+      throw new ConflictError(
+        `"${tag.label}" is a system tag — the platform assigns it automatically ` +
+          '(new registrations land in it), so it cannot be deleted. Its label and ' +
+          'colour can be edited, and removing it from individual clients is how ' +
+          'they are triaged out of it.',
+      );
+    }
+
+    /*
      * A tag that is somebody's TERRITORY cannot be deleted.
      *
      * The database enforces this too (`admin_client_tag_scopes.tag_id` is ON
@@ -172,6 +192,11 @@ export class AdminTagsService {
         slug: tag.slug,
       });
     }
+    /*
+     * Nothing else to do for intake — D-60, final form. "Untriaged" is the
+     * DERIVED state of carrying no tags, so this assignment has already ended
+     * it by existing. No second tag to remove, no second audit row to write.
+     */
     return this.tags.tagsForClient(clientId);
   }
 

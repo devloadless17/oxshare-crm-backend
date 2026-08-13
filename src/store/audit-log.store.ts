@@ -1,4 +1,17 @@
-import { and, asc, count, desc, eq, sql, SQL, type SQLWrapper } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  not,
+  or,
+  sql,
+  SQL,
+  type SQLWrapper,
+} from 'drizzle-orm';
+import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
 import { buildCursorPage, pageSize, type CursorPosition } from '../common/pagination';
 import type { SortOrder } from '../common/sorting';
 import { Inject, Injectable } from '@nestjs/common';
@@ -6,6 +19,15 @@ import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { auditLog } from '../database/schema';
 import { currentClientIp } from '../common/logging/request-context';
+
+/**
+ * Subject types whose `subjectId` is a CLIENT's user id — the rows that carry
+ * client identity into the trail and therefore follow the reader's scope:
+ * `'user'` (tag assign/unassign, status changes) and `'kyc_submission'` (the
+ * queue is keyed on the client's own id). `'kyc_document'` is deliberately NOT
+ * here: its subject is the file's random uuid, which names no one.
+ */
+export const CLIENT_SUBJECT_TYPES = ['user', 'kyc_submission'] as const;
 
 // D-21: admin action log — actor, action, subject, details, timestamp.
 // First Postgres-backed store: entries survive backend restarts. Append-only
@@ -115,6 +137,14 @@ export class AuditLogStore {
       /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
       sort?: AuditSortKey;
       order?: SortOrder;
+      /**
+       * D-54, resolved (owner, 13 Aug 2026): rows whose SUBJECT is a client
+       * follow the reader's client scope. Admin-subject rows (role edits,
+       * invites, settings) stay visible to every `audit.view` holder — the
+       * trail about administrators is not client data. Absent scope means the
+       * caller is unrestricted, same convention as every other store.
+       */
+      scope?: ClientScope;
     } = {},
   ) {
     const page = Math.max(1, filter.page ?? 1);
@@ -128,6 +158,26 @@ export class AuditLogStore {
     if (filter.action) conditions.push(eq(auditLog.action, filter.action));
     if (filter.subjectType) conditions.push(eq(auditLog.subjectType, filter.subjectType));
     if (filter.actorId) conditions.push(eq(auditLog.actorId, filter.actorId));
+    if (filter.scope && !filter.scope.unrestricted) {
+      /*
+       * Keep a row if its subject is NOT a client, or if that client is inside
+       * the reader's territory. The predicate lives in the WHERE clause, never
+       * fetch-then-filter — the D-45 rule, for the D-45 reason.
+       *
+       * `subjectId` is varchar and the scope join needs a uuid, so the cast is
+       * wrapped in a CASE on a uuid shape: CASE is evaluation-ordered, which a
+       * bare `AND` is not — Postgres may reorder — and a single malformed row
+       * would otherwise abort every scoped read of the log. A non-uuid subject
+       * on a client-subject row FAILS CLOSED (hidden), which is the recoverable
+       * way to be wrong about the one record that must not leak.
+       */
+      const inScope = clientScopePredicate(
+        filter.scope,
+        sql`(CASE WHEN ${auditLog.subjectId} ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN ${auditLog.subjectId}::uuid END)`,
+      );
+      const scoped = or(not(inArray(auditLog.subjectType, [...CLIENT_SUBJECT_TYPES])), inScope);
+      if (scoped) conditions.push(scoped);
+    }
     /*
      * Keyset seek — R-2.4. The audit log is append-only and grows forever, so it
      * is the list most certain to reach a depth where OFFSET hurts. It is also

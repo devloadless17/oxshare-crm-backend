@@ -70,7 +70,7 @@ export class AdminComplianceController {
   // ── KYC Review — requires the kyc.review permission (RBAC-02/03) ──────────
   @Get('kyc')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('kyc.review')
+  @RequirePermissions('kyc.view', 'kyc.review')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'List all KYC submissions, optionally filtered by status',
@@ -134,8 +134,8 @@ export class AdminComplianceController {
    */
   @Get('kyc/export')
   @UseGuards(PermissionsGuard)
-  // The same permission as the queue. An export is not a lesser act.
-  @RequirePermissions('kyc.review')
+  // The same permissions as the queue. An export is not a lesser act.
+  @RequirePermissions('kyc.view', 'kyc.review')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Export the filtered KYC review queue as CSV',
@@ -179,7 +179,7 @@ export class AdminComplianceController {
 
   @Get('kyc/:userId')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('kyc.review')
+  @RequirePermissions('kyc.view', 'kyc.review')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get full KYC submission for a user' })
   @ApiOkResponse({ type: KycSubmissionDto })
@@ -200,7 +200,7 @@ export class AdminComplianceController {
    */
   @Get('kyc/:userId/history')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('kyc.review')
+  @RequirePermissions('kyc.view', 'kyc.review')
   @ApiCookieAuth()
   @ApiOperation({
     summary: "A client's previously decided KYC attempts, oldest first",
@@ -341,9 +341,11 @@ export class AdminComplianceController {
   }
 
   // ── KYC Step Configurator ──────────────────────────────────────────────────
+  // `kyc.edit` included so the builder can LOAD the config it is allowed to
+  // change — a route gated on editing that 403s the read renders nothing.
   @Get('kyc-config')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('kyc.view')
+  @RequirePermissions('kyc.view', 'kyc.edit')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get current KYC onboarding steps configuration' })
   @NotClientScoped("The KYC form definition — a schema, not anybody's submission.")

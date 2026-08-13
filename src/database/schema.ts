@@ -248,6 +248,19 @@ export const admins = pgTable('admins', {
    * defaulted to `[]` could not express the first, which is the common case.
    */
   maskedFields: jsonb('masked_fields').$type<string[]>(),
+  /**
+   * D-60 — sees the intake pool: clients with NO tag assignments yet.
+   *
+   * "Untriaged" is a DERIVED state (has no tags), never a tag — materialising
+   * it was tried and reverted (migrations 0055–0057): stored derived state
+   * needed three guards to stay true, and still allowed an orphan class
+   * (remove a client's last tag and nobody scoped could see them). Under the
+   * derived model every client is ALWAYS either in a territory or in intake.
+   *
+   * Only meaningful for a SCOPED admin — an unrestricted admin sees everything
+   * regardless. Honoured as an OR-branch in `clientScopePredicate`.
+   */
+  seesUntriaged: boolean('sees_untriaged').notNull().default(true),
   /*
    * Password recovery, INITIATED BY ANOTHER MASTER ADMIN — never self-service.
    * See DECISIONS D-44.
@@ -347,6 +360,8 @@ export const adminInvites = pgTable('admin_invites', {
    * in words rather than leaving to inference.
    */
   scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
+  /** D-60 — intake grant chosen at invite time, for the same window reason. */
+  seesUntriaged: boolean('sees_untriaged').notNull().default(true),
   invitedBy: uuid('invited_by').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   accepted: boolean('accepted').notNull().default(false),
@@ -471,6 +486,13 @@ export const clientTags = pgTable(
     label: varchar('label', { length: 100 }).notNull(),
     /** Chip colour token for the admin UI. Presentation, hence nullable. */
     color: varchar('color', { length: 32 }),
+    /**
+     * A tag the PRODUCT depends on — `new-client` (D-60) is attached by
+     * registration itself. Deletion is refused for system tags (the scope FK
+     * only protects a tag once a territory references it); label and colour
+     * stay editable, and un-assigning from a client stays allowed (triage).
+     */
+    isSystem: boolean('is_system').notNull().default(false),
     description: text('description'),
     createdBy: uuid('created_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

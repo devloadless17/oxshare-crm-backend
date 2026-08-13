@@ -23,6 +23,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
+import { targetSupersedesActor } from './admin-reset';
 import { assertActorCan, normalizePermissionKey } from '../../common/security/actor';
 import { ClientFieldsService } from './client-fields.service';
 import { ClientTagsStore } from '../../store/client-tags.store';
@@ -434,11 +435,26 @@ export class AdminRbacService {
       maskedFields?: string[] | null;
       /** RBAC-03 territory. An empty array means unrestricted. */
       scopedTagIds?: string[];
+      /** D-60 — sees the intake pool (clients with no tags yet). */
+      seesUntriaged?: boolean;
     },
     actor: AuthenticatedAdmin,
   ) {
     const admin = await this.admins.findById(id);
     if (!admin) throw new NotFoundError('Admin not found.');
+
+    /*
+     * NOBODY MANAGES UPWARDS — D-59, resolved (owner, 13 Aug 2026).
+     *
+     * An administrator who holds a permission you do not is out of your reach:
+     * not renamable, not demotable, not maskable, not scopeable. This is how
+     * "no one can edit the super admin" is expressed without a special tier —
+     * the full-access admin outranks everyone, equals stay peers (so two
+     * Administrators can rescue each other), and demotion-as-sabotage is
+     * closed the same way reset-as-takeover was (admin-reset.ts, D-44).
+     * Compared on RESOLVED permissions, role over snapshot, both normalised.
+     */
+    await this.assertActorOutranks(actor, admin, 'edit');
 
     /*
      * VISIBILITY is access, so it lives under the same three guards as
@@ -455,7 +471,8 @@ export class AdminRbacService {
       patch.roleId ||
       patch.permissions ||
       patch.maskedFields !== undefined ||
-      patch.scopedTagIds !== undefined,
+      patch.scopedTagIds !== undefined ||
+      patch.seesUntriaged !== undefined,
     );
 
     /*
@@ -477,7 +494,11 @@ export class AdminRbacService {
      * not the same size of act, and the permission matrix should not imply they
      * are.
      */
-    if (patch.maskedFields !== undefined || patch.scopedTagIds !== undefined) {
+    if (
+      patch.maskedFields !== undefined ||
+      patch.scopedTagIds !== undefined ||
+      patch.seesUntriaged !== undefined
+    ) {
       assertActorCan(actor, 'admins.scope', "change an administrator's client visibility");
     }
 
@@ -496,6 +517,24 @@ export class AdminRbacService {
       // `null` clears the override; an array pins this person's own answer.
       if (patch.maskedFields !== null) this.assertMaskAllowed(actor, patch.maskedFields);
       update = { ...update, maskedFields: patch.maskedFields ?? undefined };
+    }
+
+    /*
+     * D-60 — the intake grant. Guarded by `admins.scope` above with the other
+     * visibility writes: whether somebody sees the untriaged pool is exactly
+     * as access-shaped as which territories they hold. A scoped actor may
+     * grant it only if they hold it themselves — the subset rule, same as
+     * territories: you cannot hand out sight you do not have.
+     */
+    if (patch.seesUntriaged !== undefined) {
+      if (patch.seesUntriaged && !actor.clientScope.unrestricted) {
+        if (!actor.seesUntriaged) {
+          throw new AuthorizationError(
+            'You cannot grant sight of the intake pool: you do not see it yourself.',
+          );
+        }
+      }
+      update = { ...update, seesUntriaged: patch.seesUntriaged };
     }
 
     if (patch.scopedTagIds !== undefined) {
@@ -521,8 +560,36 @@ export class AdminRbacService {
       // March" is not answerable from a permission diff, and it is exactly the
       // question a compliance review asks after an incident.
       ...(patch.scopedTagIds === undefined ? {} : { scopedTagIds: patch.scopedTagIds }),
+      ...(patch.seesUntriaged === undefined ? {} : { seesUntriaged: patch.seesUntriaged }),
     });
     return await this.sanitize(updated);
+  }
+
+  /**
+   * The D-59 upward-reach guard, on RESOLVED permissions.
+   *
+   * The target's raw row may carry a stale snapshot while their ROLE is the
+   * live truth, so both sides are resolved the way the guard resolves the
+   * actor's — and normalised, because `KYC.Review` and `kyc.review` are one
+   * key everywhere else in this system.
+   */
+  private async assertActorOutranks(actor: Pick<Admin, 'permissions'>, target: Admin, act: string) {
+    const targetPermissions = await this.roles.resolvePermissions(
+      target.roleId,
+      target.permissions,
+    );
+    const normalize = (keys: string[]) => keys.map((k) => AdminRbacService.normalizeKey(k));
+    if (
+      targetSupersedesActor(
+        { permissions: normalize(actor.permissions) },
+        { permissions: normalize(targetPermissions) },
+      )
+    ) {
+      throw new AuthorizationError(
+        `You cannot ${act} an administrator whose access supersedes yours: ` +
+          'they hold everything you hold, and more.',
+      );
+    }
   }
 
   // ─── Admin suspension (admins.suspend) ─────────────────────────────────────
@@ -555,6 +622,10 @@ export class AdminRbacService {
     if (actor.id === id) {
       throw new AuthorizationError('You cannot change your own account status.');
     }
+    // Nobody suspends upwards either — D-59. Suspension of a superior is the
+    // bluntest takeover there is: the account that outranks you stops being
+    // able to answer.
+    await this.assertActorOutranks(actor, admin, 'suspend or reactivate');
     /*
      * Suspending the last administrator who can manage the directory leaves
      * nobody able to reinstate anybody — the master admin used to be the way
@@ -658,6 +729,8 @@ export class AdminRbacService {
        */
       maskedFieldsOverride: admin.maskedFields ?? null,
       scopedTags,
+      // D-60 — the intake grant, beside the territory it belongs with.
+      seesUntriaged: admin.seesUntriaged ?? false,
     };
   }
 }

@@ -215,10 +215,41 @@ describe('what cannot be suspended', () => {
    * reason none of them are about — which is exactly how this test failing
    * took two others down with it.
    */
-  it('allows suspending the master while other managers remain, and it is reversible', async () => {
+  it('refuses a LESSER manager suspending the full-access admin — D-59, the super admin is out of reach', async () => {
+    /*
+     * The owner's rule, replacing the earlier "any manager may suspend the
+     * master" pin: nobody manages an account whose access SUPERSEDES their
+     * own (holds everything they hold, and more). Suspension of a superior is
+     * the bluntest takeover there is.
+     */
     await reactivate();
     const operator = await actingAs(ctx, 'admin', OPERATOR);
-    await operator.patch(`/v1/admin/users/${masterId}/status`, { status: 'suspended' }).expect(200);
+    await operator.patch(`/v1/admin/users/${masterId}/status`, { status: 'suspended' }).expect(403);
+
+    // Still signed in, untouched.
+    const master = await actingAs(ctx, 'admin', MASTER);
+    await master.get(ADMIN_ME).expect(200);
+  });
+
+  it('lets an EQUAL suspend the full-access admin while managers remain — peers can rescue each other', async () => {
+    // Equals are peers, exactly as D-44 made them for password reset: a
+    // locked-out or compromised top admin must be stoppable by the other one,
+    // and the last-manager guard is what keeps the pair from zeroing out.
+    await reactivate();
+    const passwords = new PasswordService();
+    const PEER = { email: 'susp-peer@oxshare.com', password: 'admin-password-123' };
+    await ctx.db.db.insert(admins).values({
+      email: PEER.email,
+      passwordHash: await passwords.hash(PEER.password),
+      name: 'Susp Peer',
+      role: 'sub_admin',
+      permissions: ALL_PERMISSIONS,
+      seesUntriaged: false,
+      status: 'active',
+    });
+
+    const peer = await actingAs(ctx, 'admin', PEER);
+    await peer.patch(`/v1/admin/users/${masterId}/status`, { status: 'suspended' }).expect(200);
 
     // Suspension bites on the NEXT request, so this is the real check.
     await expect(actingAs(ctx, 'admin', MASTER)).rejects.toThrow();

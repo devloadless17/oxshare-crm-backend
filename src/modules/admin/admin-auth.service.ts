@@ -19,6 +19,8 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
+import { assertActorCan } from '../../common/security/actor';
+import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { AdminRbacService } from './admin-rbac.service';
 import { randomUUID } from 'crypto';
 import { refuseReset, RESET_TOKEN_TTL_MS } from './admin-reset';
@@ -259,7 +261,7 @@ export class AdminAuthService {
   async createInvite(
     rawEmail: string,
     name: string,
-    actor: Admin,
+    actor: AuthenticatedAdmin,
     roleId?: string,
     permissions?: string[],
     /*
@@ -273,6 +275,8 @@ export class AdminAuthService {
      */
     maskedFields?: string[],
     scopedTagIds?: string[],
+    /** D-60 — the intake grant, chosen at invite time for the window reason above. */
+    seesUntriaged?: boolean,
   ) {
     /*
      * One canonical spelling from here down.
@@ -342,6 +346,43 @@ export class AdminAuthService {
       grantedPermissions = role.permissions;
     }
     await this.rbac.assertGrantable(actor, grantedPermissions ?? ['kyc.review', 'admins.view']);
+
+    /*
+     * Visibility at INVITE time runs the same three guards as `updateAdmin` —
+     * the invite path used to check permissions only, so an `admins.create`
+     * holder could hand out a territory, a mask or the intake grant that the
+     * edit path would refuse them. One rulebook, both doors:
+     * - setting any visibility field needs `admins.scope`;
+     * - the mask obeys the superset rule (you cannot un-hide what is hidden
+     *   from you);
+     * - the territory obeys the subset rule via `assertScopable`;
+     * - the intake grant cannot be handed out by a scoped actor who does not
+     *   hold it themselves.
+     * An EMPTY scope list is normalised to absent — at invite it can only mean
+     * "unrestricted", and storing `[]` would read as a choice that was never
+     * made.
+     */
+    if (scopedTagIds !== undefined && scopedTagIds.length === 0) scopedTagIds = undefined;
+    if (maskedFields !== undefined || scopedTagIds !== undefined || seesUntriaged !== undefined) {
+      assertActorCan(actor, 'admins.scope', "choose an invitee's client visibility");
+    }
+    if (maskedFields !== undefined) this.rbac.assertMaskAllowed(actor, maskedFields);
+    if (scopedTagIds !== undefined) await this.rbac.assertScopable(actor, scopedTagIds);
+    /*
+     * The intake grant defaults to TRUE (0058) — restriction is the explicit
+     * act — EXCEPT when the inviter cannot grant it: a scoped actor without
+     * the grant themselves must not hand out sight of the pool implicitly
+     * through a default, and asking for it explicitly is refused. The default
+     * is the system's, not a choice, so it needs no `admins.scope`.
+     */
+    const actorCanGrantIntake = actor.clientScope.unrestricted || actor.seesUntriaged === true;
+    if (seesUntriaged && !actorCanGrantIntake) {
+      throw new AuthorizationError(
+        'You cannot grant sight of the intake pool: you do not see it yourself.',
+      );
+    }
+    const resolvedSeesUntriaged = seesUntriaged ?? actorCanGrantIntake;
+
     const invitedBy = actor.id;
 
     const token = uuidv4();
@@ -354,6 +395,7 @@ export class AdminAuthService {
       permissions: grantedPermissions,
       maskedFields,
       scopedTagIds,
+      seesUntriaged: resolvedSeesUntriaged,
       invitedBy,
       expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h
     });
@@ -407,6 +449,9 @@ export class AdminAuthService {
       // Carried from the invite. Without it the mask was always the role's
       // default and the inviter's choice was silently discarded.
       maskedFields: invite.maskedFields,
+      // D-60 — same carry, same reason: the intake grant is part of the
+      // visibility the inviter chose.
+      seesUntriaged: invite.seesUntriaged,
       status: 'active',
     });
 

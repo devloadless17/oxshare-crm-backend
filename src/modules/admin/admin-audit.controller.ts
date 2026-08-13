@@ -12,14 +12,14 @@
 import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { Admin } from '../../store/admins.store';
+import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { AdminAuditService } from './admin-audit.service';
 import { AuditActionDto, AuditListResponseDto } from './dto/responses.dto';
 import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
 import { AUDIT_ACTIONS } from './audit-actions.catalog';
 import { AUDIT_SORT_COLUMNS } from '../../store/audit-log.store';
 import { searchQuery } from '../../common/query-params';
-import { NotClientScoped } from './guards/client-scope.decorator';
+import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 import { AdminExportService } from './admin-export.service';
 import { exportFormat, streamCsv } from '../../common/export/export-response';
@@ -95,12 +95,14 @@ export class AdminAuditController {
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
   @ApiQuery({ name: 'action', required: false })
   @ApiQuery({ name: 'subjectType', required: false })
-  @NotClientScoped(
-    'Gated on audit.view, and the log records administrators acting rather than client-owned rows — the same stance GET /admin/audit-log takes, on the same table.',
+  @ScopedToClients(
+    'AuditLogStore.findAll applies clientScopePredicate to rows whose subject is a CLIENT ' +
+      '(subject_type user / kyc_submission, via auditBatch → scope) — D-54, resolved. ' +
+      'Admin-subject rows are unscoped: the trail about administrators is not client data.',
   )
   @Audited('export.audit_log')
   async exportAuditLog(
-    @Req() req: Request & { admin: Admin },
+    @Req() req: Request & { admin: AuthenticatedAdmin },
     @Res() res: Response,
     @Query('format') format?: string,
     @Query('action') action?: string,
@@ -131,8 +133,13 @@ export class AdminAuditController {
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Append-only admin action log (master admin only)' })
   @ApiOkResponse({ type: AuditListResponseDto })
-  @NotClientScoped(
-    'Gated on audit.view. The log records administrators acting, not client-owned rows, so there is no client scope to apply — the subjects are admin ids and the actions they took.',
+  @ScopedToClients(
+    'AuditLogStore.findAll applies clientScopePredicate to rows whose subject is a CLIENT ' +
+      '(subject_type user / kyc_submission) — D-54, resolved (owner, 13 Aug 2026). The old ' +
+      'exemption claimed "the subjects are admin ids", which was mostly true and exactly ' +
+      'wrong for the KYC and tag rows; a tag-scoped admin could read decisions about ' +
+      'clients outside their territory. Admin-subject rows stay unscoped for every ' +
+      'audit.view holder.',
   )
   /*
    * Declared OPTIONAL, explicitly — otherwise Swagger emits every `@Query()` as
@@ -147,7 +154,7 @@ export class AdminAuditController {
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(AUDIT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   listAuditLog(
-    @Req() req: Request & { admin: Admin },
+    @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,

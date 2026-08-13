@@ -386,6 +386,34 @@
       "when": 1787061973600,
       "tag": "0054_ib_revenue_cap",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1787066400000,
+      "tag": "0055_new_client_intake_tag",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1787068800000,
+      "tag": "0056_system_tags",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1787070600000,
+      "tag": "0057_untriaged_is_a_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1787074800000,
+      "tag": "0058_intake_granted_by_default",
+      "breakpoints": true
     }
   ]
 }

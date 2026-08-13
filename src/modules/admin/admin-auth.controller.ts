@@ -177,7 +177,7 @@ export class AdminAuthController {
   @ApiOkResponse({ type: InviteResponseDto })
   @NotClientScoped('Creates an admin_invites row. Administrators are not clients.')
   @Audited('admin.invite')
-  invite(@Body() dto: InviteDto, @Req() req: Request & { admin: Admin }) {
+  invite(@Body() dto: InviteDto, @Req() req: Request & { admin: AuthenticatedAdmin }) {
     return this.auth.createInvite(
       dto.email,
       dto.name,
@@ -186,6 +186,7 @@ export class AdminAuthController {
       dto.permissions,
       dto.maskedFields,
       dto.scopedTagIds,
+      dto.seesUntriaged,
     );
   }
 

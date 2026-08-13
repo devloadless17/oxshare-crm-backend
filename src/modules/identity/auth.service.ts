@@ -203,6 +203,15 @@ export class AuthService {
      */
     await this.walletProvisioning?.openAllEnabledWallets(user.id);
 
+    /*
+     * Registration deliberately does NOT tag the client — D-60, final form.
+     * "New / untriaged" is the DERIVED state of carrying no tag assignments,
+     * honoured by `clientScopePredicate` for admins holding the
+     * `sees_untriaged` grant. A materialised intake tag was tried and reverted
+     * (migrations 0055–0057): stored derived state needed guards to stay true
+     * and still allowed an orphan class the derived state cannot express.
+     */
+
     // The verification link is a bearer credential. It is emailed and never
     // written to stdout — it used to be console.logged in every environment.
     await this.email.sendVerificationEmail(user.email, verificationToken);

@@ -10,6 +10,8 @@ export interface ClientTag {
   label: string;
   color?: string;
   description?: string;
+  /** A tag the product depends on — undeletable. See schema. */
+  isSystem: boolean;
   createdAt: Date;
 }
 
@@ -33,6 +35,7 @@ type TagColumns = {
   label: string;
   color: string | null;
   description: string | null;
+  isSystem: boolean;
   createdAt: Date;
 };
 
@@ -42,6 +45,7 @@ const toTag = (r: TagColumns): ClientTag => ({
   label: r.label,
   color: r.color ?? undefined,
   description: r.description ?? undefined,
+  isSystem: r.isSystem,
   createdAt: r.createdAt,
 });
 
@@ -72,6 +76,7 @@ export class ClientTagsStore {
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
+        isSystem: clientTags.isSystem,
         createdAt: clientTags.createdAt,
         // LEFT JOIN + count of the joined key, so a tag nobody carries reports
         // 0 rather than vanishing from the list.
@@ -148,6 +153,7 @@ export class ClientTagsStore {
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
+        isSystem: clientTags.isSystem,
         createdAt: clientTags.createdAt,
       })
       .from(clientTagAssignments)
@@ -176,6 +182,7 @@ export class ClientTagsStore {
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
+        isSystem: clientTags.isSystem,
         createdAt: clientTags.createdAt,
       })
       .from(clientTagAssignments)
@@ -201,7 +208,12 @@ export class ClientTagsStore {
    * Returns whether a row was actually created, so the caller can skip an audit
    * entry for a no-op rather than recording an event that did not happen.
    */
-  async assign(userId: string, tagId: string, assignedBy: string): Promise<boolean> {
+  /**
+   * `assignedBy: null` is the SYSTEM assigning — registration attaching the
+   * intake tag (D-60). The column was nullable from day one; the signature
+   * just never admitted it.
+   */
+  async assign(userId: string, tagId: string, assignedBy: string | null): Promise<boolean> {
     const inserted = await this.db
       .insert(clientTagAssignments)
       .values({ userId, tagId, assignedBy })

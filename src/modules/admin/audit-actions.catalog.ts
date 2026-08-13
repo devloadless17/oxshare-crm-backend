@@ -273,8 +273,11 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'payment_method.delete', label: 'Payment method removed', group: 'Configuration' },
 
   // ── Security controls ─────────────────────────────────────────────────────
-  { action: 'ip_allowlist.add', label: 'Network rule added', group: 'Security' },
-  { action: 'ip_allowlist.remove', label: 'Network rule removed', group: 'Security' },
+  // `ip_allowlist.add|remove` are GONE: the feature was deleted whole
+  // (migration 0034 dropped the table, the guard no longer exists), so the two
+  // entries offered filters over rows nothing can ever write again. Historical
+  // rows, if any exist, remain readable — the filter is a varchar match, not
+  // an enum — but the vocabulary should not advertise dead actions.
   { action: 'security.control.set', label: 'Security control toggled', group: 'Security' },
   /*
    * Grouped under Security rather than Configuration, unlike the other settings

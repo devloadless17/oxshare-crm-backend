@@ -6,12 +6,11 @@ import { AuditLogStore } from '../../store/audit-log.store';
 import { IbStore } from '../../store/ib.store';
 import { RolesStore } from '../../store/roles.store';
 import { AuthorizationError, ValidationError } from '../../common/errors/domain-errors';
-import { actorHasPermission, assertActorCan } from '../../common/security/actor';
+import { actorHasPermission, assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import { applyMaskAll } from '../../common/security/field-mask';
 import { TransactionsService } from '../payments/transactions.service';
 import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
-import type { Admin } from '../../store/admins.store';
 import type { CsvColumn } from '../../common/export/csv';
 
 /**
@@ -337,7 +336,7 @@ export class AdminExportService {
     offset: number,
     limit: number,
   ): Promise<KycExportRow[]> {
-    assertActorCan(actor, 'kyc.review', 'export KYC submissions');
+    assertActorCanAny(actor, ['kyc.view', 'kyc.review'], 'export KYC submissions');
 
     const { items } = await this.kyc.findPageWithUsers({
       status: query.status as KycExportRow['status'] | undefined,
@@ -383,7 +382,7 @@ export class AdminExportService {
    */
   async auditBatch(
     query: { action?: string; subjectType?: string },
-    actor: Admin,
+    actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
   ): Promise<AuditExportRow[]> {
@@ -402,6 +401,9 @@ export class AdminExportService {
       limit,
       action: query.action,
       subjectType: query.subjectType,
+      // D-54: the export follows the same scope as the list — an export is not
+      // a lesser act, and it would otherwise be the way around the filter.
+      scope: actor.clientScope,
     });
     // `findAll` fetches limit + 1 for its cursor; drop the lookahead row.
     return items.slice(0, limit);

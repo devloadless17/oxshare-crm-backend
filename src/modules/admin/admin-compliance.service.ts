@@ -6,7 +6,7 @@ import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-r
 import { KycService } from '../compliance/kyc.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
-import { assertActorCan } from '../../common/security/actor';
+import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { Admin } from '../../store/admins.store';
@@ -39,20 +39,14 @@ export class AdminComplianceService {
     actor: AuthenticatedAdmin,
   ) {
     /*
-     * `kyc.review`, matching the route guard exactly.
-     *
-     * Asserting `kyc.view` here instead was stricter than the edge, so a
-     * reviewer holding only `kyc.review` — which is every reviewer — got a 403
-     * from a route their permission is named after. A service-layer check that
-     * disagrees with its guard is worse than none: it turns a working grant
-     * into a refusal nobody can explain from the permission matrix.
-     *
-     * (The catalog does have a separate `kyc.view`, and the queue arguably
-     * ought to accept either — the same "reading is not deciding" split that
-     * `kyc.documents.view` exists for. That would WIDEN access, so it is a
-     * decision of its own and not a side effect of adding scoping.)
+     * EITHER key, matching the route guard exactly — the "reading is not
+     * deciding" split, decided (owner, 13 Aug). The catalog has always
+     * labelled `kyc.view` "View Submissions & the Review Queue" while every
+     * queue endpoint demanded `kyc.review`, so a compliance READER got the
+     * nav item, the route, and a 403 where the queue should be. Reads accept
+     * either key now; the three DECISIONS below stay `kyc.review` only.
      */
-    assertActorCan(actor, 'kyc.review', 'list KYC submissions');
+    assertActorCanAny(actor, ['kyc.view', 'kyc.review'], 'list KYC submissions');
     return this.kycService.listAll({
       status: query.status as import('../../store/kyc.store').KycStatus | undefined,
       q: query.q,
@@ -103,7 +97,7 @@ export class AdminComplianceService {
    * in both places (R-4.3).
    */
   async getKycHistory(userId: string, actor: AuthenticatedAdmin) {
-    assertActorCan(actor, 'kyc.review', "view a client's KYC history");
+    assertActorCanAny(actor, ['kyc.view', 'kyc.review'], "view a client's KYC history");
     /*
      * The gap `client-scope-enforcement.spec.ts` found.
      *

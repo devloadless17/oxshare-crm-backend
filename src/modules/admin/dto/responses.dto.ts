@@ -70,6 +70,13 @@ export class AdminProfileDto {
   @ApiProperty({ type: [AdminScopeTagDto] }) scopedTags: AdminScopeTagDto[];
 
   /**
+   * D-60 — sees the intake pool: clients with no tag assignments yet.
+   * "Untriaged" is a DERIVED state, not a tag; this grant is the flag beside
+   * the territory list. Meaningful only when the admin is scoped.
+   */
+  @ApiProperty() seesUntriaged: boolean;
+
+  /**
    * The profile photo, on `me` rather than behind a profile endpoint of its
    * own — the sidebar renders it on every page, so a second call would be a
    * round trip per navigation to draw one 32px circle.
@@ -245,6 +252,12 @@ export class ClientTagDto {
   @ApiProperty() label: string;
   @ApiPropertyOptional() color?: string;
   @ApiPropertyOptional() description?: string;
+  @ApiProperty({
+    description:
+      'A tag the platform itself assigns (new-client intake, D-60). Undeletable; label and ' +
+      'colour editable; un-assigning from a client is how they are triaged out of it.',
+  })
+  isSystem: boolean;
   @ApiProperty() createdAt: Date;
 }
 
