@@ -1,0 +1,124 @@
+# Production stack. Shipped to the VPS by .github/workflows/ci.yml alongside a
+# rendered .env, and never used locally except to rehearse a deploy.
+#
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# This is a SEPARATE FILE, not an overlay on docker-compose.yml. The dev file
+# publishes Postgres and Redis on the host so `npm run dev` can reach them; here
+# nothing but Caddy is reachable from outside, and an overlay cannot un-publish a
+# port its base declared.
+
+name: oxshare
+
+# Docker's default json-file driver has no bound, so a chatty container fills the
+# VPS disk and takes the database down with it. Applied to every service.
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: '10m'
+      max-file: '5'
+
+services:
+  # THE SERVICE NAME `postgres` IS LOad-BEARING — do not rename it.
+  # src/database/db.ts treats /@(localhost|127\.0\.0\.1|postgres)[:/]/ as a local
+  # connection and disables TLS for it. Every other hostname gets
+  # ssl: { rejectUnauthorized: true }, so renaming this to `db` makes the API
+  # demand a certificate from a container that has none, and it fails at boot
+  # while `scripts/migrate.mjs` keeps working — a split that is genuinely hard to
+  # read from the symptoms.
+  postgres:
+    image: postgres:16-alpine
+    container_name: oxshare_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: oxshare
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: oxshare
+    volumes:
+      - oxshare_pgdata:/var/lib/postgresql/data
+    # Not published to the host. `docker compose exec postgres psql -U oxshare`
+    # for a shell; a database on a public interface is a different risk entirely.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U oxshare -d oxshare']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    <<: *logging
+
+  # Replay markers for signed webhooks and the throttler's counters. Every key
+  # here is meant to expire in minutes, so persisting them across a restart would
+  # be worse than losing them — no volume, no appendonly, on purpose.
+  redis:
+    image: redis:7-alpine
+    container_name: oxshare_redis
+    restart: unless-stopped
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    # redis:7-alpine ships NO healthcheck, and `condition: service_healthy`
+    # against a service without one makes compose refuse to start api at all.
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    <<: *logging
+
+  api:
+    # Pinned to the commit SHA by the deploy, not :latest — so `up -d` reliably
+    # recreates the container, and the tag doubles as the rollback target.
+    image: ${IMAGE_REPO:?IMAGE_REPO is required}:${IMAGE_TAG:-latest}
+    container_name: oxshare_api
+    restart: unless-stopped
+    # tini as PID 1: node is not designed to reap orphans, and without an init the
+    # SIGTERM below would also have nothing forwarding it.
+    init: true
+    # Long enough for in-flight requests to finish. Only does anything because
+    # main.ts calls enableShutdownHooks() — a process that dies on the signal
+    # ignores this entirely.
+    stop_grace_period: 30s
+    env_file:
+      - .env
+    volumes:
+      # Needed even under STORAGE_DRIVER=r2: main.ts mkdirSyncs uploads/kyc at
+      # boot, and a legacy disk driver still READS from here for documents that
+      # predate the R2 move (there is no backfill migration).
+      - oxshare_uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No ports. Caddy reaches :3001 and :3003 over the compose network.
+    <<: *logging
+
+  caddy:
+    image: caddy:2
+    container_name: oxshare_caddy
+    restart: unless-stopped
+    # TCP only. The host does not pass UDP/443, and the Caddyfile pins
+    # `protocols h1 h2` to match — advertising h3 with the UDP path dead gives
+    # mobile users 30 days of cached, intermittently broken alt-svc. Opening
+    # UDP/443 at the host firewall means adding `443:443/udp` here and deleting
+    # the protocols pin there, together.
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?API_DOMAIN is required}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # caddy_data HOLDS THE CERTIFICATES AND THE ACME ACCOUNT KEY. Deleting it
+      # forces re-issuance, and Let's Encrypt rate-limits that per registered
+      # domain per week — losing it twice in a week means no TLS until it resets.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    <<: *logging
+
+volumes:
+  oxshare_pgdata:
+  oxshare_uploads:
+  caddy_data:
+  caddy_config:

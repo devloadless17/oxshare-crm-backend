@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { MailNotConfiguredError } from '../../common/errors/domain-errors';
 import { sealSecret } from '../../common/security/secret-box';
 import { AppSettingsStore } from '../../store/app-settings.store';
 import { AdminAuditService } from '../admin/admin-audit.service';
@@ -44,19 +45,42 @@ export class SettingsService {
   async getSmtp(): Promise<SmtpSettingsDto> {
     const row = await this.store.getSmtp();
     if (!row) {
-      // No row yet: report what the process is actually using, so the form opens
-      // pre-filled with the live configuration instead of blank.
-      const effective = await this.smtpConfig.resolve();
-      return {
-        host: effective.host,
-        port: effective.port,
-        username: effective.username,
-        passwordSet: effective.password !== null,
-        fromAddress: effective.from,
-        secure: effective.secure,
-        source: 'environment',
-        updatedAt: null,
-      };
+      /*
+       * No row yet: report what the process is actually using, so the form opens
+       * pre-filled with the live configuration instead of blank.
+       *
+       * Unless there is genuinely nothing. `resolve()` refuses when neither a row
+       * nor SMTP_HOST exists — the right answer on a send path, and a trap on
+       * THIS one: the refusal would 503 the settings read, and the settings
+       * screen is the only place the unconfigured state can be fixed. A blank
+       * form is not the hazard here that it is above — there is no working
+       * configuration to invite retyping — it is the truth.
+       */
+      try {
+        const effective = await this.smtpConfig.resolve();
+        return {
+          host: effective.host,
+          port: effective.port,
+          username: effective.username,
+          passwordSet: effective.password !== null,
+          fromAddress: effective.from,
+          secure: effective.secure,
+          source: 'environment',
+          updatedAt: null,
+        };
+      } catch (error) {
+        if (!(error instanceof MailNotConfiguredError)) throw error;
+        return {
+          host: '',
+          port: 587,
+          username: null,
+          passwordSet: false,
+          fromAddress: '',
+          secure: false,
+          source: 'environment',
+          updatedAt: null,
+        };
+      }
     }
 
     return {

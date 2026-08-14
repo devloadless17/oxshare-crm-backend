@@ -15,6 +15,7 @@ import {
   ConflictError,
   ExternalServiceError,
   DomainError,
+  MailNotConfiguredError,
   MoneyRuleError,
   QuotaExceededError,
   ClientNotFoundError,
@@ -62,6 +63,9 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   [QuotaExceededError, HttpStatus.PAYLOAD_TOO_LARGE],
   // 502: this service is fine, something it calls is not — see the class.
   [ExternalServiceError, HttpStatus.BAD_GATEWAY],
+  // 503: nothing is broken and there is no upstream to have failed — mail has
+  // simply not been configured yet. See MailNotConfiguredError.
+  [MailNotConfiguredError, HttpStatus.SERVICE_UNAVAILABLE],
 ]);
 
 /**

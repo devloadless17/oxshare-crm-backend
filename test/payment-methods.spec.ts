@@ -127,12 +127,17 @@ beforeEach(async () => {
 });
 
 describe('what the platform ships with', () => {
-  it('has Whish, with its logo, disabled', async () => {
+  it('has Whish, logoless, disabled', async () => {
     const whish = await methods.findOne('whish');
 
     expect(whish?.name).toBe('Whish Money');
     expect(whish?.currency).toBe('USD');
-    expect(whish?.logoUrl).toContain('Whish');
+    // Null since migration 0065: the 0033 seed pointed at Whish's marketing CDN,
+    // which both frontends' CSP (`img-src 'self'`) refuses — so the seeded logo
+    // could never render anywhere. A real logo arrives when an operator uploads
+    // one through the console, stored same-origin. This asserted toContain('Whish')
+    // until then, which failed on every fresh database from 0065 onwards.
+    expect(whish?.logoUrl).toBeNull();
     expect(whish?.enabled).toBe(false);
   });
 

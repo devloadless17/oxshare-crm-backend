@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { MailNotConfiguredError } from '../../common/errors/domain-errors';
 import { openSecret } from '../../common/security/secret-box';
 import { AppSettingsStore } from '../../store/app-settings.store';
 
@@ -50,13 +51,58 @@ export interface EffectiveSmtpConfig {
 }
 
 @Injectable()
-export class SmtpConfigService {
+export class SmtpConfigService implements OnApplicationBootstrap {
   private readonly logger = new Logger(SmtpConfigService.name);
 
   constructor(
     private readonly settings: AppSettingsStore,
     private readonly config: ConfigService,
   ) {}
+
+  /**
+   * Say once, at boot, whether mail can be sent at all.
+   *
+   * `resolve()` refusing is the correct behaviour but a quiet one: every
+   * `send*` path funnels through `EmailService.send`, which logs and swallows
+   * on purpose — no caller treats "the mail did not go" as a reason to fail the
+   * operation that triggered it, and a KYC approval must not report failure
+   * after it has already committed. Correct, and it means an unconfigured
+   * deployment reveals itself only to whoever reads a log line at the moment
+   * somebody happens to register.
+   *
+   * A deploy, on the other hand, is watched. This puts the answer where the
+   * operator is already looking, on the one occasion they are looking.
+   *
+   * It never throws: the process must start regardless, because the screen that
+   * fixes this is served by the process. A database not yet reachable is
+   * reported as unknown rather than as unconfigured — claiming mail is broken
+   * because a probe failed would be its own kind of wrong.
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    try {
+      const row = await this.settings.getSmtp();
+      if (row) {
+        this.logger.log(`Mail configured from the database (${row.host}:${row.port}).`);
+        return;
+      }
+      const host = this.config.get<string>('SMTP_HOST', '');
+      if (host) {
+        this.logger.log(`Mail configured from the environment (${host}).`);
+        return;
+      }
+      this.logger.warn(
+        'NO MAIL SERVER IS CONFIGURED. Verification links, KYC decisions, withdrawal ' +
+          'notifications and admin invites will not be delivered. An administrator must ' +
+          'configure one in Settings → Email.',
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Could not determine the mail configuration at boot: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
 
   async resolve(): Promise<EffectiveSmtpConfig> {
     const row = await this.settings.getSmtp();
@@ -110,7 +156,26 @@ export class SmtpConfigService {
       };
     }
 
-    const host = this.config.get<string>('SMTP_HOST', 'smtp.example.com');
+    /*
+     * NOTHING CONFIGURED IS A REFUSAL, not a default.
+     *
+     * This used to fall back to `smtp.example.com` — a host RFC 2606 reserves to
+     * never resolve — so an unconfigured deployment produced a config that looked
+     * complete and failed at the relay. `EmailService.send` catches and logs
+     * rather than throwing, so that failure stopped there: no verification link,
+     * no KYC decision, no withdrawal notification, and nothing above the logger
+     * any the wiser. SMTP_* used to be required at boot to prevent exactly this.
+     *
+     * They no longer are, because mail is admin-configured and the process must
+     * start in order to serve the screen that configures it. The check moved here
+     * — later, and where it can actually name the fix.
+     */
+    const configuredHost = this.config.get<string>('SMTP_HOST', '');
+    if (!configuredHost) {
+      throw new MailNotConfiguredError();
+    }
+
+    const host = configuredHost;
     const port = this.config.get<number>('SMTP_PORT', 587);
     const username = this.config.get<string>('SMTP_USER', '') || null;
     const password = this.config.get<string>('SMTP_PASS', '') || null;

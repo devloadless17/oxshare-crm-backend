@@ -391,7 +391,10 @@ describe('payment methods', () => {
     const whish = rows.find((r) => r.key === 'whish');
     expect(whish?.name).toBe('Whish Money');
     expect(whish?.currency).toBe('USD');
-    expect(whish?.logo_url).toContain('Whish');
+    // Null since migration 0065: the 0033 seed pointed at a marketing CDN both
+    // frontends' CSP refuses, so it could never render — a real logo arrives
+    // when an operator uploads one. Same fix as payment-methods.spec.ts.
+    expect(whish?.logo_url).toBeNull();
     // Disabled: `enabled` is the operator's whole decision about whether clients
     // see a method, and nobody has switched this one on.
     expect(whish?.enabled).toBe(false);

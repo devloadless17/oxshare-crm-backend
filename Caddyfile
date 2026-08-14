@@ -1,0 +1,60 @@
+# TLS termination and the only thing on this VPS listening to the internet.
+# Both API_DOMAIN and ACME_EMAIL come from the environment (docker-compose.prod.yml).
+
+{
+	# So Let's Encrypt has somewhere to send expiry and revocation notices. ACME
+	# registration succeeds without it, and then nobody is told when something is
+	# wrong with a certificate.
+	email {$ACME_EMAIL}
+
+	# NO HTTP/3, deliberately — the VPS does not pass UDP/443. Caddy enables h3
+	# by default and advertises `alt-svc: h3=":443"`, which browsers cache for
+	# 30 DAYS; with UDP going nowhere, flaky mobile networks then hit
+	# intermittent ERR_CONNECTION_RESET while everything works fine from a desk.
+	# If UDP/443 is ever opened at the host firewall, delete this line AND
+	# publish `443:443/udp` on the caddy service in docker-compose.prod.yml.
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$API_DOMAIN} {
+	# ── One hostname, two upstreams ──────────────────────────────────────────
+	#
+	# The realtime engine is a SECOND TCP listener: REALTIME_ENGINE=uws runs
+	# Socket.IO on uWebSockets.js, which owns :3003 while Nest keeps :3001.
+	#
+	# Both must answer on the SAME HOSTNAME. Session cookies carry the `__Host-`
+	# prefix, which scopes them to one host and ignores the port — so a
+	# `realtime.` subdomain would receive no cookie and every handshake would be
+	# refused, with a `logger.warn` as the only trace. Splitting by PATH is what
+	# keeps the cookie in play.
+	#
+	# `/socket.io/*` is the right prefix: REALTIME_NAMESPACE = '/realtime' in the
+	# gateway is a Socket.IO namespace multiplexed inside the packet, not a URL
+	# segment, and the server keeps the default `/socket.io` path.
+	handle /socket.io/* {
+		# Caddy v2 upgrades WebSockets with no extra configuration, and passes
+		# Origin through untouched — which the gateway compares by exact string
+		# equality against PORTAL_URL / ADMIN_URL.
+		reverse_proxy api:3003
+	}
+
+	handle {
+		reverse_proxy api:3001
+	}
+
+	# Caddy appends the client address to X-Forwarded-For, one hop. That is what
+	# TRUSTED_PROXY_HOPS=1 in the rendered .env refers to: Express counts that many
+	# entries in from the RIGHT. Put anything else in front of this — a Cloudflare
+	# orange cloud, another load balancer — and the count has to rise with it, or
+	# every request resolves to the proxy's address and the rate limiter, the
+	# RBAC-08 allowlist and the audit trail all key on the wrong thing.
+
+	encode zstd gzip
+
+	log {
+		output stdout
+		format json
+	}
+}

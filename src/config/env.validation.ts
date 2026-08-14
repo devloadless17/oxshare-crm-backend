@@ -351,21 +351,35 @@ const SIGNING_SECRETS = [
   'JWT_REFRESH_SECRET',
 ] as const;
 
+/*
+ * SMTP_HOST/USER/PASS/FROM ARE DELIBERATELY NOT HERE. Do not add them back
+ * without reading the note below and smtp-config.service.ts.
+ *
+ * They were required, for a good reason: mail was optional, `resolve()` fell
+ * back to `smtp.example.com` with no auth, and `EmailService.send` catches and
+ * logs rather than throwing — so a deploy missing SMTP started cleanly and every
+ * verification link, KYC decision and withdrawal notification failed silently.
+ *
+ * The requirement is gone because SMTP is now ADMIN-CONFIGURED, on Settings →
+ * Email, and the `smtp_settings` row (migration 0026) is what a real deployment
+ * uses. Requiring the environment too would mean every operator holds relay
+ * credentials in two places, with the environment copy never actually used after
+ * the first save.
+ *
+ * The silent-failure hole that made these required is closed at its source
+ * instead: `SmtpConfigService.resolve()` now REFUSES when nothing is configured,
+ * rather than returning example.com defaults that fail downstream in a catch.
+ * That keeps R-8.5's "does not warn, does not degrade, it refuses" while letting
+ * the process boot — which it must, because the screen that configures mail is
+ * served by the process itself.
+ */
 const PROD_REQUIRED = [
   'DATABASE_URL',
-  // Mail was optional, and EmailService falls back to `smtp.example.com` with no
-  // auth — so a production deploy missing SMTP started cleanly and every
-  // verification link, KYC decision and withdrawal notification failed into a
-  // catch. CORE-08's withdrawal OTP will fail the same way when it lands. R-8.5's
-  // own principle is that config "does not warn, it does not degrade, it
-  // refuses"; this is the gap where it warned.
-  'SMTP_HOST',
-  'SMTP_USER',
-  'SMTP_PASS',
-  'SMTP_FROM',
-  // Without it the SMTP settings screen cannot store a password at all, and the
-  // failure would land on an operator mid-form rather than on the deploy that
-  // omitted it. Same principle as the entry above: refuse, do not degrade.
+  // Still required, and now MORE load-bearing than before: it seals
+  // smtp_settings.password_ciphertext, so without it the settings screen cannot
+  // store a relay password at all — and that screen is now the only way to
+  // configure mail. The failure would land on an operator mid-form rather than
+  // on the deploy that omitted it. Refuse, do not degrade.
   'APP_ENCRYPTION_KEY',
 ] as const;
 

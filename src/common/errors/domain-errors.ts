@@ -257,3 +257,36 @@ export class PaymentIndeterminateError extends DomainError {
 export class ExternalServiceError extends DomainError {
   readonly code = 'EXTERNAL_SERVICE_ERROR';
 }
+
+/**
+ * No mail relay is configured, so nothing can be sent. → 503
+ *
+ * ## Why this refuses instead of trying anyway
+ *
+ * SMTP is admin-configured, on Settings → Email. Before the first save there is
+ * no `smtp_settings` row, and `SmtpConfigService.resolve()` used to answer with
+ * `smtp.example.com:587` — a syntactically valid configuration pointing at a
+ * host reserved by RFC 2606 to never exist. Every send then failed inside
+ * `EmailService.send`, which catches and logs rather than throwing, so a
+ * verification link, a KYC decision or a withdrawal notification simply never
+ * arrived and nothing above the logger knew.
+ *
+ * This is the same "refuse, do not degrade" principle that used to be enforced
+ * by making SMTP_* required at boot. That could not stay: the process has to
+ * start in order to serve the screen where mail gets configured. So the refusal
+ * moved from boot time to send time, which is also where it is actionable.
+ *
+ * 503 rather than 500 because nothing is broken — a step of setup has not been
+ * done — and rather than 502 because there is no upstream to have failed. It is
+ * the one status that means "ask again once someone has finished configuring
+ * this", and the message names the screen that does it.
+ */
+export class MailNotConfiguredError extends DomainError {
+  readonly code = 'MAIL_NOT_CONFIGURED';
+
+  constructor(
+    message = 'No mail server is configured. An administrator must set one up in Settings → Email.',
+  ) {
+    super(message);
+  }
+}

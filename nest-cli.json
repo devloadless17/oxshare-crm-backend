@@ -2,6 +2,7 @@
   "collection": "@nestjs/schematics",
   "sourceRoot": "src",
   "compilerOptions": {
-    "plugins": []
+    "plugins": [],
+    "assets": [{ "include": "config/*.json", "outDir": "dist" }]
   }
 }

@@ -178,6 +178,24 @@ async function bootstrap() {
     ),
   );
 
+  /*
+   * SIGTERM must drain, not kill. Node's default action for a signal with no
+   * listener is IMMEDIATE termination, so without this every `docker compose up
+   * -d` recreate — i.e. every deploy — severed in-flight requests mid-flight.
+   * On a system whose wallet writes hold `SELECT ... FOR UPDATE` for the length
+   * of a transaction, that means the caller gets a dropped connection instead of
+   * an idempotent answer, and has no way to learn which of the two happened.
+   * Postgres rolls the transaction back, so no money is lost — but a deposit
+   * whose outcome is unknown to its caller is a support incident either way.
+   *
+   * `stop_grace_period` in compose is what gives this time to finish; it was
+   * doing nothing at all while the process exited on the signal instead of
+   * handling it. Enabling hooks is also what makes OnApplicationShutdown fire,
+   * which is how the pg pool and the realtime LISTEN connection get closed —
+   * see DatabaseModule.
+   */
+  app.enableShutdownHooks();
+
   const port = process.env['PORT'] ?? 3001;
   await app.listen(port);
 

@@ -32,8 +32,23 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
 @Module({
   imports: [
     ReplayNonceModule,
-    // Global config — loads .env, validated at boot (refuses to start on invalid)
-    ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
+    /*
+     * Global config — loads .env, validated at boot (refuses to start on invalid).
+     *
+     * `ignoreEnvFile` in production because a container gets its configuration
+     * from the environment, and a stray `/app/.env` is strictly a hazard there:
+     * ConfigModule fills in only the keys ABSENT from process.env, so a file that
+     * shouldn't be in the image at all would silently backfill whatever the real
+     * deployment forgot — and `validateEnv` would then see the merged object and
+     * pass. A missing R2_BUCKET has to be a refusal to boot, not a quiet fallback
+     * to somebody's development bucket. The .dockerignore keeps the file out;
+     * this makes it not matter if one ever gets in.
+     */
+    ConfigModule.forRoot({
+      isGlobal: true,
+      validate: validateEnv,
+      ignoreEnvFile: process.env['NODE_ENV'] === 'production',
+    }),
 
     // §9 repeatable jobs. Interim host for the confirm job until BullMQ lands.
     ScheduleModule.forRoot(),
