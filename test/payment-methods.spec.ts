@@ -12,6 +12,7 @@ import type { Actor } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
 import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
+import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
 import { gatewayStub } from './gateway-stub';
 import type { PaymentGateways } from '../src/modules/payments/payment-gateways.service';
 import { PaymentIndeterminateError, ValidationError } from '../src/common/errors/domain-errors';
@@ -78,6 +79,8 @@ beforeAll(async () => {
     new ConfigService(),
     emailStubAs(),
     notificationsStubAs(),
+    transfersStubAs(),
+    transferExecutorStubAs(),
   );
 }, 120_000);
 

@@ -8,6 +8,8 @@ import {
   withdrawalPaymentMethods,
 } from '../../database/schema';
 import type { ListTransactionsQueryDto } from './dto/transaction-query.dto';
+import { TransfersService } from './transfers.service';
+import { TransferExecutor } from './transfer-executor.service';
 
 /** The stored row, as every read here returns it. */
 type TransactionRow = typeof transactions.$inferSelect;
@@ -288,6 +290,21 @@ export class TransactionsService {
      * above, and APPENDED LAST for the same positional-construction reason.
      */
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
+    /*
+     * The onward leg of a deposit that names a trading account.
+     *
+     * `requestDeposit` has always accepted and validated
+     * `destinationTradingAccountId`, and the comment beside that column has
+     * always said settlement "chains a transfer to move it on" — but nothing
+     * did. The field was captured, validated, stored, and then never read
+     * again, so a client who chose an account watched their money stop in the
+     * wallet.
+     *
+     * APPENDED LAST, for the positional-construction reason every parameter
+     * above records.
+     */
+    private readonly transfers: TransfersService,
+    private readonly transferExecutor: TransferExecutor,
   ) {}
 
   /**
@@ -1158,6 +1175,72 @@ export class TransactionsService {
     };
   }
 
+  /**
+   * Move a settled deposit on to the trading account it was aimed at.
+   *
+   * ## Two movements, and the client sees both
+   *
+   * A deposit routed to an account is a DEPOSIT into the wallet followed by a
+   * TRANSFER out of it. It is not one operation with a different endpoint: the
+   * wallet is this system's ledger, every deposit lands there, and the money
+   * reaches MT5 the same way any other transfer does — through
+   * `TransferExecutor`, with the same idempotency key, the same hold, and the
+   * same settlement.
+   *
+   * That also means the client's history shows the two rows that actually
+   * happened, rather than one row implying money went somewhere it never was.
+   *
+   * ## AFTER the credit commits, never inside it
+   *
+   * The transfer debits the wallet, so the deposit's credit has to be durable
+   * first — chaining inside the settlement transaction would take money out of a
+   * balance that does not exist yet if the outer commit then failed.
+   *
+   * ## A failed transfer must NOT fail the deposit
+   *
+   * The money is legitimately in the wallet by this point. Leaving it there is
+   * safe, visible and recoverable: the client can transfer it themselves, and
+   * nothing is lost. Unwinding a settled deposit to punish a failed onward leg
+   * would be far worse, and the reasons this can fail are ordinary — an
+   * unverified client (transfers need KYC level 1), a suspended account, or an
+   * unreachable bridge.
+   *
+   * So it is logged with the transaction id and swallowed. The deposit stands.
+   */
+  private async chainTransferToAccount(tx: TransactionRow): Promise<void> {
+    if (!tx.destinationTradingAccountId) return;
+
+    try {
+      const transfer = await this.transfers.request({
+        userId: tx.userId,
+        tradingAccountId: tx.destinationTradingAccountId,
+        direction: 'wallet_to_account',
+        amount: tx.amount,
+        currency: tx.currency,
+      });
+
+      /*
+       * Executed here rather than left pending, so the common case finishes
+       * while the client is still looking at the screen. `execute` is the same
+       * call the transfer endpoint makes, and it is idempotent on the transfer
+       * id — a retry cannot move the money twice.
+       */
+      await this.transferExecutor.execute(transfer.id);
+
+      this.logger.log(
+        `Deposit ${tx.id} chained transfer ${transfer.id}: ${tx.amount} ${tx.currency} ` +
+          `to trading account ${tx.destinationTradingAccountId}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Deposit ${tx.id} settled but its onward transfer to trading account ` +
+          `${tx.destinationTradingAccountId} could not be made: ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          'The money is credited to the wallet and can be transferred from there.',
+      );
+    }
+  }
+
   async getById(id: string) {
     const [tx] = await this.db.select().from(transactions).where(eq(transactions.id, id)).limit(1);
     if (!tx) throw new NotFoundError('Transaction not found.');
@@ -1930,6 +2013,16 @@ export class TransactionsService {
      */
     if (transitioned) {
       void this.sendDepositOutcomeEmail(tx.userId, 'succeeded', tx.amount, tx.currency);
+
+      /*
+       * A deposit aimed at a trading account becomes TWO movements, and this is
+       * the second one. Gated on `transitioned` for the same reason the mail is:
+       * this method is deliberately reachable twice at once — the provider
+       * callback and the client's browser landing race each other — and only the
+       * winner of the conditional UPDATE gets here. That is what stops one
+       * deposit chaining two transfers.
+       */
+      await this.chainTransferToAccount(tx);
     }
 
     /*

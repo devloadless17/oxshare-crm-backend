@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { asc, eq } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
@@ -86,6 +86,19 @@ export class PaymentMethodsService {
    * Enabled, and CONFIGURED — see `isConfigured` for the one thing enabling a
    * method cannot settle.
    */
+  private readonly logger = new Logger(PaymentMethodsService.name);
+
+  /**
+   * Keys already warned about, so the log carries the signal once rather than
+   * once per deposit page view.
+   *
+   * Per PROCESS, and deliberately not invalidated when settings change: the hook
+   * would have to reach across into the settings module, and a diagnostic log is
+   * not worth a dependency edge between the two. A restart re-warns, which is
+   * the moment somebody is looking anyway.
+   */
+  private readonly warnedUnconfigured = new Set<string>();
+
   async listAvailable(): Promise<ClientPaymentMethod[]> {
     const rows = await this.db
       .select()
@@ -97,9 +110,41 @@ export class PaymentMethodsService {
     // resolved before filtering — sequential, because the answer is cached
     // after the first gateway row and a client holds a handful of methods.
     const available: typeof rows = [];
+    const hidden: string[] = [];
     for (const row of rows) {
       if (await this.isConfigured(row)) available.push(row);
+      else hidden.push(row.key);
     }
+
+    /*
+     * ── AN ENABLED METHOD THAT NOBODY CAN SEE MUST NOT BE SILENT ─────────────
+     *
+     * Hiding an unreachable gateway is right — a client who picks one and lands
+     * on an error has been told the platform is broken. What was wrong is that
+     * it happened invisibly: the operator sees Whish enabled in the admin
+     * console, every client sees "no deposit methods are available", and nothing
+     * anywhere connects the two.
+     *
+     * That is how this deployment sat with deposits switched off. The row said
+     * enabled, `rival_settings` was empty, and the only signal was a client
+     * being told their account manager had not set anything up.
+     *
+     * Logged at WARN with the key and the fix, because the operator can act on
+     * it and nobody else can.
+     */
+    for (const key of hidden) {
+      if (this.warnedUnconfigured.has(key)) continue;
+      // Once per key per process — this runs on every deposit page load, and a
+      // line per view would bury the first one, which is the one somebody reads.
+      this.warnedUnconfigured.add(key);
+      this.logger.warn(
+        `Payment method "${key}" is ENABLED but hidden from clients: this deployment has no ` +
+          'credentials for its provider, so it cannot take a payment. Clients see "no deposit ' +
+          'methods available" while the admin console shows it switched on. Configure it under ' +
+          'Settings → Payments, or disable the method.',
+      );
+    }
+
     return available.map((row) => this.withEffectiveBounds(row));
   }
 

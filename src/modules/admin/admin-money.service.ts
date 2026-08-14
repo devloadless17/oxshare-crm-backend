@@ -388,9 +388,39 @@ export class AdminMoneyService {
         );
       },
     );
-    // FR-CORE-08 "email on success/failure" begins at approval: this is the
-    // first decision the client can be told about.
-    void this.emailWithdrawalDecision(row, 'approved');
+    /*
+     * ── ONE EMAIL PER WITHDRAWAL, NAMING THE STATE THE ROW IS ACTUALLY IN ────
+     *
+     * FR-CORE-08 asks for an email "on success/failure". This sent 'approved'
+     * unconditionally, which missed on BOTH paths:
+     *
+     *  - RAIL path: the client got "your withdrawal is approved" and then "your
+     *    withdrawal is paid" about FOUR SECONDS later, because Rival settles
+     *    almost immediately. An "it is happening, please wait" message is
+     *    worthless when the outcome lands before it has been read, and two mails
+     *    that close together read as a duplicate send rather than as two states.
+     *
+     *  - DESK path: it was simply untrue. `approve` writes `success` and
+     *    `settledAt` there — the operator approving IS the one sending the money
+     *    — so the row was PAID and the client was told "approved" about funds
+     *    that had already left.
+     *
+     * The bell has always branched correctly (see `notify` above); the mail just
+     * never learned the same rule. It does now, and deliberately reads off the
+     * SAME `awaitsProviderPayout` value rather than re-deriving one, so the two
+     * channels cannot drift into telling a client different things:
+     *
+     *  - rail → say nothing here. `RivalWithdrawalsService` emails 'paid' or
+     *    'rejected' when the provider actually answers, and that outcome is the
+     *    only one worth a client's attention.
+     *  - desk → 'paid', matching both the row's state and the bell.
+     *
+     * A withdrawal that stalls on the rail is therefore silent until it settles.
+     * That is the intended trade: the desk sees it in the queue, and a client
+     * who has not been told anything is in a better position than one told
+     * "approved" and left to guess whether a second mail is still coming.
+     */
+    if (!awaitsProviderPayout) void this.emailWithdrawalDecision(row, 'paid');
     /*
      * The Rival submission, POST-COMMIT and detached: the approval is a fact
      * the moment its transaction commits, and a Rival outage must not turn a

@@ -9,6 +9,7 @@ import { MoneyLimits } from '../src/config/money-limits';
 import { auditStubAs } from './audit-stub';
 import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
+import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
 import { gatewayStubAs } from './gateway-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -61,6 +62,8 @@ beforeAll(async () => {
     new ConfigService(),
     emailStubAs(),
     notificationsStubAs(),
+    transfersStubAs(),
+    transferExecutorStubAs(),
   );
 }, 120_000);
 
