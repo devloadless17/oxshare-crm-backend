@@ -142,12 +142,9 @@ export class RivalWithdrawalsService {
     try {
       await this.submitApprovedInner(txId);
     } catch (error) {
-      this.logger.error(
-        `Rival submission for withdrawal ${txId} failed unexpectedly: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      await this.flagNeedsAttention(txId);
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Rival submission for withdrawal ${txId} failed unexpectedly: ${reason}`);
+      await this.flagNeedsAttention(txId, `The submission failed unexpectedly: ${reason}`);
     }
   }
 
@@ -188,7 +185,11 @@ export class RivalWithdrawalsService {
       // 3. RECORD — the partial unique index backs this being one-to-one.
       await this.db
         .update(transactions)
-        .set({ rivalWithdrawalId: created.id })
+        .set({
+          rivalWithdrawalId: created.id,
+          rivalNeedsAttention: false,
+          rivalAttentionReason: null,
+        })
         .where(eq(transactions.id, tx.id));
 
       this.recordSystemAction('withdrawal.rival.submit', tx.id, {
@@ -208,7 +209,12 @@ export class RivalWithdrawalsService {
           `Rival gave no answer creating the withdrawal for ${tx.id}; holding the claim for ` +
             'the reconciler. Do NOT resubmit by hand.',
         );
-        await this.flagNeedsAttention(tx.id);
+        await this.flagNeedsAttention(
+          tx.id,
+          'The platform gave no answer while creating this payout — the outcome is unknown ' +
+            'and a resubmission could pay twice. The reconciler resolves it automatically ' +
+            'within ~15 minutes; do not resubmit by hand.',
+        );
         return;
       }
       /*
@@ -220,7 +226,11 @@ export class RivalWithdrawalsService {
       const reason = error instanceof Error ? error.message : String(error);
       await this.db
         .update(transactions)
-        .set({ rivalSubmittedAt: null, rivalNeedsAttention: true })
+        .set({
+          rivalSubmittedAt: null,
+          rivalNeedsAttention: true,
+          rivalAttentionReason: `The platform refused the submission: ${reason}`,
+        })
         .where(eq(transactions.id, tx.id));
       this.recordSystemAction('withdrawal.rival.submit', tx.id, { failed: true, reason });
       await this.notifications.notifyAdminsWithPermission(
@@ -332,6 +342,15 @@ export class RivalWithdrawalsService {
       },
     );
     void this.emailDecision(row, 'paid');
+    await this.notifications.notifyAdminsWithPermission(
+      'withdrawals.approve',
+      {
+        kind: 'withdrawal.rival_paid',
+        params: { transactionId: row.id, amount: row.amount, currency: row.currency },
+        dedupeKey: `withdrawal.rival_paid:${row.id}`,
+      },
+      { subjectClientId: row.userId },
+    );
   }
 
   /** Rival refused after our approval: refund, reasoned, audited, emailed. */
@@ -373,6 +392,28 @@ export class RivalWithdrawalsService {
       },
     );
     void this.emailDecision(row, 'rejected', reason);
+    /*
+     * The ADMIN hears about this too, not only the client. A payout the desk
+     * approved coming back refused is operator news: the client will call, and
+     * an operator who learns it from that call — while the desk still shows
+     * the row as awaiting payout — is the exact "the admin didn't know"
+     * failure this event exists to prevent.
+     */
+    await this.notifications.notifyAdminsWithPermission(
+      'withdrawals.approve',
+      {
+        kind: 'withdrawal.rival_rejected',
+        params: {
+          transactionId: txId,
+          amount: row.amount,
+          currency: row.currency,
+          reason,
+          event,
+        },
+        dedupeKey: `withdrawal.rival_rejected:${txId}`,
+      },
+      { subjectClientId: row.userId },
+    );
   }
 
   /** Terminal states that DISAGREE (our success, their rejected): a human's. */
@@ -381,7 +422,12 @@ export class RivalWithdrawalsService {
     ourState: string,
     event: string,
   ): Promise<RivalWithdrawalOutcome> {
-    await this.flagNeedsAttention(txId);
+    await this.flagNeedsAttention(
+      txId,
+      `The platform reports this withdrawal ${event}, but this side recorded '${ourState}'. ` +
+        'The two systems disagree about whether the money moved — reconcile by hand against ' +
+        "the platform's dashboard before touching the row.",
+    );
     raiseAlert(
       this.logger,
       ALERT_KINDS.PAYMENT_STATE_MISMATCH,
@@ -390,6 +436,13 @@ export class RivalWithdrawalsService {
         'sides disagree about whether this money moved — reconcile by hand.',
       { transactionId: txId, ourState, event },
     );
+    // The bell rings as well as the pager: the operator working the desk sees
+    // the flagged row announced, not only whoever reads the alert channel.
+    await this.notifications.notifyAdminsWithPermission('withdrawals.approve', {
+      kind: 'withdrawal.rival_attention',
+      params: { transactionId: txId, ourState, event },
+      dedupeKey: `withdrawal.rival_attention:${txId}`,
+    });
     return 'needs-attention';
   }
 
@@ -450,7 +503,11 @@ export class RivalWithdrawalsService {
       if (found) {
         await this.db
           .update(transactions)
-          .set({ rivalWithdrawalId: found.id, rivalNeedsAttention: false })
+          .set({
+            rivalWithdrawalId: found.id,
+            rivalNeedsAttention: false,
+            rivalAttentionReason: null,
+          })
           .where(and(eq(transactions.id, tx.id), isNull(transactions.rivalWithdrawalId)));
         this.logger.log(`Adopted Rival withdrawal ${found.id} for ${tx.id} by notes-match.`);
         continue;
@@ -465,7 +522,13 @@ export class RivalWithdrawalsService {
          */
         await this.db
           .update(transactions)
-          .set({ rivalSubmittedAt: null, rivalNeedsAttention: true })
+          .set({
+            rivalSubmittedAt: null,
+            rivalNeedsAttention: true,
+            rivalAttentionReason:
+              'The submission never reached the platform (nothing matching this withdrawal ' +
+              'exists there after 15 minutes). Retry the submission from the desk.',
+          })
           .where(and(eq(transactions.id, tx.id), isNull(transactions.rivalWithdrawalId)));
         this.logger.warn(
           `Cleared a dangling Rival claim on withdrawal ${tx.id}: no matching note at Rival ` +
@@ -606,10 +669,10 @@ export class RivalWithdrawalsService {
       );
   }
 
-  private async flagNeedsAttention(txId: string): Promise<void> {
+  private async flagNeedsAttention(txId: string, reason: string): Promise<void> {
     await this.db
       .update(transactions)
-      .set({ rivalNeedsAttention: true })
+      .set({ rivalNeedsAttention: true, rivalAttentionReason: reason })
       .where(eq(transactions.id, txId));
   }
 

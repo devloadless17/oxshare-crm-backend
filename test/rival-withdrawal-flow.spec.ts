@@ -136,8 +136,10 @@ async function rowOf(txId: string) {
     rival_withdrawal_id: string | null;
     rival_submitted_at: Date | null;
     rival_needs_attention: boolean;
+    rival_attention_reason: string | null;
     provider_ref: string | null;
-  }>(sql`SELECT state, rival_withdrawal_id, rival_submitted_at, rival_needs_attention, provider_ref
+  }>(sql`SELECT state, rival_withdrawal_id, rival_submitted_at, rival_needs_attention,
+               rival_attention_reason, provider_ref
         FROM transactions WHERE id = ${txId}`);
   return rows[0];
 }
@@ -200,6 +202,8 @@ describe('submit on approval — the no-idempotency-key defence', () => {
     const row = await rowOf(txId);
     expect(row.rival_submitted_at).toBeNull(); // one retry is possible
     expect(row.rival_needs_attention).toBe(true);
+    // The operator can read WHY, in the platform's own words, on the row.
+    expect(row.rival_attention_reason).toContain('INSUFFICIENT_BALANCE at Rival');
     expect(row.state).toBe('approved'); // the approval itself stands
     expect(notifications.notifyAdminsWithPermission).toHaveBeenCalledWith(
       'withdrawals.approve',

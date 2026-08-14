@@ -1,0 +1,11 @@
+-- 0066 · Say WHY a row needs attention, not just that it does.
+--
+-- Hand-written (see the 0040 header: snapshots stop at 0026).
+--
+-- `rival_needs_attention` flips true when the payment platform refuses a payout
+-- submission, when terminal states disagree, or when money moved against a row
+-- this side considers closed. The reason lived only in a log line; the operator
+-- staring at the flagged row on the desk had no way to read it. One nullable
+-- column, written at every site that raises the flag, cleared when a retry
+-- lands the submission.
+ALTER TABLE "transactions" ADD COLUMN "rival_attention_reason" text;

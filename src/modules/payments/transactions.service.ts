@@ -628,6 +628,7 @@ export class TransactionsService {
         rivalWithdrawalId: transactions.rivalWithdrawalId,
         rivalSubmittedAt: transactions.rivalSubmittedAt,
         rivalNeedsAttention: transactions.rivalNeedsAttention,
+        rivalAttentionReason: transactions.rivalAttentionReason,
         userId: transactions.userId,
         userEmail: users.email,
         userFirstName: users.firstName,
@@ -754,6 +755,7 @@ export class TransactionsService {
       rivalWithdrawalId: r.rivalWithdrawalId,
       rivalSubmittedAt: r.rivalSubmittedAt,
       rivalNeedsAttention: r.rivalNeedsAttention,
+      rivalAttentionReason: r.rivalAttentionReason,
       user: {
         id: r.userId,
         email: r.userEmail,
@@ -1614,22 +1616,37 @@ export class TransactionsService {
   }
 
   /**
-   * `redirectUrl`, or undefined when a PAYER'S PHONE could not open it.
+   * The redirect URL the PROVIDER gets — the API's return bounce when the API
+   * has a public address, the portal directly as a fallback, or nothing.
    *
-   * Rival refuses localhost/loopback redirect URLs at create time (its rule is
-   * measured against live Whish, which 403s them), so sending them would fail
-   * EVERY deposit from a deployment whose PORTAL_URL is not public — local
-   * dev, a private staging box. Omitted, Rival serves its own platform result
-   * pages; the client still sees a real outcome, and settlement never
-   * depended on the redirect (webhook + poll own it).
+   * Preference order, and why (tech lead's direction):
+   *
+   *  1. `API_PUBLIC_URL` + the `PaymentsReturnController` bounce. The provider
+   *     only ever sees the API origin — which is public anyway, for webhooks —
+   *     and the API 302s the payer on to wherever `PORTAL_URL` points, even a
+   *     localhost portal in dev (the payer's browser IS the dev machine).
+   *  2. The portal directly, when no `API_PUBLIC_URL` is set but the portal
+   *     address is itself payer-reachable.
+   *  3. Omitted. Rival refuses localhost/loopback redirect URLs at create time
+   *     (its rule is measured against live Whish, which 403s them), so sending
+   *     one would fail EVERY deposit. Omitted, Rival serves its own platform
+   *     result pages; settlement never depended on the redirect (webhook +
+   *     poll own it).
    */
   private payerRedirectUrl(
     method: string,
     reference: string,
     outcome: 'success' | 'failure',
   ): string | undefined {
-    const url = this.redirectUrl(method, reference, outcome);
-    return isPayerReachableUrl(url) ? url : undefined;
+    const apiBase = (this.config.get<string>('API_PUBLIC_URL') ?? '').replace(/\/+$/, '');
+    if (apiBase) {
+      const bounce =
+        `${apiBase}/v1/payments/deposits/${encodeURIComponent(reference)}` +
+        `/return/${outcome}?method=${encodeURIComponent(method)}`;
+      if (isPayerReachableUrl(bounce)) return bounce;
+    }
+    const direct = this.redirectUrl(method, reference, outcome);
+    return isPayerReachableUrl(direct) ? direct : undefined;
   }
 
   /**
@@ -1876,7 +1893,13 @@ export class TransactionsService {
     if (event === 'reversed') {
       await this.db
         .update(transactions)
-        .set({ rivalNeedsAttention: true })
+        .set({
+          rivalNeedsAttention: true,
+          rivalAttentionReason:
+            'The platform REVERSED this deposit after it settled. The client wallet has not ' +
+            'been debited — a compensating entry is a human decision (§6.4). Reconcile ' +
+            "against the platform's dashboard.",
+        })
         .where(eq(transactions.id, tx.id));
       raiseAlert(
         this.logger,
@@ -1904,7 +1927,13 @@ export class TransactionsService {
        */
       await this.db
         .update(transactions)
-        .set({ rivalNeedsAttention: true })
+        .set({
+          rivalNeedsAttention: true,
+          rivalAttentionReason:
+            'The platform reports this deposit PAID, but this side had already recorded it ' +
+            'as failed. The money is at the platform and no wallet was credited — ' +
+            'reconcile by hand.',
+        })
         .where(eq(transactions.id, tx.id));
       raiseAlert(
         this.logger,

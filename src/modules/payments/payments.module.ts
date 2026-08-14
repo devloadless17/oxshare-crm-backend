@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PaymentsController } from './payments.controller';
+import { PaymentsReturnController } from './payments-return.controller';
 import { AdminPaymentMethodsController } from './admin-payment-methods.controller';
 import { AdminAuthModule } from '../admin/admin-auth.module';
 import { TransactionsService } from './transactions.service';
@@ -53,7 +54,12 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
    * exception inside `PaymentsController` so that the low-auth surface of this
    * system stays greppable — see its class comment.
    */
-  controllers: [PaymentsController, RivalWebhookController, AdminPaymentMethodsController],
+  controllers: [
+    PaymentsController,
+    PaymentsReturnController,
+    RivalWebhookController,
+    AdminPaymentMethodsController,
+  ],
   /*
    * `SecuritySettingsService` and `AdminAuditService` are provided here rather
    * than imported from AdminModule, deliberately: importing the admin module
