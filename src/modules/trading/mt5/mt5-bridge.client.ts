@@ -64,6 +64,11 @@ export interface Mt5BalanceResult {
  * gateways use for "the provider did not say whether it did" — rather than a
  * plain failure, because the one thing the caller must not do is assume nothing
  * happened and retry with a fresh key.
+ *
+ * That applies to WRITES only. A timed-out GET changed nothing and raises an
+ * ordinary `ExternalServiceError`; see `request()` for why the distinction is
+ * taken from the HTTP method rather than from a caller-supplied flag, and for
+ * the client-facing screen that made it matter.
  */
 @Injectable()
 export class Mt5BridgeClient {
@@ -147,7 +152,44 @@ export class Mt5BridgeClient {
       );
     }
 
-    const timeout = Number(this.config.get('MT5_BRIDGE_TIMEOUT_MS') ?? 30_000);
+    /*
+     * ── A READ is safe, and is treated as one ─────────────────────────────
+     *
+     * Derived from the HTTP method rather than passed in by the caller, because
+     * a flag can be forgotten and the direction it fails in matters: a write
+     * mistakenly marked safe is a double credit. GET and HEAD cannot have
+     * changed anything on the MT5 server, so a timeout on one is an ordinary
+     * unreachable-service failure with nothing to reconcile.
+     *
+     * This was not a distinction until a client-facing screen started reading
+     * `GET /accounts/{login}`. Before that every call through here was an admin
+     * write, so treating all of them as possibly-committed cost nothing. It
+     * costs something now: a timed-out READ was answering the portal with
+     * PAYMENT_INDETERMINATE, which tells an operator to reconcile a client's
+     * balance against MT5 because somebody opened an account page.
+     */
+    const safe = method === 'GET' || method === 'HEAD';
+
+    /*
+     * Reads get their own, much shorter budget.
+     *
+     * 30 seconds is calibrated for a balance write, where waiting beats not
+     * knowing whether money moved. A snapshot read has the opposite trade-off:
+     * nobody is served by a page that hangs for 30 seconds and then says the
+     * server could not be reached, and the answer is stale by then anyway.
+     *
+     * TEN seconds, not five, and the number is measured rather than guessed.
+     * Against this broker's Web API a healthy `GET /accounts/{login}` takes
+     * ~2.5s and `GET /groups` ~4.9s — every MT5 call is a round trip to the
+     * broker, not a local lookup. A 5s budget would sit inside the normal range
+     * of a call that WORKS, which is the worst place to put a timeout: it turns
+     * an ordinary slow response into a reported outage, and the retry adds load
+     * to the server it just gave up on.
+     */
+    const timeout = safe
+      ? Number(this.config.get('MT5_BRIDGE_READ_TIMEOUT_MS') ?? 10_000)
+      : Number(this.config.get('MT5_BRIDGE_TIMEOUT_MS') ?? 30_000);
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
 
@@ -184,6 +226,18 @@ export class Mt5BridgeClient {
        * fresh key.
        */
       const aborted = error instanceof Error && error.name === 'AbortError';
+      if (aborted && safe) {
+        /*
+         * A read that timed out changed nothing, so there is nothing to
+         * reconcile and the caller may simply try again. Saying INDETERMINATE
+         * here would be a false alarm about a client's money, and false alarms
+         * about money are how the real ones stop being read.
+         */
+        throw new ExternalServiceError(
+          `MT5 bridge timed out after ${timeout}ms on ${method} ${path}. Nothing was changed.`,
+        );
+      }
+
       if (aborted) {
         /*
          * INDETERMINATE, not failed — the same distinction the payment gateways

@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
@@ -9,6 +19,12 @@ import { positionStatusEnum } from '../../database/schema';
 import { TradingService } from './trading.service';
 import { TradingAccountDto } from './dto/trading-account.dto';
 import { PositionDto } from './dto/position.dto';
+import {
+  AccountDealPageDto,
+  AccountSnapshotDto,
+  AccountStatsDto,
+  ListAccountDealsQueryDto,
+} from './dto/account-detail.dto';
 import { OpenOwnAccountDto } from './dto/open-account.dto';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
 import { SelfServiceGroups } from './mt5/self-service-groups';
@@ -253,5 +269,95 @@ export class TradingController {
       status: enumQuery(status, positionStatusEnum.enumValues, 'status'),
       limit: limit ? Number.parseInt(limit, 10) : undefined,
     });
+  }
+
+  /*
+   * ── The `accounts/:id` family ──────────────────────────────────────────────
+   *
+   * DECLARED AFTER `accounts/self-service` and `accounts/transferable`, and that
+   * ordering is load-bearing. Nest matches routes in declaration order, so a
+   * `:id` parameter registered above them would swallow both literals and send
+   * `self-service` into `ParseUUIDPipe` as an account id — a 400 on a route that
+   * exists, which reads as a client bug rather than a routing one.
+   *
+   * Every handler here takes the account id from the URL and the OWNER from the
+   * session. `TradingService.findMine` is what reconciles them, and it is the
+   * only thing standing between "my account" and "any account" on four routes
+   * that are authenticated but not permission-gated.
+   */
+
+  @Get('accounts/:id')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "One of the signed-in client's trading accounts",
+    description:
+      '404 when the account does not exist OR belongs to somebody else — the two are the same ' +
+      'answer on purpose, because distinguishing them tells a caller which ids are real.\n\n' +
+      '`balance` here is the CRM-held figure, as on the list. For what MT5 holds right now, ' +
+      'including equity and floating P/L, call `/trading/accounts/:id/live`.',
+  })
+  @ApiOkResponse({ type: TradingAccountDto })
+  myAccount(@Req() req: Request & { user: User }, @Param('id', ParseUUIDPipe) id: string) {
+    return this.trading.findMine(req.user.id, id);
+  }
+
+  @Get('accounts/:id/live')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Balance, equity, margin and floating P/L for one account, read live from MT5',
+    description:
+      'The AUTHORITATIVE figures, read through the bridge to the MT5 server. Distinct from the ' +
+      '`balance` column on the list endpoint, which is what a transfer credited and goes stale ' +
+      'the moment the client opens a position.\n\n' +
+      '`floating` is equity minus balance minus credit — the unrealised total across every open ' +
+      'position. It is the ONLY floating figure this system can state: the bridge exposes no ' +
+      'open-position feed, so a PER-TRADE floating number would have to be invented.\n\n' +
+      'NULL when the account has no MT5 login yet, which is a different state from the bridge ' +
+      'being unreachable — that raises EXTERNAL_SERVICE_ERROR. A screen must not render both as ' +
+      'the same sentence.',
+  })
+  @ApiOkResponse({ type: AccountSnapshotDto })
+  myAccountLive(@Req() req: Request & { user: User }, @Param('id', ParseUUIDPipe) id: string) {
+    return this.trading.snapshotMine(req.user.id, id);
+  }
+
+  @Get('accounts/:id/deals')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "One account's deal history — trades and money movements, paged",
+    description:
+      'Every deal MT5 has reported for this account, newest first by the time MT5 says it ' +
+      'happened. `kind=trades` narrows to market activity; `kind=balance` to deposits, ' +
+      'withdrawals, credits, commissions and the rest. Absent returns everything.\n\n' +
+      'These are CLOSED deals. Open positions are not here and are not anywhere: the bridge ' +
+      'ingests deals, and nothing feeds the `positions` table.\n\n' +
+      'An account with no MT5 login returns an empty page — deals are keyed by login, so it has ' +
+      'none by definition rather than by a query that found nothing.',
+  })
+  @ApiOkResponse({ type: AccountDealPageDto })
+  myAccountDeals(
+    @Req() req: Request & { user: User },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: ListAccountDealsQueryDto,
+  ) {
+    return this.trading.listDealsMine(req.user.id, id, query);
+  }
+
+  @Get('accounts/:id/stats')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "One account's realised performance, summed in the database",
+    description:
+      'Closed round trips only — opening deals carry no realised result and counting them would ' +
+      'drag every average toward zero. Balance operations are excluded: a deposit is not a ' +
+      'winning trade.\n\n' +
+      '`wins + losses` need NOT equal `trades`: a trade closing at exactly zero is neither. A win ' +
+      'rate divides by `trades`.\n\n' +
+      'Realised figures only. Floating P/L is on `/live`, because it belongs to MT5 and to this ' +
+      'instant rather than to the history.',
+  })
+  @ApiOkResponse({ type: AccountStatsDto })
+  myAccountStats(@Req() req: Request & { user: User }, @Param('id', ParseUUIDPipe) id: string) {
+    return this.trading.statsMine(req.user.id, id);
   }
 }

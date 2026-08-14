@@ -3320,6 +3320,217 @@
         ]
       }
     },
+    "/v1/trading/accounts/{id}": {
+      "get": {
+        "description": "404 when the account does not exist OR belongs to somebody else — the two are the same answer on purpose, because distinguishing them tells a caller which ids are real.\n\n`balance` here is the CRM-held figure, as on the list. For what MT5 holds right now, including equity and floating P/L, call `/trading/accounts/:id/live`.",
+        "operationId": "TradingController_myAccount",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "One of the signed-in client's trading accounts",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/v1/trading/accounts/{id}/live": {
+      "get": {
+        "description": "The AUTHORITATIVE figures, read through the bridge to the MT5 server. Distinct from the `balance` column on the list endpoint, which is what a transfer credited and goes stale the moment the client opens a position.\n\n`floating` is equity minus balance minus credit — the unrealised total across every open position. It is the ONLY floating figure this system can state: the bridge exposes no open-position feed, so a PER-TRADE floating number would have to be invented.\n\nNULL when the account has no MT5 login yet, which is a different state from the bridge being unreachable — that raises EXTERNAL_SERVICE_ERROR. A screen must not render both as the same sentence.",
+        "operationId": "TradingController_myAccountLive",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountSnapshotDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Balance, equity, margin and floating P/L for one account, read live from MT5",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/v1/trading/accounts/{id}/deals": {
+      "get": {
+        "description": "Every deal MT5 has reported for this account, newest first by the time MT5 says it happened. `kind=trades` narrows to market activity; `kind=balance` to deposits, withdrawals, credits, commissions and the rest. Absent returns everything.\n\nThese are CLOSED deals. Open positions are not here and are not anywhere: the bridge ingests deals, and nothing feeds the `positions` table.\n\nAn account with no MT5 login returns an empty page — deals are keyed by login, so it has none by definition rather than by a query that found nothing.",
+        "operationId": "TradingController_myAccountDeals",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "required": false,
+            "in": "query",
+            "description": "Narrow to market activity or to money movements. Absent returns everything, including the cancelled deals that are neither.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "trades",
+                "balance"
+              ]
+            }
+          },
+          {
+            "name": "symbol",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "EURUSD",
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "example": "2026-08-01",
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "example": "2026-08-31",
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDealPageDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "One account's deal history — trades and money movements, paged",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/v1/trading/accounts/{id}/stats": {
+      "get": {
+        "description": "Closed round trips only — opening deals carry no realised result and counting them would drag every average toward zero. Balance operations are excluded: a deposit is not a winning trade.\n\n`wins + losses` need NOT equal `trades`: a trade closing at exactly zero is neither. A win rate divides by `trades`.\n\nRealised figures only. Floating P/L is on `/live`, because it belongs to MT5 and to this instant rather than to the history.",
+        "operationId": "TradingController_myAccountStats",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountStatsDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "One account's realised performance, summed in the database",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
     "/v1/dashboard": {
       "get": {
         "description": "Wallets, recent transactions, trading accounts, open positions and five counts.\n\nONE request rather than six because these are read in a single glance: a balance from one instant beside a transaction list from another is a screen that contradicts itself, and six requests give the portal six ways to half-fail.\n\nEvery figure is counted from a table. The screen this replaces carried hardcoded zeros for \"trading accounts\" and \"pending transactions\" with no endpoint behind either, so a client holding three accounts read 0.\n\n`openPositions` is empty for everyone until an MT5 bridge writes to `positions` — but the query is real, so that emptiness is a database answer rather than a frontend assumption.",
@@ -10922,6 +11133,261 @@
           "status",
           "openedAt",
           "closedAt"
+        ]
+      },
+      "AccountSnapshotDto": {
+        "type": "object",
+        "properties": {
+          "login": {
+            "type": "string",
+            "description": "The MT5 login these figures belong to.",
+            "example": "5000002"
+          },
+          "group": {
+            "type": "string",
+            "example": "demo\\Standard"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "leverage": {
+            "type": "number",
+            "description": "The ratio denominator — 500 means 1:500.",
+            "example": 500
+          },
+          "balance": {
+            "type": "string",
+            "example": "1250.00000000",
+            "description": "Cash balance, EXCLUDING floating profit. Decimal string (§6.1)."
+          },
+          "equity": {
+            "type": "string",
+            "example": "1312.40000000",
+            "description": "Balance plus credit plus floating profit — what the client can act on."
+          },
+          "credit": {
+            "type": "string",
+            "example": "0.00000000"
+          },
+          "margin": {
+            "type": "string",
+            "example": "120.00000000"
+          },
+          "marginFree": {
+            "type": "string",
+            "example": "1192.40000000"
+          },
+          "marginLevel": {
+            "type": "string",
+            "nullable": true,
+            "example": "1093.66",
+            "description": "NULL when the account has no margin requirement at all — no open positions. Zero and \"not applicable\" are different answers and must render differently, so this is not defaulted to 0."
+          },
+          "floating": {
+            "type": "string",
+            "example": "62.40000000",
+            "description": "Unrealised profit across every open position: equity - balance - credit.\n\nDerived here rather than stored, and derived from MT5 rather than from our own tables. It is the ONE floating figure this system can state honestly: the bridge exposes no per-position feed, so a per-trade floating column would have to be invented, but the account total falls straight out of two numbers the MT5 server just gave us.\n\nSigned — a client underwater is negative."
+          }
+        },
+        "required": [
+          "login",
+          "group",
+          "currency",
+          "leverage",
+          "balance",
+          "equity",
+          "credit",
+          "margin",
+          "marginFree",
+          "marginLevel",
+          "floating"
+        ]
+      },
+      "AccountDealDto": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "string",
+            "description": "MT5's ticket.",
+            "example": "90210"
+          },
+          "symbol": {
+            "type": "string",
+            "example": "EURUSD"
+          },
+          "action": {
+            "type": "number",
+            "description": "MT5's raw numeric action.",
+            "example": 0
+          },
+          "actionLabel": {
+            "type": "string",
+            "description": "A stable name for the action — \"buy\", \"balance\", \"commission\". Unknown codes render as \"action <n>\" rather than as a guess.",
+            "example": "buy"
+          },
+          "entry": {
+            "type": "number",
+            "description": "MT5's raw numeric entry: 0 in, 1 out, 2 inout, 3 out_by.",
+            "example": 1
+          },
+          "closing": {
+            "type": "boolean",
+            "description": "True when this deal realised a result rather than opening a position."
+          },
+          "volume": {
+            "type": "string",
+            "example": "1.00000000"
+          },
+          "price": {
+            "type": "string",
+            "example": "1.08542000"
+          },
+          "profit": {
+            "type": "string",
+            "example": "-12.50000000",
+            "description": "Signed. A loss is negative."
+          },
+          "commission": {
+            "type": "string",
+            "example": "-3.00000000"
+          },
+          "swap": {
+            "type": "string",
+            "example": "0.00000000"
+          },
+          "comment": {
+            "type": "string",
+            "nullable": true
+          },
+          "dealtAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "When MT5 says it happened — NOT when we ingested it."
+          }
+        },
+        "required": [
+          "ticket",
+          "symbol",
+          "action",
+          "actionLabel",
+          "entry",
+          "closing",
+          "volume",
+          "price",
+          "profit",
+          "commission",
+          "swap",
+          "dealtAt"
+        ]
+      },
+      "AccountDealPageDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountDealDto"
+            }
+          },
+          "total": {
+            "type": "number",
+            "description": "Deals matching the filters, across every page."
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "limit"
+        ]
+      },
+      "AccountStatsDto": {
+        "type": "object",
+        "properties": {
+          "trades": {
+            "type": "number",
+            "description": "Closed round trips. The denominator for a win rate."
+          },
+          "wins": {
+            "type": "number",
+            "description": "Closed trades with profit > 0."
+          },
+          "losses": {
+            "type": "number",
+            "description": "Closed trades with profit < 0. See the DTO note on scratch exits."
+          },
+          "volume": {
+            "type": "string",
+            "example": "14.50000000",
+            "description": "Lots closed."
+          },
+          "netProfit": {
+            "type": "string",
+            "example": "840.20000000",
+            "description": "Realised profit and loss, net and signed. Excludes floating — see the snapshot."
+          },
+          "grossProfit": {
+            "type": "string",
+            "example": "1290.00000000",
+            "description": "Sum of winning trades."
+          },
+          "grossLoss": {
+            "type": "string",
+            "example": "-449.80000000",
+            "description": "Sum of losing trades. NEGATIVE, as stored — not an absolute value."
+          },
+          "commission": {
+            "type": "string",
+            "example": "-38.00000000",
+            "description": "Signed: a charge is negative."
+          },
+          "swap": {
+            "type": "string",
+            "example": "-4.20000000",
+            "description": "Signed."
+          },
+          "bestTrade": {
+            "type": "string",
+            "nullable": true,
+            "description": "Best single closed trade. Null with no trades."
+          },
+          "worstTrade": {
+            "type": "string",
+            "nullable": true,
+            "description": "Worst single closed trade. Null with no trades."
+          },
+          "firstDealAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "lastDealAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "required": [
+          "trades",
+          "wins",
+          "losses",
+          "volume",
+          "netProfit",
+          "grossProfit",
+          "grossLoss",
+          "commission",
+          "swap",
+          "bestTrade",
+          "worstTrade",
+          "firstDealAt",
+          "lastDealAt"
         ]
       },
       "DashboardStatsDto": {
