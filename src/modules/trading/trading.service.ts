@@ -1,25 +1,25 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, desc, eq, inArray, notInArray, sql } from 'drizzle-orm';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { mt5Deals, positions, tradingAccounts } from '../../database/schema';
-import { ExternalServiceError, NotFoundError } from '../../common/errors/domain-errors';
-import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
+import { positions, tradingAccounts } from '../../database/schema';
 import {
-  CANCELLED_ACTIONS,
-  CLOSING_ENTRIES,
-  TRADE_ACTIONS,
-  dealActionLabel,
-  isRealisedTrade,
-} from './mt5/deal-codes';
+  ExternalServiceError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
+import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
+import { dealActionLabel, isRealisedTrade } from './mt5/deal-codes';
 import type { TradingAccountDto } from './dto/trading-account.dto';
 import type { PositionDto } from './dto/position.dto';
 import type {
-  AccountDealPageDto,
+  AccountDealDto,
+  AccountHistoryDto,
+  AccountHistoryQueryDto,
+  AccountPositionDto,
   AccountSnapshotDto,
   AccountStatsDto,
-  ListAccountDealsQueryDto,
 } from './dto/account-detail.dto';
 
 /**
@@ -46,6 +46,8 @@ import type {
  */
 @Injectable()
 export class TradingService {
+  private readonly logger = new Logger(TradingService.name);
+
   /*
    * The bridge is injected for ONE method — `snapshotMine` — and that is the
    * whole reason this service is no longer purely a database reader.
@@ -254,20 +256,11 @@ export class TradingService {
     const account = await this.findMine(userId, accountId);
     if (!account.login) return null;
 
-    /*
-     * An unconfigured bridge fails as an EXTERNAL SERVICE problem, not as a
-     * validation one. The admin route says "set MT5_BRIDGE_URL" because an
-     * operator can act on that; a client cannot, and the deployment's
-     * environment variables are not theirs to be told about. Both reach the
-     * portal as "the live figures could not be read", which is the true
-     * statement either way — and the screen keeps rendering the CRM balance
-     * beside it, labelled as the cached figure it is.
-     */
-    if (!this.bridge.isConfigured) {
-      throw new ExternalServiceError('The trading server could not be reached.');
-    }
+    this.assertBridge();
 
-    const snapshot = await this.bridge.getAccount(account.login);
+    const snapshot = await this.viaBridge('snapshot', accountId, () =>
+      this.bridge.getAccount(account.login as string),
+    );
     if (!snapshot) return null;
 
     const floating = new Decimal(snapshot.equity)
@@ -293,186 +286,343 @@ export class TradingService {
   }
 
   /**
-   * This account's deal history, paged and filtered.
+   * Refuse before calling a bridge that was never configured.
    *
-   * ## Joined on the LOGIN, which is why an unprovisioned account is empty
-   *
-   * `mt5_deals` names an MT5 login, never an account id — the schema comment
-   * records why: a deal arriving before its account has been linked would
-   * otherwise be orphaned forever, and that ordering is normal during
-   * onboarding. An account with no login therefore has no deals BY DEFINITION,
-   * and the query is skipped rather than run against a null.
+   * An EXTERNAL SERVICE failure, not a validation one. The admin route says
+   * "set MT5_BRIDGE_URL" because an operator can act on that; a client cannot,
+   * and the deployment's environment variables are not theirs to be told about.
+   * Either way the portal reads it as "the live figures could not be read",
+   * which is the true statement.
    */
-  async listDealsMine(
-    userId: string,
-    accountId: string,
-    query: ListAccountDealsQueryDto = {},
-  ): Promise<AccountDealPageDto> {
-    const account = await this.findMine(userId, accountId);
-    const page = Math.max(query.page ?? 1, 1);
-    const limit = Math.min(Math.max(query.limit ?? 25, 1), 100);
-
-    if (!account.login) return { items: [], total: 0, page, limit };
-
-    const where = and(...this.dealPredicates(account.login, query));
-
-    const [{ total }] = await this.db
-      .select({ total: sql<number>`COUNT(*)::int` })
-      .from(mt5Deals)
-      .where(where);
-
-    const rows = await this.db
-      .select({
-        ticket: mt5Deals.mt5DealId,
-        symbol: mt5Deals.symbol,
-        action: mt5Deals.action,
-        entry: mt5Deals.entry,
-        volume: mt5Deals.volume,
-        price: mt5Deals.price,
-        profit: mt5Deals.profit,
-        commission: mt5Deals.commission,
-        swap: mt5Deals.swap,
-        comment: mt5Deals.comment,
-        dealtAt: mt5Deals.dealtAt,
-      })
-      .from(mt5Deals)
-      .where(where)
-      /*
-       * By `dealtAt`, never `ingestedAt`. The sweep re-reads a rolling 24 hours
-       * and can ingest an older deal after a newer one, so ordering by arrival
-       * would reshuffle a client's history every time a partition healed.
-       *
-       * The ticket breaks ties: two deals can share a timestamp, and without a
-       * total order an offset page can drop or repeat a row between requests.
-       */
-      .orderBy(desc(mt5Deals.dealtAt), desc(mt5Deals.mt5DealId))
-      .limit(limit)
-      .offset((page - 1) * limit);
-
-    return {
-      items: rows.map((row) => ({
-        ...row,
-        actionLabel: dealActionLabel(row.action),
-        closing: isRealisedTrade(row),
-      })),
-      total,
-      page,
-      limit,
-    };
+  private assertBridge(): void {
+    if (!this.bridge.isConfigured) {
+      throw new ExternalServiceError('The trading server could not be reached.');
+    }
   }
 
   /**
-   * The account's realised performance, summed in the database.
+   * Run a bridge read for a CLIENT, and never let its internals reach them.
    *
-   * Counts and totals cover CLOSED round trips only — `AccountStatsDto` records
-   * why an opening deal must not be counted, and `deal-codes.ts` what qualifies
-   * as one. Balance operations are excluded here and surfaced as history
-   * instead: a deposit is not a winning trade.
+   * ## What this exists to stop
    *
-   * Every SUM is `COALESCE`d because SUM over no rows is NULL, and a null total
-   * reaching a formatter renders blank where the true answer is zero. MIN and MAX
-   * are deliberately NOT coalesced: "the best trade was 0" and "there were no
-   * trades" are different statements, and only one may be shown beside a currency
-   * symbol.
+   * A client's account page rendered this, in full:
+   *
+   *   "MT5 bridge returned 500 for GET /accounts/6477978/deals?from=…:
+   *    Mt5Bridge.Mt5.Mt5WebApiException: MT5 counts 1 deal(s) for 6477978 …"
+   *
+   * — a .NET type name, an internal URL, another client's-eye view of our
+   * topology, and a login, on a screen belonging to somebody who cannot act on
+   * any of it. The detail is exactly right for an operator and wrong for the
+   * person reading it.
+   *
+   * So the cause is LOGGED with the account it belongs to, and the client gets
+   * one plain sentence. The request id already on the error response is what
+   * ties the two together when they call support — which is the whole reason
+   * that id exists.
+   *
+   * Admin routes are deliberately NOT routed through here: an operator debugging
+   * a broker integration needs the underlying message, and `Mt5AccountsService`
+   * keeps passing it through.
    */
-  async statsMine(userId: string, accountId: string): Promise<AccountStatsDto> {
-    const account = await this.findMine(userId, accountId);
-    if (!account.login) return { ...EMPTY_STATS };
+  private async viaBridge<T>(what: string, accountId: string, read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch (error) {
+      this.logger.error(
+        `Bridge read failed (${what}) for trading account ${accountId}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
 
-    const realised = and(
-      eq(mt5Deals.login, account.login),
-      inArray(mt5Deals.action, [...TRADE_ACTIONS]),
-      inArray(mt5Deals.entry, [...CLOSING_ENTRIES]),
+      /*
+       * Re-thrown as the same TYPE, so the HTTP status and the client's retry
+       * affordance are unchanged — only the wording is. A client seeing "could
+       * not be reached" and a retry button is being told the truth: the read
+       * failed and trying again is a reasonable thing to do.
+       */
+      throw new ExternalServiceError(
+        'We could not read this account from the trading server just now. Please try again.',
+      );
+    }
+  }
+
+  /**
+   * Every OPEN position on this account, read live from MT5.
+   *
+   * ## Why this does not touch the `positions` table
+   *
+   * That table exists, and nothing writes to it. It must stay that way: a
+   * position's profit moves on every tick, so a stored row is stale the moment
+   * it is written and would reach a client wearing the same label as a live
+   * figure. This reads through the bridge on demand and keeps nothing.
+   *
+   * ## An empty list is an answer
+   *
+   * An account with nothing open returns `[]`, and so does a login MT5 does not
+   * know. Both mean "there is nothing open to show you", which is what the
+   * screen asked. An account with no login at all short-circuits before the
+   * bridge is called — there is nothing to ask about.
+   */
+  async positionsMine(userId: string, accountId: string): Promise<AccountPositionDto[]> {
+    const account = await this.findMine(userId, accountId);
+    if (!account.login) return [];
+
+    this.assertBridge();
+
+    const positions = await this.viaBridge('positions', accountId, () =>
+      this.bridge.getPositions(account.login as string),
     );
 
-    const [row] = await this.db
-      .select({
-        trades: sql<number>`COUNT(*)::int`,
-        wins: sql<number>`COUNT(*) FILTER (WHERE ${mt5Deals.profit} > 0)::int`,
-        losses: sql<number>`COUNT(*) FILTER (WHERE ${mt5Deals.profit} < 0)::int`,
-        volume: sql<string>`COALESCE(SUM(${mt5Deals.volume}), 0)::text`,
-        netProfit: sql<string>`COALESCE(SUM(${mt5Deals.profit}), 0)::text`,
-        grossProfit: sql<string>`COALESCE(SUM(${mt5Deals.profit}) FILTER (WHERE ${mt5Deals.profit} > 0), 0)::text`,
-        grossLoss: sql<string>`COALESCE(SUM(${mt5Deals.profit}) FILTER (WHERE ${mt5Deals.profit} < 0), 0)::text`,
-        commission: sql<string>`COALESCE(SUM(${mt5Deals.commission}), 0)::text`,
-        swap: sql<string>`COALESCE(SUM(${mt5Deals.swap}), 0)::text`,
-        bestTrade: sql<string | null>`MAX(${mt5Deals.profit})::text`,
-        worstTrade: sql<string | null>`MIN(${mt5Deals.profit})::text`,
-      })
-      .from(mt5Deals)
-      .where(realised);
-
-    /*
-     * The date range spans EVERY deal, not only the realised ones. "Active
-     * since" is answered by the first thing that happened on the account —
-     * usually the opening deposit — so a client who has funded an account but
-     * not yet traded it has a real first date rather than a blank.
-     */
-    const [dates] = await this.db
-      .select({
-        firstDealAt: sql<Date | null>`MIN(${mt5Deals.dealtAt})`,
-        lastDealAt: sql<Date | null>`MAX(${mt5Deals.dealtAt})`,
-      })
-      .from(mt5Deals)
-      .where(eq(mt5Deals.login, account.login));
-
-    return { ...row, firstDealAt: dates.firstDealAt, lastDealAt: dates.lastDealAt };
+    return positions.map((position) => ({
+      // A ticket identifies, it does not measure — a string all the way out, so
+      // nothing downstream is tempted to do arithmetic on it.
+      ticket: String(position.ticket),
+      symbol: position.symbol,
+      action: position.action,
+      side: POSITION_SIDES[position.action] ?? `action ${position.action}`,
+      volume: position.volume,
+      priceOpen: position.priceOpen,
+      priceCurrent: position.priceCurrent,
+      stopLoss: position.stopLoss,
+      takeProfit: position.takeProfit,
+      profit: position.profit,
+      swap: position.swap,
+      commission: position.commission,
+      comment: position.comment || null,
+      openedAt: new Date(position.openedAt),
+    }));
   }
 
   /**
-   * The WHERE clause for a deal listing, shared by the count and the page.
+   * What this account did over a window: the deals, and the statistics computed
+   * from exactly those deals.
    *
-   * One builder rather than two so the pair cannot drift: a count built from
-   * different predicates than the rows it counts reports "312 results" over a
-   * page of 25 that came from somewhere else, and a client's own history is the
-   * last place to discover that.
+   * ## One read, two views
    *
-   * Dates compare by DATE PART — `::date >= ::date` — matching
-   * `TransactionsService`. Comparing a timestamp against an end date parsed as
-   * midnight excludes almost the whole final day.
+   * The statistics come from the SAME array that is returned, not from a second
+   * query. Two reads of one window would cost twice the latency against a server
+   * we do not own and — worse — could disagree: a client would see totals over
+   * one set beside a list showing another.
+   *
+   * ## Live, not from `mt5_deals`
+   *
+   * The ingested table is the commission engine's record, filled by a sweep. A
+   * client-facing history served from it shows nothing whenever ingestion is
+   * behind or broken, and this deployment has spent whole days in that state. A
+   * slower answer that is true beats an instant one that is empty.
    */
-  private dealPredicates(login: string, query: ListAccountDealsQueryDto) {
-    return [
-      eq(mt5Deals.login, login),
-      ...(query.kind === 'trades' ? [inArray(mt5Deals.action, [...TRADE_ACTIONS])] : []),
+  async historyMine(
+    userId: string,
+    accountId: string,
+    query: AccountHistoryQueryDto = {},
+  ): Promise<AccountHistoryDto> {
+    const account = await this.findMine(userId, accountId);
+    const { from, to } = resolveWindow(query);
+
+    if (!account.login) {
+      return { from, to, stats: emptyStats(), deals: [] };
+    }
+
+    this.assertBridge();
+
+    const deals = await this.viaBridge('history', accountId, () =>
+      this.bridge.getAccountDeals(account.login as string, from, to),
+    );
+
+    const items: AccountDealDto[] = deals
+      .map((deal) => ({
+        ticket: String(deal.dealId),
+        symbol: deal.symbol,
+        action: deal.action,
+        actionLabel: dealActionLabel(deal.action),
+        entry: deal.entry,
+        closing: isRealisedTrade(deal),
+        volume: deal.volume,
+        price: deal.price,
+        profit: deal.profit,
+        commission: deal.commission,
+        swap: deal.swap,
+        comment: deal.comment || null,
+        dealtAt: new Date(deal.dealtAt),
+      }))
       /*
-       * Spelled out rather than inverting the trade filter. A plain
-       * `notInArray(TRADE_ACTIONS)` would sweep the cancelled actions in with the
-       * balance operations, and `isBalanceOperation` excludes them deliberately —
-       * a cancellation is the reversal of an event, not money moving.
+       * Newest first, with the TICKET breaking ties. Two deals can share a
+       * timestamp at MT5's one-second resolution, and without a total order the
+       * list reshuffles between two renders of identical data.
        */
-      ...(query.kind === 'balance'
-        ? [notInArray(mt5Deals.action, [...TRADE_ACTIONS, ...CANCELLED_ACTIONS])]
-        : []),
-      ...(query.symbol ? [eq(mt5Deals.symbol, query.symbol)] : []),
-      ...(query.from ? [sql`${mt5Deals.dealtAt}::date >= ${query.from}::date`] : []),
-      ...(query.to ? [sql`${mt5Deals.dealtAt}::date <= ${query.to}::date`] : []),
-    ];
+      .sort(
+        (a, b) => b.dealtAt.getTime() - a.dealtAt.getTime() || Number(b.ticket) - Number(a.ticket),
+      );
+
+    return { from, to, stats: computeStats(items), deals: items };
   }
 }
 
+/** MT5's numeric position side, named. An unknown code is reported raw. */
+const POSITION_SIDES: Record<number, string> = { 0: 'buy', 1: 'sell' };
+
 /**
- * What an account with no MT5 login has done: nothing, and every figure says so.
+ * The window to read, with defaults and the ceiling applied.
  *
- * A literal rather than a computed empty row, because the alternative is running
- * the aggregate against a null login and trusting it to return zeros — which it
- * would, right up until somebody adds a join.
+ * ## Thirty days by default, thirty-one at most
  *
- * The three nullables stay null: there is no best trade, and `'0'` beside a
- * currency symbol claims there was one that broke even.
+ * The ceiling is not a preference. MT5 silently TRUNCATES a request for a larger
+ * range rather than refusing it, so a client asking for a year would be shown a
+ * partial history that looks complete. The bridge refuses over 31 days for the
+ * same reason; this refuses first, so the message names the window instead of
+ * arriving from a service the client has never heard of.
+ *
+ * ## Inclusive at both ends, by DATE PART
+ *
+ * `to` becomes the END of its day. Parsing it as midnight excludes almost the
+ * whole final day — the "my newest row vanished when I set an end date" bug that
+ * `date-range.ts` and `TransactionsService` both carry a note about.
  */
-const EMPTY_STATS: AccountStatsDto = {
-  trades: 0,
-  wins: 0,
-  losses: 0,
-  volume: '0',
-  netProfit: '0',
-  grossProfit: '0',
-  grossLoss: '0',
-  commission: '0',
-  swap: '0',
-  bestTrade: null,
-  worstTrade: null,
-  firstDealAt: null,
-  lastDealAt: null,
-};
+function resolveWindow(query: AccountHistoryQueryDto): { from: Date; to: Date } {
+  const to = query.to ? endOfDay(query.to) : endOfDay(todayIso());
+  const from = query.from ? startOfDay(query.from) : new Date(to.getTime() - THIRTY_DAYS_MS);
+
+  if (from.getTime() > to.getTime()) {
+    throw new ValidationError('The start of the range must not be after its end.');
+  }
+
+  if (to.getTime() - from.getTime() > MAX_WINDOW_MS) {
+    throw new ValidationError(
+      'A history window may cover at most 31 days. Ask for a shorter range — the trading ' +
+        'server truncates anything larger without saying so, which would show a partial history ' +
+        'as though it were complete.',
+    );
+  }
+
+  return { from, to };
+}
+
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+/** 31 whole days, plus the part-day the inclusive end adds. */
+const MAX_WINDOW_MS = 32 * 24 * 60 * 60 * 1000;
+
+/**
+ * `YYYY-MM-DD` to a LOCAL day boundary.
+ *
+ * Local constructor rather than `new Date('2026-08-01')`, which parses as UTC
+ * and so starts the window in the wrong place for every zone but one — the trap
+ * the portal's `todayIso()` documents from the other direction.
+ */
+function startOfDay(iso: string): Date {
+  const [year, month, day] = iso.split('-').map(Number);
+  return new Date(year, month - 1, day, 0, 0, 0, 0);
+}
+
+function endOfDay(iso: string): Date {
+  const [year, month, day] = iso.split('-').map(Number);
+  return new Date(year, month - 1, day, 23, 59, 59, 999);
+}
+
+function todayIso(): string {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * The statistics for one window, from the deals in it.
+ *
+ * ## decimal.js for every total (§6.1)
+ *
+ * The arithmetic moved out of Postgres when the read went live, so it happens
+ * here — and `+` on two of these values is exactly the coercion the money rules
+ * exist to forbid. The window's ceiling is what keeps the loop bounded.
+ *
+ * ## Only realised round trips count
+ *
+ * An opening deal carries `profit: '0'` because nothing has been realised yet.
+ * Counting opens would drag every average toward zero and add one guaranteed
+ * non-winning row per position. Balance operations are excluded for a blunter
+ * reason: a deposit is not a winning trade.
+ */
+function computeStats(deals: AccountDealDto[]): AccountStatsDto {
+  const realised = deals.filter((deal) => deal.closing);
+
+  let volume = new Decimal(0);
+  let netProfit = new Decimal(0);
+  let grossProfit = new Decimal(0);
+  let grossLoss = new Decimal(0);
+  let commission = new Decimal(0);
+  let swap = new Decimal(0);
+  let best: Decimal | null = null;
+  let worst: Decimal | null = null;
+  let wins = 0;
+  let losses = 0;
+
+  for (const deal of realised) {
+    const profit = new Decimal(deal.profit);
+
+    volume = volume.plus(deal.volume);
+    netProfit = netProfit.plus(profit);
+    commission = commission.plus(deal.commission);
+    swap = swap.plus(deal.swap);
+
+    if (profit.isPositive() && !profit.isZero()) {
+      wins += 1;
+      grossProfit = grossProfit.plus(profit);
+    } else if (profit.isNegative() && !profit.isZero()) {
+      losses += 1;
+      grossLoss = grossLoss.plus(profit);
+    }
+    // A trade closing at exactly zero is neither — see the DTO note.
+
+    if (best === null || profit.greaterThan(best)) best = profit;
+    if (worst === null || profit.lessThan(worst)) worst = profit;
+  }
+
+  /*
+   * The dates span EVERY deal in the window, not only the realised ones. "Last
+   * activity" is answered by the last thing that happened on the account — a
+   * deposit counts — so a client who funded an account without trading it has a
+   * real date rather than a blank.
+   */
+  const times = deals.map((deal) => deal.dealtAt.getTime());
+
+  return {
+    trades: realised.length,
+    wins,
+    losses,
+    volume: volume.toFixed(8),
+    netProfit: netProfit.toFixed(8),
+    grossProfit: grossProfit.toFixed(8),
+    grossLoss: grossLoss.toFixed(8),
+    commission: commission.toFixed(8),
+    swap: swap.toFixed(8),
+    // Null rather than '0' with no trades: '0' beside a currency symbol claims
+    // there WAS a best trade and it broke even.
+    bestTrade: best === null ? null : best.toFixed(8),
+    worstTrade: worst === null ? null : worst.toFixed(8),
+    firstDealAt: times.length ? new Date(Math.min(...times)) : null,
+    lastDealAt: times.length ? new Date(Math.max(...times)) : null,
+  };
+}
+
+/**
+ * What an account with no MT5 login did: nothing, and every figure says so.
+ *
+ * A function rather than a shared constant, because a caller that mutated one
+ * field of a shared object would change every future empty response — and that
+ * bug reads as a data problem rather than an aliasing one.
+ */
+function emptyStats(): AccountStatsDto {
+  return {
+    trades: 0,
+    wins: 0,
+    losses: 0,
+    volume: '0',
+    netProfit: '0',
+    grossProfit: '0',
+    grossLoss: '0',
+    commission: '0',
+    swap: '0',
+    bestTrade: null,
+    worstTrade: null,
+    firstDealAt: null,
+    lastDealAt: null,
+  };
+}

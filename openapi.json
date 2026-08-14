@@ -3394,10 +3394,50 @@
         ]
       }
     },
-    "/v1/trading/accounts/{id}/deals": {
+    "/v1/trading/accounts/{id}/positions": {
       "get": {
-        "description": "Every deal MT5 has reported for this account, newest first by the time MT5 says it happened. `kind=trades` narrows to market activity; `kind=balance` to deposits, withdrawals, credits, commissions and the rest. Absent returns everything.\n\nThese are CLOSED deals. Open positions are not here and are not anywhere: the bridge ingests deals, and nothing feeds the `positions` table.\n\nAn account with no MT5 login returns an empty page — deals are keyed by login, so it has none by definition rather than by a query that found nothing.",
-        "operationId": "TradingController_myAccountDeals",
+        "description": "Live, and never stored. `profit` is the FLOATING result on each position and moves on every tick, so a persisted copy would be stale the moment it was written — the CRM keeps a `positions` table that nothing writes to, and that must stay true.\n\nAn empty array means the account has nothing open. It is a real answer from the trading server, not an unbuilt feature: an account with no MT5 login returns the same, because there is nothing to ask about.\n\n`stopLoss` and `takeProfit` are NULL when unset — MT5 stores an absent stop as the price 0, and rendering that as 0.00 reads as an order to close at zero.",
+        "operationId": "TradingController_myAccountPositions",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountPositionDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "One account's OPEN positions, read live from MT5",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/v1/trading/accounts/{id}/history": {
+      "get": {
+        "description": "The deals AND the statistics computed from exactly those deals, in one response. They come together because they are two views of one read: splitting them would cost two round trips to a server we do not own, and would let a total describe a different set from the list beside it.\n\nRead LIVE rather than from the ingested `mt5_deals` table. That table is the commission engine's record, filled by a sweep, and a client-facing history served from it shows nothing whenever ingestion is behind.\n\nThe window defaults to the last 30 days and is CAPPED at 31, because MT5 truncates a larger request silently rather than refusing it — a partial history that looks complete is the one answer this endpoint must never give. Dates are inclusive at both ends.\n\nEvery figure describes THE WINDOW, not all time; `from` and `to` are echoed back so the screen can say so.",
+        "operationId": "TradingController_myAccountHistory",
         "parameters": [
           {
             "name": "id",
@@ -3408,32 +3448,10 @@
             }
           },
           {
-            "name": "kind",
-            "required": false,
-            "in": "query",
-            "description": "Narrow to market activity or to money movements. Absent returns everything, including the cancelled deals that are neither.",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "trades",
-                "balance"
-              ]
-            }
-          },
-          {
-            "name": "symbol",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "example": "EURUSD",
-              "type": "string"
-            }
-          },
-          {
             "name": "from",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Inclusive, YYYY-MM-DD. Defaults to 30 days before `to`.",
             "schema": {
               "example": "2026-08-01",
               "type": "string"
@@ -3443,32 +3461,11 @@
             "name": "to",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Inclusive, YYYY-MM-DD. Defaults to today.",
             "schema": {
               "example": "2026-08-31",
               "type": "string"
             }
-          },
-          {
-            "name": "page",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "minimum": 1,
-              "default": 1,
-              "type": "number"
-            }
-          },
-          {
-            "name": "limit",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "minimum": 1,
-              "maximum": 100,
-              "default": 25,
-              "type": "number"
-            }
           }
         ],
         "responses": {
@@ -3477,7 +3474,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AccountDealPageDto"
+                  "$ref": "#/components/schemas/AccountHistoryDto"
                 }
               }
             }
@@ -3488,44 +3485,7 @@
             "cookie": []
           }
         ],
-        "summary": "One account's deal history — trades and money movements, paged",
-        "tags": [
-          "trading"
-        ]
-      }
-    },
-    "/v1/trading/accounts/{id}/stats": {
-      "get": {
-        "description": "Closed round trips only — opening deals carry no realised result and counting them would drag every average toward zero. Balance operations are excluded: a deposit is not a winning trade.\n\n`wins + losses` need NOT equal `trades`: a trade closing at exactly zero is neither. A win rate divides by `trades`.\n\nRealised figures only. Floating P/L is on `/live`, because it belongs to MT5 and to this instant rather than to the history.",
-        "operationId": "TradingController_myAccountStats",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountStatsDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "One account's realised performance, summed in the database",
+        "summary": "One account's deals and statistics over a window, read live from MT5",
         "tags": [
           "trading"
         ]
@@ -11187,7 +11147,7 @@
           "floating": {
             "type": "string",
             "example": "62.40000000",
-            "description": "Unrealised profit across every open position: equity - balance - credit.\n\nDerived here rather than stored, and derived from MT5 rather than from our own tables. It is the ONE floating figure this system can state honestly: the bridge exposes no per-position feed, so a per-trade floating column would have to be invented, but the account total falls straight out of two numbers the MT5 server just gave us.\n\nSigned — a client underwater is negative."
+            "description": "Unrealised profit across every open position: equity - balance - credit.\n\nDerived here rather than stored, and derived from MT5 rather than from our own tables. This is the ACCOUNT total; the per-position breakdown is on `/positions`.\n\nThe two are read independently — this from the account snapshot, that from the position list — so they can differ by a tick. Neither is derived from the other on purpose: making them agree would mean choosing one as the truth and recomputing the other from it, which would hide a real disagreement rather than show it.\n\nSigned — a client underwater is negative."
           }
         },
         "required": [
@@ -11204,13 +11164,12 @@
           "floating"
         ]
       },
-      "AccountDealDto": {
+      "AccountPositionDto": {
         "type": "object",
         "properties": {
           "ticket": {
             "type": "string",
-            "description": "MT5's ticket.",
-            "example": "90210"
+            "description": "MT5's position id — one per position, not per deal."
           },
           "symbol": {
             "type": "string",
@@ -11218,94 +11177,79 @@
           },
           "action": {
             "type": "number",
-            "description": "MT5's raw numeric action.",
+            "description": "MT5's numeric side: 0 buy, 1 sell.",
             "example": 0
           },
-          "actionLabel": {
+          "side": {
             "type": "string",
-            "description": "A stable name for the action — \"buy\", \"balance\", \"commission\". Unknown codes render as \"action <n>\" rather than as a guess.",
-            "example": "buy"
-          },
-          "entry": {
-            "type": "number",
-            "description": "MT5's raw numeric entry: 0 in, 1 out, 2 inout, 3 out_by.",
-            "example": 1
-          },
-          "closing": {
-            "type": "boolean",
-            "description": "True when this deal realised a result rather than opening a position."
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "description": "The side, named. Unknown codes pass through raw."
           },
           "volume": {
             "type": "string",
             "example": "1.00000000"
           },
-          "price": {
+          "priceOpen": {
             "type": "string",
             "example": "1.08542000"
           },
+          "priceCurrent": {
+            "type": "string",
+            "example": "1.08610000",
+            "description": "The live market price."
+          },
+          "stopLoss": {
+            "type": "string",
+            "nullable": true,
+            "description": "NULL when unset. MT5 stores an absent stop as the price 0, and a stop loss rendered as 0.00 reads as an order to close at zero."
+          },
+          "takeProfit": {
+            "type": "string",
+            "nullable": true,
+            "description": "NULL when unset, as with stopLoss."
+          },
           "profit": {
             "type": "string",
-            "example": "-12.50000000",
-            "description": "Signed. A loss is negative."
-          },
-          "commission": {
-            "type": "string",
-            "example": "-3.00000000"
+            "example": "62.40000000",
+            "description": "FLOATING profit or loss, signed. Live — it changes on every tick."
           },
           "swap": {
             "type": "string",
-            "example": "0.00000000"
+            "example": "-1.20000000",
+            "description": "Signed."
+          },
+          "commission": {
+            "type": "string",
+            "nullable": true,
+            "description": "NULL on the Manager protocol, which carries commission on deals rather than on the open position. Not interchangeable with \"0\", which would claim a fee-free position."
           },
           "comment": {
             "type": "string",
             "nullable": true
           },
-          "dealtAt": {
+          "openedAt": {
             "format": "date-time",
-            "type": "string",
-            "description": "When MT5 says it happened — NOT when we ingested it."
+            "type": "string"
           }
         },
         "required": [
           "ticket",
           "symbol",
           "action",
-          "actionLabel",
-          "entry",
-          "closing",
+          "side",
           "volume",
-          "price",
+          "priceOpen",
+          "priceCurrent",
+          "stopLoss",
+          "takeProfit",
           "profit",
-          "commission",
           "swap",
-          "dealtAt"
-        ]
-      },
-      "AccountDealPageDto": {
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AccountDealDto"
-            }
-          },
-          "total": {
-            "type": "number",
-            "description": "Deals matching the filters, across every page."
-          },
-          "page": {
-            "type": "number"
-          },
-          "limit": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "items",
-          "total",
-          "page",
-          "limit"
+          "commission",
+          "comment",
+          "openedAt"
         ]
       },
       "AccountStatsDto": {
@@ -11388,6 +11332,114 @@
           "worstTrade",
           "firstDealAt",
           "lastDealAt"
+        ]
+      },
+      "AccountDealDto": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "string",
+            "description": "MT5's ticket.",
+            "example": "90210"
+          },
+          "symbol": {
+            "type": "string",
+            "example": "EURUSD"
+          },
+          "action": {
+            "type": "number",
+            "description": "MT5's raw numeric action.",
+            "example": 0
+          },
+          "actionLabel": {
+            "type": "string",
+            "description": "A stable name for the action — \"buy\", \"balance\", \"commission\". Unknown codes render as \"action <n>\" rather than as a guess.",
+            "example": "buy"
+          },
+          "entry": {
+            "type": "number",
+            "description": "MT5's raw numeric entry: 0 in, 1 out, 2 inout, 3 out_by.",
+            "example": 1
+          },
+          "closing": {
+            "type": "boolean",
+            "description": "True when this deal realised a result rather than opening a position."
+          },
+          "volume": {
+            "type": "string",
+            "example": "1.00000000"
+          },
+          "price": {
+            "type": "string",
+            "example": "1.08542000"
+          },
+          "profit": {
+            "type": "string",
+            "example": "-12.50000000",
+            "description": "Signed. A loss is negative."
+          },
+          "commission": {
+            "type": "string",
+            "example": "-3.00000000"
+          },
+          "swap": {
+            "type": "string",
+            "example": "0.00000000"
+          },
+          "comment": {
+            "type": "string",
+            "nullable": true
+          },
+          "dealtAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "When MT5 says it happened — NOT when we ingested it."
+          }
+        },
+        "required": [
+          "ticket",
+          "symbol",
+          "action",
+          "actionLabel",
+          "entry",
+          "closing",
+          "volume",
+          "price",
+          "profit",
+          "commission",
+          "swap",
+          "dealtAt"
+        ]
+      },
+      "AccountHistoryDto": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Start of the window, inclusive."
+          },
+          "to": {
+            "format": "date-time",
+            "type": "string",
+            "description": "End of the window, inclusive."
+          },
+          "stats": {
+            "$ref": "#/components/schemas/AccountStatsDto"
+          },
+          "deals": {
+            "description": "Newest first.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountDealDto"
+            }
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "stats",
+          "deals"
         ]
       },
       "DashboardStatsDto": {

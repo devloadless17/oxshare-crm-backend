@@ -1,6 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsOptional, Matches } from 'class-validator';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -76,9 +75,11 @@ export class AccountSnapshotDto {
     description:
       'Unrealised profit across every open position: equity - balance - credit.\n\n' +
       'Derived here rather than stored, and derived from MT5 rather than from our own tables. ' +
-      'It is the ONE floating figure this system can state honestly: the bridge exposes no ' +
-      'per-position feed, so a per-trade floating column would have to be invented, but the ' +
-      'account total falls straight out of two numbers the MT5 server just gave us.\n\n' +
+      'This is the ACCOUNT total; the per-position breakdown is on `/positions`.\n\n' +
+      'The two are read independently — this from the account snapshot, that from the position ' +
+      'list — so they can differ by a tick. Neither is derived from the other on purpose: making ' +
+      'them agree would mean choosing one as the truth and recomputing the other from it, which ' +
+      'would hide a real disagreement rather than show it.\n\n' +
       'Signed — a client underwater is negative.',
   })
   floating: string;
@@ -154,30 +155,100 @@ export class AccountDealDto {
 }
 
 /**
- * One page of an account's deals.
+ * One OPEN position, read live from MT5.
  *
- * Paged where the account LIST is not, and the difference is the point: a
- * client holds a handful of accounts and an unbounded number of deals. `total`
- * counts the whole filtered set in the database, so "showing 25 of 312" is a
- * statement about the account's real history rather than about the array that
- * happened to be sent — the same contract `TransactionPageDto` documents.
+ * ## Nothing here is stored, and that is the point
+ *
+ * `profit` is the FLOATING result: it moves on every tick, so a persisted copy
+ * is stale the moment it is written. The CRM has a `positions` table that
+ * nothing writes to, and it must stay that way — a sweep filling it would show
+ * a client a minute-old floating P/L wearing the same label as a live one.
+ *
+ * Every amount is a decimal string (§6.1), converted once at the MT5 boundary.
  */
-export class AccountDealPageDto {
-  @ApiProperty({ type: [AccountDealDto] }) items: AccountDealDto[];
-  @ApiProperty({ description: 'Deals matching the filters, across every page.' }) total: number;
-  @ApiProperty() page: number;
-  @ApiProperty() limit: number;
+export class AccountPositionDto {
+  @ApiProperty({ description: "MT5's position id — one per position, not per deal." })
+  ticket: string;
+
+  @ApiProperty({ example: 'EURUSD' })
+  symbol: string;
+
+  @ApiProperty({ description: "MT5's numeric side: 0 buy, 1 sell.", example: 0 })
+  action: number;
+
+  @ApiProperty({
+    enum: ['buy', 'sell'],
+    description: 'The side, named. Unknown codes pass through raw.',
+  })
+  side: string;
+
+  @ApiProperty({ type: 'string', example: '1.00000000' })
+  volume: string;
+
+  @ApiProperty({ type: 'string', example: '1.08542000' })
+  priceOpen: string;
+
+  @ApiProperty({ type: 'string', example: '1.08610000', description: 'The live market price.' })
+  priceCurrent: string;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      'NULL when unset. MT5 stores an absent stop as the price 0, and a stop loss rendered as ' +
+      '0.00 reads as an order to close at zero.',
+  })
+  stopLoss: string | null;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'NULL when unset, as with stopLoss.',
+  })
+  takeProfit: string | null;
+
+  @ApiProperty({
+    type: 'string',
+    example: '62.40000000',
+    description: 'FLOATING profit or loss, signed. Live — it changes on every tick.',
+  })
+  profit: string;
+
+  @ApiProperty({ type: 'string', example: '-1.20000000', description: 'Signed.' })
+  swap: string;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      'NULL on the Manager protocol, which carries commission on deals rather than on the open ' +
+      'position. Not interchangeable with "0", which would claim a fee-free position.',
+  })
+  commission: string | null;
+
+  @ApiProperty({ type: 'string', nullable: true })
+  comment: string | null;
+
+  @ApiProperty({ format: 'date-time' })
+  openedAt: Date;
 }
 
 /**
- * What the account has done, summed in the database.
+ * What the account did in the window, computed from the deals in it.
  *
- * ## Summed in SQL, on NUMERIC, on purpose
+ * ## Computed in the backend on decimal.js, and the window is what makes that safe
  *
- * Postgres sums NUMERIC exactly. Pulling every deal into Node to total it would
- * mean either a float — which §6.1 exists to forbid — or a decimal.js loop over
- * an unbounded row set on every page view. The aggregate is one query and the
- * arithmetic never leaves the column type.
+ * This used to be a SQL aggregate over the ingested `mt5_deals` table, which was
+ * exact and unbounded but could only report what the sweep had managed to
+ * ingest. Reading live moves the arithmetic into Node — where §6.1 forbids
+ * floats, so every total goes through decimal.js — and the 31-day ceiling on the
+ * window is what keeps that loop bounded.
+ *
+ * ## The figures describe the WINDOW, never all time
+ *
+ * `AccountHistoryDto` echoes the period for this reason. "12 trades" means
+ * twelve in the selected window, and a caller rendering it without the dates is
+ * making a claim the data does not support.
  *
  * ## Only CLOSED round trips are counted
  *
@@ -256,57 +327,65 @@ export class AccountStatsDto {
 }
 
 /**
- * The filters on an account's deal history.
+ * An account's activity over ONE window: the statistics and the deals behind
+ * them.
+ *
+ * ## Why both come back together
+ *
+ * They are two views of the same fetch. Splitting them into two endpoints would
+ * mean two reads of the same window from MT5 — twice the latency and twice the
+ * load on a server we do not own — and, worse, two windows that can disagree:
+ * a client would see totals computed over one set beside a list showing another.
+ *
+ * `from` and `to` are echoed back so the screen can state the period it is
+ * describing. A statistics panel that does not say what it covers gets read as
+ * all-time.
+ */
+export class AccountHistoryDto {
+  @ApiProperty({ format: 'date-time', description: 'Start of the window, inclusive.' })
+  from: Date;
+
+  @ApiProperty({ format: 'date-time', description: 'End of the window, inclusive.' })
+  to: Date;
+
+  @ApiProperty({ type: () => AccountStatsDto })
+  stats: AccountStatsDto;
+
+  @ApiProperty({ type: [AccountDealDto], description: 'Newest first.' })
+  deals: AccountDealDto[];
+}
+
+/**
+ * The window an account's history is read over.
+ *
+ * ## A window, not a page
+ *
+ * The old shape here was offset pagination over an ingested table. Reading live
+ * changes what a bound has to do: MT5 answers per time range, and it TRUNCATES a
+ * large range silently rather than erroring — so the bound must be on the
+ * period, where the server's own limit is, and not on a row count the server
+ * knows nothing about.
  *
  * Dates are INCLUSIVE at both ends by DATE PART, matching
  * `ListTransactionsQueryDto` — and for the reason recorded there and in the
- * portal's `date-range.ts`: comparing a timestamp against an end date parsed as
- * midnight excludes almost the whole final day, which is the "my newest row
- * vanished when I set an end date" bug.
+ * portal's `date-range.ts`: treating the end date as midnight excludes almost
+ * the whole final day, which is the "my newest row vanished when I set an end
+ * date" bug.
  */
-export class ListAccountDealsQueryDto {
+export class AccountHistoryQueryDto {
   @ApiPropertyOptional({
-    enum: ['trades', 'balance'],
-    description:
-      'Narrow to market activity or to money movements. Absent returns everything, including ' +
-      'the cancelled deals that are neither.',
+    example: '2026-08-01',
+    description: 'Inclusive, YYYY-MM-DD. Defaults to 30 days before `to`.',
   })
-  @IsOptional()
-  @IsString()
-  kind?: 'trades' | 'balance';
-
-  @ApiPropertyOptional({ example: 'EURUSD' })
-  @IsOptional()
-  @IsString()
-  symbol?: string;
-
-  @ApiPropertyOptional({ example: '2026-08-01', description: 'Inclusive, YYYY-MM-DD.' })
   @IsOptional()
   @Matches(DATE_PATTERN, { message: 'from must be a YYYY-MM-DD date' })
   from?: string;
 
-  @ApiPropertyOptional({ example: '2026-08-31', description: 'Inclusive, YYYY-MM-DD.' })
+  @ApiPropertyOptional({
+    example: '2026-08-31',
+    description: 'Inclusive, YYYY-MM-DD. Defaults to today.',
+  })
   @IsOptional()
   @Matches(DATE_PATTERN, { message: 'to must be a YYYY-MM-DD date' })
   to?: string;
-
-  @ApiPropertyOptional({ default: 1, minimum: 1 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  page?: number;
-
-  /**
-   * CAPPED at 100, like the transaction history and for the same reason: an
-   * unbounded limit is a request that can ask the database for every deal an
-   * account has ever had, and this endpoint is reachable with any session.
-   */
-  @ApiPropertyOptional({ default: 25, minimum: 1, maximum: 100 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(100)
-  limit?: number;
 }

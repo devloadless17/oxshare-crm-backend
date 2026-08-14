@@ -20,10 +20,10 @@ import { TradingService } from './trading.service';
 import { TradingAccountDto } from './dto/trading-account.dto';
 import { PositionDto } from './dto/position.dto';
 import {
-  AccountDealPageDto,
+  AccountHistoryDto,
+  AccountHistoryQueryDto,
+  AccountPositionDto,
   AccountSnapshotDto,
-  AccountStatsDto,
-  ListAccountDealsQueryDto,
 } from './dto/account-detail.dto';
 import { OpenOwnAccountDto } from './dto/open-account.dto';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
@@ -321,43 +321,49 @@ export class TradingController {
     return this.trading.snapshotMine(req.user.id, id);
   }
 
-  @Get('accounts/:id/deals')
+  @Get('accounts/:id/positions')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: "One account's deal history — trades and money movements, paged",
+    summary: "One account's OPEN positions, read live from MT5",
     description:
-      'Every deal MT5 has reported for this account, newest first by the time MT5 says it ' +
-      'happened. `kind=trades` narrows to market activity; `kind=balance` to deposits, ' +
-      'withdrawals, credits, commissions and the rest. Absent returns everything.\n\n' +
-      'These are CLOSED deals. Open positions are not here and are not anywhere: the bridge ' +
-      'ingests deals, and nothing feeds the `positions` table.\n\n' +
-      'An account with no MT5 login returns an empty page — deals are keyed by login, so it has ' +
-      'none by definition rather than by a query that found nothing.',
+      'Live, and never stored. `profit` is the FLOATING result on each position and moves on ' +
+      'every tick, so a persisted copy would be stale the moment it was written — the CRM keeps ' +
+      'a `positions` table that nothing writes to, and that must stay true.\n\n' +
+      'An empty array means the account has nothing open. It is a real answer from the trading ' +
+      'server, not an unbuilt feature: an account with no MT5 login returns the same, because ' +
+      'there is nothing to ask about.\n\n' +
+      '`stopLoss` and `takeProfit` are NULL when unset — MT5 stores an absent stop as the price ' +
+      '0, and rendering that as 0.00 reads as an order to close at zero.',
   })
-  @ApiOkResponse({ type: AccountDealPageDto })
-  myAccountDeals(
-    @Req() req: Request & { user: User },
-    @Param('id', ParseUUIDPipe) id: string,
-    @Query() query: ListAccountDealsQueryDto,
-  ) {
-    return this.trading.listDealsMine(req.user.id, id, query);
+  @ApiOkResponse({ type: [AccountPositionDto] })
+  myAccountPositions(@Req() req: Request & { user: User }, @Param('id', ParseUUIDPipe) id: string) {
+    return this.trading.positionsMine(req.user.id, id);
   }
 
-  @Get('accounts/:id/stats')
+  @Get('accounts/:id/history')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: "One account's realised performance, summed in the database",
+    summary: "One account's deals and statistics over a window, read live from MT5",
     description:
-      'Closed round trips only — opening deals carry no realised result and counting them would ' +
-      'drag every average toward zero. Balance operations are excluded: a deposit is not a ' +
-      'winning trade.\n\n' +
-      '`wins + losses` need NOT equal `trades`: a trade closing at exactly zero is neither. A win ' +
-      'rate divides by `trades`.\n\n' +
-      'Realised figures only. Floating P/L is on `/live`, because it belongs to MT5 and to this ' +
-      'instant rather than to the history.',
+      'The deals AND the statistics computed from exactly those deals, in one response. They ' +
+      'come together because they are two views of one read: splitting them would cost two round ' +
+      'trips to a server we do not own, and would let a total describe a different set from the ' +
+      'list beside it.\n\n' +
+      'Read LIVE rather than from the ingested `mt5_deals` table. That table is the commission ' +
+      "engine's record, filled by a sweep, and a client-facing history served from it shows " +
+      'nothing whenever ingestion is behind.\n\n' +
+      'The window defaults to the last 30 days and is CAPPED at 31, because MT5 truncates a ' +
+      'larger request silently rather than refusing it — a partial history that looks complete ' +
+      'is the one answer this endpoint must never give. Dates are inclusive at both ends.\n\n' +
+      'Every figure describes THE WINDOW, not all time; `from` and `to` are echoed back so the ' +
+      'screen can say so.',
   })
-  @ApiOkResponse({ type: AccountStatsDto })
-  myAccountStats(@Req() req: Request & { user: User }, @Param('id', ParseUUIDPipe) id: string) {
-    return this.trading.statsMine(req.user.id, id);
+  @ApiOkResponse({ type: AccountHistoryDto })
+  myAccountHistory(
+    @Req() req: Request & { user: User },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: AccountHistoryQueryDto,
+  ) {
+    return this.trading.historyMine(req.user.id, id, query);
   }
 }

@@ -42,6 +42,58 @@ export interface Mt5BalanceResult {
 }
 
 /**
+ * One OPEN position, read live from MT5.
+ *
+ * `profit` is the FLOATING result and moves on every tick, which is why nothing
+ * here is stored: a persisted copy is stale the moment it is written, and would
+ * be shown to a client wearing the same label as a live figure.
+ *
+ * `commission` is NULL on the Manager protocol, which carries commission on
+ * deals rather than on the open position. Null means "this protocol will not
+ * say" and is not interchangeable with `'0'`, which would claim a fee-free
+ * position.
+ *
+ * `stopLoss` and `takeProfit` are null when unset — MT5 stores an absent stop as
+ * the price 0, and a stop loss rendered as `0.00` reads as an order to close at
+ * zero.
+ */
+export interface Mt5Position {
+  ticket: number;
+  login: number;
+  symbol: string;
+  /** MT5's numeric side: 0 buy, 1 sell. Passed through, never re-encoded. */
+  action: number;
+  volume: string;
+  priceOpen: string;
+  priceCurrent: string;
+  stopLoss: string | null;
+  takeProfit: string | null;
+  profit: string;
+  swap: string;
+  commission: string | null;
+  comment: string;
+  openedAt: string;
+}
+
+/** One closed deal, as the bridge reports it. Amounts are decimal strings. */
+export interface Mt5Deal {
+  dealId: number;
+  login: number;
+  orderId: number;
+  positionId: number;
+  symbol: string;
+  action: number;
+  entry: number;
+  volume: string;
+  price: string;
+  profit: string;
+  commission: string;
+  swap: string;
+  comment: string;
+  dealtAt: string;
+}
+
+/**
  * The CRM's client for the MT5 bridge.
  *
  * The bridge is a Windows service wrapping the Manager API, which cannot be
@@ -108,6 +160,38 @@ export class Mt5BridgeClient {
       }
       throw error;
     }
+  }
+
+  /**
+   * Every OPEN position on one login, with live floating P/L.
+   *
+   * An empty array is a real answer — the account has nothing open — and is not
+   * distinguishable from an unknown login, deliberately: the bridge treats both
+   * the same because the caller has already established the account exists by
+   * reading the login out of its own table to build this call.
+   */
+  async getPositions(login: string): Promise<Mt5Position[]> {
+    return await this.request<Mt5Position[]>('GET', `/accounts/${login}/positions`);
+  }
+
+  /**
+   * Closed deals for ONE login in a window.
+   *
+   * Read live rather than out of `mt5_deals`. That table is the commission
+   * engine's ingestion record, fed by a sweep; a client-facing history served
+   * from it shows nothing whenever ingestion is behind or broken, which is a
+   * worse answer than a slower one.
+   *
+   * The bridge REFUSES a window over 31 days rather than truncating, because
+   * MT5 silently caps a larger request and would hand back a partial set that
+   * looks complete.
+   */
+  async getAccountDeals(login: string, from: Date, to: Date): Promise<Mt5Deal[]> {
+    const params = new URLSearchParams({
+      from: from.toISOString(),
+      to: to.toISOString(),
+    });
+    return await this.request<Mt5Deal[]>('GET', `/accounts/${login}/deals?${params.toString()}`);
   }
 
   /**
