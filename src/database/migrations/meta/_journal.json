@@ -449,6 +449,13 @@
       "when": 1787090004000,
       "tag": "0063_drop_ib_expected_volume",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1787090005000,
+      "tag": "0064_stored_objects",
+      "breakpoints": true
     }
   ]
 }

@@ -174,13 +174,33 @@ describe('requesting a withdrawal', () => {
   });
 });
 
-describe('approve and settle', () => {
+/**
+ * The two lifecycles, named where they are used.
+ *
+ * A desk payout is one step (approval records money a human already sent); a
+ * provider payout is two (approval authorises, the rail pays, its event settles).
+ * Spelling them out at each call site is the point — a bare `true` here would be
+ * the least readable boolean in the money path.
+ */
+const BY_DESK = { awaitsProviderPayout: false } as const;
+const BY_PAYOUT_RAIL = { awaitsProviderPayout: true } as const;
+
+describe('approve and settle — the PROVIDER lifecycle', () => {
+  /*
+   * Two steps because something genuinely happens between them: the row is
+   * submitted to the payout rail, and the provider's event is what says the money
+   * left. See `TransactionsService.approve`.
+   */
   it('moves no money — the debit already happened', async () => {
     const userId = await makeFundedClient('settle@test.local');
     const row = await request(userId, '300');
     const afterRequest = await balanceOf(userId);
 
-    await transactions.approve(row.id, ADMIN);
+    const approved = await transactions.approve(row.id, ADMIN, BY_PAYOUT_RAIL);
+    // AUTHORISED, not paid — and `settledAt` is null, which is what makes an
+    // approved-but-never-submitted row visible to the reconciler.
+    expect(approved.state).toBe('approved');
+    expect(approved.settledAt).toBeNull();
     expect(await balanceOf(userId)).toBe(afterRequest);
 
     const settled = await transactions.settle(row.id, ADMIN, 'PROVIDER-REF-1');
@@ -201,11 +221,61 @@ describe('approve and settle', () => {
   it('refuses to approve twice', async () => {
     const userId = await makeFundedClient('double-approve@test.local');
     const row = await request(userId);
-    await transactions.approve(row.id, ADMIN);
+    await transactions.approve(row.id, ADMIN, BY_PAYOUT_RAIL);
 
     // The conditional UPDATE ... WHERE state = 'pending' is what stops a
     // double-clicked button, not a pre-read.
-    await expect(transactions.approve(row.id, ADMIN)).rejects.toThrow(/pending/i);
+    await expect(transactions.approve(row.id, ADMIN, BY_PAYOUT_RAIL)).rejects.toThrow(/pending/i);
+  });
+});
+
+describe('approve — the DESK lifecycle', () => {
+  /*
+   * One step, because the operator approving is the one sending the money. A
+   * second `settle` click would be a human confirming to the system what the
+   * system had just told them to do — which produced a queue of `approved` rows
+   * already paid in the real world and never marked.
+   */
+  it('records the payout immediately, and still moves no money', async () => {
+    const userId = await makeFundedClient('desk@test.local');
+    const row = await request(userId, '300');
+    const afterRequest = await balanceOf(userId);
+
+    const approved = await transactions.approve(row.id, ADMIN, BY_DESK);
+
+    expect(approved.state).toBe('success');
+    expect(approved.settledAt).not.toBeNull();
+    // The debit happened at request time; approval records, it does not perform.
+    expect(await balanceOf(userId)).toBe(afterRequest);
+    expect(await ledgerCount(userId)).toBe(2);
+  });
+
+  it('cannot then be settled — there is nothing left to settle', async () => {
+    const userId = await makeFundedClient('desk-settle@test.local');
+    const row = await request(userId);
+    await transactions.approve(row.id, ADMIN, BY_DESK);
+
+    await expect(transactions.settle(row.id, ADMIN, 'REF')).rejects.toThrow(/approved/i);
+  });
+
+  /*
+   * ⚠️ The mistake this pairing exists to make impossible.
+   *
+   * Approving a rail-backed withdrawal down the DESK path would mark it paid
+   * without ever submitting it for payout — and because the balance is debited at
+   * request time, nothing looks wrong until the client asks where their money is.
+   * Which lifecycle applies is decided by `RivalWithdrawalsService.willPayOut`,
+   * whose conditions are pinned to the claim that does the submitting.
+   */
+  it('leaves a desk-approved row where the payout rail will never claim it', async () => {
+    const userId = await makeFundedClient('never-claimed@test.local');
+    const row = await request(userId);
+
+    const approved = await transactions.approve(row.id, ADMIN, BY_DESK);
+
+    // The rail claims `approved` rows only, so `success` is out of its reach —
+    // which is correct here, because a human has already paid it.
+    expect(approved.state).not.toBe('approved');
   });
 });
 
@@ -257,7 +327,7 @@ describe('rejection refunds with a compensating entry', () => {
   it('refuses to reject a settled withdrawal', async () => {
     const userId = await makeFundedClient('too-late@test.local');
     const row = await request(userId);
-    await transactions.approve(row.id, ADMIN);
+    await transactions.approve(row.id, ADMIN, BY_PAYOUT_RAIL);
     await transactions.settle(row.id, ADMIN, 'REF');
 
     await expect(transactions.reject(row.id, ADMIN, 'Changed my mind')).rejects.toThrow(/pending/i);
@@ -291,7 +361,9 @@ describe('provider failure after approval', () => {
   it('refunds, exactly as a rejection does', async () => {
     const userId = await makeFundedClient('failed@test.local');
     const row = await request(userId, '200');
-    await transactions.approve(row.id, ADMIN);
+    // Only the rail lifecycle can fail after approval: a desk payout is already
+    // `success`, and unwinding one is a rejection, not a provider failure.
+    await transactions.approve(row.id, ADMIN, BY_PAYOUT_RAIL);
 
     const failed = await transactions.markFailed(row.id, 'Provider timeout', SYSTEM_ACTOR);
 

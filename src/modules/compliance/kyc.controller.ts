@@ -14,6 +14,8 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
+import { KYC_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
+import { storedPath } from '../../common/uploads/storage/storage-key';
 import { MAX_UPLOAD_BYTES } from './upload-limits';
 import { UploadSizeFilter } from './upload-size.filter';
 import {
@@ -24,11 +26,8 @@ import {
   ApiOkResponse,
   ApiBody,
 } from '@nestjs/swagger';
-import { diskStorage } from 'multer';
+import { memoryStorage } from 'multer';
 import { Request } from 'express';
-import { randomUUID } from 'crypto';
-import { open, unlink } from 'fs/promises';
-import { SIGNATURE_BYTES, signatureMatchesDeclared } from './file-signature';
 import { KycService } from './kyc.service';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
@@ -38,94 +37,41 @@ import { SaveKycStepDto, UploadKycFileDto } from './dto/kyc.dto';
 import { KycStatusDto, KycStepConfigDto } from './dto/kyc-response.dto';
 
 /**
- * Upload hardening.
+ * Upload hardening — now ENTIRELY in `StoredFilesService`.
  *
- * The stored extension previously came from the client-supplied filename while
- * the type check trusted the client-supplied Content-Type. Uploading
- * `payload.html` declared as `image/png` stored a `.html` file that the uploads
- * controller then served with `Content-Type: text/html` from the API origin —
- * the same origin that holds the session cookies. That is stored XSS into
- * session theft.
+ * ## What used to be here, and why none of it is
  *
- * Now: the extension is derived from an allowlist keyed on the declared type,
- * never from the filename, and the served response is forced to download with
- * nosniff (see uploads.controller.ts).
+ * This controller predated `StoredFilesService` and duplicated it: its own
+ * allow-list of accepted types, its own extension map, `diskStorage`, and a manual
+ * `open`/`read`/`subarray`/`close` dance to sniff a magic-byte header off a file
+ * that had ALREADY been written to disk — followed by an `unlink` when the sniff
+ * failed.
+ *
+ * That last part is the shape worth noticing. Every one of those steps existed to
+ * clean up after a decision the code could not make until the bytes were on disk.
+ * `memoryStorage` removes the problem rather than handling it: the bytes are in a
+ * buffer, the type is decided before anything is stored, and a refused upload has
+ * nothing to delete.
+ *
+ * The security properties are unchanged and are asserted in `stored-files.service.ts`:
+ * the accepted type is decided from magic bytes and must also agree with the
+ * declared one, the stored name is a UUID, and the extension comes from the sniffed
+ * type — never from the filename. `payload.html` declared as `image/png` is still
+ * refused, which is what stops a stored upload becoming stored XSS on the origin
+ * holding the session cookies.
+ *
+ * ## The size ceiling is still enforced where it stops bytes
+ *
+ * `MaxFileSizeValidator` is a ParseFilePipe, and a pipe runs AFTER multer has read
+ * the whole request body. So multer's own `limits` is what actually stops a
+ * multi-gigabyte upload — it aborts the stream mid-flight — and the pipe is the
+ * second line that turns the abort into an honest 413. Both read the same constant.
+ *
+ * With `memoryStorage` that ceiling matters MORE than it did, not less: it is what
+ * bounds heap per request. The worst case is `MAX_UPLOAD_BYTES` × concurrent
+ * uploads, and per client the 10/min throttle below bounds it further. Anyone
+ * raising `MAX_UPLOAD_BYTES` owes that multiplication.
  */
-const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
-  'image/jpeg': '.jpg',
-  'image/jpg': '.jpg',
-  'image/png': '.png',
-  'image/webp': '.webp',
-  'application/pdf': '.pdf',
-};
-
-/**
- * The size ceiling is enforced where it actually stops bytes.
- *
- * `MaxFileSizeValidator` is a ParseFilePipe, and a pipe runs AFTER multer has
- * already streamed the whole request body to disk. So the 10 MB limit this file
- * advertised was real for the response and useless for the disk: an
- * authenticated client could post a multi-gigabyte body, have every byte written
- * under ./uploads/kyc, and only then receive a 413.
- *
- * That matters more here than it would elsewhere. KYC documents live on the API
- * host's LOCAL DISK (ARCHITECTURE §8.5's private-S3 move is still pending), so
- * the same volume holds every identity document the business is required to
- * keep.
- *
- * multer's own `limits` is the fix: it aborts the stream mid-flight, so the
- * bytes are never written. The pipe validator stays as the second line, because
- * it is what turns the abort into an honest 413 for the caller — and
- * `UploadSizeFilter` is what makes that 413 say something useful.
- *
- * The constant itself lives in ./upload-limits.ts, because the filter needs it
- * too and importing it from here would be a cycle.
- */
-
-const multerStorage = diskStorage({
-  destination: './uploads/kyc',
-  filename: (
-    _req: Request,
-    file: Express.Multer.File,
-    cb: (err: Error | null, name: string) => void,
-  ) => {
-    const extension = ALLOWED_UPLOAD_TYPES[file.mimetype.toLowerCase()] ?? '.bin';
-    // randomUUID, not Date.now()+Math.random(): the old scheme was guessable,
-    // and these are filenames for identity documents.
-    cb(null, `${randomUUID()}${extension}`);
-  },
-});
-
-/*
- * The rejection message names the fix, because most uploads come from a phone.
- *
- * iPhones photograph in HEIC by default, and HEIC is not in the allow-list above
- * — decoding it would mean adding an image codec, which is a decision nobody has
- * taken. So an iPhone client can be refused for doing nothing wrong, and the old
- * message ("Only JPG, PNG, WEBP images and PDF files are allowed") told them
- * only that the thing they were holding was not a photo.
- *
- * The setting that resolves it is three levels into iOS Settings and is not
- * something a client will guess. Naming it turns a dead end into an instruction.
- * This does NOT decide the HEIC question — it makes the current answer usable
- * while that decision is outstanding.
- */
-const UNSUPPORTED_TYPE_MESSAGE =
-  'Only JPG, PNG, WEBP images and PDF files are allowed. ' +
-  'If you are on an iPhone, set Settings → Camera → Formats to "Most Compatible" and retake the ' +
-  'photo, or choose it from Photos so it is converted to JPG.';
-
-const fileFilter = (
-  _req: Request,
-  file: Express.Multer.File,
-  cb: (error: Error | null, acceptFile: boolean) => void,
-) => {
-  if (ALLOWED_UPLOAD_TYPES[file.mimetype.toLowerCase()]) {
-    cb(null, true);
-  } else {
-    cb(new BadRequestException(UNSUPPORTED_TYPE_MESSAGE), false);
-  }
-};
 
 @ApiTags('kyc')
 @ApiCookieAuth()
@@ -135,6 +81,7 @@ export class KycController {
   constructor(
     private readonly kyc: KycService,
     private readonly kycConfig: KycConfigStore,
+    private readonly files: StoredFilesService,
   ) {}
 
   @Get('config')
@@ -201,75 +148,88 @@ export class KycController {
   // under the field name, each one its own 10 MB.
   @UseInterceptors(
     FileInterceptor('file', {
-      storage: multerStorage,
-      fileFilter,
+      /*
+       * `memoryStorage`, not `diskStorage`, and that is the whole difference.
+       *
+       * The bytes never touch this host: they are validated in a buffer and
+       * streamed to object storage, so a refused upload leaves nothing behind and
+       * an accepted one leaves nothing here to lose with the host.
+       */
+      storage: memoryStorage(),
+      /*
+       * `limits` is what actually stops the bytes — it aborts the stream
+       * mid-flight, before the buffer grows. `files: 1` matters too: without it a
+       * client may post any number of parts under the field name, each its own
+       * 10MB, and `memoryStorage` would hold all of them.
+       *
+       * There is deliberately NO `fileFilter`. It ran before any bytes existed and
+       * could only read the client's own `Content-Type` header, so it refused
+       * honest uploads and admitted dishonest ones. The real check needs the bytes
+       * and now happens in `StoredFilesService.write`, once.
+       */
       limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
     }),
   )
   async uploadFile(
     @Req() req: Request & { user: User },
     @UploadedFile(
-      // Kept as the second line of defence. multer now rejects oversize bodies
-      // before they land, so in practice this fires only if the two numbers ever
-      // drift apart — which is why they now come from the same constant.
+      // Kept as the second line of defence. multer rejects oversize bodies before
+      // they land, so in practice this fires only if the two numbers ever drift
+      // apart — which is why they come from the same constant.
       new ParseFilePipe({
         validators: [new MaxFileSizeValidator({ maxSize: MAX_UPLOAD_BYTES })],
       }),
     )
-    file: Express.Multer.File & { path: string; originalname: string },
+    file: Express.Multer.File,
     @Body() dto: UploadKycFileDto,
   ) {
+    if (!file?.buffer?.length) throw new BadRequestException('No file was uploaded.');
+
     /*
-     * What the bytes ARE, not what the client said they were.
+     * Validation, storage and the registry row, in one call.
      *
-     * `fileFilter` and the stored extension were both decided from
-     * `file.mimetype` — the Content-Type the CLIENT wrote into the multipart
-     * header. multer cannot do better: a fileFilter runs before any bytes exist.
-     * So an authenticated client could upload an HTML document, declare it
-     * image/png and have it stored as <uuid>.png in the same directory as every
-     * identity document the business is required to keep.
+     * `write` decides the type from the file's own magic bytes, refuses anything
+     * the KYC bucket does not accept (with the message that names the iPhone HEIC
+     * fix), enforces the client's storage quota, computes the SHA-256 that R2
+     * verifies on write, and records the object in `stored_objects` — so "who
+     * uploaded this document and when" is answerable from here on.
      *
-     * `uploads.controller.ts` sends X-Content-Type-Options: nosniff, which is
-     * what stops a reviewing admin's browser executing it. That single header
-     * being the whole defence is the reason to add this one: it is easy to lose
-     * in a proxy config, and the account it protects is the one that can read
-     * every client's documents.
-     *
-     * Checked here rather than in the filter because this is the first point at
-     * which the bytes exist. Rejection unlinks, using the same path as the
-     * failure below — an unreferenced identity document on disk is both a disk
-     * problem and a retention one.
+     * The owner is the CALLING CLIENT, taken from the session and never from a
+     * parameter (R-4.4). A field in the body deciding whose quota is charged and
+     * whose documents these are would be the whole distance between "my data" and
+     * "anyone's data".
      */
-    const handle = await open(file.path, 'r');
-    let header: Buffer;
-    try {
-      const buffer = Buffer.alloc(SIGNATURE_BYTES);
-      const { bytesRead } = await handle.read(buffer, 0, SIGNATURE_BYTES, 0);
-      header = buffer.subarray(0, bytesRead);
-    } finally {
-      await handle.close();
-    }
+    const stored = await this.files.write(
+      KYC_BUCKET,
+      file.buffer,
+      file.mimetype,
+      {
+        id: req.user.id,
+        kind: 'client',
+        ownerUserId: req.user.id,
+      },
+      file.originalname,
+    );
 
-    if (!signatureMatchesDeclared(header, file.mimetype)) {
-      await unlink(file.path).catch(() => undefined);
-      // Same guidance as the filter's: a HEIC relabelled `image/jpeg` by the
-      // browser passes the filter and fails HERE, and "the content does not
-      // match its declared type" is meaningless to someone who just took a
-      // photo.
-      throw new BadRequestException(
-        `The file content does not match its declared type. ${UNSUPPORTED_TYPE_MESSAGE}`,
+    try {
+      /*
+       * The submission records the same path shape multer used to produce
+       * (`uploads/kyc/<uuid>.jpg`), so rows written before and after this change
+       * read identically and the frontends' URL builders need no branch. See
+       * `storage/storage-key.ts` for why that mirror is load-bearing.
+       */
+      return await this.kyc.attachFile(
+        req.user.id,
+        dto.field,
+        storedPath(KYC_BUCKET.dir, stored.filename),
+        file.originalname,
       );
-    }
-
-    try {
-      return await this.kyc.attachFile(req.user.id, dto.field, file.path, file.originalname);
     } catch (error) {
-      // The bytes are already on disk by the time the service runs. If recording
-      // them fails, the file is unreferenced by any submission — so it can never
-      // be served, never be reviewed, and never be cleaned up by anything else.
-      // Orphaned identity documents accumulating on the API host is both a disk
-      // problem and a data-retention one.
-      await unlink(file.path).catch(() => undefined);
+      // The object is already stored. If recording it against the submission
+      // fails, it is referenced by nothing — unservable, unreviewable, and
+      // invisible to every screen. Orphaned identity documents are both a cost
+      // problem and a data-retention one, so it goes now.
+      await this.files.remove(KYC_BUCKET, stored.filename);
       throw error;
     }
   }

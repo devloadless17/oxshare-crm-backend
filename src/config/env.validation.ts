@@ -222,6 +222,36 @@ const envSchema = z
     RIVAL_WEBHOOK_KEY: z.string().min(1).optional(),
 
     /*
+     * ── Object storage (ARCHITECTURE §8.5, PLATFORM-CONVENTIONS R-7.3) ────────
+     *
+     * Which backend holds uploaded files. Cloudflare R2 is the only production
+     * answer; `disk` is the local-filesystem driver for offline dev and the test
+     * suite.
+     *
+     * `disk` IS AN EXPLICIT OPT-IN AND NEVER A FALLBACK, and that is the whole
+     * point of validating it here. The obvious wiring — "use R2 when the
+     * credentials are present, disk when they are not" — is a silent downgrade: a
+     * deployment with one typo'd variable would start cleanly, write every
+     * identity document to a container filesystem, and report nothing. R-7.3
+     * already names the consequence of documents living on local disk ("losing
+     * the API host loses the KYC documents"); arriving there by accident is
+     * strictly worse than arriving there on purpose.
+     *
+     * So: the driver defaults to `r2`, the R2 block is REQUIRED whenever the
+     * driver is `r2` (below), and `disk` is refused outright in production. A
+     * checkout with no credentials fails to boot with a message naming the
+     * one-line fix rather than quietly storing files somewhere else.
+     *
+     * The four R2 values are all-or-nothing for the same reason — a half-filled
+     * block is a mistake, not a configuration.
+     */
+    STORAGE_DRIVER: z.enum(['r2', 'disk']).default('r2'),
+    R2_ACCOUNT_ID: z.string().min(1).optional(),
+    R2_ACCESS_KEY_ID: z.string().min(1).optional(),
+    R2_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    R2_BUCKET: z.string().min(1).optional(),
+
+    /*
      * The §12.4 money bounds — validated HERE, at boot.
      *
      * `money-limits.ts` says these are "also validated at boot in
@@ -262,6 +292,53 @@ const envSchema = z
         code: z.ZodIssueCode.custom,
         path: ['WITHDRAWAL_DAILY_MAX'],
         message: `WITHDRAWAL_DAILY_MAX (${env.WITHDRAWAL_DAILY_MAX}) is below WITHDRAWAL_MAX (${env.WITHDRAWAL_MAX}); the per-request cap could never be reached.`,
+      });
+    }
+
+    /*
+     * The R2 block: all four, or none.
+     *
+     * Checked before the driver requirement below so a partially-filled block
+     * reports as a partially-filled block. `STORAGE_DRIVER=disk` with three of
+     * four R2 values set is still a mistake worth naming — it is almost always a
+     * half-finished edit rather than a decision.
+     */
+    const R2_KEYS = [
+      'R2_ACCOUNT_ID',
+      'R2_ACCESS_KEY_ID',
+      'R2_SECRET_ACCESS_KEY',
+      'R2_BUCKET',
+    ] as const;
+    const present = R2_KEYS.filter((k) => env[k]);
+    if (present.length > 0 && present.length < R2_KEYS.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['R2_BUCKET'],
+        message:
+          `The R2 configuration is incomplete: ${R2_KEYS.filter((k) => !env[k]).join(', ')} ` +
+          `${present.length === R2_KEYS.length - 1 ? 'is' : 'are'} missing. All four are needed to ` +
+          'reach the bucket, and a half-configured store is a mistake rather than a configuration.',
+      });
+    }
+
+    /*
+     * `STORAGE_DRIVER=r2` (the default) means the credentials must actually exist.
+     *
+     * This is the check that turns "no R2 config" from a silent downgrade into a
+     * refusal. The message names both ways out, because both are legitimate: add
+     * the credentials, or state `disk` and accept non-durable local files.
+     */
+    if (env.STORAGE_DRIVER === 'r2' && present.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['STORAGE_DRIVER'],
+        message:
+          'STORAGE_DRIVER is "r2" (the default) but no R2 credentials are set. Uploaded KYC ' +
+          'documents have nowhere durable to go. Either set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, ' +
+          'R2_SECRET_ACCESS_KEY and R2_BUCKET, or set STORAGE_DRIVER=disk to use the local ' +
+          'filesystem for development (see .env.example). It is deliberately not inferred: ' +
+          'silently writing identity documents to a container filesystem is the failure ' +
+          'PLATFORM-CONVENTIONS R-7.3 exists to prevent.',
       });
     }
   });
@@ -398,6 +475,27 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
           'balancer, 2 for nginx behind CloudFront. The rate limiter, RBAC-08 IP allowlist and ' +
           'audit trail all key on the address it resolves: too low reads your own proxy, too high ' +
           'lets callers choose their own IP. Set it deliberately (see common/security/client-ip.ts).',
+      );
+    }
+
+    /*
+     * The local filesystem is not a production object store.
+     *
+     * Refused rather than warned, because the loss is silent and total: files on a
+     * container filesystem are not backed up, not replicated, and gone with the
+     * host. R-7.3 states the consequence plainly — "losing the API host loses the
+     * KYC documents" — and for a regulated broker those documents are the evidence
+     * behind every verification decision the business has made.
+     *
+     * A warning here would be read once, at a deploy, by somebody who is not
+     * thinking about backups.
+     */
+    if (env.STORAGE_DRIVER === 'disk') {
+      throw new Error(
+        'Refusing to start in production with STORAGE_DRIVER=disk. The local filesystem driver is ' +
+          'for offline development and the test suite: files written to it are not backed up, not ' +
+          'replicated, and lost with the host (PLATFORM-CONVENTIONS R-7.3). Unset STORAGE_DRIVER ' +
+          'and configure the R2 block — Cloudflare R2 is the only production object store.',
       );
     }
   }

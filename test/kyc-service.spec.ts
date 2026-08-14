@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { storedFilesStub } from './storage-stub';
 import { KycService } from '../src/modules/compliance/kyc.service';
 import type { KycStore, KycSubmission } from '../src/store/kyc.store';
 import type { User, UsersStore } from '../src/store/users.store';
@@ -114,6 +115,9 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
 
   const service = new KycService(
     email as unknown as EmailService,
+    // In-memory storage: this suite asserts the KYC decision rules, not where the
+    // bytes live. `deleteDocuments` goes through it, so it has to be callable.
+    storedFilesStub(),
     kycStore as unknown as KycStore,
     users as unknown as UsersStore,
     kycConfig as unknown as KycConfigStore,

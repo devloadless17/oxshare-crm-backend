@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ConfigService } from '@nestjs/config';
+import type { StoredFilesService } from '../src/common/uploads/stored-files.service';
 import { HealthService } from '../src/modules/health/health.service';
 import type { DependencyHealthDto, ReadinessDto } from '../src/modules/health/dto/health.dto';
 import type { Db } from '../src/database/db';
@@ -32,12 +33,29 @@ function dbThat(behaviour: 'succeeds' | 'fails' | 'hangs'): Db {
 const configWith = (values: Record<string, string>) =>
   ({ get: (key: string) => values[key] }) as unknown as ConfigService;
 
+/**
+ * A storage stand-in whose reachability the test chooses.
+ *
+ * The default is `up`, because these cases are about POSTGRES and a storage probe
+ * failing underneath them would make every assertion here fail for the wrong reason.
+ * The storage cases below set it explicitly.
+ */
+const storageThat = (reachable: boolean, provider: 'r2' | 'disk' = 'r2') =>
+  ({
+    healthy: () => Promise.resolve(reachable),
+    providerName: provider,
+  }) as unknown as StoredFilesService;
+
 const dependency = (report: ReadinessDto, name: string): DependencyHealthDto | undefined =>
   report.dependencies.find((d) => d.name === name);
 
 describe('R-6.4 readiness', () => {
   it('is ready, and times the probe, when Postgres answers', async () => {
-    const report = await new HealthService(dbThat('succeeds'), configWith({})).readiness();
+    const report = await new HealthService(
+      dbThat('succeeds'),
+      configWith({}),
+      storageThat(true),
+    ).readiness();
 
     expect(report.status).toBe('ready');
     expect(dependency(report, 'postgres')).toMatchObject({ status: 'up', required: true });
@@ -45,7 +63,11 @@ describe('R-6.4 readiness', () => {
   });
 
   it('is NOT ready, with a required dependency down, when Postgres fails', async () => {
-    const report = await new HealthService(dbThat('fails'), configWith({})).readiness();
+    const report = await new HealthService(
+      dbThat('fails'),
+      configWith({}),
+      storageThat(true),
+    ).readiness();
 
     expect(report.status).toBe('not_ready');
     expect(dependency(report, 'postgres')).toMatchObject({ status: 'down', required: true });
@@ -54,7 +76,11 @@ describe('R-6.4 readiness', () => {
   it('never leaks connection detail to an unauthenticated caller', async () => {
     // /health/ready is public. A raw pg error echoes the host, port and user
     // back to whoever asked; the reason belongs in the logs, not the response.
-    const report = await new HealthService(dbThat('fails'), configWith({})).readiness();
+    const report = await new HealthService(
+      dbThat('fails'),
+      configWith({}),
+      storageThat(true),
+    ).readiness();
 
     expect(dependency(report, 'postgres')?.detail).not.toMatch(/connection terminated/);
     expect(dependency(report, 'postgres')?.detail).toMatch(/server logs/);
@@ -63,7 +89,11 @@ describe('R-6.4 readiness', () => {
   it('gives up on a hanging database instead of hanging with it', async () => {
     // Without the probe timeout this test would never finish — which is exactly
     // what an unreachable host does to a readiness endpoint that has none.
-    const report = await new HealthService(dbThat('hangs'), configWith({})).readiness();
+    const report = await new HealthService(
+      dbThat('hangs'),
+      configWith({}),
+      storageThat(true),
+    ).readiness();
 
     expect(report.status).toBe('not_ready');
     expect(dependency(report, 'postgres')?.status).toBe('down');
@@ -73,7 +103,11 @@ describe('R-6.4 readiness', () => {
     // Redis is a later milestone. Reporting it as `down` would make every
     // instance permanently unready; omitting it would let "ready" quietly mean
     // "ready apart from the parts nobody checked".
-    const report = await new HealthService(dbThat('succeeds'), configWith({})).readiness();
+    const report = await new HealthService(
+      dbThat('succeeds'),
+      configWith({}),
+      storageThat(true),
+    ).readiness();
 
     expect(report.status).toBe('ready');
     expect(dependency(report, 'redis')).toMatchObject({
@@ -90,10 +124,66 @@ describe('R-6.4 readiness', () => {
     const report = await new HealthService(
       dbThat('succeeds'),
       configWith({ REDIS_URL: 'redis://localhost:6379' }),
+      storageThat(true),
     ).readiness();
 
     expect(dependency(report, 'redis')?.status).toBe('up');
     expect(dependency(report, 'redis')?.detail).toMatch(/not probed yet/);
+  });
+
+  /*
+   * Object storage is a REQUIRED dependency, and that is the assertion.
+   *
+   * An API that cannot reach the bucket cannot accept a KYC document or serve one to
+   * a reviewer — the upload fails loudly rather than falling back to local disk, so
+   * an instance in that state should not be sent traffic.
+   */
+  it('is NOT ready when object storage is unreachable', async () => {
+    const report = await new HealthService(
+      dbThat('succeeds'),
+      configWith({}),
+      storageThat(false),
+    ).readiness();
+
+    expect(report.status).toBe('not_ready');
+    expect(dependency(report, 'storage (r2)')).toMatchObject({
+      status: 'down',
+      required: true,
+    });
+  });
+
+  it('names the active provider, so a disk deployment is visible in the payload', async () => {
+    const report = await new HealthService(
+      dbThat('succeeds'),
+      configWith({}),
+      storageThat(true, 'disk'),
+    ).readiness();
+
+    expect(dependency(report, 'storage (disk)')?.status).toBe('up');
+  });
+
+  /*
+   * The probe is CACHED, because it costs a billed round trip and readiness is
+   * polled continuously. Asserted by counting calls across two probes on the same
+   * instance — a cache that quietly stopped working would look identical from the
+   * outside while turning a health check into a line item.
+   */
+  it('does not re-probe storage on every readiness call', async () => {
+    let calls = 0;
+    const counting = {
+      healthy: () => {
+        calls += 1;
+        return Promise.resolve(true);
+      },
+      providerName: 'r2',
+    } as unknown as StoredFilesService;
+
+    const service = new HealthService(dbThat('succeeds'), configWith({}), counting);
+    await service.readiness();
+    await service.readiness();
+    await service.readiness();
+
+    expect(calls).toBe(1);
   });
 });
 
@@ -101,7 +191,7 @@ describe('R-6.4 liveness', () => {
   it('answers without touching any dependency', async () => {
     // The point of the split: a database outage must not cause an orchestrator
     // to kill healthy processes. This returns ok with the database on fire.
-    const service = new HealthService(dbThat('fails'), configWith({}));
+    const service = new HealthService(dbThat('fails'), configWith({}), storageThat(true));
 
     expect(service.liveness().status).toBe('ok');
     expect(service.liveness().uptimeSeconds).toBeGreaterThanOrEqual(0);

@@ -10,6 +10,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { StoreModule } from './store/store.module';
+import { UploadsModule } from './common/uploads/uploads.module';
 import { EmailModule } from './modules/email/email.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { IdentityModule } from './modules/identity/identity.module';
@@ -66,6 +67,13 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     // Infrastructure
     DatabaseModule,
     StoreModule,
+    /*
+     * @Global(), like StoreModule: StoredFilesService is needed by identity, admin,
+     * payments and compliance, and used to be provided by two of them and
+     * re-exported by a third — more than one instance of a service that owns an S3
+     * client, and a different answer per module to "where does this come from".
+     */
+    UploadsModule,
     EmailModule,
     NotificationsModule,
     SecurityModule,

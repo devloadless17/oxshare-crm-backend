@@ -1,6 +1,8 @@
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
+  char,
   check,
   foreignKey,
   uniqueIndex,
@@ -2745,5 +2747,77 @@ export const notifications = pgTable(
     index('notifications_recipient_unread_idx')
       .on(t.recipientKind, t.recipientId)
       .where(sql`${t.readAt} IS NULL`),
+  ],
+);
+
+/**
+ * Every file this system stores — the upload registry (migration 0064).
+ *
+ * Read that migration's header first; it carries the reasoning. In short: file
+ * references live as free-text values inside JSONB blobs and on owning rows, and
+ * nothing recorded the act of uploading at all. "Who uploaded this document, when,
+ * how big was it" had no answer, and on a system holding identity documents for a
+ * regulated broker that question gets asked under pressure.
+ *
+ * **Additive, not a replacement.** `kyc_submissions.document -> 'frontFilePath'`,
+ * `users.avatar_filename` and `payment_methods.logo_url` are untouched. A row here
+ * is evidence about an OBJECT; those columns are the claim about which object a
+ * submission or a profile is made of. `scripts/r2-reconcile.mjs` cross-checks the
+ * two, in both directions.
+ */
+export const storedObjects = pgTable(
+  'stored_objects',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** 'kyc' | 'avatars' | 'payment-logos' — also the key prefix and the disk dir. */
+    bucket: varchar('bucket', { length: 32 }).notNull(),
+    /** The provider key, e.g. `kyc/9f2c….jpg`. Never a URL — the bucket is private. */
+    storageKey: varchar('storage_key', { length: 512 }).notNull(),
+    /**
+     * 'r2' | 'disk', per object rather than per deployment.
+     *
+     * Both are live at once: files uploaded before the R2 move are still on local
+     * disk and still served, with no backfill migration. This is what tells the
+     * reconciliation sweep which store to look in.
+     */
+    provider: varchar('provider', { length: 16 }).notNull(),
+    /** The SNIFFED type from the file's own magic bytes, never the declared one. */
+    contentType: varchar('content_type', { length: 128 }).notNull(),
+    /** `mode: 'number'` — a file size, not money. No NUMERIC/decimal.js rule applies. */
+    byteSize: bigint('byte_size', { mode: 'number' }).notNull(),
+    /**
+     * Lowercase hex SHA-256, sent to R2 as an integrity checksum on write.
+     *
+     * Indexed for DETECTION ("has this exact file been uploaded before" is a
+     * fraud-review question), never for deduplication — sharing one object between
+     * two owners would mean deleting one client's document deletes another's.
+     */
+    sha256: char('sha256', { length: 64 }).notNull(),
+    /** Display only. Never used to build a path or an extension. */
+    originalName: varchar('original_name', { length: 255 }),
+    /**
+     * The client the object is ABOUT; null for brand marks belonging to nobody.
+     * `restrict` matches `kyc_submissions` — deleting a client must fail loudly
+     * rather than silently discard the record of what they uploaded.
+     */
+    ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'restrict' }),
+    uploadedById: uuid('uploaded_by_id').notNull(),
+    /** 'client' | 'admin' — the same shape as `audit_log.actor_kind`. */
+    uploadedByKind: varchar('uploaded_by_kind', { length: 16 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Soft. The row outlives the bytes — see the migration header. */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (t) => [
+    /* Idempotency in a constraint, never check-then-insert (§6.3). */
+    uniqueIndex('stored_objects_bucket_key_uq').on(t.bucket, t.storageKey),
+    /* The quota query. Partial: a replaced document must not still count. */
+    index('stored_objects_owner_live_idx')
+      .on(t.ownerUserId)
+      .where(sql`${t.deletedAt} IS NULL`),
+    index('stored_objects_created_at_idx').on(t.createdAt.desc()),
+    index('stored_objects_sha256_idx').on(t.sha256),
+    /* "Which client owns this filename" — the ILIKE-over-JSONB scan this replaces. */
+    index('stored_objects_key_idx').on(t.storageKey),
   ],
 );

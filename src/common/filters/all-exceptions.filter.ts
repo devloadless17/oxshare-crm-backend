@@ -16,6 +16,7 @@ import {
   ExternalServiceError,
   DomainError,
   MoneyRuleError,
+  QuotaExceededError,
   ClientNotFoundError,
   NotFoundError,
   PaymentIndeterminateError,
@@ -56,6 +57,9 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   [KycNotVerifiedError, HttpStatus.FORBIDDEN],
   [ConflictError, HttpStatus.CONFLICT],
   [MoneyRuleError, HttpStatus.UNPROCESSABLE_ENTITY],
+  // Beside the other size refusal on the upload path, so anyone debugging a failed
+  // upload finds both in the same place. See QuotaExceededError.
+  [QuotaExceededError, HttpStatus.PAYLOAD_TOO_LARGE],
   // 502: this service is fine, something it calls is not — see the class.
   [ExternalServiceError, HttpStatus.BAD_GATEWAY],
 ]);

@@ -205,6 +205,50 @@ and `JwtStrategy.validate` — the same objects the HTTP guards use. Do not re-i
 checks for sockets; that is how two authorization paths drift until one is missing an enforcement
 point. Sockets close at token expiry (15-minute ceiling) so the reconnect re-authenticates.
 
+## Object storage — R2, and the two rules that keep it honest
+
+Uploads (KYC documents, avatars, payment logos) live in a **private Cloudflare R2
+bucket**, not on this host. `common/uploads/` owns the whole thing:
+
+```
+storage/storage-driver.ts   the port — no Nest, no fs, no aws-sdk
+storage/{r2,disk,fake}.*    the three implementations
+storage/storage-key.ts      the key scheme, as pure functions
+storage/http-range.ts       Range + If-None-Match, shared by disk and fake
+stored-files.service.ts     validation, quota, checksum, registry — the only caller
+stream-object.ts            the response: 206, 304, disconnect, mid-stream failure
+```
+
+**1. `STORAGE_DRIVER` is stated, never inferred.** It defaults to `r2` and
+`env.validation.ts` refuses to boot without the `R2_*` block; `disk` must be set
+explicitly and is refused outright in production. "Use R2 if configured, else disk" is
+a silent downgrade — one typo and every identity document goes to a container
+filesystem with nothing reporting it (D-62).
+
+**2. Reads fall back, writes never do.** A read misses R2 and then tries local disk,
+because documents uploaded before the move are still there and there is no backfill.
+A write that cannot reach R2 **fails loudly**: falling back would scatter documents
+across two providers with no record of which is which.
+
+Two things that are not obvious and cost time to rediscover:
+
+- **`responseChecksumValidation: 'WHEN_REQUIRED'` is load-bearing.** R2 returns the
+  WHOLE-object checksum on a partial response and the SDK compares it against the
+  range received, so every range read fails — which is every multi-page PDF in the
+  review queue. Found by `npm run r2:verify`; re-run it after any aws-sdk upgrade.
+- **The key mirrors the URL.** DB `uploads/kyc/x.jpg` → route `/v1/uploads/kyc/x.jpg`
+  → key `kyc/x.jpg`. That mirror is why the R2 move needed no frontend change and no
+  data migration; break it and both come back. `storage-key.spec.ts` pins it.
+
+`stored_objects` (migration 0064) records every file — checksum, size, owner,
+uploader. It is additive: the JSONB references in `kyc_submissions` are untouched.
+
+**Scripts, neither in CI** (both cost billed requests): `npm run r2:verify` proves the
+credentials in one round trip; `npm run r2:reconcile` diffs the bucket against the
+registry both ways. The live driver contract is `R2_LIVE_TEST=1 npx vitest run
+src/common/uploads/storage/storage-driver.spec.ts` — the same spec the fake and disk
+drivers run, which is what makes the fake trustworthy in CI.
+
 ## Validation
 
 The global `ValidationPipe` (`whitelist`, `transform`) only validates where a **DTO class**
@@ -219,7 +263,10 @@ says why.
 
 ## Tests
 
-`npm test` → Vitest, 350 tests. `vitest.config.mts` sets `fileParallelism: false`
+`npm test` → Vitest. **No test touches Cloudflare R2** — `vitest.config.mts` sets
+`STORAGE_DRIVER=disk` and the unit suites use `test/storage-stub.ts` (an in-memory
+driver). Keep it that way: a suite that bills a live account per run is one somebody
+disables. `vitest.config.mts` sets `fileParallelism: false`
 **deliberately** — the money tests must observe each other's concurrency. Testcontainers starts
 a real Postgres 16 and runs the committed migrations; nothing is mocked.
 

@@ -246,7 +246,20 @@ export class AdminProfileService {
     const admin = await this.admins.findById(adminId);
     if (!admin) throw new AuthenticationError('Your session is no longer valid. Please sign in.');
 
-    const stored = await this.files.write(AVATAR_BUCKET, bytes, declaredMimeType);
+    /*
+     * `ownerUserId: null` — an administrator is not a client.
+     *
+     * `owner_user_id` on `stored_objects` references `users`, and an admin id is
+     * not in that table, so attributing the photo to them would violate the
+     * foreign key. It also means an admin's own avatar does not count against any
+     * client's storage quota, which is correct: the quota exists to bound what an
+     * untrusted uploader can cost us, and the admin console is not that.
+     */
+    const stored = await this.files.write(AVATAR_BUCKET, bytes, declaredMimeType, {
+      id: adminId,
+      kind: 'admin',
+      ownerUserId: null,
+    });
 
     // The OLD file is removed only after the new one is safely written and the
     // row points at it: a failure in between must not leave the administrator

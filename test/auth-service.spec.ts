@@ -9,7 +9,7 @@ import type { EmailService } from '../src/modules/email/email.service';
 import type { RefreshTokensService } from '../src/common/security/refresh-tokens.service';
 import type { LoginAttemptsService } from '../src/common/security/login-attempts.service';
 import type { User, UsersStore } from '../src/store/users.store';
-import { StoredFilesService } from '../src/common/uploads/stored-files.service';
+import { storedFilesStub } from './storage-stub';
 import {
   AuthenticationError,
   AuthorizationError,
@@ -134,7 +134,7 @@ function build(overrides: { user?: User | undefined } = {}): Harness {
     refreshTokens as unknown as RefreshTokensService,
     passwords,
     loginAttempts as unknown as LoginAttemptsService,
-    new StoredFilesService(),
+    storedFilesStub(),
   );
 
   return { service, users, email, refreshTokens, passwords };

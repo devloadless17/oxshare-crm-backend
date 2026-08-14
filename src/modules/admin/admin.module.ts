@@ -10,7 +10,6 @@ import { AdminComplianceController } from './admin-compliance.controller';
 import { AdminRbacController } from './admin-rbac.controller';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminProfileService } from './admin-profile.service';
-import { StoredFilesService } from '../../common/uploads/stored-files.service';
 import { AdminTagsService } from './admin-tags.service';
 import { AdminClientsService } from './admin-clients.service';
 import { AdminComplianceService } from './admin-compliance.service';
@@ -50,7 +49,6 @@ const ADMIN_SERVICES = [
    * identity graph into the back office to reach it would be the larger cost.
    */
   AdminProfileService,
-  StoredFilesService,
   AdminRbacService,
   ApiKeysService,
   AdminComplianceService,

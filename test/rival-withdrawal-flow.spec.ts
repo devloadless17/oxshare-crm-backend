@@ -122,7 +122,11 @@ async function makeApprovedWithdrawal(amount = '100'): Promise<{
     destination: '+961 3 123 456',
     methodKey: 'whish',
   });
-  await transactions.approve(requested.id, '00000000-0000-4000-8000-000000000001');
+  // The rail WILL pay this one, so it is approved into `approved` and settled by
+  // Rival's event — the two-step lifecycle this whole suite exercises.
+  await transactions.approve(requested.id, '00000000-0000-4000-8000-000000000001', {
+    awaitsProviderPayout: true,
+  });
   return { txId: requested.id, userId };
 }
 

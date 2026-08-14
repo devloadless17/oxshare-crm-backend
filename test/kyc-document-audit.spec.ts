@@ -1,7 +1,7 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
-import { describe, expect, it, beforeEach, afterAll } from 'vitest';
-import { mkdirSync, rmSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { describe, expect, it } from 'vitest';
+import { PassThrough } from 'node:stream';
+import { createHash } from 'node:crypto';
 import {
   ForbiddenException,
   NotFoundException,
@@ -11,7 +11,7 @@ import {
 import { UploadsController } from '../src/modules/compliance/uploads.controller';
 import type { AuditEntry } from '../src/store/audit-log.store';
 import { TOKEN_KIND } from '../src/common/security/token-audience';
-import { StoredFilesService } from '../src/common/uploads/stored-files.service';
+import { storageStub } from './storage-stub';
 import { UNRESTRICTED, type ClientScope } from '../src/common/security/client-scope';
 
 /**
@@ -133,6 +133,18 @@ function makeController(options: {
     scopeFor: () => Promise.resolve(options.clientScope ?? UNRESTRICTED),
   };
 
+  /*
+   * A storage stub seeded with the document, per controller.
+   *
+   * Per-controller rather than shared, so a case that deletes or fails to find the
+   * object cannot leak that state into the next one.
+   */
+  const { files, driver } = storageStub();
+  void driver.put(`kyc/${FILE}`, DOCUMENT, {
+    contentType: 'image/png',
+    sha256: createHash('sha256').update(DOCUMENT).digest('hex'),
+  });
+
   const controller = new UploadsController(
     jwt as never,
     config as never,
@@ -141,7 +153,7 @@ function makeController(options: {
     kyc as never,
     users as never,
     auditLog as never,
-    new StoredFilesService(),
+    files,
     scopes as never,
   );
 
@@ -149,25 +161,39 @@ function makeController(options: {
 }
 
 /**
- * A response that records what was sent without touching the filesystem.
+ * A response that records what was sent.
  *
- * Closures rather than methods, so nothing here depends on `this` — the object
- * is handed to a controller that may destructure it.
+ * Built on a real `PassThrough`, because the handler no longer calls `sendFile` —
+ * it streams the object through `streamObject`, which pipes into the response. A
+ * plain object fails inside Node's stream machinery rather than in an assertion.
+ *
+ * `streamed` is the successor to the old `sent` array: `Accept-Ranges` is set by
+ * `streamObject` only when a BODY is going out, so it is the signal for "the
+ * document was actually served" — which is what every case here is really asking.
  */
 function fakeResponse() {
   const headers: Record<string, string> = {};
-  const sent: string[] = [];
-  const res = {
-    headers,
-    sent,
-    setHeader: (key: string, value: string) => {
-      headers[key] = value;
-    },
-    sendFile: (path: string) => {
-      sent.push(path);
-      return res;
-    },
+  const res = new PassThrough() as PassThrough & {
+    headers: Record<string, string>;
+    statusCode: number;
+    headersSent: boolean;
+    streamed: boolean;
+    setHeader(key: string, value: string): void;
+    status(code: number): unknown;
   };
+  res.headers = headers;
+  res.statusCode = 200;
+  res.headersSent = false;
+  res.setHeader = (key: string, value: string) => {
+    headers[key.toLowerCase()] = value;
+  };
+  res.status = (code: number) => {
+    res.statusCode = code;
+    return res;
+  };
+  Object.defineProperty(res, 'streamed', {
+    get: () => 'accept-ranges' in headers,
+  });
   return res;
 }
 
@@ -175,23 +201,22 @@ function requestWith(cookies: Record<string, string>, ip?: string) {
   // `socket: {}` mirrors what `clientIp()` falls back to on a real request; with
   // no `ip` it resolves to undefined, which is the "we cannot identify this
   // caller" case RBAC-08 must fail closed on.
-  return { cookies, ip, socket: {} } as never;
+  // `headers` is always present on a real Express request, and the handler reads
+  // `Range` from it. Omitting it here made the fixture diverge from the thing it
+  // stands in for.
+  return { cookies, ip, socket: {}, headers: {} } as never;
 }
 
-const FIXTURE = join(process.cwd(), 'uploads', 'kyc', FILE);
-
-beforeEach(() => {
-  // The handler 404s on a missing file before it audits, so the fixture has to
-  // exist. Written into the real upload directory the controller reads from.
-  mkdirSync(dirname(FIXTURE), { recursive: true });
-  writeFileSync(FIXTURE, 'not-a-real-document');
-});
-
-afterAll(() => {
-  // upload-limits.spec.ts asserts on the total byte size of this directory, so
-  // a fixture left behind is a test that changes another test's baseline.
-  rmSync(FIXTURE, { force: true });
-});
+/**
+ * The document exists — in memory.
+ *
+ * The handler 404s on a missing object BEFORE it audits, so something has to be
+ * there or every case here would pass for the wrong reason. It used to be a real
+ * file under `./uploads/kyc`, which meant this suite wrote into the directory
+ * `upload-limits.spec.ts` measures and had to clean up after itself. Seeding the
+ * fake store is faster, leaves nothing behind, and touches no other suite's baseline.
+ */
+const DOCUMENT = Buffer.from('not-a-real-document');
 
 describe('R-6.6 — reading a KYC document writes an audit row', () => {
   it('records which admin viewed which document', async () => {
@@ -214,7 +239,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
       subjectId: FILE,
     });
     // And the document was still served.
-    expect(res.sent).toHaveLength(1);
+    expect(res.streamed).toBe(true);
   });
 
   it('REFUSES a client whose email is not verified, and serves nothing', async () => {
@@ -245,7 +270,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
 
     // No bytes, and no audit row claiming a read that did not happen — the
     // refusal lands before both, exactly as the scope check does.
-    expect(res.sent).toHaveLength(0);
+    expect(res.streamed).toBe(false);
     expect(recorded).toHaveLength(0);
   });
 
@@ -296,7 +321,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
       res as never,
     );
 
-    expect(res.sent).toHaveLength(1);
+    expect(res.streamed).toBe(true);
     expect(recorded[0]).toMatchObject({ actorKind: 'admin', action: 'kyc.document.view' });
   });
 
@@ -313,7 +338,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
       res as never,
     );
 
-    expect(res.sent).toHaveLength(1);
+    expect(res.streamed).toBe(true);
   });
 
   it('refuses an admin holding neither', async () => {
@@ -347,7 +372,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
 
     expect(recorded).toHaveLength(0);
-    expect(res.sent).toHaveLength(0);
+    expect(res.streamed).toBe(false);
   });
 
   it('refuses an admin REFRESH token, which is not an access credential', async () => {
@@ -367,7 +392,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
     ).rejects.toBeInstanceOf(UnauthorizedException);
 
     expect(recorded).toHaveLength(0);
-    expect(res.sent).toHaveLength(0);
+    expect(res.streamed).toBe(false);
   });
 
   it('still denies an admin without kyc.review, and records nothing', async () => {
@@ -432,7 +457,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
       // 404, not 403 — distinguishing them would tell a scoped admin which
       // filenames are real, which is the enumeration this route is most
       // exposed to.
-      expect(res.sent).toHaveLength(0);
+      expect(res.streamed).toBe(false);
       // And NOTHING is recorded. An audit row for a refused read is a claim
       // that a document was accessed when it was not.
       expect(recorded).toHaveLength(0);
@@ -454,7 +479,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
         res as never,
       );
 
-      expect(res.sent).toHaveLength(1);
+      expect(res.streamed).toBe(true);
       expect(recorded).toHaveLength(1);
     });
 
@@ -489,7 +514,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
         requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }),
         res as never,
       );
-      expect(res.sent).toHaveLength(1);
+      expect(res.streamed).toBe(true);
     });
   });
 
