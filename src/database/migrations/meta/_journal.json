@@ -456,6 +456,13 @@
       "when": 1787090005000,
       "tag": "0064_stored_objects",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1787097600000,
+      "tag": "0065_null_unreachable_logo_url",
+      "breakpoints": true
     }
   ]
 }
