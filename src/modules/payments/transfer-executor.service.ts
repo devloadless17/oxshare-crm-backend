@@ -155,9 +155,50 @@ export class TransferExecutor {
  * errs toward HELD: an unrecognised error leaves the transfer pending, which is
  * recoverable, instead of releasing a hold against money MT5 may already have
  * moved, which is not.
+ *
+ * ## It used to say that and do the opposite
+ *
+ * This listed the network errors and returned false for everything else — and
+ * the caller FAILS on false. So an unrecognised error released the hold, which
+ * is exactly the behaviour the paragraph above promises it avoids. The comment
+ * was right and the code was inverted.
+ *
+ * It cost real money in this deployment. Restarting the bridge mid-operation
+ * leaves its idempotency key claimed with no recorded outcome, so every later
+ * attempt is answered:
+ *
+ *     409 · "This idempotency key is already in flight or was interrupted
+ *            mid-operation. Check the MT5 deal history for this login before
+ *            retrying."
+ *
+ * That sentence IS the definition of indeterminate — the deal may have posted.
+ * It matched none of the network patterns, so two transfers were marked failed
+ * and their holds released while MT5 may already have credited the account.
+ *
+ * ## So the list is inverted: name what is DETERMINATE
+ *
+ * A refusal only counts when the bridge rejected the request before MT5 could
+ * act on it — a 400, or a validation error raised on our side of the wire.
+ * Everything else, known or not, is held. A transfer stuck pending is a row an
+ * operator can finish; a hold released against money that moved is a client
+ * holding the same funds twice, and nothing in the system will notice.
  */
 function isIndeterminate(message: string): boolean {
-  return /timeout|timed out|ECONNRESET|ECONNREFUSED|socket hang up|network|ETIMEDOUT/i.test(
-    message,
-  );
+  return !isDefiniteRefusal(message);
+}
+
+/**
+ * The narrow set where MT5 provably did NOT act.
+ *
+ * `400` is the bridge's own validation — a malformed amount, a login it will not
+ * accept — raised before it calls MT5 at all. `ValidationError` is ours, raised
+ * before the request leaves this process.
+ *
+ * Note what is NOT here: 409 (the key was claimed, outcome unknown), 500 (the
+ * bridge failed somewhere unspecified), and every timeout. Adding a status to
+ * this list is a decision to release a client's hold on the strength of it, and
+ * it needs the same evidence: that MT5 cannot have moved the money.
+ */
+function isDefiniteRefusal(message: string): boolean {
+  return /\b400\b|validation|invalid|malformed/i.test(message);
 }

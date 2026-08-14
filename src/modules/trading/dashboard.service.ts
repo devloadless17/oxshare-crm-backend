@@ -1,11 +1,28 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, count, desc, eq } from 'drizzle-orm';
+import { and, count, eq, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { positions, tradingAccounts, transactions, users } from '../../database/schema';
 import { WalletService } from '../wallet/wallet.service';
 import { TradingService } from './trading.service';
 import type { DashboardDto } from './dto/dashboard.dto';
+
+/** The union's own column names, before they are mapped for the DTO. */
+interface RecentRow {
+  id: string;
+  user_id: string;
+  wallet_id: string;
+  direction: 'deposit' | 'withdrawal';
+  amount: string;
+  currency: string;
+  state: 'pending' | 'approved' | 'success' | 'failure' | 'rejected';
+  provider: string;
+  provider_ref: string | null;
+  destination: string | null;
+  rejection_reason: string | null;
+  created_at: Date;
+  kind: 'payment' | 'transfer';
+}
 
 /** How many recent transactions the landing page shows. */
 const RECENT_TRANSACTION_LIMIT = 8;
@@ -101,26 +118,71 @@ export class DashboardService {
    * (R-4.4). It is the only thing standing between this and one client reading
    * another's transactions.
    */
+  /*
+   * ── TRANSFERS BELONG IN RECENT ACTIVITY TOO ──────────────────────────────
+   *
+   * This read the transactions table alone, so a client who had just moved money
+   * between their wallet and a trading account saw nothing here — the most
+   * recent thing they had done was the one thing the panel would not show.
+   * Recent activity that omits a whole class of movement is worse than none: it
+   * looks complete.
+   *
+   * Unioned in SQL rather than fetched separately and merged, for the reason
+   * TransactionsService.listForUser gives at length: "the five newest" across
+   * two lists is not the five newest of either, so merging after the LIMIT
+   * silently drops rows. The limit has to apply to the combined set.
+   *
+   * The mapping is the same one the list endpoint uses — direction stated from
+   * the wallet's side, transfer states mapped onto transaction states — and it
+   * is deliberately identical. Two screens describing one movement differently
+   * is how a client concludes the numbers are wrong.
+   */
   private async recentTransactions(userId: string) {
-    return this.db
-      .select({
-        id: transactions.id,
-        userId: transactions.userId,
-        walletId: transactions.walletId,
-        direction: transactions.direction,
-        amount: transactions.amount,
-        currency: transactions.currency,
-        state: transactions.state,
-        provider: transactions.provider,
-        providerRef: transactions.providerRef,
-        destination: transactions.destination,
-        rejectionReason: transactions.rejectionReason,
-        createdAt: transactions.createdAt,
-      })
-      .from(transactions)
-      .where(eq(transactions.userId, userId))
-      .orderBy(desc(transactions.createdAt))
-      .limit(RECENT_TRANSACTION_LIMIT);
+    const rows = await this.db.execute(sql`
+      WITH combined AS (
+        SELECT
+          t.id, t.user_id, t.wallet_id, t.direction::text AS direction, t.amount, t.currency,
+          t.state::text AS state, t.provider, t.provider_ref, t.destination,
+          t.rejection_reason, t.created_at, 'payment'::text AS kind
+        FROM transactions t
+        WHERE t.user_id = ${userId}
+
+        UNION ALL
+
+        SELECT
+          tr.id, tr.user_id, tr.wallet_id,
+          CASE WHEN tr.direction = 'account_to_wallet' THEN 'deposit' ELSE 'withdrawal' END,
+          tr.amount, tr.currency,
+          CASE tr.state
+            WHEN 'settled' THEN 'success'
+            WHEN 'failed'  THEN 'failure'
+            ELSE 'pending'
+          END,
+          'transfer'::varchar, NULL::varchar, NULL::text,
+          tr.failure_reason, tr.created_at, 'transfer'::text
+        FROM transfers tr
+        WHERE tr.user_id = ${userId}
+      )
+      SELECT * FROM combined
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${RECENT_TRANSACTION_LIMIT}
+    `);
+
+    return (rows.rows as unknown as RecentRow[]).map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      walletId: row.wallet_id,
+      direction: row.direction,
+      amount: row.amount,
+      currency: row.currency,
+      state: row.state,
+      provider: row.provider,
+      providerRef: row.provider_ref,
+      destination: row.destination,
+      rejectionReason: row.rejection_reason,
+      createdAt: row.created_at,
+      kind: row.kind,
+    }));
   }
 
   /**

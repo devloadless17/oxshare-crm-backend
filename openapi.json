@@ -10542,6 +10542,18 @@
           "createdAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "payment",
+              "transfer"
+            ],
+            "description": "Branch on this, never on the absence of a payment field."
+          },
+          "tradingAccountId": {
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -10552,7 +10564,8 @@
           "amount",
           "currency",
           "state",
-          "createdAt"
+          "createdAt",
+          "kind"
         ]
       },
       "TransactionPageDto": {

@@ -6,6 +6,7 @@ import { AdminAuthModule } from '../admin/admin-auth.module';
 import { TransactionsService } from './transactions.service';
 import { TransfersService } from './transfers.service';
 import { TransferExecutor } from './transfer-executor.service';
+import { TransferResumeScheduler } from './transfer-resume.scheduler';
 import { PaymentMethodsService } from './payment-methods.service';
 import { WalletModule } from '../wallet/wallet.module';
 import { TradingModule } from '../trading/trading.module';
@@ -78,6 +79,8 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
      * the broker's server, and what settles or fails the row afterwards.
      */
     TransferExecutor,
+    // Finishes transfers the executor deliberately left pending — see its note.
+    TransferResumeScheduler,
     // `WithdrawalOtpService` is gone with the withdrawal confirmation code.
     SecuritySettingsService,
     AdminAuditService,

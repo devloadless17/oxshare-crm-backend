@@ -1,23 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomBytes } from 'crypto';
+import { and, asc, desc, eq, gte, ilike, isNull, ne, or, sql, type SQLWrapper } from 'drizzle-orm';
 import {
-  and,
-  asc,
-  count,
-  desc,
-  eq,
-  gte,
-  ilike,
-  isNull,
-  ne,
-  or,
-  sql,
-  type SQLWrapper,
-} from 'drizzle-orm';
-import {
-  // Aliased: `this.paymentMethods` is the injected SERVICE, and an unaliased
-  // import of the table would shadow it in every query below.
-  paymentMethods as paymentMethodsTable,
   tradingAccounts,
   transactions,
   users,
@@ -27,6 +11,65 @@ import type { ListTransactionsQueryDto } from './dto/transaction-query.dto';
 
 /** The stored row, as every read here returns it. */
 type TransactionRow = typeof transactions.$inferSelect;
+
+/**
+ * What a movement IS, when the list holds more than one kind of them.
+ *
+ * `payment` is a row in `transactions` — a deposit or a withdrawal. `transfer`
+ * is a row in `transfers`, wallet ⇄ trading account. They share one list because
+ * they are one history to the person reading it, and they are separate tables
+ * because a transfer has two legs and a bridge confirmation that a payment does
+ * not.
+ *
+ * A renderer branches on THIS, never on the absence of a payment field: a
+ * transfer has no method, no provider and no destination — but "the method is
+ * null" is also true of a manual admin credit.
+ */
+export type MovementKind = 'payment' | 'transfer';
+
+/**
+ * One row of a client's money history, from either table.
+ *
+ * Every payment field is null on a transfer; the two fields at the bottom are
+ * what tell the two apart.
+ */
+export type TransactionListRow = TransactionRow & {
+  /** Resolved server-side so a client and an operator read the same words. */
+  methodName: string | null;
+  kind: MovementKind;
+  /** The trading account a TRANSFER moved money to or from. Null on a payment. */
+  tradingAccountId: string | null;
+};
+
+/** The union's own column names, before they are mapped to the DTO's. */
+interface CombinedRow {
+  id: string;
+  user_id: string;
+  wallet_id: string;
+  direction: TransactionRow['direction'];
+  amount: string;
+  currency: string;
+  state: TransactionRow['state'];
+  method_key: string | null;
+  withdrawal_method_key: string | null;
+  provider: string;
+  provider_ref: string | null;
+  destination: string | null;
+  destination_trading_account_id: string | null;
+  rejection_reason: string | null;
+  reviewed_by: string | null;
+  reviewed_at: Date | null;
+  settled_at: Date | null;
+  rival_external_id: string | null;
+  rival_withdrawal_id: string | null;
+  rival_submitted_at: Date | null;
+  rival_needs_attention: boolean;
+  rival_attention_reason: string | null;
+  created_at: Date;
+  method_name: string | null;
+  kind: MovementKind;
+  trading_account_id: string | null;
+}
 
 /**
  * `transactions.provider` for money an ADMIN placed by hand.
@@ -871,139 +914,245 @@ export class TransactionsService {
   async listForUser(
     userId: string,
     query: ListTransactionsQueryDto = {},
-  ): Promise<{ items: TransactionRow[]; total: number; page: number; limit: number }> {
+  ): Promise<{ items: TransactionListRow[]; total: number; page: number; limit: number }> {
     const page = query.page ?? 1;
     const limit = query.limit ?? 25;
 
     /*
-     * The predicate, built once and used TWICE — for the page and for the
-     * count.
+     * ── TRANSFERS ARE IN THIS LIST, AND THEY LIVE IN ANOTHER TABLE ───────────
+     *
+     * A client's money history is deposits, withdrawals AND wallet ⇄ account
+     * transfers. The first two are rows in `transactions`; the third is a row in
+     * `transfers`, because a transfer has two legs and a bridge confirmation
+     * that a payment does not. Two tables, one history.
+     *
+     * They are unioned HERE, in SQL, rather than merged by the caller — and that
+     * is not a preference. This endpoint pages, sorts, filters and COUNTS. A
+     * client-side merge of two paged lists gives a page whose rows come from one
+     * table and a total that describes the other, which is exactly the
+     * "showing 4 of 100" failure this method's own history records. The union is
+     * the only place where one predicate can govern both.
+     *
+     * ── The mapping, and why each choice is the honest one ──────────────────
+     *
+     * `direction` is stated FROM THE WALLET'S SIDE, because that is what every
+     * other row in this list describes: `account_to_wallet` brings money in, so
+     * it reads as a deposit; `wallet_to_account` takes it out, so it reads as a
+     * withdrawal. A screen must not print those words for a transfer — `kind`
+     * exists for that — but the DIRECTION is the same fact, and inventing a
+     * third enum value would break both frontends' exhaustive switches over a
+     * Postgres enum this row is not stored in.
+     *
+     * `state` is mapped rather than passed through: a transfer is
+     * pending/settled/failed and a transaction is pending/…/success/failure, and
+     * a list that mixes two vocabularies makes "settled" and "success" look like
+     * different outcomes. Mapped once, here, where both sets are visible.
+     *
+     * `kind` is what a renderer branches on. It is the one new field, and it is
+     * NOT nullable: every row says what it is.
+     */
+    const selection = sql`
+      WITH combined AS (
+        SELECT
+          t.id,
+          t.user_id,
+          t.wallet_id,
+          t.direction::text                       AS direction,
+          t.amount,
+          t.currency,
+          t.state::text                           AS state,
+          t.method_key,
+          t.withdrawal_method_key,
+          t.provider,
+          t.provider_ref,
+          t.destination,
+          t.destination_trading_account_id,
+          t.rejection_reason,
+          t.reviewed_by,
+          t.reviewed_at,
+          t.settled_at,
+          t.rival_external_id,
+          t.rival_withdrawal_id,
+          t.rival_submitted_at,
+          t.rival_needs_attention,
+          t.rival_attention_reason,
+          t.created_at,
+          /*
+           * ONE name for both rails. A deposit names its method through
+           * method_key, a withdrawal through withdrawal_method_key into a
+           * DIFFERENT table — one row can never match both, so the coalesce is
+           * unambiguous rather than a guess about precedence.
+           */
+          COALESCE(pm.name, wpm.name)             AS method_name,
+          'payment'::text                         AS kind,
+          NULL::uuid                              AS trading_account_id
+        FROM transactions t
+        LEFT JOIN payment_methods pm ON pm.key = t.method_key
+        LEFT JOIN withdrawal_payment_methods wpm ON wpm.key = t.withdrawal_method_key
+        WHERE t.user_id = ${userId}
+
+        UNION ALL
+
+        SELECT
+          tr.id,
+          tr.user_id,
+          tr.wallet_id,
+          CASE WHEN tr.direction = 'account_to_wallet' THEN 'deposit' ELSE 'withdrawal' END,
+          tr.amount,
+          tr.currency,
+          CASE tr.state
+            WHEN 'settled' THEN 'success'
+            WHEN 'failed'  THEN 'failure'
+            ELSE 'pending'
+          END,
+          NULL::varchar,                          -- method_key
+          NULL::varchar,                          -- withdrawal_method_key
+          /*
+           * NAMED, not null: transactions.provider is NOT NULL, and a transfer
+           * did move through something — the wallet-to-account rail. The DTO
+           * documents provider as an OPEN set that no screen may switch on
+           * exhaustively, so adding a value is in contract; inventing a null
+           * would not be, and would break the column type.
+           */
+          'transfer'::varchar,                    -- provider
+          NULL::varchar,                          -- provider_ref
+          NULL::text,                             -- destination
+          NULL::uuid,                             -- destination_trading_account_id
+          /*
+           * The transfer's failure reason lands in rejection_reason: both
+           * answer "why did this not happen", and giving them one column means a
+           * screen showing the reason shows it for every kind of movement.
+           */
+          tr.failure_reason,
+          NULL::uuid,                             -- reviewed_by
+          NULL::timestamptz,                      -- reviewed_at
+          tr.settled_at,
+          NULL::varchar,                          -- rival_external_id
+          NULL::varchar,                          -- rival_withdrawal_id
+          NULL::timestamptz,                      -- rival_submitted_at
+          FALSE,                                  -- rival_needs_attention
+          NULL::text,                             -- rival_attention_reason
+          tr.created_at,
+          NULL::varchar                           AS method_name,
+          'transfer'::text                        AS kind,
+          tr.trading_account_id
+        FROM transfers tr
+        WHERE tr.user_id = ${userId}
+      )
+      SELECT * FROM combined
+    `;
+
+    /*
+     * The predicate, built once and applied to BOTH the page and the count.
      *
      * Sharing it is the point: two separately-assembled WHERE clauses are two
      * things that can drift, and the failure is a total that disagrees with the
      * rows beside it. "Showing 25 of 312" where 312 counted something else is a
      * number a client cannot act on and cannot tell is wrong.
+     *
+     * It reads from combined, so a filter covers transfers and payments alike
+     * — a client narrowing to "pending" sees every pending movement, not the
+     * pending half of one table.
      */
-    const where = and(
-      eq(transactions.userId, userId),
-      ...(query.direction ? [eq(transactions.direction, query.direction)] : []),
-      ...(query.state ? [eq(transactions.state, query.state)] : []),
-      ...(query.currency ? [eq(transactions.currency, query.currency)] : []),
+    const filters = [
+      ...(query.direction ? [sql`direction = ${query.direction}`] : []),
+      ...(query.state ? [sql`state = ${query.state}`] : []),
+      ...(query.currency ? [sql`currency = ${query.currency}`] : []),
       /*
        * INCLUSIVE at both ends, compared by DATE PART.
        *
-       * `created_at::date >= from` rather than `created_at >= from`, and `<=`
-       * rather than `< to`. Comparing a timestamp against the end date parsed as
-       * midnight excludes almost the whole final day — the "my newest
-       * transaction vanished when I set an end date" bug the portal's
-       * `date-range.ts` exists to prevent. Casting both sides to `date` means
-       * there is no end-of-day arithmetic to get wrong.
-       *
-       * The cast resolves in the database's session timezone, so a client in a
-       * distant zone can see a movement land on the neighbouring day. That is a
-       * known limit of comparing dates without a per-client timezone, and it is
-       * the same one the previous client-side filter had in the other
-       * direction.
+       * `created_at::date >= from` rather than `created_at >= from`. Comparing a
+       * timestamp against the end date parsed as midnight excludes almost the
+       * whole final day — the "my newest transaction vanished when I set an end
+       * date" bug the portal's date-range.ts exists to prevent.
        */
-      ...(query.from ? [sql`${transactions.createdAt}::date >= ${query.from}::date`] : []),
-      ...(query.to ? [sql`${transactions.createdAt}::date <= ${query.to}::date`] : []),
-    );
+      ...(query.from ? [sql`created_at::date >= ${query.from}::date`] : []),
+      ...(query.to ? [sql`created_at::date <= ${query.to}::date`] : []),
+    ];
+
+    const where = filters.length ? sql` WHERE ${sql.join(filters, sql` AND `)}` : sql``;
 
     /*
      * The sort column, resolved through a MAP rather than by interpolation.
      *
      * The DTO's `@IsIn` already closes the set, but this is what makes the
      * closure structural: there is no path from a request string to a SQL
-     * identifier, only a lookup that either finds a column object or falls back
-     * to `created_at`. Defence in depth on the one value here that reaches an
-     * ORDER BY.
+     * identifier, only a lookup that either finds a known fragment or falls back
+     * to created_at. That matters more here than it did before — this
+     * statement is assembled as SQL text rather than by the query builder.
      */
     const sortable = {
-      createdAt: transactions.createdAt,
-      amount: transactions.amount,
-      direction: transactions.direction,
-      currency: transactions.currency,
-      state: transactions.state,
+      createdAt: sql`created_at`,
+      amount: sql`amount`,
+      direction: sql`direction`,
+      currency: sql`currency`,
+      state: sql`state`,
     } as const;
-    const column = sortable[query.sort ?? 'createdAt'] ?? transactions.createdAt;
-    const direction = query.order === 'asc' ? asc : desc;
+    const column = sortable[query.sort ?? 'createdAt'] ?? sortable.createdAt;
+    const order = query.order === 'asc' ? sql`ASC` : sql`DESC`;
 
-    const [rows, [counted]] = await Promise.all([
-      this.db
-        .select({
-          tx: transactions,
-          methodName: paymentMethodsTable.name,
-          withdrawalMethodName: withdrawalPaymentMethods.name,
-        })
-        .from(transactions)
-        /*
-         * LEFT join, and it has to be left: `method_key` is null for every
-         * withdrawal and for a manual admin credit, and an inner join would drop
-         * exactly those rows from a client's own history.
-         *
-         * Joined rather than resolved per row in the caller, because a page of
-         * 100 transactions is otherwise 100 extra queries — and because the name
-         * has to be filterable and sortable from the same statement if it ever
-         * becomes either.
-         */
-        .leftJoin(paymentMethodsTable, eq(paymentMethodsTable.key, transactions.methodKey))
-        /*
-         * ⚠️ THE SECOND JOIN, and its absence was a live bug.
-         *
-         * Deposits name their rail through `method_key` → `payment_methods`.
-         * Withdrawals name theirs through `withdrawal_method_key` →
-         * `withdrawal_payment_methods` (migration 0062), a different column into
-         * a different table — so a client's own transaction list resolved every
-         * withdrawal's method to NULL and rendered it as an empty cell. The
-         * money was right, the state was right, and the row simply would not say
-         * how it had been paid out.
-         *
-         * One row can never match both: `method_key` is null on a withdrawal and
-         * `withdrawal_method_key` is null on a deposit, which is why coalescing
-         * them below is unambiguous rather than a guess about precedence.
-         */
-        .leftJoin(
-          withdrawalPaymentMethods,
-          eq(withdrawalPaymentMethods.key, transactions.withdrawalMethodKey),
-        )
-        .where(where)
-        /*
-         * A TIE-BREAKER on `id`, and it is not cosmetic.
-         *
-         * Ordering by `state` or `currency` puts many rows on the same value,
-         * and Postgres gives no guarantee about their relative order between
-         * queries. Without a stable second key, paging through such a sort can
-         * show one row twice and skip another entirely — a client's own money
-         * history silently missing a row. `id` is unique, so it makes the total
-         * order deterministic.
-         */
-        .orderBy(direction(column), desc(transactions.id))
-        .limit(limit)
-        .offset((page - 1) * limit),
-      this.db.select({ value: count() }).from(transactions).where(where),
+    /*
+     * The ORDER BY carries a TIE-BREAKER on id, and it is not cosmetic.
+     *
+     * Sorting by state or currency puts many rows on the same value, and
+     * Postgres gives no guarantee about their relative order between queries —
+     * so paging such a sort can show one row twice and skip another entirely.
+     * The id is unique, which makes the total order deterministic.
+     *
+     * It matters more here than it did before: the rows come from two tables, so
+     * even a sort by created_at can land a transfer and a payment on the same
+     * instant.
+     */
+    const [rows, counted] = await Promise.all([
+      this.db.execute(sql`
+        ${selection}
+        ${where}
+        ORDER BY ${column} ${order}, id DESC
+        LIMIT ${limit} OFFSET ${(page - 1) * limit}
+      `),
+      this.db.execute(sql`
+        WITH counted AS (${selection}${where})
+        SELECT COUNT(*)::int AS value FROM counted
+      `),
     ]);
 
+    /*
+     * Raw SQL returns the database's own column names, so the mapping to the
+     * shape both frontends read happens here rather than being handed to them
+     * by the query builder. Every field is named explicitly: a `SELECT *` spread
+     * would quietly start shipping any column added to `transactions` later,
+     * including ones a client should not see.
+     */
     return {
-      /*
-       * `methodName` is flattened onto the row rather than nested, so the shape
-       * a frontend reads is the transaction it already knows plus one field.
-       *
-       * ONE field for both rails: the client is asking "how did this money
-       * move", and that is the same question whether it came in through a
-       * payment method or went out through a payout method. Exposing two
-       * nullable fields would make every consumer write the same coalesce, and
-       * the transactions screen would eventually get it wrong for one direction.
-       *
-       * Still null for a manual admin credit, which went through no method at
-       * all — `provider` reads `manual_admin` there and the portal branches on
-       * that one value by name.
-       */
-      items: rows.map(({ tx, methodName, withdrawalMethodName }) => ({
-        ...tx,
-        amount: money(tx.amount),
-        methodName: methodName ?? withdrawalMethodName ?? null,
+      items: (rows.rows as unknown as CombinedRow[]).map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        walletId: row.wallet_id,
+        direction: row.direction,
+        amount: money(row.amount),
+        currency: row.currency,
+        state: row.state,
+        methodKey: row.method_key,
+        withdrawalMethodKey: row.withdrawal_method_key,
+        provider: row.provider,
+        providerRef: row.provider_ref,
+        destination: row.destination,
+        destinationTradingAccountId: row.destination_trading_account_id,
+        rejectionReason: row.rejection_reason,
+        reviewedBy: row.reviewed_by,
+        reviewedAt: row.reviewed_at,
+        settledAt: row.settled_at,
+        rivalExternalId: row.rival_external_id,
+        rivalWithdrawalId: row.rival_withdrawal_id,
+        rivalSubmittedAt: row.rival_submitted_at,
+        rivalNeedsAttention: row.rival_needs_attention,
+        rivalAttentionReason: row.rival_attention_reason,
+        createdAt: row.created_at,
+        methodName: row.method_name,
+        kind: row.kind,
+        tradingAccountId: row.trading_account_id,
       })),
-      total: counted?.value ?? 0,
+      total: (counted.rows[0] as unknown as { value: number } | undefined)?.value ?? 0,
       page,
       limit,
     };

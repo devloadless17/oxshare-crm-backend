@@ -229,4 +229,41 @@ export class TransactionDto {
   @ApiPropertyOptional({ type: Date, nullable: true }) reviewedAt?: Date | null;
   @ApiPropertyOptional({ type: Date, nullable: true }) settledAt?: Date | null;
   @ApiProperty() createdAt: Date;
+
+  /**
+   * What KIND of movement this is — and the field a screen branches on.
+   *
+   * A client's history holds deposits, withdrawals AND wallet ⇄ trading-account
+   * transfers. The first two are rows in `transactions`; a transfer is a row in
+   * `transfers`, because it has two legs and a bridge confirmation that a
+   * payment does not. The list endpoint unions them, because they are one
+   * history to the person reading it.
+   *
+   * ## Do not infer this from the other fields
+   *
+   * A transfer has no method and no destination — but neither does a manual
+   * admin credit, so "methodKey is null" does not identify one. This field does.
+   *
+   * ## `direction` on a transfer is stated from the WALLET's side
+   *
+   * `account_to_wallet` brings money into the wallet and therefore reads as
+   * `deposit`; `wallet_to_account` reads as `withdrawal`. That keeps one meaning
+   * for the word across every row in the list. A screen must still not PRINT
+   * "Deposit" for a transfer — that is what this field is for.
+   */
+  @ApiProperty({
+    enum: ['payment', 'transfer'],
+    description: 'Branch on this, never on the absence of a payment field.',
+  })
+  kind: 'payment' | 'transfer';
+
+  /**
+   * The trading account a TRANSFER moved money to or from. Null on a payment.
+   *
+   * Distinct from `destinationTradingAccountId`, which is a DEPOSIT routed
+   * straight to an account. Both can appear on different rows of one list, and
+   * they answer different questions.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true })
+  tradingAccountId?: string | null;
 }
