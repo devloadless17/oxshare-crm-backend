@@ -265,6 +265,62 @@ describe('verification through the real chain', () => {
   });
 });
 
+describe("Rival's webhook field spelling: adminNote (singular) carries the reason", () => {
+  /*
+   * Found live: Rival's WEBHOOK payload names the operator note `adminNote`
+   * while its REST API returns `adminNotes` for the same field. The CRM read
+   * only the plural, so every platform rejection refunded with the generic
+   * default instead of the operator's words. Both spellings are accepted now;
+   * this pins the one the webhook actually sends.
+   */
+  const USER_ID = '00000000-0000-4000-8000-00000000c1e2';
+
+  it('a rejected event with adminNote lands its exact words as the rejection reason', async () => {
+    await configureRival();
+    await ctx.db.db.insert(users).values({
+      id: USER_ID,
+      email: 'rival-adminnote-client@spec.test',
+      passwordHash: 'x',
+      firstName: 'Note',
+      lastName: 'Case',
+      emailVerified: true,
+    });
+    const [wallet] = await ctx.db.db
+      .insert(wallets)
+      .values({ userId: USER_ID, currency: 'USD', balance: '0.00000000' })
+      .returning();
+    const [tx] = await ctx.db.db
+      .insert(transactions)
+      .values({
+        userId: USER_ID,
+        walletId: wallet.id,
+        direction: 'withdrawal',
+        amount: '25.00000000',
+        currency: 'USD',
+        state: 'approved',
+        methodKey: 'whish',
+        provider: 'whish',
+        destination: '+961 3 123 456',
+        rivalWithdrawalId: 'rw-adminnote-1',
+        rivalSubmittedAt: new Date(),
+      })
+      .returning();
+
+    const res = await signedPost(
+      JSON.stringify({
+        event: 'withdrawal.rejected',
+        reference: 'withdrawal:rw-adminnote-1',
+        withdrawal: { id: 'rw-adminnote-1', adminNote: 'Recipient account frozen at Whish' },
+      }),
+    );
+    expect(res.status).toBe(200);
+
+    const [after] = await ctx.db.db.select().from(transactions).where(eq(transactions.id, tx.id));
+    expect(after.state).toBe('failure');
+    expect(after.rejectionReason).toBe('Recipient account frozen at Whish');
+  });
+});
+
 describe('the crown jewel: a signed completed event credits the wallet, exactly once', () => {
   const USER_ID = '00000000-0000-4000-8000-00000000c1e1';
   const EXTERNAL_ID = '777001';

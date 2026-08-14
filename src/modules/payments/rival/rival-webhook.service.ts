@@ -50,7 +50,17 @@ const MAX_BODY_BYTES = 64 * 1024;
 interface RivalEventBody {
   event: string;
   reference: string;
-  withdrawal?: { externalReference?: string | null; adminNotes?: string | null } | null;
+  withdrawal?: {
+    externalReference?: string | null;
+    /*
+     * Rival's WEBHOOK payload names this `adminNote` (singular) while its REST
+     * API returns `adminNotes` (plural) for the same field. Both are accepted,
+     * because the mismatch was found live: the operator's rejection note was
+     * silently dropped and every refund carried the generic default reason.
+     */
+    adminNote?: string | null;
+    adminNotes?: string | null;
+  } | null;
 }
 
 @Injectable()
@@ -207,7 +217,7 @@ export class RivalWebhookService {
 
     const outcome = await this.withdrawals.applyEvent(rivalWithdrawalId, kind, {
       externalReference: body.withdrawal?.externalReference ?? null,
-      adminNotes: body.withdrawal?.adminNotes ?? null,
+      adminNotes: body.withdrawal?.adminNote ?? body.withdrawal?.adminNotes ?? null,
     });
     /*
      * Every outcome answers 200, including 'not-ours': unlike a deposit's
