@@ -689,6 +689,14 @@ export class WithdrawalRowDto {
     description: 'A human must reconcile this row against the payment platform.',
   })
   rivalNeedsAttention: boolean;
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    description:
+      'WHY the row needs attention, in words the operator can act on. Written whenever ' +
+      'rivalNeedsAttention flips true; null once a retry lands or the flag was never raised.',
+  })
+  rivalAttentionReason?: string | null;
   @ApiProperty({ type: WithdrawalUserDto }) user: WithdrawalUserDto;
 }
 

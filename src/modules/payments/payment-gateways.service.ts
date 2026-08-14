@@ -100,8 +100,9 @@ export class PaymentGateways {
       currency: string;
       invoice: string;
       idempotencyKey: string;
-      successRedirectUrl: string;
-      failureRedirectUrl: string;
+      /** Optional: omitted when the portal address is not payer-reachable. */
+      successRedirectUrl?: string;
+      failureRedirectUrl?: string;
     },
   ): Promise<{ paymentUrl: string; rivalExternalId: string }> {
     switch (key) {

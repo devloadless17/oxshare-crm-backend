@@ -175,6 +175,13 @@ const PUBLIC_ROUTES: Record<string, string> = {
     'verified before parsing). Response codes are shaped to its retry policy; settlement ' +
     'still re-reads Rival’s stored state.',
 
+  'GET /payments/deposits/:reference/return/:outcome':
+    'The payer’s browser lands here from the provider’s payment page, carrying no session ' +
+    'for this origin. It reads no row, changes no state and discloses nothing: it 302s to ' +
+    'the portal result page built from OUR config, with every interpolated value ' +
+    'allowlist-validated (no open redirect). Settlement stays with the signed webhook, the ' +
+    'poller and the portal’s authenticated status endpoint.',
+
   /*
    * Payment-method brand marks. Open because the deposit screen renders them,
    * and part of that screen is reachable before a session is fully established.

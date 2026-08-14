@@ -1882,6 +1882,15 @@ export const transactions = pgTable(
     rivalWithdrawalId: varchar('rival_withdrawal_id', { length: 64 }),
     rivalSubmittedAt: timestamp('rival_submitted_at', { withTimezone: true }),
     rivalNeedsAttention: boolean('rival_needs_attention').notNull().default(false),
+    /*
+     * WHY the row needs a human, in words — written whenever
+     * `rival_needs_attention` flips true, cleared when a retry succeeds. The
+     * flag alone put an operator in front of a row saying "needs attention"
+     * with the reason living only in a log line they cannot see; on a payout
+     * queue that reads as "the system is broken", not "the platform refused
+     * this submission because X".
+     */
+    rivalAttentionReason: text('rival_attention_reason'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

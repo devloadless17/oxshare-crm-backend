@@ -257,6 +257,45 @@ describe('the poller repairs an unconfirmed create', () => {
     expect(rows[0].rival_external_id).toBe(externalId);
   });
 
+  it('redirects point at the API return bounce when API_PUBLIC_URL is public, else are omitted', async () => {
+    const { txId, reference, externalId } = await makePendingDeposit();
+    await ctx.db.execute(sql`UPDATE transactions SET rival_external_id = NULL WHERE id = ${txId}`);
+
+    // No public API address (and no reachable portal): the pair is OMITTED —
+    // sending a localhost URL would fail the create at Rival (D-68).
+    gateway.startPayment.mockResolvedValueOnce({
+      paymentUrl: 'https://pay.example.test/x',
+      rivalExternalId: externalId,
+    });
+    expect(await transactions.recoverRivalExternalId(txId)).toBe(true);
+    let input = gateway.startPayment.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(input.successRedirectUrl).toBeUndefined();
+    expect(input.failureRedirectUrl).toBeUndefined();
+
+    // With a public API address the provider gets the RETURN BOUNCE — the
+    // portal's own (possibly localhost) address never reaches the provider.
+    process.env.API_PUBLIC_URL = 'https://api.oxshare.example';
+    try {
+      await ctx.db.execute(
+        sql`UPDATE transactions SET rival_external_id = NULL WHERE id = ${txId}`,
+      );
+      gateway.startPayment.mockResolvedValueOnce({
+        paymentUrl: 'https://pay.example.test/x',
+        rivalExternalId: externalId,
+      });
+      expect(await transactions.recoverRivalExternalId(txId)).toBe(true);
+      input = gateway.startPayment.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      expect(input.successRedirectUrl).toBe(
+        `https://api.oxshare.example/v1/payments/deposits/${reference}/return/success?method=whish`,
+      );
+      expect(input.failureRedirectUrl).toBe(
+        `https://api.oxshare.example/v1/payments/deposits/${reference}/return/failure?method=whish`,
+      );
+    } finally {
+      delete process.env.API_PUBLIC_URL;
+    }
+  });
+
   it('refuses to touch a row that is settled, addressed, or not a gateway deposit', async () => {
     const { txId, externalId } = await makePendingDeposit();
     // Already addressed: nothing to recover.

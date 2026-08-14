@@ -51,6 +51,7 @@ import type { SortOrder } from '../../common/sorting';
 import { MoneyLimits } from '../../config/money-limits';
 import { PaymentMethodsService } from './payment-methods.service';
 import { wishDestinationIssue } from './rival/wish-phone';
+import { isPayerReachableUrl } from './rival/payer-reachable-url';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { DRIZZLE_DB } from '../../database/database.module';
@@ -627,6 +628,7 @@ export class TransactionsService {
         rivalWithdrawalId: transactions.rivalWithdrawalId,
         rivalSubmittedAt: transactions.rivalSubmittedAt,
         rivalNeedsAttention: transactions.rivalNeedsAttention,
+        rivalAttentionReason: transactions.rivalAttentionReason,
         userId: transactions.userId,
         userEmail: users.email,
         userFirstName: users.firstName,
@@ -753,6 +755,7 @@ export class TransactionsService {
       rivalWithdrawalId: r.rivalWithdrawalId,
       rivalSubmittedAt: r.rivalSubmittedAt,
       rivalNeedsAttention: r.rivalNeedsAttention,
+      rivalAttentionReason: r.rivalAttentionReason,
       user: {
         id: r.userId,
         email: r.userEmail,
@@ -1472,8 +1475,8 @@ export class TransactionsService {
            * webhook and the poll backstop, never through an anonymous GET.
            */
           idempotencyKey: reference,
-          successRedirectUrl: this.redirectUrl(paymentMethod.key, reference, 'success'),
-          failureRedirectUrl: this.redirectUrl(paymentMethod.key, reference, 'failure'),
+          successRedirectUrl: this.payerRedirectUrl(paymentMethod.key, reference, 'success'),
+          failureRedirectUrl: this.payerRedirectUrl(paymentMethod.key, reference, 'failure'),
         });
         paymentUrl = started.paymentUrl;
         /*
@@ -1610,6 +1613,40 @@ export class TransactionsService {
       `${base}/deposit/${outcome}` +
       `?reference=${encodeURIComponent(reference)}&method=${encodeURIComponent(method)}`
     );
+  }
+
+  /**
+   * The redirect URL the PROVIDER gets — the API's return bounce when the API
+   * has a public address, the portal directly as a fallback, or nothing.
+   *
+   * Preference order, and why (tech lead's direction):
+   *
+   *  1. `API_PUBLIC_URL` + the `PaymentsReturnController` bounce. The provider
+   *     only ever sees the API origin — which is public anyway, for webhooks —
+   *     and the API 302s the payer on to wherever `PORTAL_URL` points, even a
+   *     localhost portal in dev (the payer's browser IS the dev machine).
+   *  2. The portal directly, when no `API_PUBLIC_URL` is set but the portal
+   *     address is itself payer-reachable.
+   *  3. Omitted. Rival refuses localhost/loopback redirect URLs at create time
+   *     (its rule is measured against live Whish, which 403s them), so sending
+   *     one would fail EVERY deposit. Omitted, Rival serves its own platform
+   *     result pages; settlement never depended on the redirect (webhook +
+   *     poll own it).
+   */
+  private payerRedirectUrl(
+    method: string,
+    reference: string,
+    outcome: 'success' | 'failure',
+  ): string | undefined {
+    const apiBase = (this.config.get<string>('API_PUBLIC_URL') ?? '').replace(/\/+$/, '');
+    if (apiBase) {
+      const bounce =
+        `${apiBase}/v1/payments/deposits/${encodeURIComponent(reference)}` +
+        `/return/${outcome}?method=${encodeURIComponent(method)}`;
+      if (isPayerReachableUrl(bounce)) return bounce;
+    }
+    const direct = this.redirectUrl(method, reference, outcome);
+    return isPayerReachableUrl(direct) ? direct : undefined;
   }
 
   /**
@@ -1786,8 +1823,8 @@ export class TransactionsService {
         currency: tx.currency,
         invoice: `Deposit ${tx.providerRef}`,
         idempotencyKey: tx.providerRef,
-        successRedirectUrl: this.redirectUrl(tx.provider, tx.providerRef, 'success'),
-        failureRedirectUrl: this.redirectUrl(tx.provider, tx.providerRef, 'failure'),
+        successRedirectUrl: this.payerRedirectUrl(tx.provider, tx.providerRef, 'success'),
+        failureRedirectUrl: this.payerRedirectUrl(tx.provider, tx.providerRef, 'failure'),
       });
       await this.db
         .update(transactions)
@@ -1856,7 +1893,13 @@ export class TransactionsService {
     if (event === 'reversed') {
       await this.db
         .update(transactions)
-        .set({ rivalNeedsAttention: true })
+        .set({
+          rivalNeedsAttention: true,
+          rivalAttentionReason:
+            'The platform REVERSED this deposit after it settled. The client wallet has not ' +
+            'been debited — a compensating entry is a human decision (§6.4). Reconcile ' +
+            "against the platform's dashboard.",
+        })
         .where(eq(transactions.id, tx.id));
       raiseAlert(
         this.logger,
@@ -1884,7 +1927,13 @@ export class TransactionsService {
        */
       await this.db
         .update(transactions)
-        .set({ rivalNeedsAttention: true })
+        .set({
+          rivalNeedsAttention: true,
+          rivalAttentionReason:
+            'The platform reports this deposit PAID, but this side had already recorded it ' +
+            'as failed. The money is at the platform and no wallet was credited — ' +
+            'reconcile by hand.',
+        })
         .where(eq(transactions.id, tx.id));
       raiseAlert(
         this.logger,

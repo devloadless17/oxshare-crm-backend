@@ -14296,6 +14296,11 @@
             "type": "boolean",
             "description": "A human must reconcile this row against the payment platform."
           },
+          "rivalAttentionReason": {
+            "type": "string",
+            "nullable": true,
+            "description": "WHY the row needs attention, in words the operator can act on. Written whenever rivalNeedsAttention flips true; null once a retry lands or the flag was never raised."
+          },
           "user": {
             "$ref": "#/components/schemas/WithdrawalUserDto"
           }

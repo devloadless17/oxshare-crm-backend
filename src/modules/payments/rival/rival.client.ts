@@ -131,8 +131,15 @@ export class RivalClient {
     currency: string;
     invoice: string;
     idempotencyKey: string;
-    successRedirectUrl: string;
-    failureRedirectUrl: string;
+    /**
+     * OPTIONAL, matching Rival's schema — and Rival REFUSES a localhost or
+     * loopback value here (its rule is measured against live Whish, which
+     * 403s such redirects). Callers omit these when the portal address is not
+     * payer-reachable (`payer-reachable-url.ts`); Rival then serves its own
+     * platform result pages, and settlement never depended on the redirect.
+     */
+    successRedirectUrl?: string;
+    failureRedirectUrl?: string;
   }): Promise<RivalPayment> {
     return this.request<RivalPayment>('POST', '/integrations/whish/payments', {
       body: {
@@ -140,8 +147,8 @@ export class RivalClient {
         currency: input.currency,
         invoice: input.invoice,
         idempotencyKey: input.idempotencyKey,
-        successRedirectUrl: input.successRedirectUrl,
-        failureRedirectUrl: input.failureRedirectUrl,
+        ...(input.successRedirectUrl ? { successRedirectUrl: input.successRedirectUrl } : {}),
+        ...(input.failureRedirectUrl ? { failureRedirectUrl: input.failureRedirectUrl } : {}),
       },
       // A create that timed out may still have minted a payment; the
       // idempotencyKey makes a later replay converge, but THIS call cannot
