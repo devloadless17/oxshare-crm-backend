@@ -100,6 +100,33 @@ export class RivalWithdrawalsService {
     return await this.config.isEnabled();
   }
 
+  /**
+   * Will the automated rail actually pay THIS withdrawal out?
+   *
+   * ## Why this exists, and why it must stay next to the claim below
+   *
+   * It is what decides the withdrawal's lifecycle at approval time
+   * (`admin-money.service.ts`): a payout this rail will make is approved into
+   * `approved` and settled later by the inbound event, while anything the rail
+   * will not touch is approved straight to `success`, because a human has already
+   * sent the money and there is no second actor to wait for.
+   *
+   * **The conditions must match `submitApprovedInner`'s claim exactly.** If this
+   * says yes and the claim then finds nothing, the row sits in `approved` with the
+   * client already debited and nobody paying — the single worst state this module
+   * can produce. They are deliberately adjacent so the two lists are read together;
+   * the claim remains the real guarantee, because only it is atomic.
+   *
+   * `rivalSubmittedAt` is not checked here: at approval time it is null by
+   * construction (a pending row has never been submitted), and re-reading it would
+   * imply this is safe to use as a general-purpose predicate, which it is not.
+   */
+  async willPayOut(tx: { direction: string; provider: string }): Promise<boolean> {
+    if (tx.direction !== 'withdrawal') return false;
+    if (tx.provider !== 'whish') return false;
+    return await this.config.isEnabled();
+  }
+
   /* ── submit on approval ─────────────────────────────────────────────────── */
 
   /**

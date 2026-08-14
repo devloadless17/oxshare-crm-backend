@@ -167,6 +167,21 @@ export type WithdrawalSortKey = keyof typeof WITHDRAWAL_SORT_COLUMNS;
 /** Newest first — what the queue showed before it was sortable. */
 export const DEFAULT_WITHDRAWAL_SORT: WithdrawalSortKey = 'createdAt';
 
+/**
+ * Which withdrawal lifecycle an approval follows — see `approve()`.
+ *
+ * Not a boolean parameter, and not defaulted. Both lifecycles are correct for
+ * their own rail and dangerous for the other, so the caller has to have thought
+ * about it: a default would silently pick one the day a new payout rail is added.
+ */
+export interface ApproveWithdrawalOptions {
+  /**
+   * True when a payout rail will send the money and its event will settle the row.
+   * False when a human is sending it, so approval records a completed payout.
+   */
+  awaitsProviderPayout: boolean;
+}
+
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
@@ -1018,36 +1033,51 @@ export class TransactionsService {
   }
 
   /**
-   * Approve a withdrawal AND record it as paid, in one step.
+   * Approve a withdrawal. Whether that also PAYS it depends on who pays.
    *
-   * ## Why approval and settlement are now one action
+   * ## Two lifecycles, and the rule that picks between them
    *
-   * They used to be two: `approved` authorised the payout and `settle` recorded
-   * that the provider had sent it, gated on a second permission so that "two
-   * people must be involved in a payout" could be expressed. That separation
-   * described a flow this platform does not run — there is no automated payout
-   * rail, so nothing happened between the two steps except an operator clicking
-   * again. What it produced in practice was a queue full of `approved`
-   * withdrawals that were already paid in the real world and never marked, and
-   * two states a desk had to reconcile by memory.
+   * - **A desk payout is one step.** `pending → success`. An operator approving a
+   *   withdrawal they are about to send by hand has already done the only other
+   *   thing that was ever going to happen, so a separate `settle` click was an
+   *   operator confirming to the system what the system had just told them to do.
+   *   What that produced in practice was a queue of `approved` rows already paid in
+   *   the real world and never marked, and two states a desk reconciled by memory.
    *
-   * So an approval now means the money has gone: state `success`, `settledAt`
-   * stamped. The `approved` state remains in the enum because rows already sit
-   * in it — `settle` below still closes those — but nothing enters it any more.
+   * - **A provider payout is two steps.** `pending → approved → success`. Here
+   *   something really does happen in between: the row is submitted to the payout
+   *   rail, and the provider's own event is what says the money left. Collapsing
+   *   these would mark a withdrawal PAID before anybody had been asked to pay it —
+   *   and since the client's balance is debited at request time, nothing would look
+   *   wrong until they asked where their money was.
+   *
+   * The caller states which, because the caller is what knows about payout rails;
+   * this service must not. `admin-money.service.ts` asks
+   * `RivalWithdrawalsService.willPayOut()`, whose conditions are pinned to the
+   * claim that does the submitting.
+   *
+   * ## Neither step moves money
+   *
+   * That is the point of debiting on request: the wallet changed when the client
+   * asked. Approval authorises, settlement records. `reject` and `markFailed` are
+   * the paths that give money back.
    *
    * ## The control that replaced the two-person rule
    *
    * The permission, not the step count. The controller gates this on
    * `withdrawals.settle` rather than `withdrawals.approve`: holding the weaker
-   * permission no longer lets anybody release funds, so who may move money out
-   * is still a deliberate grant. That is a real reduction in control and is
-   * recorded as such — segregation of duties is gone; authority over payout is
-   * not.
+   * permission does not let anybody release funds. Segregation of duties is gone;
+   * authority over payout is not, and that is recorded as a real reduction.
    *
    * Still the §8.7 conditional transition from `pending`, so a double-clicked
    * button cannot pay twice.
    */
-  async approve(id: string, adminId: string, withinTx?: WithinTransaction) {
+  async approve(
+    id: string,
+    adminId: string,
+    options: ApproveWithdrawalOptions,
+    withinTx?: WithinTransaction,
+  ) {
     // Wrapped in a transaction it did not previously need, so `withinTx` — the
     // admin audit row — commits with the state change or not at all (R-6.5).
     return this.db.transaction(async (dbTx) => {
@@ -1055,18 +1085,25 @@ export class TransactionsService {
       const row = await this.transition(
         id,
         'pending',
-        {
-          /*
-           * Straight to `success`. NO BALANCE CHANGE, and that is the point of
-           * debiting on request: the money left the wallet when the client
-           * asked, so this records the payout rather than performing it. The
-           * same reasoning `settle` documents — it is inherited, not dropped.
-           */
-          state: 'success',
-          reviewedBy: adminId,
-          reviewedAt: now,
-          settledAt: now,
-        },
+        options.awaitsProviderPayout
+          ? {
+              /*
+               * AUTHORISED, not paid. `settledAt` stays null because nothing has
+               * settled: the payout rail has not been asked yet. Leaving it null is
+               * what makes "approved but never submitted" visible to the
+               * reconciler rather than indistinguishable from a completed payout.
+               */
+              state: 'approved',
+              reviewedBy: adminId,
+              reviewedAt: now,
+            }
+          : {
+              /* Paid by hand. Approval records what the operator has done. */
+              state: 'success',
+              reviewedBy: adminId,
+              reviewedAt: now,
+              settledAt: now,
+            },
         dbTx,
       );
       if (!row) {

@@ -14,7 +14,7 @@ import { sortKey, sortOrder } from '../../common/sorting';
 import { WalletService } from '../wallet/wallet.service';
 import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
-import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
 import { decodeCursor } from '../../common/pagination';
@@ -331,62 +331,63 @@ export class AdminMoneyService {
     await this.assertWithdrawalVisible(id, actor.clientScope);
 
     /*
-     * ⚠️ ONE-STEP APPROVAL AND THE RIVAL PAYOUT RAIL ARE INCOMPATIBLE.
+     * WHICH LIFECYCLE this approval follows, decided once, here.
      *
-     * Approval now goes straight to `success`. The Rival submission below
-     * claims rows in state `approved` — a state this path no longer produces —
-     * so with Rival enabled the withdrawal would be marked PAID and never
-     * actually submitted for payout. The client's balance is already debited,
-     * so nothing would look wrong until they asked where their money was.
+     * A withdrawal the automated rail will pay is approved into `approved` and
+     * settled later by Rival's own event. Anything else — a desk payout, or any
+     * rail while Rival is switched off — goes straight to `success`, because the
+     * operator approving it is the one sending the money.
      *
-     * Refused LOUDLY rather than left to fail silently. Rival is off by
-     * default and off in this deployment, so this costs nothing today; the
-     * check exists because turning it on is a settings toggle, and the failure
-     * it would otherwise cause is invisible and expensive.
+     * The predicate lives beside the claim that does the submitting
+     * (`RivalWithdrawalsService.willPayOut`) precisely so the two cannot drift: if
+     * this said yes and the claim found nothing, the row would sit in `approved`
+     * with the client already debited and nobody paying it.
      *
-     * Resolving this properly is a product decision, not a code one: either the
-     * automated rail goes (approval is the payout) or the two steps come back
-     * for whish withdrawals (approval authorises, Rival pays, settlement
-     * confirms). Both are small changes; guessing between them is not.
+     * This replaces a hard refusal that stood here while the two flows were
+     * irreconcilable — approving with the rail enabled used to throw, because a
+     * one-step approval would have marked the withdrawal PAID without ever sending
+     * it for payout.
      */
-    if (await this.rivalWithdrawals.isAutomatedPayoutEnabled()) {
-      throw new MoneyRuleError(
-        'The automated payout rail is enabled, which the one-step approval flow does not ' +
-          'support: a withdrawal approved here would be recorded as paid without being sent ' +
-          'for payout. Disable the Rival payout integration, or restore the two-step ' +
-          'approve-then-settle flow, before approving withdrawals.',
-      );
-    }
+    const withdrawal = await this.transactions.getById(id);
+    const awaitsProviderPayout = await this.rivalWithdrawals.willPayOut(withdrawal);
 
-    const row = await this.transactions.approve(id, actor.id, async (tx, approved) => {
-      await this.audit.recordWithin(tx, actor.id, 'withdrawal.approve', 'transaction', id, {
-        amount: approved.amount,
-        currency: approved.currency,
-      });
-      // In the SAME transaction as the state change (the audit stance): the
-      // client is told "approved" only if it actually was.
-      await this.notifications.notify(
-        {
-          recipient: { kind: 'client', id: approved.userId },
-          /*
-           * `withdrawal.paid`, not `withdrawal.approved`.
-           *
-           * The row is `success` by the time this runs, so telling the client
-           * their withdrawal was "approved" would announce an intermediate
-           * state that no longer exists and leave them waiting for a second
-           * message that is never coming. Both kinds are in the portal's
-           * catalogue; historical rows keep the old one.
-           */
-          kind: 'withdrawal.paid',
-          params: {
-            transactionId: approved.id,
-            amount: approved.amount,
-            currency: approved.currency,
+    const row = await this.transactions.approve(
+      id,
+      actor.id,
+      { awaitsProviderPayout },
+      async (tx, approved) => {
+        await this.audit.recordWithin(tx, actor.id, 'withdrawal.approve', 'transaction', id, {
+          amount: approved.amount,
+          currency: approved.currency,
+          awaitsProviderPayout,
+        });
+        // In the SAME transaction as the state change (the audit stance): the
+        // client is told "approved" only if it actually was.
+        await this.notifications.notify(
+          {
+            recipient: { kind: 'client', id: approved.userId },
+            /*
+             * The message has to match the state the row is actually in.
+             *
+             * On the desk path the row is `success`, so "approved" would announce
+             * an intermediate state that does not exist and leave the client
+             * waiting for a second message that never comes. On the rail path the
+             * row really is only authorised, and telling them it was PAID before
+             * Rival has sent it is the more expensive of the two mistakes — the
+             * `withdrawal.paid` message follows from `settleBySystem` when the
+             * money genuinely leaves.
+             */
+            kind: awaitsProviderPayout ? 'withdrawal.approved' : 'withdrawal.paid',
+            params: {
+              transactionId: approved.id,
+              amount: approved.amount,
+              currency: approved.currency,
+            },
           },
-        },
-        tx,
-      );
-    });
+          tx,
+        );
+      },
+    );
     // FR-CORE-08 "email on success/failure" begins at approval: this is the
     // first decision the client can be told about.
     void this.emailWithdrawalDecision(row, 'approved');

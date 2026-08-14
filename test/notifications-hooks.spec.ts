@@ -152,20 +152,25 @@ describe('withdrawal decisions and their bell rows are one commit', () => {
     });
 
     // The same callback shape AdminMoneyService passes.
-    await transactions.approve(row.id, ADMIN_ID, async (tx, approved) => {
-      await dispatch.notify(
-        {
-          recipient: { kind: 'client', id: approved.userId },
-          kind: 'withdrawal.approved',
-          params: {
-            transactionId: approved.id,
-            amount: approved.amount,
-            currency: approved.currency,
+    await transactions.approve(
+      row.id,
+      ADMIN_ID,
+      { awaitsProviderPayout: false },
+      async (tx, approved) => {
+        await dispatch.notify(
+          {
+            recipient: { kind: 'client', id: approved.userId },
+            kind: 'withdrawal.approved',
+            params: {
+              transactionId: approved.id,
+              amount: approved.amount,
+              currency: approved.currency,
+            },
           },
-        },
-        tx,
-      );
-    });
+          tx,
+        );
+      },
+    );
 
     const bells = await rowsFor(userId, 'withdrawal.approved');
     expect(bells).toHaveLength(1);
@@ -183,17 +188,22 @@ describe('withdrawal decisions and their bell rows are one commit', () => {
     });
 
     await expect(
-      transactions.approve(row.id, ADMIN_ID, async (tx, approved) => {
-        await dispatch.notify(
-          {
-            recipient: { kind: 'client', id: approved.userId },
-            kind: 'withdrawal.approved',
-            params: {},
-          },
-          tx,
-        );
-        throw new Error('audit write failed after the notify');
-      }),
+      transactions.approve(
+        row.id,
+        ADMIN_ID,
+        { awaitsProviderPayout: false },
+        async (tx, approved) => {
+          await dispatch.notify(
+            {
+              recipient: { kind: 'client', id: approved.userId },
+              kind: 'withdrawal.approved',
+              params: {},
+            },
+            tx,
+          );
+          throw new Error('audit write failed after the notify');
+        },
+      ),
     ).rejects.toThrow('audit write failed');
 
     // The state change rolled back...
