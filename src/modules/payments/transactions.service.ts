@@ -51,6 +51,7 @@ import type { SortOrder } from '../../common/sorting';
 import { MoneyLimits } from '../../config/money-limits';
 import { PaymentMethodsService } from './payment-methods.service';
 import { wishDestinationIssue } from './rival/wish-phone';
+import { isPayerReachableUrl } from './rival/payer-reachable-url';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { DRIZZLE_DB } from '../../database/database.module';
@@ -1472,8 +1473,8 @@ export class TransactionsService {
            * webhook and the poll backstop, never through an anonymous GET.
            */
           idempotencyKey: reference,
-          successRedirectUrl: this.redirectUrl(paymentMethod.key, reference, 'success'),
-          failureRedirectUrl: this.redirectUrl(paymentMethod.key, reference, 'failure'),
+          successRedirectUrl: this.payerRedirectUrl(paymentMethod.key, reference, 'success'),
+          failureRedirectUrl: this.payerRedirectUrl(paymentMethod.key, reference, 'failure'),
         });
         paymentUrl = started.paymentUrl;
         /*
@@ -1610,6 +1611,25 @@ export class TransactionsService {
       `${base}/deposit/${outcome}` +
       `?reference=${encodeURIComponent(reference)}&method=${encodeURIComponent(method)}`
     );
+  }
+
+  /**
+   * `redirectUrl`, or undefined when a PAYER'S PHONE could not open it.
+   *
+   * Rival refuses localhost/loopback redirect URLs at create time (its rule is
+   * measured against live Whish, which 403s them), so sending them would fail
+   * EVERY deposit from a deployment whose PORTAL_URL is not public — local
+   * dev, a private staging box. Omitted, Rival serves its own platform result
+   * pages; the client still sees a real outcome, and settlement never
+   * depended on the redirect (webhook + poll own it).
+   */
+  private payerRedirectUrl(
+    method: string,
+    reference: string,
+    outcome: 'success' | 'failure',
+  ): string | undefined {
+    const url = this.redirectUrl(method, reference, outcome);
+    return isPayerReachableUrl(url) ? url : undefined;
   }
 
   /**
@@ -1786,8 +1806,8 @@ export class TransactionsService {
         currency: tx.currency,
         invoice: `Deposit ${tx.providerRef}`,
         idempotencyKey: tx.providerRef,
-        successRedirectUrl: this.redirectUrl(tx.provider, tx.providerRef, 'success'),
-        failureRedirectUrl: this.redirectUrl(tx.provider, tx.providerRef, 'failure'),
+        successRedirectUrl: this.payerRedirectUrl(tx.provider, tx.providerRef, 'success'),
+        failureRedirectUrl: this.payerRedirectUrl(tx.provider, tx.providerRef, 'failure'),
       });
       await this.db
         .update(transactions)
