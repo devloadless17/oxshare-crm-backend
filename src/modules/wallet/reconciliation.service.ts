@@ -19,10 +19,49 @@ export interface WalletDiscrepancy {
 export interface ReconciliationReport {
   checkedAt: string;
   walletsChecked: number;
+  /**
+   * The WORST discrepancies by absolute difference, capped at `SAMPLE_LIMIT`.
+   *
+   * A SAMPLE, not the set — see `discrepancyCount` for how many there are. The
+   * cap exists because this field used to be every mismatched row: on a
+   * database whose wallets were seeded with balances and no ledger, that is
+   * thirty thousand objects built, serialised into the report, and logged.
+   */
   walletDiscrepancies: WalletDiscrepancy[];
-  /** Confirmed accruals with no corresponding ledger entry — commission owed but never credited. */
+  /** How many wallets disagree in total, whatever the sample above holds. */
+  discrepancyCount: number;
+  /** Sum of the absolute differences — the size of the problem, not its shape. */
+  totalDifference: string;
   balanced: boolean;
 }
+
+/**
+ * How many mismatched wallets the report carries and the log names.
+ *
+ * ## Why this is capped at all
+ *
+ * The hourly job took the server down. `findWalletDiscrepancies` returned every
+ * mismatched wallet and `report()` emitted TWO log lines each — a `page` alert
+ * and a full diagnostic — so a database with 30,011 unbacked balances produced
+ * about sixty thousand synchronous writes to stdout in one tick, every hour.
+ * Node's console transport is blocking on a pipe, so that is the event loop
+ * held for the duration: requests time out, the socket's LISTEN connection
+ * misses its heartbeat, and the process looks hung.
+ *
+ * ## Why a cap is the right answer rather than a bigger buffer
+ *
+ * Thirty thousand identical `page`-severity alerts are not thirty thousand
+ * pieces of information. They are ONE fact — "the balances and the ledger
+ * disagree at scale" — repeated until it buries every other line in the log,
+ * including whichever alert somebody actually needed to see. A detector that
+ * takes the system down when it detects something is worse than no detector:
+ * it fails precisely when it matters, and it trains people to turn it off.
+ *
+ * Twenty is enough to characterise the problem — the largest differences, the
+ * currencies involved, whether it is one client or all of them — and the exact
+ * set is always one SQL query away for somebody actually diagnosing it.
+ */
+const SAMPLE_LIMIT = 20;
 
 /**
  * Reconciliation as a PRODUCTION control, not only a CI test.
@@ -59,7 +98,8 @@ export class ReconciliationService {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
   async run(): Promise<ReconciliationReport> {
-    const [walletDiscrepancies, walletsChecked] = await Promise.all([
+    const [summary, walletDiscrepancies, walletsChecked] = await Promise.all([
+      this.summariseDiscrepancies(),
       this.findWalletDiscrepancies(),
       this.countWallets(),
     ]);
@@ -68,7 +108,16 @@ export class ReconciliationService {
       checkedAt: new Date().toISOString(),
       walletsChecked,
       walletDiscrepancies,
-      balanced: walletDiscrepancies.length === 0,
+      discrepancyCount: summary.count,
+      totalDifference: summary.total,
+      /*
+       * Decided by the COUNT, never by the sample's length. The sample is
+       * capped, so `walletDiscrepancies.length === 0` would read as balanced
+       * only by coincidence — and on a database with more than `SAMPLE_LIMIT`
+       * mismatches it would be right for the wrong reason, which is the kind of
+       * agreement that stops being true later.
+       */
+      balanced: summary.count === 0,
     };
 
     this.report(report);
@@ -103,6 +152,16 @@ export class ReconciliationService {
         LEFT JOIN ${ledgerEntries} le ON le.wallet_id = w.id
        GROUP BY w.id, w.user_id, w.currency, w.balance
       HAVING w.balance <> COALESCE(SUM(le.amount), 0)
+       -- Worst first, and CAPPED at SAMPLE_LIMIT. Without the limit this
+       -- materialised every mismatched wallet: thirty thousand rows through the
+       -- driver, into objects, into the report, into the log.
+       --
+       -- Ordered by the ABSOLUTE difference, so the sample holds the biggest
+       -- problems rather than whichever rows Postgres grouped first. A signed
+       -- sort would fill it with the largest positive drift and hide an equally
+       -- large negative one, which is the direction that means money is missing.
+       ORDER BY ABS(w.balance - COALESCE(SUM(le.amount), 0)) DESC
+       LIMIT ${SAMPLE_LIMIT}
     `);
 
     // `.rows`, not the result object: drizzle 0.45's node-postgres driver returns
@@ -133,6 +192,36 @@ export class ReconciliationService {
    * `LEDGER_REFERENCE` exists and why neither side may use a literal.
    */
 
+  /**
+   * How many wallets disagree, and by how much in total — as two numbers.
+   *
+   * A separate aggregate rather than `walletDiscrepancies.length`, because that
+   * array is now a capped sample and counting it would silently report twenty.
+   * Postgres does the counting and the summing, so the answer is exact and no
+   * row crosses the driver: the cost is the same GROUP BY the sample query
+   * already runs, without materialising thirty thousand rows to discard them.
+   *
+   * `SUM(ABS(...))` — the magnitude of the drift, not its net. Netting a
+   * positive against a negative would report a system with two large opposite
+   * errors as nearly balanced, which is the one summary that must not be
+   * reassuring.
+   */
+  private async summariseDiscrepancies(): Promise<{ count: number; total: string }> {
+    const rows = await this.db.execute<{ n: number; total: string }>(sql`
+      SELECT COUNT(*)::int                        AS n,
+             COALESCE(SUM(ABS(diff)), 0)::text    AS total
+        FROM (
+              SELECT (w.balance - COALESCE(SUM(le.amount), 0)) AS diff
+                FROM ${wallets} w
+                LEFT JOIN ${ledgerEntries} le ON le.wallet_id = w.id
+               GROUP BY w.id, w.balance
+              HAVING w.balance <> COALESCE(SUM(le.amount), 0)
+             ) AS mismatched
+    `);
+    const row = rows.rows[0];
+    return { count: row?.n ?? 0, total: money(row?.total ?? '0') };
+  }
+
   private async countWallets(): Promise<number> {
     const [row] = await this.db.select({ n: sql<number>`count(*)::int` }).from(wallets);
     return row?.n ?? 0;
@@ -155,24 +244,55 @@ export class ReconciliationService {
       return;
     }
 
+    /*
+     * ONE alert for the whole run, never one per wallet.
+     *
+     * This used to raise a `page`-severity alert and log a full diagnostic for
+     * every mismatched wallet. That is correct at three discrepancies and it is
+     * what took the server down at thirty thousand: sixty thousand synchronous
+     * writes to a blocking stdout in a single tick, once an hour.
+     *
+     * It was also the wrong signal even when it survived. Thirty thousand
+     * identical pages are one fact repeated until it buries every other line in
+     * the log — including whichever alert somebody actually needed. The count
+     * and the total say the same thing in one line and are the two numbers that
+     * decide what to do next.
+     */
+    raiseAlert(
+      this.logger,
+      ALERT_KINDS.RECONCILIATION_MISMATCH,
+      'page',
+      `${report.discrepancyCount} wallet(s) disagree with their ledgers, ` +
+        `totalling ${report.totalDifference} across all currencies`,
+      {
+        discrepancyCount: report.discrepancyCount,
+        totalDifference: report.totalDifference,
+        walletsChecked: report.walletsChecked,
+      },
+    );
+
+    /*
+     * The sample, at ONE line each and capped — enough to characterise the
+     * problem without reproducing it in the log. `warn`, not `error`: the
+     * `page` alert above is the thing that should wake somebody, and repeating
+     * the severity twenty times would make the alert harder to find, not easier.
+     */
     for (const d of report.walletDiscrepancies) {
-      raiseAlert(
-        this.logger,
-        ALERT_KINDS.RECONCILIATION_MISMATCH,
-        'page',
-        `Wallet ${d.walletId} balance disagrees with its ledger by ${d.difference}`,
-        { walletId: d.walletId, currency: d.currency, difference: d.difference },
-      );
-      this.logger.error(
-        `RECONCILIATION MISMATCH wallet ${d.walletId} (user ${d.userId}, ${d.currency}): ` +
-          `balance ${d.balance} but ledger sums to ${d.ledgerSum} — difference ${d.difference}. ` +
-          'The ledger is the truth (§6.2). Do NOT edit the balance: diagnose the cause, then ' +
-          'correct with a compensating entry (§6.4).',
+      this.logger.warn(
+        `  wallet ${d.walletId} (user ${d.userId}, ${d.currency}): balance ${d.balance} ` +
+          `vs ledger ${d.ledgerSum} — difference ${d.difference}`,
       );
     }
 
+    const shown = report.walletDiscrepancies.length;
     this.logger.error(
-      `Reconciliation FAILED: ${report.walletDiscrepancies.length} wallet discrepancy(ies).`,
+      `Reconciliation FAILED: ${report.discrepancyCount} wallet discrepancy(ies) totalling ` +
+        `${report.totalDifference}` +
+        (report.discrepancyCount > shown
+          ? `. The ${shown} largest are listed above; query wallets against ledger_entries for the full set.`
+          : '.') +
+        ' The ledger is the truth (§6.2). Do NOT edit the balances: diagnose the cause, then ' +
+        'correct with compensating entries (§6.4).',
     );
   }
 

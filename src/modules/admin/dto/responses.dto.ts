@@ -980,9 +980,28 @@ export class ReconciliationReportDto {
 
   @ApiProperty({
     type: [WalletDiscrepancyDto],
-    description: 'Empty when every wallet agrees with its ledger.',
+    description:
+      'A SAMPLE — the largest discrepancies by absolute difference, capped at 20. Empty when ' +
+      'every wallet agrees with its ledger. Read `discrepancyCount` for how many there really ' +
+      'are: a screen that counts this array reports 20 on a database with thousands.',
   })
   walletDiscrepancies: WalletDiscrepancyDto[];
+
+  @ApiProperty({
+    description:
+      'How many wallets disagree in total, independent of the capped sample above. Counted in ' +
+      'SQL, so it is exact.',
+  })
+  discrepancyCount: number;
+
+  @ApiProperty({
+    description:
+      'The SUM OF ABSOLUTE differences across every mismatched wallet — the size of the problem. ' +
+      'Absolute rather than net, so two large opposite errors do not report as nearly balanced. ' +
+      'Monetary value — always a string.',
+    example: '24995.35000000',
+  })
+  totalDifference: string;
 
   @ApiProperty({
     description:
