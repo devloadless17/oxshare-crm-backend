@@ -2,6 +2,7 @@ import { and, asc, eq, ilike, inArray, or, sql, SQL, type SQLWrapper } from 'dri
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
+import { StoredObjectsStore } from './stored-objects.store';
 import type { Db, Executor } from '../database/db';
 import { kycSubmissionAttempts, kycSubmissions, users } from '../database/schema';
 import {
@@ -159,7 +160,10 @@ const toColumns = (patch: Partial<KycSubmission>) => {
 
 @Injectable()
 export class KycStore {
-  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DRIZZLE_DB) private readonly db: Db,
+    private readonly storedObjects: StoredObjectsStore,
+  ) {}
 
   async getOrCreate(userId: string): Promise<KycSubmission> {
     const existing = await this.findByUserId(userId);
@@ -474,6 +478,22 @@ export class KycStore {
    * "unowned" and be allowed.
    */
   async ownerOfDocument(fileName: string): Promise<string | undefined> {
+    /*
+     * The registry first — an indexed lookup on `stored_objects.storage_key`.
+     *
+     * The scan below is what this replaces: three JSONB columns cast to text and
+     * matched with a leading-wildcard ILIKE, twice, on a route that serves identity
+     * documents. It is correct and it does not scale, and it was the only reverse
+     * lookup the system had.
+     *
+     * It is KEPT as the fallback rather than deleted, because there is no backfill
+     * migration: documents uploaded before `stored_objects` existed have no row, and
+     * the client-scope check that calls this must keep working for them. A miss here
+     * means "not in the registry", not "not ours".
+     */
+    const registered = await this.storedObjects.ownerOfFilename(fileName);
+    if (registered) return registered;
+
     const needle = `%${fileName}%`;
 
     const [live] = await this.db

@@ -8,7 +8,6 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { KycVerifiedGuard } from './guards/kyc-verified.guard';
 import { EmailVerifiedGuard } from './guards/email-verified.guard';
-import { StoredFilesService } from '../../common/uploads/stored-files.service';
 
 /*
  * STILL NO `forwardRef(() => WalletModule)`, and registration opens wallets again.
@@ -48,14 +47,12 @@ import { StoredFilesService } from '../../common/uploads/stored-files.service';
     KycVerifiedGuard,
     // Shared with the KYC upload path — one definition of what is safe
     // to write to disk, rather than a second copy that drifts.
-    StoredFilesService,
   ],
   exports: [
     AuthService,
     JwtAuthGuard,
     EmailVerifiedGuard,
     KycVerifiedGuard,
-    StoredFilesService,
     /*
      * Exported for the WebSocket handshake, which has no HTTP guard to run.
      *

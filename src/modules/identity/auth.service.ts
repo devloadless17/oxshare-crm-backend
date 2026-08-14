@@ -970,7 +970,13 @@ export class AuthService {
     const user = await this.users.findById(userId);
     if (!user) throw new AuthenticationError('Your session is no longer valid. Please sign in.');
 
-    const stored = await this.files.write(AVATAR_BUCKET, buffer, declaredMime);
+    // The owner is the calling client, taken from the session (R-4.4) — so the
+    // photo is attributed to them and counts against their own storage quota.
+    const stored = await this.files.write(AVATAR_BUCKET, buffer, declaredMime, {
+      id: userId,
+      kind: 'client',
+      ownerUserId: userId,
+    });
     const previous = user.avatarFilename;
 
     await this.users.update(userId, { avatarFilename: stored.filename });

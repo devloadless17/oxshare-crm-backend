@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { sql } from 'drizzle-orm';
+import { StoredFilesService } from '../../common/uploads/stored-files.service';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { DependencyHealthDto, ReadinessDto } from './dto/health.dto';
@@ -27,9 +28,25 @@ export class HealthService {
    *  block until the pool's own 10s connect timeout. */
   private static readonly PROBE_TIMEOUT_MS = 2_000;
 
+  /**
+   * How long a storage probe's answer is reused.
+   *
+   * Unlike the Postgres check, this one costs a BILLED round trip to Cloudflare, and
+   * a readiness endpoint is polled continuously by whatever is running the process.
+   * Probing per request would turn a health check into a line item, and a health
+   * check with a cost attached is one somebody eventually switches off.
+   *
+   * 60s is well inside any sensible probe window while collapsing a poll every few
+   * seconds into one call a minute.
+   */
+  private static readonly STORAGE_CACHE_MS = 60_000;
+
+  private storageProbe: { at: number; result: DependencyHealthDto } | null = null;
+
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly config: ConfigService,
+    private readonly files: StoredFilesService,
   ) {}
 
   liveness() {
@@ -46,7 +63,7 @@ export class HealthService {
     // reads, not probes, and are kept separate rather than dressed up as
     // promises — `await-thenable` catches that, and it is right to: a synchronous
     // check inside Promise.all reads as if something is being contacted.
-    const probed = await Promise.all([this.checkPostgres()]);
+    const probed = await Promise.all([this.checkPostgres(), this.checkStorage()]);
     const declared = [this.checkOptional('redis', 'REDIS_URL')];
     const dependencies = [...probed, ...declared];
 
@@ -60,6 +77,57 @@ export class HealthService {
       timestamp: new Date().toISOString(),
       dependencies,
     };
+  }
+
+  /**
+   * Is the object store reachable?
+   *
+   * REQUIRED, because an API that cannot reach storage cannot accept a KYC document
+   * or serve one to a reviewer — the upload fails loudly rather than falling back to
+   * local disk, which is the deliberate asymmetry in `StoredFilesService.read`.
+   *
+   * Cached — see `STORAGE_CACHE_MS`. The cached value is returned with its ORIGINAL
+   * latency reading rather than a fresh zero, so the number in the payload always
+   * describes a real round trip.
+   */
+  private async checkStorage(): Promise<DependencyHealthDto> {
+    const now = Date.now();
+    if (this.storageProbe && now - this.storageProbe.at < HealthService.STORAGE_CACHE_MS) {
+      return this.storageProbe.result;
+    }
+
+    const startedAt = process.hrtime.bigint();
+    const name = `storage (${this.files.providerName})`;
+    let result: DependencyHealthDto;
+    try {
+      const ok = await this.withTimeout(this.files.healthy(), 'storage');
+      result = ok
+        ? { name, status: 'up', latencyMs: this.elapsedMs(startedAt), required: true }
+        : {
+            name,
+            status: 'down',
+            latencyMs: this.elapsedMs(startedAt),
+            detail: 'The bucket did not respond as reachable. See server logs.',
+            required: true,
+          };
+    } catch (error) {
+      // Summarised in the response for the reason the Postgres probe gives: this
+      // endpoint is public, and a storage error can echo the account id and bucket
+      // name back to an unauthenticated caller.
+      this.logger.error(
+        `Readiness probe failed for storage: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      result = {
+        name,
+        status: 'down',
+        latencyMs: this.elapsedMs(startedAt),
+        detail: 'Unreachable or timed out. See server logs for the reason.',
+        required: true,
+      };
+    }
+
+    this.storageProbe = { at: now, result };
+    return result;
   }
 
   private async checkPostgres(): Promise<DependencyHealthDto> {

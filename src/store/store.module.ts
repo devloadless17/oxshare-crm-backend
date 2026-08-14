@@ -14,6 +14,7 @@ import { RejectionReasonsStore } from './rejection-reasons.store';
 import { RolesStore } from './roles.store';
 import { SecuritySettingsStore } from './security-settings.store';
 import { StatsStore } from './stats.store';
+import { StoredObjectsStore } from './stored-objects.store';
 import { UsersStore } from './users.store';
 import { WalletsStore } from './wallets.store';
 import { ClientVisibilityService } from '../common/security/client-visibility.service';
@@ -35,6 +36,7 @@ const STORES = [
   RolesStore,
   SecuritySettingsStore,
   StatsStore,
+  StoredObjectsStore,
   UsersStore,
   WalletsStore,
   /*

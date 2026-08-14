@@ -86,6 +86,22 @@ export default defineConfig({
        * and are unaffected.
        */
       APP_ENCRYPTION_KEY: 'test-only-encryption-key-at-least-32-chars-long',
+
+      /*
+       * The local filesystem object-storage driver, stated because it cannot be
+       * inferred.
+       *
+       * `STORAGE_DRIVER` defaults to `r2` and env.validation.ts then REQUIRES the
+       * R2 credential block — deliberately, so a deployment missing it refuses to
+       * start rather than silently writing identity documents to a container
+       * filesystem. Declaring `disk` here is what keeps the suite hermetic: no
+       * test needs credentials, and no test can reach the real bucket and bill it.
+       *
+       * This is the block whose own comment warns that "a promise that it passed
+       * locally and it passed in CI mean the same thing has to be re-checked
+       * whenever the required set grows". It just grew: ci.yml sets this too.
+       */
+      STORAGE_DRIVER: 'disk',
     },
 
     // One container, shared connection: money tests must observe each other's

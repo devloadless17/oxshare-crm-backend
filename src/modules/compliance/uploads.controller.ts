@@ -19,8 +19,7 @@ import { ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
-import { existsSync } from 'fs';
-import { basename, join } from 'path';
+import { basename } from 'path';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { EmailNotVerifiedError } from '../../common/errors/domain-errors';
 import { AdminsStore, type Admin } from '../../store/admins.store';
@@ -34,9 +33,11 @@ import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { AdminGuard } from '../admin/guards/admin.guard';
 import {
   AVATAR_BUCKET,
+  KYC_BUCKET,
   PAYMENT_LOGO_BUCKET,
   StoredFilesService,
 } from '../../common/uploads/stored-files.service';
+import { inlineDisposition, streamObject } from '../../common/uploads/stream-object';
 import {
   isTokenKind,
   TOKEN_ALGORITHMS,
@@ -126,9 +127,6 @@ export class UploadsController {
       throw new NotFoundException('Photo not found.');
     }
 
-    const found = this.files.read(AVATAR_BUCKET, name);
-    if (!found) throw new NotFoundException('Photo not found.');
-
     /*
      * Declared, for the reason the payment-logo handler below sets out at
      * length: this route sent no `Content-Type` either. It renders anyway
@@ -140,13 +138,22 @@ export class UploadsController {
     const contentType = this.files.contentType(AVATAR_BUCKET, name);
     if (!contentType) throw new NotFoundException('Photo not found.');
 
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
-    // Private, because it is one client's photo, and short — an avatar the
-    // client has just replaced should not survive on their own screen.
-    res.setHeader('Cache-Control', 'private, max-age=300');
-    found.stream.pipe(res);
+    // Conditional and partial reads forwarded from the browser's own headers. An
+    // avatar is cacheable (unlike a KYC document), so a revalidation can end as a
+    // 304 and move no bytes at all.
+    const found = await this.files.read(AVATAR_BUCKET, name, {
+      ifNoneMatch: req.headers['if-none-match'],
+      range: req.headers.range,
+    });
+    if (!found) throw new NotFoundException('Photo not found.');
+
+    streamObject(res, found, {
+      contentType,
+      // Private, because it is one client's photo, and short — an avatar the
+      // client has just replaced should not survive on their own screen.
+      cacheControl: 'private, max-age=300',
+      contentSecurityPolicy: "default-src 'none'; sandbox",
+    });
   }
 
   /**
@@ -190,19 +197,22 @@ export class UploadsController {
       throw new NotFoundException('Photo not found.');
     }
 
-    const found = this.files.read(AVATAR_BUCKET, name);
-    if (!found) throw new NotFoundException('Photo not found.');
-
     const contentType = this.files.contentType(AVATAR_BUCKET, name);
     if (!contentType) throw new NotFoundException('Photo not found.');
 
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
-    // Private and short, matching the client route: a photo just replaced must
-    // not survive on the replacer's own screen.
-    res.setHeader('Cache-Control', 'private, max-age=300');
-    found.stream.pipe(res);
+    const found = await this.files.read(AVATAR_BUCKET, name, {
+      ifNoneMatch: req.headers['if-none-match'],
+      range: req.headers.range,
+    });
+    if (!found) throw new NotFoundException('Photo not found.');
+
+    streamObject(res, found, {
+      contentType,
+      // Private and short, matching the client route: a photo just replaced must
+      // not survive on the replacer's own screen.
+      cacheControl: 'private, max-age=300',
+      contentSecurityPolicy: "default-src 'none'; sandbox",
+    });
   }
 
   /**
@@ -259,10 +269,8 @@ export class UploadsController {
   @NotClientScoped(
     'A payment brand mark on the deposit screen. Names no client and carries no client data.',
   )
-  servePaymentLogo(@Param('file') file: string, @Res() res: Response) {
+  async servePaymentLogo(@Param('file') file: string, @Req() req: Request, @Res() res: Response) {
     const name = basename(file);
-    const found = this.files.read(PAYMENT_LOGO_BUCKET, name);
-    if (!found) throw new NotFoundException('Logo not found.');
 
     /*
      * From the STORED extension, which this service chose from the file's own
@@ -273,14 +281,19 @@ export class UploadsController {
     const contentType = this.files.contentType(PAYMENT_LOGO_BUCKET, name);
     if (!contentType) throw new NotFoundException('Logo not found.');
 
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader(
-      'Content-Security-Policy',
-      "default-src 'none'; style-src 'unsafe-inline'; sandbox",
-    );
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    found.stream.pipe(res);
+    // These are the most cacheable objects in the system and every client loads
+    // them, so a revalidation ending in 304 is the common case worth serving well.
+    const found = await this.files.read(PAYMENT_LOGO_BUCKET, name, {
+      ifNoneMatch: req.headers['if-none-match'],
+      range: req.headers.range,
+    });
+    if (!found) throw new NotFoundException('Logo not found.');
+
+    streamObject(res, found, {
+      contentType,
+      cacheControl: 'public, max-age=86400',
+      contentSecurityPolicy: "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    });
   }
 
   @Get('kyc/:file')
@@ -296,8 +309,26 @@ export class UploadsController {
 
     const reader = await this.authorize(req, name);
 
-    const fullPath = join(process.cwd(), 'uploads', 'kyc', name);
-    if (!existsSync(fullPath)) throw new NotFoundException('Document not found.');
+    /*
+     * The type comes from the STORED extension, which records what the magic bytes
+     * were at upload. `sendFile` used to derive it; streaming from object storage
+     * means setting it explicitly, and an unrecognised extension is a 404 rather
+     * than a guess — guessing is the sniffing `nosniff` forbids.
+     */
+    const contentType = this.files.contentType(KYC_BUCKET, name);
+    if (!contentType) throw new NotFoundException('Document not found.');
+
+    /*
+     * `Range` is forwarded; `If-None-Match` deliberately is NOT.
+     *
+     * A browser PDF viewer fetches the trailer and the first page by range, so
+     * without this a reviewer waits for a whole 10MB scan before anything paints.
+     * Conditional caching is a different matter: the response is `no-store` below,
+     * so offering a revalidation path would invite exactly the cached copy that
+     * header exists to prevent.
+     */
+    const found = await this.files.read(KYC_BUCKET, name, { range: req.headers.range });
+    if (!found) throw new NotFoundException('Document not found.');
 
     // Recorded BEFORE the bytes are sent, and awaited rather than detached.
     //
@@ -310,29 +341,31 @@ export class UploadsController {
     // A client fetching their own document is recorded too. It is the same PII,
     // and an access log with a hole in it invites the question of what else is
     // missing.
+    //
+    // Still before any byte reaches the wire, and still after the object is known
+    // to exist — so a read of a document that is not there writes no row claiming
+    // it was viewed.
     await this.recordRead(reader, name);
 
-    // Never let the browser interpret a KYC document as active content on this
-    // origin — this origin holds the session cookies.
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Disposition', `inline; filename="${name}"`);
-    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
-    /*
-     * Do not let an identity document settle into a disk cache.
-     *
-     * `sendFile` sets ETag and Last-Modified and no Cache-Control, so a browser
-     * applies its own heuristic freshness and may write the file to disk. The
-     * account that reads these is the reviewer's, which opens every client's
-     * passport in the course of the working day — so the default leaves a
-     * growing pile of other people's identity documents in a cache directory
-     * that outlives the session and that nothing here can clear.
-     *
-     * It also matters for what comes next: when ARCHITECTURE §8.5's signed URLs
-     * arrive, a cached response is a credentialled response sitting on disk past
-     * its TTL.
-     */
-    res.setHeader('Cache-Control', 'no-store, private');
-    return res.sendFile(fullPath);
+    streamObject(res, found, {
+      contentType,
+      /*
+       * Do not let an identity document settle into a disk cache.
+       *
+       * The account that reads these is the reviewer's, which opens every client's
+       * passport in the course of the working day — so a browser's own heuristic
+       * freshness leaves a growing pile of other people's identity documents in a
+       * cache directory that outlives the session and that nothing here can clear.
+       *
+       * This is also why no `ETag` revalidation is offered above: `no-store` and a
+       * conditional request are answers to opposite questions.
+       */
+      cacheControl: 'no-store, private',
+      // Never let the browser interpret a KYC document as active content on this
+      // origin — this origin holds the session cookies.
+      contentSecurityPolicy: "default-src 'none'; sandbox",
+      contentDisposition: inlineDisposition(name),
+    });
   }
 
   /**

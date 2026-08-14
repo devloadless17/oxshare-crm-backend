@@ -1,11 +1,7 @@
-import { afterAll, describe, expect, it } from 'vitest';
-import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
-import {
-  PAYMENT_LOGO_BUCKET,
-  StoredFilesService,
-} from '../src/common/uploads/stored-files.service';
+import { describe, expect, it } from 'vitest';
+import { PAYMENT_LOGO_BUCKET } from '../src/common/uploads/stored-files.service';
 import { sniffMimeType } from '../src/common/uploads/file-signature';
+import { storageStub } from './storage-stub';
 
 /**
  * Payment-method logo uploads.
@@ -20,7 +16,23 @@ import { sniffMimeType } from '../src/common/uploads/file-signature';
  * because that scan is the only thing standing between the two cases.
  */
 
-const files = new StoredFilesService();
+// An admin uploading a brand mark: no owner, and so no storage quota — see
+// PAYMENT_LOGO_BUCKET.countsTowardOwnerQuota.
+const ADMIN_UPLOADER = {
+  id: '00000000-0000-4000-8000-000000000001',
+  kind: 'admin' as const,
+  ownerUserId: null,
+};
+
+/*
+ * In-memory: nothing here touches the filesystem or Cloudflare R2.
+ *
+ * This suite used to write under `./uploads` and delete the directory afterwards.
+ * With the storage driver in place it asserts against the STORE instead, which is
+ * both faster and honest about what is being tested — these cases are about which
+ * bytes are accepted, not about where they land.
+ */
+const { files, driver, registry } = storageStub();
 
 /** A real 1x1 PNG. */
 const PNG = Buffer.from(
@@ -40,14 +52,6 @@ const SVG_WITH_PROLOGUE = Buffer.from(
 
 /** A BOM, as Windows editors write. */
 const SVG_WITH_BOM = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), SVG]);
-
-afterAll(async () => {
-  // The bucket writes under ./uploads; leave nothing behind.
-  await rm(join(process.cwd(), 'uploads', PAYMENT_LOGO_BUCKET.dir), {
-    recursive: true,
-    force: true,
-  });
-});
 
 describe('sniffing', () => {
   it('recognises the raster formats by signature', () => {
@@ -81,7 +85,7 @@ describe('sniffing', () => {
 
 describe('writing a logo', () => {
   it('stores a PNG under a generated name and the right extension', async () => {
-    const stored = await files.write(PAYMENT_LOGO_BUCKET, PNG, 'image/png');
+    const stored = await files.write(PAYMENT_LOGO_BUCKET, PNG, 'image/png', ADMIN_UPLOADER);
 
     expect(stored.mimeType).toBe('image/png');
     expect(stored.filename).toMatch(/^[0-9a-f-]{36}\.png$/);
@@ -90,7 +94,7 @@ describe('writing a logo', () => {
   });
 
   it('stores an SVG', async () => {
-    const stored = await files.write(PAYMENT_LOGO_BUCKET, SVG, 'image/svg+xml');
+    const stored = await files.write(PAYMENT_LOGO_BUCKET, SVG, 'image/svg+xml', ADMIN_UPLOADER);
 
     expect(stored.mimeType).toBe('image/svg+xml');
     expect(stored.filename).toMatch(/^[0-9a-f-]{36}\.svg$/);
@@ -103,7 +107,9 @@ describe('writing a logo', () => {
    * below from having a way through.
    */
   it('refuses a file whose declared type contradicts its bytes', async () => {
-    await expect(files.write(PAYMENT_LOGO_BUCKET, PNG, 'image/svg+xml')).rejects.toThrow();
+    await expect(
+      files.write(PAYMENT_LOGO_BUCKET, PNG, 'image/svg+xml', ADMIN_UPLOADER),
+    ).rejects.toThrow();
   });
 
   /*
@@ -112,11 +118,60 @@ describe('writing a logo', () => {
    */
   it('refuses an HTML document declared as SVG', async () => {
     const html = Buffer.from('<html><script>alert(document.cookie)</script></html>');
-    await expect(files.write(PAYMENT_LOGO_BUCKET, html, 'image/svg+xml')).rejects.toThrow();
+    await expect(
+      files.write(PAYMENT_LOGO_BUCKET, html, 'image/svg+xml', ADMIN_UPLOADER),
+    ).rejects.toThrow();
   });
 
   it('refuses a file over the bucket ceiling', async () => {
     const tooBig = Buffer.concat([PNG, Buffer.alloc(PAYMENT_LOGO_BUCKET.maxBytes)]);
-    await expect(files.write(PAYMENT_LOGO_BUCKET, tooBig, 'image/png')).rejects.toThrow();
+    await expect(
+      files.write(PAYMENT_LOGO_BUCKET, tooBig, 'image/png', ADMIN_UPLOADER),
+    ).rejects.toThrow();
+  });
+});
+
+/*
+ * The registry half, added with object storage.
+ *
+ * These assert the two properties that make "who uploaded this" answerable at all:
+ * a row exists per stored object, and a REFUSED upload leaves neither a row nor an
+ * object. The second is the one worth having — a rejection that still wrote bytes
+ * would leave unreferenced files accumulating with nothing pointing at them.
+ */
+describe('the upload registry', () => {
+  it('records the object with its SNIFFED type, size and checksum', async () => {
+    const before = registry.recorded.length;
+    const stored = await files.write(PAYMENT_LOGO_BUCKET, PNG, 'image/png', ADMIN_UPLOADER);
+
+    const row = registry.recorded[before];
+    expect(row.bucket).toBe(PAYMENT_LOGO_BUCKET.dir);
+    expect(row.storageKey).toBe(`payment-logos/${stored.filename}`);
+    expect(row.contentType).toBe('image/png');
+    expect(row.byteSize).toBe(PNG.length);
+    expect(row.sha256).toBe(stored.sha256);
+    expect(row.uploadedById).toBe(ADMIN_UPLOADER.id);
+    expect(row.uploadedByKind).toBe('admin');
+    // A brand mark belongs to nobody — and an admin id is not in `users`, so
+    // attributing it to the uploader would violate the foreign key.
+    expect(row.ownerUserId).toBeNull();
+  });
+
+  it('writes the bytes the caller supplied, under the generated key', async () => {
+    const stored = await files.write(PAYMENT_LOGO_BUCKET, SVG, 'image/svg+xml', ADMIN_UPLOADER);
+    expect(driver.peek(`payment-logos/${stored.filename}`)).toEqual(SVG);
+  });
+
+  it('stores NOTHING when the bytes are refused', async () => {
+    const objectsBefore = driver.size;
+    const rowsBefore = registry.recorded.length;
+
+    const html = Buffer.from('<html><script>alert(document.cookie)</script></html>');
+    await expect(
+      files.write(PAYMENT_LOGO_BUCKET, html, 'image/svg+xml', ADMIN_UPLOADER),
+    ).rejects.toThrow();
+
+    expect(driver.size).toBe(objectsBefore);
+    expect(registry.recorded.length).toBe(rowsBefore);
   });
 });

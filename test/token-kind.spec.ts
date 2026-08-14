@@ -197,6 +197,10 @@ describe('env.validation — the four signing secrets', () => {
     ADMIN_JWT_REFRESH_SECRET: 'b'.repeat(40),
     JWT_ACCESS_SECRET: 'c'.repeat(40),
     JWT_REFRESH_SECRET: 'd'.repeat(40),
+    // Stated, because it cannot be inferred — see the storage block below. These
+    // cases are about the SECRETS, and an unrelated storage refusal underneath them
+    // would fail every one for the wrong reason.
+    STORAGE_DRIVER: 'disk',
   });
 
   it('accepts four distinct secrets', () => {
@@ -225,5 +229,87 @@ describe('env.validation — the four signing secrets', () => {
     expect(() => validateEnv({ ...distinct(), JWT_ACCESS_SECRET: 'short' })).toThrow(
       /at least 32 characters/,
     );
+  });
+});
+
+/**
+ * Object storage config (D-61/D-62).
+ *
+ * The rule being pinned is that the driver is CHOSEN, never inferred. "Use R2 if the
+ * credentials are there, disk if not" is a silent downgrade — one typo'd variable and
+ * a deployment starts cleanly, writes every identity document to a container
+ * filesystem, and reports nothing. These cases are cheap and the failure they prevent
+ * is invisible, which is the whole argument for having them.
+ */
+describe('env.validation — object storage', () => {
+  const base = () => ({
+    NODE_ENV: 'test',
+    ADMIN_JWT_SECRET: 'a'.repeat(40),
+    ADMIN_JWT_REFRESH_SECRET: 'b'.repeat(40),
+    JWT_ACCESS_SECRET: 'c'.repeat(40),
+    JWT_REFRESH_SECRET: 'd'.repeat(40),
+  });
+
+  const r2 = {
+    R2_ACCOUNT_ID: 'acct',
+    R2_ACCESS_KEY_ID: 'key',
+    R2_SECRET_ACCESS_KEY: 'secret',
+    R2_BUCKET: 'bucket',
+  };
+
+  it('refuses to boot on the default driver with no credentials', () => {
+    // NOT a fallback to disk. This is the whole point.
+    expect(() => validateEnv(base())).toThrow(/STORAGE_DRIVER/);
+  });
+
+  it('names both ways out, because both are legitimate', () => {
+    expect(() => validateEnv(base())).toThrow(/R2_ACCOUNT_ID[\s\S]*STORAGE_DRIVER=disk/);
+  });
+
+  it('accepts the default driver once the credentials are there', () => {
+    expect(() => validateEnv({ ...base(), ...r2 })).not.toThrow();
+  });
+
+  it('accepts disk when it is stated explicitly', () => {
+    expect(() => validateEnv({ ...base(), STORAGE_DRIVER: 'disk' })).not.toThrow();
+  });
+
+  it('refuses a half-filled R2 block, whichever driver is chosen', () => {
+    const { R2_BUCKET: _omitted, ...partial } = r2;
+    expect(() => validateEnv({ ...base(), ...partial })).toThrow(/R2_BUCKET/);
+    // Still a mistake worth naming even on disk — it is almost always a
+    // half-finished edit rather than a decision.
+    expect(() => validateEnv({ ...base(), ...partial, STORAGE_DRIVER: 'disk' })).toThrow(
+      /incomplete/,
+    );
+  });
+
+  it('rejects a driver name that is neither', () => {
+    expect(() => validateEnv({ ...base(), STORAGE_DRIVER: 's3' })).toThrow(/STORAGE_DRIVER/);
+  });
+
+  /*
+   * The local filesystem is not a production object store. Refused rather than
+   * warned, because the loss is silent and total: R-7.3's "losing the API host loses
+   * the KYC documents", reached by a deploy nobody re-read.
+   */
+  it('refuses disk in production', () => {
+    expect(() =>
+      validateEnv({
+        ...base(),
+        ...r2,
+        NODE_ENV: 'production',
+        STORAGE_DRIVER: 'disk',
+        DATABASE_URL: 'postgres://u:p@h/db',
+        SMTP_HOST: 'h',
+        SMTP_USER: 'u',
+        SMTP_PASS: 'p',
+        SMTP_FROM: 'f@example.com',
+        APP_ENCRYPTION_KEY: 'e'.repeat(40),
+        TRUSTED_PROXY_HOPS: '1',
+        PORTAL_URL: 'https://portal.example.com',
+        ADMIN_URL: 'https://admin.example.com',
+      }),
+    ).toThrow(/STORAGE_DRIVER=disk/);
   });
 });

@@ -1,6 +1,7 @@
-import { unlink } from 'fs/promises';
-import { basename, join } from 'path';
+import { basename } from 'path';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { KYC_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
+import { filenameFromStored } from '../../common/uploads/storage/storage-key';
 import {
   KycStore,
   type KycSortKey,
@@ -78,6 +79,7 @@ export class KycService {
 
   constructor(
     private readonly email: EmailService,
+    private readonly files: StoredFilesService,
     private readonly kycStore: KycStore,
     private readonly users: UsersStore,
     private readonly kycConfig: KycConfigStore,
@@ -599,17 +601,21 @@ export class KycService {
    */
   private async deleteDocuments(paths: string[]): Promise<void> {
     for (const filePath of paths) {
-      const name = basename(filePath);
+      /*
+       * Through `StoredFilesService`, not `fs`, so this reaches wherever the bytes
+       * actually are — object storage for anything uploaded since the R2 move, and
+       * the API host's disk for anything older. Unlinking a local path directly
+       * would silently succeed at deleting nothing for every document written since
+       * that move, and leave the client's identity documents in the bucket after
+       * their submission was discarded.
+       *
+       * `remove` never throws and soft-deletes the registry row, which preserves
+       * the same property this method already had: the database work is what
+       * matters, and a file that cannot be removed is logged rather than fatal.
+       */
+      const name = filenameFromStored(filePath);
       if (!name) continue;
-      try {
-        await unlink(join(process.cwd(), 'uploads', 'kyc', name));
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        // ENOENT is normal — a replaced document is already gone.
-        if (!reason.includes('ENOENT')) {
-          this.logger.warn(`Could not delete KYC document ${name}: ${reason}`);
-        }
-      }
+      await this.files.remove(KYC_BUCKET, name);
     }
   }
 

@@ -32,6 +32,13 @@ jobs:
       ADMIN_JWT_REFRESH_SECRET: ci-only-admin-refresh-secret-not-a-real-key
       JWT_ACCESS_SECRET: ci-only-portal-access-secret-not-a-real-key
       JWT_REFRESH_SECRET: ci-only-portal-refresh-secret-not-a-real-key
+      # The local-filesystem storage driver. `STORAGE_DRIVER` defaults to `r2`,
+      # and env.validation.ts then requires the R2 credential block, so a build
+      # without this would fail to boot AppModule. Stated rather than inferred for
+      # the reason that file gives: silently falling back to disk is how identity
+      # documents end up somewhere non-durable with nothing reporting it. CI must
+      # never hold real R2 credentials — same rule as the fake secrets above.
+      STORAGE_DRIVER: disk
 
     steps:
       - uses: actions/checkout@v4

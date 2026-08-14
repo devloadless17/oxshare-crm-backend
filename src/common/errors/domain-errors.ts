@@ -196,6 +196,21 @@ export class MoneyRuleError extends DomainError {
 }
 
 /**
+ * A per-account allowance was exhausted — today, the document storage quota. → 413
+ *
+ * Its own class rather than a `ValidationError` because the caller can act on it and
+ * the two need different words: a validation failure means "this file is wrong", and
+ * this means "this file is fine and there is no room for it". Collapsing them would
+ * tell a client their passport scan was invalid.
+ *
+ * 413 rather than 409 so it lands beside the other size refusal on the upload path
+ * (`UploadSizeFilter`), which is where anyone debugging a failed upload will look.
+ */
+export class QuotaExceededError extends DomainError {
+  readonly code = 'QUOTA_EXCEEDED';
+}
+
+/**
  * A payment provider was asked to start a payment and did not say whether it
  * did. → 400, like the `ValidationError` it extends.
  *

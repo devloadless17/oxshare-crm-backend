@@ -3,8 +3,6 @@ import { Test } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import type { Server } from 'http';
-import { existsSync, readdirSync, statSync } from 'fs';
-import { join } from 'path';
 import { KycController } from '../src/modules/compliance/kyc.controller';
 import { KycService } from '../src/modules/compliance/kyc.service';
 import { KycConfigStore } from '../src/store/kyc-config.store';
@@ -12,9 +10,8 @@ import { JwtAuthGuard } from '../src/modules/identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../src/modules/identity/guards/email-verified.guard';
 import { VALIDATION_PIPE_OPTIONS } from '../src/common/validation.config';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
-import { readdir } from 'fs/promises';
-
-const UPLOAD_DIR = './uploads/kyc';
+import { StoredFilesService } from '../src/common/uploads/stored-files.service';
+import { storageStub } from './storage-stub';
 
 /**
  * A buffer that really is a PNG.
@@ -51,25 +48,35 @@ function pngOfSize(bytes: number): Buffer {
  *
  * No database and no container: the service is stubbed, since what is under test
  * is the upload boundary, not what happens to the record afterwards.
+ *
+ * ── What object storage changed, and what it did NOT ────────────────────────
+ *
+ * These assertions used to count BYTES IN `./uploads/kyc`, because the defect was
+ * that multer wrote every byte to disk before the size validator could refuse them.
+ * The route now uses `memoryStorage` and streams to Cloudflare R2, so there is no
+ * directory to grow and that instrument is gone — they count objects in the
+ * in-memory store instead.
+ *
+ * The GUARANTEE is unchanged and still worth testing, because `memoryStorage` moved
+ * the exposure rather than removing it: an unbounded upload now grows the HEAP
+ * instead of the disk. `limits.fileSize` aborting the stream mid-flight is still the
+ * only thing that stops it, and removing it still fails these tests.
  */
 
 const MB = 1024 * 1024;
 
-/**
- * Total bytes sitting in the KYC upload directory.
- *
- * Counting BYTES rather than files is deliberate: a partially-written oversize
- * upload is one file, so a file count would not distinguish "aborted at 10 MB"
- * from "never started".
- */
-function storedBytes(dir: string): number {
-  if (!existsSync(dir)) return 0;
-  return readdirSync(dir).reduce((total, name) => total + statSync(join(dir, name)).size, 0);
-}
-
 interface Recorded {
   attached: { userId: string; field: string; path: string }[];
   failNext: boolean;
+  /** The in-memory `StoredFilesService`, plus the driver to assert against. */
+  files: StoredFilesService;
+  stored: () => number;
+}
+
+/** Fresh state per test — a leaked object would change the next case's baseline. */
+function newRecorded(failNext = false): Recorded {
+  const { files, driver } = storageStub();
+  return { attached: [], failNext, files, stored: () => driver.size };
 }
 
 /** `app.getHttpServer()` is typed `any`; narrow it once rather than at every call. */
@@ -95,6 +102,9 @@ async function makeApp(recorded: Recorded): Promise<INestApplication> {
         },
       },
       { provide: KycConfigStore, useValue: { getSteps: () => Promise.resolve([]) } },
+      // In memory: the boundary under test is the upload, not where the bytes land.
+      // Nothing here reaches the filesystem or Cloudflare R2.
+      { provide: StoredFilesService, useValue: recorded.files },
     ],
   })
     // The guards are not what is under test; a fixed user keeps the multipart
@@ -119,7 +129,7 @@ async function makeApp(recorded: Recorded): Promise<INestApplication> {
 
 describe('KYC upload — size is bounded before anything is written', () => {
   it('accepts a document inside the limit', async () => {
-    const recorded: Recorded = { attached: [], failNext: false };
+    const recorded = newRecorded();
     const app = await makeApp(recorded);
 
     try {
@@ -141,10 +151,9 @@ describe('KYC upload — size is bounded before anything is written', () => {
   });
 
   it('REFUSES an oversize document without writing it to disk', async () => {
-    const recorded: Recorded = { attached: [], failNext: false };
+    const recorded = newRecorded();
     const app = await makeApp(recorded);
-    const dir = join(process.cwd(), 'uploads', 'kyc');
-    const bytesBefore = storedBytes(dir);
+    const storedBefore = recorded.stored();
 
     try {
       // 11 MB against a 10 MB ceiling.
@@ -184,11 +193,16 @@ describe('KYC upload — size is bounded before anything is written', () => {
        * passed against the vulnerable code and quietly certified the defect as
        * fixed.
        *
-       * What changed is that multer aborts the stream, so the disk never grows.
+       * What changed is that multer aborts the stream, so nothing is ever stored.
        * Remove `limits` from the FileInterceptor and this line fails while every
        * other assertion in the file still passes.
+       *
+       * (The instrument moved from bytes-on-disk to objects-in-the-store when the
+       * route switched to `memoryStorage` + object storage. The guarantee did not:
+       * without `limits` the body now fills the HEAP instead of the volume, which
+       * is not an improvement.)
        */
-      expect(storedBytes(dir)).toBe(bytesBefore);
+      expect(recorded.stored()).toBe(storedBefore);
     } finally {
       await app.close();
     }
@@ -209,9 +223,9 @@ describe('KYC upload — size is bounded before anything is written', () => {
    * account it protects can read every client's documents.
    */
   it('refuses HTML that CLAIMS to be a PNG, and leaves nothing on disk', async () => {
-    const recorded: Recorded = { attached: [], failNext: false };
+    const recorded = newRecorded();
     const app = await makeApp(recorded);
-    const before = await readdir(UPLOAD_DIR).catch(() => [] as string[]);
+    const storedBefore = recorded.stored();
 
     try {
       await request(httpServer(app))
@@ -227,18 +241,21 @@ describe('KYC upload — size is bounded before anything is written', () => {
 
       expect(recorded.attached).toHaveLength(0);
 
-      // Asserted on the DISK, not just the status code. The bytes are written
-      // before this check can run, so "rejected" has to mean the file was also
-      // removed — otherwise the payload is still sitting next to the documents.
-      const after = await readdir(UPLOAD_DIR).catch(() => [] as string[]);
-      expect(after.length).toBe(before.length);
+      // Asserted on the STORE, not just the status code — the point is that the
+      // payload is not sitting next to the identity documents afterwards.
+      //
+      // This is now true by CONSTRUCTION rather than by cleanup: the type is decided
+      // from the bytes in a buffer before anything is written, so there is no file to
+      // delete. The assertion stays because that construction is what is being
+      // pinned; a future change that writes first and validates second breaks it.
+      expect(recorded.stored()).toBe(storedBefore);
     } finally {
       await app.close();
     }
   });
 
   it('refuses a disallowed content type', async () => {
-    const recorded: Recorded = { attached: [], failNext: false };
+    const recorded = newRecorded();
     const app = await makeApp(recorded);
 
     try {
@@ -250,7 +267,6 @@ describe('KYC upload — size is bounded before anything is written', () => {
           contentType: 'text/html',
         })
         .expect((res) => {
-          console.log('OVERSIZE RESPONSE:', res.status, JSON.stringify(res.body));
           expect(res.status).toBeGreaterThanOrEqual(400);
         });
 
@@ -261,10 +277,9 @@ describe('KYC upload — size is bounded before anything is written', () => {
   });
 
   it('deletes the written file when recording it fails', async () => {
-    const recorded: Recorded = { attached: [], failNext: true };
+    const recorded = newRecorded(true);
     const app = await makeApp(recorded);
-    const dir = join(process.cwd(), 'uploads', 'kyc');
-    const before = existsSync(dir) ? readdirSync(dir) : [];
+    const storedBefore = recorded.stored();
 
     try {
       await request(httpServer(app))
@@ -277,9 +292,11 @@ describe('KYC upload — size is bounded before anything is written', () => {
         .expect(500);
 
       // An identity document that no submission references can never be served,
-      // never be reviewed and never be cleaned up by anything else.
-      const after = existsSync(dir) ? readdirSync(dir) : [];
-      expect(after.length).toBe(before.length);
+      // never be reviewed and never be cleaned up by anything else — so the upload
+      // handler removes it when `attachFile` fails. Unlike the case above this one
+      // is NOT true by construction: the object really is written first, and this
+      // asserts the compensating delete actually runs.
+      expect(recorded.stored()).toBe(storedBefore);
     } finally {
       await app.close();
     }

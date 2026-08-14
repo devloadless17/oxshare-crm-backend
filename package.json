@@ -21,10 +21,15 @@
     "db:studio": "drizzle-kit studio",
     "prepare": "husky",
     "test:coverage": "vitest run --coverage",
+    "r2:verify": "node scripts/r2-verify.mjs",
+    "r2:reconcile": "node scripts/r2-reconcile.mjs",
+    "r2:e2e": "node scripts/r2-e2e.mjs",
+    "r2:e2e:assets": "node scripts/r2-e2e-assets.mjs",
     "gen:openapi": "npm run build && node scripts/gen-openapi.mjs",
     "check:openapi": "npm run build && node scripts/gen-openapi.mjs --check"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1110.0",
     "@casl/ability": "^6.7.2",
     "@nestjs/bullmq": "^11.0.0",
     "@nestjs/common": "^11.0.0",

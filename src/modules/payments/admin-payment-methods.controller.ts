@@ -223,9 +223,29 @@ export class AdminPaymentMethodsController {
   @NotAudited(
     'Writes an unreferenced file and returns its URL; changes no configuration and no client sees it. The create/update that attaches the URL is audited and carries it.',
   )
-  async uploadLogo(@UploadedFile() file: Express.Multer.File | undefined) {
+  async uploadLogo(
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Req() req: Request & { admin: { id: string } },
+  ) {
     if (!file) throw new ValidationError('No file was uploaded.');
-    const stored = await this.files.write(PAYMENT_LOGO_BUCKET, file.buffer, file.mimetype);
+    /*
+     * A brand mark belongs to nobody, so it has no owner and counts against no
+     * quota (`PAYMENT_LOGO_BUCKET.countsTowardOwnerQuota` is false). The uploading
+     * administrator is still recorded — this route is deliberately `@NotAudited`
+     * because an abandoned upload is not a configuration change, and the registry
+     * row is what makes an unreferenced logo traceable to whoever wrote it.
+     */
+    const stored = await this.files.write(
+      PAYMENT_LOGO_BUCKET,
+      file.buffer,
+      file.mimetype,
+      {
+        id: req.admin.id,
+        kind: 'admin',
+        ownerUserId: null,
+      },
+      file.originalname,
+    );
     return { logoUrl: `/v1/uploads/payment-logos/${stored.filename}` };
   }
 
