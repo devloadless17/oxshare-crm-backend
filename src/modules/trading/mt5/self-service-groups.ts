@@ -2,6 +2,7 @@ import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ValidationError } from '../../../common/errors/domain-errors';
 import { AppSettingsStore } from '../../../store/app-settings.store';
+import { LeveragesService } from '../../leverages/leverages.service';
 import { ProductsStore, type OfferedGroup } from '../../../store/products.store';
 import { tradingTermsFrom, type TradingTerms } from '../../../common/trading-terms';
 
@@ -38,6 +39,12 @@ export class SelfServiceGroups implements OnModuleInit {
     private readonly config: ConfigService,
     private readonly settings: AppSettingsStore,
     private readonly products: ProductsStore,
+    /*
+     * The ladder, since migration 0067 moved it out of the settings row.
+     * APPENDED LAST because this class is constructed positionally in
+     * `self-service-groups.spec.ts`.
+     */
+    private readonly leverageLadder: LeveragesService,
   ) {}
 
   /**
@@ -195,12 +202,16 @@ export class SelfServiceGroups implements OnModuleInit {
    * ## Why it comes from the DATABASE and not the environment
    *
    * Which leverages a broker advertises is a regulatory and commercial call
-   * that changes without a deploy. It used to be `MT5_CLIENT_LEVERAGES`, which
-   * is still read as the SEED for a deployment that has never opened the
-   * Trading settings tab — after the first save, the table is the only answer.
+   * that changes without a deploy. It was `MT5_CLIENT_LEVERAGES`, then a CSV on
+   * the trading settings row, and it is the `leverages` TABLE now (migration
+   * 0067) — one row per rung, so one can be withdrawn without touching the
+   * accounts already opened on it.
+   *
+   * ENABLED rungs only, in the operator's order. `LeveragesService` filters
+   * rather than flagging, so this cannot forget to.
    */
   async leverages(): Promise<number[]> {
-    return (await this.terms()).leverages;
+    return this.leverageLadder.listEnabled();
   }
 
   /**
@@ -211,10 +222,7 @@ export class SelfServiceGroups implements OnModuleInit {
    * response.
    */
   async terms(): Promise<TradingTerms> {
-    return tradingTermsFrom(
-      await this.settings.getTrading(),
-      this.config.get<string>('MT5_CLIENT_LEVERAGES'),
-    );
+    return tradingTermsFrom(await this.settings.getTrading());
   }
 
   /** Validate a chosen leverage, or fall back to the middle of the ladder. */

@@ -1,7 +1,7 @@
 {
   "clients": {
     "moduleName": "Clients",
-    "description": "The client directory and one client's profile. Clients register themselves and are never deleted \u2014 every ledger row and audit entry has to keep resolving to a name \u2014 so this module has no create and no delete. There is no `clients.edit` either: the API exposes no endpoint that edits a client's profile, and a key with nothing behind it is a permission an operator can grant and then watch do nothing.",
+    "description": "The client directory and one client's profile. Clients register themselves and are never deleted — every ledger row and audit entry has to keep resolving to a name — so this module has no create and no delete. There is no `clients.edit` either: the API exposes no endpoint that edits a client's profile, and a key with nothing behind it is a permission an operator can grant and then watch do nothing.",
     "permissions": [
       {
         "key": "clients.view",
@@ -49,7 +49,7 @@
   },
   "roles": {
     "moduleName": "Roles & Permissions",
-    "description": "Roles are the only source of access in this system \u2014 there is no role above another and no wildcard. Editing a role takes effect on the next request from every administrator holding it.",
+    "description": "Roles are the only source of access in this system — there is no role above another and no wildcard. Editing a role takes effect on the next request from every administrator holding it.",
     "permissions": [
       {
         "key": "roles.view",
@@ -101,7 +101,7 @@
   },
   "wallets": {
     "moduleName": "Client Wallets",
-    "description": "Client holdings, opening a wallet, and manual credits. Crediting and closing are separate keys because adding money and removing an account are not one power \u2014 and a credit is a real ledger movement (\u00a76), not an edit to a number.",
+    "description": "Client holdings, opening a wallet, and manual credits. Crediting and closing are separate keys because adding money and removing an account are not one power — and a credit is a real ledger movement (§6), not an edit to a number.",
     "permissions": [
       {
         "key": "wallets.view",
@@ -123,7 +123,7 @@
   },
   "withdrawals": {
     "moduleName": "Withdrawals & Payouts",
-    "description": "Reviewing and paying out client withdrawal requests. Approve and settle are SEPARATE keys on purpose (R-5.4): approval says a payout may be released, settlement releases it. While both required the same permission, 'two people must be involved in a payout' was unexpressible \u2014 one admin could authorise their own instruction and pay it out in the same minute, with the audit log showing one name on both rows.",
+    "description": "Reviewing and paying out client withdrawal requests. Approve and settle are SEPARATE keys on purpose (R-5.4): approval says a payout may be released, settlement releases it. While both required the same permission, 'two people must be involved in a payout' was unexpressible — one admin could authorise their own instruction and pay it out in the same minute, with the audit log showing one name on both rows.",
     "permissions": [
       {
         "key": "withdrawals.view",
@@ -205,7 +205,7 @@
   },
   "tags": {
     "moduleName": "Client Tags",
-    "description": "The tag vocabulary itself. Deleting a tag is a privilege change rather than a label edit \u2014 an administrator restricted to it loses that restriction, and an empty scope means unrestricted \u2014 so delete is its own key. Applying a tag TO a client is clients.tag.",
+    "description": "The tag vocabulary itself. Deleting a tag is a privilege change rather than a label edit — an administrator restricted to it loses that restriction, and an empty scope means unrestricted — so delete is its own key. Applying a tag TO a client is clients.tag.",
     "permissions": [
       {
         "key": "tags.view",
@@ -247,9 +247,31 @@
       }
     ]
   },
+  "leverages": {
+    "moduleName": "Leverages",
+    "description": "The leverage ladder a client may open a trading account on. Its own module rather than a corner of settings, for the reason currencies are: leverage is a RISK control and a regulatory answer, and granting somebody the support email address should not also let them withdraw 1:500. There is no separate 'withdraw' key — taking a rung off the menu is an edit (`enabled: false`), and it is the action an operator almost always wants, because deleting is refused while any account is trading at that ratio.",
+    "permissions": [
+      {
+        "key": "leverages.view",
+        "label": "View Leverages"
+      },
+      {
+        "key": "leverages.create",
+        "label": "Add a Leverage"
+      },
+      {
+        "key": "leverages.edit",
+        "label": "Edit / Withdraw a Leverage"
+      },
+      {
+        "key": "leverages.delete",
+        "label": "Delete a Leverage"
+      }
+    ]
+  },
   "payments": {
     "moduleName": "Payment Methods",
-    "description": "How clients can put money in \u2014 the methods offered on the deposit screen, their instructions, and the account details money is sent to. No delete key: a method is disabled rather than removed (migration 0043), because a deleted method would orphan the deposits that used it.",
+    "description": "How clients can put money in — the methods offered on the deposit screen, their instructions, and the account details money is sent to. No delete key: a method is disabled rather than removed (migration 0043), because a deleted method would orphan the deposits that used it.",
     "permissions": [
       {
         "key": "payments.view",
@@ -285,7 +307,7 @@
   },
   "settings": {
     "moduleName": "Settings",
-    "description": "Operational settings: brand, support contacts, terminal download links, outbound mail and the security controls. A singleton, so there is no create and no delete. The SMTP keys gate the SCREEN \u2014 the system sends mail regardless of who holds them.",
+    "description": "Operational settings: brand, support contacts, terminal download links, outbound mail and the security controls. A singleton, so there is no create and no delete. The SMTP keys gate the SCREEN — the system sends mail regardless of who holds them.",
     "permissions": [
       {
         "key": "settings.view",
@@ -323,7 +345,7 @@
   },
   "audit": {
     "moduleName": "Audit & Reconciliation",
-    "description": "The record of who did what, and the ledger reconciliation report. Read-only both \u2014 neither screen writes anything, so neither has a write key.",
+    "description": "The record of who did what, and the ledger reconciliation report. Read-only both — neither screen writes anything, so neither has a write key.",
     "permissions": [
       {
         "key": "audit.view",

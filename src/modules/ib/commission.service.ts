@@ -107,10 +107,7 @@ export class CommissionService implements CommissionAccrualPort {
    * touches four tables is not the cost worth optimising.
    */
   private async maxSharePct(): Promise<string> {
-    const terms = tradingTermsFrom(
-      await this.settings.getTrading(),
-      this.config.get<string>('MT5_CLIENT_LEVERAGES'),
-    );
+    const terms = tradingTermsFrom(await this.settings.getTrading());
     return terms.ibMaxRevenueSharePct;
   }
 

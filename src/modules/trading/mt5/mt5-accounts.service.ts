@@ -12,7 +12,6 @@ import { clientScopePredicate } from '../../../common/security/client-scope';
 import type { AuthenticatedAdmin } from '../../admin/guards/admin.guard';
 import { NotFoundError, ValidationError } from '../../../common/errors/domain-errors';
 import { AppSettingsStore } from '../../../store/app-settings.store';
-import { ConfigService } from '@nestjs/config';
 import { tradingTermsFrom } from '../../../common/trading-terms';
 import {
   NOTIFICATION_DISPATCH,
@@ -79,7 +78,6 @@ export class Mt5AccountsService {
     private readonly audit: AdminAuditService,
     private readonly email: EmailService,
     private readonly settings: AppSettingsStore,
-    private readonly config: ConfigService,
     /*
      * The TOKEN from `common/`, not `NotificationsService` — the port recipe
      * every domain module here follows, and `NotificationsModule` is `@Global`
@@ -99,10 +97,7 @@ export class Mt5AccountsService {
    * wait out a TTL or restart the process for it to take effect.
    */
   private async terms() {
-    return tradingTermsFrom(
-      await this.settings.getTrading(),
-      this.config.get<string>('MT5_CLIENT_LEVERAGES'),
-    );
+    return tradingTermsFrom(await this.settings.getTrading());
   }
 
   /**

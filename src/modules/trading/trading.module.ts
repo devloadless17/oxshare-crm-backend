@@ -5,6 +5,7 @@ import { DashboardController } from './dashboard.controller';
 import { DashboardService } from './dashboard.service';
 import { IdentityModule } from '../identity/identity.module';
 import { AdminAuthModule } from '../admin/admin-auth.module';
+import { LeveragesModule } from '../leverages/leverages.module';
 import { Mt5WebhooksController } from './mt5/mt5-webhooks.controller';
 import { Mt5AccountsController } from './mt5/mt5-accounts.controller';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
@@ -59,7 +60,9 @@ import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
    * without a cycle — see its own note — so this does not drag the admin graph
    * into trading.
    */
-  imports: [IdentityModule, AdminAuthModule],
+  // LeveragesModule for `SelfServiceGroups`, which resolves the ladder a client
+  // may open on — the CSV it used to parse is a table now (migration 0067).
+  imports: [IdentityModule, AdminAuthModule, LeveragesModule],
   controllers: [
     TradingController,
     DashboardController,

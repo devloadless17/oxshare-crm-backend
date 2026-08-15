@@ -930,8 +930,12 @@ export const tradingSettings = pgTable(
     id: boolean('id')
       .primaryKey()
       .$default(() => true),
-    /** The leverage ladder, in the operator's order. `50,100,200,500`. */
-    leverages: varchar('leverages', { length: 200 }).notNull().default('50,100,200,500'),
+    /*
+     * `leverages` was here — a CSV of the ladder. It is the `leverages` TABLE
+     * now (migration 0067): an operator needs to withdraw a rung without
+     * touching the accounts standing on it, and a delimited string has nowhere
+     * to put `enabled`.
+     */
     /*
      * Per client, per environment. A cap of ZERO is meaningful and is not the
      * same as self-service being off: it stops new accounts of that kind while
@@ -1138,6 +1142,67 @@ export const currencies = pgTable(
     uniqueIndex('currencies_one_default_uq')
       .on(sql`(1)`)
       .where(sql`${t.isDefault}`),
+  ],
+);
+
+/*
+ * ── The leverage ladder a client may open an account on ──────────────────────
+ *
+ * A TABLE, not the `trading_settings.leverages` CSV it replaces.
+ *
+ * That column held `50,100,200,500` and its own note argued the CSV was enough:
+ * "nothing queries into it, and the CSV is exactly what the operator typed".
+ * Both halves stopped being true. An operator withdrawing 500:1 for a
+ * regulatory change had no way to say so except deleting it from the string —
+ * which says nothing about the accounts already open on it — and a ladder with
+ * no `enabled` cannot distinguish "we never offered this" from "we stopped".
+ *
+ * The same argument `currencies` and `ib_levels` already won: these are
+ * operator data with their own lifecycle, and a delimited string is a table
+ * that cannot be queried, ordered or audited per row.
+ *
+ * ## `ratio` is the key, and it is an INTEGER
+ *
+ * 500 means 500:1. The ratio is what MT5 is told, what a client picks and what
+ * `trading_accounts.leverage` stores, so it is the natural identity — a surrogate
+ * id would leave the number that actually matters unconstrained, and nothing
+ * would stop two rows both claiming 500.
+ *
+ * ## A DISABLED rung keeps the accounts standing on it
+ *
+ * Exactly `currencies.enabled` and `ib_levels.enabled`: it stops the leverage
+ * being OFFERED without touching accounts already opened on it. Deleting the
+ * row is refused while any account references it, for the same reason a
+ * currency holding wallets cannot be deleted.
+ *
+ * `trading_accounts.leverage` deliberately carries NO foreign key onto this.
+ * MetaTrader is the system of record for what an account is actually running
+ * at, and it may report a ratio this ladder never offered — a group default, a
+ * value set by hand on the server, or one withdrawn years ago. A foreign key
+ * would make the bridge's own truth unwritable.
+ */
+export const leverages = pgTable(
+  'leverages',
+  {
+    /** `500` means 500:1 — the number MT5 is told and the client picks. */
+    ratio: integer('ratio').primaryKey(),
+    /**
+     * What the client reads, when the ratio alone is not what the broker wants
+     * to say. Null renders as `1:500`, which is what every screen did before
+     * this table existed.
+     */
+    label: varchar('label', { length: 40 }),
+    /** A disabled rung is not offered. Accounts already on it are untouched. */
+    enabled: boolean('enabled').notNull().default(true),
+    /** The operator's own order, which is the order a client sees. */
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /* The hot read: "what may a client choose", asked on every account-opening
+       form and by the self-service group resolver. */
+    index('leverages_enabled_sort_idx').on(t.enabled, t.sortOrder),
   ],
 );
 

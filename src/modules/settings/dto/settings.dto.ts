@@ -132,13 +132,12 @@ export class SmtpTestResultDto {
 /* ── Trading ──────────────────────────────────────────────────────────────── */
 
 export class TradingSettingsDto {
-  @ApiProperty({
-    example: [50, 100, 200, 500],
-    type: [Number],
-    description: 'The leverage ladder offered to clients, in the order they see it.',
-  })
-  leverages: number[];
-
+  /*
+   * `leverages` was here. The ladder is its own resource now — `GET
+   * /admin/leverages` — because a rung needs to be withdrawn without touching
+   * the accounts opened on it, and a list on this response had nowhere to say
+   * so. See migration 0067.
+   */
   @ApiProperty({ example: 5, description: 'Live accounts one client may open themselves.' })
   maxLiveAccounts: number;
 
@@ -172,12 +171,6 @@ export class UpdateTradingSettingsDto {
    * malformed one with a message naming the offending value — a silently
    * dropped entry would remove a leverage from the offer with no trace.
    */
-  @ApiProperty({ example: '50,100,200,500', maxLength: 200 })
-  @IsString()
-  @MinLength(1)
-  @MaxLength(200)
-  leverages: string;
-
   /*
    * ZERO IS ALLOWED and means "no new ones of this kind". It is not the same as
    * switching self-service off, which is done by offering no groups: this stops

@@ -12,7 +12,7 @@ import type {
   UpdateSmtpSettingsDto,
   UpdateTradingSettingsDto,
 } from './dto/settings.dto';
-import { formatLeverages, parseLeverages, tradingTermsFrom } from '../../common/trading-terms';
+import { tradingTermsFrom } from '../../common/trading-terms';
 
 /**
  * Reads and writes the two singleton settings rows.
@@ -196,10 +196,9 @@ export class SettingsService {
 
   async getTrading(): Promise<TradingSettingsDto> {
     const row = await this.store.getTrading();
-    const terms = tradingTermsFrom(row, this.config.get<string>('MT5_CLIENT_LEVERAGES'));
+    const terms = tradingTermsFrom(row);
 
     return {
-      leverages: terms.leverages,
       maxLiveAccounts: terms.maxLiveAccounts,
       maxDemoAccounts: terms.maxDemoAccounts,
       maxDemoDeposit: terms.maxDemoDeposit,
@@ -212,19 +211,15 @@ export class SettingsService {
     const previous = await this.getTrading();
 
     /*
-     * Parsed here rather than in the DTO, and STRICTLY — `parseLeverages`
-     * throws on `50,1OO,200` instead of dropping the bad entry. A filter would
-     * turn a typo into a shorter offer the operator never chose, and they would
-     * find out from a client asking where 1:100 went.
+     * The LEVERAGE LADDER is not here any more.
      *
-     * Re-formatted from the parsed list rather than stored raw, so what comes
-     * back is normalised: whitespace gone, duplicates collapsed, order kept.
+     * It was a CSV on this row, parsed strictly and re-formatted on every save.
+     * It is the `leverages` table now (migration 0067), with its own screen and
+     * its own audit actions — a rung can be withdrawn without touching the
+     * accounts opened on it, which is what a delimited string could not say.
      */
-    const leverages = parseLeverages(dto.leverages);
-
     const row = await this.store.setTrading(
       {
-        leverages: formatLeverages(leverages),
         maxLiveAccounts: dto.maxLiveAccounts,
         maxDemoAccounts: dto.maxDemoAccounts,
         maxDemoDeposit: dto.maxDemoDeposit,
@@ -238,12 +233,8 @@ export class SettingsService {
      * with both sides. Raising the demo ceiling or the account cap is the kind
      * of change that gets noticed a month later in the broker's own reporting,
      * and "who set this to a million and when" needs an answer.
-     *
-     * The leverage ladder is compared as text: the list is ordered, and a
-     * reorder is a real change to what a client is shown first.
      */
     const after: TradingSettingsDto = {
-      leverages,
       maxLiveAccounts: row.maxLiveAccounts,
       maxDemoAccounts: row.maxDemoAccounts,
       maxDemoDeposit: row.maxDemoDeposit,
@@ -252,9 +243,6 @@ export class SettingsService {
     };
 
     const changed: Record<string, { before: unknown; after: unknown }> = {};
-    if (formatLeverages(previous.leverages) !== formatLeverages(after.leverages)) {
-      changed['leverages'] = { before: previous.leverages, after: after.leverages };
-    }
     for (const field of [
       'maxLiveAccounts',
       'maxDemoAccounts',

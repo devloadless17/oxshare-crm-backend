@@ -221,6 +221,17 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'currency.update', label: 'Currency changed', group: 'Configuration' },
   { action: 'currency.delete', label: 'Currency removed', group: 'Configuration' },
   /*
+   * The leverage ladder — Configuration for the same reason currencies are: no
+   * balance moves. What changes is the RISK a client may take on, which is a
+   * regulatory answer somebody may have to give months later. "Who withdrew
+   * 1:500, and when" is the question this makes answerable; before migration
+   * 0067 it was one field on a settings row and the audit said only that the
+   * trading settings had changed.
+   */
+  { action: 'leverage.create', label: 'Leverage added', group: 'Configuration' },
+  { action: 'leverage.update', label: 'Leverage changed', group: 'Configuration' },
+  { action: 'leverage.delete', label: 'Leverage removed', group: 'Configuration' },
+  /*
    * The IB payout ladder. Configuration rather than Money for the same reason
    * currencies are: no balance moves. What DOES move is what every partner
    * earns from that point on, and a level's share changing is the kind of thing

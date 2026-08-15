@@ -59,7 +59,7 @@ export interface SmtpSettingsWrite {
  * can act on.
  */
 export interface TradingSettingsRow {
-  leverages: string;
+  // `leverages` was here — the ladder is the `leverages` TABLE now (0067).
   maxLiveAccounts: number;
   maxDemoAccounts: number;
   /** A decimal string, never a number — see §6. */
@@ -71,7 +71,6 @@ export interface TradingSettingsRow {
 }
 
 export interface TradingSettingsWrite {
-  leverages: string;
   maxLiveAccounts: number;
   maxDemoAccounts: number;
   maxDemoDeposit: string;

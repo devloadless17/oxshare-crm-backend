@@ -153,11 +153,7 @@ export class AdminRbacService {
    */
   // eslint-disable-next-line @typescript-eslint/require-await
   async assertGrantable(actor: Admin, permissions: string[]) {
-    const catalog = this.catalogKeys();
-    const unknown = permissions.filter((p) => !catalog.has(AdminRbacService.normalizeKey(p)));
-    if (unknown.length > 0) {
-      throw new ValidationError(`Unknown permission key(s): ${unknown.join(', ')}.`);
-    }
+    this.assertKnownKeys(permissions);
 
     const held = new Set(actor.permissions.map((p) => AdminRbacService.normalizeKey(p)));
     const beyond = permissions.filter((p) => !held.has(AdminRbacService.normalizeKey(p)));
@@ -165,6 +161,90 @@ export class AdminRbacService {
       throw new AuthorizationError(
         `You cannot grant permissions you do not hold: ${beyond.join(', ')}.`,
       );
+    }
+  }
+
+  /**
+   * `roles.edit` MEANS `roles.edit` — on every role except the actor's own.
+   *
+   * ## The rule
+   *
+   * An admin holding `roles.edit` may grant any key in the catalog to any role
+   * they are not themselves assigned to. Editing THEIR OWN role keeps the
+   * subset rule: they cannot use it to hand themselves something they do not
+   * already hold.
+   *
+   * ## Why not the plain subset rule everywhere
+   *
+   * It made the roles screen unusable, and not hypothetically. A hidden
+   * `Master Admin` role held `reconciliation.view` with zero admins assigned,
+   * so no logged-in operator held that key — and granting it required already
+   * holding it. The screen answered "You cannot grant permissions you do not
+   * hold" to the one person whose job is to decide that. Migration 0069 clears
+   * that particular row, but the shape recurs with every genuinely new key:
+   * defining what an operator may do is the job `roles.edit` names, and binding
+   * it to the editor's own set means the set can only ever shrink.
+   *
+   * ## Why not catalog-only everywhere
+   *
+   * Because then a sub-admin with `roles.edit` writes `wallets.credit` into
+   * their own role and reloads. That is a one-step path from "can manage
+   * access" to "can move money", taken by the person themselves, and it is what
+   * `REGRESSION C1` in `rbac.spec.ts` exists to stop.
+   *
+   * Excluding the actor's own role costs a role editor nothing they should be
+   * doing — you do not promote yourself, you ask somebody who can — and it
+   * removes the self-service escalation entirely.
+   *
+   * ## What it does NOT stop, stated plainly
+   *
+   * Two admins holding `roles.edit` can promote each other, and one holding it
+   * can promote a role they then ask to be moved onto. Both take a second
+   * person or a second step, and both land in the audit log with a name on
+   * them: `role.update` records the full before/after permission sets. That is
+   * the line this draws — escalation stops being something you can do alone and
+   * silently.
+   *
+   * API KEYS and INVITES keep the strict subset rule regardless, in
+   * `api-keys.service.ts` and `admin-auth.service.ts`. A key is a credential
+   * with no session and no browser that outlives the person who minted it, and
+   * an invite creates an account nobody has checked.
+   */
+  private async assertRoleGrantable(
+    actor: Admin,
+    // `undefined` for "no role in question", matching `Admin.roleId` and
+    // `RolesStore.resolvePermissions` rather than introducing a second
+    // absent-value convention into the same comparison.
+    roleId: string | undefined,
+    permissions: string[],
+  ): Promise<void> {
+    /*
+     * `resolvePermissions` REPLACES an admin's own column with their role's
+     * when they have a roleId — so "my role" is the thing that actually decides
+     * what I can do, and raising it raises me. An admin with no roleId runs on
+     * their own snapshot, which no role edit can touch, so every role is fair
+     * game for them.
+     */
+    if (roleId !== undefined && actor.roleId === roleId) {
+      await this.assertGrantable(actor, permissions);
+      return;
+    }
+    this.assertKnownKeys(permissions);
+  }
+
+  /**
+   * The CATALOG half of `assertGrantable`, factored out so the two checks read
+   * separately — the subset rule is the security-critical one.
+   *
+   * On its own this only rejects keys that do not exist. That is not a small
+   * check: a typo'd key saves cleanly, grants nothing, and looks exactly like a
+   * permission that is broken rather than misspelled.
+   */
+  private assertKnownKeys(permissions: string[]): void {
+    const catalog = this.catalogKeys();
+    const unknown = permissions.filter((p) => !catalog.has(AdminRbacService.normalizeKey(p)));
+    if (unknown.length > 0) {
+      throw new ValidationError(`Unknown permission key(s): ${unknown.join(', ')}.`);
     }
   }
 
@@ -309,7 +389,13 @@ export class AdminRbacService {
     if (await this.roles.findByName(name)) {
       throw new ConflictError('A role with this name already exists.');
     }
-    await this.assertGrantable(actor, permissions);
+    /*
+     * `undefined`, because a role being created is one NOBODY is assigned to —
+     * the actor included. Assigning themselves to it afterwards goes through
+     * `updateAdmin`, which runs `assertGrantable` against the role's keys and
+     * is where that escalation is actually caught.
+     */
+    await this.assertRoleGrantable(actor, undefined, permissions);
     this.assertMaskAllowed(actor, maskedFields);
     const role = await this.roles.create({ name, description, permissions, maskedFields });
     this.audit.record(actor.id, 'role.create', 'role', role.id, {
@@ -335,7 +421,8 @@ export class AdminRbacService {
     if (patch.name && patch.name !== role.name && (await this.roles.findByName(patch.name))) {
       throw new ConflictError('A role with this name already exists.');
     }
-    if (patch.permissions) await this.assertGrantable(actor, patch.permissions);
+    // Any role but their own — see `assertRoleGrantable`.
+    if (patch.permissions) await this.assertRoleGrantable(actor, role.id, patch.permissions);
     if (patch.maskedFields) this.assertMaskAllowed(actor, patch.maskedFields);
     const updated = await this.roles.update(id, patch);
     this.audit.record(actor.id, 'role.update', 'role', id, {

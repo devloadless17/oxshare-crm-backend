@@ -8,6 +8,12 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
  * generated `types.gen.ts` describes them. A passthrough endpoint is exactly
  * where an untyped `any` survives longest: nothing here fails at compile time,
  * so the screen silently renders `undefined` when a field is renamed upstream.
+ *
+ * ⚠️ Every nullable property declares `type` EXPLICITLY. Nest cannot read
+ * `string | null` off the TypeScript annotation — a union erases to Object — so
+ * `@ApiProperty({ nullable: true })` alone emits a schema carrying no type, and
+ * `openapi-typescript` renders it as `Record<string, never> | null`. The admin
+ * then fails to compile on every use of that field.
  */
 
 class BridgeOutboxSummaryDto {
@@ -40,7 +46,8 @@ class BridgeOutboxRowDto {
   dealId!: string;
 
   @ApiProperty({
-    description: "How the bridge learned of it. Always 'sweep' on this protocol — the MT5 Web API has no deal push.",
+    description:
+      "How the bridge learned of it. Always 'sweep' on this protocol — the MT5 Web API has no deal push.",
     example: 'sweep',
   })
   source!: string;
@@ -56,12 +63,14 @@ class BridgeOutboxRowDto {
   nextAttempt!: string;
 
   @ApiProperty({
+    type: String,
     nullable: true,
-    description: 'Null while undelivered. This field answers "did it arrive"; the value answers "when".',
+    description:
+      'Null while undelivered. This field answers "did it arrive"; the value answers "when".',
   })
   deliveredAt!: string | null;
 
-  @ApiProperty({ nullable: true, example: 'HTTP 400: VALIDATION_FAILED ...' })
+  @ApiProperty({ type: String, nullable: true, example: 'HTTP 400: VALIDATION_FAILED ...' })
   lastError!: string | null;
 
   @ApiProperty()
@@ -111,12 +120,14 @@ class BridgeOperationRowDto {
   amount!: string;
 
   @ApiProperty({
-    description: "MT5's operation type. `balance` is real money; `credit` is broker funds the client cannot withdraw.",
+    description:
+      "MT5's operation type. `balance` is real money; `credit` is broker funds the client cannot withdraw.",
     example: 'balance',
   })
   type!: string;
 
   @ApiProperty({
+    type: String,
     nullable: true,
     description: 'The resulting MT5 ticket. Null means the operation never confirmed.',
     example: '56054592',
@@ -127,6 +138,7 @@ class BridgeOperationRowDto {
   startedAt!: string;
 
   @ApiProperty({
+    type: String,
     nullable: true,
     description: 'Null is the state that needs a human: claimed, and never confirmed.',
   })

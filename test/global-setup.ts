@@ -31,7 +31,29 @@ export async function setup(): Promise<void> {
   container = await new PostgreSqlContainer('postgres:16-alpine').start();
   // Suites reach the container through this, rather than through an import —
   // vitest runs globalSetup in a separate module graph from the test files.
-  process.env['TEST_PG_URI'] = container.getConnectionUri();
+  process.env['TEST_PG_URI'] = ipv4(container.getConnectionUri());
+}
+
+/**
+ * `localhost` → `127.0.0.1`, because the two are not interchangeable here.
+ *
+ * Testcontainers builds its URI with the hostname `localhost`. On a machine
+ * where `localhost` resolves to IPv6 `::1` first — the default on Windows, and
+ * on any host with an IPv6 loopback line in `hosts` — that name points
+ * somewhere the published port is not: Docker's forward listens on IPv4 only,
+ * so the connection reaches nothing and comes back `read ECONNRESET`.
+ *
+ * The failure is maximally confusing, which is why this is worth a helper and
+ * a comment rather than an inline replace. The container starts, reports
+ * healthy, and hands out a URI; every suite then dies on its first statement.
+ * A whole run goes red at once and reads like the database is broken rather
+ * than merely unreachable — the visible error is on `CREATE DATABASE`, several
+ * frames from the cause. `127.0.0.1` has no such ambiguity.
+ */
+function ipv4(uri: string): string {
+  const url = new URL(uri);
+  if (url.hostname === 'localhost') url.hostname = '127.0.0.1';
+  return url.toString();
 }
 
 export async function teardown(): Promise<void> {

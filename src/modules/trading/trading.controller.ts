@@ -203,7 +203,8 @@ export class TradingController {
       demo: demoTypes.length > 0,
       liveTypes,
       demoTypes,
-      leverages: terms.leverages,
+      // From the ladder TABLE, not the settings row — see migration 0067.
+      leverages: await this.selfServiceGroups.leverages(),
       maxLiveAccounts: terms.maxLiveAccounts,
       maxDemoAccounts: terms.maxDemoAccounts,
       maxDemoDeposit: terms.maxDemoDeposit,

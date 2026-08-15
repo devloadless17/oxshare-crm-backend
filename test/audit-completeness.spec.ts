@@ -338,16 +338,22 @@ describe('recorded: the feature modules', () => {
     /*
      * Took over from `settings.general.update`, which was removed with the
      * General tab and its table. The reason for pinning it is stronger here:
-     * the leverage ladder, the per-client account caps and the demo funding
-     * ceiling are all limits somebody can raise, and the effect surfaces in the
-     * broker's own reporting weeks later.
+     * the per-client account caps, the demo funding ceiling and the broker's
+     * revenue cap are all limits somebody can raise, and the effect surfaces in
+     * the broker's own reporting weeks later.
+     *
+     * The leverage ladder USED to ride on this payload as a comma-separated
+     * string. Migration 0067 gave it its own table and its own `leverages.*`
+     * keys, so it is attributed through `leverage.create`/`.update`/`.delete`
+     * instead — one row per rung rather than one "trading settings changed".
+     * Sending it here now is a 400: the DTO whitelists its properties, so an
+     * unknown one is rejected rather than ignored.
      *
      * PUT, not PATCH — the route is `@Put('trading')`, and a PATCH matches no
      * handler, which would make this pass on the status assertion rather than
      * on the audit row it claims to be about.
      */
     const res = await session.put('/v1/admin/settings/trading', {
-      leverages: '50,100,200',
       maxLiveAccounts: 4,
       maxDemoAccounts: 6,
       maxDemoDeposit: '500000',
