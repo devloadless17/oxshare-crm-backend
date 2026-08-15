@@ -20,6 +20,8 @@ import { AdminMoneyController } from './admin-money.controller';
 import { AdminStatsService } from './admin-stats.service';
 import { AdminStatsController } from './admin-stats.controller';
 import { AdminHoldingsController } from './admin-holdings.controller';
+import { AdminBridgeController } from './admin-bridge.controller';
+import { TradingModule } from '../trading/trading.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { CurrenciesModule } from '../currencies/currencies.module';
@@ -81,6 +83,9 @@ const ADMIN_SERVICES = [
     // currency the platform actually holds and has enabled, and
     // CurrenciesService is what answers that.
     CurrenciesModule,
+    // For AdminBridgeController: TradingModule exports Mt5BridgeClient, which the
+    // bridge diagnostics routes call straight through.
+    TradingModule,
   ],
   // Nine controllers share the 'admin' prefix, one per concern, mirroring the
   // services. Express registers all of their routes; there are no path
@@ -99,6 +104,7 @@ const ADMIN_SERVICES = [
     AdminMoneyController,
     AdminStatsController,
     AdminHoldingsController,
+    AdminBridgeController,
   ],
   /*
    * The RBAC-08 `IpAllowlistGuard` was registered HERE as an APP_GUARD and is

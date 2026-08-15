@@ -75,6 +75,55 @@ export interface Mt5Position {
   openedAt: string;
 }
 
+/**
+ * The bridge's delivery queue, as it reports it.
+ *
+ * `failing` is deliberately distinct from `pending`: a pending row may simply
+ * be new and about to go out, while a failing one has already been attempted
+ * and rejected. Alerting on `pending` cries wolf on a healthy busy system;
+ * alerting on `failing` does not.
+ */
+export interface BridgeOutbox {
+  summary: { total: number; delivered: number; pending: number; failing: number };
+  rows: {
+    dealId: string;
+    source: string;
+    attempts: number;
+    nextAttempt: string;
+    deliveredAt: string | null;
+    lastError: string | null;
+    createdAt: string;
+  }[];
+}
+
+/**
+ * Balance operations the bridge has run.
+ *
+ * `amount` is a decimal STRING all the way from MT5 — §6.1 applies here as
+ * everywhere, and this one is read by a human checking a client's balance.
+ * `stuck` counts rows with no `completedAt`: money in an unknown state.
+ */
+export interface BridgeOperations {
+  summary: { total: number; completed: number; stuck: number };
+  rows: {
+    idempotencyKey: string;
+    login: string;
+    amount: string;
+    type: string;
+    dealId: string | null;
+    startedAt: string;
+    completedAt: string | null;
+  }[];
+}
+
+/** The tail of the bridge's log file. `exists: false` is a normal first-run answer. */
+export interface BridgeLogs {
+  file: string;
+  exists: boolean;
+  matched?: number;
+  lines: string[];
+}
+
 /** One closed deal, as the bridge reports it. Amounts are decimal strings. */
 export interface Mt5Deal {
   dealId: number;
@@ -192,6 +241,57 @@ export class Mt5BridgeClient {
       to: to.toISOString(),
     });
     return await this.request<Mt5Deal[]>('GET', `/accounts/${login}/deals?${params.toString()}`);
+  }
+
+  /**
+   * The bridge's own DELIVERY QUEUE — has each deal reached us, and when.
+   *
+   * Diagnostic, not a data source. The deals themselves live in `mt5_deals`
+   * once ingested; this answers the different question of whether ingestion is
+   * working, which `mt5_deals` cannot — a deal that never arrived leaves no row
+   * to notice the absence of.
+   *
+   * `pending` narrows to rows the bridge has not delivered. On a healthy system
+   * that is empty or briefly non-empty; a persistent backlog means the CRM is
+   * rejecting deals, and `lastError` on each row says why.
+   */
+  async getOutbox(options: { pending?: boolean; limit?: number } = {}): Promise<BridgeOutbox> {
+    const params = new URLSearchParams();
+    if (options.pending) params.set('pending', 'true');
+    if (options.limit) params.set('limit', String(options.limit));
+    const query = params.toString();
+    return await this.request<BridgeOutbox>('GET', `/admin/outbox${query ? `?${query}` : ''}`);
+  }
+
+  /**
+   * Balance operations the bridge has executed, and — the point of this — the
+   * ones it CLAIMED and never confirmed.
+   *
+   * A row with `completedAt: null` is an operation where the bridge told MT5 to
+   * move money and never learned whether it did. The key stays claimed on
+   * purpose so a retry cannot double-credit, which also means it stays that way
+   * until a person reconciles it against MT5's own deal history.
+   *
+   * `stuck: true` is therefore not a convenience filter, it is the alert. Any
+   * row it returns is money in an unknown state.
+   */
+  async getBalanceOperations(
+    options: { stuck?: boolean; limit?: number } = {},
+  ): Promise<BridgeOperations> {
+    const params = new URLSearchParams();
+    if (options.stuck) params.set('stuck', 'true');
+    if (options.limit) params.set('limit', String(options.limit));
+    const query = params.toString();
+    return await this.request<BridgeOperations>('GET', `/admin/operations${query ? `?${query}` : ''}`);
+  }
+
+  /** The tail of the bridge's log for today, optionally filtered. */
+  async getLogs(options: { lines?: number; contains?: string } = {}): Promise<BridgeLogs> {
+    const params = new URLSearchParams();
+    if (options.lines) params.set('lines', String(options.lines));
+    if (options.contains) params.set('contains', options.contains);
+    const query = params.toString();
+    return await this.request<BridgeLogs>('GET', `/admin/logs${query ? `?${query}` : ''}`);
   }
 
   /**
