@@ -146,11 +146,35 @@ describe('AdminRbacService anti-escalation', () => {
     expect(rolesFake.update).not.toHaveBeenCalled();
   });
 
-  it('a sub-admin cannot grant their OWN role a permission they do not hold', async () => {
+  /*
+   * REFUSED, not merely restricted. An earlier version let you edit your own
+   * role downward — subset-only — which closed the escalation but left the UI
+   * offering an Edit action that failed on save depending on which boxes you
+   * ticked. A flat refusal is what lets the roles screen hide the action.
+   */
+  it('a sub-admin cannot edit their OWN role at all, even to a subset they hold', async () => {
     const { service, rolesFake } = await buildRbacService();
 
     await expect(
-      service.updateRole('role-1', { permissions: ['ib.approve'] }, SUB_ADMIN_ON_ROLE_1),
+      service.updateRole('role-1', { permissions: ['roles.view'] }, SUB_ADMIN_ON_ROLE_1),
+    ).rejects.toThrow(AuthorizationError);
+    expect(rolesFake.update).not.toHaveBeenCalled();
+  });
+
+  /*
+   * The rename and the mask are the same act. `maskedFields` decides which
+   * client fields the holder may READ, so leaving it editable on your own role
+   * would be the same escalation under a different property name — which is
+   * exactly what the earlier `if (patch.permissions)` placement allowed.
+   */
+  it('refuses a name-only or mask-only edit of your own role', async () => {
+    const { service, rolesFake } = await buildRbacService();
+
+    await expect(
+      service.updateRole('role-1', { name: 'Renamed' }, SUB_ADMIN_ON_ROLE_1),
+    ).rejects.toThrow(AuthorizationError);
+    await expect(
+      service.updateRole('role-1', { maskedFields: [] }, SUB_ADMIN_ON_ROLE_1),
     ).rejects.toThrow(AuthorizationError);
     expect(rolesFake.update).not.toHaveBeenCalled();
   });

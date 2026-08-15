@@ -170,9 +170,9 @@ export class AdminRbacService {
    * ## The rule
    *
    * An admin holding `roles.edit` may grant any key in the catalog to any role
-   * they are not themselves assigned to. Editing THEIR OWN role keeps the
-   * subset rule: they cannot use it to hand themselves something they do not
-   * already hold.
+   * they are not themselves assigned to. Their OWN role is refused outright —
+   * see `assertRoleNotSelf`, which is applied to the whole update rather than
+   * to its permissions, because the mask and the name are the same act.
    *
    * ## Why not the plain subset rule everywhere
    *
@@ -210,6 +210,38 @@ export class AdminRbacService {
    * with no session and no browser that outlives the person who minted it, and
    * an invite creates an account nobody has checked.
    */
+  /**
+   * NOBODY EDITS THE ROLE THEY ARE STANDING ON.
+   *
+   * `resolvePermissions` replaces an admin's own snapshot with their role's, so
+   * their role IS their access — editing it is editing themselves, and every
+   * field on it counts: `permissions` grants, `maskedFields` decides which
+   * client data they can read.
+   *
+   * A subset rule was tried here first ("you may edit your own role, but only
+   * downward"). It closed the escalation and still read as a trap: the screen
+   * offered an Edit action that failed on save depending on which keys you
+   * ticked. A flat refusal is enforceable in one line, explainable in one
+   * sentence, and lets the roles screen hide the action outright rather than
+   * predicting which edits the API will take.
+   *
+   * The cost is that somebody else has to make the change. That is the point —
+   * it puts a second name on every permission change, which is what the audit
+   * log is for.
+   */
+  private assertRoleNotSelf(actor: Admin, roleId: string): void {
+    if (actor.roleId !== undefined && actor.roleId === roleId) {
+      throw new AuthorizationError(
+        'You cannot edit the role you are assigned to. Ask another administrator with role access to make this change.',
+      );
+    }
+  }
+
+  // Async by contract, like `assertGrantable` above and for the same reason:
+  // every caller awaits it, and the day this needs a role lookup, making it
+  // async then would silently un-await the call sites. A missing `await` on
+  // exactly this kind of guard is what shipped a privilege escalation once.
+  // eslint-disable-next-line @typescript-eslint/require-await
   private async assertRoleGrantable(
     actor: Admin,
     // `undefined` for "no role in question", matching `Admin.roleId` and
@@ -221,13 +253,15 @@ export class AdminRbacService {
     /*
      * `resolvePermissions` REPLACES an admin's own column with their role's
      * when they have a roleId — so "my role" is the thing that actually decides
-     * what I can do, and raising it raises me. An admin with no roleId runs on
+     * what I can do, and editing it edits me. An admin with no roleId runs on
      * their own snapshot, which no role edit can touch, so every role is fair
      * game for them.
      */
     if (roleId !== undefined && actor.roleId === roleId) {
-      await this.assertGrantable(actor, permissions);
-      return;
+      // Unreachable through `updateRole`, which refuses earlier — kept because
+      // this method is the one that states the invariant, and a future caller
+      // should not be able to reintroduce the hole by not knowing about it.
+      this.assertRoleNotSelf(actor, roleId);
     }
     this.assertKnownKeys(permissions);
   }
@@ -418,10 +452,22 @@ export class AdminRbacService {
     const role = await this.roles.findById(id);
     if (!role) throw new NotFoundError('Role not found.');
     if (role.isSystem) throw new ValidationError('System roles cannot be modified.');
+
+    /*
+     * THE WHOLE ROLE, not just its permissions.
+     *
+     * This guard used to hang off `patch.permissions`, which left the mask and
+     * the name editable on your own role — and `maskedFields` decides which
+     * client fields you can see, so that was the same escalation wearing a
+     * different name. Refusing the request outright is also what lets the UI
+     * hide the action entirely: a rule with no exceptions is one a screen can
+     * mirror without guessing.
+     */
+    this.assertRoleNotSelf(actor, role.id);
+
     if (patch.name && patch.name !== role.name && (await this.roles.findByName(patch.name))) {
       throw new ConflictError('A role with this name already exists.');
     }
-    // Any role but their own — see `assertRoleGrantable`.
     if (patch.permissions) await this.assertRoleGrantable(actor, role.id, patch.permissions);
     if (patch.maskedFields) this.assertMaskAllowed(actor, patch.maskedFields);
     const updated = await this.roles.update(id, patch);
