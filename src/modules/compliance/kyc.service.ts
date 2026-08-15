@@ -169,6 +169,32 @@ export class KycService {
   async attachFile(userId: string, field: string, filePath: string, fileName: string) {
     const submission = await this.kycStore.getOrCreate(userId);
 
+    /*
+     * THE SAME GUARD `saveStep` HAS, and its absence here was the hole.
+     *
+     * `saveStep` refused an approved or in-review submission from the day it
+     * was written; this method never did, and `POST /kyc/upload` reaches it
+     * with only the auth guards. So a client could:
+     *
+     *   · swap evidence mid-review — upload a clean passport, submit, then
+     *     re-upload a forged one while the reviewer had the row open, so the
+     *     approval was recorded against bytes nobody inspected; or
+     *   · replace documents AFTER approval, leaving status `approved` and
+     *     `verificationLevel` 1 while the files behind them changed.
+     *
+     * Neither left a trace: `archiveAttempt` snapshots at DECISION time, so an
+     * overwrite before the decision erased the original with no record it had
+     * existed. `schema.ts` already identified `attachFile` overwriting
+     * `frontFilePath` as the danger — it was only ever solved for the
+     * post-decision case.
+     */
+    if (submission.status === 'approved') {
+      throw new AuthorizationError('KYC already approved.');
+    }
+    if (submission.status === 'under_review' || submission.status === 'submitted') {
+      throw new AuthorizationError('KYC is under review. You cannot change your documents now.');
+    }
+
     if (field === 'doc_front') {
       await this.kycStore.update(userId, {
         document: {
@@ -269,20 +295,49 @@ export class KycService {
       throw new ValidationError('Proof of address is required.');
 
     /*
-     * Read BEFORE the update below overwrites it — this is what tells a first
-     * submission from a client returning to fix one, and the update sets
-     * `status` to 'submitted' unconditionally.
+     * Read BEFORE the transition below overwrites it — this is what tells a
+     * first submission from a client returning to fix one.
      */
     const wasRejected = finalSub.status === 'rejected';
 
-    // A resubmission after rejection starts a fresh review — stale rejection
-    // data must not follow it into the admin queue.
-    const submitted = await this.kycStore.update(userId, {
-      status: 'submitted',
-      submittedAt: new Date(),
-      rejectionReason: undefined,
-      rejectedFields: undefined,
-    });
+    /*
+     * `transition`, NOT `update`, and the difference was a real bug.
+     *
+     * This wrote `status: 'submitted'` unconditionally, with no check on what
+     * the status already was. Nothing here touches `verificationLevel`, so an
+     * approved client calling `POST /kyc/submit` again landed on `submitted`
+     * WITH level 1 still granted — in the review queue and able to withdraw at
+     * the same time. That is exactly the divergence `reject()` claws the level
+     * back to prevent, reached by a route neither it nor `approve` covers.
+     *
+     * It also let a client bounce a claimed row out of `under_review` from
+     * under the reviewer holding it.
+     *
+     * The `from` list is the set of states a submission may legitimately be
+     * sent from: never started, part-filled, or returned for correction. A
+     * resubmission after rejection starts a fresh review, so stale rejection
+     * data must not follow it into the admin queue.
+     */
+    const submitted = await this.kycStore.transition(
+      userId,
+      ['not_started', 'in_progress', 'rejected'],
+      {
+        status: 'submitted',
+        submittedAt: new Date(),
+        rejectionReason: undefined,
+        rejectedFields: undefined,
+      },
+    );
+
+    if (!submitted) {
+      // No row matched, so the status moved under us — already submitted, in
+      // review, or approved. Reporting the current state beats a generic 500.
+      throw new AuthorizationError(
+        finalSub.status === 'approved'
+          ? 'KYC already approved.'
+          : 'KYC has already been submitted and is awaiting review.',
+      );
+    }
 
     /*
      * Ring the reviewers' bells — post-write, never-throws, scope-filtered at
@@ -444,7 +499,26 @@ export class KycService {
           : 'Only submitted KYC can be claimed for review.',
       );
     }
-    await this.kycStore.update(userId, { status: 'under_review', reviewedBy: adminId });
+    /*
+     * `transition`, so the check and the write are ONE statement.
+     *
+     * The read above is kept for its error messages, but it cannot be the
+     * guard: two admins clicking Review in the same tick both saw 'submitted',
+     * both passed, and both wrote — the second silently taking ownership of a
+     * row the first was already reading. `transition` puts the expected status
+     * in the WHERE clause, so exactly one UPDATE matches and the loser is told.
+     *
+     * This was the one decision path that never adopted the pattern the store
+     * documents; approve and reject have used it throughout.
+     */
+    const claimed = await this.kycStore.transition(userId, ['submitted'], {
+      status: 'under_review',
+      reviewedBy: adminId,
+    });
+
+    if (!claimed) {
+      throw new ConflictError('Another reviewer claimed this submission first.');
+    }
     return this.getByUserId(userId);
   }
 

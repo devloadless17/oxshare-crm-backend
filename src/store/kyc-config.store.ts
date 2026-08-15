@@ -1,3 +1,4 @@
+import { documentForFieldType } from '../common/kyc/document-catalogue';
 import { v4 as uuidv4 } from 'uuid';
 import { asc, eq } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
@@ -5,14 +6,52 @@ import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
 import { kycConfigSteps } from '../database/schema';
 
+/** One upload slot a document type asks for. See `KycDocumentType`. */
+export interface KycDocumentPart {
+  key: string;
+  label: string;
+  required: boolean;
+  hint?: string;
+}
+
+/**
+ * A document the client may choose, and what uploading it involves.
+ *
+ * The parts live on the TYPE because that is where the requirement actually
+ * belongs: a passport is one page, a national ID is two, a utility bill is one,
+ * a tenancy agreement may be several. Every KYC provider surveyed (Sumsub,
+ * Onfido, Persona, Veriff, Jumio, Stripe Identity, Trulioo — Aug 2026) models
+ * the side as an axis orthogonal to the type rather than baking it into an
+ * enum, and only Sumsub and Jumio publish it as data. This does, which is what
+ * lets the portal render the right number of slots without knowing any document
+ * name.
+ */
+export interface KycDocumentType {
+  value: string;
+  label: string;
+  category: 'identity' | 'address';
+  parts: KycDocumentPart[];
+}
+
 export interface KycFieldConfig {
   id: string;
   name: string;
   label: string;
-  type: 'text' | 'date' | 'phone' | 'select' | 'file' | 'camera' | 'checkbox';
+  /**
+   * A base type, or `doc:<value>` for a document — see `documentFieldType`.
+   * Left as a string because the catalogue defines the document half, so a
+   * union here would have to be regenerated every time one is added.
+   */
+  type: string;
   required: boolean;
   options?: string[]; // for select type
   hint?: string;
+  /**
+   * The catalogue entry this field collects, resolved from its `type` when
+   * serving. NOT persisted — the type is the only stored fact, so a field can
+   * never hold a stale copy of what a passport requires.
+   */
+  document?: KycDocumentType;
 }
 
 /**
@@ -120,20 +159,34 @@ export const DEFAULT_KYC_STEPS: KycStepConfig[] = [
     icon: 'FileText',
     enabled: true,
     fields: [
+      /*
+       * THREE FIELDS, one per accepted document — the alternatives the client
+       * chooses between, written the way they read.
+       *
+       * The type IS the document (`doc:passport`), so how many photos each
+       * needs is a fact in `common/kyc/document-catalogue.ts` rather than
+       * something re-entered per step.
+       */
       {
-        id: 'f-9',
-        name: 'doc_front',
-        label: 'Front Side',
-        type: 'file',
-        required: true,
+        id: 'f-doc-passport',
+        name: 'passport',
+        label: 'Passport',
+        type: 'doc:passport',
+        required: false,
       },
       {
-        id: 'f-10',
-        name: 'doc_back',
-        label: 'Back Side',
-        type: 'file',
+        id: 'f-doc-national-id',
+        name: 'nationalId',
+        label: 'National ID',
+        type: 'doc:national_id',
         required: false,
-        hint: 'Required for National ID & Driving License',
+      },
+      {
+        id: 'f-doc-driving-license',
+        name: 'drivingLicense',
+        label: 'Driving License',
+        type: 'doc:driving_license',
+        required: false,
       },
     ],
   },
@@ -165,34 +218,59 @@ export const DEFAULT_KYC_STEPS: KycStepConfig[] = [
     enabled: true,
     fields: [
       {
-        id: 'f-13',
-        name: 'address_proof',
-        label: 'Primary Page (Page 1)',
-        type: 'file',
-        required: true,
+        id: 'f-addr-utility',
+        name: 'utilityBill',
+        label: 'Utility Bill',
+        type: 'doc:utility_bill',
+        required: false,
       },
       {
-        id: 'f-14',
-        name: 'address_proof_2',
-        label: 'Page 2 / Supporting Document',
-        type: 'file',
+        id: 'f-addr-bank',
+        name: 'bankStatement',
+        label: 'Bank Statement',
+        type: 'doc:bank_statement',
+        required: false,
+      },
+      {
+        id: 'f-addr-tenancy',
+        name: 'tenancyAgreement',
+        label: 'Tenancy Agreement',
+        type: 'doc:tenancy_agreement',
         required: false,
       },
     ],
   },
-  {
-    id: 'step-5',
-    stepNumber: 5,
-    slug: 'review',
-    title: 'Review & Submit',
-    description: 'Confirm all details and submit your application for compliance review.',
-    icon: 'CheckSquare',
-    enabled: true,
-    fields: [],
-  },
 ];
 
+/*
+ * ── THERE IS NO `review` STEP IN HERE, DELIBERATELY ───────────────────────
+ *
+ * It used to be seeded as step 5 like any other, which made it configurable —
+ * and it is the one step that must not be. "Review & Submit" is where the
+ * client presses the button that submits the whole application: an operator who
+ * disabled or deleted it left a flow with no way to finish, and one who dragged
+ * it to position 2 left a flow that submits before it collects anything.
+ *
+ * The portal appends it after whatever this config returns, so it is always
+ * last and always present. See `dynamic-step-renderer.tsx`.
+ */
+
 type Row = typeof kycConfigSteps.$inferSelect;
+
+/**
+ * Resolves `acceptedDocuments` into the full catalogue entries on the way OUT.
+ *
+ * The row stores values only, so a step configured last year cannot hold a
+ * stale copy of what a passport requires — change the catalogue and every step
+ * that accepts one follows on the next read. Storing the resolved shape would
+ * mean a migration each time a document's slots changed.
+ */
+const withResolvedDocuments = (fields: KycFieldConfig[]): KycFieldConfig[] =>
+  fields.map((field) => {
+    const document = documentForFieldType(field.type);
+    // A base type (`text`, `date`, …) resolves to nothing and passes through.
+    return document ? { ...field, document } : field;
+  });
 
 const toStep = (r: Row): KycStepConfig => ({
   id: r.id,
@@ -202,8 +280,17 @@ const toStep = (r: Row): KycStepConfig => ({
   description: r.description ?? '',
   icon: r.icon ?? 'FileText',
   enabled: r.enabled,
-  fields: (r.fields as unknown as KycFieldConfig[]) ?? [],
+  fields: withResolvedDocuments((r.fields as unknown as KycFieldConfig[]) ?? []),
 });
+
+/*
+ * `documentTypes` is stripped on the way IN. It is derived from the catalogue,
+ * so persisting it would create a second copy that drifts — and a client
+ * posting a hand-crafted one could otherwise declare a passport needs no
+ * upload at all.
+ */
+const stripResolved = (fields: KycFieldConfig[]): KycFieldConfig[] =>
+  fields.map(({ document: _resolved, ...field }) => field);
 
 const toRow = (s: KycStepConfig) => ({
   id: s.id,
@@ -213,7 +300,7 @@ const toRow = (s: KycStepConfig) => ({
   description: s.description,
   icon: s.icon,
   enabled: s.enabled,
-  fields: s.fields as unknown as Record<string, unknown>[],
+  fields: stripResolved(s.fields) as unknown as Record<string, unknown>[],
 });
 
 @Injectable()

@@ -31,6 +31,8 @@ import { AdminAuditService } from './admin-audit.service';
 import { exportFormat, streamCsv } from '../../common/export/export-response';
 import { KYC_SORT_COLUMNS } from '../../store/kyc.store';
 import { KycStepConfig } from '../../store/kyc-config.store';
+import { DOCUMENT_CATALOGUE } from '../../common/kyc/document-catalogue';
+import { KycDocumentTypeDto } from '../compliance/dto/kyc-response.dto';
 import { RejectionContext } from '../../store/rejection-reasons.store';
 import {
   KycConfigDto,
@@ -351,6 +353,25 @@ export class AdminComplianceController {
   @NotClientScoped("The KYC form definition — a schema, not anybody's submission.")
   getKycConfig() {
     return this.compliance.getKycConfig();
+  }
+
+  /**
+   * The documents the builder may offer, and what each one requires.
+   *
+   * Served rather than duplicated in the admin bundle: "a passport is one photo
+   * page" is a fact the portal also renders from, and two copies of it would
+   * drift the moment one was edited. The builder ticks values off this list;
+   * the step stores the values only.
+   */
+  @Get('kyc-config/document-catalogue')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.view', 'kyc.edit')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Documents a `document` field may accept' })
+  @ApiOkResponse({ type: [KycDocumentTypeDto] })
+  @NotClientScoped('A catalogue of document shapes — no client data.')
+  getDocumentCatalogue() {
+    return DOCUMENT_CATALOGUE;
   }
 
   @Put('kyc-config')

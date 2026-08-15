@@ -313,13 +313,24 @@ describe('the step configurator is a different permission from reviewing', () =>
     expect(res.status).toBe(403);
   });
 
-  it('refuses even a master admin a config with the mandated steps removed', async () => {
-    // FR-CORE-15: every customer uploads the three document types. Permission to
-    // edit the flow is not permission to delete the requirement.
+  it('lets an admin with kyc.edit empty the flow entirely', async () => {
+    /*
+     * This asserted a 400: `personal`, `document`, `selfie` and `address` were
+     * mandated by FR-CORE-15 and could not be removed by anyone.
+     *
+     * The owner retired that rule on 15 Aug 2026 — a KYC flow sold as
+     * configurable that refuses to drop four of its steps is not configurable,
+     * and which documents a jurisdiction demands is the broker's decision. The
+     * empty config is the extreme case and the sharpest test of it: if any step
+     * were still secretly required, this call is what would reveal it.
+     *
+     * The PERMISSION split above is untouched and still the real control — a
+     * reviewer gets 403, only `kyc.edit` gets this far. What replaced the block
+     * is the audit trail; see test/kyc-config-rules.spec.ts.
+     */
     const master = await actingAs(ctx, 'admin', ADMIN);
     const res = await master.put('/v1/admin/kyc-config', { steps: [] });
-    expect(res.status).toBe(400);
-    expect(JSON.stringify(res.body)).toMatch(/personal|document|selfie|address/i);
+    expect(res.status).toBe(200);
   });
 });
 

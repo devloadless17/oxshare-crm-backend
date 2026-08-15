@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { KycConfigStore, KycStepConfig, MANDATORY_KYC_SLUGS } from '../../store/kyc-config.store';
+import { KycConfigStore, KycStepConfig } from '../../store/kyc-config.store';
 import { DEFAULT_KYC_SORT, KYC_SORT_COLUMNS } from '../../store/kyc.store';
 import { sortKey, sortOrder } from '../../common/sorting';
 import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-reasons.store';
@@ -255,26 +255,30 @@ export class AdminComplianceService {
   getKycConfig() {
     return this.kycConfig.getSteps();
   }
-  /**
-   * FR-CORE-15 / FR-IND-03, enforced here rather than only in the admin UI.
+  /*
+   * ── THERE IS NO MANDATORY STEP ANY MORE (owner's call, 15 Aug 2026) ───────
    *
-   * `setSteps` replaces the whole configuration, so a payload that omits or
-   * disables a mandatory step silently removes it from onboarding — the portal
-   * filters /kyc/config to enabled steps. The admin screen has always blocked
-   * that; the API accepted it, which made the rule a property of one screen
-   * rather than of the system.
+   * `personal`, `document`, `selfie` and `address` used to be undeletable and
+   * undisablable here, in the admin UI, and by omission in the portal — three
+   * copies of one rule citing FR-CORE-15/FR-IND-03.
+   *
+   * The objection that retired it is simple and correct: a KYC flow sold as
+   * configurable that refuses to drop four of its steps is not configurable.
+   * Which documents a jurisdiction requires is the broker's decision and
+   * differs by licence; encoding one regulator's answer in a service made
+   * every other answer unreachable without a code change.
+   *
+   * WHAT REPLACES IT is the audit trail, not nothing. `kyc_config.replace`
+   * records the full slug list and the enabled subset on every save, so
+   * "onboarding stopped asking for proof of address on the 12th" is an
+   * answerable question with a name attached. That is the control a compliance
+   * review actually needs — the previous rule could only say the step was
+   * never removed, which is a weaker claim than knowing who removed it.
+   *
+   * The portal degrades safely: it resolves steps by `stepNumber` from the
+   * config and branches on slug for its uploader, camera and passport paths,
+   * so a slug that is gone simply takes its branch out of the flow.
    */
-  private assertMandatoryStepsIntact(steps: KycStepConfig[]): void {
-    const enabledSlugs = new Set(steps.filter((s) => s.enabled).map((s) => s.slug));
-    const missing = MANDATORY_KYC_SLUGS.filter((slug) => !enabledSlugs.has(slug));
-    if (missing.length > 0) {
-      throw new ValidationError(
-        `These KYC steps are required and must stay enabled: ${missing.join(', ')}. ` +
-          'They are mandated by FR-CORE-15/FR-IND-03 and the client portal submits by slug.',
-        { missing },
-      );
-    }
-  }
 
   // `async` so this REJECTS rather than throwing synchronously. deleteKycStep and
   // updateKycStep both await the current config before guarding, so they reject; a
@@ -289,7 +293,6 @@ export class AdminComplianceService {
    * what onboarding looked like on a given day.
    */
   async updateKycConfig(steps: KycStepConfig[], actor: Admin) {
-    this.assertMandatoryStepsIntact(steps);
     const result = await this.kycConfig.setSteps(steps);
     this.audit.record(actor.id, 'kyc_config.replace', 'kyc_config', 'steps', {
       slugs: steps.map((step) => step.slug),
@@ -308,23 +311,12 @@ export class AdminComplianceService {
   async updateKycStep(id: string, patch: Partial<KycStepConfig>, actor: Admin) {
     const steps = await this.kycConfig.getSteps();
     const target = steps.find((s) => s.id === id);
-    if (target && MANDATORY_KYC_SLUGS.includes(target.slug)) {
-      // Disabling or re-slugging a mandatory step is the same removal by another
-      // route: the portal submits by slug and filters to enabled.
-      if (patch.enabled === false) {
-        throw new ValidationError(
-          `"${target.title}" is required by the KYC spec (FR-CORE-15) and cannot be disabled.`,
-          { slug: target.slug },
-        );
-      }
-      if (patch.slug !== undefined && patch.slug !== target.slug) {
-        throw new ValidationError(
-          `"${target.title}" is a required step and its slug cannot be changed — the client ` +
-            'portal submits by slug.',
-          { slug: target.slug },
-        );
-      }
-    }
+    /*
+     * NO MANDATORY-STEP GUARD. See `assertMandatoryStepsIntact` below for why
+     * the whole rule was dropped: a configurable flow that refuses to drop four
+     * of its steps is not configurable, and the broker — not this service —
+     * owns which jurisdiction needs what.
+     */
     const updated = await this.kycConfig.updateStep(id, patch);
     this.audit.record(actor.id, 'kyc_config.step_update', 'kyc_config', id, {
       slug: target?.slug,
@@ -337,12 +329,6 @@ export class AdminComplianceService {
   async deleteKycStep(id: string, actor: Admin) {
     const steps = await this.kycConfig.getSteps();
     const target = steps.find((s) => s.id === id);
-    if (target && MANDATORY_KYC_SLUGS.includes(target.slug)) {
-      throw new ValidationError(
-        `"${target.title}" is required by the KYC spec (FR-CORE-15) and cannot be deleted.`,
-        { slug: target.slug },
-      );
-    }
     const result = await this.kycConfig.deleteStep(id);
     this.audit.record(actor.id, 'kyc_config.step_delete', 'kyc_config', id, {
       slug: target?.slug,

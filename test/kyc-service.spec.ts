@@ -187,6 +187,46 @@ describe('saveStep', () => {
   });
 });
 
+describe('documents cannot change once the review has started', () => {
+  /*
+   * `attachFile` had NO status guard while `saveStep` had one from the start,
+   * and `POST /kyc/upload` reaches it with only the auth guards. Two attacks
+   * followed:
+   *
+   *   · swap evidence mid-review — upload a clean passport, submit, then
+   *     re-upload a forged one while the reviewer has the row open, so the
+   *     approval is recorded against bytes nobody inspected;
+   *   · replace documents AFTER approval, leaving `approved` and level 1 in
+   *     place over files that were never seen.
+   *
+   * Neither left a trace: `archiveAttempt` snapshots at DECISION time, so an
+   * overwrite before the decision erased the original silently.
+   */
+  for (const status of ['submitted', 'under_review'] as const) {
+    it(`refuses an upload while ${status}`, async () => {
+      const h = build({ stored: submission({ status }) });
+      await expect(
+        h.service.attachFile('user-1', 'doc_front', 'uploads/kyc/x.jpg', 'x.jpg'),
+      ).rejects.toThrow(/under review/i);
+      expect(h.kycStore.update).not.toHaveBeenCalled();
+    });
+  }
+
+  it('refuses an upload once approved', async () => {
+    const h = build({ stored: submission({ status: 'approved' }) });
+    await expect(
+      h.service.attachFile('user-1', 'doc_front', 'uploads/kyc/x.jpg', 'x.jpg'),
+    ).rejects.toThrow(/already approved/i);
+    expect(h.kycStore.update).not.toHaveBeenCalled();
+  });
+
+  it('ALLOWS an upload after rejection, which is the point of that state', async () => {
+    const h = build({ stored: submission({ status: 'rejected' }) });
+    await h.service.attachFile('user-1', 'doc_front', 'uploads/kyc/x.jpg', 'x.jpg');
+    expect(h.kycStore.update).toHaveBeenCalled();
+  });
+});
+
 describe('submit', () => {
   it('requires all four documents FR-CORE-15 mandates', async () => {
     const cases: Array<[Partial<KycSubmission>, RegExp]> = [
@@ -207,8 +247,12 @@ describe('submit', () => {
   it('accepts a complete submission and stamps submittedAt', async () => {
     const h = build({ stored: completeSubmission() });
     await h.service.submit('user-1');
-    expect(h.kycStore.update).toHaveBeenCalledWith(
+    // `transition`, not `update`: the states a submission may legitimately be
+    // sent FROM go into the WHERE clause, so an approved client calling submit
+    // again matches no row instead of demoting themselves to the queue.
+    expect(h.kycStore.transition).toHaveBeenCalledWith(
       'user-1',
+      ['not_started', 'in_progress', 'rejected'],
       expect.objectContaining({ status: 'submitted', submittedAt: expect.any(Date) }),
     );
   });
@@ -226,8 +270,9 @@ describe('submit', () => {
       user: { ...USER, firstName: '' },
     });
     await expect(h.service.submit('user-1')).rejects.toThrow(/required before submitting/i);
-    expect(h.kycStore.update).not.toHaveBeenCalledWith(
+    expect(h.kycStore.transition).not.toHaveBeenCalledWith(
       'user-1',
+      expect.anything(),
       expect.objectContaining({ status: 'submitted' }),
     );
   });
@@ -262,6 +307,25 @@ describe('submit', () => {
     await expect(h.service.submit('user-1')).rejects.toThrow(/lastName/);
   });
 
+  it('refuses an APPROVED client re-submitting, which used to demote them', async () => {
+    /*
+     * `submit()` wrote `status: 'submitted'` unconditionally and never touched
+     * `verificationLevel`. So an approved client calling this again landed on
+     * `submitted` WITH level 1 still granted — in the review queue and able to
+     * withdraw at the same time. That is the divergence `reject()` claws the
+     * level back to prevent, reached by a route it does not cover.
+     */
+    const h = build({ stored: completeSubmission({ status: 'approved' }) });
+    await expect(h.service.submit('user-1')).rejects.toThrow(/already approved/i);
+  });
+
+  it('refuses a re-submit while already in the queue', async () => {
+    // Also stops a client bouncing a claimed row out of `under_review` from
+    // under the reviewer holding it.
+    const h = build({ stored: completeSubmission({ status: 'under_review' }) });
+    await expect(h.service.submit('user-1')).rejects.toThrow(/already been submitted/i);
+  });
+
   it('CLEARS the previous rejection when resubmitting', async () => {
     // A resubmission starts a fresh review. Stale rejection text following it
     // into the queue tells the next reviewer to reject it again.
@@ -273,8 +337,10 @@ describe('submit', () => {
       }),
     });
     await h.service.submit('user-1');
-    expect(h.kycStore.update).toHaveBeenCalledWith(
+    expect(h.kycStore.transition).toHaveBeenCalledWith(
       'user-1',
+      // `rejected` is in the allowed set precisely so this resubmission works.
+      expect.arrayContaining(['rejected']),
       expect.objectContaining({ rejectionReason: undefined, rejectedFields: undefined }),
     );
   });
@@ -295,10 +361,23 @@ describe('claim', () => {
   it('claims a submitted one for the reviewing admin', async () => {
     const h = build({ stored: submission({ status: 'submitted' }) });
     await h.service.claim('user-1', 'admin-1');
-    expect(h.kycStore.update).toHaveBeenCalledWith('user-1', {
+    // Conditional on still being `submitted`, so two admins clicking Review at
+    // once cannot both take the row.
+    expect(h.kycStore.transition).toHaveBeenCalledWith('user-1', ['submitted'], {
       status: 'under_review',
       reviewedBy: 'admin-1',
     });
+  });
+
+  it('refuses the SECOND reviewer when two claim at once', async () => {
+    /*
+     * The race H1 named: both admins read `submitted`, both passed the check,
+     * and the second silently took ownership of a row the first was reading.
+     * The store fake honours the `from` precondition, so a row that has already
+     * moved to `under_review` matches nothing.
+     */
+    const h = build({ stored: submission({ status: 'under_review' }) });
+    await expect(h.service.claim('user-1', 'admin-2')).rejects.toThrow(/already being reviewed/i);
   });
 
   it('refuses when there is no submission at all', async () => {
