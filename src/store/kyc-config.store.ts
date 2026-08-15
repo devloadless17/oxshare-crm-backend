@@ -1,4 +1,5 @@
 import { documentForFieldType } from '../common/kyc/document-catalogue';
+import { KYC_COUNTRY_OPTIONS, KYC_NATIONALITY_OPTIONS } from '../common/kyc/country-options';
 import { v4 as uuidv4 } from 'uuid';
 import { asc, eq } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
@@ -265,11 +266,41 @@ type Row = typeof kycConfigSteps.$inferSelect;
  * that accepts one follows on the next read. Storing the resolved shape would
  * mean a migration each time a document's slots changed.
  */
+/**
+ * Field names whose options are a SYSTEM LIST rather than an operator's typing.
+ *
+ * Nobody is going to hand-enter 250 countries into the builder, and a list that
+ * was typed once would then drift from the `countries-list` package. So these
+ * two resolve from `common/kyc/country-options.ts` when the field carries no
+ * options of its own.
+ *
+ * Matched on the field NAME, which is the one piece of name-coupling left and
+ * is deliberate: `nationality` and `country` are the names the portal has
+ * always submitted and the columns are keyed on them. An operator who wants a
+ * different list gives the field its own `options`, and this defers.
+ */
+const SYSTEM_OPTIONS: Record<string, string[]> = {
+  nationality: KYC_NATIONALITY_OPTIONS,
+  country: KYC_COUNTRY_OPTIONS,
+};
+
 const withResolvedDocuments = (fields: KycFieldConfig[]): KycFieldConfig[] =>
   fields.map((field) => {
     const document = documentForFieldType(field.type);
     // A base type (`text`, `date`, …) resolves to nothing and passes through.
-    return document ? { ...field, document } : field;
+    if (document) return { ...field, document };
+
+    /*
+     * A `select` with no options of its own gets the system list, if one exists
+     * for its name. The admin builder showed both of these as "Dropdown with no
+     * choices" because that is exactly what they were — the portal filled them
+     * in locally, so the config never knew.
+     */
+    if (field.type === 'select' && !field.options?.length) {
+      const system = SYSTEM_OPTIONS[field.name];
+      if (system) return { ...field, options: system };
+    }
+    return field;
   });
 
 const toStep = (r: Row): KycStepConfig => ({
@@ -290,7 +321,22 @@ const toStep = (r: Row): KycStepConfig => ({
  * upload at all.
  */
 const stripResolved = (fields: KycFieldConfig[]): KycFieldConfig[] =>
-  fields.map(({ document: _resolved, ...field }) => field);
+  fields.map(({ document: _resolved, ...field }) => {
+    /*
+     * A system list is stripped back out on the way IN, or the first save from
+     * the builder would bake 250 country names into the row — a snapshot that
+     * stops tracking the package the moment it is written.
+     *
+     * Compared by identity: an operator who edits the list is holding a
+     * different array, and theirs is kept.
+     */
+    const system = SYSTEM_OPTIONS[field.name];
+    if (system && field.options === system) {
+      const { options: _system, ...rest } = field;
+      return rest;
+    }
+    return field;
+  });
 
 const toRow = (s: KycStepConfig) => ({
   id: s.id,
