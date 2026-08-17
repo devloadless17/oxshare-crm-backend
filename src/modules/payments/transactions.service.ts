@@ -60,18 +60,43 @@ interface CombinedRow {
   destination_trading_account_id: string | null;
   rejection_reason: string | null;
   reviewed_by: string | null;
-  reviewed_at: Date | null;
-  settled_at: Date | null;
+  reviewed_at: string | null;
+  settled_at: string | null;
   rival_external_id: string | null;
   rival_withdrawal_id: string | null;
-  rival_submitted_at: Date | null;
+  rival_submitted_at: string | null;
   rival_needs_attention: boolean;
   rival_attention_reason: string | null;
-  created_at: Date;
+  created_at: string;
   method_name: string | null;
   kind: MovementKind;
   trading_account_id: string | null;
 }
+
+/**
+ * Every timestamp above is a STRING, and that is not a typo.
+ *
+ * `db.execute(sql\`…\`)` runs raw SQL, so none of drizzle's column mappers
+ * apply — a `timestamptz` arrives as the Postgres literal
+ * `2026-08-14 16:20:59.660801+00` rather than a `Date`. The fields were
+ * previously declared `Date` and the rows cast with `as unknown as`, which is
+ * precisely the cast that stops the compiler from noticing the difference.
+ *
+ * Parsing here rather than passing the string through is what keeps the wire
+ * format uniform: `JSON.stringify` turns a Date into ISO 8601, which is what
+ * every other endpoint in this API returns and what both frontends parse. That
+ * literal is NOT ISO — its space separator and six-digit fraction are accepted
+ * by V8's lenient parser but are implementation-defined elsewhere, so shipping
+ * it would hand Safari and Firefox a value `new Date()` can reject outright.
+ *
+ * Node parses the literal correctly (verified); the equivalent-looking
+ * `replace(' ', 'T')` does NOT — a 'T' commits V8 to strict ISO, which allows
+ * no more than three fractional digits. Leave the string exactly as Postgres
+ * wrote it.
+ */
+const instantOf = (value: string): Date => new Date(value);
+const instantOrNull = (value: string | null): Date | null =>
+  value === null ? null : instantOf(value);
 
 /**
  * `transactions.provider` for money an ADMIN placed by hand.
@@ -1157,14 +1182,14 @@ export class TransactionsService {
         destinationTradingAccountId: row.destination_trading_account_id,
         rejectionReason: row.rejection_reason,
         reviewedBy: row.reviewed_by,
-        reviewedAt: row.reviewed_at,
-        settledAt: row.settled_at,
+        reviewedAt: instantOrNull(row.reviewed_at),
+        settledAt: instantOrNull(row.settled_at),
         rivalExternalId: row.rival_external_id,
         rivalWithdrawalId: row.rival_withdrawal_id,
-        rivalSubmittedAt: row.rival_submitted_at,
+        rivalSubmittedAt: instantOrNull(row.rival_submitted_at),
         rivalNeedsAttention: row.rival_needs_attention,
         rivalAttentionReason: row.rival_attention_reason,
-        createdAt: row.created_at,
+        createdAt: instantOf(row.created_at),
         methodName: row.method_name,
         kind: row.kind,
         tradingAccountId: row.trading_account_id,

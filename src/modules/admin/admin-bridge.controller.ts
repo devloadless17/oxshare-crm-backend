@@ -6,6 +6,7 @@ import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Mt5BridgeClient } from '../trading/mt5/mt5-bridge.client';
 import { BridgeLogsDto, BridgeOperationsDto, BridgeOutboxDto } from './dto/bridge.dto';
+import { NotClientScoped } from './guards/client-scope.decorator';
 import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
 
 /**
@@ -52,6 +53,24 @@ export class AdminBridgeController {
   @Get('outbox')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('trading.view')
+  /*
+   * Stated for all three routes here, and the reason is the same one: there is
+   * no query to attach a predicate to. Every route in this controller is a
+   * passthrough to the bridge's own HTTP API — no CRM table is read, so no
+   * `client_id` column exists to filter on.
+   *
+   * What that does NOT mean is that the response holds nothing about clients:
+   * the payloads name MT5 logins, amounts and transfer ids, as the class comment
+   * above says. An admin narrowed to a subset of clients therefore sees queue
+   * rows belonging to clients outside that subset. That is a consequence of
+   * gating on `trading.view` rather than a scope this decorator could enforce,
+   * and it is recorded here rather than left for someone to discover — see
+   * DEPLOYMENT/handover notes.
+   */
+  @NotClientScoped(
+    'Passthrough to the bridge HTTP API; reads no CRM rows, so there is no column to scope. ' +
+      'The payload does name client logins — see the note above this decorator.',
+  )
   @ApiOperation({
     summary: "The bridge's deal delivery queue",
     description:
@@ -75,6 +94,10 @@ export class AdminBridgeController {
   @Get('operations')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('trading.view')
+  @NotClientScoped(
+    'Passthrough to the bridge HTTP API; reads no CRM rows, so there is no column to scope. ' +
+      'The payload does name client logins — see the note on `outbox`.',
+  )
   @ApiOperation({
     summary: 'Balance operations, including the ones stuck mid-flight',
     description:
@@ -98,6 +121,10 @@ export class AdminBridgeController {
   @Get('logs')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('trading.view')
+  @NotClientScoped(
+    'Passthrough to the bridge HTTP API; reads no CRM rows, so there is no column to scope. ' +
+      'The log text can mention client logins — see the note on `outbox`.',
+  )
   @ApiOperation({
     summary: "The tail of the bridge's log for today",
     description:

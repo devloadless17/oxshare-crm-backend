@@ -44,6 +44,44 @@ jobs:
     name: Type-check, lint and the §11 money tests
     runs-on: ubuntu-latest
 
+    # ── The two backing services the specs have always assumed ───────────────
+    #
+    # Testcontainers covers the money specs, which build and destroy their own
+    # Postgres. It does NOT cover the specs that stand up the whole AppModule —
+    # route-authorization, audit-coverage, client-scope-coverage, openapi-routes
+    # — because `SelfServiceGroups.onModuleInit` reads trading products at boot,
+    # so `app.init()` needs a real database on the default connection. On a dev
+    # machine `docker compose up -d` supplies exactly that and the specs pass; a
+    # runner had neither, so those four failed on every commit from 14 Aug.
+    #
+    # The credentials deliberately match the fallback in `src/database/db.ts`
+    # (`oxshare:oxshare_dev@localhost:5432/oxshare`), so no DATABASE_URL is set
+    # here and CI resolves the same connection a developer's machine does. That
+    # host is also why TLS stays off: db.ts treats localhost as local.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: oxshare
+          POSTGRES_PASSWORD: oxshare_dev
+          POSTGRES_DB: oxshare
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oxshare -d oxshare"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      # Single-use replay markers for signed webhooks. `ReplayNonceModule` turns
+      # a missing Redis into a REFUSAL rather than a bypass — fail-closed, and
+      # correct — so without this every signed Rival webhook spec got a 401 it
+      # was right to get and the suite was wrong to provoke.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+
     # ── Config the process REFUSES to boot without ───────────────────────────
     #
     # `env.validation.ts` rejects a missing or short JWT secret rather than
@@ -70,6 +108,10 @@ jobs:
       # documents end up somewhere non-durable with nothing reporting it. CI must
       # never hold real R2 credentials — same rule as the fake secrets above.
       STORAGE_DRIVER: disk
+      # Points at the `redis` service above. Same reasoning as STORAGE_DRIVER:
+      # stated, so a signed-webhook spec exercises the real nonce store instead
+      # of the refusal path.
+      REDIS_URL: redis://localhost:6379
 
     steps:
       - uses: actions/checkout@v4
@@ -123,6 +165,17 @@ jobs:
       # check reach main.
       - name: Lint
         run: npm run lint
+
+      # The AppModule specs need SCHEMA, not merely a reachable server:
+      # `SelfServiceGroups.onModuleInit` selects from trading_products, so an
+      # empty database fails `app.init()` the same way an absent one does. The
+      # same programmatic migrator the deploy uses, against the service above —
+      # one migrator for CI and production rather than two that can disagree.
+      # Testcontainers specs are untouched; they migrate their own database.
+      - name: Apply migrations to the CI database
+        run: node scripts/migrate.mjs
+        env:
+          DATABASE_URL: postgresql://oxshare:oxshare_dev@localhost:5432/oxshare
 
       # Testcontainers starts its own Postgres 16; the runner's Docker is all
       # it needs. Tests run against the real committed migrations, never a mock.

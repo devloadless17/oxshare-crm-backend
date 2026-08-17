@@ -1505,6 +1505,148 @@
         ]
       }
     },
+    "/v1/admin/leverages": {
+      "get": {
+        "description": "Includes DISABLED rungs, unlike `GET /leverages` — an operator has to see what they have withdrawn in order to put it back.",
+        "operationId": "AdminLeveragesController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LeverageDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The whole ladder, operator order first",
+        "tags": [
+          "admin/leverages"
+        ]
+      },
+      "post": {
+        "description": "The ratio is the identity — 500 means 500:1 — so adding one that already exists is a conflict rather than an update.",
+        "operationId": "AdminLeveragesController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLeverageDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeverageDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add a rung",
+        "tags": [
+          "admin/leverages"
+        ]
+      }
+    },
+    "/v1/admin/leverages/{ratio}": {
+      "patch": {
+        "description": "The RATIO cannot be changed: it is the identity of the rung, and renumbering it would leave accounts opened at the old value pointing at a leverage the ladder no longer explains. Refuses to disable the last enabled rung — an empty ladder is an account-opening form with no options.",
+        "operationId": "AdminLeveragesController_update",
+        "parameters": [
+          {
+            "name": "ratio",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLeverageDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeverageDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Rename, reorder, or withdraw a rung",
+        "tags": [
+          "admin/leverages"
+        ]
+      },
+      "delete": {
+        "description": "Refused while any trading account is open at this leverage. Disable it instead — that takes it off the menu and leaves those accounts alone.",
+        "operationId": "AdminLeveragesController_remove",
+        "parameters": [
+          {
+            "name": "ratio",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Remove a rung nobody is trading on",
+        "tags": [
+          "admin/leverages"
+        ]
+      }
+    },
     "/v1/ib/status": {
       "get": {
         "description": "Returns the partner account if they have one AND their most recent application if they have made one. Both, because \"never applied\" and \"rejected, here is why\" are different states and a client shown a blank form after a refusal has been told nothing.",
@@ -6622,6 +6764,36 @@
         ]
       }
     },
+    "/v1/admin/kyc-config/document-catalogue": {
+      "get": {
+        "operationId": "AdminComplianceController_getDocumentCatalogue",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/KycDocumentTypeDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Documents a `document` field may accept",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/kyc-config/steps": {
       "post": {
         "operationId": "AdminComplianceController_addKycStep",
@@ -8751,6 +8923,141 @@
           "admin"
         ]
       }
+    },
+    "/v1/admin/bridge/outbox": {
+      "get": {
+        "description": "Whether each closed deal reached this API, and when. `failing` in the summary is the number worth acting on: a pending row may simply be new, while a failing one has been attempted and rejected — `lastError` says why.",
+        "operationId": "AdminBridgeController_outbox",
+        "parameters": [
+          {
+            "name": "pending",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeOutboxDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The bridge's deal delivery queue",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/bridge/operations": {
+      "get": {
+        "description": "A row with a null `completedAt` is an operation whose outcome the bridge never learned — it told MT5 to move money and did not find out whether it did. Those need reconciling against MT5's deal history by a person; they do not resolve on their own.",
+        "operationId": "AdminBridgeController_operations",
+        "parameters": [
+          {
+            "name": "stuck",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeOperationsDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Balance operations, including the ones stuck mid-flight",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/bridge/logs": {
+      "get": {
+        "description": "`exists: false` is a normal answer on the first run of a day, and names the file that was looked for so the next guess is informed.",
+        "operationId": "AdminBridgeController_logs",
+        "parameters": [
+          {
+            "name": "lines",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "contains",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BridgeLogsDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The tail of the bridge's log for today",
+        "tags": [
+          "admin"
+        ]
+      }
     }
   },
   "info": {
@@ -9458,6 +9765,87 @@
           },
           "isDefault": {
             "type": "boolean"
+          }
+        }
+      },
+      "LeverageDto": {
+        "type": "object",
+        "properties": {
+          "ratio": {
+            "type": "number",
+            "example": 500,
+            "description": "500 means 500:1."
+          },
+          "label": {
+            "type": "string",
+            "nullable": true,
+            "description": "What the client reads. Null renders as `1:<ratio>`."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "A disabled rung is not offered. Accounts already on it are kept."
+          },
+          "sortOrder": {
+            "type": "number",
+            "description": "The operator’s order, which is the order a client sees."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ratio",
+          "label",
+          "enabled",
+          "sortOrder",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "CreateLeverageDto": {
+        "type": "object",
+        "properties": {
+          "ratio": {
+            "type": "number",
+            "minimum": 1,
+            "example": 500,
+            "description": "500 means 500:1."
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 40,
+            "description": "Omitted renders as `1:<ratio>`."
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "sortOrder": {
+            "type": "number",
+            "description": "Omitted appends to the end of the ladder."
+          }
+        },
+        "required": [
+          "ratio"
+        ]
+      },
+      "UpdateLeverageDto": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "number"
           }
         }
       },
@@ -11605,6 +11993,66 @@
           "accountIds"
         ]
       },
+      "KycDocumentPartDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Slot identifier, unique within the type.",
+            "example": "back"
+          },
+          "label": {
+            "type": "string",
+            "description": "What the client is asked to upload.",
+            "example": "Back Side"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "hint": {
+            "type": "string",
+            "example": "Both sides must be readable."
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "required"
+        ]
+      },
+      "KycDocumentTypeDto": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "Stored in document.docType. Never renamed.",
+            "example": "passport"
+          },
+          "label": {
+            "type": "string",
+            "example": "Passport"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "identity",
+              "address"
+            ]
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycDocumentPartDto"
+            }
+          }
+        },
+        "required": [
+          "value",
+          "label",
+          "category",
+          "parts"
+        ]
+      },
       "KycFieldConfigDto": {
         "type": "object",
         "properties": {
@@ -11630,7 +12078,14 @@
               "select",
               "file",
               "camera",
-              "checkbox"
+              "checkbox",
+              "doc:passport",
+              "doc:national_id",
+              "doc:driving_license",
+              "doc:residence_permit",
+              "doc:utility_bill",
+              "doc:bank_statement",
+              "doc:tenancy_agreement"
             ]
           },
           "required": {
@@ -11646,6 +12101,14 @@
           "hint": {
             "type": "string",
             "example": "As on your ID"
+          },
+          "document": {
+            "description": "Resolved from the field type. Read-only — writes are ignored.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/KycDocumentTypeDto"
+              }
+            ]
           }
         },
         "required": [
@@ -11831,19 +12294,6 @@
       "TradingSettingsDto": {
         "type": "object",
         "properties": {
-          "leverages": {
-            "example": [
-              50,
-              100,
-              200,
-              500
-            ],
-            "description": "The leverage ladder offered to clients, in the order they see it.",
-            "type": "array",
-            "items": {
-              "type": "number"
-            }
-          },
           "maxLiveAccounts": {
             "type": "number",
             "example": 5,
@@ -11871,7 +12321,6 @@
           }
         },
         "required": [
-          "leverages",
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
@@ -11881,11 +12330,6 @@
       "UpdateTradingSettingsDto": {
         "type": "object",
         "properties": {
-          "leverages": {
-            "type": "string",
-            "example": "50,100,200,500",
-            "maxLength": 200
-          },
           "maxLiveAccounts": {
             "type": "number",
             "example": 5,
@@ -11910,7 +12354,6 @@
           }
         },
         "required": [
-          "leverages",
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
@@ -15329,6 +15772,216 @@
           "total",
           "page",
           "limit"
+        ]
+      },
+      "BridgeOutboxSummaryDto": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "number",
+            "example": 12
+          },
+          "delivered": {
+            "type": "number",
+            "example": 12
+          },
+          "pending": {
+            "type": "number",
+            "description": "Not yet delivered. Includes rows that are simply new.",
+            "example": 0
+          },
+          "failing": {
+            "type": "number",
+            "description": "Undelivered AND already attempted — this API is rejecting them. This is the number worth alerting on; `pending` alone cries wolf on a healthy busy system.",
+            "example": 0
+          }
+        },
+        "required": [
+          "total",
+          "delivered",
+          "pending",
+          "failing"
+        ]
+      },
+      "BridgeOutboxRowDto": {
+        "type": "object",
+        "properties": {
+          "dealId": {
+            "type": "string",
+            "description": "MT5's ticket, as a string — it is a 64-bit id and JavaScript rounds those.",
+            "example": "56054592"
+          },
+          "source": {
+            "type": "string",
+            "description": "How the bridge learned of it. Always 'sweep' on this protocol — the MT5 Web API has no deal push.",
+            "example": "sweep"
+          },
+          "attempts": {
+            "type": "number",
+            "example": 0
+          },
+          "nextAttempt": {
+            "type": "string",
+            "description": "When delivery will next be tried. Far in the future on an undelivered row means the queue is backing off, not stuck."
+          },
+          "deliveredAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null while undelivered. This field answers \"did it arrive\"; the value answers \"when\"."
+          },
+          "lastError": {
+            "type": "string",
+            "nullable": true,
+            "example": "HTTP 400: VALIDATION_FAILED ..."
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dealId",
+          "source",
+          "attempts",
+          "nextAttempt",
+          "deliveredAt",
+          "lastError",
+          "createdAt"
+        ]
+      },
+      "BridgeOutboxDto": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "$ref": "#/components/schemas/BridgeOutboxSummaryDto"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BridgeOutboxRowDto"
+            }
+          }
+        },
+        "required": [
+          "summary",
+          "rows"
+        ]
+      },
+      "BridgeOperationsSummaryDto": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "number",
+            "example": 19
+          },
+          "completed": {
+            "type": "number",
+            "example": 19
+          },
+          "stuck": {
+            "type": "number",
+            "description": "Claimed but never confirmed — the bridge told MT5 to move money and never learned whether it did. Any non-zero value needs a person, not a timer.",
+            "example": 0
+          }
+        },
+        "required": [
+          "total",
+          "completed",
+          "stuck"
+        ]
+      },
+      "BridgeOperationRowDto": {
+        "type": "object",
+        "properties": {
+          "idempotencyKey": {
+            "type": "string",
+            "description": "The CRM's own transfer id, which is how this row joins back to a transaction.",
+            "example": "fb2e201a-5752-422c-a8c8-b43a228471dc"
+          },
+          "login": {
+            "type": "string",
+            "example": "6477978"
+          },
+          "amount": {
+            "type": "string",
+            "description": "A decimal STRING (§6.1), exactly as stored. Never a number — this is money on a screen somebody checks a client's balance against.",
+            "example": "1000.00000000"
+          },
+          "type": {
+            "type": "string",
+            "description": "MT5's operation type. `balance` is real money; `credit` is broker funds the client cannot withdraw.",
+            "example": "balance"
+          },
+          "dealId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The resulting MT5 ticket. Null means the operation never confirmed.",
+            "example": "56054592"
+          },
+          "startedAt": {
+            "type": "string"
+          },
+          "completedAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null is the state that needs a human: claimed, and never confirmed."
+          }
+        },
+        "required": [
+          "idempotencyKey",
+          "login",
+          "amount",
+          "type",
+          "dealId",
+          "startedAt",
+          "completedAt"
+        ]
+      },
+      "BridgeOperationsDto": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "$ref": "#/components/schemas/BridgeOperationsSummaryDto"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BridgeOperationRowDto"
+            }
+          }
+        },
+        "required": [
+          "summary",
+          "rows"
+        ]
+      },
+      "BridgeLogsDto": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "The file that was read, named even when absent so the next guess is informed.",
+            "example": "C:\\bridge\\logs\\bridge-20260815.log"
+          },
+          "exists": {
+            "type": "boolean",
+            "description": "False is a normal answer on the first run of a day, not an error."
+          },
+          "matched": {
+            "type": "number",
+            "description": "How many lines matched before the tail was taken.",
+            "example": 1284
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "file",
+          "exists",
+          "lines"
         ]
       },
       "ErrorResponseDto": {

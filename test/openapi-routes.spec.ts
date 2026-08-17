@@ -23,9 +23,14 @@ import { buildSwaggerConfig } from '../src/common/swagger-config';
  * It boots the real AppModule, so it also catches a DI wiring break that
  * unit-instantiated specs sail straight past.
  *
- * No database is needed: getDb() builds its pool lazily and nothing queries
- * during module init. That is why this spec runs in milliseconds while the money
- * specs need Testcontainers.
+ * A REACHABLE, MIGRATED DATABASE IS NEEDED. This once said the opposite, and it
+ * was true when written — getDb() builds its pool lazily, so nothing connected
+ * during module init. `SelfServiceGroups.onModuleInit` then began selecting
+ * trading products to report at boot whether self-service is on, and every spec
+ * that calls `app.init()` inherited that requirement. Locally `docker compose up
+ * -d` satisfies it invisibly, which is why this only ever failed on CI. It still
+ * runs in milliseconds and still needs no Testcontainers — it queries no money
+ * tables — but an empty database fails it exactly like an absent one.
  *
  * When you intend to change the API surface, run with UPDATE_ROUTE_SNAPSHOT=1 and
  * review the fixture diff as part of the change.
