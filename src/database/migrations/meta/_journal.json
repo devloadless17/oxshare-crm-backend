@@ -526,6 +526,13 @@
       "when": 1787101208000,
       "tag": "0074_document_is_the_field_type",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1787101209000,
+      "tag": "0075_administrator_holds_the_whole_catalog",
+      "breakpoints": true
     }
   ]
 }
