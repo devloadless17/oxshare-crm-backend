@@ -102,28 +102,52 @@ Everything under `~/oxshare-crm-backend/` on the VPS is owned by the pipeline �
 `docker-compose.prod.yml`, `Caddyfile` and `.env` are overwritten on every deploy.
 Change them by changing the repo or the secrets, not by editing the box.
 
-## After the first deploy, once
+## The first administrator
 
-Production skips the dev seeds, so a fresh database has no admin — and the invite flow
-needs a signed-in admin. Create the first one:
+Production skips the dev seeds — `runSeeds()` plants the whole e2e cohort
+(`e2e@`, `e2e-kyc@`, `e2e-restricted@` and a batch of `@oxshare-e2e.test` clients)
+and must never touch a live database. A fresh database therefore has no admin, and
+the invite flow needs a signed-in admin to send an invite.
+
+**Set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` as repository secrets and
+this needs no manual step at all.** Every deploy runs `scripts/bootstrap-admin.mjs`
+after the migrations: it creates one `Administrator` role holding all 67 catalog keys
+and one `master_admin` account, and does nothing whatsoever if that email already
+exists. Idempotency is by database constraint — unique role name, unique admin email —
+so it never resets a password, never re-widens a role an operator has narrowed, and
+never resurrects an account somebody deleted.
+
+That is what makes rebuilding this VPS, or moving to a different one, a pure
+`git push`: new server, empty volume, and the admin exists when the deploy finishes.
+The password must be at least 12 characters; the script refuses shorter ones rather
+than leaving a guessable credential on the only account holding every permission.
+
+Omit the two secrets and the deploy prints that it is skipping the bootstrap. To do it
+by hand instead:
 
 ```bash
 ssh <user>@<vps>
 cd oxshare-crm-backend
+read -rsp 'Admin password: ' PW && echo      # not echoed, not in shell history
 docker compose -f docker-compose.prod.yml run --rm \
   -e BOOTSTRAP_ADMIN_EMAIL='you@company.com' \
-  -e BOOTSTRAP_ADMIN_PASSWORD='<a long throwaway>' \
+  -e BOOTSTRAP_ADMIN_PASSWORD="$PW" \
   api node scripts/bootstrap-admin.mjs
+unset PW
 ```
 
 Then, in this order:
 
-1. Sign in at the admin app and **change that password** (it is in the shell history).
+1. Sign in at the admin app and **change that password** — it lives in a repository
+   secret and in the VPS `.env`, which is the wrong home for a standing credential.
 2. **Settings → Email** — configure the SMTP relay and use *Send test message*.
+   Nothing is delivered until this is done: no invites, no verification links, no KYC
+   decisions. The API logs `NO MAIL SERVER IS CONFIGURED` at every boot until then.
 3. Only now invite the other admins — invites arrive by mail.
 
-The script is idempotent and never resets an existing admin's password; running it
-twice is safe and does nothing the second time.
+`role: 'master_admin'` is set explicitly and is **not** the dead column
+`admin.guard.ts` describes: `admin-reset.ts` reads it twice, and the second reading is
+what stops a peer resetting this account's password. See the comment in the script.
 
 ## Verifying a release
 

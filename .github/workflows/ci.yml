@@ -453,6 +453,15 @@ jobs:
           PORT: ${{ secrets.VPS_PORT || '22' }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_SECRET: ${{ secrets.DOCKER_SECRET }}
+          # Optional. Set both and every deploy guarantees the first
+          # administrator exists — which is what makes rebuilding this VPS, or
+          # moving to a different one, a pure `git push`. Omit them and the
+          # bootstrap step says so and skips. Not in REQUIRED above for that
+          # reason. The password must be at least 12 characters; the script
+          # refuses shorter ones rather than putting a guessable credential on
+          # the only account that holds every permission.
+          BOOTSTRAP_ADMIN_EMAIL: ${{ secrets.BOOTSTRAP_ADMIN_EMAIL }}
+          BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.BOOTSTRAP_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
           KEY=~/.ssh/deploy_key
@@ -493,6 +502,34 @@ jobs:
           # in one transaction — an interruption rolls back whole.
           echo "==> Applying migrations"
           $COMPOSE run --rm api node scripts/migrate.mjs </dev/null
+
+          # ── The first administrator, without a manual step ──────────────────
+          #
+          # NODE_ENV=production skips runSeeds(), and rightly: that function
+          # plants the whole e2e cohort — e2e@, e2e-kyc@, e2e-restricted@ and a
+          # batch of @oxshare-e2e.test clients — into whatever database it is
+          # pointed at. What is unsafe there is THAT function, not the idea of
+          # bootstrapping, so this runs the narrow script instead: one role, one
+          # admin, nothing else.
+          #
+          # Runs on EVERY deploy because it is idempotent by database constraint
+          # (unique role name, unique admin email). On an existing database it
+          # prints "already exists; password left unchanged" and touches nothing
+          # — it will NOT resurrect a deleted admin's password or undo a
+          # narrowing. That is what makes a rebuilt VPS a pure `git push`: new
+          # server, empty volume, and the admin exists when the deploy finishes.
+          #
+          # Skipped rather than failed when the secrets are absent, so a project
+          # that prefers creating its first admin by hand is not forced into it.
+          if [ -n "${BOOTSTRAP_ADMIN_EMAIL:-}" ] && [ -n "${BOOTSTRAP_ADMIN_PASSWORD:-}" ]; then
+            echo "==> Ensuring the bootstrap administrator exists"
+            $COMPOSE run --rm \
+              -e BOOTSTRAP_ADMIN_EMAIL="$BOOTSTRAP_ADMIN_EMAIL" \
+              -e BOOTSTRAP_ADMIN_PASSWORD="$BOOTSTRAP_ADMIN_PASSWORD" \
+              api node scripts/bootstrap-admin.mjs </dev/null
+          else
+            echo "==> No BOOTSTRAP_ADMIN_* secrets; skipping administrator bootstrap"
+          fi
 
           echo "==> Recreating the stack"
           $COMPOSE up -d --remove-orphans
@@ -542,6 +579,15 @@ jobs:
           $COMPOSE ps
           REMOTE
           )"
-          { printf 'DOCKER_SECRET=%q\n' "$DOCKER_SECRET"; printf '%s\n' "$REMOTE_SCRIPT"; } | \
+          # Secrets go over STDIN with %q quoting, never the ssh argv — argv is
+          # world-readable through `ps` on the VPS for as long as the deploy runs.
+          # The admin password rides the same channel as the registry password
+          # for exactly that reason.
+          {
+            printf 'DOCKER_SECRET=%q\n' "$DOCKER_SECRET"
+            printf 'BOOTSTRAP_ADMIN_EMAIL=%q\n' "${BOOTSTRAP_ADMIN_EMAIL:-}"
+            printf 'BOOTSTRAP_ADMIN_PASSWORD=%q\n' "${BOOTSTRAP_ADMIN_PASSWORD:-}"
+            printf '%s\n' "$REMOTE_SCRIPT"
+          } | \
             ssh -i "$KEY" -p "$PORT" $COMMON "$SSH_USER@$HOST" \
               "DEPLOY_DIR='$DEPLOY_DIR' DOCKER_USERNAME='$DOCKER_USERNAME' bash -s"

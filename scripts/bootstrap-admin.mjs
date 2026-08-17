@@ -118,8 +118,29 @@ try {
       email,
       passwordHash,
       name,
-      // `role` (the enum column) is deliberately left at its default: it is dead
-      // after migration 0044 and nothing reads it. Access comes from roleId.
+      /*
+       * SET EXPLICITLY, because the column's default is `sub_admin` and it is
+       * NOT the dead column it is documented to be.
+       *
+       * `admin.guard.ts` says of `admins.role`: "Nothing READS it after
+       * migration 0044: no guard, no service and no screen branches on it.
+       * Treat it as a dead column." That was true of the guard, and this script
+       * repeated it — but `admin-reset.ts` reads it twice, and both readings
+       * matter for the account this script creates:
+       *
+       *   actorIsMaster = actor.role === 'master_admin' || …includes('*')
+       *   if (target.role === 'master_admin' || …) return 'target-is-master'
+       *
+       * The first decides whether this admin may reset another's password
+       * without proof-of-password; the second is what PROTECTS it from being
+       * reset by a peer. Left at `sub_admin`, the system's first and highest
+       * account is the one account not shielded by the master rule — while
+       * every seeded dev admin IS, since seed.ts sets the enum.
+       *
+       * `permissions` below lists every key rather than `['*']`, so the wildcard
+       * arm of those checks does not apply either. The enum is the whole claim.
+       */
+      role: 'master_admin',
       permissions: ALL_PERMISSIONS,
     })
     .onConflictDoNothing({ target: admins.email })
