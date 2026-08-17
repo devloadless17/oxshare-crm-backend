@@ -110,6 +110,38 @@ export class IbApplicationsService {
   // ── the client's side ──────────────────────────────────────────────────────
 
   /**
+   * The agency a SUB-PARTNER inherits, or null when they may choose.
+   *
+   * ## Why a sub-partner does not pick their own programme
+   *
+   * A partner recruited BY another partner sells beneath them. Left to choose,
+   * they could take a programme their introducer does not carry — so a master
+   * partner's own downline would be selling a catalogue the master has no
+   * relationship with, while commission flowed up a chain whose top never
+   * agreed to that programme.
+   *
+   * So the programme comes from the introducer and the applicant is not asked.
+   * A client under NOBODY is a direct partner and still chooses, because there
+   * is nobody above them for the answer to come from.
+   *
+   * ## Null has two meanings, and both mean "let them choose"
+   *
+   * No introducer at all, or an introducer carrying no agency — the second
+   * being the pre-agency partners `ib_accounts.agencyId` is nullable for.
+   * Neither can supply an answer, and refusing the application instead would
+   * punish an applicant for an operator's unfinished migration, which is the
+   * same reasoning the schema note on that column already records.
+   */
+  private async inheritedAgencyIdFor(userId: string): Promise<string | null> {
+    const user = await this.users.findById(userId);
+    const introducerId = user?.referredByIbUserId;
+    if (!introducerId) return null;
+
+    const introducer = await this.ib.findAccount(introducerId);
+    return introducer?.agencyId ?? null;
+  }
+
+  /**
    * Everything the portal needs to decide which screen to render.
    *
    * Deliberately returns BOTH the account and the latest application. "Not a
@@ -126,6 +158,17 @@ export class IbApplicationsService {
     ineligibleReason: string | null;
     /** WHICH requirement is unmet, for chrome the sentence cannot carry. */
     ineligibleCode: IbIneligibleCode | null;
+    /**
+     * The programme this applicant will be placed on, when it is not theirs to
+     * pick — a partner introduced by another partner inherits theirs.
+     *
+     * NULL means the choice IS theirs, which is what the portal keys the picker
+     * off: present, hide the picker and name the programme; absent, ask.
+     * Sending the name rather than only the id is what lets the screen say
+     * which programme they are joining instead of "one has been chosen for
+     * you", which reads as an error.
+     */
+    inheritedAgency: { id: string; name: string } | null;
   }> {
     const [account, application, user] = await Promise.all([
       this.ib.findAccount(userId),
@@ -158,7 +201,23 @@ export class IbApplicationsService {
      * client who has never applied — costs no extra query. The catalogue is a
      * handful of rows, so listing it whole beats two id lookups.
      */
-    const needsCatalogue = Boolean(account?.agencyId ?? application?.agencyId);
+    /*
+     * The programme an applicant would INHERIT from their introducer.
+     *
+     * Resolved from the `user` already loaded above rather than through
+     * `inheritedAgencyIdFor`, which would fetch that row a second time for an
+     * answer this method is holding.
+     *
+     * Skipped for somebody who is already a partner, like `chainFull` above and
+     * for the same reason: they will never see the application form, so this is
+     * a query for a field nothing reads.
+     */
+    const inheritedAgencyId =
+      account || !user?.referredByIbUserId
+        ? null
+        : ((await this.ib.findAccount(user.referredByIbUserId))?.agencyId ?? null);
+
+    const needsCatalogue = Boolean(account?.agencyId ?? application?.agencyId ?? inheritedAgencyId);
     const [agencies, products] = needsCatalogue
       ? await Promise.all([this.catalogue.listAgencies(), this.catalogue.listProducts()])
       : [[], []];
@@ -167,6 +226,7 @@ export class IbApplicationsService {
     const productName = new Map(products.map((product) => [product.id, product.name]));
 
     const accountAgency = agencyOf(account?.agencyId ?? null);
+    const inheritedAgency = agencyOf(inheritedAgencyId);
 
     return {
       account: account
@@ -202,6 +262,9 @@ export class IbApplicationsService {
           ? CHAIN_FULL_REASON
           : null,
       ineligibleCode: !verified ? 'unverified' : chainFull ? 'chain_full' : null,
+      inheritedAgency: inheritedAgency
+        ? { id: inheritedAgency.id, name: inheritedAgency.name }
+        : null,
     };
   }
 
@@ -349,23 +412,43 @@ export class IbApplicationsService {
      * against nothing and discovering it weeks later is the failure this whole
      * block exists to prevent.
      */
-    if (!input.agencyId) {
-      throw new ValidationError(
-        'Choose the partner programme you are applying for. An application cannot be submitted without one.',
-      );
-    }
+    /*
+     * ── A SUB-PARTNER DOES NOT CHOOSE ────────────────────────────────────────
+     *
+     * An applicant introduced by an existing partner inherits that partner's
+     * programme; see `inheritedAgencyIdFor` for why the choice cannot be
+     * theirs. Their `agencyId` is IGNORED rather than refused, because the
+     * portal does not draw the picker for them — so anything arriving in that
+     * field is a stale form or a hand-made request, and neither is worth an
+     * error the honest client would never see.
+     *
+     * The inherited id deliberately skips the "open for applications" check
+     * below. That check protects a CHOICE, and this is not one: an operator
+     * closing a programme to new direct applicants must not thereby sever the
+     * downline of every partner already selling it, which is what refusing here
+     * would do.
+     */
+    const inheritedAgencyId = await this.inheritedAgencyIdFor(userId);
 
-    const agencies = await this.catalogue.listAgencies();
-    if (!agencies.some((agency) => agency.id === input.agencyId && agency.enabled)) {
-      throw new ValidationError(
-        'That partner programme is not open for applications. Choose one from the list.',
-      );
+    if (!inheritedAgencyId) {
+      if (!input.agencyId) {
+        throw new ValidationError(
+          'Choose the partner programme you are applying for. An application cannot be submitted without one.',
+        );
+      }
+
+      const agencies = await this.catalogue.listAgencies();
+      if (!agencies.some((agency) => agency.id === input.agencyId && agency.enabled)) {
+        throw new ValidationError(
+          'That partner programme is not open for applications. Choose one from the list.',
+        );
+      }
     }
 
     try {
       const created = await this.ib.createApplication({
         userId,
-        agencyId: input.agencyId ?? null,
+        agencyId: inheritedAgencyId ?? input.agencyId ?? null,
         motivation: input.motivation ?? null,
         website: input.website ?? null,
       });
@@ -537,19 +620,38 @@ export class IbApplicationsService {
     }
 
     /*
-     * WHAT THE APPLICANT ASKED FOR, unless the reviewer says otherwise.
+     * WHAT THE APPLICANT ASKED FOR, unless the reviewer says otherwise — and
+     * unless they are being placed BENEATH somebody, in which case the parent
+     * decides.
      *
-     * The reviewer may override — an applicant who asked for Gold and is being
-     * appointed to Silver is an ordinary decision — but the default is the
-     * applicant's own choice, because approving a request and silently
-     * substituting a different programme is the version of this that produces
-     * an angry partner.
+     * The reviewer may still override explicitly: appointing an applicant who
+     * asked for Gold onto Silver is an ordinary decision, and approving a
+     * request while silently substituting a different programme is the version
+     * of this that produces an angry partner. `undefined` means "the reviewer
+     * did not say".
      *
-     * `undefined` means "not specified by the reviewer" and falls back to what
-     * the applicant asked for.
+     * The PARENT's programme wins over the application's, because a sub-partner
+     * sells beneath their master and cannot carry a catalogue the master has no
+     * relationship with — the same rule `inheritedAgencyIdFor` applies when the
+     * application is submitted. It is re-derived here rather than trusted from
+     * the application because the reviewer chooses the parent at THIS moment:
+     * an applicant introduced by nobody can still be placed under a partner,
+     * and one introduced by A can be placed under B. In both cases the
+     * application's stored agency describes a chain that is not the one being
+     * created.
+     *
+     * A parent with no agency of their own falls through to the application's,
+     * which keeps the pre-agency partners recruiting rather than making every
+     * approval beneath them impossible.
      */
+    const parentAgencyId = parentIbUserId
+      ? ((await this.ib.findAccount(parentIbUserId))?.agencyId ?? null)
+      : null;
+
     const agencyId =
-      options.agencyId === undefined ? (application.agencyId ?? null) : options.agencyId;
+      options.agencyId === undefined
+        ? (parentAgencyId ?? application.agencyId ?? null)
+        : options.agencyId;
 
     /*
      * ── NO AGENCY, NO PARTNER ────────────────────────────────────────────────

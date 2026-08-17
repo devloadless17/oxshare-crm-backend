@@ -14,6 +14,19 @@ export const IB_APPLICATION_STATUSES = ['pending', 'approved', 'rejected'] as co
 export type IbApplicationStatusDto = (typeof IB_APPLICATION_STATUSES)[number];
 
 /**
+ * The programme a sub-partner inherits, named rather than merely identified.
+ *
+ * The id is what the application carries; the NAME is what the screen shows.
+ * Sending only the id would force the portal to fetch the agency catalogue to
+ * render one label — a request whose whole purpose is to look up a string the
+ * API already had.
+ */
+export class InheritedAgencyDto {
+  @ApiProperty() id: string;
+  @ApiProperty() name: string;
+}
+
+/**
  * What a client sends to apply.
  *
  * The AGENCY is required and everything else is optional, and the split is the
@@ -165,6 +178,27 @@ export class IbStatusDto {
       'level, so there is no rung to place them on. Null when eligible.',
   })
   ineligibleCode: IbIneligibleCode | null;
+
+  /**
+   * The programme this applicant will be placed on when it is not theirs to
+   * pick — a partner introduced by another partner inherits theirs.
+   *
+   * NULL means the choice IS theirs, and this is what the portal keys the
+   * picker off: present, hide the picker and name the programme; absent, ask.
+   *
+   * "A programme has been chosen for you" reads as an error for something that
+   * is simply how a downline works, which is why the name travels with the id.
+   */
+  @ApiProperty({
+    type: InheritedAgencyDto,
+    nullable: true,
+    description:
+      'Set when the applicant was introduced by an existing partner and therefore inherits that ' +
+      "partner's programme — the portal must not offer a choice in that case. Null when the " +
+      'applicant chooses: any client not introduced by a partner, or one whose introducer ' +
+      'carries no programme.',
+  })
+  inheritedAgency: InheritedAgencyDto | null;
 }
 
 /** @see IbStatusDto.ineligibleCode */
