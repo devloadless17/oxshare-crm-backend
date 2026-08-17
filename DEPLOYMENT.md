@@ -33,7 +33,9 @@ seconds with a message naming it — not as a container crash-loop twenty minute
 Host-specific behaviour this pipeline already encodes: the runner polls TCP before
 SSHing (the host's edge DDoS scrubbing intermittently drops shared-runner IPs), Caddy
 is explicitly reloaded after each deploy, every remote `compose exec` ends in
-`</dev/null`, and **HTTP/3 is off because the host does not pass UDP/443**.
+`</dev/null`, and **HTTP/3 is on** — UDP/443 delivery to this VPS was measured
+end-to-end (containerized UDP listener on 443/udp, probed from the public
+internet, 17 Aug 2026).
 
 | Secret | What |
 |---|---|
