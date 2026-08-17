@@ -282,7 +282,10 @@ export class Mt5BridgeClient {
     if (options.stuck) params.set('stuck', 'true');
     if (options.limit) params.set('limit', String(options.limit));
     const query = params.toString();
-    return await this.request<BridgeOperations>('GET', `/admin/operations${query ? `?${query}` : ''}`);
+    return await this.request<BridgeOperations>(
+      'GET',
+      `/admin/operations${query ? `?${query}` : ''}`,
+    );
   }
 
   /** The tail of the bridge's log for today, optionally filtered. */
