@@ -4,11 +4,13 @@ import {
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
@@ -26,6 +28,7 @@ import {
   AccountSnapshotDto,
 } from './dto/account-detail.dto';
 import { OpenOwnAccountDto } from './dto/open-account.dto';
+import { RenameOwnAccountDto } from './dto/rename-account.dto';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
 import { SelfServiceGroups } from './mt5/self-service-groups';
 import { UsersStore } from '../../store/users.store';
@@ -84,10 +87,14 @@ export class TradingController {
    * the verification prompt, and inventing a second shape here would mean it
    * silently did not.
    *
-   * ## The response carries the passwords, once
+   * ## The passwords go to the client's MAILBOX, not into this response
    *
-   * MT5 returns them at creation and nothing stores them. The portal must show
-   * them immediately; there is no second chance and no "resend".
+   * MT5 returns them once and nothing stores them, and they are deliberately
+   * absent from the response body — the browser making this call is not
+   * necessarily the client's. What comes back is where they were sent.
+   *
+   * There IS a second chance now: `POST accounts/:id/password` below rotates
+   * both and emails the new pair.
    */
   @Post('accounts')
   @ApiCookieAuth()
@@ -95,7 +102,7 @@ export class TradingController {
     summary: 'Open a trading account — live requires a verified identity, demo does not',
     description:
       "The MT5 group, leverage and currency are the broker's configuration, not the client's " +
-      'choice. Returns the master and investor passwords once; they are never stored.',
+      "choice. Credentials are emailed to the client's registered address, never returned here.",
   })
   async openAccount(@Body() dto: OpenOwnAccountDto, @Req() req: Request & { user: User }) {
     if (dto.environment === 'live') {
@@ -125,6 +132,79 @@ export class TradingController {
       leverage,
       name: dto.name,
       startingBalance: dto.startingBalance,
+    });
+  }
+
+  /**
+   * Reset BOTH passwords on one of the caller's own trading accounts.
+   *
+   * ## Throttled hard, and per client rather than per account
+   *
+   * Each call rotates real credentials and sends a real email, so an unbounded
+   * one is both a mailbox flood and a way to lock somebody out of their own
+   * account repeatedly. Five an hour is generous for the honest case — a client
+   * resets once and reads their mail — and useless as an attack.
+   *
+   * The limit deliberately does NOT scale with the number of accounts held: the
+   * thing being protected is the client's mailbox and MT5's patience, neither of
+   * which cares which account the requests name.
+   *
+   * ## Ownership is checked in the service, not here
+   *
+   * `resetOwnAccountPassword` matches the account id against the caller's own
+   * user id in the same query that reads it, so an id belonging to somebody else
+   * answers 404. Doing it there rather than in the controller keeps the check in
+   * the same place as the read it guards.
+   */
+  @Post('accounts/:id/password')
+  @Throttle({ default: { ttl: 3_600_000, limit: 5 } })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Reset a trading account's master and investor passwords",
+    description:
+      'Rotates BOTH passwords on MT5 and emails the new pair to the client’s registered ' +
+      'address. They are never returned in the response — the browser asking is not ' +
+      'necessarily the client’s. Not idempotent: each call invalidates the previous pair.',
+  })
+  async resetAccountPassword(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request & { user: User },
+  ) {
+    return await this.mt5Accounts.resetOwnAccountPassword({
+      userId: req.user.id,
+      accountId: id,
+    });
+  }
+
+  /**
+   * Rename one of the caller's own trading accounts.
+   *
+   * PATCH rather than PUT: the body carries the one field a client may change,
+   * not a whole account, and the MT5 write underneath is a read-modify-write
+   * that preserves everything it does not name.
+   *
+   * Throttled far more loosely than the reset above — renaming sends no mail and
+   * invalidates no credential, so the only thing worth bounding is chatter at
+   * the trading server.
+   */
+  @Patch('accounts/:id')
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Rename a trading account',
+    description:
+      "Changes the account holder's name as MT5 records it, so it updates what the client " +
+      'sees in their terminal and on statements. Nothing is stored CRM-side.',
+  })
+  async renameAccount(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RenameOwnAccountDto,
+    @Req() req: Request & { user: User },
+  ) {
+    return await this.mt5Accounts.renameOwnAccount({
+      userId: req.user.id,
+      accountId: id,
+      name: dto.name,
     });
   }
 

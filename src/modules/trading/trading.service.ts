@@ -84,6 +84,7 @@ export class TradingService {
       .select({
         id: tradingAccounts.id,
         login: tradingAccounts.login,
+        name: tradingAccounts.name,
         mt5Group: tradingAccounts.mt5Group,
         environment: tradingAccounts.environment,
         currency: tradingAccounts.currency,
@@ -206,6 +207,7 @@ export class TradingService {
       .select({
         id: tradingAccounts.id,
         login: tradingAccounts.login,
+        name: tradingAccounts.name,
         mt5Group: tradingAccounts.mt5Group,
         environment: tradingAccounts.environment,
         currency: tradingAccounts.currency,

@@ -75,7 +75,7 @@ ${panel(
 )}
 ${pRich(
   'Please save these somewhere safe and delete this email. <strong>We do not keep a copy</strong> — ' +
-    'if you lose them, an administrator has to set a new password for you.',
+    'if you lose them, you can reset them from the portal and we will email you a new pair.',
 )}
 ${p('Never share your master password. Nobody at OxShare will ever ask you for it.')}
 ${button(portalUrl, 'Go to Portal')}`),

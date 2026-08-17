@@ -1,0 +1,29 @@
+-- Give a trading account a NAME the client can read and change.
+--
+-- Hand-written rather than generated, matching 0027 onwards.
+--
+-- ── What was there before ──────────────────────────────────────────────────
+--
+-- `OpenOwnAccountDto` has always carried an optional `name`, and it went
+-- straight to MT5 as the account HOLDER's name and was never stored here. So
+-- the portal had nothing to show: `/accounts` rendered the login and the detail
+-- page a bare number, while the label the client typed lived only on the
+-- broker's server.
+--
+-- Reading it back from MT5 was the alternative and is worse. A name is a label,
+-- and fetching it per row would put a bridge round trip behind a list that
+-- currently renders from one database read — so the whole screen would go blank
+-- whenever the trading server was unreachable, over a caption.
+--
+-- ── NULLABLE, deliberately ─────────────────────────────────────────────────
+--
+-- Every account that already exists has no name. Backfilling one — from the
+-- login, or from the client's own name — would be indistinguishable afterwards
+-- from a name the client actually chose, and would leave the portal unable to
+-- tell "unnamed" from "named 5001234". NULL means unnamed, the portal falls
+-- back to the login, and a name appears only when somebody sets one.
+--
+-- 128 characters to match what MT5 stores for the holder name, so the two ends
+-- cannot disagree about what fits: a longer value is truncated server-side,
+-- which would silently differ from what the client typed here.
+ALTER TABLE trading_accounts ADD COLUMN IF NOT EXISTS name varchar(128);

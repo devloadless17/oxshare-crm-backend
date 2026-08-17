@@ -45,6 +45,7 @@ export { kycDecision } from './kyc-decision';
 export { partnerDecision } from './partner-decision';
 export { walletCredit } from './wallet-credit';
 export { tradingAccountOpened } from './trading-account-opened';
+export { tradingAccountPasswordReset } from './trading-account-password-reset';
 export { depositOutcome } from './deposit-outcome';
 export { withdrawalDecision } from './withdrawal-decision';
 export { adminInvite } from './admin-invite';

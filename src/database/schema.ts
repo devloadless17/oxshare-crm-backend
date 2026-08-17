@@ -1735,6 +1735,22 @@ export const tradingAccounts = pgTable(
      * A string, not a number — leading zeros are significant to the bridge.
      */
     login: varchar('login', { length: 50 }),
+    /**
+     * What the CLIENT calls this account, in the portal.
+     *
+     * Chosen when the account is opened and editable afterwards. The same value
+     * is pushed to MT5 as the account holder's name so the terminal and the
+     * portal agree — but THIS column is the one the portal reads, because a
+     * screen that had to ask the bridge for a label would go blank whenever MT5
+     * was unreachable, and a name is not worth that coupling.
+     *
+     * NULLABLE, which is the honest default rather than a convenience: every
+     * account opened before this column existed has no name, and inventing one
+     * ("Account 5001234") would be indistinguishable from a name a client
+     * actually chose. The portal falls back to the login — what it showed
+     * before, and what every statement already carries.
+     */
+    name: varchar('name', { length: 128 }),
     mt5Group: varchar('mt5_group', { length: 100 }),
     environment: tradingEnvironmentEnum('environment').notNull().default('live'),
     /**

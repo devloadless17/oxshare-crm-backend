@@ -416,6 +416,11 @@ export class Mt5AccountsService {
       .values({
         userId: client.id,
         login: String(created.login),
+        // Stored so the PORTAL can label this account without asking the
+        // bridge. The same string went to MT5 above as the holder name; NULL
+        // when the client chose nothing, so the portal falls back to the login
+        // rather than showing a name nobody picked.
+        name: input.name?.trim() || null,
         environment: input.environment,
         currency: created.currency,
         leverage: created.leverage,
@@ -510,6 +515,171 @@ export class Mt5AccountsService {
       balance: snapshot?.balance ?? '0',
       credentialsSentTo: client.email,
     };
+  }
+
+  /**
+   * The client's OWN account, or nothing.
+   *
+   * One lookup shared by the two self-service methods below, and the single
+   * place ownership is decided for them. Both take an account id straight from a
+   * browser, so the `userId` predicate is the whole control: without it a client
+   * could rename — or reset the credentials of — any account whose id they could
+   * name.
+   *
+   * A row belonging to somebody else answers NOT FOUND rather than forbidden.
+   * "You may not touch this account" confirms the account exists and is
+   * somebody's, which is a membership oracle for anyone enumerating ids, and the
+   * client has neither a way nor a reason to tell the two apart.
+   */
+  private async ownAccount(userId: string, accountId: string) {
+    const [row] = await this.db
+      .select({
+        id: tradingAccounts.id,
+        login: tradingAccounts.login,
+        environment: tradingAccounts.environment,
+        email: users.email,
+        firstName: users.firstName,
+      })
+      .from(tradingAccounts)
+      .innerJoin(users, eq(users.id, tradingAccounts.userId))
+      .where(and(eq(tradingAccounts.id, accountId), eq(tradingAccounts.userId, userId)))
+      .limit(1);
+
+    if (!row) throw new NotFoundError('Trading account not found.');
+
+    /*
+     * A row with no login exists in the CRM and nowhere on MT5 — an account
+     * whose provisioning failed part-way. Neither operation below can mean
+     * anything for it, and the bridge would otherwise be asked for
+     * `/accounts/null`.
+     */
+    if (!row.login) {
+      throw new ValidationError('This account is not fully set up yet. Please contact support.');
+    }
+
+    return { ...row, login: row.login };
+  }
+
+  /**
+   * Reset BOTH passwords on the client's own trading account.
+   *
+   * ## The new passwords do NOT come back in the response
+   *
+   * They go to the client's registered address and nowhere else — the same rule
+   * the opening mail follows, plus one reason specific to a RESET: the person
+   * asking is by definition someone who has lost control of a credential.
+   * Returning the replacement to the browser that asked hands it to whoever is
+   * sitting at that browser, which is sometimes the party the reset exists to
+   * shut out. The registered mailbox is the one channel already proven to belong
+   * to the account holder.
+   *
+   * The caller therefore learns only WHERE it went, which is also what lets the
+   * portal say something more useful than "done".
+   *
+   * ## Not idempotent, and the failure is asymmetric
+   *
+   * MT5 rotates first, the mail goes second. If the send fails, the client is
+   * locked out of an account that worked a moment ago — a password change has no
+   * rollback, so this must not pretend otherwise.
+   * `sendTradingAccountPasswordResetEmail` is awaited and swallows its own
+   * failure into a log line naming the login, which is what an operator needs to
+   * put it right. Raising an error to the client instead would claim a rollback
+   * that did not happen.
+   */
+  async resetOwnAccountPassword(input: { userId: string; accountId: string }) {
+    this.assertBridge();
+
+    const account = await this.ownAccount(input.userId, input.accountId);
+
+    const reset = await this.bridge.resetPasswords(account.login);
+    if (!reset) {
+      /*
+       * The CRM holds a login MT5 does not. Nothing the client can do fixes it,
+       * so it reads as an account needing support rather than as their mistake.
+       */
+      this.logger.error(
+        `Trading account ${account.id} has login ${account.login}, which MT5 does not know.`,
+      );
+      throw new ValidationError(
+        'This account could not be found on the trading server. Please contact support.',
+      );
+    }
+
+    this.logger.log(
+      `Client ${input.userId} reset the passwords on their MT5 account ${account.login}`,
+    );
+
+    await this.email.sendTradingAccountPasswordResetEmail(
+      account.email,
+      account.firstName,
+      account.login,
+      account.environment,
+      reset.masterPassword,
+      reset.investorPassword,
+    );
+
+    return { login: account.login, credentialsSentTo: account.email };
+  }
+
+  /**
+   * Rename the client's own trading account.
+   *
+   * ## Two writes, and the order is the point
+   *
+   * `trading_accounts.name` is what the PORTAL reads — a label must not depend
+   * on the trading server being reachable — and MT5 holds the same string as
+   * the account holder's name, so the terminal and the portal agree.
+   *
+   * MT5 goes FIRST and the database second. MT5 is the write that can fail for
+   * reasons of its own (unreachable, unknown login, a name it refuses), and a
+   * failure there must leave nothing changed. The reverse order would show the
+   * client a renamed account in the portal while their terminal still said
+   * something else, with no error to explain the difference.
+   *
+   * If the local write failed after MT5 succeeded the two would disagree the
+   * other way — which is why the database update is the last statement and its
+   * failure propagates: a 500 the client can retry is better than a silent
+   * divergence, and retrying is safe because both writes are idempotent for the
+   * same name.
+   */
+  async renameOwnAccount(input: { userId: string; accountId: string; name: string }) {
+    this.assertBridge();
+
+    /*
+     * Trimmed and length-checked HERE, not only at the DTO: MT5 accepts a name
+     * of nothing but spaces and the terminal then shows an account belonging to
+     * nobody. The ceiling matches what MT5 stores — a longer name is truncated
+     * server-side, which would silently disagree with what the client typed.
+     */
+    const name = input.name.trim();
+    if (name.length === 0) {
+      throw new ValidationError('Enter a name for this account.');
+    }
+    if (name.length > 128) {
+      throw new ValidationError('That name is too long — use 128 characters or fewer.');
+    }
+
+    const account = await this.ownAccount(input.userId, input.accountId);
+
+    const renamed = await this.bridge.updateName(account.login, name);
+    if (!renamed) {
+      this.logger.error(
+        `Trading account ${account.id} has login ${account.login}, which MT5 does not know.`,
+      );
+      throw new ValidationError(
+        'This account could not be found on the trading server. Please contact support.',
+      );
+    }
+
+    // Second, and only once MT5 has accepted it — see the note above.
+    await this.db
+      .update(tradingAccounts)
+      .set({ name, updatedAt: new Date() })
+      .where(eq(tradingAccounts.id, account.id));
+
+    this.logger.log(`Client ${input.userId} renamed their MT5 account ${account.login}`);
+
+    return { id: account.id, login: account.login, name };
   }
 
   /**

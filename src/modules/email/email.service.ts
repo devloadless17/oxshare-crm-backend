@@ -11,6 +11,7 @@ import {
   depositOutcome,
   walletCredit,
   tradingAccountOpened,
+  tradingAccountPasswordReset,
   withdrawalDecision,
   passwordReset,
   smtpTest,
@@ -298,6 +299,44 @@ export class EmailService {
         this.portalUrl(),
         accountName,
         balance,
+      ),
+    );
+  }
+
+  /**
+   * The NEW passwords after a client reset their trading account.
+   *
+   * Awaited by the caller for the same reason the creation mail is: this is the
+   * ONLY delivery, and MT5 has already rotated the credentials by the time we
+   * reach here. If the send fails, the client is locked out of an account that
+   * worked a second ago, so the caller must know the attempt finished before it
+   * reports success.
+   *
+   * `send()` still swallows and logs rather than throwing. There is no undo for
+   * a password change, so failing the request would announce a rollback that did
+   * not happen; the log line names the login instead, which is what an operator
+   * needs in order to resend or reset again deliberately.
+   *
+   * The passwords are never logged (R-6.3).
+   */
+  async sendTradingAccountPasswordResetEmail(
+    email: string,
+    firstName: string,
+    login: string,
+    environment: 'live' | 'demo',
+    masterPassword: string,
+    investorPassword: string,
+  ): Promise<void> {
+    await this.send(
+      email,
+      `trading account ${login} password reset`,
+      tradingAccountPasswordReset(
+        firstName,
+        login,
+        environment,
+        masterPassword,
+        investorPassword,
+        this.portalUrl(),
       ),
     );
   }

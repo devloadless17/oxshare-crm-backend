@@ -22,6 +22,19 @@ export interface Mt5CreatedAccount {
   investorPassword: string;
 }
 
+/**
+ * Fresh credentials for an account whose owner lost theirs.
+ *
+ * Both passwords, always — the bridge rotates the pair together because a
+ * client who has lost one cannot say which. Returned ONCE, exactly like
+ * `Mt5CreatedAccount`: deliver it and store nothing.
+ */
+export interface Mt5ResetPasswords {
+  login: number;
+  masterPassword: string;
+  investorPassword: string;
+}
+
 export interface Mt5AccountSnapshot {
   login: number;
   group: string;
@@ -197,6 +210,47 @@ export class Mt5BridgeClient {
     externalId: string;
   }): Promise<Mt5CreatedAccount> {
     return await this.request<Mt5CreatedAccount>('POST', '/accounts', input);
+  }
+
+  /**
+   * Rotate BOTH passwords on an existing account.
+   *
+   * NOT retried and not idempotent — every call mints a new pair and kills the
+   * previous one, so a retry after a timeout would issue a second set and leave
+   * the client holding an email for credentials that no longer work. `request`
+   * does not retry, and no caller here should add one: on a timeout the honest
+   * answer is "we do not know", which the service turns into a message telling
+   * the client to try again rather than a silent second reset.
+   *
+   * Returns null for an unknown login, matching `getAccount`.
+   */
+  async resetPasswords(login: string): Promise<Mt5ResetPasswords | null> {
+    try {
+      return await this.request<Mt5ResetPasswords>('POST', `/accounts/${login}/password`);
+    } catch (error) {
+      if (error instanceof ExternalServiceError && error.message.includes('404')) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Change the account HOLDER's name as MT5 records it.
+   *
+   * The bridge does a read-modify-write, so every field this does not name
+   * survives. Returns false for an unknown login.
+   */
+  async updateName(login: string, name: string): Promise<boolean> {
+    try {
+      await this.request<{ login: number; name: string }>('PATCH', `/accounts/${login}`, { name });
+      return true;
+    } catch (error) {
+      if (error instanceof ExternalServiceError && error.message.includes('404')) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   async getAccount(login: string): Promise<Mt5AccountSnapshot | null> {

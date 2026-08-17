@@ -49,6 +49,16 @@ export class TradingAccountDto {
   })
   login: string | null;
 
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      'What the client calls this account. NULL means unnamed — the portal falls back to the ' +
+      'login rather than inventing a name, so an account somebody named "5001234" stays ' +
+      'distinguishable from one nobody named at all.',
+  })
+  name: string | null;
+
   @ApiProperty({ type: 'string', nullable: true })
   mt5Group: string | null;
 
