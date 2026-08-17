@@ -7,15 +7,13 @@
 	# wrong with a certificate.
 	email {$ACME_EMAIL}
 
-	# NO HTTP/3, deliberately — the VPS does not pass UDP/443. Caddy enables h3
-	# by default and advertises `alt-svc: h3=":443"`, which browsers cache for
-	# 30 DAYS; with UDP going nowhere, flaky mobile networks then hit
-	# intermittent ERR_CONNECTION_RESET while everything works fine from a desk.
-	# If UDP/443 is ever opened at the host firewall, delete this line AND
-	# publish `443:443/udp` on the caddy service in docker-compose.prod.yml.
-	servers {
-		protocols h1 h2
-	}
+	# HTTP/3 is on (Caddy's default: h1 h2 h3). UDP/443 delivery was measured on
+	# 17 Aug 2026 — a listener in a container publishing 443/udp received probes
+	# from the public internet — so advertising `alt-svc: h3=":443"` is safe. If
+	# this VPS ever moves to a host that drops UDP/443, pin `servers { protocols
+	# h1 h2 }` here AND remove `443:443/udp` from docker-compose.prod.yml,
+	# together: browsers cache alt-svc for 30 days, and h3 advertised over a dead
+	# UDP path gives mobile users intermittent ERR_CONNECTION_RESET.
 }
 
 {$API_DOMAIN} {

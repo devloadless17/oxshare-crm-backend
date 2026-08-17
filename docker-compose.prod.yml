@@ -95,14 +95,15 @@ services:
     image: caddy:2
     container_name: oxshare_caddy
     restart: unless-stopped
-    # TCP only. The host does not pass UDP/443, and the Caddyfile pins
-    # `protocols h1 h2` to match — advertising h3 with the UDP path dead gives
-    # mobile users 30 days of cached, intermittently broken alt-svc. Opening
-    # UDP/443 at the host firewall means adding `443:443/udp` here and deleting
-    # the protocols pin there, together.
+    # 443 on both TCP (h1/h2) and UDP (h3/QUIC). UDP/443 delivery was measured
+    # end-to-end on 17 Aug 2026; if the host ever stops passing it, remove the
+    # udp line AND pin `servers { protocols h1 h2 }` in the Caddyfile, together
+    # — h3 advertised over a dead UDP path breaks mobile clients for the 30-day
+    # alt-svc cache lifetime.
     ports:
       - '80:80'
       - '443:443'
+      - '443:443/udp'
     environment:
       API_DOMAIN: ${API_DOMAIN:?API_DOMAIN is required}
       ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
