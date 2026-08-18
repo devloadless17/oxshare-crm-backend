@@ -810,6 +810,7 @@ export class IbApplicationsService {
   }
 
   /**
+   *
    * The decision email, looked up and sent without ever failing the decision.
    *
    * Private and shared by both paths so approve and reject cannot drift into
