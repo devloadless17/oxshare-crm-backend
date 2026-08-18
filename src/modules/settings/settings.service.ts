@@ -1,11 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { MailNotConfiguredError } from '../../common/errors/domain-errors';
 import { sealSecret } from '../../common/security/secret-box';
 import { AppSettingsStore } from '../../store/app-settings.store';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
-import { SmtpConfigService } from '../email/smtp-config.service';
 import type {
   SmtpSettingsDto,
   TradingSettingsDto,
@@ -25,19 +23,17 @@ import { tradingTermsFrom } from '../../common/trading-terms';
  * directions in separate classes is what makes "who can read the SMTP password"
  * answerable by looking at imports rather than by reading every method.
  *
- * ── Why the DEFAULTS come from the environment ─────────────────────────────
+ * ── With no row, the form is BLANK ─────────────────────────────────────────
  *
- * `getSmtp` with no row returns the environment's values with
- * `source: 'environment'`, rather than an empty form. The operator opening this
- * screen for the first time is looking at a system that already sends mail, and
- * showing blank fields would invite them to retype a working configuration from
- * memory — or to save a partial one over it.
+ * `getSmtp` with no row returns empty fields with `source: 'environment'`.
+ * There is no SMTP_* environment configuration left to pre-fill from, so blank
+ * is the honest answer: nothing is configured, and this screen is where that
+ * gets fixed.
  */
 @Injectable()
 export class SettingsService {
   constructor(
     private readonly store: AppSettingsStore,
-    private readonly smtpConfig: SmtpConfigService,
     private readonly config: ConfigService,
     private readonly audit: AdminAuditService,
   ) {}
@@ -46,41 +42,23 @@ export class SettingsService {
     const row = await this.store.getSmtp();
     if (!row) {
       /*
-       * No row yet: report what the process is actually using, so the form opens
-       * pre-filled with the live configuration instead of blank.
-       *
-       * Unless there is genuinely nothing. `resolve()` refuses when neither a row
-       * nor SMTP_HOST exists — the right answer on a send path, and a trap on
-       * THIS one: the refusal would 503 the settings read, and the settings
-       * screen is the only place the unconfigured state can be fixed. A blank
-       * form is not the hazard here that it is above — there is no working
-       * configuration to invite retyping — it is the truth.
+       * No row means nothing is configured, full stop — there is no longer an
+       * environment fallback to report. A blank form is the truth here, and
+       * this read must NOT refuse: the settings screen is the only place the
+       * unconfigured state can be fixed, so 503-ing it would close the door on
+       * the fix. `source` stays 'environment' because it is the DTO's word for
+       * "not from the database" and both frontends read it.
        */
-      try {
-        const effective = await this.smtpConfig.resolve();
-        return {
-          host: effective.host,
-          port: effective.port,
-          username: effective.username,
-          passwordSet: effective.password !== null,
-          fromAddress: effective.from,
-          secure: effective.secure,
-          source: 'environment',
-          updatedAt: null,
-        };
-      } catch (error) {
-        if (!(error instanceof MailNotConfiguredError)) throw error;
-        return {
-          host: '',
-          port: 587,
-          username: null,
-          passwordSet: false,
-          fromAddress: '',
-          secure: false,
-          source: 'environment',
-          updatedAt: null,
-        };
-      }
+      return {
+        host: '',
+        port: 587,
+        username: null,
+        passwordSet: false,
+        fromAddress: '',
+        secure: false,
+        source: 'environment',
+        updatedAt: null,
+      };
     }
 
     return {

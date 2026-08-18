@@ -90,22 +90,6 @@ const envSchema = z
     JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
 
     /*
-     * The SMTP env vars are now the BOOTSTRAP configuration, not the only one.
-     *
-     * `smtp_settings` (one row, admin-editable) overrides all five at runtime.
-     * These stay, and stay required in production below, because the override
-     * cannot exist before somebody signs in to create it: a fresh deployment
-     * must be able to send the admin-invite email that produces the first
-     * administrator, and an operator who mis-saves the SMTP form must not lock
-     * the system out of its own password-reset flow. Env is the floor.
-     */
-    SMTP_HOST: z.string().optional(),
-    SMTP_PORT: z.coerce.number().int().optional(),
-    SMTP_USER: z.string().optional(),
-    SMTP_PASS: z.string().optional(),
-    SMTP_FROM: z.string().optional(),
-
-    /*
      * Encrypts the secrets this system stores at rest — today the SMTP password
      * in `smtp_settings.password_ciphertext`, via common/security/secret-box.ts.
      *
@@ -352,26 +336,26 @@ const SIGNING_SECRETS = [
 ] as const;
 
 /*
- * SMTP_HOST/USER/PASS/FROM ARE DELIBERATELY NOT HERE. Do not add them back
- * without reading the note below and smtp-config.service.ts.
+ * THERE ARE NO SMTP_* VARIABLES AT ALL any more — not required, not optional,
+ * not read. Do not add them back without reading smtp-config.service.ts.
  *
- * They were required, for a good reason: mail was optional, `resolve()` fell
- * back to `smtp.example.com` with no auth, and `EmailService.send` catches and
- * logs rather than throwing — so a deploy missing SMTP started cleanly and every
- * verification link, KYC decision and withdrawal notification failed silently.
+ * They were once required, for a good reason: mail was optional, `resolve()`
+ * fell back to `smtp.example.com` with no auth, and `EmailService.send` catches
+ * and logs rather than throwing — so a deploy missing SMTP started cleanly and
+ * every verification link, KYC decision and withdrawal notification failed
+ * silently.
  *
- * The requirement is gone because SMTP is now ADMIN-CONFIGURED, on Settings →
- * Email, and the `smtp_settings` row (migration 0026) is what a real deployment
- * uses. Requiring the environment too would mean every operator holds relay
- * credentials in two places, with the environment copy never actually used after
- * the first save.
+ * They are gone entirely because SMTP is ADMIN-CONFIGURED, on Settings → Email,
+ * and the `smtp_settings` row (migration 0026) is what a real deployment uses.
+ * Keeping an environment copy meant relay credentials in two places, with the
+ * env half never used after the first save — and still able to be silently
+ * fallen back to. DEPLOYMENT.md says it plainly: "There is no SMTP_* secret."
  *
- * The silent-failure hole that made these required is closed at its source
- * instead: `SmtpConfigService.resolve()` now REFUSES when nothing is configured,
- * rather than returning example.com defaults that fail downstream in a catch.
- * That keeps R-8.5's "does not warn, does not degrade, it refuses" while letting
- * the process boot — which it must, because the screen that configures mail is
- * served by the process itself.
+ * The silent-failure hole is closed at its source: `SmtpConfigService.resolve()`
+ * REFUSES when no row exists, rather than returning defaults that fail
+ * downstream in a catch. That keeps R-8.5's "does not warn, does not degrade,
+ * it refuses" while letting the process boot — which it must, because the screen
+ * that configures mail is served by the process itself.
  */
 const PROD_REQUIRED = [
   'DATABASE_URL',

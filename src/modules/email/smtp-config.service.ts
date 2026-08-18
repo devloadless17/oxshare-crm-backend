@@ -21,16 +21,19 @@ import { AppSettingsStore } from '../../store/app-settings.store';
  * turn depend on the settings module. `AppSettingsStore` is `@Global()`, so this
  * reaches the row without importing anything from `modules/settings`.
  *
- * ── Env is the floor, not the default ──────────────────────────────────────
+ * ── The row is the ONLY source ─────────────────────────────────────────────
  *
- * The row wins WHOLE, not field by field. A half-merged configuration — the
- * row's host with the environment's password — is a state no operator chose and
- * cannot see on the screen; it would silently authenticate to a new relay with
- * an old credential and fail in a way the settings form shows as correct.
+ * There is no SMTP_* environment fallback. Mail is configured by an
+ * administrator on Settings → Email; until that row exists `resolve()` refuses
+ * with `MailNotConfiguredError` rather than reaching for a second, invisible
+ * configuration. Holding relay credentials in two places meant the environment
+ * copy was never used after the first save, while still being the thing a
+ * misconfigured deployment silently fell back to.
  *
- * The environment still has to be complete enough to send, because the row
- * cannot exist before somebody signs in to create it. See the SMTP block in
- * `env.validation.ts`.
+ * The bootstrap chicken-and-egg that once justified an env floor is handled
+ * elsewhere: `scripts/bootstrap-admin.mjs` creates the first administrator from
+ * BOOTSTRAP_ADMIN_EMAIL/PASSWORD, so no invite email is needed to get in. See
+ * DEPLOYMENT.md, "The first administrator".
  */
 
 export interface EffectiveSmtpConfig {
@@ -40,8 +43,12 @@ export interface EffectiveSmtpConfig {
   username: string | null;
   password: string | null;
   from: string;
-  /** Where this came from, for the log line and the settings screen. */
-  source: 'database' | 'environment';
+  /**
+   * Where this came from, for the log line and the settings screen. Only ever
+   * `'database'` now that the environment fallback is gone — kept as a field
+   * because the settings DTO and both frontends still read it.
+   */
+  source: 'database';
   /**
    * Changes whenever anything above changes, so `EmailService` can decide
    * whether its cached transporter is still valid without comparing fields.
@@ -83,11 +90,6 @@ export class SmtpConfigService implements OnApplicationBootstrap {
       const row = await this.settings.getSmtp();
       if (row) {
         this.logger.log(`Mail configured from the database (${row.host}:${row.port}).`);
-        return;
-      }
-      const host = this.config.get<string>('SMTP_HOST', '');
-      if (host) {
-        this.logger.log(`Mail configured from the environment (${host}).`);
         return;
       }
       this.logger.warn(
@@ -157,42 +159,18 @@ export class SmtpConfigService implements OnApplicationBootstrap {
     }
 
     /*
-     * NOTHING CONFIGURED IS A REFUSAL, not a default.
+     * NO ROW IS A REFUSAL, not a default.
      *
-     * This used to fall back to `smtp.example.com` — a host RFC 2606 reserves to
-     * never resolve — so an unconfigured deployment produced a config that looked
-     * complete and failed at the relay. `EmailService.send` catches and logs
-     * rather than throwing, so that failure stopped there: no verification link,
-     * no KYC decision, no withdrawal notification, and nothing above the logger
-     * any the wiser. SMTP_* used to be required at boot to prevent exactly this.
+     * There is nothing left to fall back to. This once read SMTP_* from the
+     * environment, and before that defaulted to `smtp.example.com` — a host RFC
+     * 2606 reserves to never resolve — so an unconfigured deployment produced a
+     * config that looked complete and failed at the relay. `EmailService.send`
+     * catches and logs rather than throwing, so that failure stopped there: no
+     * verification link, no KYC decision, no withdrawal notification, and
+     * nothing above the logger any the wiser.
      *
-     * They no longer are, because mail is admin-configured and the process must
-     * start in order to serve the screen that configures it. The check moved here
-     * — later, and where it can actually name the fix.
+     * Refusing here keeps that failure loud and names the one place it is fixed.
      */
-    const configuredHost = this.config.get<string>('SMTP_HOST', '');
-    if (!configuredHost) {
-      throw new MailNotConfiguredError();
-    }
-
-    const host = configuredHost;
-    const port = this.config.get<number>('SMTP_PORT', 587);
-    const username = this.config.get<string>('SMTP_USER', '') || null;
-    const password = this.config.get<string>('SMTP_PASS', '') || null;
-    const from = this.config.get<string>('SMTP_FROM', '"OxShare System" <no-reply@oxshare.com>');
-
-    return {
-      host,
-      port,
-      // Preserves the previous behaviour for the env path exactly. The database
-      // path stores this explicitly instead, because deriving it from the port
-      // is wrong on any relay using a non-standard SMTPS port.
-      secure: port === 465,
-      username,
-      password,
-      from,
-      source: 'environment',
-      fingerprint: ['env', host, port, username ?? '', from].join('|'),
-    };
+    throw new MailNotConfiguredError();
   }
 }
