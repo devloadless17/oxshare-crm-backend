@@ -34,21 +34,36 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
   imports: [
     ReplayNonceModule,
     /*
-     * Global config — loads .env, validated at boot (refuses to start on invalid).
+     * Global config — loads .env in EVERY environment, production included,
+     * validated at boot (refuses to start on invalid).
      *
-     * `ignoreEnvFile` in production because a container gets its configuration
-     * from the environment, and a stray `/app/.env` is strictly a hazard there:
-     * ConfigModule fills in only the keys ABSENT from process.env, so a file that
-     * shouldn't be in the image at all would silently backfill whatever the real
-     * deployment forgot — and `validateEnv` would then see the merged object and
-     * pass. A missing R2_BUCKET has to be a refusal to boot, not a quiet fallback
-     * to somebody's development bucket. The .dockerignore keeps the file out;
-     * this makes it not matter if one ever gets in.
+     * This previously set `ignoreEnvFile: NODE_ENV === 'production'`, on the
+     * reasoning that a container gets its configuration from the orchestrator and
+     * a stray `/app/.env` is strictly a hazard: ConfigModule fills in only the
+     * keys ABSENT from process.env, so a file that shouldn't be in the image
+     * would silently backfill whatever the real deployment forgot, and
+     * `validateEnv` would see the merged object and pass.
+     *
+     * That reasoning holds for a container. It does not describe how this system
+     * is actually deployed on the Windows VPS, where there is no orchestrator to
+     * inject 25 variables and the .env file IS the configuration — maintained,
+     * reviewed and edited in one place. Ignoring it there did not make config
+     * safer; it split the truth in two, because the file stayed on disk looking
+     * authoritative while the process read a separate machine environment block.
+     *
+     * THE TRADE-OFF IS REAL AND UNCHANGED: a value missing from the environment
+     * now falls back to this file rather than refusing to boot. What keeps that
+     * honest is that .env is the DECLARED source here rather than a leftover — it
+     * is gitignored, it is not copied into any image (.dockerignore still
+     * excludes it), and `validateEnv` still refuses the merged result if the
+     * outcome is invalid. If this ever runs in a container again, set
+     * `ignoreEnvFile: true` there explicitly rather than deriving it from
+     * NODE_ENV, so the choice is stated by the deployment that needs it.
      */
     ConfigModule.forRoot({
       isGlobal: true,
       validate: validateEnv,
-      ignoreEnvFile: process.env['NODE_ENV'] === 'production',
+      ignoreEnvFile: false,
     }),
 
     // §9 repeatable jobs. Interim host for the confirm job until BullMQ lands.
