@@ -15,10 +15,39 @@ name: CI
 # concurrency and two-level tests have just passed on that exact commit. Split
 # across two workflows the best available link is `workflow_run`, which fires on
 # completion regardless of outcome and has to re-check it by hand.
+#
+# ── Minutes are a budget, so this runs when it can tell you something ────────
+#
+# This suite costs 6–9 minutes (Testcontainers starts a real Postgres), so the
+# triggers skip runs that could not fail:
+#
+#  - `paths-ignore` — a markdown-only commit cannot break the money tests. One
+#    docs change cost a full run for nothing, which is what prompted this.
+#  - `pull_request` is scoped to PRs targeting `production`. Pushes to `main`
+#    already run this workflow, so an unscoped trigger paid twice for the same
+#    answer on every merge PR.
+#
+# To skip deliberately, put `[skip ci]` in the commit message — GitHub honours it
+# natively, and `workflow_dispatch` below still works on a skipped commit, so
+# nothing becomes unverifiable. NEVER skip the commit you intend to deploy: the
+# deploy job needs `verify` to have passed on that exact SHA.
 on:
   push:
     branches: [main, production]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
+      - '.vscode/**'
   pull_request:
+    branches: [production]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
+      - '.vscode/**'
   # A redeploy or a rollback without an empty commit. Rolling back is: set
   # IMAGE_TAG to the previous SHA in .env on the VPS and `up -d`, or re-run this
   # workflow from the older commit.
@@ -29,11 +58,13 @@ on:
 permissions:
   contents: read
 
-# Superseded PR runs are cancelled; a deploy in flight is NEVER cancelled —
-# killing it mid-ssh leaves an orphaned one-off migration container behind.
+# A superseded run describes a commit nobody is on any more, so cancelling it
+# frees minutes for the run that replaced it — EXCEPT on `production`, where a
+# cancelled run can kill a deploy mid-ssh and orphan the one-off migration
+# container. That branch is never cancelled, whatever it costs.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/production' }}
 
 env:
   # Deploy target on the VPS, relative to VPS_USER's home directory.
