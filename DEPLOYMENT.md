@@ -22,6 +22,51 @@ commit SHA and `docker compose -f docker-compose.prod.yml up -d` — the previou
 kept on the machine for exactly this. (Migrations are not rolled back; write a
 compensating migration if a schema change must be undone.)
 
+## Where the frontends must live — a hard requirement, not a preference
+
+**The frontends and this API must be served from SIBLING SUBDOMAINS of one
+registrable domain.** `admin.example.com` + `api.example.com` is correct;
+`admin.vercel.app` + `api.example.com` is not, and neither is any pairing whose
+parent domains differ.
+
+This is not stylistic. Sessions are httpOnly `__Host-` cookies, which browsers
+scope to exactly one hostname, and `SameSite=Lax` sends a cookie only on a
+SAME-SITE request. The frontends therefore call this API **directly** from the
+browser rather than through a same-origin proxy: that is what makes the API's own
+host set the cookie, which in turn is what lets the realtime WebSocket — which
+cannot go through a proxy, because it must stay open — present that cookie when
+it dials the same host.
+
+Get this wrong and the failure is quiet and specific: **HTTP works, login works,
+and realtime silently never connects.** Every handshake is refused with a
+`logger.warn` and nothing else, because the socket reaches a host the browser
+holds no cookie for. It cost a full day to diagnose the first time (18 Aug 2026);
+the note exists so it costs nobody a second one.
+
+Consequences to plan for:
+
+- `PORTAL_URL` / `ADMIN_URL` must be the EXACT browser origins — scheme + host, no
+  trailing slash. They are compared by string equality for CORS, for the CSRF
+  origin check and for the WebSocket handshake.
+- Preview deployments on random hostnames (Vercel previews, for instance) are
+  cross-site and will be refused on every authenticated write. That is the guard
+  working, not a bug. Give previews their own backend or accept the limit.
+- The frontends read the API origin from `NEXT_PUBLIC_API_BASE_URL`, which also
+  feeds their CSP `connect-src` and `img-src`. A value that disagrees with reality
+  blocks requests SILENTLY — a CSP refusal on an `<img>` just renders the
+  fallback.
+- If a future host genuinely cannot satisfy this (the client insists on split
+  domains), the supported alternative is ticket-based socket auth: mint a
+  short-lived single-use token from an authenticated endpoint and pass it in the
+  handshake. It works under any topology and costs the `__Host-` guarantee,
+  because a token in JavaScript is a token XSS can steal. Not built; decide
+  deliberately before promising it.
+
+Verified working 18 Aug 2026: `oxshareadmin.loadless.site` and
+`oxshareportal.loadless.site` against `aipp.loadless.site` — login 200, foreign
+origin 403, and a `/realtime` namespace connection accepted (`40/realtime,{...}`)
+using only the cookies the login returned.
+
 ## GitHub secrets
 
 Settings → Secrets and variables → Actions. The deploy job validates all of these
