@@ -42,6 +42,28 @@ export class WalletDto {
   })
   currency: string;
 
+  /**
+   * WHAT this wallet is for — `main` or `commission`.
+   *
+   * ## `GET /wallet` only ever returns `main`, so why send it at all
+   *
+   * Because this DTO is ALSO what `GET /ib/overview` returns commission wallets
+   * as, and a screen holding both lists must not have to remember which array
+   * it took a card from. The field travels with the wallet rather than with the
+   * request that fetched it, so a card rendered from either list can label
+   * itself and cannot be mislabelled by being passed to the wrong component.
+   *
+   * A client who is not a partner sees only `main` and can ignore this.
+   */
+  @ApiProperty({
+    enum: ['main', 'commission'],
+    description:
+      "`GET /wallet` returns `main` only — a commission wallet is a partner's earnings and " +
+      'appears solely on GET /ib/overview. It cannot be deposited to, withdrawn from, or moved ' +
+      'to a trading account; POST /ib/wallet/transfer moves it into the main wallet first.',
+  })
+  kind: 'main' | 'commission';
+
   @ApiProperty({ type: 'string', example: '700.00000000', description: 'Decimal string (§6.1).' })
   balance: string;
 

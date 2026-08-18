@@ -96,7 +96,7 @@ export class WalletProvisioningService {
         );
         return;
       }
-      await this.wallets.getOrCreateWallet(userId, currency.code, executor);
+      await this.wallets.getOrCreateWallet(userId, currency.code, 'main', executor);
       this.logger.log(`Opened ${currency.code} wallet for new user ${userId}.`);
     } catch (error) {
       // See the class comment: registration must not fail because of this.
@@ -133,7 +133,7 @@ export class WalletProvisioningService {
       }
 
       for (const currency of enabled) {
-        await this.wallets.getOrCreateWallet(userId, currency.code, executor);
+        await this.wallets.getOrCreateWallet(userId, currency.code, 'main', executor);
       }
       this.logger.log(
         `Opened wallets for user ${userId}: ${enabled.map((c) => c.code).join(', ')}.`,

@@ -2,7 +2,13 @@ import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { and, count, desc, eq, sql } from 'drizzle-orm';
 import { getDb } from '../../database/db';
-import { ledgerEntries, transactions, transfers, wallets } from '../../database/schema';
+import {
+  ledgerEntries,
+  transactions,
+  transfers,
+  walletKindEnum,
+  wallets,
+} from '../../database/schema';
 import { available, money, MoneyInput, toDecimal } from './money';
 import {
   ConflictError,
@@ -65,9 +71,31 @@ export type LedgerEntryType =
   // deposit AND a withdrawal.
   | 'transfer';
 
+/**
+ * WHICH of a client's wallets in a currency — see `walletKindEnum` in schema.ts.
+ *
+ * Re-exported from the schema rather than restated as a literal union, so the
+ * two cannot drift: adding a kind to the enum makes every exhaustive read of
+ * this type a compile error instead of a branch that silently never runs.
+ */
+export type WalletKind = (typeof walletKindEnum.enumValues)[number];
+
+/**
+ * The default EVERYWHERE, and it is load-bearing rather than a convenience.
+ *
+ * Deposits, withdrawals, holds and trading-account transfers all resolve the
+ * main wallet, and none of them takes a kind — so a caller cannot aim any of
+ * those rails at a commission wallet even by mistake. A commission wallet is
+ * reached only by naming it, which two places do: the commission confirm loop
+ * and `IbWalletService`.
+ */
+const DEFAULT_KIND: WalletKind = 'main';
+
 export interface PostParams {
   userId: string;
   currency: Currency;
+  /** Which wallet in that currency. Defaults to `main` — see DEFAULT_KIND. */
+  kind?: WalletKind;
   /** Signed: positive credits, negative debits. String or Decimal — never a number. */
   amount: MoneyInput;
   entryType: LedgerEntryType;
@@ -112,17 +140,33 @@ export class WalletService {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
   /** Create-if-absent without locking. Callers that will move money should use
-   *  post()/hold()/release(), which lock as part of their transaction. */
-  async getOrCreateWallet(userId: string, currency: Currency, executor?: Executor) {
+   *  post()/hold()/release(), which lock as part of their transaction.
+   *
+   *  `kind` sits BEFORE `executor` deliberately. Appending it instead would have
+   *  left every existing call site compiling untouched — including the four that
+   *  pass a transaction — and a money path that keeps compiling silently is
+   *  exactly the one you want the compiler to make you look at when its meaning
+   *  changes. */
+  async getOrCreateWallet(
+    userId: string,
+    currency: Currency,
+    kind: WalletKind = DEFAULT_KIND,
+    executor?: Executor,
+  ) {
     const db = executor ?? this.db;
     await db
       .insert(wallets)
-      .values({ userId, currency })
-      .onConflictDoNothing({ target: [wallets.userId, wallets.currency] });
+      .values({ userId, currency, kind })
+      /* The conflict target must MATCH `wallets_user_currency_kind_uq` exactly.
+         A target naming no unique index fails at RUNTIME, not at compile time —
+         on the path that opens a client's wallet. */
+      .onConflictDoNothing({ target: [wallets.userId, wallets.currency, wallets.kind] });
     const [wallet] = await db
       .select()
       .from(wallets)
-      .where(and(eq(wallets.userId, userId), eq(wallets.currency, currency)))
+      .where(
+        and(eq(wallets.userId, userId), eq(wallets.currency, currency), eq(wallets.kind, kind)),
+      )
       .limit(1);
     return wallet;
   }
@@ -137,6 +181,7 @@ export class WalletService {
 
   private async postWithin(tx: Executor, params: PostParams) {
     const { userId, currency, entryType, referenceType, referenceId } = params;
+    const kind = params.kind ?? DEFAULT_KIND;
     const amount = toDecimal(params.amount);
     if (amount.isZero()) {
       throw new ValidationError('A ledger entry must move a non-zero amount.');
@@ -144,7 +189,7 @@ export class WalletService {
 
     // 1. Ensure the wallet exists and lock it — both inside this transaction,
     //    so creation and the lock cannot be separated by a concurrent writer.
-    const wallet = await this.lockWallet(tx, userId, currency);
+    const wallet = await this.lockWallet(tx, userId, currency, kind);
 
     // 2. Compute the new balance with decimal.js — never bare arithmetic.
     const newBalance = toDecimal(wallet.balance).plus(amount);
@@ -201,16 +246,23 @@ export class WalletService {
    * before the transaction opened and the locked SELECT was destructured
    * without a null check — a missing row crashed with a TypeError mid-payment.
    */
-  private async lockWallet(tx: Executor, userId: string, currency: Currency) {
+  private async lockWallet(
+    tx: Executor,
+    userId: string,
+    currency: Currency,
+    kind: WalletKind = DEFAULT_KIND,
+  ) {
     await tx
       .insert(wallets)
-      .values({ userId, currency })
-      .onConflictDoNothing({ target: [wallets.userId, wallets.currency] });
+      .values({ userId, currency, kind })
+      .onConflictDoNothing({ target: [wallets.userId, wallets.currency, wallets.kind] });
 
     const [wallet] = await tx
       .select()
       .from(wallets)
-      .where(and(eq(wallets.userId, userId), eq(wallets.currency, currency)))
+      .where(
+        and(eq(wallets.userId, userId), eq(wallets.currency, currency), eq(wallets.kind, kind)),
+      )
       .for('update')
       .limit(1);
 
@@ -218,7 +270,9 @@ export class WalletService {
       // Not a money rule and not the caller's fault: the upsert above just ran,
       // so an absent row means the database is in a state we do not understand.
       // A plain Error becomes a 500 with the stack logged and nothing leaked.
-      throw new Error(`Wallet ${currency} for user ${userId} could not be created or locked.`);
+      throw new Error(
+        `The ${kind} ${currency} wallet for user ${userId} could not be created or locked.`,
+      );
     }
     return wallet;
   }
@@ -277,8 +331,22 @@ export class WalletService {
     }
   }
 
-  async listWallets(userId: string) {
-    const rows = await this.db.select().from(wallets).where(eq(wallets.userId, userId));
+  /**
+   * A client's wallets of ONE kind, `main` unless asked otherwise.
+   *
+   * Filtered SERVER-SIDE rather than returned whole for the caller to sift.
+   * `GET /wallet` is what the portal's wallet screen, the deposit screen and the
+   * withdraw screen all read, and none of them may offer a commission wallet as
+   * a source — a commission balance leaves through `POST /ib/wallet/transfer`
+   * and nowhere else. Making that a filter in one UI would leave the other two
+   * to remember it; making it the shape of the response means they cannot get
+   * it wrong.
+   */
+  async listWallets(userId: string, kind: WalletKind = DEFAULT_KIND) {
+    const rows = await this.db
+      .select()
+      .from(wallets)
+      .where(and(eq(wallets.userId, userId), eq(wallets.kind, kind)));
     return rows.map((w) => ({
       ...w,
       balance: money(w.balance),

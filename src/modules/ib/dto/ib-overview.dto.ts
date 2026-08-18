@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { WalletDto } from '../../wallet/dto/wallet-response.dto';
 
 /**
  * The partner's own dashboard, in one response.
@@ -65,6 +66,34 @@ export class IbEarningsDto {
   engineLive: boolean;
 }
 
+/**
+ * The partner's COMMISSION wallets — where earnings are held until moved.
+ *
+ * ## Here rather than on its own endpoint, for the reason this whole DTO exists
+ *
+ * The commission BALANCE and the lifetime-earnings TOTAL sit beside each other
+ * on one screen and are read as a pair. Fetched separately they can disagree —
+ * the hourly confirm loop credits a commission between the two requests, and
+ * the screen shows a balance that its own earnings figure does not explain.
+ * Same instant, same response.
+ *
+ * ## Deliberately ABSENT from `GET /wallet`
+ *
+ * That endpoint returns `main` wallets only, and the exclusion is server-side
+ * rather than a filter the portal applies. The wallet screen, the deposit
+ * screen and the withdraw screen all read it, and none of them may offer a
+ * commission wallet as a source: commission leaves through
+ * `POST /ib/wallet/transfer` into the main wallet, and every other rail then
+ * works on it unchanged. One filter in one UI would leave the other two to
+ * remember the rule.
+ *
+ * ## EMPTY is the normal state, and it is not a zero
+ *
+ * The wallet is opened by the first commission credit, so a partner who has
+ * never been paid has none. Render that as "nothing credited yet" — a zero
+ * balance says money was earned and has gone, which is the same failure as the
+ * wallet screen showing `$0.00` to a client holding $700.
+ */
 /** One client this partner introduced. */
 export class IbReferredClientDto {
   @ApiProperty() userId: string;
@@ -130,6 +159,14 @@ export class IbOverviewDto {
 
   @ApiProperty({ type: IbEarningsDto })
   earnings: IbEarningsDto;
+
+  /**
+   * One entry per currency this partner has been paid in — see the note above
+   * `IbReferredClientDto`. An empty array means nothing has been credited yet,
+   * which is NOT the same as a zero balance.
+   */
+  @ApiProperty({ type: [WalletDto] })
+  commissionWallets: WalletDto[];
 
   @ApiProperty({
     type: [IbReferredClientDto],

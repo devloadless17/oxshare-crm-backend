@@ -1610,12 +1610,50 @@ export const withdrawalPaymentMethods = pgTable(
 );
 
 /**
+ * WHAT a wallet is FOR — `wallets.kind`.
+ *
+ * `main` is the client's money: what a deposit credits, what a withdrawal is
+ * paid from, and what moves to a trading account. Every wallet that existed
+ * before this column is one.
+ *
+ * `commission` holds a PARTNER's earnings and nothing else. Only the commission
+ * confirm loop credits it, and the only way out is
+ * `IbWalletService.transferToMain` — which lands in the `main` wallet of the
+ * same currency, where the ordinary withdrawal and transfer rails already work.
+ *
+ * ## Why a second wallet rather than a filter over the ledger
+ *
+ * "What have I earned as a partner" was answerable before this: sum the
+ * `commission`/`rebate`/`payout` entries in the main wallet. What was NOT
+ * answerable is "what have I earned and not yet moved", because the moment a
+ * commission credit landed in the main wallet it was indistinguishable from a
+ * deposit — one balance, two meanings, and a partner reconciling their earnings
+ * against their own records had to subtract their own deposits by hand.
+ *
+ * Separating the BALANCE is what makes the second question a read. It also
+ * makes the first one survive a transfer out: the earnings total keeps summing
+ * commission entries, which the transfer does not write, so moving money to the
+ * main wallet lowers the commission balance and leaves lifetime earnings alone.
+ *
+ * ## What this deliberately does NOT do
+ *
+ * A commission wallet cannot be deposited to, withdrawn from, or transferred to
+ * a trading account. Those rails all resolve `kind: 'main'` and there is no
+ * parameter to make them do otherwise — the partner moves the money across
+ * first. One extra step, in exchange for every existing money path continuing
+ * to mean exactly what it meant before this column existed.
+ */
+export const walletKindEnum = pgEnum('wallet_kind', ['main', 'commission']);
+
+/**
  * Money the platform holds for a client.
  *
- * One per client per currency, opened for every ENABLED currency at
- * registration. `available = balance − on_hold` is what a client may actually
- * move; `wallets_hold_within_balance` makes a hold exceeding the balance a
- * constraint violation rather than a state the arithmetic has to survive.
+ * One per client per currency PER KIND, opened for every ENABLED currency at
+ * registration (`main` only — a commission wallet is opened lazily, the first
+ * time a partner is actually paid). `available = balance − on_hold` is what a
+ * client may actually move; `wallets_hold_within_balance` makes a hold
+ * exceeding the balance a constraint violation rather than a state the
+ * arithmetic has to survive.
  */
 export const wallets = pgTable(
   'wallets',
@@ -1631,6 +1669,16 @@ export const wallets = pgTable(
     currency: varchar('currency', { length: 10 })
       .notNull()
       .references(() => currencies.code, { onDelete: 'restrict' }),
+    /**
+     * What this wallet is FOR — see `walletKindEnum`.
+     *
+     * Defaulted to `main` so every existing row is one and the backfill is the
+     * default rather than a migration script. It also means a caller that does
+     * not know about this column keeps writing main wallets, which is what the
+     * whole system did before — a new kind must be asked for explicitly, never
+     * arrived at by omission.
+     */
+    kind: walletKindEnum('kind').notNull().default('main'),
     /** §6.1: NUMERIC(28,8), never a float, and a string at every boundary. */
     balance: numeric('balance', { precision: 28, scale: 8 }).notNull().default('0'),
     /**
@@ -1643,15 +1691,22 @@ export const wallets = pgTable(
   },
   (t) => [
     /*
-     * One wallet per user per currency, in the DATABASE.
+     * One wallet per user per currency PER KIND, in the DATABASE.
      *
      * "Open a wallet if they have none" is a read-then-insert, and two
      * concurrent registrations — or one retried request — otherwise leave a
      * client with two USD wallets and a balance split across them, which reads
      * on screen as money going missing. The insert expects this conflict and
      * treats it as success.
+     *
+     * `kind` joined the key rather than replacing anything: a partner
+     * legitimately holds a main USD wallet AND a commission USD wallet, so the
+     * old two-column key would have refused the second one. Every upsert that
+     * targets this index had to grow the third column with it — a conflict
+     * target that does not match a unique index is not a compile error, it is
+     * a runtime `ON CONFLICT` failure on a money path.
      */
-    uniqueIndex('wallets_user_currency_uq').on(t.userId, t.currency),
+    uniqueIndex('wallets_user_currency_kind_uq').on(t.userId, t.currency, t.kind),
     index('wallets_user_idx').on(t.userId),
     check('wallets_balance_non_negative', sql`${t.balance} >= 0`),
     check('wallets_on_hold_non_negative', sql`${t.onHold} >= 0`),
@@ -2027,6 +2082,75 @@ export const transfers = pgTable(
     index('transfers_state_idx').on(t.state),
     index('transfers_created_at_idx').on(t.createdAt),
     index('transfers_trading_account_idx').on(t.tradingAccountId),
+  ],
+);
+
+/**
+ * A partner moving earnings from their COMMISSION wallet to their MAIN one.
+ *
+ * ## Its own table, and not a row in `transfers`
+ *
+ * `transfers` is wallet ⇄ MT5 trading account. Every column it carries beyond
+ * the amount exists because that movement CROSSES A BOUNDARY into a server this
+ * platform does not own: `state`, `failure_reason`, `settled_at`, the resume
+ * scheduler, and a `trading_account_id` that is NOT NULL. Putting a
+ * wallet-to-wallet move in there would mean making that column nullable and
+ * teaching every reader that a transfer might have no account — for a movement
+ * that has none of the failure modes the column set was built for.
+ *
+ * This one is entirely inside one database. Both legs are `WalletService.post`
+ * calls in a single transaction against two rows of the same table, so it
+ * commits or it does not exist. There is no pending state to model, nothing to
+ * resume, and no reason a settled one can later fail — which is why this table
+ * has no `state` column and its absence is the honest shape rather than a
+ * simplification.
+ *
+ * ## Both wallet ids, stored
+ *
+ * Not `userId + currency`, from which they could be re-derived: a wallet is a
+ * durable row with its own ledger, and recording WHICH rows moved is what lets
+ * this be reconciled against `ledger_entries` without repeating the lookup
+ * logic — and without that lookup silently resolving differently if the wallet
+ * rules ever change.
+ */
+export const ibWalletTransfers = pgTable(
+  'ib_wallet_transfers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** The COMMISSION wallet debited. */
+    fromWalletId: uuid('from_wallet_id')
+      .notNull()
+      .references(() => wallets.id, { onDelete: 'restrict' }),
+    /** The MAIN wallet credited, same currency and same owner. */
+    toWalletId: uuid('to_wallet_id')
+      .notNull()
+      .references(() => wallets.id, { onDelete: 'restrict' }),
+    /** Always positive — the direction is in the column names, not the sign. */
+    amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('ib_wallet_transfers_user_idx').on(t.userId),
+    index('ib_wallet_transfers_created_at_idx').on(t.createdAt),
+    /*
+     * A transfer moves money and can never be zero or negative. The API refuses
+     * both first; this is the backstop that makes a bug in that check a failed
+     * INSERT rather than a partner's balance moving the wrong way — a negative
+     * amount here would be a withdrawal FROM the main wallet dressed as a
+     * commission payout.
+     */
+    check('ib_wallet_transfers_amount_positive', sql`${t.amount} > 0`),
+    /* The two legs must be different wallets. Equal ids would post a debit and
+       a credit to the same row for the same reference — the second of which the
+       ledger's idempotency index absorbs as a replay, leaving a transfer row
+       claiming a movement that only happened once, as a debit. */
+    check('ib_wallet_transfers_distinct_wallets', sql`${t.fromWalletId} <> ${t.toWalletId}`),
   ],
 );
 

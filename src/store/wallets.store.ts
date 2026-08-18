@@ -59,12 +59,24 @@ export class WalletsStore {
    * Throws on a bad currency — `wallets.currency` is a foreign key onto
    * `currencies.code`. The callers decide what to do about that; a store that
    * swallowed it would hide a genuine misconfiguration from both of them.
+   *
+   * ## `main` only, stated in the INSERT rather than left to the default
+   *
+   * This backfills the wallets a CLIENT holds. A commission wallet belongs to a
+   * partner and is opened the first time one is actually paid, so handing every
+   * user on the platform an empty one would put a second same-currency row
+   * beside their real wallet for a programme most of them are not in.
+   *
+   * Written out rather than relying on the column default because the ON
+   * CONFLICT target below has to name `kind` either way — and a conflict target
+   * that does not match a unique index fails at runtime. Naming the value in the
+   * INSERT keeps the two halves of that pairing visible together.
    */
   async openForAllClients(currency: string): Promise<number> {
     const result = await this.db.execute(sql`
-      INSERT INTO wallets (user_id, currency)
-      SELECT id, ${currency} FROM users
-      ON CONFLICT (user_id, currency) DO NOTHING`);
+      INSERT INTO wallets (user_id, currency, kind)
+      SELECT id, ${currency}, 'main' FROM users
+      ON CONFLICT (user_id, currency, kind) DO NOTHING`);
 
     return result.rowCount ?? 0;
   }

@@ -236,6 +236,20 @@ export class AdminExportService {
     { header: 'Balance', value: (r) => r.balance },
     { header: 'On hold', value: (r) => r.onHold },
     { header: 'Currency', value: (r) => r.currency },
+    /*
+     * WHICH wallet — `main` or `commission`.
+     *
+     * Without it a partner exports as two rows reading "USD" with different
+     * balances and nothing telling them apart, and this is the output where
+     * that costs most: a CSV is the format most likely to be re-imported into a
+     * spreadsheet and summed. An operator reconciling one client's holdings
+     * would either double-count or drop a row, with no way to see which.
+     *
+     * Beside `Currency` rather than at the end, because the two are read
+     * together — "USD, commission" is one fact about the row, and splitting it
+     * across the first and last columns of a wide sheet is how it gets missed.
+     */
+    { header: 'Wallet kind', value: (r) => r.kind },
     { header: 'Client ID', value: (r) => r.userId },
     { header: 'Client email', value: (r) => r.userEmail },
     { header: 'Client first name', value: (r) => r.userFirstName },
@@ -560,6 +574,8 @@ export interface WalletExportRow {
   /** A STRING, always. */
   onHold: string;
   currency: string;
+  /** `main` or `commission` — see the `Wallet kind` column for why it is here. */
+  kind: string;
   createdAt: Date;
   updatedAt: Date;
   userId: string;

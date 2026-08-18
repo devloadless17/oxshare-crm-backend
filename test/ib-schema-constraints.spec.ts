@@ -215,18 +215,61 @@ describe('ib_accounts', () => {
 });
 
 describe('wallets', () => {
-  it('refuses a second wallet in the same currency', async () => {
+  it('refuses a second wallet of the same KIND in the same currency', async () => {
     const userId = await makeUser('two-usd@test.local');
 
     await ctx.db.execute(sql`INSERT INTO wallets (user_id, currency) VALUES (${userId}, 'USD')`);
 
-    // Otherwise a retried registration leaves a client with two USD wallets and
-    // a balance split across them — which reads on screen as money going missing.
+    // Otherwise a retried registration leaves a client with two USD main wallets
+    // and a balance split across them — which reads on screen as money going
+    // missing. The index gained `kind` (migration 0077) and did not lose this:
+    // a repeated insert with the same kind is still refused.
     expect(
       await constraintViolatedBy(
         ctx.db.execute(sql`INSERT INTO wallets (user_id, currency) VALUES (${userId}, 'USD')`),
       ),
-    ).toBe('wallets_user_currency_uq');
+    ).toBe('wallets_user_currency_kind_uq');
+  });
+
+  it('allows a main AND a commission wallet in one currency', async () => {
+    /*
+     * The other half of the same index, and the reason it gained a column.
+     *
+     * A partner holds their earnings in a `commission` USD wallet beside their
+     * ordinary `main` one. Under the old two-column key the second insert was a
+     * UNIQUE violation — and the symptom would not have looked like a constraint
+     * error to anyone reading a bug report, it would have looked like commission
+     * silently never being paid.
+     */
+    const userId = await makeUser('main-and-commission@test.local');
+
+    await ctx.db.execute(
+      sql`INSERT INTO wallets (user_id, currency, kind) VALUES (${userId}, 'USD', 'main')`,
+    );
+    await ctx.db.execute(
+      sql`INSERT INTO wallets (user_id, currency, kind) VALUES (${userId}, 'USD', 'commission')`,
+    );
+
+    const { rows } = await ctx.db.execute<{ n: string }>(
+      sql`SELECT count(*)::text AS n FROM wallets WHERE user_id = ${userId} AND currency = 'USD'`,
+    );
+    expect(rows[0].n).toBe('2');
+  });
+
+  it('defaults a wallet to `main`, so nothing reaches a commission wallet by omission', async () => {
+    /*
+     * Every money rail — deposit, withdrawal, hold, trading transfer — inserts
+     * without naming a kind. If the column defaulted the other way, or had no
+     * default, a client's deposit could land in the wallet the wallet screen
+     * deliberately cannot see.
+     */
+    const userId = await makeUser('default-kind@test.local');
+    await ctx.db.execute(sql`INSERT INTO wallets (user_id, currency) VALUES (${userId}, 'USD')`);
+
+    const { rows } = await ctx.db.execute<{ kind: string }>(
+      sql`SELECT kind FROM wallets WHERE user_id = ${userId}`,
+    );
+    expect(rows[0].kind).toBe('main');
   });
 
   it('allows one wallet per currency', async () => {

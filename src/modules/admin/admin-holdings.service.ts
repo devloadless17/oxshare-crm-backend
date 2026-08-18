@@ -265,6 +265,9 @@ export class AdminHoldingsService {
         balance: wallets.balance,
         onHold: wallets.onHold,
         currency: wallets.currency,
+        // See WalletRowDto.kind — without it a partner shows as two identical
+        // same-currency rows and an operator cannot tell which to act on.
+        kind: wallets.kind,
         createdAt: wallets.createdAt,
         updatedAt: wallets.updatedAt,
         userId: wallets.userId,
@@ -366,6 +369,7 @@ export class AdminHoldingsService {
           balance: wallets.balance,
           onHold: wallets.onHold,
           currency: wallets.currency,
+          kind: wallets.kind,
           createdAt: wallets.createdAt,
           updatedAt: wallets.updatedAt,
           userId: wallets.userId,

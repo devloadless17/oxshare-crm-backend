@@ -6,8 +6,10 @@ import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { IbApplicationsService } from './ib-applications.service';
 import { IbOverviewService } from './ib-overview.service';
+import { IbWalletService } from './ib-wallet.service';
 import { CreateIbApplicationDto, IbApplicationDto, IbStatusDto } from './dto/ib-application.dto';
 import { IbClientPositionDto, IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
+import { IbWalletTransferDto, IbWalletTransferResultDto } from './dto/ib-wallet.dto';
 import { PublicAgencyDto } from '../products/dto/catalogue.dto';
 import { ProductsStore } from '../../store/products.store';
 
@@ -30,6 +32,7 @@ export class IbController {
   constructor(
     private readonly applications: IbApplicationsService,
     private readonly overview: IbOverviewService,
+    private readonly ibWallets: IbWalletService,
     /*
      * The `@Global()` store rather than `CatalogueService`, so this module does
      * not have to import ProductsModule (and through it TradingModule) for one
@@ -143,6 +146,41 @@ export class IbController {
   @ApiOkResponse({ type: [PublicAgencyDto] })
   openAgencies() {
     return this.listOpenAgencies();
+  }
+
+  @Get('wallet/transfers')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'The last few commission transfers, newest first',
+    description:
+      'A short list to sit beside the balance it explains. The FULL history is in ' +
+      '`GET /payments/transactions`, which carries these rows alongside every other movement — a ' +
+      "partner's own money should not be split across two histories that have to be reconciled " +
+      'against each other.',
+  })
+  @ApiOkResponse({ type: [IbWalletTransferResultDto] })
+  myWalletTransfers(@Req() req: Request & { user: User }) {
+    return this.ibWallets.listTransfers(req.user.id);
+  }
+
+  @Post('wallet/transfer')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Move commission earnings into the main wallet',
+    description:
+      'Same currency, same owner, both legs in one transaction — it commits whole or does not ' +
+      'happen. There is no pending state to poll: unlike a wallet ⇄ trading-account transfer, ' +
+      'nothing here crosses into a server this platform does not own.\n\n' +
+      'Refuses a suspended partner, an amount above the available commission balance, and a ' +
+      'currency the partner holds no commission wallet in — each with its own message, because ' +
+      '"you have nothing to move" and "you have no such wallet" send a partner to different ' +
+      'places.\n\n' +
+      'Both legs are written to the ledger as `transfer`, NOT `commission`, so lifetime earnings ' +
+      'are unchanged by moving money that was already earned.',
+  })
+  @ApiOkResponse({ type: IbWalletTransferResultDto })
+  transferCommission(@Req() req: Request & { user: User }, @Body() dto: IbWalletTransferDto) {
+    return this.ibWallets.transferToMain(req.user.id, dto);
   }
 
   @Post('apply')

@@ -18,16 +18,25 @@ type TransactionRow = typeof transactions.$inferSelect;
  * What a movement IS, when the list holds more than one kind of them.
  *
  * `payment` is a row in `transactions` — a deposit or a withdrawal. `transfer`
- * is a row in `transfers`, wallet ⇄ trading account. They share one list because
- * they are one history to the person reading it, and they are separate tables
- * because a transfer has two legs and a bridge confirmation that a payment does
- * not.
+ * is a row in `transfers`, wallet ⇄ trading account. `commission_transfer` is a
+ * row in `ib_wallet_transfers`, a partner moving earnings from their commission
+ * wallet into their main one. They share one list because they are one history
+ * to the person reading it, and they are separate tables because each has
+ * something the others do not — a provider, a bridge confirmation, or neither.
+ *
+ * ## `commission_transfer` is its own kind rather than another `transfer`
+ *
+ * Both are internal moves, so folding them together is tempting. They answer
+ * different questions: a `transfer` changes how much of a client's money is
+ * available to TRADE, and a `commission_transfer` changes how much of a
+ * partner's money is available to WITHDRAW. A screen that printed one label for
+ * both would tell a partner their earnings had gone to a trading account.
  *
  * A renderer branches on THIS, never on the absence of a payment field: a
  * transfer has no method, no provider and no destination — but "the method is
  * null" is also true of a manual admin credit.
  */
-export type MovementKind = 'payment' | 'transfer';
+export type MovementKind = 'payment' | 'transfer' | 'commission_transfer';
 
 /**
  * One row of a client's money history, from either table.
@@ -509,7 +518,7 @@ export class TransactionsService {
      */
     return db
       .transaction(async (dbTx) => {
-        const wallet = await this.wallets.getOrCreateWallet(params.userId, currency, dbTx);
+        const wallet = await this.wallets.getOrCreateWallet(params.userId, currency, 'main', dbTx);
         const [row] = await dbTx
           .insert(transactions)
           .values({
@@ -1080,6 +1089,70 @@ export class TransactionsService {
           tr.trading_account_id
         FROM transfers tr
         WHERE tr.user_id = ${userId}
+
+        UNION ALL
+
+        /*
+         * A partner moving commission into their main wallet.
+         *
+         * NO BACKTICKS anywhere in this block, and none in the two arms above
+         * either: this whole query is a TEMPLATE LITERAL, so one backtick in a
+         * comment ends the string and the rest of the file parses as code.
+         *
+         * ## direction is stated from the MAIN wallet's side
+         *
+         * Always deposit, because that is what the movement does to the wallet
+         * every other row in this list is about — the same rule the transfer arm
+         * above follows. The commission wallet's matching debit is NOT a second
+         * row: that wallet never appears in GET /wallet, so a client reading a
+         * withdrawal against a wallet they cannot see would be reading about
+         * money leaving nowhere.
+         *
+         * The ledger still holds both legs. This list is a client's history, not
+         * the accounting record — /wallet/ledger is where both sides live.
+         *
+         * ## state is always success
+         *
+         * Not a simplification: ib_wallet_transfers has no state column, because
+         * both legs commit in one transaction against two rows of the same
+         * table. A row existing IS the movement having happened, so there is no
+         * pending state a screen could ever render.
+         */
+        SELECT
+          iwt.id,
+          iwt.user_id,
+          iwt.to_wallet_id                        AS wallet_id,
+          'deposit'::text,
+          iwt.amount,
+          iwt.currency,
+          'success'::text,
+          NULL::varchar,                          -- method_key
+          NULL::varchar,                          -- withdrawal_method_key
+          /*
+           * NAMED, like the transfer arm and for the same reason:
+           * transactions.provider is NOT NULL and this did move through
+           * something — the commission rail. The DTO documents provider as an
+           * OPEN set no screen may switch on exhaustively.
+           */
+          'commission'::varchar,                  -- provider
+          NULL::varchar,                          -- provider_ref
+          NULL::text,                             -- destination
+          NULL::uuid,                             -- destination_trading_account_id
+          NULL::text,                             -- rejection_reason: it cannot fail
+          NULL::uuid,                             -- reviewed_by
+          NULL::timestamptz,                      -- reviewed_at
+          iwt.created_at                          AS settled_at,
+          NULL::varchar,                          -- rival_external_id
+          NULL::varchar,                          -- rival_withdrawal_id
+          NULL::timestamptz,                      -- rival_submitted_at
+          FALSE,                                  -- rival_needs_attention
+          NULL::text,                             -- rival_attention_reason
+          iwt.created_at,
+          NULL::varchar                           AS method_name,
+          'commission_transfer'::text             AS kind,
+          NULL::uuid                              AS trading_account_id
+        FROM ib_wallet_transfers iwt
+        WHERE iwt.user_id = ${userId}
       )
       SELECT * FROM combined
     `;

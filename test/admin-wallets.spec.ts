@@ -184,9 +184,13 @@ beforeAll(async () => {
   });
 
   /*
-   * `wallets_user_currency_uq` means one wallet per client per currency, so the
-   * two clients get one USD wallet each and `mine` gets a USDT one for the
-   * currency filter to have something to distinguish.
+   * `wallets_user_currency_kind_uq` means one wallet per client per currency PER
+   * KIND, so the two clients get one main USD wallet each and `mine` gets a USDT
+   * one for the currency filter to have something to distinguish.
+   *
+   * The conflict target must name all THREE columns — migration 0077 widened the
+   * index, and a target that matches no unique index is a runtime error rather
+   * than a compile one, which is how this suite stopped collecting entirely.
    *
    * Registration also opens wallets for every enabled currency, so these
    * inserts are `onConflictDoNothing` and the ids are read back rather than
@@ -196,7 +200,7 @@ beforeAll(async () => {
     .insert(wallets)
     .values({ userId: mineId, currency: 'USD', balance: HUGE_BALANCE, onHold: '0' })
     .onConflictDoUpdate({
-      target: [wallets.userId, wallets.currency],
+      target: [wallets.userId, wallets.currency, wallets.kind],
       set: { balance: HUGE_BALANCE },
     })
     .returning();
@@ -206,7 +210,7 @@ beforeAll(async () => {
     .insert(wallets)
     .values({ userId: mineId, currency: 'USDT', balance: '5.50000000', onHold: '1.25000000' })
     .onConflictDoUpdate({
-      target: [wallets.userId, wallets.currency],
+      target: [wallets.userId, wallets.currency, wallets.kind],
       set: { balance: '5.50000000', onHold: '1.25000000' },
     });
 
@@ -214,7 +218,7 @@ beforeAll(async () => {
     .insert(wallets)
     .values({ userId: theirsId, currency: 'USD', balance: '77.00000000', onHold: '0' })
     .onConflictDoUpdate({
-      target: [wallets.userId, wallets.currency],
+      target: [wallets.userId, wallets.currency, wallets.kind],
       set: { balance: '77.00000000' },
     });
 }, 180_000);

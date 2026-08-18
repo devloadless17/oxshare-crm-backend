@@ -14,6 +14,7 @@ import {
 } from '../../database/schema';
 import { NotFoundError } from '../../common/errors/domain-errors';
 import { CommissionService } from './commission.service';
+import { IbWalletService } from './ib-wallet.service';
 import type { IbClientPositionDto, IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
 
 /**
@@ -80,6 +81,17 @@ export class IbOverviewService {
      * paid, and an accrual is only a claim until it is confirmed.
      */
     private readonly commissions: CommissionService,
+    /*
+     * Only for `listCommissionWallets`. Injected rather than reading `wallets`
+     * directly here so the "a commission wallet is one with kind = 'commission'"
+     * rule lives in ONE place — the moment two services encode it independently
+     * is the moment one can be narrowed and the other forgotten, and the failure
+     * looks like a partner's balance disappearing.
+     *
+     * APPENDED LAST: these services are constructed positionally in their specs,
+     * so a new parameter in the middle would silently rebind the two above.
+     */
+    private readonly wallets: IbWalletService,
   ) {}
 
   /**
@@ -103,16 +115,23 @@ export class IbOverviewService {
     }
 
     /*
-     * Four independent reads, issued together.
+     * FIVE independent reads, issued together.
      *
      * None of them depends on another's result, and they are all cheap indexed
-     * lookups — `users_referred_by_idx`, `ib_accounts_parent_idx` and the
-     * ledger's wallet index. Awaiting them in sequence would make this screen
-     * four round-trips deep for no reason.
+     * lookups — `users_referred_by_idx`, `ib_accounts_parent_idx`,
+     * `wallets_user_idx` and the ledger's wallet index. Awaiting them in
+     * sequence would make this screen five round-trips deep for no reason.
+     *
+     * The commission BALANCE joined this list rather than getting its own
+     * endpoint, and the reason is the one this whole method is built on: it is
+     * read beside the earnings total, and two requests can straddle the hourly
+     * confirm loop — leaving a partner looking at a balance their own earnings
+     * figure does not account for.
      */
-    const [level, earnings, referredClients, subPartners] = await Promise.all([
+    const [level, earnings, commissionWallets, referredClients, subPartners] = await Promise.all([
       this.levelFor(account.level),
       this.earningsFor(userId),
+      this.wallets.listCommissionWallets(userId),
       this.referredClientsFor(userId),
       this.subPartnersFor(userId),
     ]);
@@ -120,6 +139,7 @@ export class IbOverviewService {
     return {
       level,
       earnings,
+      commissionWallets,
       referredClients,
       subPartners,
       verifiedReferredCount: referredClients.filter((client) => client.verified).length,
@@ -172,6 +192,20 @@ export class IbOverviewService {
      * `ledger_entries` has no `user_id` — it has `wallet_id`, and the wallet
      * knows its owner. Scoping to ONE currency here is what makes summing the
      * rows legitimate; see EARNINGS_CURRENCY.
+     */
+    /*
+     * ⚠️ NOT filtered by `wallets.kind`, and that is the correct read.
+     *
+     * Commission now credits the `commission` wallet, but every commission
+     * credited BEFORE that change is in the `main` wallet and is just as
+     * earned. Narrowing this to the commission wallet would drop every existing
+     * partner's lifetime total to zero overnight — a figure they have been
+     * reading for months, silently rewritten by a schema change.
+     *
+     * Spanning both kinds stays right in the other direction too: the transfer
+     * between them writes `entry_type = 'transfer'`, which the filter below
+     * excludes, so moving money from one to the other cannot double-count it or
+     * make the total move at all.
      */
     const earningWallets = this.db
       .select({ id: wallets.id })

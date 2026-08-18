@@ -1796,6 +1796,75 @@
         ]
       }
     },
+    "/v1/ib/wallet/transfers": {
+      "get": {
+        "description": "A short list to sit beside the balance it explains. The FULL history is in `GET /payments/transactions`, which carries these rows alongside every other movement — a partner's own money should not be split across two histories that have to be reconciled against each other.",
+        "operationId": "IbController_myWalletTransfers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IbWalletTransferResultDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The last few commission transfers, newest first",
+        "tags": [
+          "ib"
+        ]
+      }
+    },
+    "/v1/ib/wallet/transfer": {
+      "post": {
+        "description": "Same currency, same owner, both legs in one transaction — it commits whole or does not happen. There is no pending state to poll: unlike a wallet ⇄ trading-account transfer, nothing here crosses into a server this platform does not own.\n\nRefuses a suspended partner, an amount above the available commission balance, and a currency the partner holds no commission wallet in — each with its own message, because \"you have nothing to move\" and \"you have no such wallet\" send a partner to different places.\n\nBoth legs are written to the ledger as `transfer`, NOT `commission`, so lifetime earnings are unchanged by moving money that was already earned.",
+        "operationId": "IbController_transferCommission",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IbWalletTransferDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbWalletTransferResultDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Move commission earnings into the main wallet",
+        "tags": [
+          "ib"
+        ]
+      }
+    },
     "/v1/ib/apply": {
       "post": {
         "description": "Requires a verified identity (KYC level 1). Refuses a second application while one is still awaiting review, and refuses outright if the client is already a partner. `agencyId` names the programme applied for and must be one GET /ib/agencies returned.",
@@ -3300,7 +3369,7 @@
     },
     "/v1/trading/accounts": {
       "post": {
-        "description": "The MT5 group, leverage and currency are the broker's configuration, not the client's choice. Returns the master and investor passwords once; they are never stored.",
+        "description": "The MT5 group, leverage and currency are the broker's configuration, not the client's choice. Credentials are emailed to the client's registered address, never returned here.",
         "operationId": "TradingController_openAccount",
         "parameters": [],
         "requestBody": {
@@ -3353,6 +3422,111 @@
           }
         ],
         "summary": "The signed-in client's trading accounts, live first then demo",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/v1/trading/accounts/{id}/password": {
+      "post": {
+        "description": "Rotates BOTH passwords on MT5 and emails the new pair to the client’s registered address. They are never returned in the response — the browser asking is not necessarily the client’s. Not idempotent: each call invalidates the previous pair.",
+        "operationId": "TradingController_resetAccountPassword",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Reset a trading account's master and investor passwords",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/v1/trading/accounts/{id}": {
+      "patch": {
+        "description": "Changes the account holder's name as MT5 records it, so it updates what the client sees in their terminal and on statements. Nothing is stored CRM-side.",
+        "operationId": "TradingController_renameAccount",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameOwnAccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Rename a trading account",
+        "tags": [
+          "trading"
+        ]
+      },
+      "get": {
+        "description": "404 when the account does not exist OR belongs to somebody else — the two are the same answer on purpose, because distinguishing them tells a caller which ids are real.\n\n`balance` here is the CRM-held figure, as on the list. For what MT5 holds right now, including equity and floating P/L, call `/trading/accounts/:id/live`.",
+        "operationId": "TradingController_myAccount",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "One of the signed-in client's trading accounts",
         "tags": [
           "trading"
         ]
@@ -3457,43 +3631,6 @@
           }
         ],
         "summary": "The signed-in client's positions — open by default",
-        "tags": [
-          "trading"
-        ]
-      }
-    },
-    "/v1/trading/accounts/{id}": {
-      "get": {
-        "description": "404 when the account does not exist OR belongs to somebody else — the two are the same answer on purpose, because distinguishing them tells a caller which ids are real.\n\n`balance` here is the CRM-held figure, as on the list. For what MT5 holds right now, including equity and floating P/L, call `/trading/accounts/:id/live`.",
-        "operationId": "TradingController_myAccount",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TradingAccountDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "One of the signed-in client's trading accounts",
         "tags": [
           "trading"
         ]
@@ -9955,6 +10092,21 @@
           "submittedAt"
         ]
       },
+      "InheritedAgencyDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
       "IbStatusDto": {
         "type": "object",
         "properties": {
@@ -9991,6 +10143,16 @@
               "chain_full"
             ],
             "description": "Machine-readable counterpart to ineligibleReason. `unverified` — identity not verified yet. `chain_full` — the partner who introduced them is already on the deepest enabled level, so there is no rung to place them on. Null when eligible."
+          },
+          "inheritedAgency": {
+            "nullable": true,
+            "description": "Set when the applicant was introduced by an existing partner and therefore inherits that partner's programme — the portal must not offer a choice in that case. Null when the applicant chooses: any client not introduced by a partner, or one whose introducer carries no programme.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InheritedAgencyDto"
+              }
+            ]
           }
         },
         "required": [
@@ -9998,7 +10160,8 @@
           "application",
           "eligible",
           "ineligibleReason",
-          "ineligibleCode"
+          "ineligibleCode",
+          "inheritedAgency"
         ]
       },
       "IbLevelSummaryDto": {
@@ -10052,6 +10215,59 @@
           "last30Days",
           "currency",
           "engineLive"
+        ]
+      },
+      "WalletDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string",
+            "description": "A currency CODE from `GET /currencies`, not a fixed set — currencies are operator data.",
+            "example": "USD"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "main",
+              "commission"
+            ],
+            "description": "`GET /wallet` returns `main` only — a commission wallet is a partner's earnings and appears solely on GET /ib/overview. It cannot be deposited to, withdrawn from, or moved to a trading account; POST /ib/wallet/transfer moves it into the main wallet first."
+          },
+          "balance": {
+            "type": "string",
+            "example": "700.00000000",
+            "description": "Decimal string (§6.1)."
+          },
+          "onHold": {
+            "type": "string",
+            "example": "0.00000000",
+            "description": "Reserved against pending withdrawals."
+          },
+          "available": {
+            "type": "string",
+            "example": "700.00000000",
+            "description": "balance − onHold, computed server-side so both sides agree."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "currency",
+          "kind",
+          "balance",
+          "onHold",
+          "available",
+          "createdAt"
         ]
       },
       "IbReferredClientDto": {
@@ -10126,6 +10342,12 @@
           "earnings": {
             "$ref": "#/components/schemas/IbEarningsDto"
           },
+          "commissionWallets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WalletDto"
+            }
+          },
           "referredClients": {
             "description": "Newest first. The whole list — a partner may read every client they introduced.",
             "type": "array",
@@ -10148,6 +10370,7 @@
         "required": [
           "level",
           "earnings",
+          "commissionWallets",
           "referredClients",
           "subPartners",
           "verifiedReferredCount"
@@ -10300,6 +10523,62 @@
           "id",
           "name",
           "products"
+        ]
+      },
+      "IbWalletTransferResultDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The `ib_wallet_transfers` row — its id in /transactions too."
+          },
+          "amount": {
+            "type": "string",
+            "example": "250.00000000",
+            "description": "Always positive."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "commissionBalance": {
+            "type": "string",
+            "example": "50.00000000",
+            "description": "The commission wallet AFTER this transfer. Absent on history rows — see the DTO."
+          },
+          "mainBalance": {
+            "type": "string",
+            "example": "950.00000000",
+            "description": "The main wallet AFTER this transfer. Absent on history rows — see the DTO."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "amount",
+          "currency",
+          "createdAt"
+        ]
+      },
+      "IbWalletTransferDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "250.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "WHICH commission wallet to draw from. The money lands in the main wallet of the SAME currency — there is no FX rate source in this system, so a cross-currency move is not something this endpoint can offer."
+          }
+        },
+        "required": [
+          "amount",
+          "currency"
         ]
       },
       "CreateIbApplicationDto": {
@@ -10935,7 +11214,8 @@
             "type": "string",
             "enum": [
               "payment",
-              "transfer"
+              "transfer",
+              "commission_transfer"
             ],
             "description": "Branch on this, never on the absence of a payment field."
           },
@@ -11151,50 +11431,6 @@
           "logoUrl"
         ]
       },
-      "WalletDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "userId": {
-            "type": "string"
-          },
-          "currency": {
-            "type": "string",
-            "description": "A currency CODE from `GET /currencies`, not a fixed set — currencies are operator data.",
-            "example": "USD"
-          },
-          "balance": {
-            "type": "string",
-            "example": "700.00000000",
-            "description": "Decimal string (§6.1)."
-          },
-          "onHold": {
-            "type": "string",
-            "example": "0.00000000",
-            "description": "Reserved against pending withdrawals."
-          },
-          "available": {
-            "type": "string",
-            "example": "700.00000000",
-            "description": "balance − onHold, computed server-side so both sides agree."
-          },
-          "createdAt": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "userId",
-          "currency",
-          "balance",
-          "onHold",
-          "available",
-          "createdAt"
-        ]
-      },
       "LedgerEntryDto": {
         "type": "object",
         "properties": {
@@ -11323,6 +11559,20 @@
           "environment"
         ]
       },
+      "RenameOwnAccountDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 128,
+            "example": "Swing trading",
+            "description": "The account holder's name as MT5 will show it."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
       "TradingAccountDto": {
         "type": "object",
         "properties": {
@@ -11333,6 +11583,11 @@
             "type": "string",
             "nullable": true,
             "description": "The MT5 login, once there is an MT5 to issue one. Null until a bridge assigns it — a string rather than a number because leading zeros are significant."
+          },
+          "name": {
+            "type": "string",
+            "nullable": true,
+            "description": "What the client calls this account. NULL means unnamed — the portal falls back to the login rather than inventing a name, so an account somebody named \"5001234\" stays distinguishable from one nobody named at all."
           },
           "mt5Group": {
             "type": "string",
@@ -11379,6 +11634,7 @@
         "required": [
           "id",
           "login",
+          "name",
           "mt5Group",
           "environment",
           "currency",
@@ -15420,6 +15676,14 @@
             "type": "string",
             "example": "USD"
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "main",
+              "commission"
+            ],
+            "description": "`main` is the client's own money — deposits, withdrawals, trading transfers. `commission` holds a partner's earnings until they move them across; it is invisible to GET /wallet and reachable only through POST /ib/wallet/transfer."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -15437,6 +15701,7 @@
           "balance",
           "onHold",
           "currency",
+          "kind",
           "createdAt",
           "updatedAt",
           "user"

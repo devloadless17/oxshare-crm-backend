@@ -754,6 +754,31 @@ export class WalletRowDto {
   })
   onHold: string;
   @ApiProperty({ example: 'USD' }) currency: string;
+  /**
+   * WHICH wallet of this owner's, in this currency — `main` or `commission`.
+   *
+   * ## Without it this list shows one client two identical rows
+   *
+   * A partner holds a main USD wallet AND a commission USD wallet, and every
+   * other column an operator can see on them is the same shape. Two rows
+   * reading "USD · $700" and "USD · $120" against one name, with nothing saying
+   * which is which, is the failure `/accounts/[id]` records in the portal: two
+   * money figures that differ and no way to tell them apart, so half the readers
+   * act on the wrong one. On an operator screen that means adjusting the wrong
+   * balance.
+   *
+   * Not filtered out of the admin list, deliberately. A commission balance IS
+   * the platform's liability to that partner, so a holdings total that omitted
+   * it would understate what is owed — the fix is to LABEL it, not to hide it.
+   */
+  @ApiProperty({
+    enum: ['main', 'commission'],
+    description:
+      "`main` is the client's own money — deposits, withdrawals, trading transfers. " +
+      "`commission` holds a partner's earnings until they move them across; it is invisible to " +
+      'GET /wallet and reachable only through POST /ib/wallet/transfer.',
+  })
+  kind: 'main' | 'commission';
   @ApiProperty() createdAt: Date;
   @ApiProperty() updatedAt: Date;
   @ApiProperty({ type: HoldingOwnerDto }) user: HoldingOwnerDto;

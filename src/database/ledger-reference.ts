@@ -37,6 +37,22 @@ export const LEDGER_REFERENCE = {
    */
   transfer: 'transfer',
   /**
+   * A partner moving earnings out of their COMMISSION wallet into their MAIN
+   * one — a row in `ib_wallet_transfers`.
+   *
+   * Its own value rather than reusing `transfer`, and the reason is the
+   * uniqueness index rather than tidiness. Both legs of this movement post
+   * against the SAME reference id, and `transfers` ids come from a different
+   * table — two id spaces sharing one reference_type is a collision waiting for
+   * the day two uuids match, at which point one of the two movements silently
+   * posts nothing and returns the other's ledger entry as its own.
+   *
+   * It also keeps the reports honest: `transfer` means wallet ⇄ trading
+   * account, and counting a commission payout as one would overstate how much
+   * money moved to the trading server.
+   */
+  ibTransfer: 'ib_transfer',
+  /**
    * A CLOSED POSITION — the event a partner is actually paid on.
    *
    * Commission used to key off `transaction`, because it accrued on deposits.

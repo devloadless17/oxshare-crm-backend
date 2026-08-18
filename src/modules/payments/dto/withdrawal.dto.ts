@@ -233,29 +233,43 @@ export class TransactionDto {
   /**
    * What KIND of movement this is — and the field a screen branches on.
    *
-   * A client's history holds deposits, withdrawals AND wallet ⇄ trading-account
-   * transfers. The first two are rows in `transactions`; a transfer is a row in
-   * `transfers`, because it has two legs and a bridge confirmation that a
-   * payment does not. The list endpoint unions them, because they are one
-   * history to the person reading it.
+   * A client's history holds deposits, withdrawals, wallet ⇄ trading-account
+   * transfers AND a partner's commission transfers. The first two are rows in
+   * `transactions`; a transfer is a row in `transfers`, because it has two legs
+   * and a bridge confirmation that a payment does not; a commission transfer is
+   * a row in `ib_wallet_transfers`. The list endpoint unions all three, because
+   * they are one history to the person reading it.
    *
    * ## Do not infer this from the other fields
    *
    * A transfer has no method and no destination — but neither does a manual
    * admin credit, so "methodKey is null" does not identify one. This field does.
    *
-   * ## `direction` on a transfer is stated from the WALLET's side
+   * ## `direction` on either transfer is stated from the WALLET's side
    *
    * `account_to_wallet` brings money into the wallet and therefore reads as
-   * `deposit`; `wallet_to_account` reads as `withdrawal`. That keeps one meaning
-   * for the word across every row in the list. A screen must still not PRINT
-   * "Deposit" for a transfer — that is what this field is for.
+   * `deposit`; `wallet_to_account` reads as `withdrawal`. A `commission_transfer`
+   * is always `deposit`, because it credits the main wallet — the commission
+   * wallet's matching debit is not a second row here, since that wallet never
+   * appears in `GET /wallet` and a withdrawal from an invisible wallet reads as
+   * money leaving nowhere. Both legs are still in `/wallet/ledger`.
+   *
+   * That keeps one meaning for the word across every row in the list. A screen
+   * must still not PRINT "Deposit" for a transfer — that is what this field is
+   * for, and printing it for a commission transfer would tell a partner their
+   * earnings arrived from outside the platform.
+   *
+   * ## An OPEN set — never switch on it exhaustively without a fallback
+   *
+   * `commission_transfer` was added after `payment` and `transfer` shipped, and
+   * a screen that treated the earlier two as the whole world rendered the new
+   * one as a blank row rather than as something unfamiliar.
    */
   @ApiProperty({
-    enum: ['payment', 'transfer'],
+    enum: ['payment', 'transfer', 'commission_transfer'],
     description: 'Branch on this, never on the absence of a payment field.',
   })
-  kind: 'payment' | 'transfer';
+  kind: 'payment' | 'transfer' | 'commission_transfer';
 
   /**
    * The trading account a TRANSFER moved money to or from. Null on a payment.

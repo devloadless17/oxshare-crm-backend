@@ -5,6 +5,7 @@ import { IbController } from './ib.controller';
 import { IbApplicationsService } from './ib-applications.service';
 import { IbLevelsService } from './ib-levels.service';
 import { IbOverviewService } from './ib-overview.service';
+import { IbWalletService } from './ib-wallet.service';
 import { CommissionService } from './commission.service';
 import { CommissionScheduler } from './commission.scheduler';
 import { COMMISSION_ACCRUAL } from '../../common/provisioning/commission-accrual.port';
@@ -45,6 +46,7 @@ import { AdminExportModule } from '../admin/admin-export.module';
     IbApplicationsService,
     IbLevelsService,
     IbOverviewService,
+    IbWalletService,
     CommissionService,
     CommissionScheduler,
     /*
@@ -67,6 +69,7 @@ import { AdminExportModule } from '../admin/admin-export.module';
     IbApplicationsService,
     IbLevelsService,
     IbOverviewService,
+    IbWalletService,
     CommissionService,
     COMMISSION_ACCRUAL,
   ],

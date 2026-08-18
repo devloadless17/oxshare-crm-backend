@@ -464,6 +464,27 @@ export class CommissionService implements CommissionAccrualPort {
             {
               userId: accrual.ibUserId,
               currency: accrual.currency,
+              /*
+               * The COMMISSION wallet, not the partner's spending wallet.
+               *
+               * This credited `main` — the same wallet a deposit lands in — so
+               * the ledger knew which movements were earnings but the BALANCE
+               * did not. A partner looking at $700 could not tell what they had
+               * deposited from what they had earned, and reconciling their
+               * commission against their own records meant subtracting their
+               * own deposits by hand.
+               *
+               * Opened lazily, here, by `post` itself: a partner who has never
+               * been paid has no commission wallet, and that is the honest
+               * state — the portal renders it as "nothing credited yet" rather
+               * than as a zero balance, which is the same rule the wallet
+               * screen follows for a currency nobody has opened.
+               *
+               * Existing balances are NOT migrated. Commission already credited
+               * to a main wallet is settled money the partner may have spent;
+               * moving it now would rewrite history to make a report tidier.
+               */
+              kind: 'commission',
               amount: accrual.amount,
               entryType: 'commission',
               /*

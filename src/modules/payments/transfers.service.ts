@@ -174,7 +174,7 @@ export class TransfersService {
       const wallet =
         params.direction === 'wallet_to_account'
           ? await this.wallets.hold(params.userId, currency, amount, tx)
-          : await this.wallets.getOrCreateWallet(params.userId, currency, tx);
+          : await this.wallets.getOrCreateWallet(params.userId, currency, 'main', tx);
 
       const [row] = await tx
         .insert(transfers)
