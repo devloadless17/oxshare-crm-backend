@@ -7,6 +7,10 @@ import { IbStore } from '../src/store/ib.store';
 import { ProductsStore } from '../src/store/products.store';
 import { UsersStore } from '../src/store/users.store';
 import { ClientVisibilityService } from '../src/common/security/client-visibility.service';
+import { WalletService } from '../src/modules/wallet/wallet.service';
+import { WalletProvisioningService } from '../src/modules/wallet/wallet-provisioning.service';
+import { CurrenciesService } from '../src/modules/currencies/currencies.service';
+import { WalletsStore } from '../src/store/wallets.store';
 import type { EmailService } from '../src/modules/email/email.service';
 import { scopeOf, UNRESTRICTED } from '../src/common/security/client-scope';
 import type { Actor } from '../src/common/security/actor';
@@ -59,6 +63,17 @@ beforeAll(async () => {
      * returning `[]` would make unreachable.
      */
     new ProductsStore(ctx.db),
+    /*
+     * A REAL provisioning service on the test database, not a stub — same
+     * reasoning as the store above. What is worth pinning is that approving an
+     * application actually OPENS the partner's commission wallet, and a stub
+     * would make that assertion a statement about the stub.
+     */
+    new WalletProvisioningService(
+      new WalletService(ctx.db),
+      new CurrenciesService(ctx.db, auditStubAs()),
+      new WalletsStore(ctx.db),
+    ),
   );
 }, 120_000);
 
@@ -116,6 +131,17 @@ beforeEach(async () => {
   // they point at — the scope test below assigns a tag to a partner.
   await ctx.db.execute(sql`DELETE FROM client_tag_assignments`);
   await ctx.db.execute(sql`DELETE FROM client_tags`);
+  /*
+   * Wallets reference users with ON DELETE RESTRICT, so they go first.
+   *
+   * Approving an application now opens the partner's commission wallet, which
+   * made `DELETE FROM users` fail for every test after the first approval — the
+   * error surfaced as 41 unrelated failures rather than as anything about
+   * wallets. Ledger entries reference wallets and are cleared ahead of them for
+   * the same reason, even though nothing here posts one yet.
+   */
+  await ctx.db.execute(sql`DELETE FROM ledger_entries`);
+  await ctx.db.execute(sql`DELETE FROM wallets`);
   await ctx.db.execute(sql`DELETE FROM users`);
   await ctx.db.execute(sql`DELETE FROM ib_levels`);
   await ctx.db.execute(sql`
@@ -447,6 +473,48 @@ describe('approval', () => {
      */
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED);
     expect(account.agencyId).toBe(AGENCY.id);
+  });
+
+  it('opens the new partner a COMMISSION wallet, and no balance in it', async () => {
+    /*
+     * The lazy path in `WalletService.post` would open this on the first
+     * confirmed accrual anyway, so what this pins is the SCREEN: a partner
+     * approved today opens /partner and finds a commission card rather than a
+     * placeholder for one.
+     *
+     * Fire-and-forget after the transaction, so it is awaited here by polling
+     * rather than by the approve() promise -- the approval must not fail because
+     * a wallet did not open, which is the whole reason it is not inside.
+     */
+    const userId = await makeClient('gets-a-commission-wallet@test.local');
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
+    await service.approve(application.id, REVIEWER, UNRESTRICTED);
+
+    let rows: { kind: string; balance: string; currency: string }[] = [];
+    for (let attempt = 0; attempt < 50 && rows.length === 0; attempt += 1) {
+      const result = await ctx.db.execute<{ kind: string; balance: string; currency: string }>(
+        sql`SELECT kind, balance, currency FROM wallets
+             WHERE user_id = ${userId} AND kind = 'commission'`,
+      );
+      rows = result.rows;
+      if (rows.length === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    expect(rows).toHaveLength(1);
+    /*
+     * EMPTY, and that matters more than its existence. A wallet opened with a
+     * balance would be money nobody earned -- the one outcome the whole
+     * commission separation exists to make impossible.
+     */
+    expect(rows[0].balance).toBe('0.00000000');
+
+    // ...and it did NOT open a second MAIN wallet in the same currency, which is
+    // what a conflict target still naming (user_id, currency) would have done.
+    const { rows: main } = await ctx.db.execute<{ n: string }>(
+      sql`SELECT count(*)::text AS n FROM wallets
+           WHERE user_id = ${userId} AND kind = 'main' AND currency = ${rows[0].currency}`,
+    );
+    expect(Number(main[0].n)).toBeLessThanOrEqual(1);
   });
 
   it('places a partner with no parent at the shallowest enabled level', async () => {

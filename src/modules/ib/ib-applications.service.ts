@@ -25,6 +25,7 @@ import { ClientVisibilityService } from '../../common/security/client-visibility
 import { EmailService } from '../email/email.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import { ProductsStore } from '../../store/products.store';
+import { WalletProvisioningService } from '../wallet/wallet-provisioning.service';
 import type { Actor } from '../../common/security/actor';
 import type { ClientScope } from '../../common/security/client-scope';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
@@ -105,6 +106,20 @@ export class IbApplicationsService {
      * class is constructed positionally in `ib-applications.spec.ts`.
      */
     private readonly catalogue: ProductsStore,
+    /*
+     * Opens the partner's COMMISSION wallet on approval, so their screen has a
+     * card on day one rather than a placeholder for one.
+     *
+     * The concrete class rather than the WALLET_PROVISIONING port: that token
+     * exists so IDENTITY can reach provisioning without importing WalletModule
+     * and closing a cycle. There is no cycle here -- WalletModule is @Global,
+     * exports this service, and does not depend on IbModule -- and `CommissionService`
+     * in this same module already injects `WalletService` the same way.
+     *
+     * APPENDED LAST, like the two above and for the same reason: this class is
+     * constructed positionally in `ib-applications.spec.ts`.
+     */
+    private readonly walletProvisioning: WalletProvisioningService,
   ) {}
 
   // ── the client's side ──────────────────────────────────────────────────────
@@ -776,6 +791,19 @@ export class IbApplicationsService {
      * they look — where an approval lost to a mail outage is not.
      * EmailService logs the failure with recipient and reason, never the code.
      */
+    /*
+     * The partner's commission wallet, opened AFTER the transaction and
+     * fire-and-forget, for the reason the email below records: the approval has
+     * already committed, and a reviewer told it failed would approve again.
+     *
+     * `openCommissionWallet` never throws — it logs — so the `void` here is
+     * about not WAITING rather than about ignoring a failure. The wallet is
+     * opened lazily by the first confirmed commission regardless; this exists so
+     * a newly approved partner's screen shows a commission card on day one
+     * rather than a placeholder for one.
+     */
+    void this.walletProvisioning.openCommissionWallet(application.userId);
+
     void this.notifyDecision(application.userId, 'approved', { referralCode });
 
     return account;

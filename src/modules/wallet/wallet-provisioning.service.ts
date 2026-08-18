@@ -149,6 +149,64 @@ export class WalletProvisioningService {
   }
 
   /**
+   * A partner's COMMISSION wallet, opened at approval.
+   *
+   * ## Why at approval rather than at first payout
+   *
+   * `WalletService.post` opens it lazily on the first confirmed accrual, so this
+   * is not what makes commission work — it is what makes the partner SCREEN
+   * work on day one. Without it a newly approved partner opens /partner and
+   * finds a placeholder where their commission card will eventually be, which
+   * reads as an unfinished feature rather than as an empty balance.
+   *
+   * The lazy path stays and is still the real guarantee: it covers partners
+   * approved before this existed, and it covers a commission arriving in a
+   * currency this never opened.
+   *
+   * ## The DEFAULT currency only, not every enabled one
+   *
+   * Registration opens a wallet in every enabled currency because a client can
+   * deposit in any of them. A partner cannot choose what they earn in — the
+   * accrual takes the currency of the trade that produced it — so opening one
+   * per currency would put a row of empty commission cards in front of somebody
+   * who will only ever be paid in one. The rest arrive lazily, if they arrive.
+   *
+   * ## What this does NOT change
+   *
+   * The wallet is opened EMPTY, and an empty wallet is a true zero rather than a
+   * missing one: the partner has been paid nothing yet, and the screen says so
+   * through the earnings total and the engine notice beside it. This does not
+   * credit anything, and it must not — a balance nobody earned is the one thing
+   * the whole commission separation exists to make impossible.
+   */
+  async openCommissionWallet(userId: string, executor?: Executor): Promise<void> {
+    try {
+      const currency = await this.currencies.getDefault();
+      if (!currency) {
+        this.logger.error(
+          `No default currency is configured, so no commission wallet was opened for partner ` +
+            `${userId}. It will be opened by their first confirmed commission instead.`,
+        );
+        return;
+      }
+      await this.wallets.getOrCreateWallet(userId, currency.code, 'commission', executor);
+      this.logger.log(`Opened ${currency.code} commission wallet for partner ${userId}.`);
+    } catch (error) {
+      /*
+       * Swallowed and logged, like every other method here, and the reason is
+       * the same shape: by the time this runs the approval has COMMITTED. A
+       * reviewer told the approval failed would approve again, which conflicts
+       * and changes nothing — while the wallet this failed to open costs
+       * nothing, because the first commission opens it anyway.
+       */
+      this.logger.error(
+        `Could not open the commission wallet for partner ${userId}: ${String(error)}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+  }
+
+  /**
    * One currency, opened for every existing client. Returns how many were added.
    *
    * ## ONE STATEMENT, not a loop over clients
