@@ -1940,6 +1940,32 @@ export const mt5Deals = pgTable(
     ingestedAt: timestamp('ingested_at', { withTimezone: true }).notNull().defaultNow(),
     /** 'push' or 'sweep' — which path won the race. Useful when one is broken. */
     source: varchar('source', { length: 20 }).notNull().default('push'),
+    /**
+     * When the commission engine finished with this deal — NULL means it has
+     * not looked at it yet.
+     *
+     * ── A marker column rather than a LEFT JOIN, and the reason is the deals
+     * that accrue NOTHING ──────────────────────────────────────────────────
+     *
+     * "Which deals still need accruing" cannot be answered by the absence of an
+     * `ib_accruals` row, because most deals legitimately produce none: a client
+     * nobody referred earns nobody anything, and a balance operation is not a
+     * trade. Those rows would come back on every single run, forever, and the
+     * work queue would grow without bound while looking like it was draining.
+     *
+     * So this records that the engine DECIDED, not that it paid. Set for a deal
+     * that accrued and for one that correctly accrued nothing — the two are the
+     * same to a queue, and separating them is what `ib_accruals` is for.
+     *
+     * ── Deliberately NOT set for an orphan ────────────────────────────────
+     *
+     * A deal whose login matches no `trading_accounts` row is left NULL, so it
+     * is retried. That ordering is normal during onboarding, and it is the
+     * mechanism behind the promise in `Mt5DealsService`: a deal ingested before
+     * its account was linked accrues as soon as the link exists, with no
+     * backfill and no replay.
+     */
+    commissionProcessedAt: timestamp('commission_processed_at', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('mt5_deals_deal_id_uq').on(t.mt5DealId),
@@ -1947,6 +1973,105 @@ export const mt5Deals = pgTable(
     // by time. Both are covered without a scan.
     index('mt5_deals_login_dealt_idx').on(t.login, t.dealtAt),
     index('mt5_deals_dealt_idx').on(t.dealtAt),
+    /*
+     * The accrual queue's own index, and PARTIAL on purpose.
+     *
+     * The unprocessed set is small and drains continuously; the processed set
+     * grows without bound for the life of the broker. A full index on
+     * `commission_processed_at` would be almost entirely rows the queue query
+     * can never return, and would keep growing while the thing it exists to
+     * make fast stays the same size.
+     */
+    index('mt5_deals_unaccrued_idx')
+      .on(t.dealtAt)
+      .where(sql`${t.commissionProcessedAt} IS NULL`),
+  ],
+);
+
+/**
+ * The MT5 group catalogue, mirrored — what `GET /groups` reported, last time we asked.
+ *
+ * ## This is a MIRROR, and the server is still the authority
+ *
+ * Nothing here decides anything. A group exists because MT5 says so, and the
+ * only writer is the sync job. The table exists for two things the live call
+ * cannot do, and neither is caching for speed:
+ *
+ *   1. **Answer when the bridge cannot.** Every group picker used to be a live
+ *      round trip — `GET /groups` costs ~4.9s by `mt5-bridge.client.ts`'s own
+ *      measurement — so an unreachable MT5 turned a settings screen into an
+ *      error rather than a slightly stale list. A stale list an operator can
+ *      see, clearly labelled, beats a blank one.
+ *
+ *   2. **Notice a change.** A live read shows what is true NOW and cannot tell
+ *      you it used to be different. A group renamed, deleted, or moved to
+ *      another currency underneath a product that is still selling it is
+ *      invisible to a call that only ever reads the present — and it is the
+ *      failure that opens a client's account into a group that does not exist.
+ *      Detecting it requires having written down what was there before, which
+ *      is this table.
+ *
+ * ## A vanished group is MARKED, never deleted
+ *
+ * `removedAt` is stamped when a sync stops seeing a group the previous one
+ * reported. Deleting the row instead would destroy the only evidence that a
+ * group backing live accounts ever existed, at exactly the moment somebody
+ * needs to explain those accounts — and a group that reappears (a manager
+ * account's permissions were changed, which is the common cause) would come
+ * back as a brand-new row with no history.
+ *
+ * ## `currency` is NOT a foreign key to `currencies`
+ *
+ * Deliberately, and this is the one place that rule bends. Every other currency
+ * column in this schema references the table because it denominates money the
+ * CRM owns. This one records what an EXTERNAL system reported. A group priced
+ * in a currency the CRM has not configured is drift worth seeing in a row, and
+ * a foreign key would turn it into a failed sync — losing the whole catalogue
+ * to protect a column nobody computes with.
+ */
+export const mt5Groups = pgTable(
+  'mt5_groups',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** The group path exactly as the server spells it, e.g. `real\Standard`. */
+    name: varchar('name', { length: 100 }).notNull(),
+    /** The group's account currency, as MT5 reports it. */
+    currency: varchar('currency', { length: 10 }).notNull(),
+    /**
+     * The group's default leverage.
+     *
+     * NULLABLE because MT5 exposes this only as `DemoLeverage`, which is the
+     * value the server applies when a create names none. On a live group that
+     * is still the default it uses — see `Mt5Client.GetGroupsAsync` — but a
+     * zero there means "unset" rather than "1:0", and storing the zero would
+     * make an unset group indistinguishable from one with no leverage at all.
+     */
+    leverageDefault: integer('leverage_default'),
+    /** First time any sync saw this group. Never rewritten. */
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    /** The most recent sync that saw it. This is what makes staleness readable. */
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Set when a sync stopped seeing a group an earlier one reported; cleared if
+     * it comes back. NULL means the server reported it on the last successful run.
+     */
+    removedAt: timestamp('removed_at', { withTimezone: true }),
+  },
+  (t) => [
+    /*
+     * CASE-INSENSITIVE, because MT5 is.
+     *
+     * The server answers `real\Standard` and `Real\Standard` as the same group,
+     * and `catalogue.service.ts` already compares group names with
+     * `toLowerCase()` for exactly that reason. A plain unique index would let a
+     * server that changed its casing between two syncs insert a second row for
+     * one group — and then "is this group still there" has two answers.
+     */
+    uniqueIndex('mt5_groups_name_uq').on(sql`lower(${t.name})`),
+    /* "Which groups are live right now" — the picker's own query. */
+    index('mt5_groups_present_idx')
+      .on(t.name)
+      .where(sql`${t.removedAt} IS NULL`),
   ],
 );
 

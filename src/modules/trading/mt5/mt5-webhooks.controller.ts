@@ -25,6 +25,23 @@ import { Mt5DealDto } from './dto/mt5-deal.dto';
  * `@ApiExcludeController`: this is a private machine-to-machine surface on an
  * internal network, and publishing it in the OpenAPI document the admin console
  * generates its client from would invite somebody to call it from a browser.
+ *
+ * ── The credential is a shared secret. There is NO body signature ──────────
+ *
+ * This block used to claim the endpoint was authenticated by "the shared secret
+ * and an HMAC over the raw body". Only the first half was ever true:
+ * `BridgeSecretGuard` compares `X-Bridge-Secret` in fixed time and checks
+ * nothing else, and the bridge sends no signature header to check — `Program.cs`
+ * attaches `X-Bridge-Secret` and nothing more.
+ *
+ * Corrected rather than implemented, deliberately. ARCHITECTURE §3.1 asks for
+ * "mTLS OR a shared secret", the transport is TLS on a private network, and an
+ * HMAC over the raw body would add body integrity that TLS already provides —
+ * at the cost of a raw-body middleware in an application that parses JSON
+ * globally. What was actually costly was the sentence: a docblock describing a
+ * control that does not exist is worse than one describing none, because it is
+ * exactly what stops the next reader from checking. `rival-webhook.service.ts`
+ * is where this codebase does verify a real signature, if a comparison is wanted.
  */
 @ApiTags('mt5')
 @ApiExcludeController()
@@ -39,8 +56,8 @@ import { Mt5DealDto } from './dto/mt5-deal.dto';
  * Found while wiring the Rival webhook, which shares the guard path.
  */
 @NoOriginCheck(
-  'Server-to-server delivery from the MT5 bridge: authenticated by the shared secret and an ' +
-    'HMAC over the raw body. No browser, no cookie, no Origin.',
+  'Server-to-server delivery from the MT5 bridge: authenticated by the shared secret in ' +
+    'X-Bridge-Secret, compared in fixed time. No browser, no cookie, no Origin.',
 )
 @UseGuards(BridgeSecretGuard)
 export class Mt5WebhooksController {

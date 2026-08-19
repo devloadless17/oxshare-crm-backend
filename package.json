@@ -51,6 +51,7 @@
     "cookie-parser": "^1.4.7",
     "countries-list": "^3.4.1",
     "decimal.js": "10.4.3",
+    "dotenv": "^17.4.1",
     "drizzle-orm": "0.45.2",
     "express": "5.2.1",
     "helmet": "^8.3.0",
@@ -64,8 +65,8 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.3",
-    "uuid": "^11.1.0",
     "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.52.0",
+    "uuid": "^11.1.0",
     "zod": "^3.24.2"
   },
   "overrides": {

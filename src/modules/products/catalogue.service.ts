@@ -3,6 +3,7 @@ import { NotFoundError, ValidationError } from '../../common/errors/domain-error
 import { ProductsStore, type AgencyRow, type ProductRow } from '../../store/products.store';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import { Mt5AccountsService } from '../trading/mt5/mt5-accounts.service';
+import { Mt5GroupSyncService } from '../trading/mt5/mt5-group-sync.service';
 import type { Actor } from '../../common/security/actor';
 import type { AgencyDto, ProductDto, PublicAgencyDto } from './dto/catalogue.dto';
 
@@ -23,6 +24,13 @@ export class CatalogueService {
     private readonly store: ProductsStore,
     private readonly audit: AdminAuditService,
     private readonly mt5: Mt5AccountsService,
+    /*
+     * The MIRROR, used only by `availableGroups` and only to answer when the
+     * bridge cannot. `attachGroup` below deliberately still goes to `mt5`
+     * directly — see its own note on why a permanent decision is not made
+     * against a cache.
+     */
+    private readonly groupSync: Mt5GroupSyncService,
   ) {}
 
   /* ── Products ─────────────────────────────────────────────────────────── */
@@ -129,16 +137,30 @@ export class CatalogueService {
    * makes an operator hunt for a group they can see in the manager terminal.
    */
   async availableGroups() {
-    const [onServer, claimed] = await Promise.all([
-      this.mt5.listGroupsForClients(),
+    /*
+     * `offerable()` rather than a bare live read, and the difference shows up
+     * only when MT5 is unreachable: this screen used to answer with an error
+     * page, and now answers with the last synced catalogue and the date it was
+     * confirmed. An operator can act on a list marked stale; they cannot act on
+     * a failure.
+     */
+    const [offer, claimed] = await Promise.all([
+      this.groupSync.offerable(),
       this.store.claimedGroups(),
     ]);
     const taken = new Set(claimed.map((group) => group.toLowerCase()));
 
-    return onServer.map((group) => ({
+    return offer.groups.map((group) => ({
       name: group.name,
       currency: group.currency,
       claimed: taken.has(group.name.toLowerCase()),
+      /*
+       * NULL when the list came straight from the server, which is the normal
+       * case. A date means "this is what the group looked like then" — the one
+       * fact a stale list must carry, because a picker that cannot say how old
+       * it is reads exactly like a current one.
+       */
+      lastSeenAt: group.lastSeenAt?.toISOString() ?? null,
     }));
   }
 

@@ -547,6 +547,20 @@
       "when": 1787101211000,
       "tag": "0077_the_commission_wallet",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1787101212000,
+      "tag": "0078_one_account_name_per_client",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1787101213000,
+      "tag": "0079_deals_pay_partners_and_groups_are_mirrored",
+      "breakpoints": true
     }
   ]
 }

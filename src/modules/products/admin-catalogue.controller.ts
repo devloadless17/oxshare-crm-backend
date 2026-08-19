@@ -66,14 +66,18 @@ export class AdminCatalogueController {
   @RequirePermissions('settings.edit')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'MT5 groups available to attach, read live from the server',
+    summary: 'MT5 groups available to attach, read live where possible',
     description:
       'Gated on settings.edit rather than trading.create, unlike GET /admin/mt5/groups. The two ' +
       'read the same list for different jobs: that one is for opening an account, this one is ' +
       'for building the catalogue, and an operator who configures products has no reason to hold ' +
       'the power to open accounts.\n\n' +
       'Groups another product already claims come back flagged rather than filtered out — "the ' +
-      'broker does not offer it" and "ECN already has it" are different problems.',
+      'broker does not offer it" and "ECN already has it" are different problems.\n\n' +
+      'When MT5 cannot be reached this falls back to the synced catalogue rather than failing, ' +
+      'and every row carries `lastSeenAt` saying when it was last confirmed. Attaching a group ' +
+      'still validates against the live server, so a stale row here cannot become a stored ' +
+      'product configuration.',
   })
   @ApiOkResponse({ type: [AvailableGroupDto] })
   @NotClientScoped('MT5 server configuration; contains no client data.')

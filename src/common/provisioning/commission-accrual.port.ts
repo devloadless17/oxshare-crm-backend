@@ -22,6 +22,30 @@
  * the implementation. The edge runs module → common, like every other shared
  * piece.
  */
+/**
+ * The accrual was REFUSED — something WAS owed, and the amount did not survive
+ * the §12.4 plausibility check.
+ *
+ * ## Its own class, because the two failure modes need different humans
+ *
+ * A caller must not mark the event done on either. But a database failure is
+ * transient and fixes itself on the next run, while this one will fail
+ * identically forever until somebody changes a setting — overwhelmingly a rate
+ * configured in the wrong unit. A queue that logs them the same way sends an
+ * engineer to look at the database while the actual fix is one field on the
+ * levels screen.
+ *
+ * Declared HERE rather than beside `CommissionService` so the queue in
+ * `TradingModule` can catch it without importing `IbModule` — which is the
+ * whole reason this file exists. See the note at the top.
+ */
+export class CommissionRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CommissionRefusedError';
+  }
+}
+
 export interface CommissionAccrualPort {
   /**
    * Accrue partner commissions for one settled deposit. Returns rows CREATED.
@@ -66,6 +90,45 @@ export interface CommissionAccrualPort {
     transactionId: string;
     clientUserId: string;
     amount: string;
+    currency: string;
+  }): Promise<number>;
+
+  /**
+   * "This MT5 deal was ingested — accrue whatever partners are owed for it."
+   *
+   * The live feed's entry point, and the only one that actually fires today:
+   * `positions` is written by nothing, and a deposit is not revenue.
+   *
+   * ## ⚠️ This one THROWS, unlike the two above
+   *
+   * The no-throw contract on the other two protects a user-facing write that
+   * has already completed — a client's deposit, a closed trade — where failing
+   * the caller would be strictly worse than losing the accrual.
+   *
+   * This hook has no such caller. It is driven by a retrying queue, and there
+   * swallowing an error is the harmful choice: the queue marks the deal done,
+   * and a transient database blip becomes a partner permanently unpaid for a
+   * trade that really happened. So a failure propagates, the deal stays
+   * unmarked, and the next run tries again.
+   *
+   * Returning 0 still means "nothing was owed" — an unreferred client, a chain
+   * that resolves to nobody, a deal carrying no broker revenue. Those are
+   * finished, not failed, and the queue is right to mark them done.
+   *
+   * IDEMPOTENT on the same guarantee as the others: one accrual per earner per
+   * `mt5_deals` row, held by `ib_accruals_source_earner_uq`. Every deal is
+   * delivered at least twice by design, so this is exercised constantly.
+   */
+  accrueForDeal(deal: {
+    /** `mt5_deals.id` — the row, not MT5's ticket. */
+    dealRowId: string;
+    /** MT5's ticket, for logging. */
+    ticket: string;
+    clientUserId: string;
+    /** What the broker earned on this deal — its commission plus swap. */
+    brokerRevenue: string;
+    /** Lots, for `per_lot` levels. */
+    lots: string;
     currency: string;
   }): Promise<number>;
 }

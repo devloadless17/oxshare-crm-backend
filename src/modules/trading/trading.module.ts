@@ -11,6 +11,10 @@ import { Mt5AccountsController } from './mt5/mt5-accounts.controller';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
 import { SelfServiceGroups } from './mt5/self-service-groups';
 import { Mt5DealsService } from './mt5/mt5-deals.service';
+import { DealCommissionService } from './mt5/deal-commission.service';
+import { DealCommissionScheduler } from './mt5/deal-commission.scheduler';
+import { Mt5GroupSyncService } from './mt5/mt5-group-sync.service';
+import { Mt5GroupSyncScheduler } from './mt5/mt5-group-sync.scheduler';
 import { PositionsService } from './positions.service';
 import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
 
@@ -73,6 +77,16 @@ import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
     TradingService,
     DashboardService,
     Mt5DealsService,
+    /*
+     * The deal → commission seam and the job that drains it. Ingestion stores a
+     * deal; this is what turns it into money owed. Before it existed the two
+     * halves of the pipeline had no connecting piece and every partner earned
+     * nothing while every stage logged success.
+     */
+    DealCommissionService,
+    DealCommissionScheduler,
+    Mt5GroupSyncService,
+    Mt5GroupSyncScheduler,
     PositionsService,
     Mt5BridgeClient,
     Mt5AccountsService,
@@ -83,6 +97,18 @@ import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
    * which groups the server actually has before letting an operator attach one
    * to a product. That validation is the point of the products screen.
    */
-  exports: [TradingService, Mt5BridgeClient, Mt5AccountsService, PositionsService],
+  /*
+   * `Mt5GroupSyncService` is exported for the same consumer and the same reason
+   * as `Mt5AccountsService`: the products screen. That one validates a group
+   * against the live server when an operator ATTACHES it; this one answers the
+   * picker, from the mirror, when the server cannot be reached.
+   */
+  exports: [
+    TradingService,
+    Mt5BridgeClient,
+    Mt5AccountsService,
+    Mt5GroupSyncService,
+    PositionsService,
+  ],
 })
 export class TradingModule {}

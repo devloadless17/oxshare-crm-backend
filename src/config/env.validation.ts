@@ -146,6 +146,37 @@ const envSchema = z
         'IB_COMMISSION_CONFIRM_CRON must be a cron expression, e.g. "0 0 */4 * * *"',
       )
       .optional(),
+    /*
+     * How often ingested MT5 deals are turned into accruals. Every minute by
+     * default, and validated here for the reason stated above: a typo that
+     * boots a scheduler which never fires would leave every deal queued and
+     * every partner unpaid, with nothing in any log to say so.
+     *
+     * Like the confirm cron, this is not a correctness control. A deal not
+     * reached stays queued rather than being skipped, and the accrual is
+     * idempotent, so running this less often delays a partner's pending balance
+     * and cannot change what they are owed.
+     */
+    IB_DEAL_ACCRUAL_CRON: z
+      .string()
+      .regex(
+        /^(\S+\s+){4,5}\S+$/,
+        'IB_DEAL_ACCRUAL_CRON must be a cron expression, e.g. "0 */5 * * * *"',
+      )
+      .optional(),
+    /*
+     * How often the MT5 group catalogue is re-read. Hourly by default — the
+     * thing it watches is a broker changing configuration during a working day,
+     * so there is no burst to keep up with, and `GET /groups` costs ~4.9s on the
+     * MT5 side.
+     */
+    MT5_GROUP_SYNC_CRON: z
+      .string()
+      .regex(
+        /^(\S+\s+){4,5}\S+$/,
+        'MT5_GROUP_SYNC_CRON must be a cron expression, e.g. "0 0 * * * *"',
+      )
+      .optional(),
 
     /*
      * ── Whish Money, the first real payment GATEWAY ─────────────────────────

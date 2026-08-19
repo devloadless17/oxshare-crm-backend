@@ -62,6 +62,36 @@ export const LEDGER_REFERENCE = {
    * position an auditor is asking about.
    */
   position: 'position',
+  /**
+   * A ROW IN `mt5_deals` — the event the live MT5 feed actually pays on.
+   *
+   * ## Why this exists beside `position` rather than replacing it
+   *
+   * `position` is the right key for a trade the CRM itself owns end to end, and
+   * `PositionsService.close` still uses it. But MT5 does not deliver positions;
+   * it delivers DEALS, and rebuilding one from the other is a trap the ingest
+   * path must not walk into:
+   *
+   *   - The broker charges commission on the OPENING deal as well as the
+   *     closing one. Accruing only on the close silently underpays every
+   *     partner by the entry half of every round turn.
+   *   - The sweep re-reads a 24-hour window, so a position opened last week and
+   *     closed today arrives as a closing deal whose opening deal the CRM never
+   *     saw. Pairing would drop it, and a dropped pair is an unpaid partner —
+   *     the exact outcome the push-and-sweep design exists to prevent.
+   *   - A partial close is several closing deals against one position, and a
+   *     key that is the position pays the first of them and discards the rest.
+   *
+   * Keying on the deal has none of those failure modes, because a deal is what
+   * the broker's server considers atomic and it carries its own revenue.
+   *
+   * ## The two must never both be live for one trade
+   *
+   * They are separate id spaces over the same underlying event, so a system
+   * running both would pay twice for one round turn. `positions` is written by
+   * nothing today; if a feed ever fills it, the deal path is what has to go.
+   */
+  deal: 'deal',
 } as const;
 
 export type LedgerReferenceType = (typeof LEDGER_REFERENCE)[keyof typeof LEDGER_REFERENCE];

@@ -1,3 +1,30 @@
+/*
+ * ⚠️ FIRST IMPORT, and it must stay first — this line has a side effect the
+ * scheduler declarations below depend on.
+ *
+ * `@Cron(process.env.SOME_CRON ?? DEFAULT)` is evaluated when the scheduler
+ * class is DEFINED, which happens while the imports below are being resolved.
+ * `ConfigModule` reads `.env` too, but only during module INITIALISATION — long
+ * after every decorator argument has been computed. Without this line
+ * `process.env.SOME_CRON` is undefined at the one moment it is read, and every
+ * schedule silently falls back to its hardcoded default.
+ *
+ * Not theoretical; it was live. `.env` set the commission confirm job to every
+ * five minutes while `SchedulerRegistry` had it registered HOURLY, so accruals
+ * sat pending for up to an hour on a deployment whose configuration said five
+ * minutes. Nothing reported a conflict, because the value IS read — by
+ * `validateEnv`, which accepted it — so the setting looked applied everywhere a
+ * human would think to look. The same silence hid it for TRANSFER_RESUME_CRON.
+ *
+ * It lives HERE rather than in `main.ts` because this is the file that pulls the
+ * schedulers in: a test, a script or a REPL that builds AppModule directly never
+ * runs `main.ts` and would keep the broken behaviour.
+ *
+ * dotenv does not overwrite variables that are already set, so a real
+ * environment — production, CI, a container — still wins over the file.
+ * `drizzle.config.ts` records the same trap one layer over.
+ */
+import 'dotenv/config';
 import { Module } from '@nestjs/common';
 import { ReplayNonceModule } from './common/security/replay-nonce.module';
 import { ConfigModule } from '@nestjs/config';

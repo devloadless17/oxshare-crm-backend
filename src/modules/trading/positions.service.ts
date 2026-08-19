@@ -1,6 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
-import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { positions, tradingAccounts } from '../../database/schema';
@@ -9,6 +8,7 @@ import {
   type CommissionAccrualPort,
 } from '../../common/provisioning/commission-accrual.port';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import { brokerRevenueOf } from './broker-revenue';
 
 /**
  * Open positions, and what happens when one closes.
@@ -31,10 +31,10 @@ import { NotFoundError, ValidationError } from '../../common/errors/domain-error
  * Tying partner pay to client losses is the incentive nobody should build.
  *
  * Both are stored as they arrive from the platform, where a charge to the
- * client is NEGATIVE. The house's earning is the magnitude, so they are summed
- * and the sign dropped once — a swap credited TO the client is revenue the
- * house did not keep and is floored at zero rather than subtracted from the
- * commission.
+ * client is NEGATIVE. `brokerRevenueOf` turns that into what the house kept,
+ * flooring each leg at zero separately — a swap credited TO the client is
+ * revenue the house did not keep, and must neither count toward the base nor
+ * cancel the commission charged alongside it.
  */
 @Injectable()
 export class PositionsService {
@@ -130,10 +130,10 @@ export class PositionsService {
      */
     if (!row) throw new NotFoundError('No open position with that id.');
 
-    const brokerRevenue = Decimal.max(
-      new Decimal(row.commission ?? '0').abs().plus(new Decimal(row.swap ?? '0').abs()),
-      0,
-    ).toFixed(8);
+    const brokerRevenue = brokerRevenueOf({
+      commission: row.commission ?? '0',
+      swap: row.swap ?? '0',
+    });
 
     const accrued = await this.commissions.accrueForClosedPosition({
       positionId: row.id,

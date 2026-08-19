@@ -111,6 +111,18 @@ export class AvailableGroupDto {
       'hidden, so an operator can tell "not offered" from "already taken".',
   })
   claimed: boolean;
+
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description:
+      'NULL when this list was read live from MT5, which is the normal case. A date means the ' +
+      'server could not be reached and this row came from the synced catalogue instead — it is ' +
+      'when that group was last confirmed to exist. Surface it: a stale picker that cannot say ' +
+      'how stale it is reads exactly like a current one.',
+  })
+  lastSeenAt: string | null;
 }
 
 /* ── Agencies ─────────────────────────────────────────────────────────────── */

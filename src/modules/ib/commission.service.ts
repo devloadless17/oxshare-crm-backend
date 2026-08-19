@@ -6,9 +6,13 @@ import { and, eq, gt, inArray, lte, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
 import { ibAccounts, ibAccruals, ibLevels, users } from '../../database/schema';
-import { LEDGER_REFERENCE } from '../../database/ledger-reference';
+import { LEDGER_REFERENCE, type LedgerReferenceType } from '../../database/ledger-reference';
+import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { WalletService } from '../wallet/wallet.service';
-import type { CommissionAccrualPort } from '../../common/provisioning/commission-accrual.port';
+import {
+  CommissionRefusedError,
+  type CommissionAccrualPort,
+} from '../../common/provisioning/commission-accrual.port';
 import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
@@ -208,7 +212,15 @@ export class CommissionService implements CommissionAccrualPort {
      * pipeline, and the position is not.
      */
     try {
-      return await this.accrueForPosition(position);
+      return await this.accrueForRevenue({
+        sourceType: LEDGER_REFERENCE.position,
+        sourceId: position.positionId,
+        describe: `position ${position.positionId}`,
+        clientUserId: position.clientUserId,
+        brokerRevenue: position.brokerRevenue,
+        lots: position.lots,
+        currency: position.currency,
+      });
     } catch (error) {
       this.logger.error(
         `Commission accrual failed for position ${position.positionId}; the position is closed ` +
@@ -218,8 +230,84 @@ export class CommissionService implements CommissionAccrualPort {
     }
   }
 
-  private async accrueForPosition(position: {
-    positionId: string;
+  /**
+   * Accrue partner commissions for ONE ingested MT5 deal. Returns rows created.
+   *
+   * ## Why the feed pays per deal and not per position
+   *
+   * A position looks like the natural unit and is the wrong one here; the long
+   * form of the argument is on `LEDGER_REFERENCE.deal`. The short form: MT5
+   * charges commission on the opening deal as well as the closing one, the
+   * sweep's 24-hour window means a closing deal often arrives without its
+   * opener, and a partial close is several closing deals against one position.
+   * Every one of those makes a position-keyed accrual pay less than was earned,
+   * and the failure is silent — the pipeline reports success either way.
+   *
+   * A deal is what the broker's own server treats as atomic, and it carries its
+   * own revenue. Summing the accruals across a round turn gives the same total
+   * as pairing them would have, without needing the pair to exist.
+   *
+   * ## This one THROWS, unlike the two hooks above, and deliberately
+   *
+   * Those protect a user-facing write that has already happened — a settled
+   * deposit, a closed position — where failing the caller would be worse than
+   * losing the accrual. This has no such caller. It is driven by a queue whose
+   * whole job is to retry, so swallowing an error here would convert "try again
+   * in a minute" into "this deal never pays", which is the outcome the queue
+   * exists to prevent.
+   *
+   * `DealCommissionService` is the only caller, and leaves the deal unmarked on
+   * a throw so the next run picks it up again.
+   */
+  async accrueForDeal(deal: {
+    /** `mt5_deals.id` — the row, not MT5's ticket. The accrual's source id. */
+    dealRowId: string;
+    /** MT5's ticket, for the log line only. */
+    ticket: string;
+    clientUserId: string;
+    brokerRevenue: string;
+    lots: string;
+    currency: string;
+  }): Promise<number> {
+    return await this.accrueForRevenue({
+      sourceType: LEDGER_REFERENCE.deal,
+      sourceId: deal.dealRowId,
+      describe: `deal ${deal.ticket}`,
+      clientUserId: deal.clientUserId,
+      brokerRevenue: deal.brokerRevenue,
+      lots: deal.lots,
+      currency: deal.currency,
+    });
+  }
+
+  /**
+   * The one implementation behind every revenue event that pays a share.
+   *
+   * `accrueForClosedPosition` and `accrueForDeal` differ ONLY in what they key
+   * the accrual on and in what they do with a failure. Everything between —
+   * reading attribution from the client, resolving the chain, applying the
+   * ladder, the plausibility check and the idempotent insert — is identical,
+   * and was worth having once rather than twice: the two copies would drift on
+   * the first change to the ladder, and the direction they drift in is a
+   * partner being paid differently depending on which feed found the trade.
+   *
+   * ## It THROWS on a refusal, and that is the point
+   *
+   * A refused accrual is not "nothing was owed". It is "something was owed and
+   * this system will not guess the amount", and the two must not look the same
+   * to a caller — a queue that treats a refusal as a completed item drops the
+   * commission permanently at the moment a misconfiguration is worst.
+   *
+   * Returning 0 is reserved for the cases where zero is the CORRECT answer:
+   * the client was never referred, the chain resolves to nobody, or every leg
+   * rounded away. Those are done, and re-running them would change nothing.
+   */
+  private async accrueForRevenue(event: {
+    /** Which id space `sourceId` belongs to — the accrual's idempotency key. */
+    sourceType: LedgerReferenceType;
+    sourceId: string;
+    /** How to name this event in a log line, e.g. `deal 90210`. */
+    describe: string;
     clientUserId: string;
     /** The broker's own earning on this trade — commission plus swap. */
     brokerRevenue: string;
@@ -236,7 +324,7 @@ export class CommissionService implements CommissionAccrualPort {
     const [client] = await this.db
       .select({ referredBy: users.referredByIbUserId })
       .from(users)
-      .where(eq(users.id, position.clientUserId))
+      .where(eq(users.id, event.clientUserId))
       .limit(1);
 
     if (!client?.referredBy) return 0; // Not referred — nobody earns. Not an error.
@@ -250,27 +338,43 @@ export class CommissionService implements CommissionAccrualPort {
       chain.map((entry) => entry.level),
     );
 
-    const event: RevenueEvent = {
-      grossAmount: position.brokerRevenue,
-      currency: position.currency,
+    const revenue: RevenueEvent = {
+      grossAmount: event.brokerRevenue,
+      currency: event.currency,
       source: 'deal',
-      lots: position.lots,
+      lots: event.lots,
     };
 
-    const result = calculate(event, chain, terms, await this.maxSharePct());
+    const result = calculate(revenue, chain, terms, await this.maxSharePct());
     if (result.skippedReason) {
       this.logger.warn(
-        `Commission partially skipped for position ${position.positionId}: ${result.skippedReason}`,
+        `Commission partially skipped for ${event.describe}: ${result.skippedReason}`,
       );
     }
     if (result.accruals.length === 0) return 0;
 
-    const plausible = checkPlausible(event, result.accruals);
+    const plausible = checkPlausible(revenue, result.accruals);
     if (!plausible.ok) {
-      this.logger.error(
-        `Refusing commission for position ${position.positionId}: ${plausible.reason}`,
+      /*
+       * §12.4's ceiling, and the ALERT that has always been declared for it.
+       *
+       * `ALERT_THRESHOLDS` describes this exact situation — "accrual is refused,
+       * so deals are accumulating un-accrued until it is fixed" — and nothing
+       * raised it, so the condition it names could only ever have been found by
+       * reading the log by hand. The overwhelmingly likely cause is a rate
+       * configured in the wrong unit, which is a settings mistake a human fixes
+       * in a minute once they know.
+       */
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.COMMISSION_CEILING_BREACH,
+        'page',
+        `Refusing commission for ${event.describe}: ${plausible.reason}`,
+        { source: event.sourceType, base: event.brokerRevenue, currency: event.currency },
       );
-      return 0;
+      throw new CommissionRefusedError(
+        `Refusing commission for ${event.describe}: ${plausible.reason}`,
+      );
     }
 
     const inserted = await this.db
@@ -278,20 +382,22 @@ export class CommissionService implements CommissionAccrualPort {
       .values(
         result.accruals.map((accrual) => ({
           ibUserId: accrual.ibUserId,
-          clientUserId: position.clientUserId,
+          clientUserId: event.clientUserId,
           /*
-           * Keyed on the POSITION. With the accrual's own unique index over
-           * (sourceType, sourceId, ibUserId) this makes re-processing a closed
-           * position a no-op — which a redelivered deal feed will do routinely.
+           * Keyed on whatever the CALLER considers atomic — a position for the
+           * CRM's own trade path, a deal row for the MT5 feed. With the
+           * accrual's own unique index over (sourceType, sourceId, ibUserId)
+           * this makes re-processing a no-op, which the feed does routinely:
+           * every deal is delivered at least twice by design.
            */
-          sourceType: LEDGER_REFERENCE.position,
-          sourceId: position.positionId,
+          sourceType: event.sourceType,
+          sourceId: event.sourceId,
           depth: accrual.depth,
           level: accrual.level,
           rateValue: terms.get(accrual.level)?.rateValue ?? '0',
-          baseAmount: position.brokerRevenue,
+          baseAmount: event.brokerRevenue,
           amount: accrual.amount,
-          currency: position.currency,
+          currency: event.currency,
         })),
       )
       .onConflictDoNothing({

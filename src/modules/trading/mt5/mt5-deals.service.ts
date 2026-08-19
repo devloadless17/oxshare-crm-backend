@@ -33,9 +33,23 @@ export interface IngestResult {
  * make the bridge retry forever against a condition only a human can clear, and
  * dropping it would lose a real financial event.
  *
- * It is stored and flagged instead. The commission engine joins on login when it
- * runs, so a deal ingested before its account was linked is picked up as soon as
- * the link exists — no backfill, no replay.
+ * It is stored and flagged instead, with `commission_processed_at` left NULL.
+ * `DealCommissionService` joins on login every run, so a deal ingested before
+ * its account was linked accrues as soon as the link exists — no backfill, no
+ * replay.
+ *
+ * ── Ingestion does NOT accrue, and the queue is why ────────────────────────
+ *
+ * This method's only job is to get the deal into the database and answer the
+ * bridge. What it is worth to a partner is decided by `DealCommissionService`,
+ * off the request path, for two reasons: the bridge retries anything that is not
+ * a 2xx, so slow work here turns into re-delivered deals exactly when the system
+ * is already struggling — and the orphan case above simply cannot be resolved at
+ * ingest time, because the account may not exist yet.
+ *
+ * The seam was missing entirely until then: deals landed here and nothing read
+ * them, so no trade produced any commission by any route, and every stage of the
+ * pipeline reported success while it happened.
  */
 @Injectable()
 export class Mt5DealsService {

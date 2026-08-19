@@ -25,13 +25,14 @@ export function commissionStub() {
   return {
     accrueForSettledDeposit: vi.fn().mockResolvedValue(0),
     accrueForClosedPosition: vi.fn().mockResolvedValue(0),
+    accrueForDeal: vi.fn().mockResolvedValue(0),
   };
 }
 
 /**
  * The stub, typed as the thing the constructor asks for.
  *
- * No cast, unlike `auditStubAs` beside it — the port is two plain methods, so
+ * No cast, unlike `auditStubAs` beside it — the port is three plain methods, so
  * the mock already satisfies the interface structurally. `AdminAuditService` is
  * a class with private members, which is why its stub needs the double
  * assertion and this one does not.
