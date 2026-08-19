@@ -1,9 +1,14 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { positions, tradingAccounts } from '../../database/schema';
+import {
+  positions,
+  tradingAccounts,
+  tradingProductGroups,
+  tradingProducts,
+} from '../../database/schema';
 import {
   ExternalServiceError,
   NotFoundError,
@@ -21,6 +26,37 @@ import type {
   AccountSnapshotDto,
   AccountStatsDto,
 } from './dto/account-detail.dto';
+
+/**
+ * The account's PRODUCT, resolved from the MT5 group it sits in.
+ *
+ * `trading_product_groups` is UNIQUE on `mt5_group` platform-wide, and its
+ * schema comment says exactly why: "two products claiming the same group would
+ * make 'which product is this account under' unanswerable from the account —
+ * and that question is what decides whose commission it pays." That uniqueness
+ * is what makes this a join rather than a guess.
+ *
+ * ## Why the client is shown the product and not the group
+ *
+ * `real\Standard\USD` is a server path. It is the truth and it is unreadable —
+ * the portal's account-open form used to ask which GROUP to open and was
+ * rewritten to ask for a currency and a product precisely because a client
+ * cannot answer a question posed as a path. Showing them the path afterwards
+ * puts back what that change removed.
+ *
+ * ## Case-insensitive, on purpose
+ *
+ * The stored group comes from the bridge's response and the catalogue's comes
+ * from an operator picking one. MT5 treats group paths case-insensitively, so
+ * the two can differ in casing alone. An exact join would resolve those to NULL,
+ * which is indistinguishable from "this group is not in any product" — a wrong
+ * answer wearing the costume of a right one.
+ *
+ * LEFT, so an account whose group is in no product still returns. That is a real
+ * state rather than a fault: an operator can open an account directly into any
+ * MT5 group, including one the catalogue does not sell.
+ */
+const PRODUCT_JOIN_ON = sql`lower(${tradingProductGroups.mt5Group}) = lower(${tradingAccounts.mt5Group})`;
 
 /**
  * The signed-in client's own trading accounts.
@@ -86,15 +122,17 @@ export class TradingService {
         login: tradingAccounts.login,
         name: tradingAccounts.name,
         mt5Group: tradingAccounts.mt5Group,
+        product: tradingProducts.name,
         environment: tradingAccounts.environment,
         currency: tradingAccounts.currency,
         balance: tradingAccounts.balance,
-        tier: tradingAccounts.tier,
         leverage: tradingAccounts.leverage,
         status: tradingAccounts.status,
         createdAt: tradingAccounts.createdAt,
       })
       .from(tradingAccounts)
+      .leftJoin(tradingProductGroups, PRODUCT_JOIN_ON)
+      .leftJoin(tradingProducts, eq(tradingProducts.id, tradingProductGroups.productId))
       .where(eq(tradingAccounts.userId, userId))
       .orderBy(asc(tradingAccounts.environment), desc(tradingAccounts.createdAt));
 
@@ -209,15 +247,17 @@ export class TradingService {
         login: tradingAccounts.login,
         name: tradingAccounts.name,
         mt5Group: tradingAccounts.mt5Group,
+        product: tradingProducts.name,
         environment: tradingAccounts.environment,
         currency: tradingAccounts.currency,
         balance: tradingAccounts.balance,
-        tier: tradingAccounts.tier,
         leverage: tradingAccounts.leverage,
         status: tradingAccounts.status,
         createdAt: tradingAccounts.createdAt,
       })
       .from(tradingAccounts)
+      .leftJoin(tradingProductGroups, PRODUCT_JOIN_ON)
+      .leftJoin(tradingProducts, eq(tradingProducts.id, tradingProductGroups.productId))
       .where(and(eq(tradingAccounts.id, accountId), eq(tradingAccounts.userId, userId)))
       .limit(1);
 

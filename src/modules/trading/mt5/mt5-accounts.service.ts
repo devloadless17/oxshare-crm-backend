@@ -193,6 +193,26 @@ export class Mt5AccountsService {
       .values({
         userId: client.id,
         login: String(created.login),
+        /*
+         * THE GROUP, and it was missing.
+         *
+         * Every account opened through here stored NULL, so `mt5_group` was
+         * empty for the entire estate — and the portal's account card, which
+         * renders it, showed an em dash to every client on every account.
+         *
+         * It is not only a label. `trading_product_groups` is UNIQUE on
+         * `mt5_group` precisely so that "which product is this account under"
+         * has an answer, and its schema comment says why that question matters:
+         * it decides whose commission the account pays. With this column null
+         * the question was unanswerable for every account in the system.
+         *
+         * `created.group` rather than `input.group` — what MT5 actually put the
+         * account in, read back from the bridge's own response. The two are
+         * normally the same string; when they are not, the server is right and
+         * we are not, and storing what we ASKED for would record a group the
+         * account is not in.
+         */
+        mt5Group: created.group,
         environment: input.environment,
         currency: created.currency,
         leverage: created.leverage,
@@ -421,6 +441,17 @@ export class Mt5AccountsService {
         // when the client chose nothing, so the portal falls back to the login
         // rather than showing a name nobody picked.
         name: input.name?.trim() || null,
+        /*
+         * THE GROUP — see the note on the admin path above, which this omitted
+         * for the same reason and with the same consequence.
+         *
+         * It matters more here: this path exists because the client chose a
+         * PRODUCT and a currency, and the group is the only record of which
+         * product that was. Dropping it threw away the one fact the form was
+         * collecting, so an account opened as "Standard" was indistinguishable
+         * afterwards from one opened as anything else.
+         */
+        mt5Group: created.group,
         environment: input.environment,
         currency: created.currency,
         leverage: created.leverage,

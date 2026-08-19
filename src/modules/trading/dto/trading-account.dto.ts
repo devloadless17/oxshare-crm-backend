@@ -29,6 +29,23 @@ export type TradingAccountStatus = (typeof TRADING_ACCOUNT_STATUSES)[number];
  * actually credits — and it must become a mirror of MT5's balance, or
  * disappear, when the bridge lands.
  *
+ * ## `tier` is GONE, and it was never a field
+ *
+ * `trading_accounts.tier` is a column NOTHING has ever written. It was on this
+ * DTO and therefore on the portal's account card, which rendered it as "TYPE —"
+ * on every account of every client: a permanent em dash where a value belongs.
+ *
+ * That is the same failure as a hardcoded `$0.00` on the wallet, in a smaller
+ * denomination — a field that always reads "unknown" teaches a client that the
+ * data is missing rather than that the field is meaningless, and it is the first
+ * thing they ask support about. `product` above is the real answer to the
+ * question "what kind of account is this", so the placeholder is removed rather
+ * than left beside it.
+ *
+ * The COLUMN stays. Admin's holdings and export services still select it, and
+ * dropping it is a migration with no benefit; it simply has no place on the
+ * screen its owner reads.
+ *
  * What is NOT here, and must not be added before that bridge exists: equity,
  * margin, free margin, open positions, floating P/L. Those are computed from
  * live prices against open trades, nothing in this database has them, and a
@@ -59,8 +76,29 @@ export class TradingAccountDto {
   })
   name: string | null;
 
-  @ApiProperty({ type: 'string', nullable: true })
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      'The MT5 group path this account sits in — a server path, not a label. Null on accounts ' +
+      'opened before it was persisted; see `product`, which is the readable form and what a ' +
+      'client is shown.',
+  })
   mt5Group: string | null;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: 'Standard',
+    description:
+      'The product this account was opened under, resolved from `mt5Group` through ' +
+      '`trading_product_groups`, which is unique on the group for exactly this reason. Null ' +
+      'when the group is in no product — an operator may open an account directly into any MT5 ' +
+      'group — and null on accounts opened before the group was stored. THE PORTAL RENDERS ' +
+      'THIS, not the group: a backslash-separated MT5 group path is unreadable to a client, ' +
+      'which is why the open-account form asks for a currency and a product rather than a path.',
+  })
+  product: string | null;
 
   @ApiProperty({ enum: TRADING_ENVIRONMENTS })
   environment: TradingEnvironment;
@@ -76,9 +114,6 @@ export class TradingAccountDto {
       'credits, and it becomes an MT5 mirror when the bridge lands. Not equity.',
   })
   balance: string;
-
-  @ApiProperty({ type: 'string', nullable: true })
-  tier: string | null;
 
   @ApiProperty({
     type: 'number',

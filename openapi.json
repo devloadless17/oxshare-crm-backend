@@ -11591,7 +11591,14 @@
           },
           "mt5Group": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "The MT5 group path this account sits in — a server path, not a label. Null on accounts opened before it was persisted; see `product`, which is the readable form and what a client is shown."
+          },
+          "product": {
+            "type": "string",
+            "nullable": true,
+            "example": "Standard",
+            "description": "The product this account was opened under, resolved from `mt5Group` through `trading_product_groups`, which is unique on the group for exactly this reason. Null when the group is in no product — an operator may open an account directly into any MT5 group — and null on accounts opened before the group was stored. THE PORTAL RENDERS THIS, not the group: a backslash-separated MT5 group path is unreadable to a client, which is why the open-account form asks for a currency and a product rather than a path."
           },
           "environment": {
             "type": "string",
@@ -11608,10 +11615,6 @@
             "type": "string",
             "example": "1250.00000000",
             "description": "Decimal string (§6.1). The CRM-held balance — see the DTO note: this is what a transfer credits, and it becomes an MT5 mirror when the bridge lands. Not equity."
-          },
-          "tier": {
-            "type": "string",
-            "nullable": true
           },
           "leverage": {
             "type": "number",
@@ -11636,10 +11639,10 @@
           "login",
           "name",
           "mt5Group",
+          "product",
           "environment",
           "currency",
           "balance",
-          "tier",
           "leverage",
           "status",
           "createdAt"
