@@ -12,6 +12,7 @@ import {
   AuthorizationError,
   EmailNotVerifiedError,
   KycNotVerifiedError,
+  AccountNameTakenError,
   ConflictError,
   ExternalServiceError,
   DomainError,
@@ -57,6 +58,9 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   [EmailNotVerifiedError, HttpStatus.FORBIDDEN],
   [KycNotVerifiedError, HttpStatus.FORBIDDEN],
   [ConflictError, HttpStatus.CONFLICT],
+  // Same 409, and the point is the distinct `code` — the portal puts this one on
+  // the name FIELD rather than at the top of the dialog. See the class.
+  [AccountNameTakenError, HttpStatus.CONFLICT],
   [MoneyRuleError, HttpStatus.UNPROCESSABLE_ENTITY],
   // Beside the other size refusal on the upload path, so anyone debugging a failed
   // upload finds both in the same place. See QuotaExceededError.

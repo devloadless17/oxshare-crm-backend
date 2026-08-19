@@ -1849,6 +1849,32 @@ export const tradingAccounts = pgTable(
     uniqueIndex('trading_accounts_login_uq')
       .on(t.login)
       .where(sql`${t.login} IS NOT NULL`),
+    /*
+     * ONE name per client, and the client is the scope.
+     *
+     * The name is how somebody tells their own accounts apart — that is the
+     * entire job it does — so two accounts called "Swing trading" under one
+     * client is the state that makes it useless. Not globally unique: two
+     * different clients naming an account the same thing is not a collision,
+     * because neither ever sees the other's.
+     *
+     * CASE-INSENSITIVE, because "Swing trading" and "swing trading" are the same
+     * name to the person reading a list of them, and a rule that lets one
+     * through delivers exactly the confusion it exists to prevent.
+     *
+     * PARTIAL on `name IS NOT NULL`, matching the login index directly above and
+     * for the same reason: every account opened before 0076 has no name, NULL
+     * means unnamed rather than named-nothing, and Postgres would treat multiple
+     * NULLs as distinct anyway. Stating it keeps the intent readable.
+     *
+     * The service checks this before calling MT5 as well, and that is not
+     * redundant. The check is what produces a message a client can act on; this
+     * is what makes it TRUE under a double submit, where a check-then-insert
+     * races itself.
+     */
+    uniqueIndex('trading_accounts_user_name_uq')
+      .on(t.userId, sql`lower(${t.name})`)
+      .where(sql`${t.name} IS NOT NULL`),
     check('trading_accounts_balance_non_negative', sql`${t.balance} >= 0`),
   ],
 );

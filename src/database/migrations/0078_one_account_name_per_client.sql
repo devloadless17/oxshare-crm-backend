@@ -1,0 +1,46 @@
+-- ONE account name per client, case-insensitively.
+--
+-- Hand-written rather than generated, matching 0027 onwards.
+--
+-- ── Why ────────────────────────────────────────────────────────────────────
+--
+-- 0076 gave a trading account a name so the client could tell theirs apart.
+-- Nothing stopped them using the same one twice, which defeats the only job the
+-- column has: two accounts called "Swing trading" in one list is worse than two
+-- with no name at all, because the reader believes the label means something.
+--
+-- Scoped to the CLIENT, not global. Two different clients naming an account the
+-- same thing is not a collision — neither ever sees the other's.
+--
+-- ── lower(), deliberately ──────────────────────────────────────────────────
+--
+-- "Swing trading" and "swing trading" are the same name to the person reading a
+-- list of them. A rule that admits one of those delivers precisely the
+-- confusion it was added to prevent.
+--
+-- ── PARTIAL, matching trading_accounts_login_uq ────────────────────────────
+--
+-- Every account opened before 0076 has no name, and NULL means unnamed rather
+-- than named-nothing. Postgres already treats NULLs as distinct in a unique
+-- index; the WHERE clause states the intent rather than changing the behaviour,
+-- and keeps this index off the rows that will never use it.
+--
+-- ── IF THIS MIGRATION FAILS ────────────────────────────────────────────────
+--
+-- It means duplicates already exist, and the error names the offending pair.
+-- Find them all with:
+--
+--   SELECT user_id, lower(name), count(*), array_agg(id)
+--     FROM trading_accounts
+--    WHERE name IS NOT NULL
+--    GROUP BY user_id, lower(name)
+--   HAVING count(*) > 1;
+--
+-- Resolve them BY HAND. This migration deliberately does not rename anything
+-- itself: an account name is something a client typed and reads in their own
+-- terminal, and a silent de-duplication would leave them looking at a name they
+-- did not choose with nothing anywhere to explain it. 0076 refused to backfill a
+-- name for the same reason.
+CREATE UNIQUE INDEX IF NOT EXISTS trading_accounts_user_name_uq
+  ON trading_accounts (user_id, lower(name))
+  WHERE name IS NOT NULL;

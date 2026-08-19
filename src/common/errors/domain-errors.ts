@@ -190,6 +190,22 @@ export class ConflictError extends DomainError {
   readonly code = 'CONFLICT';
 }
 
+/**
+ * This client already has a trading account by that name. → 409
+ *
+ * Its OWN code rather than a bare `ConflictError`, because the portal has to be
+ * able to put the message on the name FIELD instead of at the top of the dialog
+ * as a general failure. A client who has typed a duplicate has one specific
+ * thing to change, and a form that says "something conflicted" leaves them
+ * guessing which of four fields it was.
+ *
+ * A 409 rather than a 422: the request is well-formed and would have been
+ * accepted a moment ago. What refuses it is existing state.
+ */
+export class AccountNameTakenError extends DomainError {
+  readonly code = 'ACCOUNT_NAME_TAKEN';
+}
+
 /** A money rule was violated — insufficient funds, bad state transition. → 422 */
 export class MoneyRuleError extends DomainError {
   readonly code = 'MONEY_RULE_VIOLATION';

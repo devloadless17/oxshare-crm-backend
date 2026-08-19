@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { tradingAccounts, users } from '../../../database/schema';
@@ -10,7 +10,11 @@ import { EmailService } from '../../email/email.service';
 import { assertActorCan } from '../../../common/security/actor';
 import { clientScopePredicate } from '../../../common/security/client-scope';
 import type { AuthenticatedAdmin } from '../../admin/guards/admin.guard';
-import { NotFoundError, ValidationError } from '../../../common/errors/domain-errors';
+import {
+  AccountNameTakenError,
+  NotFoundError,
+  ValidationError,
+} from '../../../common/errors/domain-errors';
 import { AppSettingsStore } from '../../../store/app-settings.store';
 import { tradingTermsFrom } from '../../../common/trading-terms';
 import {
@@ -380,12 +384,28 @@ export class Mt5AccountsService {
       );
     }
 
+    /*
+     * The name is this client's alone to reuse, and they may not.
+     *
+     * LAST of the refusals and FIRST of the writes — deliberately on this side
+     * of the bridge call. MT5 has no rollback and neither does anything below
+     * it: an account created there and then refused here would be a live
+     * trading account the client cannot see, cannot name and did not know was
+     * opened.
+     *
+     * Only when the client actually chose one. An unnamed account stores NULL
+     * (see the insert below), and NULL is not a name that can collide — a
+     * client may open any number of accounts without naming them.
+     */
+    const chosenName = input.name?.trim() || null;
+    if (chosenName) await this.assertNameFree(client.id, chosenName);
+
     const created = await this.bridge.createAccount({
       group: input.group,
       // The client's own name when they did not choose one — that is what MT5
       // expects in this field and what makes a row in the manager terminal
       // identifiable.
-      name: input.name?.trim() || `${client.firstName} ${client.lastName}`.trim(),
+      name: chosenName || `${client.firstName} ${client.lastName}`.trim(),
       email: client.email,
       country: client.country ?? undefined,
       phone: client.phone ?? undefined,
@@ -440,7 +460,7 @@ export class Mt5AccountsService {
         // bridge. The same string went to MT5 above as the holder name; NULL
         // when the client chose nothing, so the portal falls back to the login
         // rather than showing a name nobody picked.
-        name: input.name?.trim() || null,
+        name: chosenName,
         /*
          * THE GROUP — see the note on the admin path above, which this omitted
          * for the same reason and with the same consequence.
@@ -673,6 +693,57 @@ export class Mt5AccountsService {
    * divergence, and retrying is safe because both writes are idempotent for the
    * same name.
    */
+  /**
+   * Refuse a name this client has already used.
+   *
+   * ## Before MT5, always
+   *
+   * Both callers run this ahead of the bridge call. Ordering is the whole point:
+   * creating the account on the trading server and THEN discovering the name is
+   * taken leaves a real MT5 account behind that the client never got told about
+   * and cannot see — the broker's server has no rollback, and our transaction
+   * does not reach it.
+   *
+   * ## Case-insensitive
+   *
+   * "Swing trading" and "swing trading" are the same name to the person reading
+   * a list of them, and the unique index on the table uses `lower(name)` for the
+   * same reason. The two must agree, or this reports a name as free that the
+   * insert then rejects with a database error.
+   *
+   * ## Why this exists when the index does
+   *
+   * The index is what makes the rule TRUE — a check-then-insert races itself on
+   * a double submit. This is what makes it USABLE: a 409 carrying
+   * `ACCOUNT_NAME_TAKEN` lets the portal put the message on the name field,
+   * where the one thing the client can change is. A unique-violation escaping to
+   * the exception filter would be a 500 saying nothing.
+   *
+   * `exceptAccountId` is for the rename path: an account keeps its own name, so
+   * renaming "Swing trading" to "Swing trading" must not be a conflict with
+   * itself. Trimming a name, or changing its capitalisation, is a real edit and
+   * still reaches MT5.
+   */
+  private async assertNameFree(userId: string, name: string, exceptAccountId?: string) {
+    const [clash] = await this.db
+      .select({ id: tradingAccounts.id })
+      .from(tradingAccounts)
+      .where(
+        and(
+          eq(tradingAccounts.userId, userId),
+          sql`lower(${tradingAccounts.name}) = lower(${name})`,
+          ...(exceptAccountId ? [ne(tradingAccounts.id, exceptAccountId)] : []),
+        ),
+      )
+      .limit(1);
+
+    if (clash) {
+      throw new AccountNameTakenError(
+        `You already have an account named "${name}". Choose a different name.`,
+      );
+    }
+  }
+
   async renameOwnAccount(input: { userId: string; accountId: string; name: string }) {
     this.assertBridge();
 
@@ -691,6 +762,10 @@ export class Mt5AccountsService {
     }
 
     const account = await this.ownAccount(input.userId, input.accountId);
+
+    // Itself excluded — see `assertNameFree`. Before the bridge call, so a
+    // refusal cannot leave MT5 holding a name this database does not.
+    await this.assertNameFree(input.userId, name, account.id);
 
     const renamed = await this.bridge.updateName(account.login, name);
     if (!renamed) {
