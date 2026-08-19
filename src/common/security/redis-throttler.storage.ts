@@ -89,16 +89,52 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
        * "5". The expiry is set only when the counter is created, so the window
        * is fixed from the first request rather than sliding forward on every
        * one — otherwise a caller who keeps knocking never falls out of it.
+       *
+       * ── The expiry is VERIFIED, not assumed ─────────────────────────────
+       *
+       * INCR and PEXPIRE are two round trips, so there is a window between them
+       * in which this process can die, the connection can drop, or the command
+       * can fail into the `catch` below. Lose the PEXPIRE and the counter is
+       * IMMORTAL: `hits === 1` never comes round again, so nothing ever sets an
+       * expiry, the count only climbs, and that caller is over the limit
+       * FOREVER. The block key expires on schedule and the very next request
+       * re-blocks them, which is what makes it so hard to read — the limiter
+       * looks like it is working, one caller is just permanently locked out.
+       *
+       * This happened: a counter was found at 393 with `PTTL = -1` after the API
+       * was restarted mid-request, 429ing a once-a-minute poll.
+       *
+       * So a hit past the first asks what the remaining window actually is, and
+       * a key with no expiry gets one. That repairs an orphan on the next
+       * request rather than requiring somebody to find and delete it by hand.
+       * It is NOT a sliding window — the expiry is only ever set when there is
+       * none, so a caller who keeps knocking still falls out on schedule.
        */
       const hits = await this.redis.incr(hitKey);
-      if (hits === 1) await this.redis.pexpire(hitKey, ttl);
+      let remainingMs: number;
+      if (hits === 1) {
+        await this.redis.pexpire(hitKey, ttl);
+        remainingMs = ttl;
+      } else {
+        remainingMs = await this.redis.pttl(hitKey);
+        if (remainingMs < 0) {
+          await this.redis.pexpire(hitKey, ttl);
+          remainingMs = ttl;
+          this.warnOrphan(hitKey, hits);
+        }
+      }
+
+      // The REAL time left, not the full window. It reaches the caller as
+      // Retry-After, and telling somebody to wait 60s when the window resets in
+      // 3 is an answer that is wrong in the direction of looking authoritative.
+      const timeToExpire = Math.ceil(remainingMs / 1000);
 
       if (hits > limit) {
         const until = Date.now() + blockDuration;
         await this.redis.set(blockKey, String(until), 'PX', blockDuration);
         return {
           totalHits: hits,
-          timeToExpire: Math.ceil(ttl / 1000),
+          timeToExpire,
           isBlocked: true,
           timeToBlockExpire: Math.ceil(blockDuration / 1000),
         };
@@ -106,7 +142,7 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
 
       return {
         totalHits: hits,
-        timeToExpire: Math.ceil(ttl / 1000),
+        timeToExpire,
         isBlocked: false,
         timeToBlockExpire: 0,
       };
@@ -124,6 +160,17 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
       isBlocked: false,
       timeToBlockExpire: 0,
     };
+  }
+
+  /**
+   * An orphaned counter, repaired. Logged because it means a PEXPIRE was lost,
+   * and the caller was over the limit for as long as it took to notice.
+   */
+  private warnOrphan(key: string, hits: number): void {
+    this.logger.warn(
+      `Rate-limit counter ${key} had no expiry and was climbing (${hits} hits) — a lost ` +
+        'PEXPIRE, so this caller was being refused indefinitely. A fresh window has been set.',
+    );
   }
 
   private warnOnce(error: unknown): void {

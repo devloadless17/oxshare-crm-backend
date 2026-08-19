@@ -29,7 +29,10 @@ function fakeRedis(): OtpRedis & { store: Map<string, string>; expiries: Map<str
     get: (key) => Promise.resolve(store.get(key) ?? null),
     del: (...keys: string[]) => {
       let n = 0;
-      for (const k of keys) if (store.delete(k)) n++;
+      for (const k of keys) {
+        expiries.delete(k);
+        if (store.delete(k)) n++;
+      }
       return Promise.resolve(n);
     },
     incr: (key) => {
@@ -40,6 +43,16 @@ function fakeRedis(): OtpRedis & { store: Map<string, string>; expiries: Map<str
     pexpire: (key, ttlMs) => {
       expiries.set(key, ttlMs);
       return Promise.resolve(1);
+    },
+    /*
+     * Real Redis semantics, which is the whole point of the case below: -1 for
+     * a key that exists with no expiry, -2 for one that does not exist. Time
+     * does not advance here, so a live key reports the full window.
+     */
+    pttl: (key) => {
+      const ttl = expiries.get(key);
+      if (ttl !== undefined) return Promise.resolve(ttl);
+      return Promise.resolve(store.has(key) ? -1 : -2);
     },
   };
 }
@@ -95,6 +108,55 @@ describe('counting', () => {
     const setCalls = [...redis.expiries.keys()].filter((k) => k.startsWith('throttle:'));
     expect(setCalls).toHaveLength(1);
     expect(redis.expiries.get(setCalls[0])).toBe(TTL);
+  });
+});
+
+describe('a counter that lost its expiry', () => {
+  /*
+   * INCR and PEXPIRE are two round trips. Kill the process in between — a
+   * restart mid-request — and the counter survives with no expiry. Because the
+   * expiry was only ever set on `hits === 1`, nothing would set one again: the
+   * count climbs forever and that caller is refused indefinitely, while the
+   * block key expiring and re-arming every minute makes the limiter look
+   * healthy. Observed in dev as a counter at 393 with PTTL = -1, 429ing a
+   * once-a-minute poll.
+   */
+  const KEY = 'throttle:default:ip:1.2.3.4';
+
+  it('repairs it on the next hit instead of refusing that caller forever', async () => {
+    redis.store.set(KEY, '393'); // orphaned: a value, and no entry in `expiries`
+    expect(await redis.pttl(KEY)).toBe(-1);
+
+    const record = await hit();
+
+    expect(redis.expiries.get(KEY)).toBe(TTL);
+    expect(await redis.pttl(KEY)).toBeGreaterThan(0);
+    // Still refused on THIS request — the count is genuinely over the limit —
+    // but the window now ends, which is the difference that matters.
+    expect(record.isBlocked).toBe(true);
+    expect(record.timeToExpire).toBe(TTL / 1000);
+  });
+
+  it('says so, because a lost PEXPIRE is not a normal event', async () => {
+    redis.store.set(KEY, '393');
+    const warn = vi.spyOn(storage['logger'], 'warn').mockImplementation(() => undefined);
+
+    await hit();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toMatch(/no expiry/);
+    warn.mockRestore();
+  });
+
+  it('does not slide the window on a healthy counter', async () => {
+    // The repair must not become "re-set the expiry on every request", which
+    // is the permanent-ban bug in the opposite direction.
+    await hit();
+    redis.expiries.set(KEY, TTL - 30_000); // time has passed
+    await hit();
+    await hit();
+
+    expect(redis.expiries.get(KEY)).toBe(TTL - 30_000);
   });
 });
 
