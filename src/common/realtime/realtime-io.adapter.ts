@@ -55,16 +55,38 @@ export class RealtimeIoAdapter extends IoAdapter {
   /** The uWS listen socket, kept only so shutdown can close it. */
   private listenSocket: unknown = null;
 
+  /** The engine that actually ran. See `engineInUse`. */
+  private resolvedEngine: RealtimeEngine;
+
   constructor(
     app: INestApplication,
     private readonly engine: RealtimeEngine,
     private readonly port: number,
   ) {
     super(app);
+    this.resolvedEngine = engine;
+  }
+
+  /**
+   * The engine actually carrying the sockets — not always the one asked for,
+   * because `uws` degrades to the default engine where the native binary has no
+   * prebuild for this platform.
+   *
+   * Exposed because the boot banner names the socket's port, and the two engines
+   * put it in different places: `uws` on `REALTIME_PORT`, `node` on the API port.
+   * Printing the configured port unconditionally announces a port nothing is
+   * listening on the moment the fallback fires — and a stated port that is dead
+   * is worse than no line at all, because it sends whoever is debugging the
+   * silent socket to the wrong listener. Valid only after the gateway has
+   * initialised, which is during `app.listen`.
+   */
+  get engineInUse(): RealtimeEngine {
+    return this.resolvedEngine;
   }
 
   override createIOServer(port: number, options?: ServerOptions): unknown {
     if (this.engine !== 'uws') {
+      this.resolvedEngine = 'node';
       RealtimeIoAdapter.logger.log('Realtime engine: node (Socket.IO default).');
       return super.createIOServer(port, options);
     }
@@ -77,9 +99,11 @@ export class RealtimeIoAdapter extends IoAdapter {
        * that refuses to start because a performance optimisation is
        * unavailable is not.
        */
+      this.resolvedEngine = 'node';
       RealtimeIoAdapter.logger.warn(
         'uWebSockets.js could not be loaded on this platform — falling back to the ' +
-          'default engine. Realtime works; it is just the slower transport.',
+          'default engine. Realtime works; it is just the slower transport, and the ' +
+          `socket is on the API port rather than ${this.port}.`,
       );
       return super.createIOServer(port, options);
     }

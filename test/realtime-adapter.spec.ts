@@ -89,6 +89,20 @@ describe('the realtime engine', () => {
     expect(await isBound(port)).toBe(false);
   });
 
+  it('reports which engine actually ran, so the boot banner names a live port', async () => {
+    /*
+     * The banner prints the socket's port, and the two engines put it in
+     * different places. Reading REALTIME_PORT instead of asking the adapter
+     * announced :3003 under the node engine — a port with nothing on it, stated
+     * as fact, sending anyone debugging a quiet socket to the wrong listener.
+     */
+    const { adapter: uws } = build('uws', await freePort());
+    const { adapter: node } = build('node', await freePort());
+
+    expect(uws.engineInUse).toBe('uws');
+    expect(node.engineInUse).toBe('node');
+  });
+
   it('returns a working Socket.IO server either way', async () => {
     // The seam's whole promise: nothing above it can tell which engine ran.
     const uws = build('uws', await freePort());

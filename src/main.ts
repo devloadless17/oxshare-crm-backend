@@ -170,13 +170,12 @@ async function bootstrap() {
    * otherwise.
    */
   const realtimePort = Number(process.env['REALTIME_PORT'] ?? 3003);
-  app.useWebSocketAdapter(
-    new RealtimeIoAdapter(
-      app,
-      (process.env['REALTIME_ENGINE'] as RealtimeEngine) ?? 'uws',
-      realtimePort,
-    ),
+  const realtimeAdapter = new RealtimeIoAdapter(
+    app,
+    (process.env['REALTIME_ENGINE'] as RealtimeEngine) ?? 'uws',
+    realtimePort,
   );
+  app.useWebSocketAdapter(realtimeAdapter);
 
   /*
    * SIGTERM must drain, not kill. Node's default action for a signal with no
@@ -204,7 +203,19 @@ async function bootstrap() {
     console.log(`📚 Swagger docs at       http://localhost:${port}/api/docs`);
   }
   console.log(`❤️  Health check at      http://localhost:${port}/health`);
-  console.log(`⚡ Realtime socket on    http://localhost:${realtimePort}/realtime`);
+  /*
+   * The socket's REAL port, asked of the adapter rather than assumed from
+   * REALTIME_PORT. The two engines put it in different places — uws on its own
+   * listener, node attached to the API server — and uws also degrades to node
+   * where the native binary has no prebuild. Printed after `listen`, which is
+   * when the gateway initialises and the engine is settled.
+   *
+   * The old line named REALTIME_PORT unconditionally, so it announced :3003
+   * under the node engine and after every fallback: a port with nothing on it,
+   * stated as fact, which is the most expensive kind of log line to trust.
+   */
+  const socketPort = realtimeAdapter.engineInUse === 'uws' ? realtimePort : port;
+  console.log(`⚡ Realtime socket on    http://localhost:${socketPort}/realtime`);
 }
 
 void bootstrap();
