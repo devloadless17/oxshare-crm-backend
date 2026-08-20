@@ -8,6 +8,10 @@ import { AdminTagsController } from './admin-tags.controller';
 import { AdminClientsController } from './admin-clients.controller';
 import { AdminComplianceController } from './admin-compliance.controller';
 import { AdminRbacController } from './admin-rbac.controller';
+import { APP_GUARD } from '@nestjs/core';
+import { AdminIpAllowlistController } from './admin-ip-allowlist.controller';
+import { AdminIpAllowlistService } from './admin-ip-allowlist.service';
+import { IpAllowlistGuard } from './guards/ip-allowlist.guard';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminProfileService } from './admin-profile.service';
 import { AdminTagsService } from './admin-tags.service';
@@ -41,6 +45,7 @@ import { AdminExportModule } from './admin-export.module';
  */
 
 const ADMIN_SERVICES = [
+  AdminIpAllowlistService,
   AdminAuthService,
   /*
    * What an administrator may do to their OWN account, kept apart from
@@ -101,22 +106,29 @@ const ADMIN_SERVICES = [
     AdminAuditController,
     AdminApiKeysController,
     AdminSecuritySettingsController,
+    AdminIpAllowlistController,
     AdminMoneyController,
     AdminStatsController,
     AdminHoldingsController,
     AdminBridgeController,
   ],
   /*
-   * The RBAC-08 `IpAllowlistGuard` was registered HERE as an APP_GUARD and is
-   * gone with the feature. It restricted the whole admin surface to configured
-   * CIDR ranges and was a no-op until somebody added a rule.
+   * RBAC-08, restored. Global rather than per-route for the same reason
+   * `CsrfGuard` is: a route that forgets to opt IN is indistinguishable from one
+   * that never needed it, and the surface this protects grows every week.
    *
-   * What replaced it is nothing: admin routes are gated on authentication and
-   * permissions only. If a network restriction is wanted again, it belongs at
-   * the edge — a load balancer or WAF rule — rather than as an application
-   * guard reading a table, which is where it was.
+   * It is a NO-OP until the allowlist has a row, which is what makes it safe to
+   * deploy — an empty table cannot lock anybody out, and that property is
+   * asserted rather than assumed (test/ip-allowlist.spec.ts).
+   *
+   * The deletion that removed this argued the restriction belongs at the edge,
+   * in a load balancer or WAF rule, "where it survives an application bug". That
+   * is correct and this does not replace it: an application guard is defence in
+   * depth behind an edge rule, not a substitute for one. What it does buy is a
+   * control an operator can change from the console, on a deployment that has no
+   * WAF in front of it yet — which is this one.
    */
-  providers: [...ADMIN_SERVICES],
+  providers: [...ADMIN_SERVICES, { provide: APP_GUARD, useClass: IpAllowlistGuard }],
   // Re-exported so importers keep reaching the audit writer through this
   // module, as they did when it was provided here.
   exports: [...ADMIN_SERVICES, AdminAuthModule],

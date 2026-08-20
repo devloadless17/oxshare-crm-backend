@@ -353,11 +353,15 @@
   },
   "audit": {
     "moduleName": "Audit & Reconciliation",
-    "description": "The record of who did what, and the ledger reconciliation report. Read-only both — neither screen writes anything, so neither has a write key.",
+    "description": "The record of who did what, the append-only ledger, and the reconciliation report. Read-only throughout — none of these screens writes anything, so none has a write key.\n\n`ledger.view` is its OWN key rather than riding on `withdrawals.view`, which is what the endpoint used to require. The ledger holds six entry types — deposit, withdrawal, commission, rebate, payout and adjustment — and only one of them is a withdrawal, so gating it on the withdrawal queue handed anyone reviewing payouts every deposit and every partner commission on the platform. Reading every money movement is its own power, on the same reasoning that keeps `wallets.credit` apart from `wallets.delete`.",
     "permissions": [
       {
         "key": "audit.view",
         "label": "View the Audit Log"
+      },
+      {
+        "key": "ledger.view",
+        "label": "View the Ledger"
       },
       {
         "key": "reconciliation.view",

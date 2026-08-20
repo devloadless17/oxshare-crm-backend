@@ -40,6 +40,8 @@ interface Harness {
 }
 
 function makeController(options: {
+  /** RBAC-08. Empty (the default) means the allowlist is not enforcing. */
+  ipAllowlist?: string[];
   adminPermissions?: string[];
   clientOwnsFile?: boolean;
   auditFails?: boolean;
@@ -139,6 +141,7 @@ function makeController(options: {
    * Per-controller rather than shared, so a case that deletes or fails to find the
    * object cannot leak that state into the next one.
    */
+  const ipAllowlist = { listCidrs: () => Promise.resolve(options.ipAllowlist ?? []) };
   const { files, driver } = storageStub();
   void driver.put(`kyc/${FILE}`, DOCUMENT, {
     contentType: 'image/png',
@@ -155,6 +158,11 @@ function makeController(options: {
     auditLog as never,
     files,
     scopes as never,
+    // RBAC-08 is back, and this route is the reason it needed a check of its
+    // own: /uploads/kyc/:file sits outside /admin, so the global guard never
+    // reaches it. Empty by default = the allowlist is OFF, which is the state
+    // every case here except the two network ones runs in.
+    ipAllowlist as never,
   );
 
   return { controller, recorded };

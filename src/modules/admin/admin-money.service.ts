@@ -697,7 +697,16 @@ export class AdminMoneyService {
     },
     actor: AuthenticatedAdmin,
   ) {
-    assertActorCan(actor, 'withdrawals.view', 'view the ledger');
+    /*
+     * R-4.3: asserted HERE as well as in the guard, because a guard only runs
+     * on an HTTP request and this method is what a queued job would call.
+     *
+     * `ledger.view`, not `withdrawals.view` — see the note on the route. Both
+     * halves had to move together: the decorator alone would have left the
+     * service refusing the very admins the route now admits, and this pairing
+     * is exactly what the HTTP test caught.
+     */
+    assertActorCan(actor, 'ledger.view', 'view the ledger');
     return this.wallets.listEntries({
       // The ADM-13 ledger is the screen used FOR reconciliation, so the
       // predicate goes into the query rather than filtering afterwards.

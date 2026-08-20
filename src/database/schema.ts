@@ -1059,6 +1059,40 @@ export const loginAttempts = pgTable(
   ],
 );
 
+/**
+ * RBAC-08 — the networks an administrator session may be used from.
+ *
+ * RESTORED. This table, its guard, its CIDR matcher and its tests were deleted
+ * on 7 Aug as unwanted scope; the root CLAUDE.md records the opposite, that the
+ * tech lead confirmed on 2 Aug that RBAC-08 is in scope and the committed total
+ * is 41, and the deletion was never confirmed by them. The scope decision on
+ * record wins (D-51).
+ *
+ * The deleting commit's engineering argument is kept and is right as far as it
+ * goes: an application-level allowlist does not survive an application bug, and
+ * the edge — a load balancer or WAF rule — is the stronger place for it. This
+ * does not replace that; it is defence in depth, and the gap that commit named
+ * (`/uploads/kyc/:file`, which serves passports and proof of address and sits
+ * outside `/admin`) is covered this time rather than left as a note.
+ */
+export const adminIpAllowlist = pgTable(
+  'admin_ip_allowlist',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** Canonical CIDR — a bare address is stored as `/32`. */
+    cidr: varchar('cidr', { length: 43 }).notNull(),
+    /** Why this rule exists. A list of bare ranges becomes unmaintainable fast. */
+    label: varchar('label', { length: 200 }).notNull(),
+    createdBy: uuid('created_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Canonicalised before insert, so `10.0.0.5/24` and `10.0.0.0/24` cannot both
+    // exist and leave someone believing they removed a rule still in force.
+    uniqueIndex('admin_ip_allowlist_cidr_uq').on(t.cidr),
+  ],
+);
+
 /*
  * `admin_ip_allowlist` was HERE, and is dropped in migration 0034.
  *

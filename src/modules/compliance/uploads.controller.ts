@@ -28,6 +28,9 @@ import { KycStore } from '../../store/kyc.store';
 import { UsersStore } from '../../store/users.store';
 import { AuditLogStore } from '../../store/audit-log.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
+import { AdminIpAllowlistStore } from '../../store/admin-ip-allowlist.store';
+import { adminNetworkAdmits } from '../../common/security/admin-network';
+import { clientIp } from '../../common/security/client-ip';
 import { COOKIE_BASES, readSessionCookie } from '../../common/security/session-cookies';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { AdminGuard } from '../admin/guards/admin.guard';
@@ -71,6 +74,7 @@ export class UploadsController {
     private readonly auditLog: AuditLogStore,
     private readonly files: StoredFilesService,
     private readonly scopes: AdminClientScopesStore,
+    private readonly ipAllowlist: AdminIpAllowlistStore,
   ) {}
 
   /**
@@ -445,23 +449,39 @@ export class UploadsController {
         const admin = await this.admins.findById(payload.sub);
         if (admin) {
           /*
-           * A network check stood HERE and went with the IP allowlist.
+           * RBAC-08 APPLIES HERE, NOT IN THE GUARD — and this is the gap the
+           * feature's deletion went out of its way to document.
            *
-           * It mattered because this route is `/uploads/kyc/:file` — outside
-           * `/admin`, so the global guard never covered it, and it serves BOTH
-           * surfaces: a client fetching their own document and an admin
-           * fetching anyone's. Which principal is acting is only knowable after
-           * the token resolves, which is why it could not live in a guard.
+           * `IpAllowlistGuard` covers the admin surface by path, and this route
+           * is `/uploads/kyc/:file` — outside `/admin`. While the allowlist
+           * existed without this check, every client's passport, national ID and
+           * proof of address was readable from any network on earth with a valid
+           * admin session, while the allowlist reported itself as enforcing.
            *
-           * WHAT REMAINS. An admin reading a client's passport is still gated
-           * on a valid admin session and on `kyc.documents.view` below, and the
-           * read is still audited. What is gone is the restriction to
-           * particular networks — this is the most sensitive data the system
-           * holds, and it is now reachable from anywhere with a valid session.
-           * If that restriction is wanted again it belongs at the edge, in a
-           * load balancer or WAF rule, rather than as an application check
-           * reading a table.
+           * It cannot move into the guard, because this route serves BOTH
+           * surfaces: a client fetching their own document, and an admin
+           * fetching anyone's. A network restriction on the client path would
+           * lock customers out of their own files. Which principal is acting is
+           * only known here, after the token resolves — so the CHECK lives here
+           * and the RULE lives in `adminNetworkAdmits` (R-4.3), shared with the
+           * guard so the two can never disagree.
+           *
+           * Deliberately BEFORE the permission check: being on a permitted
+           * network is a precondition for exercising admin authority at all,
+           * not a second opinion about which admin you are.
            */
+          const allowlistRules = await this.ipAllowlist.listCidrs();
+          const callerIp = clientIp(req);
+          if (!adminNetworkAdmits(allowlistRules, callerIp)) {
+            this.logger.warn(
+              `Admin ${admin.email} refused a KYC document read from ${callerIp ?? 'an unknown address'}: ` +
+                `not in the IP allowlist (${allowlistRules.length} rule(s) configured).`,
+            );
+            throw new ForbiddenException(
+              'Your network is not permitted to reach the administration API.',
+            );
+          }
+
           const held = await this.roles.resolvePermissions(admin.roleId, admin.permissions);
           // One spelling — see migration 0009 and admin.guard.ts.
           const normalized = held.map((p) => p.toLowerCase());

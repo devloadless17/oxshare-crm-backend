@@ -300,6 +300,14 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   // an enum — but the vocabulary should not advertise dead actions.
   { action: 'security.control.set', label: 'Security control toggled', group: 'Security' },
   /*
+   * RBAC-08. Both sides are logged because both change who can reach the
+   * console: adding a rule starts enforcement (or narrows it), and removing the
+   * last one stops it entirely. "Who opened the console to the internet, and
+   * when" has to be answerable from the audit screen rather than the table.
+   */
+  { action: 'ip_allowlist.add', label: 'Network rule added', group: 'Security' },
+  { action: 'ip_allowlist.remove', label: 'Network rule removed', group: 'Security' },
+  /*
    * Grouped under Security rather than Configuration, unlike the other settings
    * writes. Repointing SMTP redirects every password-reset and admin-invite link
    * this system sends, so it belongs beside the controls an auditor reviews for

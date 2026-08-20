@@ -1239,3 +1239,41 @@ export class ClientTransactionsPageDto {
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
 }
+
+/** RBAC-08 — one allowlist rule. */
+export class IpAllowlistRuleDto {
+  @ApiProperty() id: string;
+  @ApiProperty({ example: '203.0.113.0/24' }) cidr: string;
+  @ApiProperty({ example: 'Beirut office' }) label: string;
+  @ApiProperty() createdBy: string;
+  @ApiProperty() createdAt: string;
+}
+
+export class IpAllowlistStatusDto {
+  @ApiProperty({
+    description:
+      'False while the list is empty. An empty list deliberately means the feature is OFF, ' +
+      'so the deploy that adds the table cannot lock every administrator out (RBAC-08).',
+  })
+  enforced: boolean;
+
+  @ApiProperty({
+    description: "The requesting admin's own address, so the UI can warn before a lockout.",
+    nullable: true,
+    type: String,
+  })
+  yourIp: string | null;
+
+  /**
+   * Enforcement switched off by `ADMIN_IP_ALLOWLIST_ENABLED=false`, with the
+   * rules left in place.
+   *
+   * Distinct from `enforced: false` with an empty list. "Nobody has configured
+   * this yet" and "somebody turned it off and the rules are still here" are
+   * different situations and the console must not render them alike.
+   */
+  @ApiProperty() disabledByConfig: boolean;
+
+  @ApiProperty({ type: [IpAllowlistRuleDto] })
+  rules: IpAllowlistRuleDto[];
+}

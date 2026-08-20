@@ -570,9 +570,22 @@ export class AdminMoneyController {
     return this.reconciliation.run();
   }
 
+  /*
+   * `ledger.view`, NOT `withdrawals.view` — ADM-13.
+   *
+   * This endpoint used to ride on the withdrawal queue's read key, and the two
+   * are not the same power. `ledger_entries` holds six entry types — deposit,
+   * withdrawal, commission, rebate, payout and adjustment — so gating it here
+   * meant that granting somebody the withdrawal queue also handed them every
+   * client deposit and every partner commission on the platform.
+   *
+   * The catalog already draws this distinction elsewhere (`wallets.credit` is
+   * separate from `wallets.delete` because adding money and removing an account
+   * are not one power); reading every money movement earns the same treatment.
+   */
   @Get('ledger')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('withdrawals.view')
+  @RequirePermissions('ledger.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Append-only ledger, filterable for reconciliation',

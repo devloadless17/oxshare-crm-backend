@@ -1,3 +1,4 @@
+import { AdminIpAllowlistStore } from './admin-ip-allowlist.store';
 import { Global, Module } from '@nestjs/common';
 import { AdminClientScopesStore } from './admin-client-scopes.store';
 import { ApiKeysStore } from './api-keys.store';
@@ -20,6 +21,7 @@ import { WalletsStore } from './wallets.store';
 import { ClientVisibilityService } from '../common/security/client-visibility.service';
 
 const STORES = [
+  AdminIpAllowlistStore,
   AdminClientScopesStore,
   AdminsStore,
   ApiKeysStore,
