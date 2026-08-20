@@ -170,6 +170,37 @@ export async function runSeeds(): Promise<void> {
     ])
     .onConflictDoNothing({ target: roles.name });
 
+  /*
+   * KEEP THE ADMINISTRATOR ROLE TRUE TO ITS OWN DESCRIPTION.
+   *
+   * It is seeded as "Every permission in the catalog" and inserted with
+   * `onConflictDoNothing`, so on any database that already had it the role
+   * silently stopped being that the moment a key was added. Adding `ledger.view`
+   * for ADM-13 is what surfaced it: the role held all sixty-seven other keys and
+   * not the new one, so the full-access account got a 403 on a screen the
+   * console had just offered it — and the e2e suite, whose whole premise is a
+   * fixture that never 403s, failed on exactly that.
+   *
+   * Matched on NAME alone. Scoping it by the seeded description was the first
+   * attempt and matched nothing: the live row says "Unrestricted access to every
+   * part of the console", because it predates the current seed text. A marker
+   * that has already drifted is not a marker.
+   *
+   * Only this role, and only because its contract IS the complete set. Every
+   * other seeded role is a fixed list and is left alone. If you want a narrower
+   * role, make one — do not trim the one named Administrator, because this will
+   * put its keys back on the next boot.
+   *
+   * Development only, which is what makes re-widening acceptable: `main.ts`
+   * calls `runSeeds()` exclusively when NODE_ENV is not production, so this
+   * cannot reach a live deployment and cannot re-widen a role somebody narrowed
+   * there on purpose.
+   */
+  await db
+    .update(roles)
+    .set({ permissions: ALL_PERMISSIONS })
+    .where(eq(roles.name, 'Administrator'));
+
   await db
     .insert(admins)
     .values({

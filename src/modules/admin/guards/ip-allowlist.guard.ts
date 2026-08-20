@@ -55,7 +55,47 @@ export class IpAllowlistGuard implements CanActivate {
     // both guards share — see common/api-prefix.ts.
     if (!isAdminSurface(req.path)) return true;
 
-    const rules = await this.allowlist.listCidrs();
+    /*
+     * A GUARD MUST NOT BE ABLE TO TAKE THE CONSOLE DOWN.
+     *
+     * This runs on every admin request, including the login that would let
+     * somebody fix it. When the table is missing — migrations pending on a
+     * deploy, a restored backup, the ordering between `npm run dev` and
+     * `npm run db:migrate` — the query throws, and without this catch EVERY
+     * admin request answers 500. Including `POST /admin/auth/login`. Nobody can
+     * sign in to the console that manages the allowlist, and the error names a
+     * table most people reading it have never heard of.
+     *
+     * That is not hypothetical: it happened the first time this guard was
+     * restored, and a browser found it within a minute of the unit suite being
+     * entirely green — 1792 backend tests pass against a migrated database and
+     * none of them models one that is behind.
+     *
+     * SO IT FAILS OPEN, LOUDLY. An unreadable list is not a configured
+     * restriction: it is the same "not configured" state an empty list already
+     * means, and the same answer this guard gives before anybody adds a rule.
+     * Failing closed would mean an infrastructure error locks every
+     * administrator out of the only place the setting can be changed.
+     *
+     * This is defence in depth behind an edge rule, which is where a network
+     * restriction that must survive an application fault belongs — so trading a
+     * window of non-enforcement for a console that stays reachable is the right
+     * way round. The log line is ERROR, not WARN, because a security control
+     * that is not running is worth waking somebody for.
+     */
+    let rules: string[];
+    try {
+      rules = await this.allowlist.listCidrs();
+    } catch (error) {
+      this.logger.error(
+        'RBAC-08 could not read the IP allowlist, so it is NOT being enforced for this request. ' +
+          'Every admin request is being admitted regardless of network. This usually means ' +
+          'migrations are pending — run `npm run db:migrate`. ' +
+          `Cause: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return true;
+    }
+
     const ip = clientIp(req);
     // The decision itself lives in `common/security/admin-network.ts`, because
     // this guard is not the only caller: `GET /uploads/kyc/:file` serves client

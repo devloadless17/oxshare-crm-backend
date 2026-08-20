@@ -470,7 +470,24 @@ export class UploadsController {
            * network is a precondition for exercising admin authority at all,
            * not a second opinion about which admin you are.
            */
-          const allowlistRules = await this.ipAllowlist.listCidrs();
+          /*
+           * Fails OPEN on an unreadable list, for the same reason the guard
+           * does — see `IpAllowlistGuard`. A missing table here would 500 every
+           * KYC document read, and a reviewer would meet an internal error on
+           * the document rather than an explanation.
+           */
+          let allowlistRules: string[] = [];
+          try {
+            allowlistRules = await this.ipAllowlist.listCidrs();
+          } catch (error) {
+            this.logger.error(
+              'RBAC-08 could not read the IP allowlist, so the network restriction on KYC ' +
+                'document reads is NOT being enforced. This usually means migrations are ' +
+                `pending — run \`npm run db:migrate\`. Cause: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+            );
+          }
           const callerIp = clientIp(req);
           if (!adminNetworkAdmits(allowlistRules, callerIp)) {
             this.logger.warn(

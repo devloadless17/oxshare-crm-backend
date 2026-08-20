@@ -128,3 +128,51 @@ describe('nothing outside the admin surface is affected', () => {
     expect(isAdminSurface('/v1/administrators')).toBe(true);
   });
 });
+
+describe('an unreadable list cannot take the console down', () => {
+  /*
+   * The failure this feature was deleted over, reproduced and pinned.
+   *
+   * `IpAllowlistGuard` runs on EVERY admin request, including the login that
+   * would let somebody fix it. When the table is missing — migrations pending,
+   * a restored backup, `npm run dev` before `npm run db:migrate` — the query
+   * throws. Without a catch every admin request answers 500, `POST
+   * /admin/auth/login` included, and the console that manages the allowlist is
+   * unreachable.
+   *
+   * A browser found this within a minute while all 1792 backend tests were
+   * green: every one of them runs against a MIGRATED database, so none of them
+   * models one that is behind.
+   */
+  it('admits the request when the store throws, rather than 500ing', async () => {
+    const { IpAllowlistGuard } = await import('../src/modules/admin/guards/ip-allowlist.guard');
+    const store = {
+      listCidrs: () => Promise.reject(new Error('relation "admin_ip_allowlist" does not exist')),
+    };
+    const guard = new IpAllowlistGuard(store as never);
+
+    const context = {
+      getType: () => 'http',
+      switchToHttp: () => ({ getRequest: () => ({ path: '/v1/admin/auth/login', ip: '::1' }) }),
+    };
+
+    await expect(guard.canActivate(context as never)).resolves.toBe(true);
+  });
+
+  it('still enforces normally when the store answers', async () => {
+    // The catch must not have become an unconditional pass.
+    const { IpAllowlistGuard } = await import('../src/modules/admin/guards/ip-allowlist.guard');
+    const guard = new IpAllowlistGuard({
+      listCidrs: () => Promise.resolve(['203.0.113.0/24']),
+    } as never);
+
+    const context = {
+      getType: () => 'http',
+      switchToHttp: () => ({
+        getRequest: () => ({ path: '/v1/admin/clients', ip: '198.51.100.9' }),
+      }),
+    };
+
+    await expect(guard.canActivate(context as never)).rejects.toThrow(/not permitted/i);
+  });
+});
