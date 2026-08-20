@@ -316,7 +316,8 @@ export class ProfileTradingAccountDto {
   @ApiProperty() mt5Login: string;
   @ApiPropertyOptional() mt5Group?: string;
   @ApiProperty({ enum: ['live', 'demo'] }) environment: string;
-  @ApiPropertyOptional() tier?: string;
+  // No `tier`: the column behind it has never had a writer, so the field was
+  // absent from every response this shape has ever described.
   @ApiPropertyOptional() leverage?: number;
   @ApiProperty() createdAt: Date;
 }
@@ -367,6 +368,36 @@ export class ProfileKycDto {
  * `maskedFields` is the third kind of absence: a field the viewer may not see,
  * omitted from the client object with its key listed here.
  */
+/**
+ * One client's ACCOUNT fields — what an edit answers with.
+ *
+ * Deliberately not `ClientProfileDto`, which is the full profile SCREEN: that
+ * one carries tags, KYC and trading accounts as required properties, and an
+ * edit endpoint does not load any of them. Reusing it would have published a
+ * contract promising three collections the response never contains, and the
+ * admin console generates its client from exactly that contract — so the lie
+ * would have surfaced as a runtime undefined rather than a compile error.
+ */
+export class ClientAccountDto {
+  @ApiProperty({ format: 'uuid' }) id: string;
+  @ApiProperty() email: string;
+  @ApiProperty() firstName: string;
+  @ApiProperty() lastName: string;
+  @ApiProperty({ enum: ['individual', 'referral', 'partner'] }) type: string;
+  @ApiProperty({ enum: ['active', 'pending', 'suspended'] }) status: string;
+  @ApiProperty({ enum: [0, 1] }) verificationLevel: number;
+
+  @ApiProperty({
+    description:
+      'Reset to false by an email change, and stays false until the new address is verified.',
+  })
+  emailVerified: boolean;
+
+  @ApiProperty({ type: String, nullable: true }) country: string | null;
+  @ApiProperty({ type: String, nullable: true }) phone: string | null;
+  @ApiProperty() createdAt: Date;
+}
+
 export class ClientProfileDto {
   @ApiProperty() id: string;
   @ApiPropertyOptional() email?: string;
@@ -814,7 +845,19 @@ export class TradingAccountRowDto {
       'point it becomes a mirror of MT5 or is removed (see the schema comment).',
   })
   balance: string;
-  @ApiPropertyOptional({ type: String, nullable: true }) tier?: string | null;
+  /**
+   * The product this account was opened under, replacing `tier`.
+   *
+   * `trading_accounts.tier` has never had a writer, so the key it filled was
+   * NULL on every row this endpoint has ever returned. Resolved from the
+   * account's own `product_id` first and the catalogue second — see
+   * `common/account-product` — so the operator and the client read the same
+   * answer off the same account.
+   *
+   * NULL is a real state: an account may be opened straight into an MT5 group
+   * the catalogue does not sell.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true }) product?: string | null;
   @ApiPropertyOptional({ type: Number, nullable: true }) leverage?: number | null;
   @ApiProperty({ enum: ['active', 'suspended', 'closed'] }) status: string;
   @ApiProperty() createdAt: Date;

@@ -4,6 +4,7 @@ import * as nodemailer from 'nodemailer';
 import { SmtpConfigService, type EffectiveSmtpConfig } from './smtp-config.service';
 import {
   accountExists,
+  emailChangedNotice,
   adminInvite,
   adminPasswordReset,
   kycDecision,
@@ -152,6 +153,45 @@ export class EmailService {
   }
 
   // FR-ADM-03 / ARCH §8.5: approve and reject both notify the client inline.
+  /**
+   * Warn the PREVIOUS address that the sign-in email was changed.
+   *
+   * Sent to the old mailbox, deliberately, and after the change has already
+   * taken effect — see the template. It is the only signal that reaches someone
+   * who would care about an unauthorised change while they can still act on it;
+   * the permission gate and the audit row both point inwards, at the broker.
+   *
+   * The SMTP `from` address doubles as the support contact rather than
+   * introducing a second setting: it is the address a client already recognises
+   * from every other mail this system sends, and one that is definitely
+   * configured wherever mail works at all.
+   */
+  async sendEmailChangedNotice(previousEmail: string, newEmail: string): Promise<void> {
+    /*
+     * The try/catch is around `resolve()` as well as the send, and that is the
+     * whole point of it.
+     *
+     * `send()` swallows its own delivery failures, but this method needed the
+     * configured `from` address BEFORE rendering — and `resolve()` throws when
+     * no SMTP settings exist. Outside a catch, that turned "the broker has not
+     * configured mail yet" into a 503 on the email change itself: the address
+     * had already been updated and the sessions already revoked, so the
+     * operation was done, and the caller was told it had failed.
+     *
+     * No caller of this service treats "the mail did not go" as a reason to
+     * fail the operation that triggered it. That contract is what this
+     * preserves.
+     */
+    try {
+      const { from } = await this.smtpConfig.resolve();
+      await this.send(previousEmail, 'email-changed notice', emailChangedNotice(newEmail, from));
+    } catch (error) {
+      this.logger.error(
+        `Failed to send email-changed notice to ${previousEmail}: ${failureReason(error)}`,
+      );
+    }
+  }
+
   async sendKycDecisionEmail(
     email: string,
     firstName: string,

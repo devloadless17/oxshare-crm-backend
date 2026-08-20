@@ -42,6 +42,15 @@ export interface AuditActionDefinition {
 
 export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   // ── Clients ───────────────────────────────────────────────────────────────
+  /*
+   * A profile edit and an EMAIL change are separate actions, for the same
+   * reason they are separate permissions: one is a corrected surname, the other
+   * is the address the account signs in with. An investigator scanning for "who
+   * could have taken this account over" must be able to filter to the second
+   * without reading every clerical correction.
+   */
+  { action: 'client.profile_update', label: 'Client profile edited', group: 'Clients' },
+  { action: 'client.email_change', label: 'Client sign-in email changed', group: 'Clients' },
   { action: 'client.suspend', label: 'Client suspended', group: 'Clients' },
   { action: 'client.activate', label: 'Client reactivated', group: 'Clients' },
   { action: 'client_tag.assign', label: 'Tag added to client', group: 'Clients' },

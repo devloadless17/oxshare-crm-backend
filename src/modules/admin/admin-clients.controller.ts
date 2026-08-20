@@ -16,8 +16,12 @@ import { AdminClientsService } from './admin-clients.service';
 import { AdminExportService } from './admin-export.service';
 import { AdminAuditService } from './admin-audit.service';
 import { exportFormat, streamCsv } from '../../common/export/export-response';
-import { ClientStatusDto } from './dto/requests/clients.dto';
-import { ClientListResponseDto, ClientProfileDto } from './dto/responses.dto';
+import {
+  ChangeClientEmailDto,
+  ClientStatusDto,
+  UpdateClientProfileDto,
+} from './dto/requests/clients.dto';
+import { ClientAccountDto, ClientListResponseDto, ClientProfileDto } from './dto/responses.dto';
 import {
   PermissionsGuard,
   RequirePermissions,
@@ -265,6 +269,62 @@ export class AdminClientsController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.clients.getClientProfile(id, req.admin);
+  }
+
+  @Patch('clients/:id')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('clients.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Correct a client's profile (requires clients.edit)",
+    description:
+      'Name, phone and country only — the clerical set a support desk fixes when a client typed ' +
+      'them wrong at registration.\n\n' +
+      'Email is NOT here. It lives on PATCH /admin/clients/:id/email behind the separate ' +
+      '`clients.email` permission, because changing the address an account signs in with is an ' +
+      'account-takeover primitive and must not ride along with fixing a surname.\n\n' +
+      '`status` is not here either (PATCH .../status, `clients.suspend`), and neither is ' +
+      'verification level or type — those are conclusions the KYC and partner flows reach from ' +
+      'evidence, not fields to type in.\n\n' +
+      'Send an empty string for phone or country to clear it.',
+  })
+  @ApiOkResponse({ type: ClientAccountDto })
+  @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
+  @Audited('client.profile_update')
+  updateClientProfile(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: UpdateClientProfileDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.clients.updateClientProfile(id, dto, req.admin);
+  }
+
+  @Patch('clients/:id/email')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('clients.email')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Change a client's sign-in email (requires clients.email)",
+    description:
+      '⚠️ The one operation on this surface that can take an account over: point the address at ' +
+      'your own inbox, run a password reset, and the balance follows. It carries its own ' +
+      'permission for exactly that reason — `clients.edit` does not grant it.\n\n' +
+      'Changing it: revokes every portal session for the client, resets email verification and ' +
+      'sends a fresh verification link to the NEW address, and notifies the PREVIOUS address that ' +
+      'the change happened. That last one is the control that points at the person who would ' +
+      'notice an unauthorised change, so it is sent whether or not anyone asked for it.\n\n' +
+      'Already-issued access tokens are short-lived JWTs and expire on their own; what revocation ' +
+      'guarantees is that none of them can be refreshed.',
+  })
+  @ApiOkResponse({ type: ClientAccountDto })
+  @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
+  @Audited('client.email_change')
+  changeClientEmail(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: ChangeClientEmailDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.clients.changeClientEmail(id, dto.email, req.admin);
   }
 
   @Patch('clients/:id/status')

@@ -1,11 +1,19 @@
 {
   "clients": {
     "moduleName": "Clients",
-    "description": "The client directory and one client's profile. Clients register themselves and are never deleted — every ledger row and audit entry has to keep resolving to a name — so this module has no create and no delete. There is no `clients.edit` either: the API exposes no endpoint that edits a client's profile, and a key with nothing behind it is a permission an operator can grant and then watch do nothing.",
+    "description": "The client directory and one client's profile. Clients register themselves and are never deleted — every ledger row and audit entry has to keep resolving to a name — so this module has no create and no delete.\n\n`clients.edit` and `clients.email` are DELIBERATELY SEPARATE, and the split is a security boundary rather than tidiness. Correcting a misspelled surname is clerical work a support desk does daily. Changing the address an account signs in with is an account-takeover primitive: set it to your own, run a password reset, and the balance is yours. Granting the first must not silently grant the second, so the everyday role carries `clients.edit` alone and `clients.email` is handed to the few people who handle lockouts.",
     "permissions": [
       {
         "key": "clients.view",
         "label": "View Clients"
+      },
+      {
+        "key": "clients.edit",
+        "label": "Edit Client Profile"
+      },
+      {
+        "key": "clients.email",
+        "label": "Change Client Sign-in Email"
       },
       {
         "key": "clients.suspend",
