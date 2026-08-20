@@ -132,6 +132,51 @@ export function csrfCookieOptions(maxAgeMs: number): CookieOptions {
 }
 
 /**
+ * The response header the token is ALSO returned in.
+ *
+ * Same name as the request header the frontends send it back in, because it is
+ * the same value travelling the other way. Listed in `exposedHeaders` in
+ * main.ts — a response header a browser is not told to expose is invisible to
+ * JS, with no error anywhere.
+ */
+export const CSRF_RESPONSE_HEADER = 'X-OxShare-CSRF';
+
+/**
+ * Issue the anti-forgery token: as a cookie, AND as a header the page can read.
+ *
+ * ── Why the header exists, when the cookie is already JS-readable ────────────
+ *
+ * `document.cookie` is scoped to the HOST of the page reading it, and the
+ * `__Host-` prefix forbids a `Domain` attribute — so this cookie is locked to
+ * the API's hostname. When the frontends call the API directly (which they must:
+ * a Next rewrite cannot proxy the realtime WebSocket upgrade, see
+ * admin/src/proxy.ts), the page is on a DIFFERENT host and cannot read it. It
+ * then sends no `X-OxShare-CSRF` header and every write is refused with a 403 —
+ * deterministically, on every state change, for every operator.
+ *
+ * That was invisible in development for the usual reason: cookies ignore the
+ * PORT, so `localhost:3001` and `localhost:3002` are one cookie host and the
+ * page could read it perfectly well.
+ *
+ * The header closes exactly that gap and nothing else. The SERVER side of the
+ * double-submit is untouched — the cookie is still sent to the API (both hosts
+ * are same-site, `SameSite=Lax`), so `CsrfGuard` still compares header against
+ * cookie AND still verifies the token was minted for this session. This only
+ * lets the client learn a value that was never secret from it: the cookie is
+ * `httpOnly: false` by design, and a foreign origin cannot read this response
+ * at all, because CORS only exposes it to the two allowlisted origins.
+ */
+export function issueCsrfToken(
+  res: Response,
+  cookieName: string,
+  token: string,
+  maxAgeMs: number,
+): void {
+  res.cookie(cookieName, token, csrfCookieOptions(maxAgeMs));
+  res.setHeader(CSRF_RESPONSE_HEADER, token);
+}
+
+/**
  * Cookie names this system used BEFORE the R-3.2 migration.
  *
  * They must be actively deleted, not left to expire, and this is not cosmetic:

@@ -34,6 +34,7 @@ import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
+import { CsrfEchoMiddleware } from './common/security/csrf-echo.middleware';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { StoreModule } from './store/store.module';
@@ -173,6 +174,9 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(RequestIdMiddleware).forRoutes('*');
+    // CsrfEchoMiddleware returns the caller's own anti-forgery token on every
+    // response, because the frontends are on a different HOST from this API and
+    // cannot read the cookie it is also set in. See the middleware.
+    consumer.apply(RequestIdMiddleware, CsrfEchoMiddleware).forRoutes('*');
   }
 }

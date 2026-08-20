@@ -47,7 +47,7 @@ import {
   COOKIE_BASES,
   clearLegacySessionCookies,
   clearSessionCookie,
-  csrfCookieOptions,
+  issueCsrfToken,
   readSessionCookie,
   sessionCookieNames,
   sessionCookieOptions,
@@ -901,10 +901,13 @@ export class AuthService {
       refreshToken,
       sessionCookieOptions(REFRESH_TTL_MS),
     );
-    res.cookie(
+    // Cookie AND readable header — the portal is on a different HOST from this
+    // API in production and cannot read the cookie. See issueCsrfToken.
+    issueCsrfToken(
+      res,
       sessionCookieNames.portalCsrf(),
       this.csrf.issue(userId),
-      csrfCookieOptions(CsrfService.TTL_MS),
+      CsrfService.TTL_MS,
     );
   }
 

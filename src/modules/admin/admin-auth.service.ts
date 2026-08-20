@@ -41,7 +41,7 @@ import {
   COOKIE_BASES,
   clearLegacySessionCookies,
   clearSessionCookie,
-  csrfCookieOptions,
+  issueCsrfToken,
   readSessionCookie,
   sessionCookieNames,
   sessionCookieOptions,
@@ -787,10 +787,14 @@ export class AdminAuthService {
       refreshToken,
       sessionCookieOptions(REFRESH_TTL_MS),
     );
-    res.cookie(
+    // Cookie AND readable header: the admin app is on a different HOST from this
+    // API in production, so it cannot read the cookie to echo it back. See
+    // issueCsrfToken.
+    issueCsrfToken(
+      res,
       sessionCookieNames.adminCsrf(),
       this.csrf.issue(adminId),
-      csrfCookieOptions(CsrfService.TTL_MS),
+      CsrfService.TTL_MS,
     );
   }
   // ─── Admin Refresh ─────────────────────────────────────────────────────────

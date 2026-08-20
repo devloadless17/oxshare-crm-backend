@@ -90,7 +90,15 @@ async function bootstrap() {
     // Idempotency-Key: R-5.2, required by the money-moving endpoints.
     allowedHeaders: ['Content-Type', 'X-Request-Id', 'X-OxShare-CSRF', 'Idempotency-Key'],
     // So a caller can read the id back off a response it did not set one on.
-    exposedHeaders: ['X-Request-Id'],
+    //
+    // X-OxShare-CSRF is exposed for a load-bearing reason, not for symmetry with
+    // the request header above: the frontends run on a different HOST from this
+    // API, so `document.cookie` cannot reach the anti-forgery cookie and the
+    // response header is the ONLY way they can learn the token. A header absent
+    // from this list is withheld from JS by the browser with no error anywhere —
+    // the read simply returns undefined and every write fails a CSRF check for a
+    // reason nothing logs. See common/security/session-cookies.ts.
+    exposedHeaders: ['X-Request-Id', 'X-OxShare-CSRF'],
   });
 
   /*
