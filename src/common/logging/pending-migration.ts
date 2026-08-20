@@ -40,9 +40,7 @@ export function pendingMigrationHint(error: unknown): string {
    * this helper exists for.
    */
   const codeOf = (value: unknown): string | undefined =>
-    typeof value === 'object' && value !== null && 'code' in value
-      ? String((value).code)
-      : undefined;
+    typeof value === 'object' && value !== null && 'code' in value ? String(value.code) : undefined;
 
   const code = codeOf(error) ?? codeOf((error as { cause?: unknown } | null | undefined)?.cause);
 
