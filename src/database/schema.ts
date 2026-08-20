@@ -1963,7 +1963,20 @@ export const tradingAccounts = pgTable(
     uniqueIndex('trading_accounts_user_name_uq')
       .on(t.userId, sql`lower(${t.name})`)
       .where(sql`${t.name} IS NOT NULL`),
-    check('trading_accounts_balance_non_negative', sql`${t.balance} >= 0`),
+    /*
+     * NO non-negative check, and its absence is deliberate (0082).
+     *
+     * One existed while `balance` was a CRM-owned number that only
+     * `TransfersService` moved. Since 0081 the column MIRRORS MT5, and MT5 has
+     * no such rule: an account stopped out through a gap, or one whose overnight
+     * swap exceeded its cash, carries a real debit. The CHECK turned those into
+     * a failed sync and a console showing the last non-negative figure for ever.
+     *
+     * `wallets_balance_non_negative` stays, and the difference is authorship
+     * rather than taste: a wallet is a ledger the CRM owns, where a negative
+     * balance means the money rules leaked. Constrain what you own; mirror what
+     * you do not.
+     */
   ],
 );
 

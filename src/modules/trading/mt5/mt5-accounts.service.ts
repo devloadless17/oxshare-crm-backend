@@ -17,6 +17,7 @@ import {
 } from '../../../common/errors/domain-errors';
 import { AppSettingsStore } from '../../../store/app-settings.store';
 import { ProductsStore } from '../../../store/products.store';
+import { Mt5AccountSyncService } from './mt5-account-sync.service';
 import { tradingTermsFrom } from '../../../common/trading-terms';
 import {
   NOTIFICATION_DISPATCH,
@@ -104,6 +105,11 @@ export class Mt5AccountsService {
      * the specs.
      */
     private readonly products: ProductsStore,
+    /*
+     * The mirror's only writer, shared with the bridge's pushed snapshots so
+     * both go through the same staleness guard. APPENDED LAST, as above.
+     */
+    private readonly accountSync: Mt5AccountSyncService,
   ) {}
 
   /**
@@ -953,15 +959,27 @@ export class Mt5AccountsService {
       idempotencyKey,
     });
 
-    // Refresh the cached balance from MT5 rather than adding locally: the
-    // client may have been trading while this ran, and our arithmetic would
-    // overwrite the truth with a stale guess.
+    /*
+     * Refresh from MT5 rather than adding locally: the client may have been
+     * trading while this ran, and our arithmetic would overwrite the truth with
+     * a stale guess.
+     *
+     * Written through `Mt5AccountSyncService` rather than with an UPDATE here,
+     * and that is not tidying. This used to set `balance` alone, leaving
+     * `balance_synced_at` untouched — so the freshest figure in the system
+     * carried no read time, and the sweep's staleness guard could not tell it
+     * from a value MT5 had never confirmed. The next delivered snapshot
+     * overwrote it unconditionally, including one read BEFORE this deposit
+     * landed, which is a client watching their money arrive and then vanish.
+     *
+     * `readAt` is stamped here rather than taken from the bridge because this
+     * response is the read: `getAccount` answered just now, and the ordering
+     * this timestamp feeds is against sweep rounds, which are minutes apart.
+     */
+    const readAt = new Date();
     const snapshot = await this.bridge.getAccount(account.login).catch(() => null);
     if (snapshot) {
-      await this.db
-        .update(tradingAccounts)
-        .set({ balance: snapshot.balance, updatedAt: new Date() })
-        .where(eq(tradingAccounts.id, account.id));
+      await this.accountSync.recordFromOperation(account.login, snapshot.balance, readAt);
     }
 
     this.audit.record(

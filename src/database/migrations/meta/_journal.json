@@ -575,6 +575,13 @@
       "when": 1787101215000,
       "tag": "0081_mt5_owns_the_balance",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1787101216000,
+      "tag": "0082_a_mirrored_balance_may_be_negative",
+      "breakpoints": true
     }
   ]
 }

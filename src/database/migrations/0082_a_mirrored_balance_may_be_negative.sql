@@ -1,0 +1,39 @@
+-- A mirrored balance may be NEGATIVE, because a real one can be.
+--
+-- Hand-written rather than generated, matching 0027 onwards.
+--
+-- ── The constraint was right, and then the column changed meaning ──────────
+--
+-- `trading_accounts_balance_non_negative` arrived with 0033, when `balance` was
+-- a CRM-OWNED number moved only by `TransfersService`. Under those rules it
+-- could not go below zero without a bug, and the CHECK was the correct way to
+-- say so.
+--
+-- 0081 made the column a MIRROR of what MT5 holds, and MT5 has no such rule. An
+-- account stopped out through a gap carries a debit until the broker settles it;
+-- so does one whose overnight swap exceeded its remaining cash. Those balances
+-- are real, they are on the broker's server right now, and the CRM's job is to
+-- report them.
+--
+-- ── What the constraint actually did once the meaning changed ──────────────
+--
+-- It rejected exactly the accounts an operator most needs to see. The sync's
+-- UPDATE raised a check violation, the webhook answered 500, and the bridge —
+-- which treats a snapshot as best-effort and drops what it cannot deliver —
+-- moved on. The account then sat in the console showing its last non-negative
+-- balance, indefinitely, with nothing anywhere reporting a problem.
+--
+-- That is the failure mode this codebase keeps paying for: not a wrong number
+-- announcing itself, but a stale one wearing a fresh one's clothes. Found by
+-- `mt5-account-webhook-http.spec.ts`, which asserts a negative balance lands.
+--
+-- ── `wallets_balance_non_negative` STAYS, and the difference is the point ───
+--
+-- A wallet is a CRM-owned ledger balance: the CRM decides every movement, a
+-- negative one would mean the money rules leaked, and the CHECK is the last line
+-- that says so. Nothing about this migration weakens it.
+--
+-- The distinction is authorship, not table. Constrain what you own; mirror what
+-- you do not. A constraint on mirrored data is an argument with the system of
+-- record, and the system of record wins — it just wins silently.
+ALTER TABLE trading_accounts DROP CONSTRAINT IF EXISTS trading_accounts_balance_non_negative;
