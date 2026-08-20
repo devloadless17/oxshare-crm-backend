@@ -85,7 +85,14 @@ export class UpdateClientProfileDto {
  */
 export class ChangeClientEmailDto {
   @ApiProperty({ example: 'layla.haddad@example.com' })
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
+  /*
+   * `value` is typed `unknown` rather than left implicit. class-transformer hands
+   * it as `any`, and returning that from a transform is an unsafe-return the lint
+   * gate counts — the narrowing below is what the rule wants to see anyway.
+   */
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
   @IsEmail({}, { message: 'A valid email address is required.' })
   @MaxLength(255)
   email: string;

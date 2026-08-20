@@ -208,7 +208,7 @@ describe('R-2.2 the error envelope carries a field map', () => {
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('VALIDATION_FAILED');
     expect(res.body.fields).toBeDefined();
-    expect(Object.keys(res.body.fields)).toContain('email');
+    expect(Object.keys(res.body.fields as Record<string, unknown>)).toContain('email');
   });
 
   it('keeps the sentence list, so nothing reading it today breaks', async () => {
