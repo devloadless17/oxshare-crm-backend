@@ -10,6 +10,7 @@ import {
 } from '../../common/errors/domain-errors';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { WalletService } from '../wallet/wallet.service';
+import Decimal from 'decimal.js';
 import { money, toDecimal } from '../wallet/money';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
 import {
@@ -221,7 +222,12 @@ export class TransfersService {
    * called out here rather than assumed: when the bridge lands and this leg
    * becomes a sync rather than a write, it needs its own idempotency key.
    */
-  async settle(transferId: string) {
+  /**
+   * @param mt5Balance What MT5 holds after the movement, from the executor's own
+   * read. Null when it could not be read — the column is then left alone rather
+   * than computed, because a known-stale figure beats a confident wrong one.
+   */
+  async settle(transferId: string, mt5Balance: string | null = null) {
     const transfer = await this.findOne(transferId);
     if (!transfer) throw new NotFoundError('Transfer not found.');
     if (transfer.state !== 'pending') {
@@ -231,6 +237,10 @@ export class TransfersService {
     }
 
     const amount = toDecimal(transfer.amount);
+
+    // One timestamp for the whole settlement, so both legs and the mirror's
+    // `balanceSyncedAt` agree about when this happened.
+    const settledAt = new Date();
 
     await this.db.transaction(async (tx) => {
       /*
@@ -264,13 +274,13 @@ export class TransfersService {
           },
           tx,
         );
-        await tx
-          .update(tradingAccounts)
-          .set({
-            balance: sql`${tradingAccounts.balance} + ${money(amount)}::numeric`,
-            updatedAt: new Date(),
-          })
-          .where(eq(tradingAccounts.id, transfer.tradingAccountId));
+        await this.writeAccountBalance(
+          tx,
+          transfer.tradingAccountId,
+          mt5Balance,
+          amount,
+          settledAt,
+        );
       } else {
         // The credit the client has been waiting for: MT5 has confirmed its own
         // debit, so the money is now on our side of the boundary.
@@ -286,53 +296,20 @@ export class TransfersService {
           tx,
         );
         /*
-         * ── THE SUFFICIENT-FUNDS GUARD IS IN THIS WHERE CLAUSE ───────────────
+         * The same writer as the deposit leg, and the guard is inside it.
          *
-         * It used to be `trading_accounts_balance_non_negative`, and this
-         * comment used to say "the CHECK does the refusing". Migration 0082
-         * dropped that CHECK, because `balance` became a MIRROR of MT5 and MT5
-         * balances can legitimately be negative — an account stopped out through
-         * a gap carries a real debit, and a constraint that refused it made the
-         * sync fail silently for exactly the accounts an operator most needs.
-         *
-         * Dropping it removed this refusal with it. That is a different rule and
-         * it still has to hold: MT5 may REPORT a negative balance, but the CRM
-         * must never CREATE one by paying out money the account does not have.
-         *
-         * So the predicate moves here, where it says what it means. Still in
-         * SQL rather than read-modify-write, and for the same reason as before —
-         * a check-then-update races itself and a stale read pays out twice.
-         *
-         * `returning()` is what makes the refusal detectable: no rows means the
-         * balance moved under us or never covered it, and the throw rolls back
-         * the wallet credit posted immediately above.
+         * `writeAccountBalance` refuses to drive the column negative when it has
+         * to compute — the rule 0082 removed from the schema and this restored:
+         * MT5 may REPORT a negative balance, but the CRM must never CREATE one by
+         * paying out money the account does not hold.
          */
-        const debited = await tx
-          .update(tradingAccounts)
-          .set({
-            balance: sql`${tradingAccounts.balance} - ${money(amount)}::numeric`,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(tradingAccounts.id, transfer.tradingAccountId),
-              sql`${tradingAccounts.balance} >= ${money(amount)}::numeric`,
-            ),
-          )
-          .returning({ id: tradingAccounts.id });
-
-        if (debited.length === 0) {
-          /*
-           * A domain error, not a constraint violation. The CHECK surfaced as a
-           * database error the filter could only render as a 500 — telling a
-           * client "internal server error" when the honest answer is "there is
-           * not enough in the account".
-           */
-          throw new ValidationError(
-            'The trading account does not hold enough to cover this transfer. Its balance may ' +
-              'have moved since the transfer was requested.',
-          );
-        }
+        await this.writeAccountBalance(
+          tx,
+          transfer.tradingAccountId,
+          mt5Balance,
+          amount.negated(),
+          settledAt,
+        );
       }
 
       await tx
@@ -384,6 +361,69 @@ export class TransfersService {
     });
 
     return this.findOne(transfer.id);
+  }
+
+  /**
+   * Write the trading account's balance: MT5's figure when we have it.
+   *
+   * ## Why there are two paths and only one of them is arithmetic
+   *
+   * `trading_accounts.balance` mirrors MT5 (0081), and MT5 is the authority. When
+   * the executor managed to read the account back after moving the money, that
+   * number is the truth and it is written verbatim — stamped with
+   * `balanceSyncedAt` so the sweep's staleness guard cannot later overwrite it
+   * with a snapshot read BEFORE this transfer.
+   *
+   * The fallback exists because the read can fail while the movement succeeded.
+   * Then we compute, and deliberately do NOT stamp a sync time: the figure is our
+   * best guess rather than MT5's word, so the next snapshot — however old —
+   * should win. That is the one case where a stale mirror is preferable to a
+   * confident one.
+   *
+   * ## The refusal
+   *
+   * Only the computed path can drive the column negative, and only a withdrawal
+   * can compute downward. The guard lives in the WHERE clause rather than a
+   * read-then-check because a check-then-update races itself and a stale read
+   * pays out twice; `returning()` makes the refusal visible so the throw rolls
+   * back the wallet leg posted alongside it.
+   */
+  private async writeAccountBalance(
+    tx: Parameters<Parameters<Db['transaction']>[0]>[0],
+    tradingAccountId: string,
+    mt5Balance: string | null,
+    delta: Decimal,
+    settledAt: Date,
+  ): Promise<void> {
+    if (mt5Balance !== null) {
+      await tx
+        .update(tradingAccounts)
+        .set({ balance: mt5Balance, balanceSyncedAt: settledAt, updatedAt: settledAt })
+        .where(eq(tradingAccounts.id, tradingAccountId));
+      return;
+    }
+
+    const moved = await tx
+      .update(tradingAccounts)
+      .set({
+        balance: sql`${tradingAccounts.balance} + ${money(delta)}::numeric`,
+        updatedAt: settledAt,
+      })
+      .where(
+        and(
+          eq(tradingAccounts.id, tradingAccountId),
+          // Only a withdrawal can go negative; a deposit satisfies this trivially.
+          sql`${tradingAccounts.balance} + ${money(delta)}::numeric >= 0`,
+        ),
+      )
+      .returning({ id: tradingAccounts.id });
+
+    if (moved.length === 0) {
+      throw new ValidationError(
+        'The trading account does not hold enough to cover this transfer. Its balance may have ' +
+          'moved since the transfer was requested.',
+      );
+    }
   }
 
   /**

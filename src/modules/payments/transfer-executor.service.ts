@@ -143,7 +143,24 @@ export class TransferExecutor {
       return await this.transfers.findById(transferId);
     }
 
-    await this.transfers.settle(transferId);
+    /*
+     * Read back what MT5 HOLDS, and hand it to `settle`.
+     *
+     * `settle` used to compute the account's new balance itself —
+     * `balance ± amount` — which was the last place anything did arithmetic on a
+     * column that mirrors MT5. It was self-correcting within a sweep interval, so
+     * the cost was cosmetic rather than dangerous, but "one number, one owner" is
+     * only true if nothing else has an opinion.
+     *
+     * Best-effort on purpose. The money has already moved on the broker's server;
+     * failing the settlement because a follow-up READ timed out would leave the
+     * transfer pending with the funds already transferred, which is strictly
+     * worse than a mirror that is briefly stale. Null means "leave the column
+     * alone", and the sweep corrects it.
+     */
+    const settled = await this.bridge.getAccount(account.login).catch(() => null);
+
+    await this.transfers.settle(transferId, settled?.balance ?? null);
     return await this.transfers.findById(transferId);
   }
 }
