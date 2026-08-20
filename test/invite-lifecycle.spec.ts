@@ -102,7 +102,10 @@ function invite(overrides: Partial<AdminInvite> = {}): AdminInvite {
 }
 
 function fakeResponse() {
-  const res = { cookie: () => res, clearCookie: () => res };
+  // setHeader: issueCsrfToken now ECHOES the anti-forgery token as a response
+  // header as well as a cookie (9d9cb92 — a page on another host cannot read
+  // the cookie), so any Response a session lands on must accept a header.
+  const res = { cookie: () => res, clearCookie: () => res, setHeader: () => res };
   return res as unknown as Response;
 }
 

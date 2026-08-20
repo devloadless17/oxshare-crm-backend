@@ -394,7 +394,7 @@ export class AdminClientsService {
     if (Object.keys(after).length === 0) {
       // Nothing moved. Not an error — a double-submitted form reaches here — and
       // an audit row saying nothing changed is noise in the log that matters.
-      return this.profileView(user);
+      return this.profileView(user, actor);
     }
 
     const updated = (await this.users.update(userId, changes))!;
@@ -405,7 +405,7 @@ export class AdminClientsService {
       after,
     });
 
-    return this.profileView(updated);
+    return this.profileView(updated, actor);
   }
 
   /**
@@ -501,11 +501,28 @@ export class AdminClientsService {
     await this.email.sendVerificationEmail(email, token);
     await this.email.sendEmailChangedNotice(previousEmail, email);
 
-    return this.profileView(updated);
+    return this.profileView(updated, actor);
   }
 
-  /** The shape both edit endpoints answer with, matching `setClientStatus`. */
-  private profileView(user: {
+  /**
+   * The shape both edit endpoints answer with, matching `setClientStatus`.
+   *
+   * ## It is MASKED, like every other read of a client
+   *
+   * `email`, `phone` and `country` are all `maskable: true` in
+   * `config/client-fields.json`, and `getClientProfile` strips them for an
+   * actor whose role hides them (RBAC-03: a masked field is ABSENT from the
+   * JSON, never merely hidden by the UI). This response returned them raw,
+   * which made a PATCH an oracle for the very fields the mask exists to
+   * withhold — an admin holding `clients.edit` could edit any harmless field
+   * and read the phone number back out of the 200.
+   *
+   * `maskedFields` rides along for the same reason it does on the profile read:
+   * the console must be able to say "hidden by your permissions" rather than
+   * render an empty box that reads as "this client has no phone number".
+   */
+  private profileView(
+    user: {
     id: string;
     email: string;
     firstName: string;
@@ -514,11 +531,13 @@ export class AdminClientsService {
     status: string;
     verificationLevel: number;
     emailVerified: boolean;
-    country?: string | null;
-    phone?: string | null;
-    createdAt: Date;
-  }) {
-    return {
+      country?: string | null;
+      phone?: string | null;
+      createdAt: Date;
+    },
+    actor: AuthenticatedAdmin,
+  ) {
+    const view = {
       id: user.id,
       email: user.email,
       firstName: user.firstName,
@@ -530,6 +549,10 @@ export class AdminClientsService {
       country: user.country ?? null,
       phone: user.phone ?? null,
       createdAt: user.createdAt,
+    };
+    return {
+      ...applyMask('client', view, actor.fieldMask),
+      maskedFields: maskedFieldsFor('client', actor.fieldMask),
     };
   }
 

@@ -396,6 +396,15 @@ export class ClientAccountDto {
   @ApiProperty({ type: String, nullable: true }) country: string | null;
   @ApiProperty({ type: String, nullable: true }) phone: string | null;
   @ApiProperty() createdAt: Date;
+
+  @ApiProperty({
+    type: [String],
+    description:
+      'Fields withheld from THIS response by the reader’s role (RBAC-03). A masked field is ' +
+      'absent from the payload entirely, so this list is the only way to tell "hidden from you" ' +
+      'apart from "this client has none" — an empty box otherwise reads as the second.',
+  })
+  maskedFields: string[];
 }
 
 export class ClientProfileDto {

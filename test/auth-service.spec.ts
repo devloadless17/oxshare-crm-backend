@@ -67,6 +67,7 @@ function makeUser(overrides: Partial<User> = {}): User {
 function fakeResponse() {
   const cookies: Record<string, unknown> = {};
   const cleared: string[] = [];
+  const headers: Record<string, unknown> = {};
   const res = {
     cookie: (name: string, value: unknown) => {
       cookies[name] = value;
@@ -76,8 +77,14 @@ function fakeResponse() {
       cleared.push(name);
       return res;
     },
+    // issueCsrfToken echoes the token as a response header too (the cross-host
+    // page cannot read the cookie); a fake Response must accept the call.
+    setHeader: (name: string, value: unknown) => {
+      headers[name] = value;
+      return res;
+    },
   };
-  return { res: res as unknown as Response, cookies, cleared };
+  return { res: res as unknown as Response, cookies, cleared, headers };
 }
 
 interface Harness {

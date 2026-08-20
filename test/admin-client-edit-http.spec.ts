@@ -30,6 +30,8 @@ const MASTER = { email: 'edit-master@oxshare.com', password: 'admin-password-123
 const CLERK = { email: 'edit-clerk@oxshare.com', password: 'admin-password-123' };
 /** Holds clients.view only — cannot edit anything. */
 const VIEWER = { email: 'edit-viewer@oxshare.com', password: 'admin-password-123' };
+/** Holds clients.edit, but their ROLE masks `client.phone` (RBAC-03). */
+const MASKED_CLERK = { email: 'edit-masked@oxshare.com', password: 'admin-password-123' };
 
 const CLIENT = { email: 'edit-target@oxshare-e2e.test', password: 'client-password-123' };
 
@@ -37,6 +39,7 @@ let ctx: HttpTestContext;
 let master: Session;
 let clerk: Session;
 let viewer: Session;
+let maskedClerk: Session;
 let clientId: string;
 
 async function clientRow() {
@@ -98,6 +101,33 @@ beforeAll(async () => {
     },
   ]);
 
+  /*
+   * An editor whose ROLE hides the phone number (RBAC-03).
+   *
+   * They can correct a client's name — a real support task — and must not be
+   * able to read back the field the mask withholds. Seeded through a role
+   * rather than a per-admin override because the role is the level a mask is
+   * normally set at, and `AdminRbacService` resolves it into `fieldMask`.
+   */
+  const [maskedRole] = await ctx.db.db
+    .insert(roles)
+    .values({
+      name: 'Edit Clerk, No Phone',
+      permissions: ['clients.view', 'clients.edit'],
+      maskedFields: ['client.phone'],
+    })
+    .returning();
+
+  await ctx.db.db.insert(admins).values({
+    email: MASKED_CLERK.email,
+    passwordHash: adminHash,
+    name: 'Edit Clerk No Phone',
+    role: 'sub_admin',
+    roleId: maskedRole.id,
+    permissions: [],
+    status: 'active',
+  });
+
   const [client] = await ctx.db.db
     .insert(users)
     .values({
@@ -115,6 +145,7 @@ beforeAll(async () => {
   master = await actingAs(ctx, 'admin', MASTER);
   clerk = await actingAs(ctx, 'admin', CLERK);
   viewer = await actingAs(ctx, 'admin', VIEWER);
+  maskedClerk = await actingAs(ctx, 'admin', MASKED_CLERK);
 }, 180_000);
 
 afterAll(async () => {
@@ -160,6 +191,44 @@ describe('editing a profile', () => {
     const row = await clientRow();
     expect(row.firstName).toBe('Leila');
     expect(row.lastName).toBe('Haddad');
+  });
+
+  /*
+   * ── The PATCH response is masked, like every other read of a client ──
+   *
+   * It was not. `profileView` returned the row raw while `getClientProfile`
+   * masked the identical object, so an admin whose role hides a client's phone
+   * number could PATCH a harmless field — their own first name correction —
+   * and read the hidden number straight out of the 200. That is a masking
+   * bypass on the feature whose entire promise (RBAC-03) is that a masked
+   * field is ABSENT from the JSON rather than merely hidden by the console.
+   *
+   * Asserted on the WIRE, because that is the only place the promise means
+   * anything: `toHaveProperty` is false only when the key is genuinely gone.
+   */
+  it('does not hand a masked field back in the response to an edit', async () => {
+    const res = await maskedClerk
+      .patch(`/v1/admin/clients/${clientId}`, { firstName: 'Leila' })
+      .expect(200);
+
+    expect(res.body).not.toHaveProperty('phone');
+    expect(res.body.firstName).toBe('Leila');
+    // The sibling list says WHICH fields were withheld, so the console can
+    // print "hidden by your permissions" rather than an empty box that reads
+    // as "this client has no phone number".
+    expect(res.body.maskedFields).toContain('client.phone');
+
+    // The mask is a READ restriction, not a write one — the row is untouched.
+    expect((await clientRow()).phone).toBe('+9613111222');
+  });
+
+  it('still returns an unmasked field to an editor whose role hides nothing', async () => {
+    const res = await master
+      .patch(`/v1/admin/clients/${clientId}`, { firstName: 'Leila' })
+      .expect(200);
+
+    expect(res.body.phone).toBe('+9613111222');
+    expect(res.body.maskedFields).toEqual([]);
   });
 
   it('clears an optional field when sent an empty string', async () => {

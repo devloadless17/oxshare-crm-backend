@@ -390,39 +390,35 @@ export function checkPlausible(
   );
 
   /*
-   * A per-lot payout is NOT a share of the revenue and is not bounded by it —
-   * a broker may legitimately pay $7/lot on a trade it earned $5 on, buying
-   * volume at a loss on that trade. Checking it against `grossAmount` would
-   * refuse a correct configuration.
+   * ## The lot count does NOT exempt an event from this check
    *
-   * It is not left unguarded: the size of a per-lot payout is bounded by the
-   * lots, and an absurd rate is caught by the same ceiling the settings screen
-   * enforces. What this guard exists for is the UNIT error on a percentage —
-   * `70` meaning 70× rather than 70% — which only applies to revenue_share.
-   */
-  if (event.lots !== undefined) return { ok: true };
-
-  /*
-   * The check applies to SHARES, not to per-lot rebates.
+   * Two guards used to stand here, both keyed on `event.lots`: an early
+   * `if (event.lots !== undefined) return { ok: true }` and a second condition
+   * repeating it. Both dated from `per_lot`, which paid a rate × a volume and
+   * genuinely was not bounded by the revenue — a broker may pay $7/lot on a
+   * trade it earned $5 on, buying volume at a loss.
    *
-   * A per-lot payout is not a share of anything — it is a rate times a volume,
-   * and it can legitimately exceed the broker's revenue on a single trade (a
-   * rebate deal that loses money on scalpers is a commercial choice, not an
-   * arithmetic error). Applying the share test to it would refuse a correct
-   * payout, so per-lot events are checked against a much cruder bound: the rate
-   * itself is validated on the level, and anything beyond that is the
-   * operator's decision.
+   * `per_lot` was REMOVED in migration 0055. Lots no longer enter the
+   * arithmetic anywhere ("it ignores the lot count entirely", commission.spec),
+   * so every accrual this function ever sees is now a share of broker revenue —
+   * and the exemption had become a hole rather than a rule.
+   *
+   * It was not a theoretical hole. The deal feed is the ONLY live accrual path,
+   * and it always sets `lots` (deal-commission.service.ts passes `deal.volume`),
+   * so this guard returned `ok: true` on 100% of real accruals: the §12.4
+   * ceiling refusal and its COMMISSION_CEILING_BREACH page were dead code in
+   * production. Every test that "covered" it used a fixture with no lots, which
+   * is exactly how it survived review — the same failure mode the docblock in
+   * `calculate` above describes for the identical bug it already fixed once.
    */
-  if (event.source !== 'deal' || event.lots === undefined) {
-    if (total.greaterThan(gross)) {
-      return {
-        ok: false,
-        reason:
-          `Total commission ${money(total)} exceeds the ${event.source}'s own value ` +
-          `${money(gross)}. A share cannot exceed the thing it is a share OF, so this is a rate ` +
-          'unit error rather than a large event. Nothing has been accrued.',
-      };
-    }
+  if (total.greaterThan(gross)) {
+    return {
+      ok: false,
+      reason:
+        `Total commission ${money(total)} exceeds the ${event.source}'s own value ` +
+        `${money(gross)}. A share cannot exceed the thing it is a share OF, so this is a rate ` +
+        'unit error rather than a large event. Nothing has been accrued.',
+    };
   }
 
   return { ok: true };

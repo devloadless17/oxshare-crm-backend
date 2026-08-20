@@ -40,11 +40,13 @@ const DEAL: RevenueEvent = {
 };
 
 /**
- * A deal WITHOUT lots — the shape `checkPlausible` guards.
+ * A deal without lots.
  *
- * The share test only applies where a share was taken, so per-lot events are
- * deliberately outside it: a rebate can exceed the broker's revenue on one
- * trade without being an error.
+ * It is no longer a meaningful distinction for `checkPlausible` — since
+ * `per_lot` went (migration 0055) the share test applies to EVERY event,
+ * lots or not — but the fixture stays because most of these cases are about
+ * the arithmetic rather than the lot count. `DEAL` is the one with lots, and
+ * the regressions at the bottom of that block are what pin the difference.
  */
 const SHARE_BASE: RevenueEvent = {
   grossAmount: '1000.00000000',
@@ -334,6 +336,34 @@ describe('checkPlausible', () => {
   it('accepts a total exactly equal to the base', () => {
     const verdict = checkPlausible(SHARE_BASE, [
       { ibUserId: 'ib-1', depth: 1, level: 1, amount: '1000.00000000' },
+    ]);
+    expect(verdict.ok).toBe(true);
+  });
+
+  /*
+   * ── The regression that made this whole guard dead in production ──
+   *
+   * `checkPlausible` used to return `ok: true` the moment an event carried a
+   * lot count, a leftover from `per_lot` (removed in migration 0055). The deal
+   * feed is the only live accrual path and it ALWAYS sets lots, so the unit-
+   * error backstop and its COMMISSION_CEILING_BREACH alert never fired on a
+   * single real accrual.
+   *
+   * Every existing case above uses a lots-free fixture, which is precisely why
+   * nothing caught it. These two use `DEAL` — the fixture with `lots: '10'` —
+   * so the exemption cannot come back without turning this file red.
+   */
+  it('refuses an impossible total on a deal that CARRIES a lot count', () => {
+    const verdict = checkPlausible(DEAL, [
+      { ibUserId: 'ib-1', depth: 1, level: 1, amount: '70000.00000000' },
+    ]);
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) expect(verdict.reason).toContain('unit error');
+  });
+
+  it('still accepts a sane share on a deal that carries a lot count', () => {
+    const verdict = checkPlausible(DEAL, [
+      { ibUserId: 'ib-1', depth: 1, level: 1, amount: '250.00000000' },
     ]);
     expect(verdict.ok).toBe(true);
   });

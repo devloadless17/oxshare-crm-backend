@@ -14051,6 +14051,13 @@
           "createdAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "maskedFields": {
+            "description": "Fields withheld from THIS response by the reader’s role (RBAC-03). A masked field is absent from the payload entirely, so this list is the only way to tell \"hidden from you\" apart from \"this client has none\" — an empty box otherwise reads as the second.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -14064,7 +14071,8 @@
           "emailVerified",
           "country",
           "phone",
-          "createdAt"
+          "createdAt",
+          "maskedFields"
         ]
       },
       "ChangeClientEmailDto": {
