@@ -11,6 +11,7 @@ import { Mt5AccountsController } from './mt5/mt5-accounts.controller';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
 import { SelfServiceGroups } from './mt5/self-service-groups';
 import { Mt5DealsService } from './mt5/mt5-deals.service';
+import { Mt5AccountSyncService } from './mt5/mt5-account-sync.service';
 import { DealCommissionService } from './mt5/deal-commission.service';
 import { DealCommissionScheduler } from './mt5/deal-commission.scheduler';
 import { Mt5GroupSyncService } from './mt5/mt5-group-sync.service';
@@ -77,6 +78,7 @@ import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
     TradingService,
     DashboardService,
     Mt5DealsService,
+    Mt5AccountSyncService,
     /*
      * The deal → commission seam and the job that drains it. Ingestion stores a
      * deal; this is what turns it into money owed. Before it existed the two
@@ -109,6 +111,14 @@ import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
     Mt5AccountsService,
     Mt5GroupSyncService,
     PositionsService,
+    /*
+     * Exported for `TransfersService`, which records the balance MT5 returned
+     * from a movement it just made. That write goes through the same staleness
+     * guard as the sweep's — a transfer response and a sweep delivery can land
+     * in either order — so it is this service's job rather than an inline UPDATE
+     * in the payments module.
+     */
+    Mt5AccountSyncService,
   ],
 })
 export class TradingModule {}

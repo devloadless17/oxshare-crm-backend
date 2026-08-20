@@ -287,7 +287,20 @@ export class AdminExportService {
     { header: 'Currency', value: (r) => r.currency },
     // A string, for the same reason the wallet balance is. See above.
     { header: 'Balance', value: (r) => r.balance },
-    { header: 'Tier', value: (r) => r.tier },
+    /*
+     * PRODUCT, where `Tier` used to be.
+     *
+     * `trading_accounts.tier` has never had a writer, so this column was a
+     * header above nothing on every export anybody has ever run — and a blank
+     * column in a spreadsheet reads as data we lost rather than a field that was
+     * never meant to hold anything.
+     *
+     * `product` answers the question `Tier` was standing in for, and answers it
+     * from the account's own `product_id` (0080) rather than from today's
+     * catalogue. Blank here means the account genuinely has no product: opened
+     * straight into a group the catalogue does not sell.
+     */
+    { header: 'Product', value: (r) => r.product },
     { header: 'Leverage', value: (r) => r.leverage },
     { header: 'Status', value: (r) => r.status },
     { header: 'Client ID', value: (r) => r.userId },
@@ -592,7 +605,7 @@ export interface TradingAccountExportRow {
   currency: string;
   /** A STRING, always — see `tradingAccountColumns`. */
   balance: string;
-  tier: string | null;
+  product: string | null;
   leverage: number | null;
   status: string;
   createdAt: Date;

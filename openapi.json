@@ -4702,7 +4702,7 @@
     },
     "/v1/admin/products/mt5-groups": {
       "get": {
-        "description": "Gated on settings.edit rather than trading.create, unlike GET /admin/mt5/groups. The two read the same list for different jobs: that one is for opening an account, this one is for building the catalogue, and an operator who configures products has no reason to hold the power to open accounts.\n\nGroups another product already claims come back flagged rather than filtered out — \"the broker does not offer it\" and \"ECN already has it\" are different problems.",
+        "description": "Gated on settings.edit rather than trading.create, unlike GET /admin/mt5/groups. The two read the same list for different jobs: that one is for opening an account, this one is for building the catalogue, and an operator who configures products has no reason to hold the power to open accounts.\n\nGroups another product already claims come back flagged rather than filtered out — \"the broker does not offer it\" and \"ECN already has it\" are different problems.\n\nWhen MT5 cannot be reached this falls back to the synced catalogue rather than failing, and every row carries `lastSeenAt` saying when it was last confirmed. Attaching a group still validates against the live server, so a stale row here cannot become a stored product configuration.",
         "operationId": "AdminCatalogueController_availableGroups",
         "parameters": [],
         "responses": {
@@ -4725,7 +4725,7 @@
             "cookie": []
           }
         ],
-        "summary": "MT5 groups available to attach, read live from the server",
+        "summary": "MT5 groups available to attach, read live where possible",
         "tags": [
           "admin"
         ]
@@ -6001,6 +6001,98 @@
           }
         ],
         "summary": "A client's full profile — KYC, documents, trading accounts, referrals (FR-ADM-01)",
+        "tags": [
+          "admin"
+        ]
+      },
+      "patch": {
+        "description": "Name, phone and country only — the clerical set a support desk fixes when a client typed them wrong at registration.\n\nEmail is NOT here. It lives on PATCH /admin/clients/:id/email behind the separate `clients.email` permission, because changing the address an account signs in with is an account-takeover primitive and must not ride along with fixing a surname.\n\n`status` is not here either (PATCH .../status, `clients.suspend`), and neither is verification level or type — those are conclusions the KYC and partner flows reach from evidence, not fields to type in.\n\nSend an empty string for phone or country to clear it.",
+        "operationId": "AdminClientsController_updateClientProfile",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateClientProfileDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Correct a client's profile (requires clients.edit)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/clients/{id}/email": {
+      "patch": {
+        "description": "⚠️ The one operation on this surface that can take an account over: point the address at your own inbox, run a password reset, and the balance follows. It carries its own permission for exactly that reason — `clients.edit` does not grant it.\n\nChanging it: revokes every portal session for the client, resets email verification and sends a fresh verification link to the NEW address, and notifies the PREVIOUS address that the change happened. That last one is the control that points at the person who would notice an unauthorised change, so it is sent whether or not anyone asked for it.\n\nAlready-issued access tokens are short-lived JWTs and expire on their own; what revocation guarantees is that none of them can be refreshed.",
+        "operationId": "AdminClientsController_changeClientEmail",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeClientEmailDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Change a client's sign-in email (requires clients.email)",
         "tags": [
           "admin"
         ]
@@ -9210,7 +9302,7 @@
     },
     {
       "name": "trading",
-      "description": "Trading accounts, groups, tiers"
+      "description": "Trading accounts, groups, products"
     },
     {
       "name": "wallet",
@@ -11598,7 +11690,7 @@
             "type": "string",
             "nullable": true,
             "example": "Standard",
-            "description": "The product this account was opened under, resolved from `mt5Group` through `trading_product_groups`, which is unique on the group for exactly this reason. Null when the group is in no product — an operator may open an account directly into any MT5 group — and null on accounts opened before the group was stored. THE PORTAL RENDERS THIS, not the group: a backslash-separated MT5 group path is unreadable to a client, which is why the open-account form asks for a currency and a product rather than a path."
+            "description": "The product this account was opened under. Read from its own `productId` column, which is SNAPSHOTTED at creation (migration 0080) so that re-pointing a group in the catalogue afterwards cannot retroactively change what an existing account was sold as; accounts opened before 0080 fall back to matching `mt5Group` against `trading_product_groups`. Null when neither answers — an operator may open an account directly into any MT5 group, including one the catalogue does not sell. THE PORTAL RENDERS THIS, not the group: a backslash-separated MT5 group path is unreadable to a client, which is why the open-account form asks for a currency and a product."
           },
           "environment": {
             "type": "string",
@@ -12961,12 +13053,19 @@
           "claimed": {
             "type": "boolean",
             "description": "True when another product already claims it. Shown disabled with the reason rather than hidden, so an operator can tell \"not offered\" from \"already taken\"."
+          },
+          "lastSeenAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "NULL when this list was read live from MT5, which is the normal case. A date means the server could not be reached and this row came from the synced catalogue instead — it is when that group was last confirmed to exist. Surface it: a stale picker that cannot say how stale it is reads exactly like a current one."
           }
         },
         "required": [
           "name",
           "currency",
-          "claimed"
+          "claimed",
+          "lastSeenAt"
         ]
       },
       "UpsertProductDto": {
@@ -13726,9 +13825,6 @@
               "demo"
             ]
           },
-          "tier": {
-            "type": "string"
-          },
           "leverage": {
             "type": "number"
           },
@@ -13922,6 +14018,112 @@
           "emailVerified",
           "tags",
           "maskedFields"
+        ]
+      },
+      "UpdateClientProfileDto": {
+        "type": "object",
+        "properties": {
+          "firstName": {
+            "type": "string",
+            "example": "Layla"
+          },
+          "lastName": {
+            "type": "string",
+            "example": "Haddad"
+          },
+          "phone": {
+            "type": "string",
+            "example": "+9613111222",
+            "nullable": true,
+            "description": "Send an empty string to clear it."
+          },
+          "country": {
+            "type": "string",
+            "example": "Lebanon",
+            "nullable": true
+          }
+        }
+      },
+      "ClientAccountDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "individual",
+              "referral",
+              "partner"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "pending",
+              "suspended"
+            ]
+          },
+          "verificationLevel": {
+            "type": "number",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "emailVerified": {
+            "type": "boolean",
+            "description": "Reset to false by an email change, and stays false until the new address is verified."
+          },
+          "country": {
+            "type": "string",
+            "nullable": true
+          },
+          "phone": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "firstName",
+          "lastName",
+          "type",
+          "status",
+          "verificationLevel",
+          "emailVerified",
+          "country",
+          "phone",
+          "createdAt"
+        ]
+      },
+      "ChangeClientEmailDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "layla.haddad@example.com"
+          }
+        },
+        "required": [
+          "email"
         ]
       },
       "ClientStatusDto": {
@@ -15772,7 +15974,7 @@
             "example": "1000.00000000",
             "description": "Monetary value — ALWAYS a string. CRM-owned until the MT5 bridge lands, at which point it becomes a mirror of MT5 or is removed (see the schema comment)."
           },
-          "tier": {
+          "product": {
             "type": "string",
             "nullable": true
           },

@@ -3,6 +3,8 @@ import { ApiExcludeController, ApiOkResponse, ApiOperation, ApiTags } from '@nes
 import { NoOriginCheck } from '../../../common/security/csrf.guard';
 import { BridgeSecretGuard } from './bridge-secret.guard';
 import { Mt5DealsService } from './mt5-deals.service';
+import { Mt5AccountSyncService } from './mt5-account-sync.service';
+import { Mt5AccountSnapshotDto } from './dto/mt5-account-snapshot.dto';
 import { Mt5DealDto } from './dto/mt5-deal.dto';
 
 /**
@@ -61,7 +63,10 @@ import { Mt5DealDto } from './dto/mt5-deal.dto';
 )
 @UseGuards(BridgeSecretGuard)
 export class Mt5WebhooksController {
-  constructor(private readonly deals: Mt5DealsService) {}
+  constructor(
+    private readonly deals: Mt5DealsService,
+    private readonly accounts: Mt5AccountSyncService,
+  ) {}
 
   @Post('deals')
   @HttpCode(HttpStatus.OK)
@@ -82,5 +87,39 @@ export class Mt5WebhooksController {
   ) {
     const result = await this.deals.ingest(deal, source === 'sweep' ? 'sweep' : 'push');
     return { dealId: deal.dealId, ...result };
+  }
+
+  /**
+   * One account's balance, as MT5 held it when the bridge last asked.
+   *
+   * ## Why the bridge pushes this instead of the CRM pulling it
+   *
+   * The console used to read balances live, one bridge call per account per page
+   * load. The bridge serialises every MT5 call behind one session lock, so that
+   * screen queued twenty-five acquisitions at a time and starved the connection
+   * supervisor — which needs the same lock to rebuild a dropped session. Moving
+   * the read onto the bridge's existing sweep takes it off the request path
+   * entirely; this endpoint is where the answer lands.
+   *
+   * ## Always 200, even when nothing was written
+   *
+   * `applied: false` is an ordinary outcome, not a failure, and the distinction
+   * matters because the bridge RETRIES a non-2xx with backoff. A snapshot for a
+   * login this CRM never opened — the broker's server carries accounts we did
+   * not create — would otherwise be retried forever and fill the outbox with
+   * deliveries that can never succeed. `reason` says which case it was.
+   */
+  @Post('accounts')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Mirror one account balance pushed by the MT5 bridge' })
+  @ApiOkResponse({
+    description:
+      '`applied: false` with `reason: "unknown-login"` means the login names no account here, ' +
+      'and `reason: "stale"` means a fresher read already landed. Both are normal and neither ' +
+      'is retried.',
+  })
+  async ingestAccount(@Body() snapshot: Mt5AccountSnapshotDto) {
+    const result = await this.accounts.ingestSnapshot(snapshot);
+    return { login: snapshot.login, ...result };
   }
 }

@@ -2,7 +2,25 @@ import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, desc, eq, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { positions, tradingAccounts, transactions, users, wallets } from '../../database/schema';
+import {
+  positions,
+  tradingAccounts,
+  tradingProductGroups,
+  transactions,
+  users,
+  wallets,
+} from '../../database/schema';
+/*
+ * Shared with `TradingService` on purpose. The client and the operator must read
+ * the same product off the same account — a mismatch surfaces mid-dispute, with
+ * both screens open.
+ */
+import {
+  PRODUCT_BY_GROUP,
+  PRODUCT_BY_ID,
+  PRODUCT_GROUP_JOIN_ON,
+  PRODUCT_NAME,
+} from '../../common/account-product';
 import {
   clientScopePredicate,
   UNRESTRICTED,
@@ -498,7 +516,19 @@ export class AdminHoldingsService {
         currency: tradingAccounts.currency,
         // A string, straight from NUMERIC(28,8) — see the wallet projection.
         balance: tradingAccounts.balance,
-        tier: tradingAccounts.tier,
+        /*
+         * PRODUCT, where `tier` used to be.
+         *
+         * `trading_accounts.tier` has no writer and never had one, so this key
+         * carried NULL on every row of every response — a field that always
+         * reads "unknown" teaches an operator that the data is missing rather
+         * than that the field is meaningless.
+         *
+         * `product` is what `tier` was standing in for, and it is answered from
+         * the account's own `product_id` first (0080) so it does not change when
+         * somebody edits the catalogue.
+         */
+        product: PRODUCT_NAME,
         leverage: tradingAccounts.leverage,
         status: tradingAccounts.status,
         createdAt: tradingAccounts.createdAt,
@@ -510,6 +540,10 @@ export class AdminHoldingsService {
       })
       .from(tradingAccounts)
       .innerJoin(users, eq(tradingAccounts.userId, users.id))
+      // Recorded product first, derived second — see `common/account-product`.
+      .leftJoin(PRODUCT_BY_ID, eq(PRODUCT_BY_ID.id, tradingAccounts.productId))
+      .leftJoin(tradingProductGroups, PRODUCT_GROUP_JOIN_ON)
+      .leftJoin(PRODUCT_BY_GROUP, eq(PRODUCT_BY_GROUP.id, tradingProductGroups.productId))
       .where(where)
       .orderBy(primary, orderBy(tradingAccounts.id))
       .limit(filter.limit + 1)
@@ -535,7 +569,7 @@ export class AdminHoldingsService {
         environment: r.environment,
         currency: r.currency,
         balance: r.balance,
-        tier: r.tier,
+        product: r.product,
         leverage: r.leverage,
         status: r.status,
         createdAt: r.createdAt,
@@ -566,30 +600,48 @@ export class AdminHoldingsService {
     const conditions = this.tradingAccountConditions({ ...query, scope: actor.clientScope });
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-    return this.db
-      .select({
-        id: tradingAccounts.id,
-        login: tradingAccounts.login,
-        mt5Group: tradingAccounts.mt5Group,
-        environment: tradingAccounts.environment,
-        currency: tradingAccounts.currency,
-        balance: tradingAccounts.balance,
-        tier: tradingAccounts.tier,
-        leverage: tradingAccounts.leverage,
-        status: tradingAccounts.status,
-        createdAt: tradingAccounts.createdAt,
-        updatedAt: tradingAccounts.updatedAt,
-        userId: tradingAccounts.userId,
-        userEmail: users.email,
-        userFirstName: users.firstName,
-        userLastName: users.lastName,
-      })
-      .from(tradingAccounts)
-      .innerJoin(users, eq(tradingAccounts.userId, users.id))
-      .where(where)
-      .orderBy(desc(tradingAccounts.createdAt), desc(tradingAccounts.id))
-      .limit(limit)
-      .offset(offset);
+    return (
+      this.db
+        .select({
+          id: tradingAccounts.id,
+          login: tradingAccounts.login,
+          mt5Group: tradingAccounts.mt5Group,
+          environment: tradingAccounts.environment,
+          currency: tradingAccounts.currency,
+          balance: tradingAccounts.balance,
+          /*
+           * PRODUCT, where `tier` used to be.
+           *
+           * `trading_accounts.tier` has no writer and never had one, so this key
+           * carried NULL on every row of every response — a field that always
+           * reads "unknown" teaches an operator that the data is missing rather
+           * than that the field is meaningless.
+           *
+           * `product` is what `tier` was standing in for, and it is answered from
+           * the account's own `product_id` first (0080) so it does not change when
+           * somebody edits the catalogue.
+           */
+          product: PRODUCT_NAME,
+          leverage: tradingAccounts.leverage,
+          status: tradingAccounts.status,
+          createdAt: tradingAccounts.createdAt,
+          updatedAt: tradingAccounts.updatedAt,
+          userId: tradingAccounts.userId,
+          userEmail: users.email,
+          userFirstName: users.firstName,
+          userLastName: users.lastName,
+        })
+        .from(tradingAccounts)
+        .innerJoin(users, eq(tradingAccounts.userId, users.id))
+        // Recorded product first, derived second — see `common/account-product`.
+        .leftJoin(PRODUCT_BY_ID, eq(PRODUCT_BY_ID.id, tradingAccounts.productId))
+        .leftJoin(tradingProductGroups, PRODUCT_GROUP_JOIN_ON)
+        .leftJoin(PRODUCT_BY_GROUP, eq(PRODUCT_BY_GROUP.id, tradingProductGroups.productId))
+        .where(where)
+        .orderBy(desc(tradingAccounts.createdAt), desc(tradingAccounts.id))
+        .limit(limit)
+        .offset(offset)
+    );
   }
 
   // ── One client's trading activity ─────────────────────────────────────────

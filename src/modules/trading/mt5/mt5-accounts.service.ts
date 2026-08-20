@@ -16,6 +16,7 @@ import {
   ValidationError,
 } from '../../../common/errors/domain-errors';
 import { AppSettingsStore } from '../../../store/app-settings.store';
+import { ProductsStore } from '../../../store/products.store';
 import { tradingTermsFrom } from '../../../common/trading-terms';
 import {
   NOTIFICATION_DISPATCH,
@@ -90,7 +91,46 @@ export class Mt5AccountsService {
      */
     @Inject(NOTIFICATION_DISPATCH)
     private readonly notifications: NotificationDispatchPort,
+    /*
+     * The catalogue, read once per create to snapshot `product_id` (0080).
+     *
+     * A STORE rather than `CatalogueService`, and that is not a style choice:
+     * `CatalogueService` already depends on THIS service, so injecting it back
+     * would close a cycle. `ProductsStore` lives in the `@Global()` StoreModule,
+     * depends on nothing but the db, and is the read half both sides share.
+     *
+     * APPENDED LAST, matching `SelfServiceGroups` — a constructor argument
+     * inserted in the middle silently re-binds every positional construction in
+     * the specs.
+     */
+    private readonly products: ProductsStore,
   ) {}
+
+  /**
+   * The product a group is being sold as, at the moment an account opens in it.
+   *
+   * Wrapped rather than called inline because it must NEVER fail a create. The
+   * account already exists on the broker's server by the time this runs — the
+   * insert is the last step, deliberately, per the ordering note on
+   * `createAccount` — so throwing here would abandon a real MT5 account with no
+   * row pointing at it, which is the exact failure that ordering exists to
+   * avoid. A product label is not worth that.
+   *
+   * A miss and a failure both store NULL, and NULL already means "no product",
+   * which the portal renders by omitting the row. The difference is that a
+   * failure is logged with the group named, so it can be set by hand.
+   */
+  private async productForGroup(group: string): Promise<string | null> {
+    try {
+      return await this.products.productIdForGroup(group);
+    } catch (error) {
+      this.logger.error(
+        `Could not resolve the product for group ${group}; the account is being opened with ` +
+          `no product recorded. ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+  }
 
   /**
    * The operator's trading terms, read fresh on each create.
@@ -217,6 +257,20 @@ export class Mt5AccountsService {
          * account is not in.
          */
         mt5Group: created.group,
+        /*
+         * THE PRODUCT, snapshotted (0080).
+         *
+         * Resolved from the group MT5 confirmed, not the one requested — same
+         * reasoning as `mt5Group` directly above: if the server put the account
+         * somewhere else, the product is whatever THAT group is sold as.
+         *
+         * Frequently NULL on this path, and legitimately so. An operator types a
+         * group here rather than picking a product, and may open an account
+         * directly into a group the catalogue does not sell — a bespoke
+         * arrangement, an internal test account, a group added on the server this
+         * morning. NULL records that honestly instead of guessing.
+         */
+        productId: await this.productForGroup(created.group),
         environment: input.environment,
         currency: created.currency,
         leverage: created.leverage,
@@ -233,6 +287,13 @@ export class Mt5AccountsService {
       environment: input.environment,
       leverage: created.leverage,
       clientId: client.id,
+      /*
+       * Logged because the catalogue is editable and this row is not re-derived.
+       * "Opened as Standard" is the fact somebody reconstructing a commission
+       * dispute needs, and after a group is re-pointed the audit entry is the
+       * only place outside this row that still says so.
+       */
+      productId: row.productId,
     });
 
     this.logger.log(
@@ -472,6 +533,23 @@ export class Mt5AccountsService {
          * afterwards from one opened as anything else.
          */
         mt5Group: created.group,
+        /*
+         * THE PRODUCT the client actually chose (0080).
+         *
+         * This is the path the column exists for. The open-account form asks for
+         * a currency and a PRODUCT, `SelfServiceGroups` turns that choice into a
+         * group, and until now the group was the only surviving record of it —
+         * so the choice was readable only for as long as the catalogue kept
+         * pointing that group at the same product. Here it becomes a fact about
+         * the account instead of a fact about the catalogue.
+         *
+         * Resolved from `created.group` rather than carried down from the form,
+         * so both open paths record the product the same way: from the group the
+         * account is actually in. Nothing is offered to a client that is not in
+         * the catalogue, so this is NULL here only if the group was detached
+         * between the picker rendering and the account opening.
+         */
+        productId: await this.productForGroup(created.group),
         environment: input.environment,
         currency: created.currency,
         leverage: created.leverage,

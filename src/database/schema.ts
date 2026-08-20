@@ -1807,6 +1807,31 @@ export const tradingAccounts = pgTable(
      */
     name: varchar('name', { length: 128 }),
     mt5Group: varchar('mt5_group', { length: 100 }),
+    /**
+     * The product this account was opened UNDER, snapshotted at creation (0080).
+     *
+     * Not derived. `TradingService` used to answer "which product is this" by
+     * joining `mt5_group` against `trading_product_groups` at read time, and
+     * that join reports the catalogue as it stands NOW rather than as it stood
+     * when the client chose. Detaching a group from a product, re-pointing it at
+     * a different one, or renaming it on the MT5 server each rewrites the answer
+     * for every account already in it — silently, with no trace on the rows
+     * themselves. This column is what makes the client's own choice survive an
+     * operator editing the catalogue afterwards.
+     *
+     * NULLABLE, and NULL is a real state rather than a gap. An operator may open
+     * an account directly into any MT5 group, including one the catalogue does
+     * not sell, so an account can legitimately have no product. The read-time
+     * join is kept as a FALLBACK for rows opened before 0080 — see
+     * `PRODUCT_JOIN_ON` — because dropping it would regress every existing
+     * account's card to "no product".
+     *
+     * ON DELETE SET NULL, the other direction of the rule `trading_products`
+     * already states: retiring a product must never reach into accounts that are
+     * already open. A deleted product leaves its accounts trading and
+     * product-less; it must not be undeletable, and must not cascade.
+     */
+    productId: uuid('product_id').references(() => tradingProducts.id, { onDelete: 'set null' }),
     environment: tradingEnvironmentEnum('environment').notNull().default('live'),
     /**
      * The account's own currency, which need not be the wallet's.
@@ -1819,25 +1844,85 @@ export const tradingAccounts = pgTable(
       .notNull()
       .references(() => currencies.code, { onDelete: 'restrict' }),
     /**
-     * ⚠️ THIS COLUMN REVERSES A DELIBERATE DECISION, and must be reversed back.
+     * A MIRROR of MT5's cash balance. MT5 is the authority; nothing here
+     * computes it (0081).
      *
-     * The deleted `trading_accounts` had NO balance, and its DTO said why: "No
-     * balance, equity, margin or open positions. Those live in MT5, not in this
-     * database … a fabricated figure beside a real MT5 login is the most
-     * expensive kind of wrong number on a trading product."
+     * ── The reversal this column was waiting for ───────────────────────────
      *
-     * That was right, and it depended on MT5 existing. It does not — there is
-     * no bridge service (ARCHITECTURE open decision #1), so nothing else can
-     * hold this number and a transfer would have nowhere to land. The CRM owns
-     * it in the meantime.
+     * It used to be a CRM-OWNED number, and this comment used to say that was
+     * temporary: "WHEN THE BRIDGE LANDS: this becomes a mirror of MT5's balance,
+     * written only by the sync … What it must NOT do is stay a CRM-owned number
+     * that MT5 also has an opinion about — two numbers for one balance is the
+     * state the original design existed to prevent." The bridge landed and this
+     * is that change.
      *
-     * WHEN THE BRIDGE LANDS: this becomes a mirror of MT5's balance, written
-     * only by the sync, or it is removed and the terminal is the only source.
-     * What it must NOT do is stay a CRM-owned number that MT5 also has an
-     * opinion about — two numbers for one balance is the state the original
-     * design existed to prevent.
+     * ── Why arithmetic here could never have stayed right ──────────────────
+     *
+     * `TransfersService` computed `balance ± amount` itself. That is exact for
+     * an account that does nothing else, and every real trading account does
+     * something else: swap is charged overnight, commission on every fill, and
+     * profit and loss move the balance on every close. None of it passes through
+     * the CRM, so none of it is visible to code doing its own addition — and the
+     * copy drifted while still looking authoritative.
+     *
+     * ── The only writers ───────────────────────────────────────────────────
+     *
+     * All three are the MT5 boundary, and each stamps `balanceSyncedAt`:
+     *
+     *   1. the balance operation's own response, so a transfer is correct
+     *      immediately rather than at the next sweep;
+     *   2. the account snapshot the bridge pushes from its sweep, which is how
+     *      trading, swap and dealer operations reach us at all;
+     *   3. the live read behind the account detail screen.
+     *
+     * Anything that adds to this column reintroduces the bug. A transfer records
+     * its intent in `ledger_entries` and `transfers`; what the account HOLDS
+     * afterwards is MT5's answer, not ours.
+     *
+     * ── Still no equity, margin or open positions ──────────────────────────
+     *
+     * Unchanged and non-negotiable. Those are computed from live prices against
+     * open trades and move on every tick, so a stored copy is stale the moment
+     * it is written — "a fabricated figure beside a real MT5 login is the most
+     * expensive kind of wrong number on a trading product". Balance is
+     * mirrorable precisely because it only changes on a discrete event.
      */
     balance: numeric('balance', { precision: 28, scale: 8 }).notNull().default('0'),
+    /**
+     * When MT5 last CONFIRMED the balance above (0081).
+     *
+     * NULL means never: the figure is the CRM's last word rather than the
+     * server's. True for every account opened before the bridge existed, and for
+     * any account whose `login` is still NULL — there is nothing to ask MT5
+     * about.
+     *
+     * Not decoration. A mirrored number with no age is indistinguishable from a
+     * live one, and that difference is the entire reason for mirroring: the
+     * console renders "confirmed 90 seconds ago" differently from "never
+     * confirmed", and an operator deciding whether to act on a figure needs to
+     * know which they are looking at. `mt5_groups.last_seen_at` carries the same
+     * rule for the same reason.
+     */
+    balanceSyncedAt: timestamp('balance_synced_at', { withTimezone: true }),
+    /**
+     * ⚠️ DEAD. Nothing has ever written this column, and nothing reads it now.
+     *
+     * It was on the client DTO, where it rendered "TYPE —" on every account of
+     * every client, and on the admin holdings projection and the trading-account
+     * CSV, where it was a `Tier` header above a column of blanks. All three are
+     * gone: `product_id` above is the real answer to "what kind of account is
+     * this", so a second, permanently-empty field beside it teaches an operator
+     * that our data is missing rather than that the field is meaningless.
+     *
+     * NOT dropped. A migration to remove it buys nothing — there is no data in
+     * it and no query touches it — and DROP COLUMN is the one direction that
+     * cannot be undone. Left inert and labelled, so the next person to find it
+     * does not wire it up thinking it was an oversight.
+     *
+     * Do NOT give it a writer. There is no concept in this domain that `product`
+     * does not already carry; a tier would be a second name for the same thing
+     * and the two would eventually disagree.
+     */
     tier: varchar('tier', { length: 50 }),
     leverage: integer('leverage'),
     status: tradingAccountStatusEnum('status').notNull().default('active'),
@@ -1846,6 +1931,9 @@ export const tradingAccounts = pgTable(
   },
   (t) => [
     index('trading_accounts_user_idx').on(t.userId),
+    /* "Every account on this product" — what an operator asks before retiring
+       one, and what the FK's SET NULL sweeps on a delete. */
+    index('trading_accounts_product_idx').on(t.productId),
     uniqueIndex('trading_accounts_login_uq')
       .on(t.login)
       .where(sql`${t.login} IS NOT NULL`),

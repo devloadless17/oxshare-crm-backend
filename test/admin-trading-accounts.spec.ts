@@ -15,6 +15,8 @@ import {
   clientTags,
   roles,
   tradingAccounts,
+  tradingProductGroups,
+  tradingProducts,
   users,
 } from '../src/database/schema';
 
@@ -59,6 +61,8 @@ interface AccountRow {
   status: string;
   balance: string;
   currency: string;
+  /** Replaced `tier`, which had no writer and was therefore null on every row. */
+  product: string | null;
   user: { id: string; email: string };
 }
 
@@ -186,16 +190,42 @@ beforeAll(async () => {
    * rows do not collide — which is itself the schema behaviour that makes the
    * NULLS LAST sort worth pinning.
    */
+  /*
+   * TWO products claiming the same account, which is the whole point.
+   *
+   * The catalogue says `real\Standard` is sold as "TA Sold Today". The live
+   * account below sits in that group and RECORDED "TA Opened As" when it was
+   * opened — the state an operator produces by re-pointing a group at a
+   * different product after accounts already exist in it. The response must say
+   * "TA Opened As", because that is what the client actually bought.
+   */
+  const [productSold] = await db
+    .insert(tradingProducts)
+    .values({ name: 'TA Sold Today', enabled: true, sortOrder: 0 })
+    .returning();
+  const [productOpenedAs] = await db
+    .insert(tradingProducts)
+    .values({ name: 'TA Opened As', enabled: true, sortOrder: 1 })
+    .returning();
+
+  await db.insert(tradingProductGroups).values({
+    productId: productSold.id,
+    environment: 'live',
+    mt5Group: 'real\\Standard',
+    currency: 'USD',
+  });
+
   const [live] = await db
     .insert(tradingAccounts)
     .values({
       userId: mineId,
       login: '00012345',
       mt5Group: 'real\\Standard',
+      // What the account recorded at open, DISAGREEING with the catalogue above.
+      productId: productOpenedAs.id,
       environment: 'live',
       currency: 'USD',
       balance: HUGE_BALANCE,
-      tier: 'standard',
       leverage: 100,
       status: 'active',
     })
@@ -207,6 +237,14 @@ beforeAll(async () => {
     .values({
       userId: mineId,
       login: '00099999',
+      /*
+       * No `productId` — the shape of every account opened before 0080 — and a
+       * group matching the catalogue's in CASING ONLY. MT5 treats group paths
+       * case-insensitively and the two ends of this string have different
+       * authors, so an exact match would answer "no product" for a group that is
+       * plainly listed.
+       */
+      mt5Group: 'REAL\\STANDARD',
       environment: 'demo',
       currency: 'USD',
       balance: '10000.00000000',
@@ -258,6 +296,48 @@ describe('listing and paging', () => {
     const row = body(res).items.find((a) => a.id === liveAccountId);
     expect(row?.user.id).toBe(mineId);
     expect(row?.user.email).toBe('ta-mine@oxshare-e2e.test');
+  });
+
+  /*
+   * The three states of `product`, which replaced the always-null `tier`.
+   *
+   * `trading_accounts.tier` had no writer, so the key it filled was null on
+   * every row this endpoint ever returned. These assert that its replacement
+   * actually answers — and, more importantly, that it answers from the account
+   * rather than from the catalogue as it stands right now.
+   */
+  it('reads the product the account RECORDED, not what the catalogue sells its group as', async () => {
+    // The single case the snapshot column exists for. `real\Standard` is
+    // attached to "TA Sold Today" in the catalogue and this account is in that
+    // group — but it was opened as something else, and re-pointing a group must
+    // not rewrite what an existing client bought.
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`/v1/admin/trading-accounts?userId=${mineId}&limit=100`);
+
+    const row = body(res).items.find((a) => a.id === liveAccountId);
+    expect(row?.product).toBe('TA Opened As');
+  });
+
+  it('falls back to the group match for an account that recorded no product', async () => {
+    // Every account opened before 0080. Case-insensitively, because the stored
+    // group and the catalogue's have different authors — this row is
+    // `REAL\STANDARD` against a catalogue entry of `real\Standard`.
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`/v1/admin/trading-accounts?userId=${mineId}&limit=100`);
+
+    const row = body(res).items.find((a) => a.id === demoAccountId);
+    expect(row?.product).toBe('TA Sold Today');
+  });
+
+  it('serves a null product for an account in no product at all', async () => {
+    // A real state, not a gap: an operator may open an account directly into
+    // any MT5 group, including one the catalogue does not sell. This one has no
+    // group and no recorded product, so neither source can answer.
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`/v1/admin/trading-accounts?userId=${mineId}&limit=100`);
+
+    const row = body(res).items.find((a) => a.id === noLoginAccountId);
+    expect(row?.product).toBeNull();
   });
 
   it('serves the login as a STRING, preserving leading zeros', async () => {

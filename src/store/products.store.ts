@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
 import {
@@ -357,5 +357,39 @@ export class ProductsStore {
       .select({ mt5Group: tradingProductGroups.mt5Group })
       .from(tradingProductGroups);
     return rows.map((row) => row.mt5Group);
+  }
+
+  /**
+   * Which product currently sells this MT5 group, if any.
+   *
+   * Called at ACCOUNT-OPEN time and nowhere else, to snapshot
+   * `trading_accounts.product_id`. That is the whole contract: it answers "what
+   * is the catalogue selling this group as, right now", and the caller writes
+   * the answer down so nothing has to ask again. A caller that re-ran this to
+   * refresh an existing account would reintroduce exactly the moving answer 0080
+   * exists to stop.
+   *
+   * CASE-INSENSITIVE, matching `PRODUCT_JOIN_ON` in `TradingService`. The group
+   * being looked up comes back from the bridge and the catalogue's was typed by
+   * an operator, so the two can differ in casing alone — and MT5 treats group
+   * paths case-insensitively, so an exact match would answer NULL for a group
+   * that is plainly listed.
+   *
+   * NULL is a normal answer, not a failure: an account may be opened directly
+   * into a group no product carries. The caller stores NULL rather than
+   * refusing.
+   *
+   * One row at most, because `trading_product_groups_group_unique` makes the
+   * group unique platform-wide — the constraint whose stated purpose is that
+   * "which product is this account under" has a single answer.
+   */
+  async productIdForGroup(mt5Group: string): Promise<string | null> {
+    const [row] = await this.db
+      .select({ productId: tradingProductGroups.productId })
+      .from(tradingProductGroups)
+      .where(sql`lower(${tradingProductGroups.mt5Group}) = lower(${mt5Group})`)
+      .limit(1);
+
+    return row?.productId ?? null;
   }
 }

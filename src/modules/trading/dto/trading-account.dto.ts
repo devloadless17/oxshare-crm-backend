@@ -42,9 +42,11 @@ export type TradingAccountStatus = (typeof TRADING_ACCOUNT_STATUSES)[number];
  * question "what kind of account is this", so the placeholder is removed rather
  * than left beside it.
  *
- * The COLUMN stays. Admin's holdings and export services still select it, and
- * dropping it is a migration with no benefit; it simply has no place on the
- * screen its owner reads.
+ * The COLUMN stays, and is now read by NOTHING. Admin's holdings projection and
+ * the trading-account CSV selected it until they were switched to `product`,
+ * where it was a `Tier` header above a column of blanks on every export anybody
+ * ever ran. Dropping the column is a migration with no benefit and the one
+ * direction that cannot be undone; it is labelled inert in `schema.ts` instead.
  *
  * What is NOT here, and must not be added before that bridge exists: equity,
  * margin, free margin, open positions, floating P/L. Those are computed from
@@ -91,12 +93,14 @@ export class TradingAccountDto {
     nullable: true,
     example: 'Standard',
     description:
-      'The product this account was opened under, resolved from `mt5Group` through ' +
-      '`trading_product_groups`, which is unique on the group for exactly this reason. Null ' +
-      'when the group is in no product — an operator may open an account directly into any MT5 ' +
-      'group — and null on accounts opened before the group was stored. THE PORTAL RENDERS ' +
-      'THIS, not the group: a backslash-separated MT5 group path is unreadable to a client, ' +
-      'which is why the open-account form asks for a currency and a product rather than a path.',
+      'The product this account was opened under. Read from its own `productId` column, ' +
+      'which is SNAPSHOTTED at creation (migration 0080) so that re-pointing a group in the ' +
+      'catalogue afterwards cannot retroactively change what an existing account was sold as; ' +
+      'accounts opened before 0080 fall back to matching `mt5Group` against ' +
+      '`trading_product_groups`. Null when neither answers — an operator may open an account ' +
+      'directly into any MT5 group, including one the catalogue does not sell. THE PORTAL ' +
+      'RENDERS THIS, not the group: a backslash-separated MT5 group path is unreadable to a ' +
+      'client, which is why the open-account form asks for a currency and a product.',
   })
   product: string | null;
 

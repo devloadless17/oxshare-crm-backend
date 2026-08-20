@@ -1,0 +1,54 @@
+-- MT5 owns the balance, and the row says when it was last told.
+--
+-- Hand-written rather than generated, matching 0027 onwards.
+--
+-- ── What was there before ──────────────────────────────────────────────────
+--
+-- `trading_accounts.balance` was a CRM-OWNED number that MT5 also had an
+-- opinion about. Its own schema comment named that as the state to avoid and
+-- said what should replace it: "WHEN THE BRIDGE LANDS: this becomes a mirror of
+-- MT5's balance, written only by the sync ... What it must NOT do is stay a
+-- CRM-owned number that MT5 also has an opinion about — two numbers for one
+-- balance is the state the original design existed to prevent."
+--
+-- The bridge has landed. This is that change.
+--
+-- ── Why CRM arithmetic could never have stayed right ───────────────────────
+--
+-- `TransfersService` computed the new balance itself: `balance + amount` on the
+-- way in, `balance - amount` on the way out. That is exact for an account that
+-- does nothing else, and every real trading account does something else. Swap
+-- is charged overnight, commission on every fill, and profit and loss move the
+-- balance on every close — none of it through the CRM, none of it observable to
+-- code doing its own addition. So the two numbers drifted apart the moment an
+-- account actually traded, and the CRM's copy was wrong in the direction that
+-- matters: it looked authoritative.
+--
+-- ── `balance` is NOT redefined by this migration, only re-sourced ───────────
+--
+-- Deliberately no type change, no default, no backfill. The column keeps every
+-- value it has; what changes is who writes it. From here the writers are the
+-- MT5 boundary only — the balance operation's own response, the account snapshot
+-- pushed by the sweep, and the live read on the detail screen. Nothing computes
+-- it.
+--
+-- A backfill was considered and rejected: the honest value for "what does MT5
+-- hold" is whatever MT5 answers next, and inventing one here would put a number
+-- in the column with a `balance_synced_at` that claims MT5 confirmed it. The
+-- first sweep after this deploys fills every account that has a login.
+ALTER TABLE trading_accounts ADD COLUMN IF NOT EXISTS balance_synced_at timestamptz;
+--> statement-breakpoint
+
+-- ── WHY THE TIMESTAMP IS NOT OPTIONAL DECORATION ───────────────────────────
+--
+-- A mirrored number with no age is indistinguishable from a live one, and the
+-- difference is the whole point of mirroring. NULL means "MT5 has never
+-- confirmed this figure" — true for every account opened before the bridge, and
+-- for any account whose login is still NULL — and the console renders that
+-- differently from a figure confirmed ninety seconds ago.
+--
+-- This is the same rule `mt5_groups.last_seen_at` follows for the same reason:
+-- a stale answer somebody can see the age of beats both a blank screen and a
+-- stale answer wearing a live one's clothes.
+COMMENT ON COLUMN trading_accounts.balance_synced_at IS
+  'When MT5 last confirmed trading_accounts.balance. NULL means never — the figure is the CRM''s last word, not the server''s.';
