@@ -5310,7 +5310,9 @@
             "name": "token",
             "required": true,
             "in": "query",
+            "description": "The invite token from the emailed link.",
             "schema": {
+              "example": "e0b8b3f2-3c1a-4f6e-9a7d-2f5c8b1d4e6a",
               "type": "string"
             }
           }

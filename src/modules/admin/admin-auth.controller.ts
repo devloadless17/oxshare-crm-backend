@@ -44,6 +44,7 @@ import {
   AcceptInviteDto,
   AdminLoginDto,
   InviteDto,
+  ValidateInviteQueryDto,
 } from './dto/requests/auth.dto';
 import {
   AdminAvatarResponseDto,
@@ -235,8 +236,8 @@ export class AdminAuthController {
   })
   @ApiOkResponse({ type: InviteValidationDto })
   @NotClientScoped('Public invite-token check; reads admin_invites only.')
-  validateInvite(@Query('token') token: string) {
-    return this.auth.validateInviteToken(token);
+  validateInvite(@Query() query: ValidateInviteQueryDto) {
+    return this.auth.validateInviteToken(query.token);
   }
 
   @NoCsrf(

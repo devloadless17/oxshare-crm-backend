@@ -523,14 +523,14 @@ export class AdminClientsService {
    */
   private profileView(
     user: {
-    id: string;
-    email: string;
-    firstName: string;
-    lastName: string;
-    type: string;
-    status: string;
-    verificationLevel: number;
-    emailVerified: boolean;
+      id: string;
+      email: string;
+      firstName: string;
+      lastName: string;
+      type: string;
+      status: string;
+      verificationLevel: number;
+      emailVerified: boolean;
       country?: string | null;
       phone?: string | null;
       createdAt: Date;

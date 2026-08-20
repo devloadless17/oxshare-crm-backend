@@ -119,6 +119,30 @@ export class InviteDto {
   seesUntriaged?: boolean;
 }
 
+/**
+ * The token on `GET /admin/invite/validate`.
+ *
+ * A DTO rather than a bare `@Query('token') token: string`, because the global
+ * ValidationPipe has nothing to reflect on without one — the parameter is typed
+ * `string`, TypeScript erases that at runtime, and an ABSENT token arrived as
+ * `undefined`, reached the store, and came back as a 500 INTERNAL_ERROR.
+ *
+ * The distinction matters beyond tidiness. A caller who omits the parameter has
+ * made a bad request and can fix it; a 500 says the server broke and invites a
+ * bug report, and it logs at error level so a routine mistake looks like an
+ * incident. The same route already answers 400 for a token that is present but
+ * unknown, so the two "bad token" cases now agree.
+ */
+export class ValidateInviteQueryDto {
+  @ApiProperty({
+    example: 'e0b8b3f2-3c1a-4f6e-9a7d-2f5c8b1d4e6a',
+    description: 'The invite token from the emailed link.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  token: string;
+}
+
 export class AcceptInviteDto {
   @ApiProperty({ description: 'Single-use token from the invitation email.' })
   @IsString()
