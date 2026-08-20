@@ -351,18 +351,44 @@ describe('trading accounts', () => {
     );
   });
 
-  it('refuses a negative balance', async () => {
+  /**
+   * A trading account MAY hold a negative balance. A wallet may not.
+   *
+   * This asserted the opposite until 0082, and the reversal is deliberate rather
+   * than a relaxation. `balance` became a MIRROR of what MT5 holds, and MT5
+   * balances go negative for ordinary reasons: an account stopped out through a
+   * weekend gap, or one whose overnight swap exceeded its remaining cash,
+   * carries a real debit until the broker settles it.
+   *
+   * The CHECK could not prevent that balance — only prevent us from recording
+   * it. The sync's UPDATE raised a violation, the webhook answered 500, the
+   * bridge dropped the snapshot, and the console kept showing the last
+   * non-negative figure indefinitely with nothing reporting a fault. The one
+   * account an operator most needs to see became the one the mirror silently
+   * refused to update.
+   *
+   * The rule the CHECK was also enforcing — that the CRM must never CREATE a
+   * negative balance by paying out money the account does not have — did not go
+   * away with it. It moved into `TransfersService.settle`, into the WHERE clause
+   * of the debit, where it produces an actionable error instead of a constraint
+   * violation the filter can only render as a 500. `wallets_balance_non_negative`
+   * is untouched: a wallet is a ledger the CRM owns outright.
+   */
+  it('ACCEPTS a negative balance on a trading account, because MT5 can report one', async () => {
     const userId = await makeUser('negacct@test.local');
     await ctx.db.execute(sql`
       INSERT INTO trading_accounts (user_id, environment, currency, balance)
       VALUES (${userId}, 'live', 'USD', '10')
     `);
 
-    expect(
-      await constraintViolatedBy(
-        ctx.db.execute(sql`UPDATE trading_accounts SET balance = '-1' WHERE user_id = ${userId}`),
-      ),
-    ).toBe('trading_accounts_balance_non_negative');
+    // Executed directly rather than through `constraintViolatedBy`, which exists
+    // to assert that a statement IS refused and throws when one succeeds.
+    await ctx.db.execute(sql`UPDATE trading_accounts SET balance = '-1' WHERE user_id = ${userId}`);
+
+    const { rows } = await ctx.db.execute<{ balance: string }>(
+      sql`SELECT balance FROM trading_accounts WHERE user_id = ${userId}`,
+    );
+    expect(rows[0].balance).toBe('-1.00000000');
   });
 });
 

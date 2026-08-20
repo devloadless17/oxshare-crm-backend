@@ -286,18 +286,53 @@ export class TransfersService {
           tx,
         );
         /*
-         * Debited in SQL rather than read-modify-write, and the CHECK does the
-         * refusing: `trading_accounts_balance_non_negative` rejects an account
-         * that cannot cover it, so this cannot quietly go negative on a stale
-         * read.
+         * ── THE SUFFICIENT-FUNDS GUARD IS IN THIS WHERE CLAUSE ───────────────
+         *
+         * It used to be `trading_accounts_balance_non_negative`, and this
+         * comment used to say "the CHECK does the refusing". Migration 0082
+         * dropped that CHECK, because `balance` became a MIRROR of MT5 and MT5
+         * balances can legitimately be negative — an account stopped out through
+         * a gap carries a real debit, and a constraint that refused it made the
+         * sync fail silently for exactly the accounts an operator most needs.
+         *
+         * Dropping it removed this refusal with it. That is a different rule and
+         * it still has to hold: MT5 may REPORT a negative balance, but the CRM
+         * must never CREATE one by paying out money the account does not have.
+         *
+         * So the predicate moves here, where it says what it means. Still in
+         * SQL rather than read-modify-write, and for the same reason as before —
+         * a check-then-update races itself and a stale read pays out twice.
+         *
+         * `returning()` is what makes the refusal detectable: no rows means the
+         * balance moved under us or never covered it, and the throw rolls back
+         * the wallet credit posted immediately above.
          */
-        await tx
+        const debited = await tx
           .update(tradingAccounts)
           .set({
             balance: sql`${tradingAccounts.balance} - ${money(amount)}::numeric`,
             updatedAt: new Date(),
           })
-          .where(eq(tradingAccounts.id, transfer.tradingAccountId));
+          .where(
+            and(
+              eq(tradingAccounts.id, transfer.tradingAccountId),
+              sql`${tradingAccounts.balance} >= ${money(amount)}::numeric`,
+            ),
+          )
+          .returning({ id: tradingAccounts.id });
+
+        if (debited.length === 0) {
+          /*
+           * A domain error, not a constraint violation. The CHECK surfaced as a
+           * database error the filter could only render as a 500 — telling a
+           * client "internal server error" when the honest answer is "there is
+           * not enough in the account".
+           */
+          throw new ValidationError(
+            'The trading account does not hold enough to cover this transfer. Its balance may ' +
+              'have moved since the transfer was requested.',
+          );
+        }
       }
 
       await tx
