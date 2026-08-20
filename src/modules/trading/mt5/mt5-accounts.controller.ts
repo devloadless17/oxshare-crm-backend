@@ -1,26 +1,16 @@
-import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  HttpStatus,
-  Param,
-  Post,
-  Req,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { ParseUUIDPipe } from '@nestjs/common';
 import { Mt5AccountsService } from './mt5-accounts.service';
-import { CreateMt5AccountDto, Mt5BalanceDto, Mt5LiveBalancesDto } from './dto/mt5-account.dto';
+import { CreateMt5AccountDto, Mt5BalanceDto } from './dto/mt5-account.dto';
 import {
   PermissionsGuard,
   RequirePermissions,
   type AuthenticatedAdmin,
 } from '../../admin/guards/admin.guard';
 import { NotClientScoped, ScopedToClients } from '../../admin/guards/client-scope.decorator';
-import { Audited, NotAudited } from '../../admin/guards/audited.decorator';
+import { Audited } from '../../admin/guards/audited.decorator';
 
 /**
  * The back office's write surface onto MT5: open an account, move its balance.
@@ -141,36 +131,26 @@ export class Mt5AccountsController {
     );
   }
 
-  /**
-   * Live balances for a page of accounts, keyed by account id.
+  /*
+   * `POST trading-accounts/live-balances` USED TO BE HERE, and its removal is
+   * the point of the balance mirror.
    *
-   * POST rather than GET, and that is not REST pedantry: the ids are a list of
-   * up to twenty-five UUIDs, which is roughly 900 characters of query string —
-   * inside most limits and not all of them, and truncation here would silently
-   * refresh some rows and not others.
+   * It read one bridge call per account, sequentially, for every row on the
+   * page. Every MT5 call is serialised behind the bridge's single session lock,
+   * so a page load queued twenty-five acquisitions — and the connection
+   * supervisor needs that same lock to rebuild a dropped session. The screen
+   * showing the estate was the reason the estate could not reconnect, and it
+   * fired whether or not anybody cared about any of those numbers.
+   *
+   * `trading_accounts.balance` is now a mirror the bridge refreshes on its sweep
+   * (migration 0081), and the list reads it with `balanceSyncedAt` beside it so
+   * the age is visible rather than implied.
+   *
+   * The SINGLE-account live read below stays, and always was going to: it is one
+   * call, asked for deliberately, on the screen where somebody is looking at one
+   * account — and it carries equity, margin and free margin, which are
+   * deliberately not mirrored because they move on every tick.
    */
-  @Post('trading-accounts/live-balances')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions('trading.view')
-  @HttpCode(HttpStatus.OK)
-  @ApiCookieAuth()
-  @ApiOperation({
-    summary: 'Live MT5 balances for the accounts on one page',
-    description:
-      'One bridge call per account, so the list is capped. An account MT5 will not answer for ' +
-      'is simply absent from the result and the console falls back to its cached figure.',
-  })
-  @ScopedToClients('Reads balances for client trading accounts the caller can already list.')
-  @NotAudited(
-    'A READ of balances the caller can already see on the list endpoint, refreshed. Recording ' +
-      'it would add a row per page load of a screen operators leave open.',
-  )
-  liveBalances(
-    @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Body() dto: Mt5LiveBalancesDto,
-  ) {
-    return this.accounts.liveBalances(dto.accountIds, req.admin);
-  }
 
   /**
    * What MT5 says this account holds right now.

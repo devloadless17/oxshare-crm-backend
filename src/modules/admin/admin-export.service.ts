@@ -301,6 +301,10 @@ export class AdminExportService {
      * straight into a group the catalogue does not sell.
      */
     { header: 'Product', value: (r) => r.product },
+    // Blank means MT5 has never confirmed the balance beside it — which is a
+    // different statement from a zero balance, and the column that tells them
+    // apart.
+    { header: 'Balance synced', value: (r) => r.balanceSyncedAt },
     { header: 'Leverage', value: (r) => r.leverage },
     { header: 'Status', value: (r) => r.status },
     { header: 'Client ID', value: (r) => r.userId },
@@ -606,6 +610,7 @@ export interface TradingAccountExportRow {
   /** A STRING, always — see `tradingAccountColumns`. */
   balance: string;
   product: string | null;
+  balanceSyncedAt: Date | null;
   leverage: number | null;
   status: string;
   createdAt: Date;

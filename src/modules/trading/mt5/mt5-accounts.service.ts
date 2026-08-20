@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { tradingAccounts, users } from '../../../database/schema';
@@ -23,15 +23,6 @@ import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
 } from '../../../common/provisioning/notification-dispatch.port';
-
-/**
- * How many accounts one live-balance request may cover.
- *
- * The console's default page size, so a page load is one request. Larger pages
- * fall back to the cached column for the overflow rather than being refused —
- * see the controller.
- */
-const MAX_LIVE_BALANCES = 25;
 
 /**
  * Clamp demo funding to the configured ceiling.
@@ -1005,89 +996,6 @@ export class Mt5AccountsService {
       replayed: result.replayed,
       balance: snapshot?.balance ?? null,
     };
-  }
-
-  /**
-   * Live balances for a page of accounts, keyed by account id.
-   *
-   * ## Why the list needs this at all
-   *
-   * `trading_accounts.balance` is a CACHE and nothing refreshes it. It moves
-   * when the console deposits and at no other time — a client's own trading
-   * changes the real figure every second and MT5 never tells us. So the column
-   * is not merely stale, it is stale in a way that gets worse the more the
-   * account is used, and it reads as authoritative.
-   *
-   * That is not hypothetical: the accounts screen showed ten accounts at
-   * $0.00, which was the honest content of a column nobody had ever written to.
-   *
-   * ## Bounded on purpose
-   *
-   * One bridge call per account, so this takes the page the operator is looking
-   * at and refuses anything larger. An unbounded version invited a caller to
-   * ask for every account on the platform and turned one page load into
-   * thousands of round trips to the broker.
-   *
-   * ## A failure here is not a failure of the page
-   *
-   * An account MT5 will not answer for is simply absent from the result, and
-   * the console falls back to the cached figure with a label saying so. The
-   * alternative — failing the whole request — would blank a working table
-   * because one account is unreadable.
-   */
-  async liveBalances(accountIds: string[], actor: AuthenticatedAdmin) {
-    assertActorCan(actor, 'trading.view', 'read live MT5 balances');
-
-    if (accountIds.length === 0) return {};
-    if (accountIds.length > MAX_LIVE_BALANCES) {
-      throw new ValidationError(
-        `Ask for at most ${MAX_LIVE_BALANCES} accounts at a time; this is one call to MT5 each.`,
-      );
-    }
-
-    // Not an error when the bridge is unconfigured: the page still works off
-    // the cache, and every row falling back is the correct rendering of "we
-    // cannot reach MT5 right now".
-    if (!this.bridge.isConfigured) return {};
-
-    // Scope on the owning client: out-of-scope account ids simply do not come
-    // back, the same as ids that name no account — a scoped desk reads live
-    // balances only for its own territory's accounts, even though the ids
-    // arrive in the request body rather than from a list it already filtered.
-    const rows = await this.db
-      .select({ id: tradingAccounts.id, login: tradingAccounts.login })
-      .from(tradingAccounts)
-      .where(
-        and(
-          inArray(tradingAccounts.id, accountIds),
-          clientScopePredicate(actor.clientScope, tradingAccounts.userId),
-        ),
-      );
-
-    const balances: Record<string, string> = {};
-
-    /*
-     * Sequential, not Promise.all.
-     *
-     * The bridge serialises every call behind one lock anyway — the MT5 session
-     * is a single socket — so firing twenty-five at once buys nothing and just
-     * queues them inside the bridge where this service cannot see or bound the
-     * wait.
-     */
-    for (const row of rows) {
-      if (!row.login) continue;
-      try {
-        const snapshot = await this.bridge.getAccount(row.login);
-        if (snapshot) balances[row.id] = snapshot.balance;
-      } catch (error) {
-        this.logger.warn(
-          `Could not read the live balance for MT5 ${row.login}: ` +
-            `${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-
-    return balances;
   }
 
   /**

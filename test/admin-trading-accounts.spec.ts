@@ -603,7 +603,7 @@ describe('the CSV export', () => {
 
 describe('scope: the write and live routes refuse an out-of-scope client (13 Aug walk)', () => {
   /*
-   * These four routes DECLARED `@ScopedToClients` and enforced nothing — a
+   * These routes DECLARED `@ScopedToClients` and enforced nothing — a
    * scoped desk could open, fund and read live balances on any client's MT5
    * account, and `createAccount` returned the client's email in
    * `credentialsSentTo`. The fix scopes on the OWNING client in the WHERE
@@ -647,17 +647,19 @@ describe('scope: the write and live routes refuse an out-of-scope client (13 Aug
     expect(res.status).not.toBe(403);
   });
 
-  it('live balances: an out-of-scope account id is silently dropped, never returned', async () => {
-    // Batch route: out-of-scope ids fall out of the result rather than 404 the
-    // whole call. The scope predicate is in the WHERE; with the bridge down it
-    // returns {} regardless, and the key point is the id is NOT present.
-    const session = await actingAs(ctx, 'admin', SCOPED);
-    const res = await session.post('/v1/admin/trading-accounts/live-balances', {
-      accountIds: [theirAccountId],
-    });
-    expect(res.status).toBe(200);
-    expect(body(res)).not.toHaveProperty(theirAccountId);
-  });
+  /*
+   * The fourth route, `POST trading-accounts/live-balances`, IS GONE.
+   *
+   * Its scope test went with it. The endpoint read one bridge call per account
+   * for every row on a page, and every MT5 call is serialised behind the
+   * bridge's single session lock — so rendering the list queued twenty-five
+   * acquisitions and starved the connection supervisor that needs the same lock
+   * to reconnect. `balance` is now a mirror the bridge refreshes on its sweep.
+   *
+   * Nothing about the scope guarantee is untested as a result: the remaining
+   * three routes are asserted above, and the LIST endpoint that now serves the
+   * balance has its own scope coverage earlier in this file.
+   */
 
   it('a MASTER admin still reaches the same out-of-scope account, proving it exists', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);

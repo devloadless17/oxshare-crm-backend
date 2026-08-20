@@ -1,7 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
-  ArrayMaxSize,
-  IsArray,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -93,20 +91,4 @@ export class Mt5BalanceDto {
   @IsNotEmpty()
   @MaxLength(128)
   comment: string;
-}
-
-/** Which accounts to read live balances for. */
-export class Mt5LiveBalancesDto {
-  /**
-   * Capped at 25 — one MT5 round trip each.
-   *
-   * The limit is in the DTO as well as the service so an over-long list is
-   * refused before any bridge call is made, rather than after the first
-   * twenty-five have already run.
-   */
-  @ApiProperty({ type: [String], format: 'uuid', maxItems: 25 })
-  @IsArray()
-  @ArrayMaxSize(25)
-  @IsUUID('4', { each: true })
-  accountIds: string[];
 }

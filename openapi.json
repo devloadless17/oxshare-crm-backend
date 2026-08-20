@@ -4016,37 +4016,6 @@
         ]
       }
     },
-    "/v1/admin/trading-accounts/live-balances": {
-      "post": {
-        "description": "One bridge call per account, so the list is capped. An account MT5 will not answer for is simply absent from the result and the console falls back to its cached figure.",
-        "operationId": "Mt5AccountsController_liveBalances",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Mt5LiveBalancesDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Live MT5 balances for the accounts on one page",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
     "/v1/admin/trading-accounts/{id}/live": {
       "get": {
         "operationId": "Mt5AccountsController_live",
@@ -12328,22 +12297,6 @@
           "comment"
         ]
       },
-      "Mt5LiveBalancesDto": {
-        "type": "object",
-        "properties": {
-          "accountIds": {
-            "maxItems": 25,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        },
-        "required": [
-          "accountIds"
-        ]
-      },
       "KycDocumentPartDto": {
         "type": "object",
         "properties": {
@@ -15976,6 +15929,11 @@
           },
           "product": {
             "type": "string",
+            "nullable": true
+          },
+          "balanceSyncedAt": {
+            "type": "string",
+            "format": "date-time",
             "nullable": true
           },
           "leverage": {

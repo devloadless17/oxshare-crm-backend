@@ -858,6 +858,16 @@ export class TradingAccountRowDto {
    * the catalogue does not sell.
    */
   @ApiPropertyOptional({ type: String, nullable: true }) product?: string | null;
+  /**
+   * When MT5 last confirmed `balance`. NULL means never.
+   *
+   * The list serves a MIRROR — the bridge refreshes it on its sweep rather than
+   * the console calling MT5 once per row — so the age is part of the answer. A
+   * mirrored figure rendered without it reads as live, which is the one thing it
+   * must not do.
+   */
+  @ApiPropertyOptional({ type: String, format: 'date-time', nullable: true })
+  balanceSyncedAt?: Date | null;
   @ApiPropertyOptional({ type: Number, nullable: true }) leverage?: number | null;
   @ApiProperty({ enum: ['active', 'suspended', 'closed'] }) status: string;
   @ApiProperty() createdAt: Date;

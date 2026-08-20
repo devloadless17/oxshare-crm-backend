@@ -529,6 +529,15 @@ export class AdminHoldingsService {
          * somebody edits the catalogue.
          */
         product: PRODUCT_NAME,
+        /*
+         * The AGE of the balance above, travelling with it deliberately.
+         *
+         * The list reads a MIRROR now rather than calling MT5 once per row. A
+         * mirrored number with no age is indistinguishable from a live one,
+         * which is worse than either — so this is part of the same projection
+         * rather than something a screen might forget to ask for.
+         */
+        balanceSyncedAt: tradingAccounts.balanceSyncedAt,
         leverage: tradingAccounts.leverage,
         status: tradingAccounts.status,
         createdAt: tradingAccounts.createdAt,
@@ -570,6 +579,7 @@ export class AdminHoldingsService {
         currency: r.currency,
         balance: r.balance,
         product: r.product,
+        balanceSyncedAt: r.balanceSyncedAt,
         leverage: r.leverage,
         status: r.status,
         createdAt: r.createdAt,
@@ -622,6 +632,9 @@ export class AdminHoldingsService {
            * somebody edits the catalogue.
            */
           product: PRODUCT_NAME,
+          // As above: an exported balance without its age invites somebody to
+          // reconcile a spreadsheet against a figure of unknown vintage.
+          balanceSyncedAt: tradingAccounts.balanceSyncedAt,
           leverage: tradingAccounts.leverage,
           status: tradingAccounts.status,
           createdAt: tradingAccounts.createdAt,
