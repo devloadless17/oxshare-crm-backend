@@ -11,7 +11,13 @@ the health probes. Routes still carry no `/api`; that prefix belongs to the fron
 rewrite, which now targets `http://localhost:3001/v1/:path*`.
 
 **Anything that decides something from `req.path` must strip the prefix with `stripApiPrefix()`,
-never match a literal.** `CsrfGuard` matched `'/admin'` directly, so introducing `/v1` silently
+never match a literal.** And in a **middleware** it must not read `req.path` at all: inside a
+`NestMiddleware` mounted with `forRoutes('*')`, Express reports `req.path` *relative to the mount*
+— it is `"/"` for every request. Use `req.originalUrl`. `CsrfEchoMiddleware` read `req.path`,
+classified every admin request as portal, and echoed no anti-forgery token, so every cross-host
+admin write failed 403 (17164fd). Guards are unaffected — they run inside the route handler and
+see the full path. A unit test that hands a middleware a literal full `path` will pass while
+production fails; build the request as Express does. `CsrfGuard` matched `'/admin'` directly, so introducing `/v1` silently
 disarmed anti-forgery checking on every admin write — the guard took the portal branch, found no
 portal cookie, and concluded there was nothing to protect.
 
