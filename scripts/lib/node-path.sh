@@ -59,6 +59,42 @@ if ! command -v npm >/dev/null 2>&1; then
     "$HOME/.volta/bin"
   )
 
+  # 5. Windows, via the Git Bash that Claude Code's Bash tool runs.
+  #
+  #    Every candidate above is a Unix path, so on a Windows host this loop found
+  #    nothing and the gates reported "node/npm not found on PATH — the typecheck
+  #    did NOT run." The node.js MSI installs to `C:\Program Files\nodejs` and
+  #    does NOT add itself to the PATH of a non-login shell, which is exactly the
+  #    shell hooks get.
+  #
+  #    `-x "$_candidate/npm"` works unchanged here: npm ships a POSIX `npm` shell
+  #    script beside `npm.cmd`, and Git Bash marks it executable. No .exe/.cmd
+  #    suffix handling is needed.
+  #
+  #    Every entry MUST be a POSIX path (/c/...), never a drive-letter one
+  #    (C:/...). This is the trap that cost the first attempt at this block:
+  #    `[ -x "C:/Program Files/nodejs/npm" ]` PASSES, because bash's file tests
+  #    go through the Windows layer — so the loop below matches and breaks, and
+  #    it all looks like it worked. But `:` is the PATH separator, so prepending
+  #    that entry splits it into `C` and `/Program Files/nodejs`, neither of
+  #    which exists, and `command -v npm` still finds nothing. The gate then
+  #    reports the same "did NOT run" as before, from a candidate that appeared
+  #    to match. cygpath (shipped with Git Bash) does the conversion properly;
+  #    %PROGRAMFILES% and friends also arrive with backslashes, which it handles
+  #    in the same pass.
+  _win_dirs=()
+  if command -v cygpath >/dev/null 2>&1; then
+    [ -n "${PROGRAMFILES:-}" ] && _win_dirs+=("$(cygpath -u "$PROGRAMFILES")/nodejs")
+    [ -n "${LOCALAPPDATA:-}" ] && _win_dirs+=("$(cygpath -u "$LOCALAPPDATA")/Programs/nodejs")
+    [ -n "${APPDATA:-}" ] && _win_dirs+=("$(cygpath -u "$APPDATA")/npm")
+  fi
+  # Fallback for a shell without cygpath, or one exporting none of the above.
+  _win_dirs+=(
+    "/c/Program Files/nodejs"
+    "/c/Program Files (x86)/nodejs"
+  )
+  _candidates+=("${_win_dirs[@]}")
+
   for _candidate in "${_candidates[@]}"; do
     if [ -n "$_candidate" ] && [ -x "$_candidate/npm" ]; then
       PATH="$_candidate:$PATH"
@@ -67,7 +103,7 @@ if ! command -v npm >/dev/null 2>&1; then
     fi
   done
 
-  unset _nvm_dir _default _dir _candidate _candidates
+  unset _nvm_dir _default _dir _candidate _candidates _win_dirs
 fi
 
 # Callers check this rather than assuming success. Reporting "I could not run the
