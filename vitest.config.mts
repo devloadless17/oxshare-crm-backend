@@ -196,7 +196,13 @@ export default defineConfig({
       // The §11 caveat above applies with more force than usual here: all four
       // money acceptance tests pass, and they — not this percentage — are what
       // guards the paths that can lose money.
-      thresholds: { lines: 74, functions: 69, branches: 61, statements: 72 },
+      /*
+       * Raised 21 Aug 2026 from 74/69/61/72, against a measured run of 119 files
+       * / 1839 tests: statements 74.64, branches 64.01, functions 71.05, lines
+       * 76.31. Still a floor a point or so under the measurement, never a
+       * target — and it may only ever go up.
+       */
+      thresholds: { lines: 75, functions: 70, branches: 62, statements: 73 },
     },
   },
 });

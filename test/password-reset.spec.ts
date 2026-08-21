@@ -189,8 +189,9 @@ describe('completing a reset', () => {
 
     const row = await reload(user.id);
     expect(row.emailVerified).toBe(true);
-    expect(row.emailVerificationToken).toBeNull();
+    expect(row.emailVerificationTokenHash).toBeNull();
     expect(row.emailVerificationExpiry).toBeNull();
+    expect(row.emailVerificationConsumedAt).toBeNull();
   });
 
   it('REVOKES every session, because that is why people reset', async () => {

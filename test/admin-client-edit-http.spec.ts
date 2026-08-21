@@ -162,7 +162,8 @@ beforeEach(async () => {
       country: 'Lebanon',
       phone: '+9613111222',
       emailVerified: true,
-      emailVerificationToken: null,
+      emailVerificationTokenHash: null,
+      emailVerificationConsumedAt: null,
     })
     .where(eq(users.id, clientId));
   /*
@@ -311,7 +312,16 @@ describe('changing the sign-in email', () => {
     const row = await clientRow();
     expect(row.email).toBe('leila.haddad@example.com');
     expect(row.emailVerified).toBe(false);
-    expect(row.emailVerificationToken).toBeTruthy();
+    expect(row.emailVerificationTokenHash).toBeTruthy();
+    /*
+     * And the PREVIOUS cycle's redemption marker is gone with it.
+     *
+     * This client had verified their old address, so the row carried a
+     * `consumed_at`. Carrying it into the new cycle would make the very first
+     * click on the new link answer `already_verified` — verifying nothing while
+     * telling the client it had. See schema.ts.
+     */
+    expect(row.emailVerificationConsumedAt).toBeNull();
   });
 
   it('revokes every portal session the client had', async () => {

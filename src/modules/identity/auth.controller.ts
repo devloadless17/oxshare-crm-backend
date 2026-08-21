@@ -33,6 +33,7 @@ import {
   MessageResponseDto,
   RegistrationResponseDto,
   SessionDto,
+  VerifyEmailResponseDto,
   UserProfileDto,
 } from './dto/auth-response.dto';
 import {
@@ -97,7 +98,7 @@ export class AuthController {
   @Throttle({ default: { ttl: 900_000, limit: 10 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify email with the token from the emailed link' })
-  @ApiOkResponse({ type: MessageResponseDto })
+  @ApiOkResponse({ type: VerifyEmailResponseDto })
   verifyEmail(@Body() dto: VerifyEmailDto) {
     return this.auth.verifyEmail(dto.token);
   }

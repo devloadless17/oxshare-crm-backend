@@ -194,7 +194,27 @@ export class AllExceptionsFilter implements ExceptionFilter {
     if (exception instanceof HttpException) {
       const body = exception.getResponse();
       if (typeof body === 'string') {
-        return { status: exception.getStatus(), message: body, code: 'HTTP_ERROR' };
+        /*
+         * `httpCodeFor`, not the literal `HTTP_ERROR` it used to return.
+         *
+         * Whether a Nest exception carries a string or an object body is an
+         * implementation detail of whoever threw it — but it decided the CODE,
+         * so the same status arrived as `RATE_LIMITED` from one thrower and
+         * `HTTP_ERROR` from another. `ThrottlerException` is the one that
+         * matters: it throws a string body, so every 429 in the system reached
+         * the frontends codeless.
+         *
+         * The portal's verification screen is where that showed. With no code
+         * to branch on, a rate-limited click fell through to the generic red
+         * box and read "Verification Failed" — telling a client their link was
+         * broken when the only thing that happened is that we asked them to
+         * wait. Same class of defect as UX-01, one layer down.
+         */
+        return {
+          status: exception.getStatus(),
+          message: body,
+          code: httpCodeFor(exception.getStatus()),
+        };
       }
 
       const shaped = body as {

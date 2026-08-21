@@ -62,10 +62,57 @@ export const users = pgTable(
     status: userStatusEnum('status').notNull().default('active'),
     verificationLevel: integer('verification_level').notNull().default(0),
     emailVerified: boolean('email_verified').notNull().default(false),
-    emailVerificationToken: varchar('email_verification_token', {
-      length: 255,
+    /*
+     * Email verification — a SHA-256 HASH of the emailed token, never the token.
+     *
+     * ## Why a hash, when this used to be plaintext
+     *
+     * `passwordResetTokenHash` below has always been hashed, for a reason that
+     * applies here word for word: a database dump, a leaked backup or a
+     * read-only SQL injection would otherwise hand an attacker a working link
+     * for every user with one outstanding. This column was the last plaintext
+     * single-use credential in the schema — the 6 Aug note on `verifyEmail`
+     * called it out as exactly that and only shortened its life. Hashing ends
+     * it. The token is a v4 UUID, so a fast digest is the right primitive: there
+     * is no guessable secret for a slow KDF to protect, and this lookup is
+     * unauthenticated and triggerable at will.
+     *
+     * ## It SURVIVES consumption, paired with `emailVerificationConsumedAt`
+     *
+     * The row used to be wiped the moment a link worked, which made "this token
+     * was used successfully a minute ago" and "this token never existed" the
+     * same state — so a refresh, a Back button, or a corporate mail scanner
+     * prefetching the link produced a red "Verification Failed" on an account
+     * that was verified (UX-01). Keeping the hash is what lets the second POST
+     * answer `already_verified` instead of lying.
+     *
+     * Retaining it costs nothing a cleared column bought: a hash is not a usable
+     * credential, which is the whole point of the paragraph above.
+     */
+    emailVerificationTokenHash: varchar('email_verification_token_hash', {
+      length: 64,
     }),
     emailVerificationExpiry: timestamp('email_verification_expiry', {
+      withTimezone: true,
+    }),
+    /*
+     * When the token above was successfully redeemed. NULL means outstanding.
+     *
+     * Written in the SAME statement as `email_verified` and never apart from it
+     * (`UsersStore.consumeEmailVerification`), so the two cannot disagree — a
+     * conditional `WHERE ... consumed_at IS NULL` with a rowcount check, the
+     * §6.3 idempotency idiom, rather than a read-then-write that two concurrent
+     * clicks would both win.
+     *
+     * ⚠️ EVERY writer of a new `emailVerificationTokenHash` must clear this in
+     * the same update, or a fresh link would be born looking already-redeemed.
+     * There are two (`AuthService.resendVerification`,
+     * `AdminClientsService.changeEmail`) plus `register`, which INSERTs and so
+     * gets NULL for free. This is not left to prose: `UsersStore.update`
+     * REFUSES a patch that sets a new hash without saying what happens to this,
+     * so a third writer cannot forget.
+     */
+    emailVerificationConsumedAt: timestamp('email_verification_consumed_at', {
       withTimezone: true,
     }),
     /*
@@ -168,6 +215,27 @@ export const users = pgTable(
     /* "Which clients did this partner introduce?" — asked per partner by every
        commission calculation the engine will eventually run. */
     index('users_referred_by_idx').on(t.referredByIbUserId),
+    /*
+     * The verification lookup, which is a by-token seek over the whole table.
+     *
+     * It had no index while the column was plaintext, and got away with it
+     * because it was rare. It is no longer rare in the same way: the hash now
+     * OUTLIVES redemption, so every repeat click, refresh and mail-scanner
+     * prefetch is another seek — and §5 sizes this table at ~219,000 rows.
+     *
+     * UNIQUE, and that is a correctness constraint rather than a performance
+     * one. `findByVerificationTokenHash` takes `.limit(1)`: if two rows ever
+     * held the same hash, it would return an ARBITRARY one of them and verify
+     * the wrong account — silently, on the control that gates KYC and therefore
+     * withdrawals. Tokens are `randomUUID`, so this cannot happen by chance;
+     * the constraint is here so that if it ever does, it is an INSERT failure
+     * somebody has to look at rather than a client verified into a stranger's
+     * account. §6.3: idempotency lives in database constraints.
+     *
+     * Nulls do not collide in Postgres, so the many rows with no outstanding
+     * token are unaffected.
+     */
+    uniqueIndex('users_email_verification_token_hash_idx').on(t.emailVerificationTokenHash),
   ],
 );
 

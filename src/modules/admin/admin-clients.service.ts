@@ -11,6 +11,7 @@ import { actorHasPermission } from '../../common/security/actor';
 import { EmailService } from '../email/email.service';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import { randomUUID } from 'crypto';
+import { hashEmailedToken } from '../../common/security/emailed-token';
 
 /** The six `kyc_status` values, in the order a client passes through them. */
 const KYC_STATUSES = [
@@ -482,8 +483,16 @@ export class AdminClientsService {
        * thing they would not receive is the mail telling them so.
        */
       emailVerified: false,
-      emailVerificationToken: token,
+      emailVerificationTokenHash: hashEmailedToken(token),
       emailVerificationExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      /*
+       * Cleared with the rest of the cycle. If this client had already verified
+       * their PREVIOUS address, the row still carries that redemption — and a
+       * link to the NEW address whose row says "redeemed" would be answered
+       * `already_verified` on its first click, verifying nothing while telling
+       * the client it had. See the column comment in schema.ts.
+       */
+      emailVerificationConsumedAt: undefined,
     }))!;
 
     this.audit.record(actor.id, 'client.email_change', 'user', userId, {

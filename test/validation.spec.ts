@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { Test } from '@nestjs/testing';
-import { ValidationPipe, type INestApplication } from '@nestjs/common';
+import { HttpException, ValidationPipe, type INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import type { Server } from 'node:http';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
@@ -8,6 +8,7 @@ import { ThrottlerStorage } from '@nestjs/throttler';
 import type { ThrottlerStorageRecord } from '@nestjs/throttler/dist/throttler-storage-record.interface';
 import { AppModule } from '../src/app.module';
 import { VALIDATION_PIPE_OPTIONS } from '../src/common/validation.config';
+import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
 
 /**
  * Request validation, at the transport edge.
@@ -234,6 +235,36 @@ describe('R-2.2 the error envelope carries a field map', () => {
 
     expect(res.body.code).not.toBe('Bad Request');
     expect(res.body.code).toMatch(/^[A-Z_]+$/);
+  });
+
+  it('gives a STRING-bodied exception the same code as an object-bodied one', () => {
+    /*
+     * Whether a Nest exception carries a string or an object body is an
+     * implementation detail of whoever threw it, and it used to decide the code:
+     * the object branch derived one from the status, the string branch returned
+     * the literal `HTTP_ERROR`. So the same status reached the frontends as
+     * `RATE_LIMITED` from one thrower and `HTTP_ERROR` from another.
+     *
+     * `ThrottlerException` is the one that mattered — it throws a string body,
+     * so EVERY 429 in the system arrived codeless, and the portal's verification
+     * screen rendered a rate-limited click as "Verification Failed".
+     *
+     * Asserted through the filter directly rather than by exhausting a real
+     * limiter, which would make this test slow and order-dependent.
+     */
+    const filter = new AllExceptionsFilter();
+    const classify = (
+      filter as unknown as {
+        classify(e: unknown): { status: number; code: string };
+      }
+    ).classify.bind(filter);
+
+    expect(classify(new HttpException('ThrottlerException: Too Many Requests', 429)).code).toBe(
+      'RATE_LIMITED',
+    );
+    expect(classify(new HttpException({ message: 'Too Many Requests' }, 429)).code).toBe(
+      'RATE_LIMITED',
+    );
   });
 
   it('omits `fields` entirely when the failure is not a validation failure', async () => {

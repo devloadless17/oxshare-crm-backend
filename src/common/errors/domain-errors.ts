@@ -54,9 +54,33 @@ export class ClientNotFoundError extends DomainError {
   }
 }
 
-/** The request was structurally fine but semantically invalid. → 400 */
+/**
+ * The request was structurally fine but semantically invalid. → 400
+ *
+ * `code` is annotated `: string` rather than left to infer the literal, for the
+ * reason spelled out on `AuthenticationError` below: the subclass beneath
+ * refines it, and without the annotation TypeScript narrows this to
+ * `'VALIDATION_FAILED'` and every subclass becomes a type error.
+ */
 export class ValidationError extends DomainError {
-  readonly code = 'VALIDATION_FAILED';
+  readonly code: string = 'VALIDATION_FAILED';
+}
+
+/**
+ * The verification link's 24 hours are up. → 400 `VERIFICATION_TOKEN_EXPIRED`
+ *
+ * A distinct subclass ONLY so it carries a distinct `code`, exactly as
+ * `EmailNotVerifiedError` is one. The portal's verification screen has three
+ * outcomes to tell apart — redeemed, expired, never valid — and until now all
+ * three arrived as `400 / VALIDATION_FAILED` with different English in
+ * `message`. It rendered one red "Verification Failed" for all of them, which
+ * is how a client whose link had merely aged out was told to do nothing in
+ * particular instead of "request a new one".
+ *
+ * A client should never have to read prose to make a decision.
+ */
+export class VerificationTokenExpiredError extends ValidationError {
+  override readonly code = 'VERIFICATION_TOKEN_EXPIRED';
 }
 
 /**

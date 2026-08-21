@@ -15,7 +15,9 @@ import {
   AuthorizationError,
   EmailNotVerifiedError,
   ValidationError,
+  VerificationTokenExpiredError,
 } from '../src/common/errors/domain-errors';
+import { createHash } from 'node:crypto';
 
 /**
  * AuthService — the portal's front door, and until now untested.
@@ -92,7 +94,8 @@ interface Harness {
   users: {
     findByEmail: ReturnType<typeof vi.fn>;
     findById: ReturnType<typeof vi.fn>;
-    findByVerificationToken: ReturnType<typeof vi.fn>;
+    findByVerificationTokenHash: ReturnType<typeof vi.fn>;
+    consumeEmailVerification: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
   };
@@ -112,7 +115,8 @@ function build(overrides: { user?: User | undefined } = {}): Harness {
   const users = {
     findByEmail: vi.fn().mockResolvedValue(overrides.user),
     findById: vi.fn().mockResolvedValue(overrides.user),
-    findByVerificationToken: vi.fn().mockResolvedValue(undefined),
+    findByVerificationTokenHash: vi.fn().mockResolvedValue(undefined),
+    consumeEmailVerification: vi.fn().mockResolvedValue(true),
     create: vi.fn((data: Partial<User>) => Promise.resolve({ id: 'new-user', ...data } as User)),
     update: vi.fn((_id: string, patch: Partial<User>) => Promise.resolve(makeUser(patch))),
   };
@@ -240,13 +244,33 @@ describe('register', () => {
 });
 
 describe('verifyEmail', () => {
+  /*
+   * The token is looked up by its SHA-256 now, so a test that wants a lookup to
+   * SUCCEED has to key the stub on the same hash the service will compute.
+   */
+  const hashOf = (token: string) => createHash('sha256').update(token, 'utf8').digest('hex');
+
   it('refuses an unknown token', async () => {
     const h = build();
-    h.users.findByVerificationToken.mockResolvedValue(undefined);
+    h.users.findByVerificationTokenHash.mockResolvedValue(undefined);
     await expect(h.service.verifyEmail('nope')).rejects.toThrow(ValidationError);
   });
 
-  it('refuses an expired token, and clears it on the way out', async () => {
+  it('never sends the PLAINTEXT token to the store', async () => {
+    /*
+     * The point of hashing: the credential stops at the service that received
+     * it and never reaches a query, a query log, or a database dump.
+     */
+    const h = build();
+    h.users.findByVerificationTokenHash.mockResolvedValue(undefined);
+    await expect(h.service.verifyEmail('secret-token')).rejects.toThrow(ValidationError);
+
+    const [arg] = h.users.findByVerificationTokenHash.mock.calls[0] as [string];
+    expect(arg).not.toBe('secret-token');
+    expect(arg).toBe(hashOf('secret-token'));
+  });
+
+  it('refuses an expired token, and clears the whole cycle on the way out', async () => {
     /*
      * UPDATED 6 Aug 2026. This asserted that NOTHING was written on the expiry
      * path, which was true and was the defect: the dead token stayed in the row
@@ -256,40 +280,180 @@ describe('verifyEmail', () => {
      * `resetPassword` has always cleared its token on the same path. This is now
      * the same shape. What must NOT change is the refusal itself, so both halves
      * are asserted.
+     *
+     * UPDATED 21 Aug 2026 for the hashed column and its redemption marker. The
+     * marker goes with the hash: half a record of a cycle that ended in nothing
+     * is worse than no record.
      */
     const h = build();
-    h.users.findByVerificationToken.mockResolvedValue(
+    h.users.findByVerificationTokenHash.mockResolvedValue(
       makeUser({ emailVerified: false, emailVerificationExpiry: new Date(Date.now() - 1000) }),
     );
     await expect(h.service.verifyEmail('stale')).rejects.toThrow(/expired/i);
 
     expect(h.users.update).toHaveBeenCalledWith('user-1', {
-      emailVerificationToken: undefined,
+      emailVerificationTokenHash: undefined,
       emailVerificationExpiry: undefined,
+      emailVerificationConsumedAt: undefined,
     });
     // And emphatically NOT verified — clearing the token must not be mistaken
     // for accepting it.
-    expect(h.users.update).not.toHaveBeenCalledWith(
+    expect(h.users.consumeEmailVerification).not.toHaveBeenCalled();
+  });
+
+  it('gives an expired link its OWN code, so the screen can say "request a new one"', async () => {
+    /*
+     * Expired and never-valid used to be the same 400 / VALIDATION_FAILED with
+     * different English, and the portal rendered one red box for both. A client
+     * whose link had merely aged out was told nothing actionable.
+     */
+    const h = build();
+    h.users.findByVerificationTokenHash.mockResolvedValue(
+      makeUser({ emailVerified: false, emailVerificationExpiry: new Date(Date.now() - 1000) }),
+    );
+    await expect(h.service.verifyEmail('stale')).rejects.toThrow(VerificationTokenExpiredError);
+    await expect(h.service.verifyEmail('stale')).rejects.toMatchObject({
+      code: 'VERIFICATION_TOKEN_EXPIRED',
+    });
+  });
+
+  it('verifies through a CONDITIONAL update, not a read-then-write', async () => {
+    const h = build();
+    h.users.findByVerificationTokenHash.mockResolvedValue(
+      makeUser({ emailVerified: false, emailVerificationExpiry: new Date(Date.now() + 10_000) }),
+    );
+
+    const result = await h.service.verifyEmail('good');
+
+    expect(result.status).toBe('verified');
+    // The token's HASH is what identifies the row to redeem — the same value
+    // that found it, so a concurrent re-issue cannot be redeemed by this call.
+    expect(h.users.consumeEmailVerification).toHaveBeenCalledWith(
       'user-1',
-      expect.objectContaining({ emailVerified: true }),
+      hashOf('good'),
+      expect.any(Date),
     );
   });
 
-  it('verifies and CLEARS the token, so a link cannot be used twice', async () => {
+  it('answers ALREADY VERIFIED on a second click instead of "invalid"', async () => {
+    /*
+     * UX-01, and the reason this whole change exists.
+     *
+     * A refresh, the Back button, a restored tab, or a mail scanner prefetching
+     * the link re-POSTs a token that has already worked. That used to be
+     * indistinguishable from a token that never existed, so a verified client
+     * was shown a red "Verification Failed" — telling a customer that something
+     * failed when it succeeded, in a money product.
+     */
     const h = build();
-    h.users.findByVerificationToken.mockResolvedValue(
-      makeUser({ emailVerified: false, emailVerificationExpiry: new Date(Date.now() + 10_000) }),
-    );
-    await h.service.verifyEmail('good');
-    expect(h.users.update).toHaveBeenCalledWith(
-      'user-1',
-      expect.objectContaining({
+    h.users.findByVerificationTokenHash.mockResolvedValue(
+      makeUser({
         emailVerified: true,
-        emailVerificationToken: undefined,
-        emailVerificationExpiry: undefined,
+        emailVerificationExpiry: new Date(Date.now() + 10_000),
+        emailVerificationConsumedAt: new Date(),
       }),
     );
+
+    const result = await h.service.verifyEmail('used-already');
+
+    expect(result.status).toBe('already_verified');
+    // Nothing is re-written. The address was already confirmed.
+    expect(h.users.consumeEmailVerification).not.toHaveBeenCalled();
   });
+
+  it('answers ALREADY VERIFIED for a link redeemed before its expiry passed', async () => {
+    /*
+     * The redeemed check runs BEFORE the expiry check, and that order is
+     * load-bearing. A link redeemed on day one must not start reporting
+     * "expired" on day two because the clock moved past a deadline it had
+     * already met — which would reintroduce the same lie in slower motion.
+     */
+    const h = build();
+    h.users.findByVerificationTokenHash.mockResolvedValue(
+      makeUser({
+        emailVerified: true,
+        emailVerificationExpiry: new Date(Date.now() - 86_400_000),
+        emailVerificationConsumedAt: new Date(Date.now() - 90_000_000),
+      }),
+    );
+
+    await expect(h.service.verifyEmail('old-but-used')).resolves.toMatchObject({
+      status: 'already_verified',
+    });
+  });
+
+  it('treats LOSING the redemption race as a success, not a failure', async () => {
+    /*
+     * Two POSTs carrying the same valid token both read `consumed_at` as NULL —
+     * StrictMode's double mount, or a scanner and a human a moment apart. The
+     * database picks one. The loser is looking at an address that IS verified,
+     * and saying "invalid" to them is the original defect with a narrower window.
+     */
+    const h = build();
+    h.users.findByVerificationTokenHash.mockResolvedValue(
+      makeUser({ emailVerified: false, emailVerificationExpiry: new Date(Date.now() + 10_000) }),
+    );
+    h.users.consumeEmailVerification.mockResolvedValue(false);
+
+    await expect(h.service.verifyEmail('raced')).resolves.toMatchObject({
+      status: 'already_verified',
+    });
+  });
+
+  it('does NOT announce a verification that did not happen', async () => {
+    /*
+     * The redeemed fast path requires `emailVerified` as well as `consumedAt`.
+     * The two are only ever written together, so this state is unreachable by
+     * construction — which is exactly why the branch is worth pinning: it must
+     * fall through and do the real work rather than assert something false.
+     */
+    const h = build();
+    h.users.findByVerificationTokenHash.mockResolvedValue(
+      makeUser({
+        emailVerified: false,
+        emailVerificationExpiry: new Date(Date.now() + 10_000),
+        emailVerificationConsumedAt: new Date(),
+      }),
+    );
+    h.users.consumeEmailVerification.mockResolvedValue(true);
+
+    await expect(h.service.verifyEmail('incoherent')).resolves.toMatchObject({
+      status: 'verified',
+    });
+    expect(h.users.consumeEmailVerification).toHaveBeenCalled();
+  });
+});
+
+describe('resendVerification', () => {
+  it('ENDS the previous cycle when it issues a new token', async () => {
+    /*
+     * The redemption marker outlives redemption by design, so a re-send onto a
+     * row that carries one has to clear it. Otherwise the client's very first
+     * click on the brand-new link is answered `already_verified` — verifying
+     * nothing, then refusing them at login on an address that really is
+     * unverified.
+     */
+    const h = build({ user: makeUser({ emailVerified: false }) });
+
+    await h.service.resendVerification('client@oxshare.com');
+
+    const [, patch] = h.users.update.mock.calls[0] as [string, Record<string, unknown>];
+    expect('emailVerificationConsumedAt' in patch).toBe(true);
+    expect(patch.emailVerificationConsumedAt).toBeUndefined();
+  });
+
+  it('stores the HASH and mails the token', async () => {
+    const h = build({ user: makeUser({ emailVerified: false }) });
+
+    await h.service.resendVerification('client@oxshare.com');
+
+    const [, mailed] = h.email.sendVerificationEmail.mock.calls[0] as [string, string];
+    const [, patch] = h.users.update.mock.calls[0] as [string, Record<string, unknown>];
+    expect(patch.emailVerificationTokenHash).toBe(hashOf(mailed));
+    expect(patch.emailVerificationTokenHash).not.toBe(mailed);
+  });
+
+  const hashOf = (token: string) => createHash('sha256').update(token, 'utf8').digest('hex');
 });
 
 describe('login', () => {
@@ -480,12 +644,12 @@ describe('sanitize — what may leave the API', () => {
     ...({
       passwordResetTokenHash: 'reset-hash',
       passwordResetExpiry: new Date(),
-      emailVerificationToken: 'verify-token',
+      emailVerificationTokenHash: 'verify-hash',
       refreshToken: 'refresh-hash',
     } as object),
   });
 
-  const forbidden = ['stored-hash', 'reset-hash', 'verify-token', 'refresh-hash'];
+  const forbidden = ['stored-hash', 'reset-hash', 'verify-hash', 'refresh-hash'];
 
   it('me() returns none of the secret fields', () => {
     const serialised = JSON.stringify(build().service.me(LEAKY));

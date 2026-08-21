@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, sql, SQL, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNull, sql, SQL, type SQLWrapper } from 'drizzle-orm';
 import type { CursorPosition } from '../common/pagination';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -124,8 +124,11 @@ export interface User {
   status: 'active' | 'suspended' | 'pending';
   verificationLevel: 0 | 1;
   emailVerified: boolean;
-  emailVerificationToken?: string;
+  /** SHA-256 of the emailed verification token — never the token itself. */
+  emailVerificationTokenHash?: string;
   emailVerificationExpiry?: Date;
+  /** When that token was redeemed. Undefined means still outstanding. */
+  emailVerificationConsumedAt?: Date;
   /** SHA-256 of the emailed reset token — never the token itself. */
   passwordResetTokenHash?: string;
   passwordResetExpiry?: Date;
@@ -151,8 +154,9 @@ type Row = typeof users.$inferSelect;
 const toUser = (r: Row): User => ({
   ...r,
   verificationLevel: r.verificationLevel === 1 ? 1 : 0,
-  emailVerificationToken: r.emailVerificationToken ?? undefined,
+  emailVerificationTokenHash: r.emailVerificationTokenHash ?? undefined,
   emailVerificationExpiry: r.emailVerificationExpiry ?? undefined,
+  emailVerificationConsumedAt: r.emailVerificationConsumedAt ?? undefined,
   passwordResetTokenHash: r.passwordResetTokenHash ?? undefined,
   passwordResetExpiry: r.passwordResetExpiry ?? undefined,
   passwordChangedAt: r.passwordChangedAt ?? undefined,
@@ -250,13 +254,56 @@ export class UsersStore {
     return row ? toUser(row) : undefined;
   }
 
-  async findByVerificationToken(token: string): Promise<User | undefined> {
+  /**
+   * By the HASH of the emailed token, mirroring `findByPasswordResetTokenHash`.
+   *
+   * Takes a hash rather than the token so the plaintext credential stops at the
+   * service that received it and never reaches a query the database logs.
+   */
+  async findByVerificationTokenHash(hash: string): Promise<User | undefined> {
     const [row] = await this.db
       .select()
       .from(users)
-      .where(eq(users.emailVerificationToken, token))
+      .where(eq(users.emailVerificationTokenHash, hash))
       .limit(1);
     return row ? toUser(row) : undefined;
+  }
+
+  /**
+   * Redeem a verification token. `true` if THIS call did it, `false` if it was
+   * already redeemed.
+   *
+   * ## Why a conditional UPDATE and not read-then-write
+   *
+   * Two POSTs of the same token arrive together more often than the flow
+   * suggests: React StrictMode double-mounts in development, a mail scanner
+   * prefetches the link a moment before the human clicks it, and a refresh
+   * re-sends it. A read of `consumed_at` followed by a write lets both callers
+   * see NULL and both believe they were first — harmless for the account's
+   * final state, but it makes the answer a coin toss, which is the defect this
+   * whole change exists to remove.
+   *
+   * `WHERE ... consumed_at IS NULL` with a rowcount check is the §6.3
+   * idempotency idiom, applied here for the same reason it is applied to
+   * payouts: the database decides who was first, not the application.
+   *
+   * `email_verified` and `consumed_at` are set in this ONE statement and are
+   * written nowhere else together, so no reader can observe a row that is
+   * consumed but unverified.
+   */
+  async consumeEmailVerification(id: string, tokenHash: string, at: Date): Promise<boolean> {
+    const rows = await this.db
+      .update(users)
+      .set({ emailVerified: true, emailVerificationConsumedAt: at })
+      .where(
+        and(
+          eq(users.id, id),
+          eq(users.emailVerificationTokenHash, tokenHash),
+          isNull(users.emailVerificationConsumedAt),
+        ),
+      )
+      .returning({ id: users.id });
+    return rows.length === 1;
   }
 
   /**
@@ -282,6 +329,47 @@ export class UsersStore {
    */
   async update(id: string, patch: Partial<User>, executor?: Executor): Promise<User | undefined> {
     const { id: _ignored, createdAt: _also, ...rest } = patch;
+
+    /*
+     * Issuing a new verification token MUST end the previous cycle.
+     *
+     * `email_verification_consumed_at` outlives redemption by design, so a row
+     * that carried one and then gets a fresh token would present that token as
+     * already redeemed. The client's very first click on a brand-new link would
+     * be answered `already_verified`, verifying nothing while telling them it
+     * had — and they would then be refused at login on an address that really is
+     * unverified, with nothing on screen explaining why.
+     *
+     * Two callers issue tokens through this method today
+     * (`AuthService.resendVerification`, `AdminClientsService.changeEmail`) and
+     * both clear it. This is here so the third one cannot forget: a prose rule
+     * in a column comment is not a rule, and the failure it prevents surfaces
+     * far away from the line that caused it.
+     *
+     * It refuses rather than silently clearing, because "which cycle is this
+     * row in" is not a question a store should answer on the caller's behalf.
+     * Registration is unaffected — it INSERTs, where NULL is already correct.
+     */
+    /*
+     * `typeof === 'string'` rather than `!= null`, and NOT `!== null`.
+     *
+     * The distinction is load-bearing: callers clear a token by passing
+     * `undefined` (auth.service.ts:410 and :576), and the loop below turns
+     * `undefined` into a NULL write. So this guard must fire only when a REAL
+     * token is being issued. `!== null` would treat the clearing calls as
+     * issuance and throw on them — which is what a linter's `eqeqeq` autofix
+     * would have produced from the original `!= null`.
+     */
+    if (
+      typeof rest.emailVerificationTokenHash === 'string' &&
+      !('emailVerificationConsumedAt' in patch)
+    ) {
+      throw new Error(
+        'users.update: setting emailVerificationTokenHash must also set ' +
+          'emailVerificationConsumedAt (pass undefined to clear it). A new token ' +
+          "inherits the previous cycle's redemption otherwise — see schema.ts.",
+      );
+    }
 
     const values: Record<string, unknown> = {};
     for (const key of Object.keys(rest)) {

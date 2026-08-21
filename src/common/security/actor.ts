@@ -32,7 +32,7 @@ export interface Actor {
  * or the next background job to need it fails authorization in production with
  * a message about a permission nobody knew it required.
  */
-const CATALOG_KEYS: string[] = Object.values(
+export const CATALOG_KEYS: string[] = Object.values(
   permissionsCatalog as Record<string, { permissions: { key: string }[] }>,
 ).flatMap((module) => module.permissions.map((entry) => entry.key));
 

@@ -589,6 +589,20 @@
       "when": 1787101216001,
       "tag": "0083_the_allowlist_returns",
       "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1787101216002,
+      "tag": "0084_a_verification_link_remembers_it_worked",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1787101216003,
+      "tag": "0085_grant_ledger_view",
+      "breakpoints": true
     }
   ]
 }

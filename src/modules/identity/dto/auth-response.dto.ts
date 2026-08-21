@@ -127,6 +127,38 @@ export class RegistrationResponseDto {
 }
 
 /**
+ * `POST /auth/verify-email`.
+ *
+ * ## Why there is a `status` and not just a message
+ *
+ * Verification is IDEMPOTENT (auth.service.ts): clicking a link twice is not an
+ * error, and both outcomes are a 200 because both are true — the address is
+ * verified either way and the caller's next step is identical. The screen still
+ * has to tell them apart, because "Email verified" and "you already did this,
+ * go and sign in" are different sentences.
+ *
+ * The discriminator is a machine-readable enum for the reason every error in
+ * this system carries a `code`: the portal used to branch on the ENGLISH TEXT of
+ * `message`, which breaks on a copy edit and again on the day Arabic ships (FSD
+ * §10 / D-16). A client should never have to read prose to make a decision.
+ *
+ * Additive — a `message`-only reader behaves exactly as it did before.
+ */
+export class VerifyEmailResponseDto {
+  @ApiProperty({
+    enum: ['verified', 'already_verified'],
+    description:
+      'verified — this call redeemed the link. already_verified — the link had already been ' +
+      'redeemed and the address is confirmed. Branch on this, never on `message`.',
+    example: 'verified',
+  })
+  status: 'verified' | 'already_verified';
+
+  @ApiProperty({ example: 'Email verified successfully. You can now log in.' })
+  message: string;
+}
+
+/**
  * One live session, as `GET /auth/sessions` returns it.
  *
  * A session is a refresh-token FAMILY, not a token row — one login starts a

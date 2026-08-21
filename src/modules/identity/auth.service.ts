@@ -24,8 +24,10 @@ import {
   SessionRevokedError,
   SessionSupersededError,
   ValidationError,
+  VerificationTokenExpiredError,
 } from '../../common/errors/domain-errors';
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
+import { hashEmailedToken } from '../../common/security/emailed-token';
 import { CsrfService } from '../../common/security/csrf.service';
 import {
   RefreshTokensService,
@@ -69,17 +71,20 @@ import {
 const ACCESS_TTL_MS = 15 * 60 * 1000;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** How long a verification link stays redeemable. */
+const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+
 /**
- * SHA-256 of a reset token, hex.
+ * What `verifyEmail` answers on the two outcomes that are not failures.
  *
- * A fast hash on purpose. The token is 122 bits of randomness from
- * `randomUUID`, so there is no guessable secret for a slow KDF to protect —
- * argon2 here would buy nothing and add latency to an unauthenticated lookup an
- * attacker can trigger at will. What this defends against is a database dump
- * being replayable as reset links, and a digest is sufficient for that.
+ * `status` is the field a client branches on. The `message` beside it is for a
+ * human and may be re-worded or translated at any time; nothing may key off it
+ * — the rule stated on `EmailNotVerifiedError` and enforced by every other code
+ * in this system.
  */
-function hashResetToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
+export interface VerifyEmailResult {
+  status: 'verified' | 'already_verified';
+  message: string;
 }
 
 @Injectable()
@@ -189,7 +194,7 @@ export class AuthService {
 
     const passwordHash = await this.passwords.hash(dto.password);
     const verificationToken = uuidv4();
-    const verificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+    const verificationExpiry = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
 
     const referredByIbUserId = await this.resolveReferral(dto.referralCode);
 
@@ -202,7 +207,10 @@ export class AuthService {
       status: 'active',
       verificationLevel: 0,
       emailVerified: false,
-      emailVerificationToken: verificationToken,
+      // Hashed, never the token — schema.ts. `emailVerificationConsumedAt` is
+      // absent rather than explicit: an INSERT gets NULL for free, which is
+      // exactly "outstanding".
+      emailVerificationTokenHash: hashEmailedToken(verificationToken),
       emailVerificationExpiry: verificationExpiry,
       country: dto.country,
       phone: dto.phone,
@@ -316,23 +324,95 @@ export class AuthService {
   }
 
   // ─── Verify Email ─────────────────────────────────────────────────────────────
-  async verifyEmail(token: string) {
-    const user = await this.users.findByVerificationToken(token);
+  /**
+   * Redeem a verification link. IDEMPOTENT — a second click is not a failure.
+   *
+   * ## The defect this replaces (UX-BACKLOG UX-01)
+   *
+   * The token was deleted from the row the instant it worked. That made "this
+   * token was redeemed successfully a minute ago" and "this token never
+   * existed" the same state, so the backend could only answer the second one:
+   * `Invalid or expired verification token.` A refresh, the Back button, a
+   * restored tab, or a corporate mail scanner prefetching the link before the
+   * human clicked it all produced a red **Verification Failed** on an account
+   * that was, in fact, verified.
+   *
+   * Telling a customer that something failed when it succeeded is expensive in
+   * a money product in a way it is not elsewhere, and it trains people to
+   * re-request links they do not need.
+   *
+   * ## Why keeping the token was never the fix
+   *
+   * The obvious repair — stop clearing it — reinstates a plaintext bearer
+   * credential that outlives its own expiry, which is precisely what the 6 Aug
+   * change removed. So the column now holds a **hash** (`schema.ts`), which is
+   * not a usable credential and can therefore be kept indefinitely. Redemption
+   * is recorded beside it as a timestamp instead of as an absence.
+   *
+   * This is the same shape `refresh_tokens.token_hash` has always had, for the
+   * same reason.
+   *
+   * ## Three outcomes, and each is told apart by a machine-readable value
+   *
+   * | State | Answer |
+   * |---|---|
+   * | Outstanding, in date | 200 `status: 'verified'` |
+   * | Already redeemed | 200 `status: 'already_verified'` |
+   * | Past its 24 hours | 400 `VERIFICATION_TOKEN_EXPIRED` |
+   * | Never issued, or superseded | 400 `VALIDATION_FAILED` |
+   *
+   * The two successes are a 200 because they are both true: the address is
+   * verified either way, and the caller's next step ("sign in") is identical.
+   * A client branches on `status`, never on the English — the rule stated on
+   * `EmailNotVerifiedError`.
+   *
+   * ## Not an enumeration oracle
+   *
+   * `already_verified` is only reachable by presenting the actual token, which
+   * is 122 bits of randomness. Nobody learns anything about an address they do
+   * not already hold a link for, so this gives up nothing the old wording
+   * protected.
+   */
+  async verifyEmail(token: string): Promise<VerifyEmailResult> {
+    const tokenHash = hashEmailedToken(token);
+    const user = await this.users.findByVerificationTokenHash(tokenHash);
     if (!user) throw new ValidationError('Invalid or expired verification token.');
+
+    /*
+     * The redeemed check comes FIRST, before expiry, and the order is load-
+     * bearing: a token that was redeemed inside its 24 hours stays answered
+     * honestly forever, and must not start reporting "expired" the next day
+     * because the clock moved past a deadline it already met.
+     *
+     * `emailVerified` is read alongside it as a coherence check. The two are
+     * only ever written together, in the single statement inside
+     * `consumeEmailVerification`, so they cannot disagree; requiring both means
+     * this branch can never announce a verification that did not happen.
+     */
+    if (user.emailVerificationConsumedAt && user.emailVerified) {
+      return {
+        status: 'already_verified',
+        message: 'This link has already been used. Your email is verified — you can sign in.',
+      };
+    }
+
     if (user.emailVerificationExpiry && user.emailVerificationExpiry < new Date()) {
       /*
        * Clear the dead token before refusing, exactly as `resetPassword` does.
        *
-       * It used to be left in place, so an expired token sat in the row
-       * indefinitely — the only one-time credential here that outlived its own
-       * expiry, and the only one stored in plaintext. Removing it on the way out
-       * means the row stops carrying a credential that can never be useful.
+       * Unchanged in intent from the 6 Aug version: a token that can never work
+       * again should not sit in the row. What it clears is now a hash rather
+       * than the credential itself, and `consumedAt` goes with it so the pair
+       * cannot survive as a half-record of a cycle that ended in nothing.
        */
       await this.users.update(user.id, {
-        emailVerificationToken: undefined,
+        emailVerificationTokenHash: undefined,
         emailVerificationExpiry: undefined,
+        emailVerificationConsumedAt: undefined,
       });
-      throw new ValidationError('Verification token has expired. Please request a new one.');
+      throw new VerificationTokenExpiredError(
+        'Verification token has expired. Please request a new one.',
+      );
     }
 
     /*
@@ -349,13 +429,25 @@ export class AuthService {
      * email verification can raise it — approval requires a submitted KYC, which
      * requires a verified email.
      */
-    await this.users.update(user.id, {
-      emailVerified: true,
-      emailVerificationToken: undefined,
-      emailVerificationExpiry: undefined,
-    });
+    const redeemed = await this.users.consumeEmailVerification(user.id, tokenHash, new Date());
 
-    return { message: 'Email verified successfully. You can now log in.' };
+    /*
+     * Losing the race is still a success. Two requests carrying the same valid
+     * token both read NULL above; the database picked one, and the other is
+     * looking at an address that is verified — which is the honest answer, and
+     * the whole point of the change.
+     */
+    if (!redeemed) {
+      return {
+        status: 'already_verified',
+        message: 'This link has already been used. Your email is verified — you can sign in.',
+      };
+    }
+
+    return {
+      status: 'verified',
+      message: 'Email verified successfully. You can now log in.',
+    };
   }
 
   // ─── Resend Verification ──────────────────────────────────────────────────────
@@ -367,8 +459,17 @@ export class AuthService {
 
     const token = uuidv4();
     await this.users.update(user.id, {
-      emailVerificationToken: token,
-      emailVerificationExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      emailVerificationTokenHash: hashEmailedToken(token),
+      emailVerificationExpiry: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS),
+      /*
+       * Cleared, and NOT optional. A new cycle begins here, so the previous
+       * cycle's redemption marker must not survive into it — a fresh link whose
+       * row still said "redeemed" would be answered `already_verified` on its
+       * first click, and the client would be sent to sign in with an address
+       * that is still unverified. See the column comment in schema.ts;
+       * `email-verification-cycle.spec.ts` fails if any writer omits this.
+       */
+      emailVerificationConsumedAt: undefined,
     });
 
     await this.email.sendVerificationEmail(user.email, token);
@@ -409,7 +510,7 @@ export class AuthService {
 
     const token = randomUUID();
     await this.users.update(user.id, {
-      passwordResetTokenHash: hashResetToken(token),
+      passwordResetTokenHash: hashEmailedToken(token),
       // 30 minutes (R-3.5). Long enough to find the email, short enough that a
       // link left in an inbox is not a standing key to the account.
       passwordResetExpiry: new Date(Date.now() + 30 * 60 * 1000),
@@ -430,7 +531,7 @@ export class AuthService {
    * refresh token alive would make the reset theatre.
    */
   async resetPassword(token: string, newPassword: string) {
-    const user = await this.users.findByPasswordResetTokenHash(hashResetToken(token));
+    const user = await this.users.findByPasswordResetTokenHash(hashEmailedToken(token));
 
     // One message for "no such token" and "expired token". Distinguishing them
     // tells an attacker which of their guesses was once real.
@@ -471,8 +572,9 @@ export class AuthService {
        * applies when it clears an expired token.
        */
       emailVerified: true,
-      emailVerificationToken: undefined,
+      emailVerificationTokenHash: undefined,
       emailVerificationExpiry: undefined,
+      emailVerificationConsumedAt: undefined,
       // Cleared in the same write as the new password: the token is spent the
       // moment it works, so a replay finds nothing.
       passwordResetTokenHash: undefined,
