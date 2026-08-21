@@ -2,7 +2,7 @@ import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, roles, users } from '../src/database/schema';
+import { admins, kycSubmissions, roles, users } from '../src/database/schema';
 
 /**
  * RBAC-03 field masking, END TO END.
@@ -190,22 +190,58 @@ describe('the client profile', () => {
 });
 
 describe('the KYC screen is not a bypass', () => {
-  it('hides the same values under their personalInfo names', async () => {
-    /*
-     * THE ALIAS RULE, exercised through HTTP.
-     *
-     * `GET /admin/kyc/:userId` returns the same person's email and phone under
-     * `personalInfo.*`. Without alias expansion, hiding `client.phone` leaves
-     * the number sitting one tab away on a screen the same permission set
-     * reaches — the feature would be decorative AND would look configured.
-     */
-    const session = await actingAs(ctx, 'admin', MASKED);
-    const res = await session.get(`/v1/admin/kyc/${clientId}`);
+  /*
+   * THE ALIAS RULE, exercised through HTTP — against a submission that EXISTS.
+   *
+   * This used to accept a 404 ("this client has no submission") and assert on
+   * its body, which contains nothing to begin with: a permanently green test
+   * guarding a mask that was never applied on this surface. Now a submission
+   * carrying the person's email and phone under `personalInfo.*` AND under the
+   * nested `user.*` is inserted first, the read must succeed, and the values
+   * must be absent from the detail and from the queue.
+   */
+  beforeAll(async () => {
+    await ctx.db.db.insert(kycSubmissions).values({
+      userId: clientId,
+      status: 'submitted',
+      submittedAt: new Date(),
+      personalInfo: {
+        firstName: 'Masked',
+        lastName: 'Target',
+        email: 'mask-target@oxshare-e2e.test',
+        phone: '+961 1 000 000',
+        country: 'Lebanon',
+      },
+    });
+  });
 
-    // 404 is a legitimate outcome here — this client has no submission — but
-    // whatever comes back must not carry the masked values.
-    expect(JSON.stringify(res.body)).not.toContain('mask-target@oxshare-e2e.test');
-    expect(JSON.stringify(res.body)).not.toContain('+961 1 000 000');
+  it('hides the same values on the KYC detail, under every name they travel by', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get(`/v1/admin/kyc/${clientId}`).expect(200);
+
+    const text = JSON.stringify(res.body);
+    expect(text).not.toContain('mask-target@oxshare-e2e.test');
+    expect(text).not.toContain('+961 1 000 000');
+    // And says so, so the screen can render "hidden" rather than blank.
+    expect((res.body as { maskedFields: string[] }).maskedFields).toEqual(
+      expect.arrayContaining(['kyc.personalInfo.email', 'kyc.user.email']),
+    );
+    // The unmasked parts still arrive — this is a mask, not a 403.
+    expect((res.body as { userId: string }).userId).toBe(clientId);
+  });
+
+  it('hides them on the review QUEUE too', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get('/v1/admin/kyc?status=submitted&limit=100').expect(200);
+    const text = JSON.stringify(res.body);
+    expect(text).toContain(clientId);
+    expect(text).not.toContain('mask-target@oxshare-e2e.test');
+  });
+
+  it('still shows the master everything on the same screens', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`/v1/admin/kyc/${clientId}`).expect(200);
+    expect(JSON.stringify(res.body)).toContain('mask-target@oxshare-e2e.test');
   });
 });
 

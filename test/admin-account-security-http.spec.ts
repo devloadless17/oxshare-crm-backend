@@ -7,6 +7,7 @@ import {
   startHttpTestApp,
   stopHttpTestApp,
   SURFACES,
+  TEST_USER_AGENT,
   type HttpTestContext,
 } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -113,6 +114,21 @@ describe('GET /admin/auth/sessions', () => {
      */
     const session = await actingAs(ctx, 'admin', ADMIN);
     await session.get(SESSIONS).expect(200);
+  });
+
+  it('shows the device each login came from — this console recorded none', async () => {
+    /*
+     * `GET /admin/auth/sessions` exists so an administrator can notice a
+     * session that is not theirs. The admin surface never passed a device
+     * fingerprint to the token store, so every row read `userAgent: null,
+     * ip: null` and the list could not do the one thing it is for.
+     */
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.get(SESSIONS).expect(200);
+    const rows = res.body as { current: boolean; userAgent: string | null; ip: string | null }[];
+    const mine = rows.find((r) => r.current);
+    expect(mine?.userAgent).toBe(TEST_USER_AGENT);
+    expect(mine?.ip).toBeTruthy();
   });
 
   it('lists one entry per LOGIN, not per token row', async () => {

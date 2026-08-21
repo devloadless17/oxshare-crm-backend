@@ -57,6 +57,10 @@ function makeController(options: {
   ownerInScope?: boolean;
   /** The CLIENT's verification state. Default verified — see `users` below. */
   clientEmailVerified?: boolean;
+  /** The session checks every other request gets — see `authorize()`. */
+  adminSuspended?: boolean;
+  clientSuspended?: boolean;
+  familyRevoked?: boolean;
 }): Harness {
   const recorded: Omit<AuditEntry, 'id' | 'createdAt'>[] = [];
 
@@ -68,10 +72,16 @@ function makeController(options: {
    * omitted `typ` was describing a token this system never mints, and it made
    * the whole suite fail the moment the check arrived.
    */
+  // `fam` and `iat` too, because real ones carry them and the handler now
+  // checks the family and the password-change cutoff like every other site.
+  const iat = Math.floor(Date.now() / 1000);
   const jwt = {
     verify: (token: string) => {
-      if (token === ADMIN_TOKEN) return { sub: 'admin-1', typ: TOKEN_KIND.access };
-      if (token === CLIENT_TOKEN) return { sub: 'client-1', typ: TOKEN_KIND.access };
+      if (token === ADMIN_TOKEN)
+        return { sub: 'admin-1', typ: TOKEN_KIND.access, fam: 'fam-a', iat };
+      if (token === CLIENT_TOKEN) {
+        return { sub: 'client-1', typ: TOKEN_KIND.access, fam: 'fam-c', iat };
+      }
       if (token === REFRESH_TOKEN) return { sub: 'admin-1', typ: TOKEN_KIND.refresh };
       throw new Error('bad token');
     },
@@ -81,7 +91,13 @@ function makeController(options: {
     findById: (id: string) =>
       Promise.resolve(
         options.adminPermissions && id === 'admin-1'
-          ? { id: 'admin-1', email: 'admin@test.local', roleId: undefined, permissions: [] }
+          ? {
+              id: 'admin-1',
+              email: 'admin@test.local',
+              roleId: undefined,
+              permissions: [],
+              status: options.adminSuspended ? 'suspended' : 'active',
+            }
           : undefined,
       ),
   };
@@ -109,6 +125,7 @@ function makeController(options: {
       Promise.resolve({
         id: 'client-1',
         email: 'client@test.local',
+        status: options.clientSuspended ? 'suspended' : 'active',
         // `emailVerified` matters now: the client branch of `authorize()`
         // refuses an unverified owner. Verified is the realistic default — an
         // unverified client cannot have submitted a document to read.
@@ -142,6 +159,7 @@ function makeController(options: {
    * object cannot leak that state into the next one.
    */
   const ipAllowlist = { listCidrs: () => Promise.resolve(options.ipAllowlist ?? []) };
+  const refreshTokens = { familyIsRevoked: () => Promise.resolve(options.familyRevoked ?? false) };
   const { files, driver } = storageStub();
   void driver.put(`kyc/${FILE}`, DOCUMENT, {
     contentType: 'image/png',
@@ -163,6 +181,7 @@ function makeController(options: {
     // reaches it. Empty by default = the allowlist is OFF, which is the state
     // every case here except the two network ones runs in.
     ipAllowlist as never,
+    refreshTokens as never,
   );
 
   return { controller, recorded };
@@ -541,7 +560,9 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
     expect(recorded).toHaveLength(0);
   });
 
-  it('the wildcard permission grants an admin read, and is still audited', async () => {
+  it('the full permission list grants an admin read, and is still audited', async () => {
+    // No wildcard any more: full access is every key in the catalog, and the
+    // `'*'` reader this route used to keep was the last one in the system.
     const { controller, recorded } = makeController({ adminPermissions: ALL_PERMISSIONS });
     const res = fakeResponse();
 
@@ -553,5 +574,58 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
 
     expect(recorded).toHaveLength(1);
     expect(recorded[0]?.action).toBe('kyc.document.view');
+  });
+});
+
+describe('a session that was ended still cannot read a document', () => {
+  /*
+   * This route authenticates by hand because it serves two surfaces, and for
+   * as long as it skipped the checks every other request gets, a suspended
+   * administrator, one signed out elsewhere, or a suspended client kept reading
+   * identity documents for the rest of their access token's life.
+   */
+  it('refuses a SUSPENDED admin, and records nothing', async () => {
+    const { controller, recorded } = makeController({
+      adminPermissions: ['kyc.review'],
+      adminSuspended: true,
+    });
+    await expect(
+      controller.serveKycFile(
+        FILE,
+        requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }),
+        fakeResponse() as never,
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(recorded).toHaveLength(0);
+  });
+
+  it('refuses an admin whose login family was revoked — signed out elsewhere', async () => {
+    const { controller, recorded } = makeController({
+      adminPermissions: ['kyc.review'],
+      familyRevoked: true,
+    });
+    await expect(
+      controller.serveKycFile(
+        FILE,
+        requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }),
+        fakeResponse() as never,
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(recorded).toHaveLength(0);
+  });
+
+  it('refuses a SUSPENDED client their own document', async () => {
+    const { controller, recorded } = makeController({
+      clientOwnsFile: true,
+      clientSuspended: true,
+    });
+    await expect(
+      controller.serveKycFile(
+        FILE,
+        requestWith({ oxshare_crm_portal_at: CLIENT_TOKEN }),
+        fakeResponse() as never,
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(recorded).toHaveLength(0);
   });
 });

@@ -12,7 +12,6 @@ import { WalletModule } from '../wallet/wallet.module';
 import { TradingModule } from '../trading/trading.module';
 import { IdentityModule } from '../identity/identity.module';
 import { CurrenciesModule } from '../currencies/currencies.module';
-import { SecuritySettingsService } from '../admin/security-settings.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import { PaymentGateways } from './payment-gateways.service';
 import { RivalModule } from './rival/rival.module';
@@ -62,12 +61,13 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
     AdminPaymentMethodsController,
   ],
   /*
-   * `SecuritySettingsService` and `AdminAuditService` are provided here rather
-   * than imported from AdminModule, deliberately: importing the admin module
-   * into the client-facing payments module would drag the whole back-office
-   * graph — and its guards — behind a portal route. Both are thin services over
-   * @Global stores, so a second instance costs nothing and keeps the dependency
-   * pointing one way.
+   * `AdminAuditService` is provided here rather than imported from
+   * AdminModule, deliberately: importing the admin module into the
+   * client-facing payments module would drag the whole back-office graph — and
+   * its guards — behind a portal route. It is a thin service over @Global
+   * stores, so a second instance costs nothing and keeps the dependency
+   * pointing one way. (`SecuritySettingsService` used to sit beside it for the
+   * withdrawal OTP; the OTP is gone and so is the switch — see D-67.)
    */
   providers: [
     TransactionsService,
@@ -81,8 +81,8 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
     TransferExecutor,
     // Finishes transfers the executor deliberately left pending — see its note.
     TransferResumeScheduler,
-    // `WithdrawalOtpService` is gone with the withdrawal confirmation code.
-    SecuritySettingsService,
+    // `WithdrawalOtpService` and `SecuritySettingsService` are gone with the
+    // withdrawal confirmation code (D-67).
     AdminAuditService,
     /*
      * The hosted-gateway seam. `PaymentGateways` is the registry every caller

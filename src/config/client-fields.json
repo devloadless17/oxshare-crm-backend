@@ -21,7 +21,10 @@
     "",
     "'maskable: false' means the field is structurally required to render a row",
     "at all. Offering it would let an operator configure a screen that cannot",
-    "work, and then file a bug about it."
+    "work, and then file a bug about it.",
+    "",
+    "'kyc.user.*' aliases: both KYC responses (the queue row and the detail) also carry the",
+    "person under a nested `user` object, so a masked client field has to be removed there too."
   ],
   "identity": {
     "groupName": "Identity",
@@ -38,7 +41,8 @@
         "label": "First name",
         "maskable": true,
         "aliases": [
-          "kyc.personalInfo.firstName"
+          "kyc.personalInfo.firstName",
+          "kyc.user.firstName"
         ]
       },
       {
@@ -46,7 +50,8 @@
         "label": "Last name",
         "maskable": true,
         "aliases": [
-          "kyc.personalInfo.lastName"
+          "kyc.personalInfo.lastName",
+          "kyc.user.lastName"
         ]
       }
     ]
@@ -60,7 +65,8 @@
         "label": "Email address",
         "maskable": true,
         "aliases": [
-          "kyc.personalInfo.email"
+          "kyc.personalInfo.email",
+          "kyc.user.email"
         ]
       },
       {
@@ -68,7 +74,8 @@
         "label": "Phone number",
         "maskable": true,
         "aliases": [
-          "kyc.personalInfo.phone"
+          "kyc.personalInfo.phone",
+          "kyc.user.phone"
         ]
       }
     ]
@@ -82,7 +89,8 @@
         "label": "Country",
         "maskable": true,
         "aliases": [
-          "kyc.personalInfo.country"
+          "kyc.personalInfo.country",
+          "kyc.user.country"
         ]
       },
       {

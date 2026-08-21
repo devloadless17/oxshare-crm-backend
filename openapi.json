@@ -373,7 +373,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MessageResponseDto"
+                  "$ref": "#/components/schemas/VerifyEmailResponseDto"
                 }
               }
             }
@@ -405,7 +405,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MessageResponseDto"
+                  "$ref": "#/components/schemas/VerifyEmailResponseDto"
                 }
               }
             }
@@ -2872,7 +2872,44 @@
     },
     "/v1/payments/deposits/{reference}/status": {
       "get": {
-        "description": "Asks the payment provider directly rather than trusting anything the browser carried back. Safe to call repeatedly: settlement is idempotent, so this and the provider callback converge on the same outcome whichever arrives first.",
+        "operationId": "PaymentsController_depositStatus",
+        "parameters": [
+          {
+            "name": "reference",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The current state of one of the caller's own gateway deposits",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/v1/payments/deposits/{reference}/settle": {
+      "post": {
+        "description": "Asks the payment provider directly rather than trusting anything the browser carried back. Safe to call repeatedly: settlement is idempotent, so this and the provider callback converge on the same outcome whichever arrives first. Only the deposit's owner may ask.",
         "operationId": "PaymentsController_settleDeposit",
         "parameters": [
           {
@@ -4383,7 +4420,7 @@
         ],
         "summary": "Serve a client's own profile photo",
         "tags": [
-          "compliance"
+          "Uploads"
         ]
       }
     },
@@ -4412,7 +4449,7 @@
         ],
         "summary": "Serve an administrator's own profile photo",
         "tags": [
-          "compliance"
+          "Uploads"
         ]
       }
     },
@@ -4436,7 +4473,7 @@
         },
         "summary": "Serve a payment-method logo (public)",
         "tags": [
-          "compliance"
+          "Uploads"
         ]
       }
     },
@@ -4465,7 +4502,7 @@
         ],
         "summary": "Serve a KYC document to its owner or a kyc.review admin",
         "tags": [
-          "compliance"
+          "Uploads"
         ]
       }
     },
@@ -8044,83 +8081,6 @@
         ]
       }
     },
-    "/v1/admin/security-settings": {
-      "get": {
-        "operationId": "AdminSecuritySettingsController_list",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/SecuritySwitchDto"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Security controls and whether each is currently on (master admin only)",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/security-settings/{key}": {
-      "put": {
-        "description": "Every change is written to the admin action log with its before and after value, and turning a control OFF raises an alert — once at the moment of the change, and again on every request made while it stays off.",
-        "operationId": "AdminSecuritySettingsController_set",
-        "parameters": [
-          {
-            "name": "key",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetSecuritySwitchDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SecuritySwitchDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Turn a security control on or off (master admin only)",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
     "/v1/admin/ip-allowlist": {
       "get": {
         "operationId": "AdminIpAllowlistController_list",
@@ -9709,15 +9669,25 @@
           "token"
         ]
       },
-      "MessageResponseDto": {
+      "VerifyEmailResponseDto": {
         "type": "object",
         "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "already_verified"
+            ],
+            "description": "verified — this call redeemed the link. already_verified — the link had already been redeemed and the address is confirmed. Branch on this, never on `message`.",
+            "example": "verified"
+          },
           "message": {
             "type": "string",
-            "example": "Logged out."
+            "example": "Email verified successfully. You can now log in."
           }
         },
         "required": [
+          "status",
           "message"
         ]
       },
@@ -9731,6 +9701,18 @@
         },
         "required": [
           "email"
+        ]
+      },
+      "MessageResponseDto": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "Logged out."
+          }
+        },
+        "required": [
+          "message"
         ]
       },
       "ForgotPasswordDto": {
@@ -9807,14 +9789,16 @@
             "type": "string",
             "enum": [
               "individual",
-              "corporate"
+              "referral",
+              "partner"
             ]
           },
           "status": {
             "type": "string",
             "enum": [
               "active",
-              "suspended"
+              "suspended",
+              "pending"
             ]
           },
           "verificationLevel": {
@@ -14795,6 +14779,12 @@
                 "$ref": "#/components/schemas/KycUserDto"
               }
             ]
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -14809,6 +14799,12 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/KycSubmissionDto"
+            }
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           },
           "total": {
@@ -15526,51 +15522,6 @@
         "required": [
           "key",
           "plaintext"
-        ]
-      },
-      "SecuritySwitchDto": {
-        "type": "object",
-        "properties": {
-          "key": {
-            "type": "string",
-            "example": "withdrawal_otp",
-            "description": "Stable machine key. Never renamed."
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "label": {
-            "type": "string",
-            "example": "Email confirmation code on every client withdrawal"
-          },
-          "updatedBy": {
-            "type": "string",
-            "nullable": true,
-            "description": "The admin who last changed it. Null while it has never been changed."
-          },
-          "updatedAt": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "key",
-          "enabled",
-          "label",
-          "updatedBy",
-          "updatedAt"
-        ]
-      },
-      "SetSecuritySwitchDto": {
-        "type": "object",
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "description": "Whether the control is in force. Turning one OFF is audited and alerted — see AdminSecuritySettingsController."
-          }
-        },
-        "required": [
-          "enabled"
         ]
       },
       "IpAllowlistRuleDto": {

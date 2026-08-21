@@ -1,4 +1,15 @@
-import { and, asc, count, desc, eq, isNull, sql, SQL, type SQLWrapper } from 'drizzle-orm';
+import {
+  SQL,
+  type SQLWrapper,
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  getTableColumns,
+  isNull,
+  sql,
+} from 'drizzle-orm';
 import type { CursorPosition } from '../common/pagination';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -90,6 +101,11 @@ export const DERIVED_CLIENT_TYPE = sql<'individual' | 'referral' | 'partner'>`
 
 export type ClientSortKey = keyof typeof CLIENT_SORT_COLUMNS;
 
+/** A user-typed search term, safe to embed inside a LIKE pattern. */
+export function escapeLike(term: string): string {
+  return term.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 export const DEFAULT_CLIENT_SORT: ClientSortKey = 'createdAt';
 
 /**
@@ -166,6 +182,18 @@ const toUser = (r: Row): User => ({
   referredByIbUserId: r.referredByIbUserId ?? undefined,
 });
 
+/**
+ * Every single-row read selects THIS, not `users.*`.
+ *
+ * `type` is the derived expression (see `DERIVED_CLIENT_TYPE`): the list had
+ * moved to it while `findById`, `findForAdmin` and `findByEmail` still read the
+ * raw column — so the client list said `partner` and the profile, the portal's
+ * own `/auth/me` and every edit response said `individual` about the same
+ * person. Same question, two answers, which is precisely what the derived
+ * expression was introduced to end. The raw column is write-only now.
+ */
+const USER_COLUMNS = { ...getTableColumns(users), type: DERIVED_CLIENT_TYPE };
+
 @Injectable()
 export class UsersStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
@@ -176,7 +204,7 @@ export class UsersStore {
   }
 
   async findById(id: string): Promise<User | undefined> {
-    const [row] = await this.db.select().from(users).where(eq(users.id, id)).limit(1);
+    const [row] = await this.db.select(USER_COLUMNS).from(users).where(eq(users.id, id)).limit(1);
     return row ? toUser(row) : undefined;
   }
 
@@ -219,7 +247,7 @@ export class UsersStore {
   async findForAdmin(id: string, scope: ClientScope): Promise<User | undefined> {
     const scoped = clientScopePredicate(scope, users.id);
     const [row] = await this.db
-      .select()
+      .select(USER_COLUMNS)
       .from(users)
       // In the WHERE clause, never a post-fetch comparison — the rule this
       // whole feature rests on. See common/security/client-scope.ts.
@@ -230,7 +258,7 @@ export class UsersStore {
 
   async findByEmail(email: string): Promise<User | undefined> {
     const [row] = await this.db
-      .select()
+      .select(USER_COLUMNS)
       .from(users)
       .where(eq(users.email, email.toLowerCase()))
       .limit(1);
@@ -247,7 +275,7 @@ export class UsersStore {
    */
   async findByPasswordResetTokenHash(hash: string): Promise<User | undefined> {
     const [row] = await this.db
-      .select()
+      .select(USER_COLUMNS)
       .from(users)
       .where(eq(users.passwordResetTokenHash, hash))
       .limit(1);
@@ -262,7 +290,7 @@ export class UsersStore {
    */
   async findByVerificationTokenHash(hash: string): Promise<User | undefined> {
     const [row] = await this.db
-      .select()
+      .select(USER_COLUMNS)
       .from(users)
       .where(eq(users.emailVerificationTokenHash, hash))
       .limit(1);
@@ -520,8 +548,11 @@ export class UsersStore {
        * search for "n j" should not match first_name "John" against a
        * neighbouring column's leading character.
        */
+      // `%` and `_` are wildcards inside the pattern; a search for "%" matched
+      // every client and a long run of them was an expensive scan. Escaped with
+      // the backslash Postgres already treats as LIKE's default escape.
       conditions.push(
-        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${filter.q}%`}`,
+        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(filter.q)}%`}`,
       );
     }
     /*

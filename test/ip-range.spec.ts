@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canonicaliseRule,
+  coversEverything,
   ipMatchesAny,
   ipMatchesRule,
   isValidRule,
@@ -60,6 +61,28 @@ describe('ipMatchesRule — ranges', () => {
     // arithmetic, not policy. `matchesEverything` below is how the layer with a
     // policy opinion recognises it; `AdminIpAllowlistService.add` refuses it.
     expect(ipMatchesRule('8.8.8.8', '0.0.0.0/0')).toBe(true);
+  });
+
+  describe('coversEverything', () => {
+    it('recognises two halves that together admit every address', () => {
+      // `matchesEverything` catches one /0; this catches the same hole one
+      // rule further apart — "Enforced — 2 rules" while admitting the internet.
+      expect(coversEverything(['0.0.0.0/1', '128.0.0.0/1'])).toBe(true);
+      expect(coversEverything(['::/1', '8000::/1'])).toBe(true);
+      expect(coversEverything(['0.0.0.0/2', '64.0.0.0/2', '128.0.0.0/1'])).toBe(true);
+    });
+
+    it('does not fire on a list that leaves any address out', () => {
+      expect(coversEverything(['0.0.0.0/1'])).toBe(false);
+      expect(coversEverything(['10.0.0.0/8', '192.168.0.0/16'])).toBe(false);
+      expect(coversEverything([])).toBe(false);
+    });
+
+    it('does not let one family stand in for the other', () => {
+      // A v4 /0 plus a v6 /1 is not "everything": v6 still has a hole.
+      expect(coversEverything(['0.0.0.0/0'])).toBe(true);
+      expect(coversEverything(['::/1'])).toBe(false);
+    });
   });
 
   describe('matchesEverything', () => {

@@ -190,6 +190,8 @@ export class KycSubmissionDto {
   addressProof?: KycAddressProofDto;
   @ApiPropertyOptional({ type: KycUserDto, nullable: true })
   user?: KycUserDto | null;
+  /** RBAC-03: the `kyc.*` keys hidden from this viewer, omitted from the body. */
+  @ApiPropertyOptional({ type: [String] }) maskedFields?: string[];
 }
 
 /**
@@ -218,6 +220,8 @@ export class KycAttemptDto {
 
 export class KycListResponseDto {
   @ApiProperty({ type: [KycSubmissionDto] }) items: KycSubmissionDto[];
+  /** RBAC-03: the `kyc.*` keys hidden from this viewer, omitted from every row. */
+  @ApiPropertyOptional({ type: [String] }) maskedFields?: string[];
   @ApiProperty() total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;

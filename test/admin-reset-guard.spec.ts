@@ -48,10 +48,31 @@ describe('refuseReset', () => {
     expect(refuseReset(master, otherMaster)).toBeNull();
   });
 
-  it('REFUSES a sub-admin reaching a master, however well permissioned', () => {
+  it('REFUSES a sub-admin reaching a full-access admin, however well permissioned', () => {
     // The headline failure. A permission check alone would allow this, look
-    // correct in review, and hand the whole console to anyone with users.create.
-    expect(refuseReset(manager, master)).toBe('target-is-master');
+    // correct in review, and hand the whole console to anyone with the grant.
+    // Refused by the subset ladder — there is no master tier to name any more;
+    // a full-access admin is unreachable because they hold MORE, not because
+    // their row carries a symbol.
+    expect(refuseReset(manager, master)).toBe('target-outranks-actor');
+  });
+
+  it('reads ONLY the permission lists it is given — the caller resolves them', () => {
+    /*
+     * The ladder this closes: `admins.permissions` is a snapshot, the role is
+     * the live truth, and comparing two raw rows meant an actor whose keys
+     * covered a TARGET's stale snapshot could reset an account whose role had
+     * since been widened past them. The service now resolves both sides through
+     * the role before calling this; the guard itself must not be tempted by a
+     * `role` column or anything else on the row.
+     */
+    const widenedByRole = { id: 't1', permissions: ['kyc.review', 'withdrawals.settle'] };
+    expect(refuseReset(manager, widenedByRole)).toBe('target-outranks-actor');
+    const resolvedActor = {
+      id: manager.id,
+      permissions: [...manager.permissions, 'withdrawals.settle'],
+    };
+    expect(refuseReset(resolvedActor, widenedByRole)).toBeNull();
   });
 
   it('refuses a sub-admin whose target holds a permission they lack', () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ipMatchesAny } from '../src/common/security/ip-range';
 import { ForbiddenException } from '@nestjs/common';
 import { IpAllowlistGuard } from '../src/modules/admin/guards/ip-allowlist.guard';
 import { AdminIpAllowlistService } from '../src/modules/admin/admin-ip-allowlist.service';
@@ -144,6 +145,22 @@ function buildService(rules: AllowlistRule[]) {
       Promise.resolve({ id: 'new-rule', createdAt: new Date(), ...input }),
     ),
     delete: vi.fn().mockResolvedValue(rules[0]),
+    /*
+     * The store decides AND deletes under one lock now (a read-then-delete in
+     * the service let two concurrent removals strand everybody). The fake
+     * mirrors that contract over the in-memory rules and still routes the
+     * actual deletion through `delete`, which the assertions below watch.
+     */
+    removeUnlessLockedOut: vi.fn(async (id: string, callerIp: string | undefined) => {
+      const target = rules.find((r) => r.id === id);
+      if (!target) return { outcome: 'not-found' as const };
+      const remaining = rules.filter((r) => r.id !== id).map((r) => r.cidr);
+      if (remaining.length > 0 && !ipMatchesAny(callerIp, remaining)) {
+        return { outcome: 'would-lock-out' as const, rule: target };
+      }
+      await store.delete(id);
+      return { outcome: 'deleted' as const, rule: target, remaining: remaining.length };
+    }),
   };
   const audit = { record: vi.fn() };
   const service = new AdminIpAllowlistService(

@@ -1,3 +1,10 @@
+/*
+ * DEAD UNTIL A SWITCH HAS A READER. The only switch this table ever held,
+ * `withdrawal_otp`, lost its reader when the withdrawal OTP was removed (D-67),
+ * and the screen that toggled it reported a protection that did not exist. The
+ * controller and service are gone; the table and this store stay so that the
+ * next real control does not start from a migration — add the reader first.
+ */
 import { Inject, Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';

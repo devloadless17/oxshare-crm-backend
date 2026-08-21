@@ -46,8 +46,8 @@ export class AdminTagsController {
   @ApiOperation({ summary: 'Client tags, with how many clients carry each' })
   @ApiOkResponse({ type: [ClientTagWithCountDto] })
   @NotClientScoped('The tag VOCABULARY, not the clients carrying them.')
-  list() {
-    return this.tags.list();
+  list(@Req() req: Request & { admin: AuthenticatedAdmin }) {
+    return this.tags.list(req.admin);
   }
 
   /**
@@ -80,9 +80,15 @@ export class AdminTagsController {
   @NotAudited(
     'A vocabulary of operator-defined labels containing no client data. The exports worth attributing are the ones carrying PII or money.',
   )
-  async exportTags(@Res() res: Response, @Query('format') format?: string) {
+  async exportTags(
+    @Res() res: Response,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Query('format') format?: string,
+  ) {
     const chosen = exportFormat(format);
-    await streamCsvFromArray(res, 'tags', chosen, TAG_EXPORT_COLUMNS, async () => this.tags.list());
+    await streamCsvFromArray(res, 'tags', chosen, TAG_EXPORT_COLUMNS, async () =>
+      this.tags.list(req.admin),
+    );
   }
 
   @Post('tags')

@@ -142,6 +142,25 @@ function validRequest(sub = 'admin-1', overrides: Record<string, unknown> = {}) 
   });
 }
 
+describe('a machine credential is not a cookie', () => {
+  it('lets an X-Api-Key write through with no Origin and no token', () => {
+    /*
+     * A cross-site page cannot set `X-Api-Key` without a preflight this API
+     * refuses, so a request carrying it was never forgeable — yet every such
+     * write used to be refused "failed anti-forgery validation" for lacking an
+     * Origin. The authenticator prefers the key unconditionally when present,
+     * so this cannot become a way past the token check for a cookie session.
+     */
+    expect(guard().canActivate(contextFor({ headers: { 'x-api-key': 'oxs_live_abcdef' } }))).toBe(
+      true,
+    );
+  });
+
+  it('still refuses the same write when the header is absent', () => {
+    expect(() => guard().canActivate(contextFor({ headers: {} }))).toThrow(ForbiddenException);
+  });
+});
+
 describe('CsrfService — the token proves which session it was minted for', () => {
   it('accepts a token for the subject it was issued to', () => {
     expect(csrf.verify('admin-1', csrf.issue('admin-1'))).toBe(true);

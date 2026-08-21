@@ -322,6 +322,40 @@ export class AdminRbacService {
     return await this.roles.resolvePermissions(admin.roleId, admin.permissions);
   }
 
+  /** Does this key set carry a manager key? */
+  private static holdsManagerKey(keys: readonly string[], key: 'roles.edit' | 'admins.edit') {
+    return keys.some((p) => AdminRbacService.normalizeKey(p) === key);
+  }
+
+  /**
+   * `assertNotLastManager`, for a write that TAKES a manager key away.
+   *
+   * Called from every path that can strip `roles.edit` or `admins.edit` from
+   * somebody — editing a role's permissions, moving an admin to a lesser role
+   * or snapshot, suspending them — and only for the keys the write actually
+   * removes. It used to run from `setAdminStatus` alone, so the invariant it
+   * states ("nobody may leave the system unmanageable") held against
+   * suspension and against nothing else: unticking `roles.edit` on the only
+   * role that carried it, or reassigning the only `admins.edit` holder to a
+   * reviewer role, was one save away from a console nobody could administer.
+   *
+   * `before` is what the affected admin(s) hold now, `predict` what everybody
+   * would hold after. A write that removes no manager key is not checked, so
+   * a fixture-driven unit test of an unrelated edit is not asked to enumerate
+   * the directory.
+   */
+  private async assertKeepsAManager(
+    before: readonly string[],
+    predictedFor: (admin: Admin) => Promise<{ active: boolean; permissions: string[] }>,
+    after: readonly string[],
+  ): Promise<void> {
+    for (const key of ['roles.edit', 'admins.edit'] as const) {
+      if (!AdminRbacService.holdsManagerKey(before, key)) continue;
+      if (AdminRbacService.holdsManagerKey(after, key)) continue;
+      await this.assertNotLastManager(key, predictedFor);
+    }
+  }
+
   /**
    * The anti-escalation rule for FIELD MASKS — `assertGrantable`'s mirror.
    *
@@ -470,6 +504,23 @@ export class AdminRbacService {
     }
     if (patch.permissions) await this.assertRoleGrantable(actor, role.id, patch.permissions);
     if (patch.maskedFields) this.assertMaskAllowed(actor, patch.maskedFields);
+    /*
+     * Editing a role edits everybody on it. If this takes `roles.edit` or
+     * `admins.edit` away from the role, every holder loses it at once — so
+     * the write is refused when it would leave nobody able to undo it.
+     */
+    if (patch.permissions) {
+      const next = patch.permissions;
+      await this.assertKeepsAManager(
+        role.permissions,
+        async (candidate) => ({
+          active: candidate.status === 'active',
+          permissions:
+            candidate.roleId === role.id ? next : await this.effectivePermissions(candidate),
+        }),
+        next,
+      );
+    }
     const updated = await this.roles.update(id, patch);
     this.audit.record(actor.id, 'role.update', 'role', id, {
       before: role.permissions,
@@ -645,6 +696,22 @@ export class AdminRbacService {
       await this.assertGrantable(actor, patch.permissions);
       update = { ...update, roleId: undefined, permissions: patch.permissions };
     }
+    /*
+     * Demoting the last manager is the same outage as suspending them — see
+     * assertKeepsAManager. Checked against what this admin holds NOW (role
+     * over snapshot) and what the write would leave them with.
+     */
+    if (patch.roleId || patch.permissions) {
+      const next = update.permissions ?? admin.permissions;
+      await this.assertKeepsAManager(
+        await this.effectivePermissions(admin),
+        async (candidate) => ({
+          active: candidate.status === 'active',
+          permissions: candidate.id === id ? next : await this.effectivePermissions(candidate),
+        }),
+        next,
+      );
+    }
 
     if (patch.maskedFields !== undefined) {
       // `null` clears the override; an array pins this person's own answer.
@@ -766,10 +833,17 @@ export class AdminRbacService {
      * produce, not the current one.
      */
     if (status === 'suspended') {
-      await this.assertNotLastManager('admins.edit', async (candidate) => ({
-        active: candidate.id === id ? false : candidate.status === 'active',
-        permissions: await this.effectivePermissions(candidate),
-      }));
+      // Both manager keys, not only `admins.edit`: suspending the last holder
+      // of `roles.edit` leaves roles frozen just as surely.
+      const held = await this.effectivePermissions(admin);
+      await this.assertKeepsAManager(
+        held,
+        async (candidate) => ({
+          active: candidate.id === id ? false : candidate.status === 'active',
+          permissions: await this.effectivePermissions(candidate),
+        }),
+        [],
+      );
     }
     if (admin.status === status) {
       throw new ValidationError(`Administrator is already ${status}.`);

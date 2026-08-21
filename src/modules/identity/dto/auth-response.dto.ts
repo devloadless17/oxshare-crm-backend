@@ -11,8 +11,11 @@ export { MessageResponseDto } from '../../../common/dto/message-response.dto';
 // Shapes below are transcribed from the live responses, not from the service
 // source, so they describe what callers actually receive.
 
-const USER_TYPES = ['individual', 'corporate'] as const;
-const USER_STATUSES = ['active', 'suspended'] as const;
+// The DERIVED client type (users.store.ts): partner ▸ referral ▸ individual.
+// `corporate` never existed in the enum, and `referral`/`partner` were missing —
+// this DTO is what the portal generates its types from.
+const USER_TYPES = ['individual', 'referral', 'partner'] as const;
+const USER_STATUSES = ['active', 'suspended', 'pending'] as const;
 
 export class UserProfileDto {
   @ApiProperty() id: string;

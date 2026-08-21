@@ -232,3 +232,35 @@ export function canonicaliseRule(rule: IpRule): string | null {
   }
   return `${groups.join(':')}/${parsed.prefix}`;
 }
+
+/**
+ * Whether these rules TOGETHER admit every address of either family.
+ *
+ * `matchesEverything` catches one `/0`. It does not catch `0.0.0.0/1` plus
+ * `128.0.0.0/1` — two perfectly valid rules whose union is the whole internet,
+ * shown on the panel as "Enforced — 2 rules". Same failure, one rule further
+ * apart. The intervals are merged per family and compared against the full
+ * address space.
+ */
+export function coversEverything(rules: readonly IpRule[]): boolean {
+  for (const family of [4, 6] as const) {
+    const width = family === 4 ? 32 : 128;
+    const intervals = rules
+      .map((rule) => parseRule(rule))
+      .filter((parsed): parsed is ParsedRule => parsed !== null && parsed.family === family)
+      .map((parsed) => {
+        const size = 1n << BigInt(width - parsed.prefix);
+        return { start: parsed.network, end: parsed.network + size - 1n };
+      })
+      .sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+    if (intervals.length === 0) continue;
+
+    let reach = -1n;
+    for (const { start, end } of intervals) {
+      if (start > reach + 1n) break;
+      if (end > reach) reach = end;
+    }
+    if (reach >= (1n << BigInt(width)) - 1n) return true;
+  }
+  return false;
+}

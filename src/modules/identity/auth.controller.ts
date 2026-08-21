@@ -24,7 +24,7 @@ import {
 import { Request, Response } from 'express';
 import { Throttle } from '@nestjs/throttler';
 import { COOKIE_BASES, readSessionCookie } from '../../common/security/session-cookies';
-import type { DeviceFingerprint } from '../../common/security/refresh-tokens.service';
+import { deviceOf } from '../../common/security/device-fingerprint';
 import { TOKEN_KIND } from '../../common/security/token-audience';
 import { AuthService } from './auth.service';
 import {
@@ -397,24 +397,6 @@ export class AuthController {
     const jti = decodeJti(token);
     return jti ? this.auth.familyIdForJti(jti) : null;
   }
-}
-
-/**
- * What the request looked like, for the session list to show back.
- *
- * `req.ip` is Express's, which respects `trust proxy`, so behind a load
- * balancer this is the client address rather than the balancer's.
- *
- * Truncated to the column width rather than rejected: refusing a login because
- * somebody sent a 900-character User-Agent would be an availability bug wearing
- * a validation costume.
- */
-function deviceOf(req: Request): DeviceFingerprint {
-  const ua = req.get('user-agent');
-  return {
-    userAgent: ua ? ua.slice(0, 400) : null,
-    ip: req.ip ? req.ip.slice(0, 64) : null,
-  };
 }
 
 /**

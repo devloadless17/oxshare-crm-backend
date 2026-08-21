@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Post,
   Query,
@@ -128,18 +130,45 @@ export class PaymentsController {
    * reference alone, so without this guard the route would be an oracle for
    * anybody else's payment status.
    */
+  /*
+   * READ-ONLY, and the caller's own deposit only.
+   *
+   * This GET used to settle: it asked the provider and credited the wallet.
+   * A state change behind a GET is what this codebase refuses elsewhere (the
+   * verify-email route is a POST for the same reason) — prefetchers, link
+   * scanners and the back button all issue GETs — and it matched on the
+   * reference alone, so any verified client could drive the settlement of, and
+   * read the state of, another client's payment. Settling is the POST below.
+   */
   @Get('deposits/:reference/status')
   @UseGuards(KycVerifiedGuard)
+  @ApiCookieAuth()
+  @ApiOperation({ summary: "The current state of one of the caller's own gateway deposits" })
+  depositStatus(
+    @Param('reference') reference: string,
+    @Query('method') method: string,
+    @Req() req: Request & { user: User },
+  ) {
+    return this.transactions.gatewayDepositState(method, reference, req.user.id);
+  }
+
+  @Post('deposits/:reference/settle')
+  @UseGuards(KycVerifiedGuard)
+  @HttpCode(HttpStatus.OK)
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Re-check a gateway deposit with the provider, settling it if it has completed',
     description:
       'Asks the payment provider directly rather than trusting anything the browser carried back. ' +
       'Safe to call repeatedly: settlement is idempotent, so this and the provider callback ' +
-      'converge on the same outcome whichever arrives first.',
+      "converge on the same outcome whichever arrives first. Only the deposit's owner may ask.",
   })
-  settleDeposit(@Param('reference') reference: string, @Query('method') method: string) {
-    return this.transactions.settleGatewayDeposit(method, reference);
+  settleDeposit(
+    @Param('reference') reference: string,
+    @Query('method') method: string,
+    @Req() req: Request & { user: User },
+  ) {
+    return this.transactions.settleGatewayDeposit(method, reference, { ownerId: req.user.id });
   }
 
   @Post('deposits')

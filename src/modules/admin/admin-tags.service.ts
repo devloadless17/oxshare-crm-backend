@@ -13,7 +13,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
-import { assertActorCan } from '../../common/security/actor';
+import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 
 /**
@@ -49,7 +49,10 @@ export class AdminTagsService {
       .slice(0, 64);
   }
 
-  list(): Promise<ClientTagWithCount[]> {
+  list(actor: AuthenticatedAdmin): Promise<ClientTagWithCount[]> {
+    // R-4.3: asserted on the actor like every sibling method, not only in the
+    // guard — the vocabulary names how the business sees its clients.
+    assertActorCanAny(actor, ['tags.view', 'clients.view'], 'list client tags');
     return this.tags.findAllWithCounts();
   }
 

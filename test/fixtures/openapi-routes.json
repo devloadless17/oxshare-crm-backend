@@ -75,7 +75,6 @@
   "GET /v1/admin/rejection-reasons",
   "GET /v1/admin/roles",
   "GET /v1/admin/roles/export",
-  "GET /v1/admin/security-settings",
   "GET /v1/admin/settings/rival",
   "GET /v1/admin/settings/smtp",
   "GET /v1/admin/settings/trading",
@@ -220,6 +219,7 @@
   "POST /v1/notifications/read-all",
   "POST /v1/notifications/{id}/read",
   "POST /v1/payments/deposits",
+  "POST /v1/payments/deposits/{reference}/settle",
   "POST /v1/payments/transfers",
   "POST /v1/payments/withdrawals",
   "POST /v1/trading/accounts",
@@ -232,7 +232,6 @@
   "PUT /v1/admin/products/{id}",
   "PUT /v1/admin/rejection-reasons/{id}",
   "PUT /v1/admin/roles/{id}",
-  "PUT /v1/admin/security-settings/{key}",
   "PUT /v1/admin/settings/rival",
   "PUT /v1/admin/settings/smtp",
   "PUT /v1/admin/settings/trading"

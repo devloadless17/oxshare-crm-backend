@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AdminIpAllowlistStore, type AllowlistRule } from '../../store/admin-ip-allowlist.store';
 import {
   canonicaliseRule,
+  coversEverything,
   ipMatchesAny,
   isValidRule,
   matchesEverything,
@@ -93,6 +94,15 @@ export class AdminIpAllowlistService {
     if (existing.includes(canonical)) {
       throw new ConflictError(`${canonical} is already on the allowlist.`);
     }
+    // The same refusal as `/0`, for a /0 assembled out of pieces: the list
+    // would report itself as enforcing while admitting every address.
+    if (coversEverything([...existing, canonical])) {
+      throw new ValidationError(
+        `Refusing: together with the existing rules, ${canonical} would admit every ` +
+          'address, so the allowlist would report itself as enforcing while admitting anyone. ' +
+          'If you want this protection switched off, remove all the rules instead.',
+      );
+    }
 
     /*
      * THE FIRST RULE IS THE DANGEROUS ONE. While the list is empty the feature
@@ -123,31 +133,33 @@ export class AdminIpAllowlistService {
     // is at least as privileged as adding one.
     assertActorCan(actor, 'settings.security.edit', 'change the admin IP allowlist');
 
-    const rules = await this.store.findAll();
-    const target = rules.find((r) => r.id === id);
-    if (!target) throw new NotFoundError('That allowlist rule does not exist.');
-
     /*
      * Removing the rule you are covered by is fine — as long as ANOTHER rule
      * still covers you, or the list is about to become empty (which turns the
      * feature off and lets everyone back in, including you).
+     *
+     * Decided and deleted in ONE transaction with the rows locked, in the
+     * store. Read-then-delete here let two concurrent removals each see the
+     * other's rule as "still covering you" and leave nobody covered.
      */
-    const remaining = rules.filter((r) => r.id !== id).map((r) => r.cidr);
-    if (remaining.length > 0 && !ipMatchesAny(callerIp, remaining)) {
+    const result = await this.store.removeUnlessLockedOut(id, callerIp);
+    if (result.outcome === 'not-found') {
+      throw new NotFoundError('That allowlist rule does not exist.');
+    }
+    if (result.outcome === 'would-lock-out') {
       throw new ValidationError(
-        `Refusing: removing ${target.cidr} would leave no rule covering your own ` +
+        `Refusing: removing ${result.rule.cidr} would leave no rule covering your own ` +
           `address (${callerIp ?? 'unknown'}), and you would immediately lose access ` +
           'to this screen. Add a rule covering yourself first.',
       );
     }
-
-    await this.store.delete(id);
+    const target = result.rule;
     this.audit.record(actor.id, 'ip_allowlist.remove', 'ip_allowlist', id, {
       cidr: target.cidr,
       label: target.label,
       // Recorded because removing the last rule DISABLES the feature entirely,
       // which is a far bigger event than deleting one row.
-      enforcementDisabled: remaining.length === 0,
+      enforcementDisabled: result.remaining === 0,
     });
   }
 }

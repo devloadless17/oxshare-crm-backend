@@ -592,7 +592,10 @@ export class AdminClientsService {
       },
     );
 
-    return {
+    // Through the mask like every other client read. This built its own
+    // object and skipped it, so an admin whose role hid `client.email` could
+    // read the address out of the 200 by suspending and reactivating.
+    const view = {
       id: updated.id,
       email: updated.email,
       firstName: updated.firstName,
@@ -602,6 +605,10 @@ export class AdminClientsService {
       verificationLevel: updated.verificationLevel,
       country: updated.country,
       createdAt: updated.createdAt,
+    };
+    return {
+      ...applyMask('client', view, actor.fieldMask),
+      maskedFields: maskedFieldsFor('client', actor.fieldMask),
     };
   }
 }

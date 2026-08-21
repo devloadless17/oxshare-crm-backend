@@ -9,7 +9,6 @@ import {
   kycSubmissions,
   rejectionReasons,
   roles,
-  securitySettings,
   users,
 } from './schema';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
@@ -359,6 +358,47 @@ export async function runSeeds(): Promise<void> {
    * days — the row claimed evidence that had never existed on disk. An absent
    * document is honest; a dangling reference is a lie the review screen repeats.
    */
+  /*
+   * Two more portal identities, each for ONE destructive journey:
+   *  - `e2e-reuse@`   — the reuse-detection spec deliberately replays a spent
+   *                     refresh token, which revokes the whole family.
+   *  - `e2e-suspend@` — the admin suite suspends it to prove a live portal
+   *                     session dies on its next navigation; reactivated by
+   *                     the spec, and re-asserted active here every boot so a
+   *                     crashed run cannot leave it locked.
+   */
+  for (const extra of [
+    {
+      email: 'e2e-reuse@oxshare.com',
+      firstName: 'Rea',
+      lastName: 'Replay',
+      phone: '+971500000003',
+    },
+    {
+      email: 'e2e-suspend@oxshare.com',
+      firstName: 'Sue',
+      lastName: 'Spended',
+      phone: '+971500000004',
+    },
+  ]) {
+    await db
+      .insert(users)
+      .values({
+        ...extra,
+        passwordHash: clientHash,
+        type: 'individual',
+        status: 'active',
+        emailVerified: true,
+        verificationLevel: 1,
+        country: 'United Arab Emirates',
+      })
+      .onConflictDoNothing({ target: users.email });
+  }
+  await db
+    .update(users)
+    .set({ status: 'active' })
+    .where(eq(users.email, 'e2e-suspend@oxshare.com'));
+
   const [e2eClient] = await db
     .select({ id: users.id })
     .from(users)
@@ -461,23 +501,8 @@ export async function runSeeds(): Promise<void> {
     );
   }
 
-  /*
-   * The withdrawal OTP starts OFF in development, and ONLY in development.
-   *
-   * `runSeeds()` is called from main.ts exclusively when NODE_ENV is not
-   * production, so this cannot reach a live deployment: there, no row exists and
-   * `SecuritySettingsStore.isEnabled` answers TRUE, which is the safe default a
-   * fresh install must have.
-   *
-   * Why turn it off here at all: the OTP requires reading a real mailbox, so
-   * every local withdrawal and every end-to-end run would otherwise stall on a
-   * six-digit code from Ethereal. The operator flips it on from Settings →
-   * Security when they are ready, and that action is audited.
-   *
-   * `onConflictDoNothing` so a developer who turns it ON locally does not have
-   * it silently turned back off by the next reboot — a seed that overwrites a
-   * deliberate choice is worse than no seed.
-   */
+  // The `withdrawal_otp` security switch is no longer seeded: the OTP was
+  // removed (D-67) and so was the screen that toggled it.
 
   /*
    * ── The ADMIN end-to-end cohort ─────────────────────────────────────────
@@ -622,6 +647,32 @@ export async function runSeeds(): Promise<void> {
       // The composite primary key IS the idempotency constraint (§6.3), so a
       // reboot re-running the seeds is a no-op rather than a duplicate-key error.
       .onConflictDoNothing();
+    /*
+     * A SUBMITTED (undecided) KYC row for alpha, carrying the person's email
+     * and phone under `personalInfo.*` — the fixture the masking specs read
+     * through the review screen (`kyc.user.*` and `kyc.personalInfo.*` must
+     * both be absent for a masked reviewer). Never decided by any spec:
+     * approval is terminal, and `onConflictDoNothing` keeps a human decision.
+     */
+    await db
+      .insert(kycSubmissions)
+      .values({
+        userId: alphaClient.id,
+        status: 'submitted',
+        submittedAt: new Date(),
+        personalInfo: {
+          firstName: 'Alpha',
+          lastName: 'Aardvark',
+          email: `alpha@${E2E_DOMAIN}`,
+          phone: '+96170000001',
+          dateOfBirth: '1991-01-01',
+          nationality: 'Lebanon',
+          country: 'Lebanon',
+        },
+        document: { docType: 'passport' },
+        addressProof: { docType: 'utility_bill' },
+      })
+      .onConflictDoNothing({ target: kycSubmissions.userId });
   }
 
   /*
@@ -655,6 +706,39 @@ export async function runSeeds(): Promise<void> {
    * The role also carries a MASK and the admin a SCOPE, so the two RBAC-03
    * dimensions are exercised by the same identity.
    */
+  /*
+   * A READ-ONLY compliance reviewer: `kyc.view` + `clients.view`, no
+   * `kyc.review`. Exists so the suite can prove the review screen draws no
+   * decision control for somebody who may not decide, and that the API
+   * refuses them. Unscoped and unmasked — one variable at a time.
+   */
+  const [kycViewerRole] = await db
+    .insert(roles)
+    .values({
+      name: 'E2E KYC Viewer',
+      description: 'Fixture for the admin end-to-end suite. Not for human use.',
+      permissions: ['kyc.view', 'clients.view'],
+      maskedFields: [],
+    })
+    .onConflictDoNothing({ target: roles.name })
+    .returning();
+  const kycViewerRoleId =
+    kycViewerRole?.id ??
+    (await db.select().from(roles).where(eq(roles.name, 'E2E KYC Viewer')).limit(1))[0]?.id;
+  if (kycViewerRoleId) {
+    await db
+      .insert(admins)
+      .values({
+        email: 'e2e-kyc-viewer@oxshare.com',
+        passwordHash: adminHash,
+        name: 'E2E KYC Viewer',
+        role: 'sub_admin',
+        roleId: kycViewerRoleId,
+        permissions: ['kyc.view', 'clients.view'],
+      })
+      .onConflictDoNothing({ target: admins.email });
+  }
+
   const [e2eRestrictedRole] = await db
     .insert(roles)
     .values({
@@ -717,13 +801,7 @@ export async function runSeeds(): Promise<void> {
     }
   }
 
-  await db
-    .insert(securitySettings)
-    .values({ key: 'withdrawal_otp', enabled: false })
-    .onConflictDoNothing({ target: securitySettings.key });
-
   console.log(
     '🌱 Seeds applied (idempotent): master role/admin, demo client, rejection reasons, e2e cohort',
   );
-  console.log('   ⚠️  withdrawal OTP is OFF in development — Settings → Security to enable');
 }

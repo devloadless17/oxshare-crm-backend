@@ -29,6 +29,7 @@ import { UsersStore } from '../../store/users.store';
 import { AuditLogStore } from '../../store/audit-log.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
 import { AdminIpAllowlistStore } from '../../store/admin-ip-allowlist.store';
+import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import { adminNetworkAdmits } from '../../common/security/admin-network';
 import { clientIp } from '../../common/security/client-ip';
 import { COOKIE_BASES, readSessionCookie } from '../../common/security/session-cookies';
@@ -60,6 +61,13 @@ type Reader =
 //   - a client may fetch only files referenced by their own submission
 // Real signed URLs arrive with the S3 move; this closes the anonymous hole now.
 @ApiTags('compliance')
+/**
+ * A session that WAS valid and has since been ended — suspension, a revoked
+ * family, a password change. A 401, but one reached ON PURPOSE, which the
+ * `authorize()` catches must propagate rather than retry as the other surface.
+ */
+class SessionEndedException extends UnauthorizedException {}
+
 @Controller('uploads')
 export class UploadsController {
   private readonly logger = new Logger(UploadsController.name);
@@ -75,6 +83,7 @@ export class UploadsController {
     private readonly files: StoredFilesService,
     private readonly scopes: AdminClientScopesStore,
     private readonly ipAllowlist: AdminIpAllowlistStore,
+    private readonly refreshTokens: RefreshTokensService,
   ) {}
 
   /**
@@ -431,14 +440,17 @@ export class UploadsController {
     const adminToken = readSessionCookie(cookies, COOKIE_BASES.adminAccess);
     if (adminToken) {
       try {
-        const payload = this.jwt.verify<{ sub: string; typ?: string }>(adminToken, {
-          secret: this.config.getOrThrow<string>('ADMIN_JWT_SECRET'),
-          audience: TOKEN_AUDIENCE.admin,
-          issuer: TOKEN_ISSUER,
-          // Stated, never inherited from the key type — see token-audience.ts.
-          algorithms: TOKEN_ALGORITHMS,
-          clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
-        });
+        const payload = this.jwt.verify<{ sub: string; typ?: string; fam?: string; iat?: number }>(
+          adminToken,
+          {
+            secret: this.config.getOrThrow<string>('ADMIN_JWT_SECRET'),
+            audience: TOKEN_AUDIENCE.admin,
+            issuer: TOKEN_ISSUER,
+            // Stated, never inherited from the key type — see token-audience.ts.
+            algorithms: TOKEN_ALGORITHMS,
+            clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
+          },
+        );
         // `typ` checked here too, as it is at every other verification site.
         // The separate refresh secret already makes a refresh token fail above,
         // so this is defence against that separation being lost in a deploy —
@@ -448,6 +460,20 @@ export class UploadsController {
         }
         const admin = await this.admins.findById(payload.sub);
         if (admin) {
+          /*
+           * THE THREE CHECKS EVERY OTHER ADMIN REQUEST GETS — suspension, the
+           * revoked-family check, and the password-change cutoff — exactly as
+           * `AdminAuthenticator` applies them. This route authenticates by hand
+           * (it serves two surfaces), and for as long as it skipped them a
+           * suspended administrator, one signed out from another device, or one
+           * whose password had just been reset under duress kept reading every
+           * client's passport for the rest of their access token's life. The
+           * most sensitive bytes in the system were behind the weakest check.
+           */
+          this.assertAdminSessionLive(admin, payload);
+          if (payload.fam && (await this.refreshTokens.familyIsRevoked('admin', payload.fam))) {
+            throw new UnauthorizedException('Session has been revoked. Please log in again.');
+          }
           /*
            * RBAC-08 APPLIES HERE, NOT IN THE GUARD — and this is the gap the
            * feature's deletion went out of its way to document.
@@ -516,10 +542,10 @@ export class UploadsController {
            * silently break every existing reviewer on deploy. So this widens who
            * may look without changing who may decide.
            */
+          // No wildcard branch: full access is a real list of real keys now
+          // (admin.guard.ts), and this was the last reader of `'*'`.
           const mayRead =
-            held.includes('*') ||
-            normalized.includes('kyc.documents.view') ||
-            normalized.includes('kyc.review');
+            normalized.includes('kyc.documents.view') || normalized.includes('kyc.review');
           if (mayRead) {
             /*
              * CLIENT SCOPE, on a route that takes a FILENAME rather than a
@@ -560,7 +586,13 @@ export class UploadsController {
          * reached ON PURPOSE is an answer, and answers are not retried as
          * somebody else.
          */
-        if (e instanceof ForbiddenException || e instanceof NotFoundException) throw e;
+        if (
+          e instanceof ForbiddenException ||
+          e instanceof NotFoundException ||
+          e instanceof SessionEndedException
+        ) {
+          throw e;
+        }
         // fall through to client auth
       }
     }
@@ -568,19 +600,31 @@ export class UploadsController {
     const clientToken = readSessionCookie(cookies, COOKIE_BASES.clientAccess);
     if (clientToken) {
       try {
-        const payload = this.jwt.verify<{ sub: string; typ?: string }>(clientToken, {
-          secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
-          audience: TOKEN_AUDIENCE.portal,
-          issuer: TOKEN_ISSUER,
-          // Stated, never inherited from the key type — see token-audience.ts.
-          algorithms: TOKEN_ALGORITHMS,
-          clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
-        });
+        const payload = this.jwt.verify<{ sub: string; typ?: string; fam?: string; iat?: number }>(
+          clientToken,
+          {
+            secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
+            audience: TOKEN_AUDIENCE.portal,
+            issuer: TOKEN_ISSUER,
+            // Stated, never inherited from the key type — see token-audience.ts.
+            algorithms: TOKEN_ALGORITHMS,
+            clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
+          },
+        );
         if (!isTokenKind(payload, TOKEN_KIND.access)) {
           throw new UnauthorizedException('Invalid or expired token.');
         }
+        /*
+         * The same three checks `JwtStrategy.validate` applies on every other
+         * portal request — see the admin branch for why a bespoke
+         * authentication path must not be the weakest one.
+         */
+        const owner = await this.users.findById(payload.sub);
+        if (owner) this.assertClientSessionLive(owner, payload);
+        if (payload.fam && (await this.refreshTokens.familyIsRevoked('portal', payload.fam))) {
+          throw new UnauthorizedException('That session has been signed out. Please log in again.');
+        }
         if (await this.submissionReferencesFile(payload.sub, fileName)) {
-          const owner = await this.users.findById(payload.sub);
           /*
            * The CLIENT branch checks `emailVerified`; the admin branch above
            * cannot and must not — an admin has no such column, and testing it
@@ -613,11 +657,57 @@ export class UploadsController {
          * they are not signed in, and losing the EMAIL_NOT_VERIFIED code the
          * portal needs to offer the resend.
          */
-        if (e instanceof ForbiddenException || e instanceof EmailNotVerifiedError) throw e;
+        if (
+          e instanceof ForbiddenException ||
+          e instanceof EmailNotVerifiedError ||
+          e instanceof SessionEndedException
+        ) {
+          throw e;
+        }
       }
     }
 
     throw new UnauthorizedException('Authentication required to access documents.');
+  }
+
+  /**
+   * Suspension and the password-change cutoff, for an ADMIN access token —
+   * the arithmetic mirrors admin.guard.ts exactly (`(iat + 1) * 1000 <=
+   * cutoff`, failing closed at the boundary). Thrown as `SessionEndedException`
+   * so the catch above propagates it as the deliberate 401 it is, rather than
+   * falling through to "Authentication required" as if nobody had signed in.
+   */
+  private assertAdminSessionLive(
+    admin: Pick<Admin, 'status' | 'passwordChangedAt'>,
+    payload: { iat?: number },
+  ): void {
+    if (admin.status === 'suspended') {
+      throw new SessionEndedException('This administrator account has been suspended.');
+    }
+    if (
+      admin.passwordChangedAt &&
+      payload.iat &&
+      (payload.iat + 1) * 1000 <= admin.passwordChangedAt.getTime()
+    ) {
+      throw new SessionEndedException('Your password was changed. Please sign in again.');
+    }
+  }
+
+  /** The portal counterpart — mirrors `JwtStrategy.validate`. */
+  private assertClientSessionLive(
+    user: { status: string; passwordChangedAt?: Date | null },
+    payload: { iat?: number },
+  ): void {
+    if (user.status === 'suspended') {
+      throw new SessionEndedException('Your account has been suspended.');
+    }
+    if (
+      user.passwordChangedAt &&
+      payload.iat &&
+      (payload.iat + 1) * 1000 <= user.passwordChangedAt.getTime()
+    ) {
+      throw new SessionEndedException('Your password was changed. Please sign in again.');
+    }
   }
 
   /**

@@ -315,6 +315,13 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * last one stops it entirely. "Who opened the console to the internet, and
    * when" has to be answerable from the audit screen rather than the table.
    */
+  /*
+   * A REFUSAL, recorded. Permission denials were `logger.warn` only, so "who
+   * keeps trying to reach the payout queue without the key" had no answer on
+   * the audit screen — the one place an investigator looks. Written by
+   * `PermissionsGuard` with the route and the keys it demanded.
+   */
+  { action: 'security.denied', label: 'Action refused (permission)', group: 'Security' },
   { action: 'ip_allowlist.add', label: 'Network rule added', group: 'Security' },
   { action: 'ip_allowlist.remove', label: 'Network rule removed', group: 'Security' },
   /*

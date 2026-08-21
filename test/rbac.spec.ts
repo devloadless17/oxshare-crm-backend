@@ -199,6 +199,48 @@ describe('AdminRbacService anti-escalation', () => {
     expect(rolesFake.update).toHaveBeenCalledWith('role-1', { permissions: ['roles.view'] });
   });
 
+  it('refuses to untick the LAST roles.edit from the only role carrying it', async () => {
+    /*
+     * The invariant that replaced the master-admin tier: nobody may leave the
+     * system unmanageable. It used to run from `setAdminStatus` alone, so
+     * editing the role instead of suspending the person walked straight past it.
+     */
+    const managerRole: Role = { ...CUSTOM_ROLE, id: 'role-m', permissions: ['roles.edit'] };
+    const holder: Admin = { ...SUB_ADMIN, id: 'sub-h', roleId: 'role-m', permissions: [] };
+    const { service, rolesFake } = await buildRbacService({
+      roles: {
+        findById: vi.fn().mockResolvedValue(managerRole),
+        resolvePermissions: vi.fn((roleId: string | undefined, own: string[]) =>
+          Promise.resolve(roleId === 'role-m' ? managerRole.permissions : own),
+        ),
+      },
+      // The directory holds one active administrator with the key — on this role.
+      admins: { findAll: vi.fn().mockResolvedValue({ rows: [holder], total: 1 }) },
+    });
+
+    await expect(
+      service.updateRole('role-m', { permissions: ['roles.view'] }, MASTER),
+    ).rejects.toThrow(/no active administrator holding roles.edit/);
+    expect(rolesFake.update).not.toHaveBeenCalled();
+  });
+
+  it('allows unticking roles.edit when another active administrator still holds it', async () => {
+    const managerRole: Role = { ...CUSTOM_ROLE, id: 'role-m', permissions: ['roles.edit'] };
+    const holder: Admin = { ...SUB_ADMIN, id: 'sub-h', roleId: 'role-m', permissions: [] };
+    const { service, rolesFake } = await buildRbacService({
+      roles: {
+        findById: vi.fn().mockResolvedValue(managerRole),
+        resolvePermissions: vi.fn((roleId: string | undefined, own: string[]) =>
+          Promise.resolve(roleId === 'role-m' ? managerRole.permissions : own),
+        ),
+      },
+      admins: { findAll: vi.fn().mockResolvedValue({ rows: [holder, MASTER], total: 2 }) },
+    });
+
+    await service.updateRole('role-m', { permissions: ['roles.view'] }, MASTER);
+    expect(rolesFake.update).toHaveBeenCalled();
+  });
+
   it('the master admin may grant the wildcard', async () => {
     const { service, rolesFake } = await buildRbacService();
 
@@ -365,6 +407,7 @@ describe('PermissionsGuard', () => {
     const guard = new PermissionsGuard(
       authenticator as unknown as AdminAuthenticator,
       reflector as unknown as Reflector,
+      { record: vi.fn() } as unknown as AdminAuditService,
     );
     const context = {
       switchToHttp: () => ({ getRequest: () => ({ cookies: {} }) }),

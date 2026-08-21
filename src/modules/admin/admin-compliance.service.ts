@@ -6,6 +6,7 @@ import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-r
 import { KycService } from '../compliance/kyc.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
+import { applyMask, applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
 import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
@@ -27,7 +28,7 @@ export class AdminComplianceService {
   ) {}
 
   // ─── KYC: list all ────────────────────────────────────────────────────────
-  listKyc(
+  async listKyc(
     query: {
       status?: string;
       q?: string;
@@ -47,7 +48,7 @@ export class AdminComplianceService {
      * either key now; the three DECISIONS below stay `kyc.review` only.
      */
     assertActorCanAny(actor, ['kyc.view', 'kyc.review'], 'list KYC submissions');
-    return this.kycService.listAll({
+    const page = await this.kycService.listAll({
       status: query.status as import('../../store/kyc.store').KycStatus | undefined,
       q: query.q,
       page: parseInt(query.page ?? '1', 10) || 1,
@@ -60,6 +61,18 @@ export class AdminComplianceService {
       sort: sortKey(query.sort, KYC_SORT_COLUMNS, DEFAULT_KYC_SORT, 'KYC submissions'),
       order: sortOrder(query.order),
     });
+    /*
+     * RBAC-03 ON THE QUEUE. The mask was computed and alias-expanded for every
+     * admin request (`admin.guard.ts`) and then applied on the CLIENT screens
+     * only — so a role that hid `client.email` read every address off the KYC
+     * queue one tab away. The queue's rows carry the same person under
+     * `user.*`; the catalog's aliases map `client.email` to `kyc.user.email`.
+     */
+    return {
+      ...page,
+      items: applyMaskAll('kyc', page.items, actor.fieldMask),
+      maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
+    };
   }
   /**
    * Open one submission — and record that its PII was read.
@@ -87,7 +100,18 @@ export class AdminComplianceService {
     if (actor) {
       this.audit.record(actor.id, 'kyc.submission.view', 'kyc_submission', userId);
     }
-    return submission;
+    /*
+     * The mask, at last, on the screen holding the most sensitive data. This
+     * response carries the date of birth, the address, the nationality, the
+     * phone and the email — and none of it was ever masked, while
+     * `client-fields.json` claimed the alias expansion "closes the KYC bypass".
+     * The expansion happened; nothing applied it here.
+     */
+    if (!actor) return submission;
+    return {
+      ...applyMask('kyc', submission, actor.fieldMask),
+      maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
+    };
   }
   /**
    * Previously decided attempts.

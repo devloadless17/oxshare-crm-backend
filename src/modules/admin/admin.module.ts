@@ -1,8 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AdminAuditController } from './admin-audit.controller';
 import { AdminApiKeysController } from './admin-api-keys.controller';
-import { AdminSecuritySettingsController } from './admin-security-settings.controller';
-import { SecuritySettingsService } from './security-settings.service';
 import { AdminAuthController } from './admin-auth.controller';
 import { AdminTagsController } from './admin-tags.controller';
 import { AdminClientsController } from './admin-clients.controller';
@@ -61,7 +59,6 @@ const ADMIN_SERVICES = [
   AdminComplianceService,
   AdminClientsService,
   AdminTagsService,
-  SecuritySettingsService,
   AdminMoneyService,
   // Reads only, and only through StoreModule's StatsStore — no money service and
   // no audit writer, because it neither moves money nor names a client.
@@ -105,7 +102,6 @@ const ADMIN_SERVICES = [
     AdminRbacController,
     AdminAuditController,
     AdminApiKeysController,
-    AdminSecuritySettingsController,
     AdminIpAllowlistController,
     AdminMoneyController,
     AdminStatsController,

@@ -102,8 +102,17 @@ export class IdempotencyInterceptor implements NestInterceptor {
     // explicitly because Express declares `req.route` as `any`.
     const route = (req.route as { path?: string } | undefined)?.path;
     const endpoint = `${req.method} ${route ?? req.path}`;
+    /*
+     * PATH PARAMETERS ARE PART OF THE INTENT. The endpoint above is the route
+     * PATTERN, so `PATCH /admin/withdrawals/:id/approve` for two different ids
+     * is one endpoint — and with an empty body, one key reused across them
+     * hashed identically, replayed the first withdrawal's stored answer, and
+     * reported success while the second was never approved. Folding the params
+     * into the hash turns that into the "same key, different request" refusal
+     * it should always have been.
+     */
     const requestHash = createHash('sha256')
-      .update(JSON.stringify(req.body ?? {}))
+      .update(JSON.stringify({ params: req.params ?? {}, body: req.body ?? {} }))
       .digest('hex');
 
     return from(this.claim({ key, endpoint, actorId, requestHash })).pipe(

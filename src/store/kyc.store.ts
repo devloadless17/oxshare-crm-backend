@@ -1,4 +1,5 @@
 import { and, asc, eq, ilike, inArray, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
+import { escapeLike } from './users.store';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -278,7 +279,7 @@ export class KycStore {
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, kycSubmissions.userId);
     if (scoped) conditions.push(scoped);
     if (filter.q) {
-      const term = `%${filter.q}%`;
+      const term = `%${escapeLike(filter.q)}%`;
       conditions.push(
         or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))!,
       );

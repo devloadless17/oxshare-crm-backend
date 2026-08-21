@@ -84,32 +84,45 @@ export function targetSupersedesActor(
   return containsActor && targetOutranksActor(actor, target);
 }
 
-export type ResetRefusal =
-  'self' | 'target-outranks-actor' | 'target-is-master' | 'actor-not-permitted';
+export type ResetRefusal = 'self' | 'target-outranks-actor' | 'actor-not-permitted';
 
-/** `null` means allowed; anything else names why not. */
+/**
+ * `null` means allowed; anything else names why not.
+ *
+ * ── PERMISSIONS MUST BE THE RESOLVED SET, NOT THE ROW'S SNAPSHOT ────────────
+ *
+ * `admins.permissions` is a snapshot taken when the role was assigned; the
+ * ROLE is the live truth and the guard resolves it on every request. Feeding
+ * this function two raw rows therefore compared stale data on both sides — and
+ * that was a ladder: widen role R, and every admin on R holds more than their
+ * row says; an actor whose keys cover the stale row passes the subset test
+ * below, resets that admin, and signs in as an account that now outranks them.
+ * `AdminAuthService.initiatePasswordReset` resolves both sides through the same
+ * resolver `AdminRbacService.assertActorOutranks` uses, and this function is
+ * typed on `permissions` alone so nothing can hand it a row by accident.
+ *
+ * ── No master tier ──────────────────────────────────────────────────────────
+ *
+ * There is no `master_admin` role and no `'*'` wildcard any more (see
+ * admin.guard.ts); full access is a real list of real keys. This used to wave
+ * through an actor whose `role` column said master and refuse a target whose
+ * did — two claims nothing else in the system honours, one of which was a
+ * bypass-shaped hole. The subset ladder below expresses the same rules
+ * honestly: a full-access admin holds every key and so reaches everyone
+ * (rule 1), and nobody below them holds a superset of theirs (rule 2).
+ */
 export function refuseReset(
-  actor: Pick<Admin, 'id' | 'role' | 'permissions'>,
-  target: Pick<Admin, 'id' | 'role' | 'permissions'>,
+  actor: Pick<Admin, 'id' | 'permissions'>,
+  target: Pick<Admin, 'id' | 'permissions'>,
 ): ResetRefusal | null {
   /*
    * Self first, before any privilege reasoning.
    *
-   * A master admin passes every check below, so without this the highest
+   * A full-access admin passes every check below, so without this the highest
    * privilege in the system would be the one able to bypass proof-of-password
    * on its own account — the exact inversion of what privilege should buy.
    */
   if (actor.id === target.id) return 'self';
-
-  const actorIsMaster = actor.role === 'master_admin' || actor.permissions.includes('*');
-  // Rule 1: masters are peers, so this is the last word for them.
-  if (actorIsMaster) return null;
-
-  // Rule 2, the upward cases. Role first, because a master's authority does not
-  // live in its permission list — `role` is the claim that outranks everything.
-  if (target.role === 'master_admin' || target.permissions.includes('*')) {
-    return 'target-is-master';
-  }
 
   /*
    * A non-master needs an explicit grant AND must not be reaching above itself.

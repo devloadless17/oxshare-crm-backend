@@ -11,7 +11,8 @@ import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { Admin, AdminsStore } from '../../../store/admins.store';
 import { ApiKeysStore } from '../../../store/api-keys.store';
-import { API_KEY_TOKEN_PREFIX, hashApiKey } from '../../../common/security/api-key';
+import { hashApiKey, readApiKeyHeader } from '../../../common/security/api-key';
+import { AdminAuditService } from '../admin-audit.service';
 import { RolesStore } from '../../../store/roles.store';
 import { Request } from 'express';
 import { COOKIE_BASES, readSessionCookie } from '../../../common/security/session-cookies';
@@ -40,40 +41,6 @@ import { EMPTY_MASK, type FieldMask } from '../../../common/security/field-mask'
  * rewriting the type under a live table. Nothing READS it after migration 0044:
  * no guard, no service and no screen branches on it. Treat it as a dead column.
  */
-
-/**
- * The API key on this request, from `X-API-Key` or a Bearer header.
- *
- * Both accepted because integrations arrive with both habits, and refusing one
- * buys nothing. `Authorization: Bearer` is only read when the value carries the
- * key prefix — otherwise a portal JWT sent in that header would be mistaken for
- * a key, and the caller would get "invalid API key" for what is really a
- * wrong-surface token.
- */
-function readApiKeyHeader(req: AdminRequest): string | null {
-  /*
-   * `headers` is defaulted rather than assumed.
-   *
-   * Express always populates it, so this looks redundant — and it is not: this
-   * function now runs FIRST on every admin request, ahead of the cookie path,
-   * so anything that reaches the authenticator with a partial request object
-   * crashes here with a TypeError instead of being refused with a 401. That is
-   * a worse failure than the one it replaces, and it is exactly what the
-   * hand-built request objects in the unit specs surfaced.
-   */
-  const headers = req.headers ?? {};
-
-  const header = headers['x-api-key'];
-  const fromHeader = Array.isArray(header) ? header[0] : header;
-  if (fromHeader) return fromHeader.trim();
-
-  const auth = headers.authorization;
-  if (auth?.startsWith('Bearer ')) {
-    const value = auth.slice('Bearer '.length).trim();
-    if (value.startsWith(API_KEY_TOKEN_PREFIX)) return value;
-  }
-  return null;
-}
 
 /**
  * An admin as every downstream service should see them: identity plus the
@@ -499,6 +466,7 @@ export class PermissionsGuard implements CanActivate {
   constructor(
     private readonly authenticator: AdminAuthenticator,
     private readonly reflector: Reflector,
+    private readonly audit: AdminAuditService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -545,6 +513,16 @@ export class PermissionsGuard implements CanActivate {
     const held = new Set(admin.permissions.map(normalizePermissionKey));
     if (required.some((p) => held.has(normalizePermissionKey(p)))) return true;
 
+    /*
+     * Recorded, not only logged. A denial is an authenticated administrator
+     * asking for something their role does not grant — exactly the pattern an
+     * investigation wants to see on the audit screen, with the route and the
+     * keys. Fire-and-forget like every non-money audit write.
+     */
+    this.audit.record(admin.id, 'security.denied', 'route', `${req.method} ${req.path}`, {
+      required,
+      reason: 'permission',
+    });
     throw new ForbiddenException(
       `Missing permission: this action requires ${required.join(' or ')}.`,
     );

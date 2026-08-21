@@ -11,6 +11,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { CsrfService } from './csrf.service';
+import { readApiKeyHeader } from './api-key';
 import { COOKIE_BASES, readSessionCookie } from './session-cookies';
 import {
   TOKEN_ALGORITHMS,
@@ -93,6 +94,26 @@ export class CsrfGuard implements CanActivate {
 
     const req = context.switchToHttp().getRequest<Request>();
     if (!STATE_CHANGING.has(req.method)) return true;
+
+    /*
+     * A MACHINE credential is outside this guard's threat model.
+     *
+     * CSRF is the forgery of a request the browser attaches cookies to. A
+     * request presenting `X-Api-Key` (or a prefixed bearer) is authenticated by
+     * that header alone — a cross-site page cannot set it without a preflight
+     * this API refuses — and `AdminAuthenticator` prefers the key UNCONDITIONALLY
+     * when one is present, so a forged key beside a real cookie ends in a 401
+     * on the key, never in a cookie write that dodged the token check.
+     *
+     * Without this, every API-key write failed: a machine sends no Origin and
+     * no anti-forgery cookie, `assertOriginAllowed` refused it with "failed
+     * anti-forgery validation", and a feature documented as able to carry
+     * `withdrawals.settle` was read-only in practice — with an error that
+     * pointed nowhere near the cause.
+     */
+    if (readApiKeyHeader(req as { headers?: Record<string, string | string[] | undefined> })) {
+      return true;
+    }
 
     /*
      * ORIGIN IS CHECKED ON EVERY STATE CHANGE — session or not.

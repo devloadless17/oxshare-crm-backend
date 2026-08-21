@@ -9,6 +9,7 @@
     "build": "nest build",
     "start": "node dist/main",
     "dev": "nest start --watch",
+    "dev:crosshost": "PORT=3011 REALTIME_PORT=3013 PORTAL_URL=http://portal.crm.localhost:3010 ADMIN_URL=http://admin.crm.localhost:3012 nest start --watch",
     "start:debug": "nest start --debug --watch",
     "lint": "eslint . --max-warnings 1",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",

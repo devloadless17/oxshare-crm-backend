@@ -2001,7 +2001,39 @@ export class TransactionsService {
    * guarded by `ledger_entries_wallet_reference_uq`. Neither is a
    * check-then-insert, because every check-then-insert loses under concurrency.
    */
-  async settleGatewayDeposit(method: string, reference: string): Promise<{ state: string }> {
+  /**
+   * The deposit's CURRENT state, for the owner only — reads nothing from the
+   * provider and changes nothing. The GET the portal polls used to be
+   * `settleGatewayDeposit`, i.e. a state change (and a wallet credit) behind a
+   * GET, outside the anti-forgery guard, reachable by a prefetcher, a link
+   * scanner or the back button. Settling is `POST …/settle` now; this is what
+   * a GET is allowed to be.
+   */
+  async gatewayDepositState(
+    method: string,
+    reference: string,
+    ownerId: string,
+  ): Promise<{ state: string }> {
+    const [tx] = await this.db
+      .select({ state: transactions.state, userId: transactions.userId })
+      .from(transactions)
+      .where(and(eq(transactions.provider, method), eq(transactions.providerRef, reference)))
+      .limit(1);
+    if (!tx || tx.userId !== ownerId) throw new NotFoundError('No deposit matches that reference.');
+    return { state: tx.state };
+  }
+
+  async settleGatewayDeposit(
+    method: string,
+    reference: string,
+    /**
+     * The client asking, when one is. The provider callback and the poller
+     * pass nothing; the portal's own call MUST, or the route is an oracle for
+     * — and a way to drive the settlement of — anybody else's payment. A
+     * mismatch is a 404, never a 403: the difference is an existence oracle.
+     */
+    opts: { ownerId?: string } = {},
+  ): Promise<{ state: string }> {
     const [tx] = await this.db
       .select()
       .from(transactions)
@@ -2011,6 +2043,9 @@ export class TransactionsService {
     // Not found is not an error worth shouting about: a status poll for a
     // reference this system never issued is noise, not an incident.
     if (!tx) throw new NotFoundError('No deposit matches that reference.');
+    if (opts.ownerId !== undefined && tx.userId !== opts.ownerId) {
+      throw new NotFoundError('No deposit matches that reference.');
+    }
 
     // Already settled — nothing to ask, nothing to do.
     if (tx.state !== 'pending') return { state: tx.state };

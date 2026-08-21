@@ -51,3 +51,38 @@ export const API_KEY_STORED_PREFIX_LENGTH = 16;
 export function hashApiKey(plaintext: string): string {
   return createHash('sha256').update(plaintext, 'utf8').digest('hex');
 }
+
+/**
+ * The machine credential on a request, if any — `X-Api-Key`, or a bearer token
+ * carrying the key prefix.
+ *
+ * Lives here rather than in the admin guard because TWO readers need one
+ * answer: `AdminAuthenticator` (which authenticates the key) and `CsrfGuard`
+ * (which must not demand an anti-forgery token of a caller that holds no
+ * cookie). A header credential cannot be attached by a cross-site form, so a
+ * request presenting one is outside the CSRF threat model entirely — and the
+ * authenticator prefers the key UNCONDITIONALLY when one is present, so a
+ * forged key sent beside a real cookie ends in a 401 on the key, never in a
+ * cookie-authenticated write that skipped the token check.
+ *
+ * `headers` is defaulted rather than assumed: this runs FIRST on every admin
+ * request, ahead of the cookie path, and a hand-built request object in a unit
+ * spec must be refused with a 401 rather than crash with a TypeError.
+ */
+export function readApiKeyHeader(req: {
+  headers?: Record<string, string | string[] | undefined>;
+}): string | null {
+  const headers = req.headers ?? {};
+
+  const header = headers['x-api-key'];
+  const fromHeader = Array.isArray(header) ? header[0] : header;
+  if (fromHeader) return fromHeader.trim();
+
+  const auth = headers.authorization;
+  const bearer = Array.isArray(auth) ? auth[0] : auth;
+  if (bearer?.startsWith('Bearer ')) {
+    const value = bearer.slice('Bearer '.length).trim();
+    if (value.startsWith(API_KEY_TOKEN_PREFIX)) return value;
+  }
+  return null;
+}

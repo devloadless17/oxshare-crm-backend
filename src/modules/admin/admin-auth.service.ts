@@ -22,6 +22,8 @@ import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { AdminRbacService } from './admin-rbac.service';
+import { deviceOf } from '../../common/security/device-fingerprint';
+import type { DeviceFingerprint } from '../../common/security/refresh-tokens.service';
 import { randomUUID } from 'crypto';
 import { refuseReset, RESET_TOKEN_TTL_MS } from './admin-reset';
 import { CsrfService } from '../../common/security/csrf.service';
@@ -96,7 +98,7 @@ export class AdminAuthService {
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
-  async login(email: string, password: string, res: Response) {
+  async login(email: string, password: string, res: Response, device?: DeviceFingerprint) {
     /*
      * Per-ACCOUNT lockout, checked before anything else — R-3.5.
      *
@@ -165,6 +167,9 @@ export class AdminAuthService {
       token: refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
       familyId,
+      // Recorded so `GET /admin/auth/sessions` can show WHERE this login is —
+      // it answered null/null for every row while this was omitted.
+      device,
     });
 
     this.setAdminCookies(res, accessToken, refreshToken, admin.id);
@@ -420,7 +425,7 @@ export class AdminAuthService {
     };
   }
   // ─── Accept Invite ─────────────────────────────────────────────────────────
-  async acceptInvite(token: string, password: string, res: Response) {
+  async acceptInvite(token: string, password: string, res: Response, device?: DeviceFingerprint) {
     const invite = await this.invites.findByToken(token);
     if (!invite) throw new NotFoundError('Invite not found or already used.');
     if (invite.accepted) throw new ValidationError('This invite has already been used.');
@@ -506,6 +511,7 @@ export class AdminAuthService {
       token: refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
       familyId,
+      device,
     });
     this.setAdminCookies(res, accessToken, refreshToken, admin.id);
 
@@ -594,10 +600,24 @@ export class AdminAuthService {
      *
      * A reset capability IS impersonation — whoever can reset an admin's
      * password can become them. A permission check alone would let any
-     * sub-admin holding `admins.manage` reset a MASTER admin and take the
+     * sub-admin holding the reset grant reset a full-access admin and take the
      * console. `refuseReset` is pure and separately tested for that reason.
+     *
+     * Compared on RESOLVED permissions — role over snapshot, both normalised —
+     * exactly as every other admin-management act does (`assertActorOutranks`).
+     * The raw rows were fed in before, and `admins.permissions` is a snapshot
+     * that goes stale the moment a role is edited; see the note on
+     * `refuseReset` for the ladder that opened.
      */
-    const refusal = refuseReset(actor, target);
+    const normalize = (keys: string[]) => keys.map((k) => AdminRbacService.normalizeKey(k));
+    const [actorPermissions, targetPermissions] = await Promise.all([
+      this.roles.resolvePermissions(actor.roleId, actor.permissions),
+      this.roles.resolvePermissions(target.roleId, target.permissions),
+    ]);
+    const refusal = refuseReset(
+      { id: actor.id, permissions: normalize(actorPermissions) },
+      { id: target.id, permissions: normalize(targetPermissions) },
+    );
     if (refusal === 'self') {
       throw new ValidationError(
         'Use Change password for your own account — it verifies the password you already know.',
@@ -741,7 +761,7 @@ export class AdminAuthService {
    * than reached for, so the two private helpers below stay the only places
    * that know how an admin session is signed and named.
    */
-  async reissueSession(adminId: string, res: Response): Promise<void> {
+  async reissueSession(adminId: string, res: Response, device?: DeviceFingerprint): Promise<void> {
     const admin = await this.admins.findById(adminId);
     if (!admin) throw new AuthenticationError('Your session is no longer valid. Please sign in.');
 
@@ -754,6 +774,7 @@ export class AdminAuthService {
       token: refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
       familyId,
+      device,
     });
     // The rotated cookies ride back on this response and the browser installs
     // them, exactly as at login. Nothing is returned in the body — same reason.
@@ -943,6 +964,8 @@ export class AdminAuthService {
       jtiNext: nextJti,
       nextToken: refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+      // The session list shows the LAST device a login was used from.
+      device: deviceOf(req),
     });
     /*
      * Lost a race with a concurrent refresh using the same token. Handing out a

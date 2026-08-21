@@ -226,6 +226,32 @@ describe('updateAdmin — changing what an administrator may do', () => {
     );
   });
 
+  it('refuses to demote the LAST admins.edit holder to a role without it', async () => {
+    /*
+     * Suspending the last manager was already refused; moving them to a lesser
+     * role produced the same outage and was not. The directory fake holds the
+     * master (every key), the operator and the target — so the target is made
+     * the sole holder by pointing the others at role-less snapshots without it.
+     */
+    const soleManager: Admin = { ...TARGET, permissions: ['admins.edit'], roleId: undefined };
+    const { service, adminsFake } = await build({
+      admin: { permissions: ['admins.edit'], roleId: undefined },
+    });
+    adminsFake.findAll.mockResolvedValue({
+      rows: [
+        { ...MASTER, permissions: ['kyc.review'] },
+        { ...OPERATOR, permissions: ['kyc.review'] },
+        soleManager,
+      ],
+      total: 3,
+    });
+
+    await expect(service.updateAdmin(TARGET.id, { roleId: 'role-1' }, MASTER)).rejects.toThrow(
+      /no active administrator holding admins.edit/,
+    );
+    expect(adminsFake.update).not.toHaveBeenCalled();
+  });
+
   it('refuses a role the actor could not grant directly (anti-escalation)', async () => {
     // The regression test/rbac.spec.ts exists for, on the path it did NOT cover:
     // routing an over-grant through a role rather than through permissions.

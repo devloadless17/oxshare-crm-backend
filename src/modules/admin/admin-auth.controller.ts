@@ -33,6 +33,7 @@ import { ApiConsumes, ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from
 import { Throttle } from '@nestjs/throttler';
 import { Request, Response } from 'express';
 import { AdminAuthService } from './admin-auth.service';
+import { deviceOf } from '../../common/security/device-fingerprint';
 import { AdminProfileService } from './admin-profile.service';
 import { Admin } from '../../store/admins.store';
 import { AVATAR_BUCKET } from '../../common/uploads/stored-files.service';
@@ -95,8 +96,12 @@ export class AdminAuthController {
   @NotAudited(
     'Success and failure both land in `login_attempts`, which is the table built for credential events and carries the lockout counter. Duplicating them here would flood the action log with the one event that already has a home.',
   )
-  login(@Body() dto: AdminLoginDto, @Res({ passthrough: true }) res: Response) {
-    return this.auth.login(dto.email, dto.password, res);
+  login(
+    @Body() dto: AdminLoginDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.auth.login(dto.email, dto.password, res, deviceOf(req));
   }
 
   @NoCsrf(
@@ -254,8 +259,12 @@ export class AdminAuthController {
   @ApiOkResponse({ type: AcceptInviteResponseDto })
   @NotClientScoped('Creates an administrator from an invite; reads no client rows.')
   @Audited('admin.invite_accept')
-  acceptInvite(@Body() dto: AcceptInviteDto, @Res({ passthrough: true }) res: Response) {
-    return this.auth.acceptInvite(dto.token, dto.password, res);
+  acceptInvite(
+    @Body() dto: AcceptInviteDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.auth.acceptInvite(dto.token, dto.password, res, deviceOf(req));
   }
 
   /**
@@ -375,7 +384,7 @@ export class AdminAuthController {
      * exception, and an exception is a hole. See AdminProfileService.
      */
     return this.profile.changePassword(req.admin.id, dto.currentPassword, dto.newPassword, (id) =>
-      this.auth.reissueSession(id, res),
+      this.auth.reissueSession(id, res, deviceOf(req)),
     );
   }
 
