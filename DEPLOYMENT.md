@@ -194,6 +194,49 @@ Then, in this order:
 `admin.guard.ts` describes: `admin-reset.ts` reads it twice, and the second reading is
 what stops a peer resetting this account's password. See the comment in the script.
 
+## Auth, sessions and anti-forgery — the verified matrix (21 Aug 2026)
+
+Recorded because the cross-host anti-forgery failure cost a day, and because the
+next person who sees `failed anti-forgery validation` should know exactly which
+behaviours are already proven so they look only at what is new.
+
+**Why it could not reproduce locally, and so was missed.** Cookies ignore the
+PORT, so on a dev machine the admin app (`:3002`) and the API (`:3001`) share
+one cookie jar: the page reads the real CSRF cookie and never needs the echoed
+`X-OxShare-CSRF` header. Cross-host the page CANNOT read the cookie and depends
+on the echo entirely — and `CsrfEchoMiddleware` read `req.path`, which inside a
+`forRoutes('*')` middleware is `"/"` for every request, so it classified every
+admin request as portal and echoed nothing (fixed 17164fd; HTTP-level regression
+test 7265a4d boots the real app and asserts the header over the wire). A second,
+independent bug — the per-refresh rotation race — is 96e3af0. Both were real.
+
+**What was exercised against the fixed build, and the result.** API level with
+curl; journeys in a real browser (Playwright) against both apps.
+
+| Area | Case | Result |
+|---|---|---|
+| CSRF guard | correct request (cookie + header + origin) | 201 |
+| | missing header / wrong header / foreign origin / no origin+referer | 403 each |
+| | header present but no session cookie | 401 (nothing to forge) |
+| | GET needs no CSRF | 200 |
+| Sessions | logout → old cookie on /me | 401; cookies cleared; browser-BACK lands on /login |
+| | refresh rotates the refresh token; new session works | 200 |
+| | replay of a rotated token INSIDE the 30s grace | accepted as a retry (by design, `RETRY_GRACE_MS`) |
+| | replay of a rotated token OUTSIDE the grace | 401, and the whole family is revoked (live session → 401) |
+| | two tabs refresh simultaneously | loser gets `401 SESSION_SUPERSEDED`, frontend retries once, both tabs stay signed in |
+| | expired access token | 401 → silent refresh 200 → write with the PRE-refresh CSRF token 201 |
+| Surfaces | admin cookie on portal routes | 401 (isolated) |
+| | admin + portal sessions in ONE jar (both cookie sets present) | admin writes 201, also after refresh; portal writes 200 |
+| Browser (admin) | write after login / after HARD REFRESH / after nav×3+refresh / in tab 2 / back in tab 1 / after re-login | 201 each |
+| | logout in tab 1 → tab 2 untouched | tab 2 lands on /login (session-channel sync) |
+| Browser (portal) | write after login / after hard refresh / after nav+refresh | 200 each, CSRF header learned every time |
+
+**The one thing that is a design choice, not a gap:** a rotated refresh token
+replayed within 30 seconds is honoured as a retry rather than treated as theft,
+because a dropped response is far more common than a stolen token and treating
+it as theft would sign out a user whose network blinked. Outside that window
+reuse revokes the family. `refresh-reuse.spec.ts` pins both halves.
+
 ## Verifying a release
 
 ```bash
