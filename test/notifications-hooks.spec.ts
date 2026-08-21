@@ -88,7 +88,10 @@ beforeAll(async () => {
    * deployment that pays immediately does, so this exercises a supported
    * configuration rather than a test-only door.
    *
-   * What the window itself does is covered in `commission.spec.ts`.
+   * What the window itself does is covered in `commission-hold-window.spec.ts`.
+   * (This comment used to name `commission.spec.ts`, which has never mentioned
+   * the window — the rule deciding when a partner's money becomes spendable was
+   * asserted nowhere at all.)
    */
   process.env.IB_COMMISSION_HOLD_HOURS = '0';
   /*
