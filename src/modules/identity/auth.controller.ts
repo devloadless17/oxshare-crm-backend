@@ -200,7 +200,18 @@ export class AuthController {
       req.cookies as Record<string, string | undefined> | undefined,
       COOKIE_BASES.clientRefresh,
     );
-    return this.auth.refreshFromToken(refreshToken ?? '', res, deviceOf(req));
+    return this.auth.refreshFromToken(
+      refreshToken ?? '',
+      res,
+      deviceOf(req),
+      // Carried forward so the token the caller already holds stays valid - see
+      // setAuthCookies. Rotating here raced the in-flight echoes and stranded
+      // the client on a token its cookie no longer matched.
+      readSessionCookie(
+        req.cookies as Record<string, string | undefined> | undefined,
+        COOKIE_BASES.portalCsrf,
+      ),
+    );
   }
 
   @NoCsrf(

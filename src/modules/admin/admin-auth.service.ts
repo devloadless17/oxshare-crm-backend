@@ -768,14 +768,38 @@ export class AdminAuthService {
    * many OxShare sites share one registrable domain. Nothing here writes a
    * cookie name or a flag as a literal.
    *
-   * The CSRF token is minted for THIS admin id and rotates on every login and
-   * refresh, so it can never outlive the session it proves.
+   * The CSRF token is minted for THIS admin id. A REFRESH carries the caller's
+   * existing token forward instead of minting a new one; login and the
+   * password-change reissue still mint. See `existingCsrf` below.
    */
   private setAdminCookies(
     res: Response,
     accessToken: string,
     refreshToken: string,
     adminId: string,
+    /*
+     * The anti-forgery token the caller already holds, on a refresh.
+     *
+     * WHY IT IS REUSED RATHER THAN ROTATED. Rotating could never invalidate the
+     * previous token: `CsrfService.verify()` checks an HMAC over (subject, nonce)
+     * and NOTHING ELSE - there is no expiry inside the token, and TTL_MS is only
+     * the cookie's max-age. Every token ever minted for an admin stays valid
+     * regardless. So rotation bought no security at all.
+     *
+     * What it cost: the access token lives 15 minutes, so refresh runs
+     * constantly, and each one replaced the cookie while responses ALREADY IN
+     * FLIGHT kept echoing the previous token - `CsrfEchoMiddleware` returns the
+     * token the REQUEST carried, not the one the cookie now holds. Whichever
+     * landed last won, so a client could be left holding a token its cookie no
+     * longer matched, and every write 403'd until the next refresh happened to
+     * resynchronise them. One token per session removes that race outright
+     * rather than narrowing it.
+     *
+     * Verified before reuse, so a tossed or foreign cookie cannot be laundered
+     * into a fresh session: a value that cannot prove it was minted for THIS
+     * admin is discarded and a new one issued.
+     */
+    existingCsrf?: string | null,
   ) {
     // Delete every superseded name first. Those cookies were httpOnly:false and
     // hold real JWTs, so a browser from the old build carries a JS-readable
@@ -790,12 +814,11 @@ export class AdminAuthService {
     // Cookie AND readable header: the admin app is on a different HOST from this
     // API in production, so it cannot read the cookie to echo it back. See
     // issueCsrfToken.
-    issueCsrfToken(
-      res,
-      sessionCookieNames.adminCsrf(),
-      this.csrf.issue(adminId),
-      CsrfService.TTL_MS,
-    );
+    const csrfToken =
+      existingCsrf && this.csrf.verify(adminId, existingCsrf)
+        ? existingCsrf
+        : this.csrf.issue(adminId);
+    issueCsrfToken(res, sessionCookieNames.adminCsrf(), csrfToken, CsrfService.TTL_MS);
   }
   // ─── Admin Refresh ─────────────────────────────────────────────────────────
   async refresh(req: Request, res: Response) {
@@ -936,7 +959,17 @@ export class AdminAuthService {
       );
     }
 
-    this.setAdminCookies(res, accessToken, refreshToken, admin.id);
+    // Carried forward, not rotated - see `existingCsrf` on setAdminCookies.
+    this.setAdminCookies(
+      res,
+      accessToken,
+      refreshToken,
+      admin.id,
+      readSessionCookie(
+        req.cookies as Record<string, string | undefined> | undefined,
+        COOKIE_BASES.adminCsrf,
+      ),
+    );
 
     /*
      * The tokens are NOT in the body, deliberately.

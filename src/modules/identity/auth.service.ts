@@ -602,7 +602,12 @@ export class AuthService {
   }
 
   // ─── Refresh ──────────────────────────────────────────────────────────────────
-  async refreshFromToken(providedRefreshToken: string, res: Response, device?: DeviceFingerprint) {
+  async refreshFromToken(
+    providedRefreshToken: string,
+    res: Response,
+    device?: DeviceFingerprint,
+    existingCsrf?: string | null,
+  ) {
     /*
      * Every failure below is `SESSION_REVOKED` rather than a bare
      * `UNAUTHENTICATED`, and they are deliberately NOT distinguished from one
@@ -738,7 +743,8 @@ export class AuthService {
       );
     }
 
-    this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken, user.id);
+    // Carried forward, not rotated - see `existingCsrf` on setAuthCookies.
+    this.setAuthCookies(res, tokens.accessToken, tokens.refreshToken, user.id, existingCsrf);
 
     return {
       user: this.sanitize(user),
@@ -890,7 +896,20 @@ export class AuthService {
    * that header was never what authenticated the request, and it put a 30-day
    * refresh token within reach of any script on the origin.
    */
-  private setAuthCookies(res: Response, accessToken: string, refreshToken: string, userId: string) {
+  private setAuthCookies(
+    res: Response,
+    accessToken: string,
+    refreshToken: string,
+    userId: string,
+    /*
+     * The anti-forgery token the caller already holds, on a refresh. Reused
+     * rather than rotated; the admin twin of this method carries the full
+     * reasoning. In short: `verify()` has no expiry and checks only the HMAC
+     * over (subject, nonce), so rotation invalidated nothing, while racing the
+     * in-flight echoes `CsrfEchoMiddleware` returns. One token per session.
+     */
+    existingCsrf?: string | null,
+  ) {
     // Delete every superseded name first. Those cookies were httpOnly:false and
     // hold real JWTs, so a browser from the old build carries a JS-readable
     // session for up to 30 more days unless we actively remove it here.
@@ -903,12 +922,11 @@ export class AuthService {
     );
     // Cookie AND readable header — the portal is on a different HOST from this
     // API in production and cannot read the cookie. See issueCsrfToken.
-    issueCsrfToken(
-      res,
-      sessionCookieNames.portalCsrf(),
-      this.csrf.issue(userId),
-      CsrfService.TTL_MS,
-    );
+    const csrfToken =
+      existingCsrf && this.csrf.verify(userId, existingCsrf)
+        ? existingCsrf
+        : this.csrf.issue(userId);
+    issueCsrfToken(res, sessionCookieNames.portalCsrf(), csrfToken, CsrfService.TTL_MS);
   }
 
   /**
