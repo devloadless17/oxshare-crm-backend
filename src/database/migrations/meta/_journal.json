@@ -610,6 +610,13 @@
       "when": 1787101216004,
       "tag": "0086_named_programmes_carry_the_rates",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1787101216005,
+      "tag": "0087_grant_client_and_ib_program_keys",
+      "breakpoints": true
     }
   ]
 }
