@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { mt5Deals, tradingAccounts } from '../../../database/schema';
@@ -10,7 +10,7 @@ import {
   type CommissionAccrualPort,
 } from '../../../common/provisioning/commission-accrual.port';
 import { brokerRevenueOf } from '../broker-revenue';
-import { isTradeAction } from './deal-codes';
+import { isClosingEntry, isTradeAction } from './deal-codes';
 
 /** What one drain of the queue did. Every deal lands in exactly one bucket. */
 export interface DealAccrualRun {
@@ -22,6 +22,15 @@ export interface DealAccrualRun {
   accrualRows: number;
   /** Deals correctly worth nothing: not a trade, no revenue, nobody referred. */
   nothingOwed: number;
+  /**
+   * Opening deals held until their position closes — FR-IB-04.
+   *
+   * Left UNPROCESSED on purpose: their revenue is paid by the closing deal that
+   * consumes them, so marking them here would discard the open leg's
+   * commission. A position that never closes keeps its opener in this count,
+   * which is the honest reading — nothing is owed on a trade still running.
+   */
+  awaitingClose: number;
   /** Deals whose login matches no trading account. Left for the next run. */
   orphaned: number;
   /** Deals the engine refused or could not process. Left for the next run. */
@@ -127,6 +136,10 @@ export class DealCommissionService {
         ticket: mt5Deals.mt5DealId,
         login: mt5Deals.login,
         action: mt5Deals.action,
+        /* Which end of the position this deal is — see `isClosingEntry`. */
+        entry: mt5Deals.entry,
+        /* Nullable: not every deal MT5 reports carries one. */
+        positionId: mt5Deals.mt5PositionId,
         volume: mt5Deals.volume,
         commission: mt5Deals.commission,
         swap: mt5Deals.swap,
@@ -156,6 +169,7 @@ export class DealCommissionService {
       accrued: 0,
       accrualRows: 0,
       nothingOwed: 0,
+      awaitingClose: 0,
       orphaned: 0,
       failed: 0,
     };
@@ -166,7 +180,7 @@ export class DealCommissionService {
        * nothing ever will be, so this is DONE rather than skipped.
        */
       if (!isTradeAction(deal.action)) {
-        await this.markProcessed(deal.id);
+        await this.markProcessed([deal.id]);
         run.nothingOwed += 1;
         continue;
       }
@@ -180,7 +194,44 @@ export class DealCommissionService {
         continue;
       }
 
-      const brokerRevenue = brokerRevenueOf(deal);
+      /*
+       * ── COMMISSION IS EARNED ON A CLOSED POSITION, NEVER ON AN OPEN ONE ──
+       *
+       * FR-IB-04: "compute commission on the closing of a deal — never on its
+       * opening. Commission accrues only once the deal is closed."
+       *
+       * This used to accrue on ANY trade deal that carried revenue, which pays
+       * the moment a position opens — MT5 charges its commission on the opening
+       * deal as often as not. A partner was therefore paid on a position the
+       * client might still be holding, and a dealer-cancelled open had already
+       * produced money.
+       *
+       * The opener is left UNPROCESSED rather than marked done, because its
+       * revenue is real and is paid by the close that consumes it below.
+       */
+      if (!isClosingEntry(deal.entry)) {
+        run.awaitingClose += 1;
+        continue;
+      }
+
+      /*
+       * The revenue of the WHOLE position, not of this row.
+       *
+       * MT5 splits a round turn's charges across its legs however the broker
+       * configured it — all on the open, all on the close, or half each — so
+       * paying only the closing row's own commission would silently pay nothing
+       * on the most common configuration there is.
+       *
+       * Summed over the position's deals that no other accrual has consumed,
+       * which is what makes a PARTIAL close correct: the first close takes the
+       * opener plus itself, the second takes only itself, and no leg is counted
+       * twice or lost. Every row summed here is marked processed together with
+       * this one.
+       */
+      const legs = await this.unconsumedLegs(deal);
+      const brokerRevenue = legs
+        .reduce((sum, leg) => sum.plus(brokerRevenueOf(leg)), new Decimal(0))
+        .toFixed(8);
 
       /*
        * The broker kept nothing on this deal, so there is no share to take.
@@ -189,7 +240,7 @@ export class DealCommissionService {
        * answer.
        */
       if (new Decimal(brokerRevenue).isZero()) {
-        await this.markProcessed(deal.id);
+        await this.markProcessed(legs.map((leg) => leg.id));
         run.nothingOwed += 1;
         continue;
       }
@@ -210,7 +261,7 @@ export class DealCommissionService {
          * costs nothing, because the accrual is idempotent and the deal is
          * simply reconsidered.
          */
-        await this.markProcessed(deal.id);
+        await this.markProcessed(legs.map((leg) => leg.id));
 
         if (rows > 0) {
           run.accrued += 1;
@@ -284,10 +335,56 @@ export class DealCommissionService {
     return row?.count ?? 0;
   }
 
-  private async markProcessed(dealRowId: string): Promise<void> {
+  /**
+   * Every deal whose revenue this accrual has taken — the closing row and the
+   * legs it consumed.
+   *
+   * A SET rather than one id, because a closing deal pays for its opener too.
+   * Marking only the closing row would leave the opener unprocessed forever,
+   * re-examined on every run and re-consumed by the next close on the same
+   * position — which is a double payment, not a wasted read.
+   */
+  private async markProcessed(dealRowIds: string[]): Promise<void> {
+    if (dealRowIds.length === 0) return;
+
     await this.db
       .update(mt5Deals)
       .set({ commissionProcessedAt: new Date() })
-      .where(eq(mt5Deals.id, dealRowId));
+      .where(inArray(mt5Deals.id, dealRowIds));
+  }
+
+  /**
+   * The closing deal, plus every leg of its position no accrual has taken yet.
+   *
+   * `commission_processed_at IS NULL` is the "not yet consumed" marker, and it
+   * is the same column the batch query reads — so a leg cannot be counted by
+   * two closes, and a leg that arrives late (the sweep runs 24 hours behind the
+   * push feed) is still picked up by whichever close comes after it.
+   *
+   * A deal with NO position id falls back to itself. That is not a guess: MT5
+   * does not always populate it, and the alternative — refusing to pay — would
+   * lose real commission over a field the broker's server chose not to send.
+   */
+  private async unconsumedLegs(deal: {
+    id: string;
+    login: string;
+    positionId: string | null;
+    commission: string;
+    swap: string;
+  }): Promise<{ id: string; commission: string; swap: string }[]> {
+    if (!deal.positionId) {
+      return [{ id: deal.id, commission: deal.commission, swap: deal.swap }];
+    }
+
+    return this.db
+      .select({ id: mt5Deals.id, commission: mt5Deals.commission, swap: mt5Deals.swap })
+      .from(mt5Deals)
+      .where(
+        and(
+          eq(mt5Deals.mt5PositionId, deal.positionId),
+          eq(mt5Deals.login, deal.login),
+          isNull(mt5Deals.commissionProcessedAt),
+        ),
+      );
   }
 }

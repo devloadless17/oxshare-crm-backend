@@ -117,7 +117,7 @@ describe('ib_accounts', () => {
     const second = await makeUser('code-b@test.local');
 
     await ctx.db.execute(
-      sql`INSERT INTO ib_accounts (user_id, level, referral_code) VALUES (${first}, 1, 'SHARED')`,
+      sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${first}, 1, 'SHARED', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
     );
 
     // Attribution is permanent per client, so a reissued code would credit one
@@ -125,7 +125,7 @@ describe('ib_accounts', () => {
     expect(
       await constraintViolatedBy(
         ctx.db.execute(
-          sql`INSERT INTO ib_accounts (user_id, level, referral_code) VALUES (${second}, 1, 'SHARED')`,
+          sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${second}, 1, 'SHARED', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
         ),
       ),
     ).toBe('ib_accounts_referral_code_unique');
@@ -140,8 +140,7 @@ describe('ib_accounts', () => {
     expect(
       await constraintViolatedBy(
         ctx.db.execute(sql`
-          INSERT INTO ib_accounts (user_id, level, parent_ib_user_id, referral_code)
-          VALUES (${partner}, 2, ${stranger}, 'CHILD1')
+          INSERT INTO ib_accounts (user_id, level, parent_ib_user_id, referral_code, program_id) VALUES (${partner}, 2, ${stranger}, 'CHILD1', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
         `),
       ),
     ).toBe('ib_accounts_parent_fk');
@@ -152,11 +151,10 @@ describe('ib_accounts', () => {
     const child = await makeUser('sub@test.local');
 
     await ctx.db.execute(
-      sql`INSERT INTO ib_accounts (user_id, level, referral_code) VALUES (${parent}, 1, 'PARENT1')`,
+      sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${parent}, 1, 'PARENT1', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
     );
     await ctx.db.execute(sql`
-      INSERT INTO ib_accounts (user_id, level, parent_ib_user_id, referral_code)
-      VALUES (${child}, 2, ${parent}, 'CHILD1')
+      INSERT INTO ib_accounts (user_id, level, parent_ib_user_id, referral_code, program_id) VALUES (${child}, 2, ${parent}, 'CHILD1', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
     `);
 
     const { rows } = await ctx.db.execute<{ parent_ib_user_id: string }>(
@@ -170,11 +168,10 @@ describe('ib_accounts', () => {
     const b = await makeUser('cycle-b@test.local');
 
     await ctx.db.execute(
-      sql`INSERT INTO ib_accounts (user_id, level, referral_code) VALUES (${a}, 1, 'CYCA')`,
+      sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${a}, 1, 'CYCA', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
     );
     await ctx.db.execute(sql`
-      INSERT INTO ib_accounts (user_id, level, parent_ib_user_id, referral_code)
-      VALUES (${b}, 2, ${a}, 'CYCB')
+      INSERT INTO ib_accounts (user_id, level, parent_ib_user_id, referral_code, program_id) VALUES (${b}, 2, ${a}, 'CYCB', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
     `);
 
     // A → B → A. Postgres accepts it: a self-FK checks only that the target
@@ -194,7 +191,7 @@ describe('ib_accounts', () => {
     expect(
       await constraintViolatedBy(
         ctx.db.execute(
-          sql`INSERT INTO ib_accounts (user_id, level, referral_code) VALUES (${userId}, 99, 'NOPE')`,
+          sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${userId}, 99, 'NOPE', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
         ),
       ),
     ).toBe('ib_accounts_level_ib_levels_level_fk');
@@ -203,7 +200,7 @@ describe('ib_accounts', () => {
   it('refuses to delete a level that a partner is placed at', async () => {
     const userId = await makeUser('placed@test.local');
     await ctx.db.execute(
-      sql`INSERT INTO ib_accounts (user_id, level, referral_code) VALUES (${userId}, 2, 'PLACED')`,
+      sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${userId}, 2, 'PLACED', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
     );
 
     // `restrict`, so removing a rung out from under somebody standing on it

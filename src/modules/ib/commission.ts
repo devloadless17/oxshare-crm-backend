@@ -41,8 +41,10 @@ export interface ChainNode {
   parentIbUserId: string | null;
   /** A suspended partner keeps their tree and stops earning. */
   active: boolean;
-  /** Their rung, which decides their rate. */
+  /** Their rung. It names their placement; it no longer decides their rate. */
   level: number;
+  /** The programme that DOES decide their rate — FR-IB-06, one per partner. */
+  programId: string;
 }
 
 /** A resolved earner: who, and at what depth above the client. */
@@ -51,6 +53,7 @@ export interface ChainEntry {
   /** 1 is the partner who introduced the client; 2 is that partner's parent. */
   depth: number;
   level: number;
+  programId: string;
 }
 
 /**
@@ -87,7 +90,7 @@ export function resolveChain(
     const node: ChainNode | undefined = lookup(currentId);
     if (!node || !node.active) break;
 
-    chain.push({ ibUserId: node.userId, depth, level: node.level });
+    chain.push({ ibUserId: node.userId, depth, level: node.level, programId: node.programId });
     currentId = node.parentIbUserId;
   }
 
@@ -127,17 +130,33 @@ export interface RevenueEvent {
   lots?: string;
 }
 
-/** One rung's terms, as configured on `ib_levels`. */
-export interface LevelTerms {
-  level: number;
-  /**
-   * The rung's share, as a PERCENTAGE of the broker's revenue on the trade.
-   *
-   * One unit. `payoutModel` used to sit beside this and decide whether the
-   * number meant 70% or $70-per-lot; migration 0055 removed it, because a
-   * commission cut from what the broker earned is a percentage by definition.
-   */
-  rateValue: string;
+/** Which legs a programme pays — FR-IB-05. */
+export type ProgramMode = 'commission_only' | 'rebate_only' | 'hybrid';
+
+/**
+ * One programme's terms, as configured on `ib_programs`.
+ *
+ * ## The rate is chosen by DEPTH, not by the holder's rung
+ *
+ * `level1Rate` applies when the trade belongs to the holder's OWN client;
+ * `level2Rate` when it belongs to a sub-partner's client. That is what makes a
+ * programme portable — it pays the same way wherever in a chain its holder
+ * stands — and it is the thing the old rung-keyed ladder could not say: under
+ * that model what you earned depended on which rung you occupied rather than on
+ * whose client had traded.
+ *
+ * Every value is a PERCENTAGE of the broker's revenue. One unit, always:
+ * `payoutModel` used to sit beside the rate and decide whether the number meant
+ * 70% or $70-per-lot, and migration 0055 removed it because a cut of what the
+ * broker earned is a percentage by definition.
+ */
+export interface ProgramTerms {
+  id: string;
+  mode: ProgramMode;
+  level1Rate: string;
+  level2Rate: string;
+  /** What returns to the TRADING CLIENT, as a percentage of the same revenue. */
+  rebateRate: string;
   enabled: boolean;
 }
 
@@ -145,12 +164,37 @@ export interface Accrual {
   ibUserId: string;
   depth: number;
   level: number;
+  /** Which programme paid it, and at what rate — both recorded on the row. */
+  programId: string;
+  rateValue: string;
   /** A fixed-scale decimal string, never a number. */
+  amount: string;
+}
+
+/**
+ * The client's leg — money returning to the person who traded.
+ *
+ * `ibUserId` is the partner whose programme PRODUCED it, not who receives it.
+ * The beneficiary is the trading client, and there is only ever one of them per
+ * event, which is why this is a single value rather than a list.
+ *
+ * It comes from the INTRODUCER's programme — the depth-1 partner — because that
+ * is the relationship the client is actually in. A partner further up the chain
+ * setting the rebate would be altering terms in a relationship they do not own,
+ * and two partners in one chain with different rebate rates would otherwise have
+ * no defined answer at all.
+ */
+export interface RebateLeg {
+  ibUserId: string;
+  programId: string;
+  rateValue: string;
   amount: string;
 }
 
 export interface CommissionResult {
   accruals: Accrual[];
+  /** Absent unless the introducer's programme pays a rebate and it rounds above zero. */
+  rebate?: RebateLeg;
   /**
    * Why nothing was accrued, when the chain was non-empty but the result is.
    *
@@ -176,7 +220,8 @@ export interface CommissionResult {
 export function calculate(
   event: RevenueEvent,
   chain: ChainEntry[],
-  terms: Map<number, LevelTerms>,
+  /** Every programme held by anybody in `chain`, keyed by id. */
+  programs: Map<string, ProgramTerms>,
   /**
    * The most of this event's revenue that may go to partners, as a percentage.
    *
@@ -195,7 +240,19 @@ export function calculate(
    * and clawbacks are a separate, deliberate operation (a compensating ledger
    * entry), not a side effect of this function.
    */
-  if (!gross.isPositive()) return { accruals: [], skippedReason: 'non-positive revenue base' };
+  /*
+   * `greaterThan(0)`, NOT `!isPositive()`.
+   *
+   * decimal.js gives ZERO a sign of 1, so `new Decimal(0).isPositive()` is TRUE
+   * and this guard never fired on a zero base — the same quirk `transferToMain`
+   * documents, and it read correctly here while doing nothing. A zero-revenue
+   * deal fell through to the loop, produced legs that rounded to nothing, and
+   * returned an empty result with NO explanation, which is indistinguishable
+   * from "nobody was owed anything" to the operator reading the log.
+   */
+  if (!gross.greaterThan(0)) {
+    return { accruals: [], skippedReason: 'non-positive revenue base' };
+  }
 
   const accruals: Accrual[] = [];
   const skipped: string[] = [];
@@ -227,24 +284,44 @@ export function calculate(
       continue;
     }
 
-    const rung = terms.get(entry.level);
+    const program = programs.get(entry.programId);
 
-    if (!rung) {
-      skipped.push(`level ${entry.level} has no configured terms`);
+    if (!program) {
+      skipped.push(`partner at depth ${entry.depth} has no configured programme`);
       continue;
     }
     /*
-     * A DISABLED level takes no share. Same rule the placement logic enforces:
-     * an operator who disables a rung has stopped it earning, and paying it
-     * anyway would make the switch decorative.
+     * A DISABLED programme takes no share. Same rule the placement logic
+     * enforces on a rung: an operator who switches terms off has stopped them
+     * paying, and honouring them anyway would make the switch decorative.
      */
-    if (!rung.enabled) {
-      skipped.push(`level ${entry.level} is disabled`);
+    if (!program.enabled) {
+      skipped.push(`programme ${program.id} is disabled`);
       continue;
     }
-    const rate = toDecimal(rung.rateValue);
-    if (!rate.isPositive()) {
-      skipped.push(`level ${entry.level} has a non-positive rate`);
+    /*
+     * `rebate_only` pays the CLIENT and nobody else. It is a real model — the
+     * broker buys volume by handing the spread back — and the partner earning
+     * nothing on it is the point, not an omission.
+     */
+    if (program.mode === 'rebate_only') {
+      skipped.push(`programme ${program.id} is rebate-only, so no commission accrues`);
+      continue;
+    }
+
+    /*
+     * DEPTH decides the rate, not the rung. Depth 1 is the partner's own
+     * client; depth 2 is a sub-partner's. `MAX_CHAIN_DEPTH` is 2, so there is
+     * no third case to fall through to.
+     */
+    const rateValue = entry.depth === 1 ? program.level1Rate : program.level2Rate;
+    const rate = toDecimal(rateValue);
+    // `greaterThan(0)` for the reason the base check above records: a rate of
+    // exactly zero is `isPositive()` in decimal.js, so a programme deliberately
+    // paying nothing at this depth would silently produce an unexplained empty
+    // result instead of saying so.
+    if (!rate.greaterThan(0)) {
+      skipped.push(`programme ${program.id} pays nothing at depth ${entry.depth}`);
       continue;
     }
 
@@ -277,8 +354,47 @@ export function calculate(
       ibUserId: entry.ibUserId,
       depth: entry.depth,
       level: entry.level,
+      programId: program.id,
+      rateValue,
       amount,
     });
+  }
+
+  /*
+   * ── THE CLIENT'S LEG ─────────────────────────────────────────────────────
+   *
+   * Read from the INTRODUCER's programme — see `RebateLeg` for why it is that
+   * partner's and not anyone else's in the chain.
+   *
+   * A suspended introducer breaks the chain before this runs, so a client whose
+   * partner has been switched off stops receiving a rebate too. That is the
+   * conservative reading and it is deliberate: the rebate is a term of the
+   * relationship the operator has just suspended.
+   */
+  let rebate: RebateLeg | undefined;
+  const introducer = chain.find((entry) => entry.depth === 1);
+  const introducerProgram = introducer ? programs.get(introducer.programId) : undefined;
+
+  if (
+    introducer &&
+    introducerProgram?.enabled &&
+    introducerProgram.mode !== 'commission_only' &&
+    event.source !== 'deposit'
+  ) {
+    const rebateRate = toDecimal(introducerProgram.rebateRate);
+    if (rebateRate.greaterThan(0)) {
+      const amount = money(gross.times(rebateRate).dividedBy(100));
+      // Rounded first, then tested — the same order, and the same reason, as
+      // the commission legs above.
+      if (!toDecimal(amount).isZero()) {
+        rebate = {
+          ibUserId: introducer.ibUserId,
+          programId: introducerProgram.id,
+          rateValue: introducerProgram.rebateRate,
+          amount,
+        };
+      }
+    }
   }
 
   /*
@@ -310,17 +426,29 @@ export function calculate(
    * every leg is a percentage of the broker's revenue now, so every leg is
    * capped, and the distinction is gone with the thing it distinguished.
    */
-  if (maxSharePct !== undefined && accruals.length > 0) {
+  /*
+   * ── The REBATE is inside the cap, not beside it ──────────────────────────
+   *
+   * It is a share of the same revenue as every commission leg, so a cap that
+   * scaled the partners and left the client's leg untouched would let the total
+   * paid out exceed the broker's floor by exactly the rebate — while reporting
+   * that it had enforced the floor. Everything that comes out of this revenue
+   * is scaled together, and the proportions between the legs survive it.
+   */
+  if (maxSharePct !== undefined && (accruals.length > 0 || rebate)) {
     const cap = toDecimal(maxSharePct);
     if (cap.isPositive()) {
       const ceiling = gross.times(cap).dividedBy(100);
-      const total = accruals.reduce((sum, a) => sum.plus(toDecimal(a.amount)), new Decimal(0));
+      const total = accruals
+        .reduce((sum, a) => sum.plus(toDecimal(a.amount)), new Decimal(0))
+        .plus(rebate ? toDecimal(rebate.amount) : 0);
 
       if (total.greaterThan(ceiling)) {
         const factor = ceiling.dividedBy(total);
         for (const accrual of accruals) {
           accrual.amount = money(toDecimal(accrual.amount).times(factor));
         }
+        if (rebate) rebate.amount = money(toDecimal(rebate.amount).times(factor));
         skipped.push(
           `chain total ${money(total)} exceeded the broker's ${maxSharePct}% cap; ` +
             `scaled to ${money(ceiling)}`,
@@ -352,8 +480,20 @@ export function calculate(
               'and were dropped',
           );
         }
+        /*
+         * The client's leg is dropped by the same rule as a partner's: a rebate
+         * scaled below what the column can store is worth nothing, and inventing
+         * a satoshi to keep the row would pay an amount the cap says is not
+         * owed.
+         */
+        if (rebate && toDecimal(rebate.amount).isZero()) {
+          skipped.push('the rebate scaled below the storable minimum and was dropped');
+          rebate = undefined;
+        }
+
         return {
           accruals: survivors,
+          rebate,
           skippedReason: skipped.length > 0 ? skipped.join('; ') : undefined,
         };
       }
@@ -362,6 +502,7 @@ export function calculate(
 
   return {
     accruals,
+    rebate,
     skippedReason: skipped.length > 0 ? skipped.join('; ') : undefined,
   };
 }
@@ -382,12 +523,20 @@ export function calculate(
 export function checkPlausible(
   event: RevenueEvent,
   accruals: readonly Accrual[],
+  /**
+   * The client's leg, counted with the rest.
+   *
+   * It leaves the broker by the same door and comes out of the same revenue, so
+   * a unit error in `rebateRate` is exactly as expensive as one in a commission
+   * rate — and a check that ignored it would pass a programme paying 900% back
+   * to the client while refusing one paying 101% to a partner.
+   */
+  rebate?: RebateLeg,
 ): { ok: true } | { ok: false; reason: string } {
   const gross = toDecimal(event.grossAmount);
-  const total = accruals.reduce(
-    (sum, accrual) => sum.plus(toDecimal(accrual.amount)),
-    new Decimal(0),
-  );
+  const total = accruals
+    .reduce((sum, accrual) => sum.plus(toDecimal(accrual.amount)), new Decimal(0))
+    .plus(rebate ? toDecimal(rebate.amount) : 0);
 
   /*
    * ## The lot count does NOT exempt an event from this check
@@ -415,7 +564,7 @@ export function checkPlausible(
     return {
       ok: false,
       reason:
-        `Total commission ${money(total)} exceeds the ${event.source}'s own value ` +
+        `Total payout ${money(total)} exceeds the ${event.source}'s own value ` +
         `${money(gross)}. A share cannot exceed the thing it is a share OF, so this is a rate ` +
         'unit error rather than a large event. Nothing has been accrued.',
     };

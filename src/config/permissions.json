@@ -208,6 +208,18 @@
       {
         "key": "ib.commissions.view",
         "label": "View Accrued Commission"
+      },
+      {
+        "key": "ib.programs.create",
+        "label": "Create commission programmes"
+      },
+      {
+        "key": "ib.programs.edit",
+        "label": "Edit commission programmes"
+      },
+      {
+        "key": "ib.programs.delete",
+        "label": "Delete commission programmes"
       }
     ]
   },

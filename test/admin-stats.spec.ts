@@ -249,8 +249,9 @@ async function makeClient(options: {
 
   if (options.ibPartner) {
     await db.execute(sql`
-      INSERT INTO ib_accounts (user_id, level, referral_code)
-      VALUES (${userId}, (SELECT min(level) FROM ib_levels), ${`STATS-${userId.slice(0, 8)}`})
+      INSERT INTO ib_accounts (user_id, level, referral_code, program_id)
+      VALUES (${userId}, (SELECT min(level) FROM ib_levels), ${`STATS-${userId.slice(0, 8)}`},
+              (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
     `);
   }
 

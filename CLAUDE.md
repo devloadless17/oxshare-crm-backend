@@ -105,12 +105,83 @@ Rebuilt after migration 0028 deleted the original. It is **not** a restore: that
 MT5 `deals` (spread × volume) through an `ib_programs` table, and both are gone with the bridge —
 rebuilding against them would be an engine that can never run.
 
-This one computes from what the system actually has: a **client deposit**, attributed by
-`users.referred_by_ib_user_id`, split along the `ib_levels` ladder.
+This one computes from what the system actually has: an **ingested MT5 deal**, attributed by
+`users.referred_by_ib_user_id`, split by the earner's **named programme** (`ib_programs`).
+
+### Programmes carry the rates; the ladder carries placement (migration 0084)
+
+FR-IB-06 asks for "a named program driving commission/rebate" per partner, which a rung-keyed rate
+cannot express — every level-1 partner was paid identically and there was nowhere at all to put a
+client rebate. So `ib_accounts.program_id` is NOT NULL and `ib_programs` carries:
+
+| column | meaning |
+|---|---|
+| `level1Rate` | what the holder earns from their **own** clients |
+| `level2Rate` | what they earn from a **sub-partner's** clients |
+| `rebateRate` | what goes back to the **trading client** |
+| `mode` | `commission_only` / `rebate_only` / `hybrid` — which legs pay |
+
+**The rates are keyed on DEPTH, not on the rung.** A level-2 partner who introduced the client
+themselves is paid `level1Rate`; under the old model they took the level-2 rate for business they
+had brought in. `ib_levels` keeps the rung's name and its enabled flag, and its `rateValue` now
+decides nothing — do not read it as what anybody earns.
+
+Migration 0084 seeded a **Default** programme from the live ladder and backfilled every partner
+onto it, so no rate moved. A fresh database seeds 0/0, which is what an empty ladder already meant:
+`calculate` skips terms that pay nothing and says so.
+
+### Commission is earned on a CLOSED POSITION, and on nothing else
+
+FR-IB-04: computed "on the closing of a deal — never on its opening". Three gates enforce it, and
+each closes a different door:
+
+1. `isTradeAction` — a balance, credit, correction, bonus or dividend is not a trade. Deposits and
+   withdrawals reach MT5 as balance deals, so this is what keeps them out.
+2. `isClosingEntry` — an OPENING deal accrues nothing. It is left UNPROCESSED rather than marked
+   done, because its revenue is real and is paid by the close that consumes it.
+3. `calculate` refuses `source: 'deposit'` outright, whatever the rate.
+
+**A close pays on the whole position, not on its own row.** MT5 splits a round turn's charges
+across the legs however the broker configured it — all on the open, all on the close, or half each
+— so paying the closing row alone would silently pay nothing on the most common configuration
+there is. `unconsumedLegs` sums the position's deals that no accrual has taken yet, and every leg
+it sums is marked processed with the close. That is what makes a PARTIAL close correct: the first
+close takes the opener plus itself, the second takes only itself, nothing counted twice or lost.
+
+Scoped by `login` as well as `mt5_position_id`: position ids are unique per SERVER, not per
+account, and a cross-account match would pay one client's partner out of another client's trade.
+
+The deposit path (`accrueForSettledDeposit` → `accrueForDeposit`) has **no callers** — only
+`positions.service.ts` injects the port, and it calls `accrueForClosedPosition`. It is kept,
+unwired and `@deprecated`, because CPA is a real model that triggers on a deposit: a FIXED amount
+per qualified client, never a percentage. `test/deal-commission.spec.ts` pins all of the above.
+
+### The client's rebate is an accrual row, not a direct credit
+
+`ib_accruals.kind` is `commission` or `rebate`. A rebate row is produced by the same trade, matures
+through the same settlement window, and is made idempotent by the same key — which is why it is a
+row rather than a payment made at accrual time, the one payout that would skip the window a
+reversal needs.
+
+On a rebate row `ib_user_id` is the partner whose programme **produced** it (attribution) and
+`client_user_id` is who is **paid**. `confirmPending` branches on `kind`: a commission credits the
+partner's `commission` wallet as `entry_type = 'commission'`; a rebate credits the CLIENT's `main`
+wallet as `entry_type = 'rebate'`. Reading `ib_user_id` as the beneficiary balances perfectly and
+pays the introducer their own client's rebate.
+
+`kind` is part of `ib_accruals_source_earner_uq` for the same reason — without it the two rows
+collide on (source, source_id, ib_user_id) and the ON CONFLICT drops the rebate in silence, which
+is indistinguishable from a rebate nobody configured. `test/ib-rebate.spec.ts` pins all of it.
+
+**`EARNING_ENTRY_TYPES` no longer includes `rebate`.** A partner is also a client and may have been
+introduced by somebody else; counting their own rebates as partner income inflates a lifetime
+figure they get paid against.
 
 ```
-deposit settles → accrueForDeposit → ib_accruals (pending, no money moved)
-hourly @Cron    → confirmPending   → wallet credit + status=confirmed
+deal ingested → accrueForDeal   → ib_accruals × N (pending, no money moved)
+                                   — one per earner, plus the client's rebate
+hourly @Cron  → confirmPending   → commission → partner's commission wallet
+                                   rebate     → client's main wallet
 ```
 
 - **`commission.ts` is a pure seam** — no Nest, no Drizzle, no `store/`. `resolveChain`,

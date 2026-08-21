@@ -5,7 +5,7 @@ import { tradingTermsFrom } from '../../common/trading-terms';
 import { and, eq, gt, inArray, lte, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
-import { ibAccounts, ibAccruals, ibLevels, users } from '../../database/schema';
+import { ibAccounts, ibAccruals, ibPrograms, users } from '../../database/schema';
 import { LEDGER_REFERENCE, type LedgerReferenceType } from '../../database/ledger-reference';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { WalletService } from '../wallet/wallet.service';
@@ -22,7 +22,7 @@ import {
   checkPlausible,
   resolveChain,
   type ChainNode,
-  type LevelTerms,
+  type ProgramTerms,
   type RevenueEvent,
 } from './commission';
 
@@ -333,9 +333,9 @@ export class CommissionService implements CommissionAccrualPort {
     const chain = resolveChain(client.referredBy, (id) => chainNodes.get(id));
     if (chain.length === 0) return 0;
 
-    const terms = await this.loadTerms(
+    const programs = await this.loadPrograms(
       this.db,
-      chain.map((entry) => entry.level),
+      chain.map((entry) => entry.programId),
     );
 
     const revenue: RevenueEvent = {
@@ -345,15 +345,15 @@ export class CommissionService implements CommissionAccrualPort {
       lots: event.lots,
     };
 
-    const result = calculate(revenue, chain, terms, await this.maxSharePct());
+    const result = calculate(revenue, chain, programs, await this.maxSharePct());
     if (result.skippedReason) {
       this.logger.warn(
         `Commission partially skipped for ${event.describe}: ${result.skippedReason}`,
       );
     }
-    if (result.accruals.length === 0) return 0;
+    if (result.accruals.length === 0 && !result.rebate) return 0;
 
-    const plausible = checkPlausible(revenue, result.accruals);
+    const plausible = checkPlausible(revenue, result.accruals, result.rebate);
     if (!plausible.ok) {
       /*
        * §12.4's ceiling, and the ALERT that has always been declared for it.
@@ -377,10 +377,45 @@ export class CommissionService implements CommissionAccrualPort {
       );
     }
 
+    /*
+     * The client's leg is a ROW like any other, and that is the whole reason it
+     * is one: it matures through the same settlement window, is confirmed by the
+     * same loop, and is made idempotent by the same unique key. A rebate paid
+     * straight to the wallet here would be the one payout on this system that
+     * skips the window a reversal needs.
+     *
+     * `depth: 1` and the introducer's level, because a rebate belongs to the
+     * direct relationship — `ib_accruals_depth_range` refuses anything else.
+     */
+    const introducer = chain.find((entry) => entry.depth === 1);
+    const rows = [
+      ...result.accruals.map((accrual) => ({
+        kind: 'commission' as const,
+        ibUserId: accrual.ibUserId,
+        depth: accrual.depth,
+        level: accrual.level,
+        rateValue: accrual.rateValue,
+        amount: accrual.amount,
+      })),
+      ...(result.rebate && introducer
+        ? [
+            {
+              kind: 'rebate' as const,
+              ibUserId: result.rebate.ibUserId,
+              depth: 1,
+              level: introducer.level,
+              rateValue: result.rebate.rateValue,
+              amount: result.rebate.amount,
+            },
+          ]
+        : []),
+    ];
+
     const inserted = await this.db
       .insert(ibAccruals)
       .values(
-        result.accruals.map((accrual) => ({
+        rows.map((accrual) => ({
+          kind: accrual.kind,
           ibUserId: accrual.ibUserId,
           clientUserId: event.clientUserId,
           /*
@@ -394,14 +429,20 @@ export class CommissionService implements CommissionAccrualPort {
           sourceId: event.sourceId,
           depth: accrual.depth,
           level: accrual.level,
-          rateValue: terms.get(accrual.level)?.rateValue ?? '0',
+          rateValue: accrual.rateValue,
           baseAmount: event.brokerRevenue,
           amount: accrual.amount,
           currency: event.currency,
         })),
       )
       .onConflictDoNothing({
-        target: [ibAccruals.sourceType, ibAccruals.sourceId, ibAccruals.ibUserId],
+        /*
+         * `kind` is in the target because it is in the index. Without it the
+         * rebate row conflicts with the commission row beside it — same source,
+         * same partner — and is dropped in silence, which is indistinguishable
+         * from a rebate that was never configured.
+         */
+        target: [ibAccruals.sourceType, ibAccruals.sourceId, ibAccruals.ibUserId, ibAccruals.kind],
       })
       .returning({ id: ibAccruals.id });
 
@@ -448,9 +489,9 @@ export class CommissionService implements CommissionAccrualPort {
     const chain = resolveChain(client.referredBy, (id) => chainNodes.get(id));
     if (chain.length === 0) return 0;
 
-    const terms = await this.loadTerms(
+    const programs = await this.loadPrograms(
       db,
-      chain.map((entry) => entry.level),
+      chain.map((entry) => entry.programId),
     );
 
     const event: RevenueEvent = {
@@ -459,7 +500,7 @@ export class CommissionService implements CommissionAccrualPort {
       source: 'deposit',
     };
 
-    const result = calculate(event, chain, terms, await this.maxSharePct());
+    const result = calculate(event, chain, programs, await this.maxSharePct());
 
     if (result.skippedReason) {
       /*
@@ -503,7 +544,7 @@ export class CommissionService implements CommissionAccrualPort {
           sourceId: deposit.transactionId,
           depth: accrual.depth,
           level: accrual.level,
-          rateValue: terms.get(accrual.level)?.rateValue ?? '0',
+          rateValue: accrual.rateValue,
           baseAmount: deposit.amount,
           amount: accrual.amount,
           currency: deposit.currency,
@@ -516,7 +557,7 @@ export class CommissionService implements CommissionAccrualPort {
        * guarantee, because every check-then-insert loses under concurrency.
        */
       .onConflictDoNothing({
-        target: [ibAccruals.sourceType, ibAccruals.sourceId, ibAccruals.ibUserId],
+        target: [ibAccruals.sourceType, ibAccruals.sourceId, ibAccruals.ibUserId, ibAccruals.kind],
       })
       .returning({ id: ibAccruals.id });
 
@@ -565,10 +606,28 @@ export class CommissionService implements CommissionAccrualPort {
 
     for (const accrual of pending) {
       try {
+        /* Read once: it decides the beneficiary, the wallet, the ledger type
+           and who gets told. */
+        const rebate = accrual.kind === 'rebate';
+
         await this.db.transaction(async (tx) => {
           const posted = await this.wallets.post(
             {
-              userId: accrual.ibUserId,
+              /*
+               * ── WHO IS PAID depends on the accrual's KIND ────────────────
+               *
+               * A `commission` row pays the PARTNER into their commission
+               * wallet. A `rebate` row pays the trading CLIENT into their main
+               * wallet — it is their own money coming back, not an earning, and
+               * putting it in a commission wallet would both mislabel it and
+               * strand it behind a transfer the client has no reason to make.
+               *
+               * `ibUserId` on a rebate row is the partner whose programme
+               * produced it, which is attribution rather than entitlement —
+               * reading it as the beneficiary would pay the introducer their
+               * client's rebate.
+               */
+              userId: rebate ? accrual.clientUserId : accrual.ibUserId,
               currency: accrual.currency,
               /*
                * The COMMISSION wallet, not the partner's spending wallet.
@@ -590,9 +649,9 @@ export class CommissionService implements CommissionAccrualPort {
                * to a main wallet is settled money the partner may have spent;
                * moving it now would rewrite history to make a report tidier.
                */
-              kind: 'commission',
+              kind: rebate ? 'main' : 'commission',
               amount: accrual.amount,
-              entryType: 'commission',
+              entryType: rebate ? 'rebate' : 'commission',
               /*
                * Keyed on the ACCRUAL, not the source transaction. One deposit
                * can pay two partners, so keying on the transaction would make
@@ -641,14 +700,14 @@ export class CommissionService implements CommissionAccrualPort {
            */
           await this.notifications.notify(
             {
-              recipient: { kind: 'client', id: accrual.ibUserId },
-              kind: 'commission.confirmed',
+              recipient: { kind: 'client', id: rebate ? accrual.clientUserId : accrual.ibUserId },
+              kind: rebate ? 'rebate.credited' : 'commission.confirmed',
               params: {
                 accrualId: accrual.id,
                 amount: accrual.amount,
                 currency: accrual.currency,
               },
-              dedupeKey: `commission.confirmed:${accrual.id}`,
+              dedupeKey: `${rebate ? 'rebate.credited' : 'commission.confirmed'}:${accrual.id}`,
             },
             tx,
           );
@@ -726,23 +785,34 @@ export class CommissionService implements CommissionAccrualPort {
           parentIbUserId: row.parentIbUserId,
           active: row.active,
           level: row.level,
+          programId: row.programId,
         },
       ]),
     );
   }
 
   /** The terms for exactly the rungs in play, keyed by level. */
-  private async loadTerms(db: Executor, levels: number[]): Promise<Map<number, LevelTerms>> {
-    if (levels.length === 0) return new Map();
+  /**
+   * The terms every earner in a chain is paid on, keyed by programme id.
+   *
+   * Read per event rather than cached: an operator editing a programme expects
+   * the next trade to pay the new rate, and a cache here would make "when does
+   * this take effect" a question with no answer anybody could state.
+   */
+  private async loadPrograms(db: Executor, ids: string[]): Promise<Map<string, ProgramTerms>> {
+    if (ids.length === 0) return new Map();
 
-    const rows = await db.select().from(ibLevels).where(inArray(ibLevels.level, levels));
+    const rows = await db.select().from(ibPrograms).where(inArray(ibPrograms.id, ids));
 
     return new Map(
       rows.map((row) => [
-        row.level,
+        row.id,
         {
-          level: row.level,
-          rateValue: row.rateValue,
+          id: row.id,
+          mode: row.mode,
+          level1Rate: row.level1Rate,
+          level2Rate: row.level2Rate,
+          rebateRate: row.rebateRate,
           enabled: row.enabled,
         },
       ]),

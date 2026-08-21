@@ -56,16 +56,29 @@ async function ingest(deal: {
   action?: number;
   entry?: number;
   volume?: string;
+  /** Ties the legs of one round turn together. */
+  positionId?: string;
 }): Promise<string> {
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO mt5_deals
-      (mt5_deal_id, login, symbol, action, entry, volume, price, profit, commission, swap, dealt_at)
+      (mt5_deal_id, login, symbol, action, entry, volume, price, profit, commission, swap,
+       mt5_position_id, dealt_at)
     VALUES
       (${deal.ticket}, ${deal.login}, 'EURUSD', ${deal.action ?? 0}, ${deal.entry ?? 1},
-       ${deal.volume ?? '1.00000000'}, '1.08542000', '0', ${deal.commission}, ${deal.swap}, now())
+       ${deal.volume ?? '1.00000000'}, '1.08542000', '0', ${deal.commission}, ${deal.swap},
+       ${deal.positionId ?? null}, now())
     RETURNING id
   `);
   return rows[0].id;
+}
+
+/** Has an accrual taken this deal's revenue yet? */
+async function isProcessed(dealRowId: string): Promise<boolean> {
+  const { rows } = await ctx.db.execute<{ processed: boolean }>(sql`
+    SELECT (commission_processed_at IS NOT NULL) AS processed
+      FROM mt5_deals WHERE id = ${dealRowId}
+  `);
+  return rows[0].processed;
 }
 
 async function accrualsFor(dealRowId: string) {
@@ -106,13 +119,31 @@ beforeAll(async () => {
        SET rate_value = 30.0000, enabled = true, name = 'Master Partner'
   `);
 
+  /*
+   * The RATE lives on the programme, not the rung.
+   *
+   * The ladder row above still has to exist — `ib_accounts.level` references it
+   * — but since migration 0084 it decides placement and nothing else. Setting
+   * only `ib_levels.rate_value` here left every figure below reading whatever
+   * the seeded Default programme happened to carry, which is how this fixture
+   * silently stopped controlling the number it exists to control.
+   */
+  await ctx.db.execute(sql`
+    UPDATE ib_programs
+       SET mode = 'commission_only',
+           level1_rate = 30.0000,
+           level2_rate = 0.0000,
+           rebate_rate = 0.0000,
+           enabled = true
+     WHERE id = (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1)
+  `);
+
   partnerId = await makeUser('deal-partner@oxshare-e2e.test');
   clientId = await makeUser('deal-client@oxshare-e2e.test');
   unreferredId = await makeUser('deal-unreferred@oxshare-e2e.test');
 
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, level, referral_code, active)
-    VALUES (${partnerId}, 1, 'DEALPART', true)
+    INSERT INTO ib_accounts (user_id, level, referral_code, active, program_id) VALUES (${partnerId}, 1, 'DEALPART', true, (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
   `);
   await ctx.db.execute(
     sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,
@@ -168,24 +199,105 @@ describe('an ingested deal pays the partner behind the client', () => {
     expect(accrual.base_amount).toBe('10.00000000');
   });
 
-  it('pays on the OPENING deal too, not only the close', async () => {
-    /*
-     * The round turn is charged in two halves. Keying accruals on the position
-     * and paying at close would drop this one silently, underpaying every
-     * partner by the entry commission on every trade they ever generated.
-     */
+  /*
+   * ── COMMISSION IS EARNED ON A CLOSED POSITION ──────────────────────────────
+   *
+   * FR-IB-04: computed "on the closing of a deal — never on its opening".
+   *
+   * This suite used to assert the opposite, and the reasoning was sound about
+   * the MONEY and wrong about the RULE: a round turn is often charged in two
+   * halves, so paying only the closing row's own commission underpays by the
+   * entry charge. The answer is not to pay at open — it is to pay at close on
+   * the WHOLE position, which is what the three cases below pin.
+   */
+  it('accrues nothing on an opening deal, and leaves it for its close', async () => {
     const opening = await ingest({
       ticket: '90211',
       login: LOGIN,
       commission: '-4.00000000',
       swap: '0.00000000',
       entry: 0, // ENTRY_IN
+      positionId: 'P-1',
+    });
+
+    const run = await deals.accruePending();
+
+    expect(await accrualsFor(opening)).toHaveLength(0);
+    expect(run.awaitingClose).toBe(1);
+    /*
+     * UNPROCESSED, and that is the load-bearing half. Marking it done would
+     * discard the entry commission, so the close would pay on its own row alone
+     * — underpaying every partner by the open leg of every trade.
+     */
+    expect(await isProcessed(opening)).toBe(false);
+  });
+
+  it('pays the whole position when it closes, entry charge included', async () => {
+    await ingest({
+      ticket: '90220',
+      login: LOGIN,
+      commission: '-4.00000000',
+      swap: '0.00000000',
+      entry: 0, // ENTRY_IN
+      positionId: 'P-2',
+    });
+    const closing = await ingest({
+      ticket: '90221',
+      login: LOGIN,
+      commission: '-6.00000000',
+      swap: '0.00000000',
+      entry: 1, // ENTRY_OUT
+      positionId: 'P-2',
     });
 
     await deals.accruePending();
 
-    const [accrual] = await accrualsFor(opening);
-    expect(accrual.amount).toBe('1.20000000');
+    const [accrual] = await accrualsFor(closing);
+    // 30% of the 10.00 the broker kept across BOTH legs — not of the 6.00 on
+    // the closing row alone.
+    expect(accrual.amount).toBe('3.00000000');
+    expect(accrual.base_amount).toBe('10.00000000');
+  });
+
+  /*
+   * THE double-payment case. The first close consumes the opener; the second
+   * must not consume it again — summing the whole position both times would pay
+   * the entry charge twice on every partially closed trade.
+   */
+  it('does not pay the entry charge twice across a partial close', async () => {
+    await ingest({
+      ticket: '90230',
+      login: LOGIN,
+      commission: '-4.00000000',
+      swap: '0.00000000',
+      entry: 0, // ENTRY_IN
+      positionId: 'P-3',
+    });
+    const firstClose = await ingest({
+      ticket: '90231',
+      login: LOGIN,
+      commission: '-3.00000000',
+      swap: '0.00000000',
+      entry: 1,
+      positionId: 'P-3',
+    });
+
+    await deals.accruePending();
+    expect((await accrualsFor(firstClose))[0].base_amount).toBe('7.00000000');
+
+    const secondClose = await ingest({
+      ticket: '90232',
+      login: LOGIN,
+      commission: '-3.00000000',
+      swap: '0.00000000',
+      entry: 1,
+      positionId: 'P-3',
+    });
+
+    await deals.accruePending();
+
+    // Its own 3.00 only. The opener was already paid for by the first close.
+    expect((await accrualsFor(secondClose))[0].base_amount).toBe('3.00000000');
   });
 
   it('counts a swap the client was charged, and not one they were paid', async () => {

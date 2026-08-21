@@ -165,6 +165,19 @@ beforeEach(async () => {
   AGENCY.id = agency.rows[0].id;
 });
 
+/**
+ * The programme a fixture partner is placed on.
+ *
+ * Read rather than hardcoded: migration 0084 seeds one carrying the ladder's
+ * own rates, and a fixture pinning its id or name would break the day an
+ * operator renames it — which is a change to test data, not to behaviour.
+ */
+async function defaultProgram(store: IbStore): Promise<string> {
+  const id = await store.defaultProgramId();
+  if (!id) throw new Error('No enabled commission programme — migration 0084 seeds one.');
+  return id;
+}
+
 describe('applying', () => {
   it('accepts an application from a verified client', async () => {
     const userId = await makeClient('applicant@test.local');
@@ -665,16 +678,23 @@ describe('the cycle guard', () => {
     const b = await makeClient('chain-b@test.local');
     const c = await makeClient('chain-c@test.local');
 
-    await store.createAccount({ userId: a, level: 1, referralCode: 'CHAINAAA' });
+    await store.createAccount({
+      userId: a,
+      level: 1,
+      programId: await defaultProgram(store),
+      referralCode: 'CHAINAAA',
+    });
     await store.createAccount({
       userId: b,
       level: 2,
+      programId: await defaultProgram(store),
       parentIbUserId: a,
       referralCode: 'CHAINBBB',
     });
     await store.createAccount({
       userId: c,
       level: 2,
+      programId: await defaultProgram(store),
       parentIbUserId: b,
       referralCode: 'CHAINCCC',
     });
@@ -695,7 +715,12 @@ describe('the cycle guard', () => {
   it('allows an unrelated partner as a parent', async () => {
     const [, b] = await makeChain();
     const outsider = await makeClient('outsider@test.local');
-    await store.createAccount({ userId: outsider, level: 1, referralCode: 'OUTSIDER' });
+    await store.createAccount({
+      userId: outsider,
+      level: 1,
+      programId: await defaultProgram(store),
+      referralCode: 'OUTSIDER',
+    });
 
     expect(await service.wouldCreateCycle(outsider, b)).toBe(false);
   });
@@ -778,10 +803,16 @@ describe('managing a live partner', () => {
   async function makePair(): Promise<[string, string]> {
     const parent = await makeClient('mgmt-parent@test.local');
     const child = await makeClient('mgmt-child@test.local');
-    await store.createAccount({ userId: parent, level: 1, referralCode: 'MGMTPRNT' });
+    await store.createAccount({
+      userId: parent,
+      level: 1,
+      programId: await defaultProgram(store),
+      referralCode: 'MGMTPRNT',
+    });
     await store.createAccount({
       userId: child,
       level: 2,
+      programId: await defaultProgram(store),
       parentIbUserId: parent,
       referralCode: 'MGMTCHLD',
     });
@@ -825,7 +856,12 @@ describe('managing a live partner', () => {
   it('accepts an unrelated parent', async () => {
     const [, child] = await makePair();
     const outsider = await makeClient('mgmt-outsider@test.local');
-    await store.createAccount({ userId: outsider, level: 1, referralCode: 'MGMTOUTS' });
+    await store.createAccount({
+      userId: outsider,
+      level: 1,
+      programId: await defaultProgram(store),
+      referralCode: 'MGMTOUTS',
+    });
 
     const moved = await service.reassignParent(child, outsider, UNRESTRICTED, REVIEWER);
     expect(moved.parentIbUserId).toBe(outsider);
@@ -849,7 +885,12 @@ describe('managing a live partner', () => {
      */
     const [, child] = await makePair();
     const outsider = await makeClient('mgmt-out-of-scope@test.local');
-    await store.createAccount({ userId: outsider, level: 1, referralCode: 'MGMTOOS1' });
+    await store.createAccount({
+      userId: outsider,
+      level: 1,
+      programId: await defaultProgram(store),
+      referralCode: 'MGMTOOS1',
+    });
 
     // A territory containing the CHILD but not the outsider parent.
     const { rows: tagRows } = await ctx.db.execute<{ id: string }>(sql`
@@ -885,7 +926,12 @@ describe('managing a live partner', () => {
     await ctx.db.execute(sql`UPDATE ib_accounts SET active = false WHERE user_id = ${parent}`);
 
     const another = await makeClient('mgmt-another@test.local');
-    await store.createAccount({ userId: another, level: 2, referralCode: 'MGMTANOT' });
+    await store.createAccount({
+      userId: another,
+      level: 2,
+      programId: await defaultProgram(store),
+      referralCode: 'MGMTANOT',
+    });
 
     await expect(service.reassignParent(another, parent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
       /suspended/i,
@@ -915,7 +961,12 @@ describe('managing a live partner', () => {
     await service.setActive(parent, false, UNRESTRICTED, REVIEWER);
 
     const orphan = await makeClient('mgmt-orphan@test.local');
-    await store.createAccount({ userId: orphan, level: 2, referralCode: 'MGMTORPH' });
+    await store.createAccount({
+      userId: orphan,
+      level: 2,
+      programId: await defaultProgram(store),
+      referralCode: 'MGMTORPH',
+    });
 
     await expect(service.reassignParent(orphan, parent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
       /suspended/i,

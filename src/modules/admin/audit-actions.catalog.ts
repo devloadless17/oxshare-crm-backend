@@ -253,6 +253,16 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'ib_level.reorder', label: 'IB ladder reordered', group: 'Configuration' },
 
   /*
+   * The PROGRAMME is where a partner's rates actually live — the ladder above
+   * only decides placement. So these are the entries somebody reads a quarter
+   * later asking why a partner's earnings changed, and the update record keeps
+   * both the before and the after for exactly that conversation.
+   */
+  { action: 'ib_program.create', label: 'Commission programme added', group: 'Configuration' },
+  { action: 'ib_program.update', label: 'Commission programme changed', group: 'Configuration' },
+  { action: 'ib_program.delete', label: 'Commission programme removed', group: 'Configuration' },
+
+  /*
    * A partner DECISION, not a configuration change — hence a different group
    * from the three above. Approving creates somebody who will be paid by the
    * platform, and "who let this partner in, and when" is the first question

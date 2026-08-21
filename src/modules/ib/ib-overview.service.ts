@@ -7,6 +7,7 @@ import {
   ibAccounts,
   ibAccruals,
   ibLevels,
+  ibPrograms,
   ledgerEntries,
   positions,
   users,
@@ -20,17 +21,26 @@ import type { IbClientPositionDto, IbCommissionRowDto, IbOverviewDto } from './d
 /**
  * The ledger entry types that represent PARTNER income.
  *
- * `commission` and `rebate` are what an engine would credit; `payout` is what a
- * manual settlement credits. All three are already in `ledgerEntryTypeEnum`, so
- * this reads real rows rather than inventing a parallel accounting surface —
- * and the moment anything starts writing them, these totals become live with no
- * change here.
+ * `commission` is what the confirm loop credits; `payout` is what a manual
+ * settlement credits. Both are already in `ledgerEntryTypeEnum`, so this reads
+ * real rows rather than inventing a parallel accounting surface.
+ *
+ * ## `rebate` was here and had to come OUT
+ *
+ * It was included when a rebate was imagined as a second kind of partner
+ * income. Migration 0084 gave the word its FSD meaning instead: a rebate is the
+ * TRADING CLIENT's leg, credited to their own main wallet.
+ *
+ * A partner is also a client — they hold wallets and may themselves have been
+ * introduced by somebody else. Leaving `rebate` in this list would have counted
+ * the rebates on a partner's OWN trading as commission they had earned from
+ * their network, inflating a lifetime-earnings figure they may be paid against.
  *
  * `deposit`, `withdrawal`, `transfer` and `adjustment` are deliberately
  * excluded: a partner's own deposit is not something they earned, and counting
  * it would make the earnings figure a second, wrong, wallet balance.
  */
-const EARNING_ENTRY_TYPES = ['commission', 'rebate', 'payout'] as const;
+const EARNING_ENTRY_TYPES = ['commission', 'payout'] as const;
 
 /**
  * The currency partner earnings are reported in.
@@ -128,16 +138,19 @@ export class IbOverviewService {
      * confirm loop — leaving a partner looking at a balance their own earnings
      * figure does not account for.
      */
-    const [level, earnings, commissionWallets, referredClients, subPartners] = await Promise.all([
-      this.levelFor(account.level),
-      this.earningsFor(userId),
-      this.wallets.listCommissionWallets(userId),
-      this.referredClientsFor(userId),
-      this.subPartnersFor(userId),
-    ]);
+    const [level, programme, earnings, commissionWallets, referredClients, subPartners] =
+      await Promise.all([
+        this.levelFor(account.level),
+        this.programmeFor(account.programId),
+        this.earningsFor(userId),
+        this.wallets.listCommissionWallets(userId),
+        this.referredClientsFor(userId),
+        this.subPartnersFor(userId),
+      ]);
 
     return {
       level,
+      programme,
       earnings,
       commissionWallets,
       referredClients,
@@ -164,6 +177,30 @@ export class IbOverviewService {
      * partner dashboard that 500s because the ladder was edited is worse than
      * one that shows everything else and omits the rate.
      */
+    return row ?? null;
+  }
+
+  /**
+   * The terms this partner is paid on.
+   *
+   * Read by id from `ib_accounts.program_id` rather than by "the default one":
+   * the whole point of a programme is that two partners on the same rung may be
+   * on different terms, and a lookup that fell back to a default would show one
+   * of them somebody else's rates.
+   */
+  private async programmeFor(programId: string): Promise<IbOverviewDto['programme']> {
+    const [row] = await this.db
+      .select({
+        name: ibPrograms.name,
+        mode: ibPrograms.mode,
+        level1Rate: ibPrograms.level1Rate,
+        level2Rate: ibPrograms.level2Rate,
+        rebateRate: ibPrograms.rebateRate,
+      })
+      .from(ibPrograms)
+      .where(eq(ibPrograms.id, programId))
+      .limit(1);
+
     return row ?? null;
   }
 

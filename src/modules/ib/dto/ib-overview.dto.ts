@@ -124,7 +124,61 @@ export class IbSubPartnerDto {
   @ApiProperty({ format: 'date-time' }) since: Date;
 }
 
-/** The rung this partner stands on, and what it pays. */
+/**
+ * The TERMS this partner is paid on — their named programme (FR-IB-06).
+ *
+ * ## This is the thing that decides the money; the rung no longer is
+ *
+ * `IbLevelSummaryDto` below still carries a `rateValue`, and since migration
+ * 0084 that number decides nothing: the ladder owns placement and the programme
+ * owns the rates. Both are on the wire because a partner is told which rung
+ * they stand on AND what they earn, and collapsing them would leave one of
+ * those unanswerable.
+ *
+ * ## The two rates are per DEPTH
+ *
+ * `level1Rate` is what this partner earns from their OWN clients; `level2Rate`
+ * from a sub-partner's. Rendering either as "the level-N partner rate" tells a
+ * sub-partner the wrong number for the clients they introduced themselves.
+ */
+export class IbProgramSummaryDto {
+  @ApiProperty({ example: 'Gold' }) name: string;
+
+  @ApiProperty({
+    enum: ['commission_only', 'rebate_only', 'hybrid'],
+    description:
+      'Which legs pay. `rebate_only` means this partner earns nothing and their clients are ' +
+      'paid instead — a real arrangement, and one the screen must not present as an error.',
+  })
+  mode: 'commission_only' | 'rebate_only' | 'hybrid';
+
+  @ApiProperty({
+    type: 'string',
+    example: '60.0000',
+    description:
+      'Their share of the broker’s revenue on their OWN client’s closed trade, as a percentage. ' +
+      'A decimal string, never a number (§6.1).',
+  })
+  level1Rate: string;
+
+  @ApiProperty({
+    type: 'string',
+    example: '40.0000',
+    description: 'Their share when the trade belongs to a sub-partner’s client.',
+  })
+  level2Rate: string;
+
+  @ApiProperty({
+    type: 'string',
+    example: '0.0000',
+    description:
+      'What their clients get back, as a percentage of the same revenue. Zero unless the mode ' +
+      'pays a rebate.',
+  })
+  rebateRate: string;
+}
+
+/** The rung this partner stands on. Its `rateValue` no longer decides pay. */
 export class IbLevelSummaryDto {
   @ApiProperty({ example: 1 }) level: number;
   @ApiProperty({ example: 'Master Partner' }) name: string;
@@ -156,6 +210,15 @@ export class IbLevelSummaryDto {
 export class IbOverviewDto {
   @ApiProperty({ type: IbLevelSummaryDto, nullable: true })
   level: IbLevelSummaryDto | null;
+
+  /**
+   * NULL only if the programme row vanished from under the partner, which the
+   * foreign key prevents. Nullable anyway for the same reason `level` is: a
+   * partner dashboard that 500s because the catalogue was edited is worse than
+   * one that shows everything else and omits the terms.
+   */
+  @ApiProperty({ type: IbProgramSummaryDto, nullable: true })
+  programme: IbProgramSummaryDto | null;
 
   @ApiProperty({ type: IbEarningsDto })
   earnings: IbEarningsDto;

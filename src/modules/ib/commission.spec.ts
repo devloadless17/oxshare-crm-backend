@@ -5,7 +5,7 @@ import {
   resolveChain,
   type ChainEntry,
   type ChainNode,
-  type LevelTerms,
+  type ProgramTerms,
   type RevenueEvent,
 } from './commission';
 
@@ -14,23 +14,30 @@ import {
  *
  * Every assertion here covers a case with a WRONG answer that pays real money
  * and does not throw: a suspended partner still earning, a cycle hanging the
- * payout walk, a rate applied to the wrong base, a unit error
- * paying seventy times a deposit. None of these surface as errors — they
- * surface as a balance somebody has to claw back.
+ * payout walk, a rate applied to the wrong base, a unit error paying seventy
+ * times the revenue, a rebate credited to the introducer instead of the client
+ * it is owed to. None of these surface as errors — they surface as a balance
+ * somebody has to claw back.
  *
  * Mutation-checked when written: each guarantee was deliberately broken and the
- * named test failed on the right assertion. A test asserting "10% of 100 is 10"
- * would prove nothing on its own, which is why the ugly values and the refusal
- * paths carry most of the weight below.
+ * named test failed on the right assertion. A test asserting "10% of 1000 is
+ * 100" would prove nothing on its own, which is why the ugly values and the
+ * refusal paths carry most of the weight below.
+ *
+ * ## What changed when programmes landed, and why some numbers are mirrored
+ *
+ * The rate used to be keyed on the RUNG an earner occupied. It is keyed on
+ * DEPTH now: `level1Rate` is what you earn from your OWN client, `level2Rate`
+ * from a sub-partner's. So a sub-partner who introduced this client is paid the
+ * level-1 rate — under the old model they were paid the level-2 rate for
+ * business they had brought in themselves, which is the defect the change
+ * fixes and the reason several expectations below are the mirror of what they
+ * were.
  */
 
 /**
- * A closed trade on which the BROKER kept 1000 — spread markup plus its own
- * commission. This is the only base a revenue share may be taken of.
- *
- * The fixture used to be a DEPOSIT of the same size, which is what made the
- * old numbers look reasonable and be wrong: 70% of a deposit is 70% of the
- * client's own money.
+ * A closed trade on which the BROKER kept 1000 — its own commission plus swap.
+ * This is the only base a revenue share may be taken of.
  */
 const DEAL: RevenueEvent = {
   grossAmount: '1000.00000000',
@@ -39,22 +46,7 @@ const DEAL: RevenueEvent = {
   lots: '10',
 };
 
-/**
- * A deal without lots.
- *
- * It is no longer a meaningful distinction for `checkPlausible` — since
- * `per_lot` went (migration 0055) the share test applies to EVERY event,
- * lots or not — but the fixture stays because most of these cases are about
- * the arithmetic rather than the lot count. `DEAL` is the one with lots, and
- * the regressions at the bottom of that block are what pin the difference.
- */
-const SHARE_BASE: RevenueEvent = {
-  grossAmount: '1000.00000000',
-  currency: 'USD',
-  source: 'deal',
-};
-
-/** A deal with no lot count — the shape a revenue share is taken of. */
+/** The same size with no lot count. Lots never enter the arithmetic. */
 const DEAL_NO_LOTS: RevenueEvent = {
   grossAmount: '1000.00000000',
   currency: 'USD',
@@ -69,7 +61,7 @@ const DEPOSIT: RevenueEvent = {
 };
 
 function node(overrides: Partial<ChainNode> & { userId: string }): ChainNode {
-  return { parentIbUserId: null, active: true, level: 1, ...overrides };
+  return { parentIbUserId: null, active: true, level: 1, programId: 'prog-a', ...overrides };
 }
 
 function lookupFrom(nodes: ChainNode[]): (id: string) => ChainNode | undefined {
@@ -77,17 +69,25 @@ function lookupFrom(nodes: ChainNode[]): (id: string) => ChainNode | undefined {
   return (id) => map.get(id);
 }
 
-function terms(entries: Partial<LevelTerms>[]): Map<number, LevelTerms> {
-  return new Map(
-    entries.map((entry) => {
-      const full: LevelTerms = {
-        level: entry.level ?? 1,
-        rateValue: entry.rateValue ?? '10.0000',
-        enabled: entry.enabled ?? true,
-      };
-      return [full.level, full];
-    }),
-  );
+/** One programme, defaulted to terms that pay both depths and no rebate. */
+function program(overrides: Partial<ProgramTerms> & { id: string }): ProgramTerms {
+  return {
+    mode: 'commission_only',
+    level1Rate: '10.0000',
+    level2Rate: '5.0000',
+    rebateRate: '0.0000',
+    enabled: true,
+    ...overrides,
+  };
+}
+
+function programs(entries: ProgramTerms[]): Map<string, ProgramTerms> {
+  return new Map(entries.map((entry) => [entry.id, entry]));
+}
+
+/** A chain entry. Every field of it decides a payment, so none is implicit. */
+function earner(over: Partial<ChainEntry> & { ibUserId: string; depth: number }): ChainEntry {
+  return { level: over.depth, programId: 'prog-a', ...over };
 }
 
 describe('resolveChain', () => {
@@ -98,52 +98,59 @@ describe('resolveChain', () => {
 
   it('resolves the introducer alone when they have no parent', () => {
     const chain = resolveChain('ib-1', lookupFrom([node({ userId: 'ib-1', level: 1 })]));
-    expect(chain).toEqual<ChainEntry[]>([{ ibUserId: 'ib-1', depth: 1, level: 1 }]);
-  });
-
-  it('resolves the introducer and their parent', () => {
-    const chain = resolveChain(
-      'ib-2',
-      lookupFrom([
-        node({ userId: 'ib-2', parentIbUserId: 'ib-1', level: 2 }),
-        node({ userId: 'ib-1', level: 1 }),
-      ]),
-    );
-    expect(chain.map((entry) => entry.ibUserId)).toEqual(['ib-2', 'ib-1']);
-    expect(chain.map((entry) => entry.depth)).toEqual([1, 2]);
+    expect(chain).toEqual<ChainEntry[]>([
+      { ibUserId: 'ib-1', depth: 1, level: 1, programId: 'prog-a' },
+    ]);
   });
 
   /*
-   * Resolution stops at two. A third rung existing in the data must not earn —
-   * without the cap the walk would keep climbing and pay a partner the ladder
-   * does not reach.
+   * The programme travels WITH the earner. Reading it from anywhere else — the
+   * client, the deal, the first rung — pays one partner on another's negotiated
+   * terms, and nothing about the resulting amount would look wrong.
    */
+  it('carries each partner’s own programme into the chain', () => {
+    const chain = resolveChain(
+      'ib-2',
+      lookupFrom([
+        node({ userId: 'ib-2', parentIbUserId: 'ib-1', level: 2, programId: 'prog-b' }),
+        node({ userId: 'ib-1', level: 1, programId: 'prog-a' }),
+      ]),
+    );
+
+    expect(chain.map((c) => [c.ibUserId, c.depth, c.programId])).toEqual([
+      ['ib-2', 1, 'prog-b'],
+      ['ib-1', 2, 'prog-a'],
+    ]);
+  });
+
   it('never returns more than two rungs, however deep the tree is', () => {
     const chain = resolveChain(
       'ib-3',
       lookupFrom([
-        node({ userId: 'ib-3', parentIbUserId: 'ib-2', level: 3 }),
-        node({ userId: 'ib-2', parentIbUserId: 'ib-1', level: 2 }),
-        node({ userId: 'ib-1', level: 1 }),
+        node({ userId: 'ib-3', parentIbUserId: 'ib-2' }),
+        node({ userId: 'ib-2', parentIbUserId: 'ib-1' }),
+        node({ userId: 'ib-1' }),
       ]),
     );
+
     expect(chain).toHaveLength(2);
-    expect(chain.map((entry) => entry.ibUserId)).toEqual(['ib-3', 'ib-2']);
+    expect(chain.map((c) => c.ibUserId)).toEqual(['ib-3', 'ib-2']);
   });
 
   /*
-   * A SUSPENDED partner earns nothing AND breaks the chain. Letting the parent
-   * keep collecting through a suspended child would pay somebody for a
-   * relationship the operator has just switched off.
+   * Suspension is a decision about a partner's whole subtree. Letting their
+   * parent keep collecting through them pays somebody for a relationship the
+   * operator has just switched off.
    */
   it('stops at a suspended partner, so nobody above them earns through them', () => {
     const chain = resolveChain(
       'ib-2',
       lookupFrom([
-        node({ userId: 'ib-2', parentIbUserId: 'ib-1', level: 2, active: false }),
-        node({ userId: 'ib-1', level: 1 }),
+        node({ userId: 'ib-2', parentIbUserId: 'ib-1', active: false }),
+        node({ userId: 'ib-1' }),
       ]),
     );
+
     expect(chain).toEqual([]);
   });
 
@@ -151,11 +158,12 @@ describe('resolveChain', () => {
     const chain = resolveChain(
       'ib-2',
       lookupFrom([
-        node({ userId: 'ib-2', parentIbUserId: 'ib-1', level: 2 }),
-        node({ userId: 'ib-1', level: 1, active: false }),
+        node({ userId: 'ib-2', parentIbUserId: 'ib-1' }),
+        node({ userId: 'ib-1', active: false }),
       ]),
     );
-    expect(chain.map((entry) => entry.ibUserId)).toEqual(['ib-2']);
+
+    expect(chain.map((c) => c.ibUserId)).toEqual(['ib-2']);
   });
 
   it('pays nobody when the referring partner has no account row', () => {
@@ -163,122 +171,154 @@ describe('resolveChain', () => {
   });
 
   /*
-   * THE hang. Postgres cannot prevent a cycle on a self-referencing key, so
-   * `seen` is the only thing between a mis-assigned parent and an infinite loop
-   * ON THE MONEY PATH. Without it this test does not fail — it never returns.
+   * Postgres cannot prevent a cycle on a self-referencing key, so this walk is
+   * the only thing between a mis-assigned parent and a hung money path.
    */
   it('terminates on a cycle instead of looping forever', () => {
     const chain = resolveChain(
       'ib-1',
       lookupFrom([
-        node({ userId: 'ib-1', parentIbUserId: 'ib-2', level: 1 }),
-        node({ userId: 'ib-2', parentIbUserId: 'ib-1', level: 2 }),
+        node({ userId: 'ib-1', parentIbUserId: 'ib-2' }),
+        node({ userId: 'ib-2', parentIbUserId: 'ib-1' }),
       ]),
     );
-    // Two distinct partners, each once — nobody is paid twice for one deposit.
-    expect(chain).toHaveLength(2);
-    expect(new Set(chain.map((entry) => entry.ibUserId)).size).toBe(2);
+
+    expect(chain.map((c) => c.ibUserId)).toEqual(['ib-1', 'ib-2']);
   });
 });
 
-describe('calculate', () => {
-  it('takes each earner at their OWN level rate', () => {
-    const chain: ChainEntry[] = [
-      { ibUserId: 'ib-2', depth: 1, level: 2 },
-      { ibUserId: 'ib-1', depth: 2, level: 1 },
-    ];
+describe('calculate — whose rate applies', () => {
+  /*
+   * THE regression the programme model exists for.
+   *
+   * `ib-2` is a level-2 partner who introduced this client themselves, so they
+   * are paid the LEVEL-1 rate — what you earn from your own business. Their
+   * parent, one hop from the trade, takes the level-2 rate. Keyed on the rung
+   * instead, `ib-2` would collect 5% on a client they brought in while the
+   * parent collected 10% on one they never met.
+   */
+  it('pays by DEPTH, not by the rung the earner sits on', () => {
     const result = calculate(
       DEAL,
-      chain,
-      terms([
-        { level: 1, rateValue: '5.0000' },
-        { level: 2, rateValue: '10.0000' },
-      ]),
+      [
+        earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
+        earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+      ],
+      programs([program({ id: 'prog-a', level1Rate: '10.0000', level2Rate: '5.0000' })]),
     );
 
-    // 10% and 5% of 1000 — NOT one rate applied to both.
-    expect(result.accruals.map((a) => a.amount)).toEqual(['100.00000000', '50.00000000']);
+    expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([
+      ['ib-2', '100.00000000'],
+      ['ib-1', '50.00000000'],
+    ]);
   });
 
   /*
-   * Fractional rates on an eight-decimal base. The assertion is an ugly value
-   * on purpose: a refactor to `Number()` would still pass a `10% of 100` test
-   * and fail this one.
+   * Two partners in one chain on different negotiated terms — the case a single
+   * rate ladder could not express at all, and the reason programmes exist.
+   */
+  it('pays each earner from their OWN programme', () => {
+    const result = calculate(
+      DEAL,
+      [
+        earner({ ibUserId: 'ib-2', depth: 1, programId: 'prog-b' }),
+        earner({ ibUserId: 'ib-1', depth: 2, programId: 'prog-a' }),
+      ],
+      programs([
+        program({ id: 'prog-a', level2Rate: '5.0000' }),
+        program({ id: 'prog-b', level1Rate: '25.0000' }),
+      ]),
+    );
+
+    expect(result.accruals.map((a) => [a.ibUserId, a.amount, a.rateValue])).toEqual([
+      ['ib-2', '250.00000000', '25.0000'],
+      ['ib-1', '50.00000000', '5.0000'],
+    ]);
+  });
+
+  /*
+   * A fractional rate on an eight-decimal base. The assertion is an ugly value
+   * on purpose: a refactor to `Number()` still passes "10% of 1000" and fails
+   * this one.
    */
   it('keeps full precision on a fractional rate', () => {
     const result = calculate(
       { grossAmount: '12345678901234567.89', currency: 'USD', source: 'deal' },
-      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
-      terms([{ level: 1, rateValue: '2.5000' }]),
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', level1Rate: '2.5000' })]),
     );
+
     expect(result.accruals[0]?.amount).toBe('308641972530864.19725000');
   });
 
   /*
-   * The two `per_lot` cases that stood here are gone with migration 0055: the
-   * model was removed, `rateValue` has one unit, and a rate can no longer be
-   * "silently treated as a percentage" because a percentage is all it can be.
-   * The LOT COUNT still rides on the event — `checkPlausible` reads it — so the
-   * fixtures keep carrying one.
-   */
-
-  /*
-   * THE REGRESSION THIS FILE EXISTS TO HOLD.
-   *
-   * A revenue share of a deposit paid 70% of the client's own money to their
-   * partner — of the broker's funds, since a deposit is a liability. It ran in
-   * production shape and the plausibility guard could not catch it, because a
-   * share smaller than its base is what a CORRECT share looks like.
+   * A share of a deposit is a share of the CLIENT's money. This was live once:
+   * a level at 70% paid a partner $700 of the broker's own funds on a $1,000
+   * deposit the client could still withdraw in full.
    */
   it('refuses to take a share of a deposit, whatever the rate', () => {
     const result = calculate(
       DEPOSIT,
-      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
-      terms([{ level: 1, rateValue: '70.0000' }]),
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', level1Rate: '70.0000' })]),
     );
+
     expect(result.accruals).toEqual([]);
     expect(result.skippedReason).toContain('deposit');
   });
 
-  it('pays nothing for a disabled level, and says why', () => {
+  it('pays nothing under a disabled programme, and says why', () => {
     const result = calculate(
       DEAL,
-      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
-      terms([{ level: 1, enabled: false }]),
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', enabled: false })]),
     );
+
     expect(result.accruals).toEqual([]);
     expect(result.skippedReason).toContain('disabled');
   });
 
-  it('pays nothing when the level has no configured terms', () => {
-    const result = calculate(DEAL, [{ ibUserId: 'ib-1', depth: 1, level: 7 }], terms([]));
+  it('pays nothing when the earner’s programme is missing entirely', () => {
+    const result = calculate(DEAL, [earner({ ibUserId: 'ib-1', depth: 1 })], programs([]));
+
     expect(result.accruals).toEqual([]);
-    expect(result.skippedReason).toContain('no configured terms');
+    expect(result.skippedReason).toContain('no configured programme');
+  });
+
+  it('pays nothing at a depth the programme rates at zero', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 2 })],
+      programs([program({ id: 'prog-a', level2Rate: '0.0000' })]),
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.skippedReason).toContain('depth 2');
+  });
+
+  it('pays nothing on a non-positive base', () => {
+    const result = calculate(
+      { ...DEAL, grossAmount: '0.00000000' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a' })]),
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.skippedReason).toContain('non-positive');
   });
 
   /*
-   * A zero or refunded base must never produce a NEGATIVE accrual — that would
-   * be a debit dressed as an earning, and the accruals table's own CHECK
-   * constraint would reject it at the last moment rather than here.
+   * `ib_accruals_amount_positive` REFUSES a zero row, and every earner on a
+   * trade is inserted in ONE statement — so a single dust-sized leg would take
+   * down the accrual of every legitimate earner beside it.
    */
-  it('pays nothing on a non-positive base', () => {
-    for (const gross of ['0', '-500.00000000']) {
-      const result = calculate(
-        { grossAmount: gross, currency: 'USD', source: 'deal' },
-        [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
-        terms([{ level: 1 }]),
-      );
-      expect(result.accruals).toEqual([]);
-    }
-  });
-
   it('skips a leg that rounds to nothing rather than writing an empty accrual', () => {
     const result = calculate(
-      { grossAmount: '0.00000001', currency: 'USD', source: 'deal' },
-      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
-      // 0.00000001 × 0.0001% is far below the 8dp the ledger stores.
-      terms([{ level: 1, rateValue: '0.0001' }]),
+      { ...DEAL, grossAmount: '0.00000001' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', level1Rate: '0.0001' })]),
     );
+
     expect(result.accruals).toEqual([]);
   });
 
@@ -286,391 +326,357 @@ describe('calculate', () => {
     const result = calculate(
       DEAL,
       [
-        { ibUserId: 'ib-2', depth: 1, level: 2 },
-        { ibUserId: 'ib-1', depth: 2, level: 1 },
+        earner({ ibUserId: 'ib-2', depth: 1, programId: 'prog-b' }),
+        earner({ ibUserId: 'ib-1', depth: 2, programId: 'prog-a' }),
       ],
-      terms([
-        { level: 1, enabled: false },
-        { level: 2, rateValue: '10.0000' },
+      programs([
+        program({ id: 'prog-a', enabled: false }),
+        program({ id: 'prog-b', level1Rate: '10.0000' }),
       ]),
     );
-    expect(result.accruals).toHaveLength(1);
-    expect(result.accruals[0]?.ibUserId).toBe('ib-2');
+
+    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['ib-2']);
     expect(result.skippedReason).toContain('disabled');
   });
 });
 
-describe('checkPlausible', () => {
+describe('calculate — the client’s rebate', () => {
   /*
-   * THE unit-error backstop. A rate entered as `70` meaning 70× rather than 70%
-   * accrues seventy times the deposit — a number that looks like a large payout
-   * rather than a bug, and that nothing else in the pipeline would question.
+   * The whole point of the mode. A commission-only programme paying a rebate
+   * would hand the client money the broker never agreed to give back, on every
+   * trade, silently.
    */
-  it('refuses a total that exceeds the revenue it is a share of', () => {
-    const verdict = checkPlausible(SHARE_BASE, [
-      { ibUserId: 'ib-1', depth: 1, level: 1, amount: '70000.00000000' },
-    ]);
-    expect(verdict.ok).toBe(false);
+  it('pays no rebate under a commission-only programme', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', mode: 'commission_only', rebateRate: '5.0000' })]),
+    );
+
+    expect(result.rebate).toBeUndefined();
+    expect(result.accruals).toHaveLength(1);
   });
 
-  it('accepts a normal split of the same deposit', () => {
-    const verdict = checkPlausible(SHARE_BASE, [
-      { ibUserId: 'ib-2', depth: 1, level: 2, amount: '100.00000000' },
-      { ibUserId: 'ib-1', depth: 2, level: 1, amount: '50.00000000' },
-    ]);
-    expect(verdict.ok).toBe(true);
-  });
+  it('pays both legs under a hybrid programme', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([
+        program({ id: 'prog-a', mode: 'hybrid', level1Rate: '10.0000', rebateRate: '5.0000' }),
+      ]),
+    );
 
-  /*
-   * The ceiling is on the TOTAL, not per leg. Two legs each under the deposit
-   * can still sum past it, which is the case a per-accrual check would miss.
-   */
-  it('refuses when the legs are individually fine but together exceed the base', () => {
-    const verdict = checkPlausible(SHARE_BASE, [
-      { ibUserId: 'ib-2', depth: 1, level: 2, amount: '600.00000000' },
-      { ibUserId: 'ib-1', depth: 2, level: 1, amount: '600.00000000' },
-    ]);
-    expect(verdict.ok).toBe(false);
-  });
-
-  it('accepts a total exactly equal to the base', () => {
-    const verdict = checkPlausible(SHARE_BASE, [
-      { ibUserId: 'ib-1', depth: 1, level: 1, amount: '1000.00000000' },
-    ]);
-    expect(verdict.ok).toBe(true);
+    expect(result.accruals[0].amount).toBe('100.00000000');
+    expect(result.rebate?.amount).toBe('50.00000000');
+    expect(result.rebate?.rateValue).toBe('5.0000');
   });
 
   /*
-   * ── The regression that made this whole guard dead in production ──
-   *
-   * `checkPlausible` used to return `ok: true` the moment an event carried a
-   * lot count, a leftover from `per_lot` (removed in migration 0055). The deal
-   * feed is the only live accrual path and it ALWAYS sets lots, so the unit-
-   * error backstop and its COMMISSION_CEILING_BREACH alert never fired on a
-   * single real accrual.
-   *
-   * Every existing case above uses a lots-free fixture, which is precisely why
-   * nothing caught it. These two use `DEAL` — the fixture with `lots: '10'` —
-   * so the exemption cannot come back without turning this file red.
+   * `rebate_only` is a real model — the broker buys volume by handing the
+   * spread back — and the partner earning nothing on it is the point rather
+   * than an omission.
    */
-  it('refuses an impossible total on a deal that CARRIES a lot count', () => {
-    const verdict = checkPlausible(DEAL, [
-      { ibUserId: 'ib-1', depth: 1, level: 1, amount: '70000.00000000' },
-    ]);
-    expect(verdict.ok).toBe(false);
-    if (!verdict.ok) expect(verdict.reason).toContain('unit error');
+  it('pays the client and no partner under a rebate-only programme', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([
+        program({ id: 'prog-a', mode: 'rebate_only', level1Rate: '10.0000', rebateRate: '5.0000' }),
+      ]),
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.rebate?.amount).toBe('50.00000000');
+    expect(result.skippedReason).toContain('rebate-only');
   });
 
-  it('still accepts a sane share on a deal that carries a lot count', () => {
-    const verdict = checkPlausible(DEAL, [
-      { ibUserId: 'ib-1', depth: 1, level: 1, amount: '250.00000000' },
-    ]);
-    expect(verdict.ok).toBe(true);
+  /*
+   * THE attribution rule. The rebate is a term of the relationship the client is
+   * actually in, so it comes from the partner who introduced them. A parent
+   * further up setting it would be altering terms in a relationship they do not
+   * own, and two programmes in one chain would otherwise have no defined answer
+   * at all.
+   */
+  it('takes the rebate from the introducer’s programme, never the parent’s', () => {
+    const result = calculate(
+      DEAL,
+      [
+        earner({ ibUserId: 'ib-2', depth: 1, programId: 'prog-b' }),
+        earner({ ibUserId: 'ib-1', depth: 2, programId: 'prog-a' }),
+      ],
+      programs([
+        program({ id: 'prog-a', mode: 'hybrid', rebateRate: '90.0000' }),
+        program({ id: 'prog-b', mode: 'hybrid', rebateRate: '2.0000' }),
+      ]),
+    );
+
+    expect(result.rebate?.programId).toBe('prog-b');
+    expect(result.rebate?.amount).toBe('20.00000000');
+  });
+
+  /*
+   * `ibUserId` on a rebate is ATTRIBUTION, not entitlement. Reading it as the
+   * beneficiary pays the introducer their own client's rebate — which balances
+   * perfectly and is wrong about who holds the money.
+   */
+  it('records the introducer as the source of the rebate, not its recipient', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', mode: 'hybrid', rebateRate: '5.0000' })]),
+    );
+
+    expect(result.rebate?.ibUserId).toBe('ib-1');
+  });
+
+  it('omits a rebate that rounds away rather than writing an empty one', () => {
+    const result = calculate(
+      { ...DEAL, grossAmount: '0.00000001' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', mode: 'hybrid', rebateRate: '0.0001' })]),
+    );
+
+    expect(result.rebate).toBeUndefined();
+  });
+
+  it('pays no rebate on a deposit, exactly as it pays no commission', () => {
+    const result = calculate(
+      DEPOSIT,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', mode: 'hybrid', rebateRate: '5.0000' })]),
+    );
+
+    expect(result.rebate).toBeUndefined();
+  });
+
+  /*
+   * A suspended introducer breaks the chain before the rebate is reached, so
+   * the client stops receiving one too. The conservative reading, deliberately:
+   * the rebate is a term of the relationship the operator has just suspended.
+   */
+  it('pays no rebate when the chain resolves to nobody', () => {
+    const result = calculate(
+      DEAL,
+      [],
+      programs([program({ id: 'prog-a', mode: 'hybrid', rebateRate: '5.0000' })]),
+    );
+
+    expect(result.rebate).toBeUndefined();
+    expect(result.accruals).toEqual([]);
   });
 });
 
-describe("the broker's revenue cap", () => {
+describe('the broker’s revenue cap', () => {
   /*
-   * The defect this exists to prevent, in one test: the shipped ladder was
-   * Master 70% and Sub 30%, and each rung takes its share of the FULL revenue.
-   * A two-level chain therefore paid out 100% and the house kept nothing —
-   * silently, since `checkPlausible` only refuses totals GREATER than the base.
+   * Each rung's rate is a share of the FULL revenue, so the rates ADD: a chain
+   * at 70 + 30 pays out everything the house earned and leaves it nothing.
    */
   it('scales a chain that would pay out everything the broker earned', () => {
     const result = calculate(
-      DEAL_NO_LOTS,
-      [
-        { ibUserId: 'master', depth: 2, level: 1 },
-        { ibUserId: 'sub', depth: 1, level: 2 },
-      ],
-      terms([
-        { level: 1, rateValue: '70.0000' },
-        { level: 2, rateValue: '30.0000' },
-      ]),
+      DEAL,
+      [earner({ ibUserId: 'ib-2', depth: 1 }), earner({ ibUserId: 'ib-1', depth: 2 })],
+      programs([program({ id: 'prog-a', level1Rate: '70.0000', level2Rate: '30.0000' })]),
       '50',
     );
 
-    const total = result.accruals.reduce((sum, a) => sum + Number(a.amount), 0);
-    // 1000 of revenue, capped at 50% — the broker keeps 500 whatever the ladder says.
-    expect(total).toBeCloseTo(500, 8);
+    expect(result.accruals.map((a) => a.amount)).toEqual(['350.00000000', '150.00000000']);
     expect(result.skippedReason).toContain('cap');
   });
 
-  it('keeps the ladder’s proportions when it scales', () => {
+  it('keeps the proportions between the legs when it scales', () => {
     const result = calculate(
-      DEAL_NO_LOTS,
-      [
-        { ibUserId: 'master', depth: 2, level: 1 },
-        { ibUserId: 'sub', depth: 1, level: 2 },
-      ],
-      terms([
-        { level: 1, rateValue: '70.0000' },
-        { level: 2, rateValue: '30.0000' },
+      DEAL,
+      [earner({ ibUserId: 'ib-2', depth: 1 }), earner({ ibUserId: 'ib-1', depth: 2 })],
+      programs([program({ id: 'prog-a', level1Rate: '60.0000', level2Rate: '30.0000' })]),
+      '45',
+    );
+
+    // 2:1 before the cap, and 2:1 after it.
+    expect(result.accruals[0].amount).toBe('300.00000000');
+    expect(result.accruals[1].amount).toBe('150.00000000');
+  });
+
+  /*
+   * THE hole the rebate could have opened. The client's leg comes out of the
+   * same revenue, so a cap that scaled only the partners would let the total
+   * exceed the broker's floor by exactly the rebate — while reporting that the
+   * floor had been enforced.
+   */
+  it('counts the rebate inside the cap and scales it with the rest', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([
+        program({ id: 'prog-a', mode: 'hybrid', level1Rate: '60.0000', rebateRate: '40.0000' }),
       ]),
       '50',
     );
 
-    const master = result.accruals.find((a) => a.ibUserId === 'master');
-    const sub = result.accruals.find((a) => a.ibUserId === 'sub');
-    // 70:30 before, 70:30 after — everyone earns less, nobody is zeroed.
-    expect(Number(master?.amount)).toBeCloseTo(350, 8);
-    expect(Number(sub?.amount)).toBeCloseTo(150, 8);
+    // 60:40 before, 60:40 after, and 500 in total rather than 1000.
+    expect(result.accruals[0].amount).toBe('300.00000000');
+    expect(result.rebate?.amount).toBe('200.00000000');
   });
 
   it('leaves a chain that already fits alone', () => {
     const result = calculate(
-      DEAL_NO_LOTS,
-      [{ ibUserId: 'ib-1', depth: 1, level: 1 }],
-      terms([{ level: 1, rateValue: '30.0000' }]),
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', level1Rate: '10.0000' })]),
       '50',
     );
-    expect(result.accruals[0]?.amount).toBe('300.00000000');
+
+    expect(result.accruals[0].amount).toBe('100.00000000');
     expect(result.skippedReason).toBeUndefined();
   });
 
-  /*
-   * ── THE REGRESSION THIS BLOCK EXISTS FOR ──────────────────────────────────
-   *
-   * The cap was gated on `event.lots === undefined`, so any event carrying a lot
-   * count skipped it. Every real commission carries one — `CommissionService`
-   * sets `lots: position.lots` on the deal event, and a deal is the only source
-   * that pays since deposits stopped being revenue.
-   *
-   * So the broker's floor was bypassed on every commission the running system
-   * produced, and the tests above all passed because they used a fixture with no
-   * lots. `DEAL` here is the shape production actually sends.
-   */
-  it('caps a revenue share on a deal that CARRIES lots', () => {
+  it('ignores a non-positive cap, which the settings layer cannot produce', () => {
     const result = calculate(
       DEAL,
-      [
-        { ibUserId: 'master', depth: 2, level: 1 },
-        { ibUserId: 'sub', depth: 1, level: 2 },
-      ],
-      terms([
-        { level: 1, rateValue: '70.0000' },
-        { level: 2, rateValue: '30.0000' },
-      ]),
-      '50',
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', level1Rate: '10.0000' })]),
+      '-5',
     );
 
-    expect(result.accruals.find((a) => a.ibUserId === 'master')?.amount).toBe('350.00000000');
-    expect(result.accruals.find((a) => a.ibUserId === 'sub')?.amount).toBe('150.00000000');
-    expect(result.skippedReason).toContain('cap');
+    expect(result.accruals[0].amount).toBe('100.00000000');
   });
 
   /*
-   * The two mixed-model cases that stood here are gone with migration 0055.
-   * They pinned which legs counted toward the ceiling when a chain held a
-   * revenue share above a per-lot rebate; with one model left, every leg counts
-   * and there is no mixture to get wrong.
-   *
-   * What replaces them is the property those tests were really protecting: a
-   * chain that fits is paid in full, and one that does not is scaled — both
-   * covered above and in `the numbers` below.
+   * Scaling can recreate exactly what the per-leg rounding guard removes, and a
+   * zero row is refused by a CHECK constraint rather than stored harmlessly.
    */
-  it('leaves a two-rung chain alone when it fits inside the cap', () => {
+  it('drops a leg that the cap scales below the storable minimum', () => {
     const result = calculate(
-      DEAL,
-      [
-        { ibUserId: 'master', depth: 2, level: 1 },
-        { ibUserId: 'sub', depth: 1, level: 2 },
-      ],
-      terms([
-        { level: 1, rateValue: '30.0000' },
-        { level: 2, rateValue: '10.0000' },
-      ]),
-      '50',
-    );
-
-    // 300 + 100 = 400, inside the 500 ceiling, so neither leg moves.
-    expect(result.accruals.find((a) => a.ibUserId === 'master')?.amount).toBe('300.00000000');
-    expect(result.accruals.find((a) => a.ibUserId === 'sub')?.amount).toBe('100.00000000');
-    expect(result.skippedReason).toBeUndefined();
-  });
-});
-
-/**
- * The arithmetic itself, at the scale the column stores.
- *
- * The engine's job is one multiplication and one division per leg, and every
- * bug this suite has caught lived in the EDGES of that: which base, which
- * rounding, which legs count toward the cap. These pin the numbers.
- */
-describe('the numbers', () => {
-  const chain = (level: number): ChainEntry[] => [{ ibUserId: 'ib-1', depth: 1, level }];
-
-  /** Broker revenue × rate% → the partner's share, at 8dp. */
-  const share = (
-    grossAmount: string,
-    rateValue: string,
-    maxSharePct?: string,
-  ): string | undefined =>
-    calculate(
-      { grossAmount, currency: 'USD', source: 'deal', lots: '1' },
-      chain(1),
-      terms([{ level: 1, rateValue }]),
-      maxSharePct,
-    ).accruals[0]?.amount;
-
-  it.each([
-    ['1000.00000000', '70.0000', '700.00000000'],
-    ['1000.00000000', '30.0000', '300.00000000'],
-    ['1000.00000000', '100.0000', '1000.00000000'],
-    ['1000.00000000', '0.5000', '5.00000000'],
-    ['0.00000001', '50.0000', '0.00000001'],
-    ['33.33000000', '33.3300', '11.10888900'],
-    // Seventeen significant digits — `Number()` is already wrong before the
-    // multiplication, which is why nothing here touches one.
-    ['12345678901.23456789', '10.0000', '1234567890.12345679'],
-  ])('takes %s at %s%% → %s', (gross, rate, expected) => {
-    expect(share(gross, rate)).toBe(expected);
-  });
-
-  it.each([
-    // ceiling 500: the 70% leg alone exceeds it and scales to the whole ceiling.
-    ['70.0000', '50', '500.00000000'],
-    // ceiling 800: 70% is 700, under it, so it is paid in full.
-    ['70.0000', '80', '700.00000000'],
-    // A cap of 100 is not a no-op to reach — it is exactly the total, and
-    // `greaterThan` must not fire on equality.
-    ['100.0000', '100', '1000.00000000'],
-  ])('a %s%% rate under a %s%% broker cap pays %s', (rate, cap, expected) => {
-    expect(share('1000.00000000', rate, cap)).toBe(expected);
-  });
-
-  /*
-   * A cap of 0 is a REAL setting, not a misconfiguration to be ignored: the
-   * settings DTO validates `ibMaxRevenueSharePct` as 0–100, so an operator can
-   * switch partner payouts off entirely and this is how they do it.
-   *
-   * What must NOT happen is a zero-amount accrual reaching the insert.
-   * `ib_accruals_amount_positive` is a CHECK, and the service writes every
-   * earner on a trade in one statement — so a single zero row refuses the whole
-   * batch, including the legs that were owed something.
-   */
-  it('pays nobody under a cap of zero, and returns no rows rather than zero rows', () => {
-    const result = calculate(
-      DEAL,
-      [
-        { ibUserId: 'a', depth: 1, level: 1 },
-        { ibUserId: 'b', depth: 2, level: 2 },
-      ],
-      terms([
-        { level: 1, rateValue: '70.0000' },
-        { level: 2, rateValue: '30.0000' },
-      ]),
-      '0',
+      { ...DEAL, grossAmount: '1.00000000' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', level1Rate: '99.0000' })]),
+      '0.0000001',
     );
 
     expect(result.accruals).toEqual([]);
-    expect(result.skippedReason).toContain('dropped');
+    expect(result.skippedReason).toContain('storable minimum');
   });
 
-  it('drops only the leg that scales away, keeping the one that survives', () => {
+  it('drops the rebate when the cap scales it away', () => {
     const result = calculate(
-      { grossAmount: '1000.00000000', currency: 'USD', source: 'deal', lots: '1' },
-      [
-        { ibUserId: 'big', depth: 1, level: 1 },
-        { ibUserId: 'dust', depth: 2, level: 2 },
-      ],
-      terms([
-        { level: 1, rateValue: '99.9999' },
-        { level: 2, rateValue: '0.0001' },
-      ]),
-      '0.00001',
+      { ...DEAL, grossAmount: '1.00000000' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', mode: 'rebate_only', rebateRate: '99.0000' })]),
+      '0.0000001',
     );
 
-    /*
-     * The ceiling is 0.0001 against a 1000.0000 total, so the factor is ~1e-7.
-     * The 0.0001% leg is worth 0.001 before scaling and rounds to nothing after
-     * it; the 99.9999% leg survives. Every returned row must be storable.
-     */
-    expect(result.accruals.every((a) => Number(a.amount) > 0)).toBe(true);
-    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['big']);
+    expect(result.rebate).toBeUndefined();
   });
+});
 
-  it('ignores a negative cap, which the settings layer cannot produce', () => {
-    // `cap.isPositive()` is false only below zero — decimal.js treats +0 as
-    // positive, which is what makes the zero case above a real cap. Pinned
-    // because the two read alike and behave oppositely.
-    expect(share('1000.00000000', '70.0000', '-10')).toBe('700.00000000');
-  });
-
-  it('never pays more than the ceiling, however many rungs share it', () => {
-    const result = calculate(
-      DEAL,
-      [
-        { ibUserId: 'a', depth: 1, level: 1 },
-        { ibUserId: 'b', depth: 2, level: 2 },
-      ],
-      terms([
-        { level: 1, rateValue: '55.5500' },
-        { level: 2, rateValue: '44.4500' },
-      ]),
-      '37',
-    );
-
-    /*
-     * The invariant, asserted as a SUM rather than per leg: rounding each scaled
-     * leg to 8dp independently could push the total a dust above the ceiling,
-     * and the broker's floor is a promise about the total.
-     */
-    const total = result.accruals.reduce((sum, a) => sum + Number(a.amount), 0);
-    expect(total).toBeLessThanOrEqual(370);
-    expect(total).toBeCloseTo(370, 6);
-  });
-
-  it('pays each rung its OWN rate before any cap applies', () => {
-    const result = calculate(
-      DEAL,
-      [
-        { ibUserId: 'sub', depth: 1, level: 2 },
-        { ibUserId: 'master', depth: 2, level: 1 },
-      ],
-      terms([
-        { level: 1, rateValue: '12.5000' },
-        { level: 2, rateValue: '7.2500' },
-      ]),
-      '90',
-    );
-
-    // 1000 × 12.5% and 1000 × 7.25%. Together 197.50, well inside the 900
-    // ceiling, so neither moves — the ladder is what decides, not the cap.
-    expect(result.accruals.find((a) => a.ibUserId === 'master')?.amount).toBe('125.00000000');
-    expect(result.accruals.find((a) => a.ibUserId === 'sub')?.amount).toBe('72.50000000');
-    expect(result.skippedReason).toBeUndefined();
+describe('checkPlausible', () => {
+  const leg = (ibUserId: string, amount: string) => ({
+    ibUserId,
+    depth: 1,
+    level: 1,
+    programId: 'prog-a',
+    rateValue: '10.0000',
+    amount,
   });
 
   /*
-   * LOTS DO NOT ENTER THE ARITHMETIC, and that is worth pinning now that they
-   * once did. The event still carries a lot count — `checkPlausible` reads it,
-   * and the deal feed supplies it — but with `per_lot` gone the only base is the
-   * broker's revenue. A trade of 2.5 lots and one of 250 pay the same on the
-   * same revenue.
+   * The backstop against a unit error — `70` meaning 70% versus `70` meaning
+   * 70× — reaching a wallet.
    */
+  it('refuses a total that exceeds the revenue it is a share of', () => {
+    const verdict = checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '70000.00000000')]);
+
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) expect(verdict.reason).toContain('exceeds');
+  });
+
+  it('accepts a normal share of the same revenue', () => {
+    expect(checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '100.00000000')]).ok).toBe(true);
+  });
+
+  it('refuses legs that are individually fine but together exceed the base', () => {
+    const verdict = checkPlausible(DEAL_NO_LOTS, [
+      leg('ib-1', '600.00000000'),
+      leg('ib-2', '600.00000000'),
+    ]);
+
+    expect(verdict.ok).toBe(false);
+  });
+
+  it('accepts a total exactly equal to the base', () => {
+    expect(checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '1000.00000000')]).ok).toBe(true);
+  });
+
+  /*
+   * The rebate leaves the broker by the same door. A check that ignored it
+   * would pass a programme handing 900% back to the client while refusing one
+   * paying 101% to a partner.
+   */
+  it('counts the rebate in the total it checks', () => {
+    const verdict = checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '600.00000000')], {
+      ibUserId: 'ib-1',
+      programId: 'prog-a',
+      rateValue: '50.0000',
+      amount: '600.00000000',
+    });
+
+    expect(verdict.ok).toBe(false);
+  });
+
+  /*
+   * A lot count does NOT exempt an event. Both guards that used to do so dated
+   * from `per_lot`, and because the live feed always sets `lots` they returned
+   * `ok: true` on 100% of real accruals — the ceiling was dead code in
+   * production while every test of it passed on a fixture with no lots.
+   */
+  it('refuses an impossible total on a deal that CARRIES a lot count', () => {
+    expect(checkPlausible(DEAL, [leg('ib-1', '70000.00000000')]).ok).toBe(false);
+  });
+
+  it('still accepts a sane share on a deal that carries a lot count', () => {
+    expect(checkPlausible(DEAL, [leg('ib-1', '100.00000000')]).ok).toBe(true);
+  });
+});
+
+describe('the numbers', () => {
   it('ignores the lot count entirely', () => {
-    const small = calculate(
-      { grossAmount: '400.00000000', currency: 'USD', source: 'deal', lots: '2.5' },
-      chain(1),
-      terms([{ level: 1, rateValue: '25.0000' }]),
-      '50',
+    const withLots = calculate(
+      { ...DEAL, lots: '10000' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', level1Rate: '10.0000' })]),
     );
-    const large = calculate(
-      { grossAmount: '400.00000000', currency: 'USD', source: 'deal', lots: '250' },
-      chain(1),
-      terms([{ level: 1, rateValue: '25.0000' }]),
-      '50',
+    const without = calculate(
+      DEAL_NO_LOTS,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', level1Rate: '10.0000' })]),
     );
 
-    expect(small.accruals[0]?.amount).toBe('100.00000000');
-    expect(large.accruals[0]?.amount).toBe(small.accruals[0]?.amount);
+    expect(withLots.accruals[0].amount).toBe(without.accruals[0].amount);
   });
 
   it('rounds a half up at the eighth decimal rather than truncating', () => {
-    // 0.000000125 → the stored scale has to resolve the ninth digit somehow,
-    // and silently dropping it would lose a partner money on every trade.
-    const result = share('0.00000025', '50.0000');
-    expect(result).toBe('0.00000013');
+    const result = calculate(
+      { ...DEAL, grossAmount: '0.00000005' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', level1Rate: '50.0000' })]),
+    );
+
+    // 0.00000005 × 50% = 0.000000025 → 0.00000003, not 0.00000002.
+    expect(result.accruals[0].amount).toBe('0.00000003');
+  });
+
+  /*
+   * Pinned so the division stays a division. A rate multiplied by 100 instead
+   * of divided by it passes every "10% of 1000" assertion above — it is only
+   * visible against a rate whose two readings differ by four orders of
+   * magnitude.
+   */
+  it('divides the rate by a hundred, so 200% is twice the revenue and not 200×', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([program({ id: 'prog-a', level1Rate: '200.0000' })]),
+    );
+
+    expect(result.accruals[0].amount).toBe('2000.00000000');
   });
 });

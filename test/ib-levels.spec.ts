@@ -179,7 +179,7 @@ describe('reordering the ladder', () => {
     `);
     const userId = rows[0].id;
     await ctx.db.execute(sql`
-      INSERT INTO ib_accounts (user_id, level, referral_code) VALUES (${userId}, ${level}, ${code})
+      INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${userId}, ${level}, ${code}, (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
     `);
     return userId;
   }

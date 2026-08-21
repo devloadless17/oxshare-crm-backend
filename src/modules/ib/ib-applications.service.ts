@@ -707,6 +707,23 @@ export class IbApplicationsService {
 
     const referralCode = await this.generateReferralCode();
 
+    /*
+     * The terms the new partner is placed on — FR-IB-06's "exactly one named
+     * program", resolved BEFORE the transaction opens so a misconfiguration
+     * refuses the approval instead of rolling one back.
+     *
+     * Refused rather than defaulted when every programme is disabled: a partner
+     * on no terms earns nothing, cannot see why, and the reviewer who approved
+     * them would have been told it worked.
+     */
+    const programId = await this.ib.defaultProgramId();
+    if (!programId) {
+      throw new ValidationError(
+        'No commission programme is enabled, so an approved partner would have no terms to be ' +
+          'paid on. Enable a programme first.',
+      );
+    }
+
     const account = await this.db.transaction(async (tx) => {
       const updated = await this.ib.transition(
         applicationId,
@@ -728,6 +745,7 @@ export class IbApplicationsService {
         {
           userId: application.userId,
           level,
+          programId,
           parentIbUserId,
           referralCode,
           applicationId,

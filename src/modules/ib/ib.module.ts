@@ -1,9 +1,11 @@
 import { Global, Module } from '@nestjs/common';
 import { AdminIbController } from './admin-ib.controller';
 import { AdminIbLevelsController } from './admin-ib-levels.controller';
+import { AdminIbProgramsController } from './admin-ib-programs.controller';
 import { IbController } from './ib.controller';
 import { IbApplicationsService } from './ib-applications.service';
 import { IbLevelsService } from './ib-levels.service';
+import { IbProgramsService } from './ib-programs.service';
 import { IbOverviewService } from './ib-overview.service';
 import { IbWalletService } from './ib-wallet.service';
 import { CommissionService } from './commission.service';
@@ -41,10 +43,16 @@ import { AdminExportModule } from '../admin/admin-export.module';
   // `AdminExportModule` for the two partner exports. A narrow import, like
   // `AdminAuthModule` above — never the whole `AdminModule`.
   imports: [AdminAuthModule, IdentityModule, EmailModule, AdminExportModule],
-  controllers: [IbController, AdminIbController, AdminIbLevelsController],
+  controllers: [
+    IbController,
+    AdminIbController,
+    AdminIbLevelsController,
+    AdminIbProgramsController,
+  ],
   providers: [
     IbApplicationsService,
     IbLevelsService,
+    IbProgramsService,
     IbOverviewService,
     IbWalletService,
     CommissionService,

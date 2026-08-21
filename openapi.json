@@ -2697,6 +2697,148 @@
         ]
       }
     },
+    "/v1/admin/ib-programs": {
+      "get": {
+        "description": "Includes disabled ones — managing them is the point of the screen. Each row carries how many partners are on it, so a delete can be refused before the database refuses it and a rate change can say how many people it affects.",
+        "operationId": "AdminIbProgramsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IbProgramDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The commission programmes, in ladder order",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Every leg is a share of the same revenue, so level 1 + level 2 + the rebate must total at most 100% — the refusal names the three numbers and their total. Terms that pay nobody are refused too: they are indistinguishable from a broken engine from the partner’s side.",
+        "operationId": "AdminIbProgramsController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateIbProgramDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbProgramDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add a programme",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib-programs/{id}": {
+      "patch": {
+        "description": "Applies to the NEXT trade. Accruals record the rate they were calculated at, so nothing already earned is restated. Disabling one that partners are on is refused — a disabled programme stops paying, and their referral links would keep working while they earned nothing.",
+        "operationId": "AdminIbProgramsController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateIbProgramDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbProgramDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update a programme",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "description": "Refuses one that partners are on, and refuses the last enabled one: approval places a new partner on the first enabled programme, so an empty catalogue turns every future approval into a refusal.",
+        "operationId": "AdminIbProgramsController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Remove a programme",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/payments/methods": {
       "get": {
         "description": "Enabled methods with configured pay-to details, in the operator’s chosen order. A method the operator has not finished setting up is absent rather than shown as unusable.",
@@ -10348,6 +10490,46 @@
           "rateValue"
         ]
       },
+      "IbProgramSummaryDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Gold"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "commission_only",
+              "rebate_only",
+              "hybrid"
+            ],
+            "description": "Which legs pay. `rebate_only` means this partner earns nothing and their clients are paid instead — a real arrangement, and one the screen must not present as an error."
+          },
+          "level1Rate": {
+            "type": "string",
+            "example": "60.0000",
+            "description": "Their share of the broker’s revenue on their OWN client’s closed trade, as a percentage. A decimal string, never a number (§6.1)."
+          },
+          "level2Rate": {
+            "type": "string",
+            "example": "40.0000",
+            "description": "Their share when the trade belongs to a sub-partner’s client."
+          },
+          "rebateRate": {
+            "type": "string",
+            "example": "0.0000",
+            "description": "What their clients get back, as a percentage of the same revenue. Zero unless the mode pays a rebate."
+          }
+        },
+        "required": [
+          "name",
+          "mode",
+          "level1Rate",
+          "level2Rate",
+          "rebateRate"
+        ]
+      },
       "IbEarningsDto": {
         "type": "object",
         "properties": {
@@ -10500,6 +10682,15 @@
               }
             ]
           },
+          "programme": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/IbProgramSummaryDto"
+              }
+            ]
+          },
           "earnings": {
             "$ref": "#/components/schemas/IbEarningsDto"
           },
@@ -10530,6 +10721,7 @@
         },
         "required": [
           "level",
+          "programme",
           "earnings",
           "commissionWallets",
           "referredClients",
@@ -11108,6 +11300,157 @@
         "required": [
           "order"
         ]
+      },
+      "IbProgramDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Gold",
+            "description": "What an operator picks, and what a partner is on."
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 0,
+            "description": "Lowest first. The first ENABLED one is the default."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "commission_only",
+              "rebate_only",
+              "hybrid"
+            ],
+            "description": "Which legs pay. `commission_only` pays the partner, `rebate_only` pays the trading client and no partner, `hybrid` pays both."
+          },
+          "level1Rate": {
+            "type": "string",
+            "example": "60.0000",
+            "description": "The holder’s share of the broker’s revenue on their OWN client’s closed trade, as a percentage. A decimal string, never a number (§6.1)."
+          },
+          "level2Rate": {
+            "type": "string",
+            "example": "40.0000",
+            "description": "Their share when the trade belongs to a SUB-partner’s client."
+          },
+          "rebateRate": {
+            "type": "string",
+            "example": "0.0000",
+            "description": "What returns to the TRADING CLIENT, as a percentage of the same revenue. Paid only when `mode` is `rebate_only` or `hybrid`."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "A disabled programme pays nothing and accepts no new partners."
+          },
+          "partnerCount": {
+            "type": "number",
+            "example": 3,
+            "description": "How many partners are currently on it. Present so a screen can refuse a delete before the database does, and say how many people it would have affected."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "sortOrder",
+          "mode",
+          "level1Rate",
+          "level2Rate",
+          "rebateRate",
+          "enabled",
+          "partnerCount",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "CreateIbProgramDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Gold"
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 10,
+            "description": "Appended to the end when omitted."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "commission_only",
+              "rebate_only",
+              "hybrid"
+            ],
+            "default": "commission_only"
+          },
+          "level1Rate": {
+            "type": "string",
+            "example": "60"
+          },
+          "level2Rate": {
+            "type": "string",
+            "example": "40"
+          },
+          "rebateRate": {
+            "type": "string",
+            "example": "0"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "UpdateIbProgramDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Gold"
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 10
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "commission_only",
+              "rebate_only",
+              "hybrid"
+            ]
+          },
+          "level1Rate": {
+            "type": "string",
+            "example": "60"
+          },
+          "level2Rate": {
+            "type": "string",
+            "example": "40"
+          },
+          "rebateRate": {
+            "type": "string",
+            "example": "0"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        }
       },
       "PaymentMethodDto": {
         "type": "object",

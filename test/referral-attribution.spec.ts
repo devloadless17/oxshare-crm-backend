@@ -72,8 +72,7 @@ async function makePartner(email: string, code: string, active = true): Promise<
   `);
   const userId = rows[0].id;
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, level, referral_code, active)
-    VALUES (${userId}, 1, ${code}, ${active})
+    INSERT INTO ib_accounts (user_id, level, referral_code, active, program_id) VALUES (${userId}, 1, ${code}, ${active}, (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
   `);
   return userId;
 }

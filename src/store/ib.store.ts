@@ -15,7 +15,14 @@ import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { ibAccounts, ibAccruals, ibApplications, ibLevels, users } from '../database/schema';
+import {
+  ibAccounts,
+  ibAccruals,
+  ibApplications,
+  ibLevels,
+  ibPrograms,
+  users,
+} from '../database/schema';
 import {
   clientScopePredicate,
   UNRESTRICTED,
@@ -298,12 +305,35 @@ export class IbStore {
   }
 
   async createAccount(
-    values: Pick<IbAccountRow, 'userId' | 'level' | 'referralCode'> &
+    values: Pick<IbAccountRow, 'userId' | 'level' | 'referralCode' | 'programId'> &
       Partial<Pick<IbAccountRow, 'parentIbUserId' | 'applicationId' | 'agencyId'>>,
     executor?: Executor,
   ): Promise<IbAccountRow> {
     const [row] = await (executor ?? this.db).insert(ibAccounts).values(values).returning();
     return row;
+  }
+
+  /**
+   * The programme a newly approved partner is placed on.
+   *
+   * The lowest `sortOrder` among the ENABLED programmes — the top of the ladder
+   * an operator has arranged, which is where a partner with no negotiated terms
+   * belongs. Migration 0084 seeded one ("Default") carrying the rates the level
+   * ladder was already paying, so this is never empty on a system that has ever
+   * paid anybody.
+   *
+   * Returns undefined only when every programme has been disabled, which
+   * approval must refuse rather than paper over: a partner placed on no terms
+   * earns nothing and has no way to find out why.
+   */
+  async defaultProgramId(executor?: Executor): Promise<string | undefined> {
+    const [row] = await (executor ?? this.db)
+      .select({ id: ibPrograms.id })
+      .from(ibPrograms)
+      .where(eq(ibPrograms.enabled, true))
+      .orderBy(asc(ibPrograms.sortOrder), asc(ibPrograms.name))
+      .limit(1);
+    return row?.id;
   }
 
   /** How many partners sit directly beneath this one — the `maxDirectPartners` check. */

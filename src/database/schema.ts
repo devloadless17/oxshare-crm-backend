@@ -2787,6 +2787,66 @@ export const refreshTokens = pgTable(
  * disagree with the key. It also makes `ib_accounts.level` a plain integer FK
  * that a person reading a row can interpret without a join.
  */
+/**
+ * A named IB programme — the terms a partner is paid on.
+ *
+ * ## Why this exists beside `ib_levels` rather than inside it
+ *
+ * The ladder keys a rate on the RUNG a partner occupies, so every level-1
+ * partner is paid identically and there is nowhere to put a client rebate. The
+ * FSD (FR-IB-06) asks for the other shape: a named programme each partner is
+ * assigned to, carrying commission AND rebate values and a mode deciding which
+ * legs pay. A broker who wants to give one introducer better terms than another
+ * on the same rung cannot say so with a ladder.
+ *
+ * `ib_levels` keeps everything else it owns — the rung's NAME, and whether new
+ * partners may be placed on it. Only the rate moved.
+ *
+ * ## The rates are per DEPTH, and that is the difference that matters
+ *
+ * `level1Rate` is what the holder earns from their OWN clients; `level2Rate` is
+ * what they earn from a sub-partner's clients. That makes a programme portable:
+ * it pays the same way wherever in a chain its holder stands, which a
+ * rung-keyed rate cannot express — under the ladder, what you earned depended on
+ * which rung you sat on rather than on whose client traded.
+ */
+export const ibProgramModeEnum = pgEnum('ib_program_mode', [
+  /** Only the partner is paid. */
+  'commission_only',
+  /** Only the trading client is paid, and no partner earns. */
+  'rebate_only',
+  /** Both legs pay. */
+  'hybrid',
+]);
+
+export const ibPrograms = pgTable('ib_programs', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  /** What an operator picks in a list, and what a partner is told they are on. */
+  name: varchar('name', { length: 80 }).notNull().unique(),
+  sortOrder: integer('sort_order').notNull().default(0),
+  mode: ibProgramModeEnum('mode').notNull().default('commission_only'),
+  /** The holder's share of broker revenue on their OWN client's trade, as a %. */
+  level1Rate: numeric('level1_rate', { precision: 12, scale: 4 }).notNull().default('0'),
+  /** Their share when the trade belongs to a SUB-partner's client, as a %. */
+  level2Rate: numeric('level2_rate', { precision: 12, scale: 4 }).notNull().default('0'),
+  /**
+   * What goes back to the TRADING CLIENT, as a % of the same revenue.
+   *
+   * A percentage, not an amount per lot: FR-IB-05 calls for a dynamic rebate,
+   * and per-lot pricing was removed from this system once already (migration
+   * 0055) because one column carrying two units is the number nobody can read.
+   */
+  rebateRate: numeric('rebate_rate', { precision: 12, scale: 4 }).notNull().default('0'),
+  /**
+   * A disabled programme cannot be assigned to a new partner AND stops paying.
+   * Same rule as a disabled level: a switch that leaves the money flowing is
+   * decorative, and an operator who turns terms off means it.
+   */
+  enabled: boolean('enabled').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const ibLevels = pgTable('ib_levels', {
   /** 1 is the partner closest to the broker; higher numbers sit further down. */
   level: integer('level').primaryKey(),
@@ -2953,6 +3013,18 @@ export const ibAccounts = pgTable(
      * accounts, which is a punishment for an operator's unfinished migration.
      */
     agencyId: uuid('agency_id').references(() => agencies.id, { onDelete: 'restrict' }),
+    /**
+     * The terms this partner is paid on — FR-IB-06's "exactly one named
+     * program".
+     *
+     * NOT NULL: migration 0084 placed every existing partner on the Default
+     * programme, which was seeded from the ladder they were already being paid
+     * by, so no rate moved. Leaving it nullable would make "no terms" a state
+     * the commission engine has to hold an opinion about on every single trade.
+     */
+    programId: uuid('program_id')
+      .notNull()
+      .references(() => ibPrograms.id, { onDelete: 'restrict' }),
     /** NULL means they deal with the broker directly — the top of a chain. */
     parentIbUserId: uuid('parent_ib_user_id'),
     /**
@@ -3020,6 +3092,19 @@ export const ibAccounts = pgTable(
  * MT5 bridge. This one keys off whatever moved the money — `sourceType` /
  * `sourceId` — and takes its rate from `ib_levels`.
  */
+/**
+ * WHO an accrual is owed to.
+ *
+ * A rebate is produced by the same trade as the commission beside it, matures
+ * through the same settlement window, and must be exactly as idempotent — so it
+ * is a row here with a different beneficiary at confirmation, rather than a
+ * second table carrying its own copy of all three properties.
+ *
+ * On a `rebate` row `ibUserId` is the partner whose programme PRODUCED it — the
+ * attribution — and `clientUserId` is who gets paid.
+ */
+export const ibAccrualKindEnum = pgEnum('ib_accrual_kind', ['commission', 'rebate']);
+
 export const ibAccrualStatusEnum = pgEnum('ib_accrual_status', [
   'pending',
   'confirmed',
@@ -3064,6 +3149,7 @@ export const ibAccruals = pgTable(
     currency: varchar('currency', { length: 10 })
       .notNull()
       .references(() => currencies.code, { onDelete: 'restrict' }),
+    kind: ibAccrualKindEnum('kind').notNull().default('commission'),
     status: ibAccrualStatusEnum('status').notNull().default('pending'),
     /**
      * The ledger entry that paid it, once confirmed.
@@ -3091,7 +3177,15 @@ export const ibAccruals = pgTable(
      * earn twice from one event, and including it would let a cycle in the tree
      * pay somebody at both depth 1 and depth 2 for the same deposit.
      */
-    uniqueIndex('ib_accruals_source_earner_uq').on(t.sourceType, t.sourceId, t.ibUserId),
+    /*
+     * `kind` is part of the key, and leaving it out was the trap.
+     *
+     * One deal produces a commission row and a rebate row that share a source
+     * and a partner. Without `kind` the second collides with the first and the
+     * insert's `onConflictDoNothing` drops it — which looks identical to a
+     * rebate that is configured, calculated, and simply never paid.
+     */
+    uniqueIndex('ib_accruals_source_earner_uq').on(t.sourceType, t.sourceId, t.ibUserId, t.kind),
     /* "What has this partner earned?" — the overview's own query. */
     index('ib_accruals_ib_user_idx').on(t.ibUserId, t.createdAt),
     /* The confirm job: everything still pending, oldest first. */
