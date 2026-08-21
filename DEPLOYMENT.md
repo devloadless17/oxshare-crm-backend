@@ -1,9 +1,42 @@
 # Deploying the backend
 
-Push to **`production`** → the backend is live. `main` is the integration branch and
-never deploys; PRs and pushes to `main` stop at the `verify` job. There is nothing
-else to operate: `.github/workflows/ci.yml` tests, builds one image, ships it to the
-VPS over SSH, migrates, recreates the stack and health-gates the release.
+> ## ⚠️ THE AUTOMATED DEPLOY IS OFF (21 Aug 2026)
+>
+> The backend no longer runs on the Hostinger VPS. It was moved to the **Contabo
+> Windows server** beside the MT5 bridge, where it runs as a **bare Node process**
+> reading a `.env` file from disk — no Docker, no orchestrator, no SSH deploy
+> target of the shape this pipeline expects.
+>
+> **Deploying today is manual**, on that box:
+>
+> ```
+> git pull origin production
+> npm run build
+> <restart the Node process>
+> ```
+>
+> Then confirm it actually restarted — uptime must RESET, it does not go up:
+>
+> ```bash
+> curl -s https://oxshareapi.loadless.site/health
+> ```
+>
+> The `build` and `deploy` jobs in `.github/workflows/ci.yml` are **commented out,
+> not deleted**, with a banner explaining how to bring them back. `verify` still
+> runs on every push and PR — with deploys manual, that gate is the only automated
+> thing between a bad commit and production, so it matters more than it did.
+>
+> Only the **MT5 bridge** genuinely requires Windows (`MT5APIManager64.dll` is a
+> native Windows library). The CRM backend reaches the bridge over HTTPS and has no
+> such constraint, so moving it back to Linux would restore the pipeline below —
+> which was built, proven, and is known to work.
+
+The description that follows is of the AUTOMATED pipeline, kept for the day it is
+switched back on. Push to **`production`** → the backend is live. `main` is the
+integration branch and never deploys; PRs and pushes to `main` stop at the `verify`
+job. There is nothing else to operate: `.github/workflows/ci.yml` tests, builds one
+image, ships it to the VPS over SSH, migrates, recreates the stack and health-gates
+the release.
 
 ```
 push to production
