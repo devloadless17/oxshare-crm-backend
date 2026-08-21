@@ -45,7 +45,25 @@ import { COOKIE_BASES, CSRF_RESPONSE_HEADER, readSessionCookie } from './session
 export class CsrfEchoMiddleware implements NestMiddleware {
   use(req: Request, res: Response, next: NextFunction): void {
     const cookies = req.cookies as Record<string, string | undefined> | undefined;
-    const base = isAdminSurface(req.path) ? COOKIE_BASES.adminCsrf : COOKIE_BASES.portalCsrf;
+    /*
+     * `req.originalUrl`, NOT `req.path`.
+     *
+     * This middleware is mounted with `forRoutes('*')`, and inside a middleware
+     * mounted that way Express reports `req.path` RELATIVE to the mount — which
+     * is `"/"` for every request. `isAdminSurface("/")` is false, so every admin
+     * request was classified as PORTAL, the middleware looked for the portal
+     * cookie, found none, and echoed nothing. On a same-host deployment nobody
+     * noticed: the frontend reads the real cookie and never needs the echo. On a
+     * cross-host deployment the echo IS the only way the page learns its token,
+     * so every write failed `failed anti-forgery validation`. Observed on
+     * production, reproduced with a probe: path="/" originalUrl="/v1/admin/…".
+     *
+     * `originalUrl` is the full request path regardless of mount point. The
+     * unit test that covered this handed the middleware a literal `path`, which
+     * a real Express request never provides — it now builds the request the way
+     * Express does.
+     */
+    const base = isAdminSurface(req.originalUrl) ? COOKIE_BASES.adminCsrf : COOKIE_BASES.portalCsrf;
 
     const token = readSessionCookie(cookies, base);
     if (token) res.setHeader(CSRF_RESPONSE_HEADER, token);

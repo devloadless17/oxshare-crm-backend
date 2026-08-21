@@ -39,8 +39,22 @@ function fakeResponse(): Response & {
   } as unknown as Response & { cookies: Record<string, string>; headers: Record<string, string> };
 }
 
-function requestFor(path: string, cookies: Record<string, string> = {}) {
-  return { path, cookies } as unknown as Request;
+/**
+ * Builds the request the way EXPRESS hands it to a middleware mounted with
+ * `forRoutes('*')` — and that shape is the whole point of this test.
+ *
+ * Inside such a middleware `req.path` is RELATIVE to the mount and is `"/"` for
+ * every request; only `req.originalUrl` carries the full path. The middleware
+ * used to branch on `req.path`, so on a real request every admin call was
+ * classified as portal, looked for the wrong cookie, and echoed nothing. The
+ * earlier version of this helper set `path` to the full URL — a shape Express
+ * never produces — which is exactly why it passed while production failed.
+ *
+ * `path` is therefore pinned to "/" here on purpose. A middleware that reads
+ * it will fail this suite, which is the protection.
+ */
+function requestFor(originalUrl: string, cookies: Record<string, string> = {}) {
+  return { path: '/', originalUrl, cookies } as unknown as Request;
 }
 
 const next: NextFunction = () => undefined;
