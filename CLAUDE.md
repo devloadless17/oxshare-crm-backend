@@ -322,6 +322,39 @@ moving `FOR UPDATE` across a new boundary would cost real risk. `test/di-wiring.
 each money service from the real module graph, which the hand-constructed money specs cannot. `database/db.ts` exports an `Executor` type so a store method can join a
 caller's transaction.
 
+## A product's spread markup is RECORDED and drives nothing (ADM-07, 0093)
+
+`trading_products.spread_markup_per_lot` is the broker's markup per standard lot, in the account
+currency. It is on the PRODUCT because **the product IS the tier** — `trading_accounts.tier` is
+inert and labelled dead precisely because "a tier would be a second name for the same thing", and a
+`tiers` table would recreate the name that column was retired for.
+
+**Nothing reads it, and that is deliberate.** In particular it is NOT part of `brokerRevenueOf`,
+which is `commission + swap` and decides what every partner is paid. Adding it to that sum is a
+reasonable next step — spread is the other half of what a broker earns on a trade — but it changes
+what every partner is paid on every future trade, and MT5 reports no per-deal spread revenue to
+check the result against. That needs a person, not a column. The database carries the same warning
+as a `COMMENT ON COLUMN`, because the failure being guarded is somebody two quarters from now
+finding a populated, plausible number and reading it as live.
+
+**It is not a mirror of MT5, and that was checked rather than assumed.** The obvious objection is
+that markup is really the server's to own — but the Manager API the bridge ships has no per-GROUP
+markup at all. It has `AskMarkup`, `BidMarkup`, `SpreadDiff` and `SpreadBalance` on
+`IMTConGroupSymbol`: per group **and symbol**, in **points**, split by side. A product maps to one
+or more groups and a group covers every symbol it trades, so the honest mirror of one product is
+group × symbol × 2 values in points — and converting any of it to currency-per-lot needs each
+symbol's `ContractSize` and `TickValue` at a price, which is a calculation that moves with the
+market, not a reading. There is no single MT5 number this column could copy, so it is not competing
+with one: it is the DESK's figure. Per-symbol truth, if ever wanted, is a different table
+`(group, symbol, ask_markup, bid_markup)` fed by a bridge endpoint that does not exist — additive
+to this, not a replacement.
+
+A decimal **string** end to end, like every `NUMERIC(28,8)` here, with `@ApiProperty({ type:
+'string' })` so the generated frontend type says `string` — the same reason ADM-10's commission
+rates are spelled that way. **Omitting it on the PUT keeps the stored value**: this endpoint is a
+full replace, so a caller that predates the field would otherwise zero a negotiated markup every
+time somebody renamed a product, and the audit row would faithfully record a change nobody made.
+
 ## `TRUSTED_PROXY_HOPS` is watched at RUNTIME, not just stated at boot
 
 One number decides which `X-Forwarded-For` entry is believed, and three controls key on it: the

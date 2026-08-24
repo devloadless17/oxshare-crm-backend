@@ -45,6 +45,7 @@ export class CatalogueService {
       description?: string | null;
       enabled: boolean;
       type?: 'real' | 'demo';
+      spreadMarkupPerLot?: string;
       sortOrder: number;
     },
     actor: Actor,
@@ -68,6 +69,13 @@ export class CatalogueService {
         description: emptyToNull(input.description),
         enabled: input.enabled,
         type,
+        /*
+         * Defaulted HERE as a string, never `Number(...) ?? 0`. The value goes
+         * form → column untouched, which is the §6 rule and the reason ADM-10's
+         * commission rates are handled the same way: a markup that round-trips
+         * through a float is wrong in a way that looks right.
+         */
+        spreadMarkupPerLot: input.spreadMarkupPerLot ?? '0',
         sortOrder: input.sortOrder,
       })
       .catch((error: unknown) => {
@@ -79,6 +87,7 @@ export class CatalogueService {
       name: row.name,
       enabled: row.enabled,
       type: row.type,
+      spreadMarkupPerLot: row.spreadMarkupPerLot,
     });
     return toProductDto(row);
   }
@@ -90,6 +99,7 @@ export class CatalogueService {
       description?: string | null;
       enabled: boolean;
       type?: 'real' | 'demo';
+      spreadMarkupPerLot?: string;
       sortOrder: number;
     },
     actor: Actor,
@@ -114,6 +124,15 @@ export class CatalogueService {
       name: input.name.trim(),
       description: emptyToNull(input.description),
       enabled: input.enabled,
+      /*
+       * Omitted means UNCHANGED, not zero.
+       *
+       * This is a PUT, so a client that does not know about this field would
+       * otherwise silently reset a negotiated markup to nothing every time
+       * somebody renamed a product — and the audit row would faithfully record
+       * a change nobody made.
+       */
+      spreadMarkupPerLot: input.spreadMarkupPerLot ?? before.spreadMarkupPerLot,
       sortOrder: input.sortOrder,
     });
     if (!row) throw new NotFoundError('Product not found.');
@@ -127,7 +146,19 @@ export class CatalogueService {
      * find it.
      */
     const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const field of ['name', 'description', 'enabled', 'sortOrder'] as const) {
+    for (const field of [
+      'name',
+      'description',
+      'enabled',
+      /*
+       * In the diff because changing it changes what the desk says a product
+       * earns — the same reason `ib.program_change` records both programmes.
+       * Nothing is paid from it today, but the record of who set it and when is
+       * the part that cannot be reconstructed later.
+       */
+      'spreadMarkupPerLot',
+      'sortOrder',
+    ] as const) {
       if (before[field] !== row[field])
         changed[field] = { before: before[field], after: row[field] };
     }
@@ -466,6 +497,7 @@ function toProductDto(row: ProductRow): ProductDto {
     description: row.description,
     enabled: row.enabled,
     type: row.type,
+    spreadMarkupPerLot: row.spreadMarkupPerLot,
     sortOrder: row.sortOrder,
     groups: row.groups,
   };

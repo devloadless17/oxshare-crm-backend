@@ -1535,6 +1535,34 @@ export const tradingProducts = pgTable(
      *   Migration 0088 was the one legitimate bulk conversion.
      */
     type: productTypeEnum('type').notNull().default('real'),
+    /**
+     * The broker's spread markup per standard lot, in the account currency.
+     *
+     * ADM-07's "per-tier" markup, on the PRODUCT because the product IS the
+     * tier — `trading_accounts.tier` is inert and labelled dead on the
+     * reasoning that "a tier would be a second name for the same thing", and a
+     * `tiers` table now would create exactly that second name.
+     *
+     * ── ⚠️ IT DRIVES NOTHING, AND THAT IS THE POINT ────────────────────────
+     *
+     * A COMMERCIAL RECORD: what the desk says a product is sold on. Nothing
+     * reads it, and in particular it is NOT part of `brokerRevenueOf`, which is
+     * `commission + swap` and decides what every partner is paid.
+     *
+     * Adding it to that sum is a real next step — spread is the other half of
+     * what a broker earns on a trade — but it changes what every partner is
+     * paid on every future trade, and MT5 reports no per-deal spread revenue to
+     * check the answer against. That is a decision with a person behind it, not
+     * a consequence of a column existing. The database carries the same warning
+     * as a COMMENT, because the failure being guarded is somebody two quarters
+     * from now finding a populated, plausible number and reading it as live.
+     *
+     * A string in and out, like every `NUMERIC(28,8)` here: it is money, and
+     * §6 forbids it ever becoming a float.
+     */
+    spreadMarkupPerLot: numeric('spread_markup_per_lot', { precision: 28, scale: 8 })
+      .notNull()
+      .default('0'),
     /** The order a client sees them in. Ties broken by name. */
     sortOrder: integer('sort_order').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

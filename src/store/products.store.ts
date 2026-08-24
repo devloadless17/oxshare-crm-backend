@@ -42,6 +42,13 @@ export interface ProductRow {
    * see the column comment in schema.ts for the full rule set.
    */
   type: 'real' | 'demo';
+  /**
+   * A decimal STRING, never a number. It is `NUMERIC(28,8)` and it is money —
+   * §6 forbids it becoming a float anywhere between the form and the column,
+   * and a markup of `1.5` that arrives as `1.4999999999` is the kind of wrong
+   * that survives review because it looks almost right.
+   */
+  spreadMarkupPerLot: string;
   sortOrder: number;
   groups: ProductGroupRow[];
 }
@@ -101,6 +108,7 @@ export class ProductsStore {
       name: row.name,
       description: row.description,
       enabled: row.enabled,
+      spreadMarkupPerLot: row.spreadMarkupPerLot,
       type: row.type,
       sortOrder: row.sortOrder,
       groups: groups
@@ -119,16 +127,29 @@ export class ProductsStore {
     description: string | null;
     enabled: boolean;
     type: 'real' | 'demo';
+    spreadMarkupPerLot: string;
     sortOrder: number;
   }): Promise<ProductRow> {
     const [row] = await this.db.insert(tradingProducts).values(values).returning();
     return { ...row, groups: [] };
   }
 
-  /** `type` is deliberately absent from the values: it is fixed at creation. */
+  /**
+   * `type` is deliberately absent from the values: it is fixed at creation.
+   *
+   * `spreadMarkupPerLot` is NOT — a markup is exactly the commercial term that
+   * gets renegotiated, so it lives in the update path and the caller audits
+   * both sides of the change.
+   */
   async updateProduct(
     id: string,
-    values: { name: string; description: string | null; enabled: boolean; sortOrder: number },
+    values: {
+      name: string;
+      description: string | null;
+      enabled: boolean;
+      spreadMarkupPerLot: string;
+      sortOrder: number;
+    },
   ): Promise<ProductRow | null> {
     const [row] = await this.db
       .update(tradingProducts)
