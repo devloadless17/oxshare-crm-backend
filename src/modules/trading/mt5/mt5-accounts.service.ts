@@ -963,12 +963,26 @@ export class Mt5AccountsService {
      * overwrote it unconditionally, including one read BEFORE this deposit
      * landed, which is a client watching their money arrive and then vanish.
      *
-     * `readAt` is stamped here rather than taken from the bridge because this
-     * response is the read: `getAccount` answered just now, and the ordering
-     * this timestamp feeds is against sweep rounds, which are minutes apart.
+     * `readAt` is stamped here rather than taken from the bridge because the
+     * direct `getAccount` response carries no read time — only the PUSHED
+     * snapshot does. The ordering this feeds is against sweep rounds, which are
+     * minutes apart, so a local stamp is close enough to be useful.
+     *
+     * AFTER the call, not before. Stamped before, the timestamp understates the
+     * read by the whole round trip to MT5, and understating is the dangerous
+     * direction: `ingestSnapshot` applies any snapshot read later than the one
+     * we hold, so an older sweep read can carry a newer stamp than this one and
+     * overwrite the post-transfer figure. That is a client watching their money
+     * arrive and then vanish — the exact failure the paragraph above describes,
+     * reintroduced through the clock rather than the column.
+     *
+     * What this does NOT fix: the pushed snapshot's `readAt` comes from the
+     * BRIDGE's clock and this one from ours, so the guard still compares two
+     * clocks. Closing that means the bridge reporting its read time on the
+     * direct response too, which is a change on the other side of the wire.
      */
-    const readAt = new Date();
     const snapshot = await this.bridge.getAccount(account.login).catch(() => null);
+    const readAt = new Date();
     if (snapshot) {
       await this.accountSync.recordFromOperation(account.login, snapshot.balance, readAt);
     }

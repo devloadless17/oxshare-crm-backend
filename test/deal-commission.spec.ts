@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
@@ -544,5 +545,62 @@ describe('the backlog is countable', () => {
     // The linked one drained; the orphan is still there and still needs someone.
     expect(await deals.backlog()).toBe(1);
     expect(await deals.orphanBacklog()).toBe(1);
+  });
+});
+
+describe('only one feed pays for a trade', () => {
+  /*
+   * ── THE DOUBLE-PAY THAT THE UNIQUENESS CONSTRAINT CANNOT SEE ─────────────
+   *
+   * `accrueForClosedPosition` and `accrueForDeal` cover the same event from
+   * two id spaces, so their accruals are two different (source_type, source_id)
+   * pairs and `ib_accruals_source_earner_uq` holds both without complaint. Run
+   * both feeds and every round turn pays its partner twice.
+   *
+   * What prevented that was `positions` having no writer — a fact about today,
+   * not a rule, and this repo's own notes ask a future implementer to change
+   * it. `revenue-feed.ts` makes it a rule; this proves the rule is enforced
+   * where the money is written rather than only asserted about a constant.
+   */
+  it('writes nothing when a position closes, because the deal feed is live', async () => {
+    const positionId = randomUUID();
+
+    const rows = await commissions.accrueForClosedPosition({
+      positionId,
+      // The SAME client whose deals pay a partner throughout this suite, so a
+      // zero here is the refusal and not an unreferred client.
+      clientUserId: clientId,
+      brokerRevenue: '10.00000000',
+      lots: '1.00000000',
+      currency: 'USD',
+    });
+
+    expect(rows).toBe(0);
+
+    const { rows: accruals } = await ctx.db.execute(
+      sql`SELECT id FROM ib_accruals WHERE source_type = 'position' AND source_id = ${positionId}`,
+    );
+    expect(accruals).toHaveLength(0);
+  });
+
+  it('still pays that client’s partner through the deal feed', async () => {
+    /*
+     * The other half, and the reason the case above is not simply proof that
+     * the fixture is broken: the refusal is about the FEED, not about this
+     * client, this partner, or this rate.
+     */
+    const id = await ingest({
+      ticket: '90777',
+      login: LOGIN,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+      positionId: 'P-ONE-FEED',
+    });
+
+    await deals.accruePending();
+
+    const [accrual] = await accrualsFor(id);
+    expect(accrual.ib_user_id).toBe(partnerId);
+    expect(accrual.amount).toBe('3.00000000');
   });
 });
