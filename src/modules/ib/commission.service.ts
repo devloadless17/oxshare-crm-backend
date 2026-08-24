@@ -7,6 +7,7 @@ import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
 import { ibAccounts, ibAccruals, ibPrograms, users } from '../../database/schema';
 import { LEDGER_REFERENCE, type LedgerReferenceType } from '../../database/ledger-reference';
+import { LIVE_REVENUE_FEED, isLiveRevenueFeed } from './revenue-feed';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { WalletService } from '../wallet/wallet.service';
 import {
@@ -203,6 +204,34 @@ export class CommissionService implements CommissionAccrualPort {
     currency: string;
   }): Promise<number> {
     /*
+     * ── ONE FEED PAYS, AND TODAY IT IS NOT THIS ONE ──────────────────────
+     *
+     * A position accrual and a deal accrual for the same round turn are two
+     * different `(source_type, source_id)` pairs, so
+     * `ib_accruals_source_earner_uq` cannot see one from the other and the
+     * database would happily hold both — one trade, a partner paid twice.
+     *
+     * Until now the only thing preventing that was `positions` having no
+     * writer, which is a countdown rather than a safety: this repo's own notes
+     * tell whoever builds the bridge to start filling that table. So the
+     * refusal is read from `revenue-feed.ts`, the single place that names the
+     * paying feed, and flipping that constant is what moves payment here.
+     *
+     * LOUD rather than silent. Being called at all means somebody wired a
+     * position writer without flipping the feed, and the honest report of that
+     * is an error naming the constant — not a quiet 0 that reads exactly like
+     * a trade nobody was owed anything on.
+     */
+    if (!isLiveRevenueFeed(LEDGER_REFERENCE.position)) {
+      this.logger.error(
+        `Position ${position.positionId} closed and was NOT accrued: the live revenue feed is ` +
+          `'${LIVE_REVENUE_FEED}', and paying both feeds would pay one trade twice. If positions ` +
+          `are now the feed, set LIVE_REVENUE_FEED in modules/ib/revenue-feed.ts.`,
+      );
+      return 0;
+    }
+
+    /*
      * The NO-THROW half of the port contract, and the reason it wraps rather
      * than being folded into the body below.
      *
@@ -269,6 +298,24 @@ export class CommissionService implements CommissionAccrualPort {
     lots: string;
     currency: string;
   }): Promise<number> {
+    /*
+     * The other half of the one-feed rule guarded in `accrueForClosedPosition`.
+     * Both sides read the same constant, so there is no arrangement of the two
+     * in which both pay — which is the property the old comment could not give.
+     *
+     * It REFUSES rather than returning 0, because the two mean opposite things
+     * to the queue that calls this. Returning 0 marks the deal done, and if the
+     * feed moved to positions while deals were still queued that would discard
+     * every one of them permanently. A refusal leaves them unmarked and names
+     * the reason on every run until a human decides what the backlog is owed.
+     */
+    if (!isLiveRevenueFeed(LEDGER_REFERENCE.deal)) {
+      throw new CommissionRefusedError(
+        `Deal ${deal.ticket} was not accrued: the live revenue feed is '${LIVE_REVENUE_FEED}', ` +
+          'and paying both feeds would pay one trade twice. These deals stay queued.',
+      );
+    }
+
     return await this.accrueForRevenue({
       sourceType: LEDGER_REFERENCE.deal,
       sourceId: deal.dealRowId,

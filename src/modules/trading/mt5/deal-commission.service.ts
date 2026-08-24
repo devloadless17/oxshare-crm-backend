@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { mt5Deals, tradingAccounts } from '../../../database/schema';
@@ -10,7 +10,7 @@ import {
   type CommissionAccrualPort,
 } from '../../../common/provisioning/commission-accrual.port';
 import { brokerRevenueOf } from '../broker-revenue';
-import { isClosingEntry, isTradeAction } from './deal-codes';
+import { CLOSING_ENTRIES, TRADE_ACTIONS, isClosingEntry, isTradeAction } from './deal-codes';
 
 /** What one drain of the queue did. Every deal lands in exactly one bucket. */
 export interface DealAccrualRun {
@@ -23,14 +23,14 @@ export interface DealAccrualRun {
   /** Deals correctly worth nothing: not a trade, no revenue, nobody referred. */
   nothingOwed: number;
   /**
-   * Opening deals held until their position closes — FR-IB-04.
+   * Open legs CONSUMED by the closes in this batch.
    *
-   * Left UNPROCESSED on purpose: their revenue is paid by the closing deal that
-   * consumes them, so marking them here would discard the open leg's
-   * commission. A position that never closes keeps its opener in this count,
-   * which is the honest reading — nothing is owed on a trade still running.
+   * Not "deals waiting on their close" — those are filtered out in SQL and the
+   * loop never sees one. This counts the opening rows whose revenue was folded
+   * into a close and marked done alongside it, which is the number that says
+   * whether the entry charge is actually reaching partners.
    */
-  awaitingClose: number;
+  legsConsumed: number;
   /** Deals whose login matches no trading account. Left for the next run. */
   orphaned: number;
   /** Deals the engine refused or could not process. Left for the next run. */
@@ -160,7 +160,37 @@ export class DealCommissionService {
        * rather than reported, which is how an unpaid partner goes unnoticed.
        */
       .leftJoin(tradingAccounts, eq(tradingAccounts.login, mt5Deals.login))
-      .where(isNull(mt5Deals.commissionProcessedAt))
+      /*
+       * ── OPEN LEGS ARE EXCLUDED HERE, NOT SKIPPED IN THE LOOP ──────────────
+       *
+       * They must stay UNPROCESSED — their revenue is paid by the close that
+       * consumes them — but skipping them inside the loop left them at the
+       * FRONT of an oldest-first queue for as long as their position ran.
+       *
+       * That starves the whole job. A broker holding `limit` positions open at
+       * once fills every batch with legs that can never be completed here, and
+       * no closing deal is ever reached again: commission stops for everybody,
+       * with nothing to show for it but one ordinary log line. The failure gets
+       * WORSE the busier the platform is, which is the worst shape a money job
+       * can have.
+       *
+       * Filtering in SQL means an open leg is not queued at all. It is still
+       * found — `unconsumedLegs` looks it up by position id when its close
+       * arrives — so nothing is lost and nothing is scanned twice.
+       *
+       * Non-trade deals are still fetched: a balance or credit row is DONE
+       * rather than pending, and the loop below is what marks it so. Leaving
+       * them out would strand them in the same way, for the same reason.
+       */
+      .where(
+        and(
+          isNull(mt5Deals.commissionProcessedAt),
+          or(
+            inArray(mt5Deals.entry, [...CLOSING_ENTRIES]),
+            notInArray(mt5Deals.action, [...TRADE_ACTIONS]),
+          ),
+        ),
+      )
       .orderBy(asc(mt5Deals.dealtAt), asc(mt5Deals.id))
       .limit(limit);
 
@@ -169,7 +199,7 @@ export class DealCommissionService {
       accrued: 0,
       accrualRows: 0,
       nothingOwed: 0,
-      awaitingClose: 0,
+      legsConsumed: 0,
       orphaned: 0,
       failed: 0,
     };
@@ -197,6 +227,11 @@ export class DealCommissionService {
       /*
        * ── COMMISSION IS EARNED ON A CLOSED POSITION, NEVER ON AN OPEN ONE ──
        *
+       * Defensive only: the query above no longer returns an open leg, so this
+       * should never fire. It is kept because the alternative to a redundant
+       * guard on a money path is a silent accrual on an open position the day
+       * somebody widens that WHERE clause.
+       *
        * FR-IB-04: "compute commission on the closing of a deal — never on its
        * opening. Commission accrues only once the deal is closed."
        *
@@ -209,10 +244,7 @@ export class DealCommissionService {
        * The opener is left UNPROCESSED rather than marked done, because its
        * revenue is real and is paid by the close that consumes it below.
        */
-      if (!isClosingEntry(deal.entry)) {
-        run.awaitingClose += 1;
-        continue;
-      }
+      if (!isClosingEntry(deal.entry)) continue;
 
       /*
        * The revenue of the WHOLE position, not of this row.
@@ -229,6 +261,16 @@ export class DealCommissionService {
        * this one.
        */
       const legs = await this.unconsumedLegs(deal);
+      /*
+       * Floored at zero because `legs` can come back EMPTY, which is not an
+       * error: two closes of one position land in the same batch on a partial
+       * close, and the first consumed both. The second then finds nothing left
+       * to take, falls through the zero-revenue branch below, and is reported
+       * as owing nothing — correct, and already paid with its sibling. Without
+       * the floor it would subtract one from a count of legs that DID reach a
+       * partner, which is the one thing this number exists to report.
+       */
+      run.legsConsumed += Math.max(0, legs.length - 1);
       const brokerRevenue = legs
         .reduce((sum, leg) => sum.plus(brokerRevenueOf(leg)), new Decimal(0))
         .toFixed(8);

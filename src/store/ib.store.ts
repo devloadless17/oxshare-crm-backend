@@ -641,7 +641,7 @@ export class IbStore {
 
   async updateAccount(
     userId: string,
-    patch: Partial<Pick<IbAccountRow, 'level' | 'parentIbUserId' | 'active'>>,
+    patch: Partial<Pick<IbAccountRow, 'level' | 'programId' | 'parentIbUserId' | 'active'>>,
   ): Promise<IbAccountRow | undefined> {
     const [row] = await this.db
       .update(ibAccounts)

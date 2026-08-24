@@ -2422,6 +2422,53 @@
         ]
       }
     },
+    "/v1/admin/ib/partners/{userId}/program": {
+      "patch": {
+        "description": "The terms a partner is paid on. Applies to the NEXT trade — accruals record the rate they were calculated at, so nothing already credited is restated. The target must be ENABLED: a disabled programme pays nothing, so moving somebody onto one would stop their earnings silently instead of changing their terms visibly.",
+        "operationId": "AdminIbController_changeProgram",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeIbProgramDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Move a partner onto a different commission programme",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ib/partners/{userId}/parent": {
       "patch": {
         "description": "Refuses a change that would put a partner beneath their own descendant. A self-FK cannot catch that — Postgres accepts A→B→A — and the payout walk climbs parents until it runs out, so a loop is a walk that never does.",
@@ -11085,6 +11132,16 @@
             "nullable": true,
             "description": "The rung’s percentage of the broker’s revenue. A decimal string, never a number."
           },
+          "programId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The terms this partner is paid on."
+          },
+          "programName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null only if the programme row vanished, which the foreign key prevents."
+          },
           "referralCode": {
             "type": "string"
           },
@@ -11139,6 +11196,8 @@
           "level",
           "levelName",
           "rateValue",
+          "programId",
+          "programName",
           "referralCode",
           "active",
           "approvedAt",
@@ -11162,6 +11221,19 @@
         },
         "required": [
           "level"
+        ]
+      },
+      "ChangeIbProgramDto": {
+        "type": "object",
+        "properties": {
+          "programId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Must be an ENABLED programme."
+          }
+        },
+        "required": [
+          "programId"
         ]
       },
       "ReassignIbParentDto": {
