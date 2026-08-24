@@ -13902,6 +13902,11 @@
             ],
             "description": "Fixed at creation. At most ONE demo product exists; it is offered to every client for demo accounts regardless of agency, and cannot be assigned to an agency. Real products carry live groups, the demo product carries demo groups."
           },
+          "spreadMarkupPerLot": {
+            "type": "string",
+            "example": "1.50000000",
+            "description": "The broker's spread markup per standard lot, in the account currency. A COMMERCIAL RECORD ONLY — nothing computes from it, and it is deliberately not part of the revenue partners are paid a share of. A decimal string, never a number: it is money."
+          },
           "sortOrder": {
             "type": "number",
             "example": 0
@@ -13918,6 +13923,7 @@
           "name",
           "enabled",
           "type",
+          "spreadMarkupPerLot",
           "sortOrder",
           "groups"
         ]
@@ -13975,6 +13981,10 @@
               "real",
               "demo"
             ]
+          },
+          "spreadMarkupPerLot": {
+            "type": "string",
+            "example": "1.50000000"
           },
           "sortOrder": {
             "type": "number",
