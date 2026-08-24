@@ -40,5 +40,18 @@ services:
       timeout: 3s
       retries: 10
 
+  # Mail catcher for the end-to-end suites and local development. Every email
+  # the API sends (verification links, password resets, invites, KYC decisions)
+  # lands here instead of a real inbox; the UI is http://localhost:8025 and the
+  # suites read it over its REST API. Point Settings → Email (or let
+  # global-setup do it with E2E_CONFIGURE_MAILPIT=1) at host localhost:1025.
+  # No volume: a mailbox of test tokens should not survive a restart.
+  mailpit:
+    image: axllent/mailpit
+    container_name: oxshare-mailpit
+    ports:
+      - '1025:1025'
+      - '8025:8025'
+
 volumes:
   oxshare_pgdata:
