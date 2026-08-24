@@ -1026,10 +1026,29 @@ export const tradingSettings = pgTable(
     ibMaxRevenueSharePct: numeric('ib_max_revenue_share_pct', { precision: 5, scale: 2 })
       .notNull()
       .default('50'),
+    /**
+     * How long an accrual is HELD before it can be confirmed — the rule
+     * between earned and spendable.
+     *
+     * It was an environment variable, which meant changing it took a deploy
+     * and nobody running the platform could see what it was. Every other
+     * commercial control on this row is here for the same reason.
+     *
+     * 0 is legal and means "pay as soon as it is calculated". The CHECK
+     * stops the other end: a mistyped 24000 would hold every partner's
+     * commission for three years with every component reporting success.
+     */
+    ibCommissionHoldHours: integer('ib_commission_hold_hours').notNull().default(24),
     updatedBy: uuid('updated_by'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [check('trading_settings_singleton', sql`${t.id}`)],
+  (t) => [
+    check('trading_settings_singleton', sql`${t.id}`),
+    check(
+      'trading_settings_hold_hours_ck',
+      sql`${t.ibCommissionHoldHours} >= 0 AND ${t.ibCommissionHoldHours} <= 8760`,
+    ),
+  ],
 );
 
 /*

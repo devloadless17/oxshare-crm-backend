@@ -61,6 +61,7 @@ function documentFilenames(submission: KycSubmission | undefined): string[] {
     .filter((p): p is string => typeof p === 'string' && p.length > 0)
     .map((p) => p.split('/').pop() as string);
 }
+import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 
 /**
@@ -76,6 +77,7 @@ export class AdminClientsService {
     private readonly users: UsersStore,
     private readonly tags: ClientTagsStore,
     private readonly kyc: KycStore,
+    private readonly holdings: AdminHoldingsService,
     private readonly audit: AdminAuditService,
     /*
      * `EmailModule` and `SecurityModule` are both @Global, so these resolve
@@ -269,9 +271,20 @@ export class AdminClientsService {
      * rebuilt IB feature will put the partner relationship back on this profile
      * — deliberately, rather than by restoring the old shape.
      */
-    const [tags, kyc] = await Promise.all([
+    const [tags, kyc, trading] = await Promise.all([
       this.tags.tagsForClient(clientId),
       may('kyc.view') || may('kyc.review') ? this.kyc.findByUserId(clientId) : undefined,
+      /*
+       * ABSENT without `trading.view`, an empty array with it. The card can
+       * then say "hidden by your permissions" rather than "no accounts", which
+       * are opposite facts about a client who may hold three.
+       *
+       * This section was DECLARED on the response and populated by nothing, so
+       * every profile reported no trading accounts — the same wrong answer the
+       * portal's own accounts page once gave, on the console this time, and to
+       * the reader most likely to act on it.
+       */
+      may('trading.view') ? this.holdings.accountsForProfile(clientId) : undefined,
     ]);
 
     const profile = {
@@ -310,6 +323,7 @@ export class AdminClientsService {
       ...(may('kyc.documents.view') && kyc !== undefined
         ? { documents: documentFilenames(kyc) }
         : {}),
+      ...(trading === undefined ? {} : { tradingAccounts: trading }),
     };
 
     /*

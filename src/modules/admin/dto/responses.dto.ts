@@ -311,7 +311,15 @@ export class ClientRowDto {
 
 export class ProfileTradingAccountDto {
   @ApiProperty() id: string;
-  @ApiProperty() mt5Login: string;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      'The MT5 login, NULL until MT5 issues one — the same contract the accounts ' +
+      'directory states. A blank where a login belongs is how a real account reads as a ' +
+      'broken row, so a reader has to be told which of the two it is.',
+  })
+  mt5Login: string | null;
   @ApiPropertyOptional() mt5Group?: string;
   @ApiProperty({ enum: ['live', 'demo'] }) environment: string;
   // No `tier`: the column behind it has never had a writer, so the field was

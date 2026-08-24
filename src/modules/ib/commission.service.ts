@@ -116,7 +116,28 @@ export class CommissionService implements CommissionAccrualPort {
     return terms.ibMaxRevenueSharePct;
   }
 
-  private holdHours(): number {
+  /**
+   * How long an accrual is held before it may be confirmed.
+   *
+   * ## The SETTING wins, and the environment is the fallback
+   *
+   * This was environment-only, which meant the one rule between earned and
+   * spendable took a deploy to change and was invisible to everybody running
+   * the platform. It is a column on `trading_settings` now — beside the account
+   * caps, the demo ceiling and the broker's revenue-share floor, which are all
+   * there for the same reason.
+   *
+   * `IB_COMMISSION_HOLD_HOURS` still answers when NO row exists, exactly as
+   * `tradingTermsFrom` treats the environment for the settings it replaced: a
+   * deployment configured before this column existed keeps holding for what it
+   * held for yesterday, rather than silently adopting a default nobody chose.
+   * Once an operator saves the form the table is the single answer — a variable
+   * that keeps overriding a saved setting is the bug this move removes.
+   */
+  private async holdHours(): Promise<number> {
+    const row = await this.settings.getTrading();
+    if (row) return tradingTermsFrom(row).ibCommissionHoldHours;
+
     const raw = this.config.get<string>('IB_COMMISSION_HOLD_HOURS');
     if (raw === undefined || raw.trim() === '') return DEFAULT_HOLD_HOURS;
 
@@ -627,7 +648,7 @@ export class CommissionService implements CommissionAccrualPort {
    * no accrual pointing at it — is a state this system cannot reach.
    */
   async confirmPending(limit = 500): Promise<{ confirmed: number; failed: number; held: number }> {
-    const hours = this.holdHours();
+    const hours = await this.holdHours();
     const payableFrom = new Date(Date.now() - hours * 3_600_000);
 
     const pending = await this.db

@@ -13117,6 +13117,11 @@
             "example": "50.00",
             "description": "The most of its revenue the broker pays partners. IB level rates are each a share of the FULL revenue and therefore add up; this caps the chain total and scales it pro rata."
           },
+          "ibCommissionHoldHours": {
+            "type": "number",
+            "example": 24,
+            "description": "Hours a commission is HELD before it may be confirmed — the rule between earned and spendable. 0 pays as soon as it is calculated."
+          },
           "updatedAt": {
             "type": "string",
             "nullable": true,
@@ -13127,7 +13132,8 @@
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
-          "ibMaxRevenueSharePct"
+          "ibMaxRevenueSharePct",
+          "ibCommissionHoldHours"
         ]
       },
       "UpdateTradingSettingsDto": {
@@ -13154,13 +13160,20 @@
             "type": "string",
             "example": "50.00",
             "description": "Percent, 0 to 100."
+          },
+          "ibCommissionHoldHours": {
+            "type": "number",
+            "example": 24,
+            "minimum": 0,
+            "maximum": 8760
           }
         },
         "required": [
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
-          "ibMaxRevenueSharePct"
+          "ibMaxRevenueSharePct",
+          "ibCommissionHoldHours"
         ]
       },
       "SmtpSettingsDto": {
@@ -14276,7 +14289,9 @@
             "type": "string"
           },
           "mt5Login": {
-            "type": "string"
+            "type": "string",
+            "nullable": true,
+            "description": "The MT5 login, NULL until MT5 issues one — the same contract the accounts directory states. A blank where a login belongs is how a real account reads as a broken row, so a reader has to be told which of the two it is."
           },
           "mt5Group": {
             "type": "string"

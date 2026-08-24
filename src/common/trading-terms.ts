@@ -41,6 +41,17 @@ export interface TradingTerms {
    * two-level ladder at 70 + 30 pays out everything the house earned.
    */
   ibMaxRevenueSharePct: string;
+
+  /**
+   * Hours a commission is held before it becomes spendable.
+   *
+   * The one rule between earned and spendable, and it lives here rather than
+   * in the environment so an operator can both SEE it and change it. A
+   * malformed stored value cannot exist — the column is an integer with a
+   * CHECK — which is the point: the failure this number must never have is
+   * silently becoming zero.
+   */
+  ibCommissionHoldHours: number;
 }
 
 /**
@@ -58,6 +69,7 @@ export const DEFAULT_TRADING_TERMS: TradingTerms = {
   maxDemoAccounts: 5,
   maxDemoDeposit: '1000000',
   ibMaxRevenueSharePct: '50',
+  ibCommissionHoldHours: 24,
 };
 
 /**
@@ -76,6 +88,7 @@ export function tradingTermsFrom(row: TradingSettingsRow | null): TradingTerms {
     maxDemoAccounts: row.maxDemoAccounts,
     maxDemoDeposit: row.maxDemoDeposit,
     ibMaxRevenueSharePct: row.ibMaxRevenueSharePct,
+    ibCommissionHoldHours: row.ibCommissionHoldHours,
   };
 }
 

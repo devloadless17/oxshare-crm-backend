@@ -66,6 +66,8 @@ export interface TradingSettingsRow {
   maxDemoDeposit: string;
   /** The most of its revenue the broker will pay partners, as a percentage. */
   ibMaxRevenueSharePct: string;
+  /** Hours an accrual is held before it may be confirmed. */
+  ibCommissionHoldHours: number;
   updatedBy: string | null;
   updatedAt: Date;
 }
@@ -75,6 +77,8 @@ export interface TradingSettingsWrite {
   maxDemoAccounts: number;
   maxDemoDeposit: string;
   ibMaxRevenueSharePct: string;
+  /** Hours an accrual is held before it may be confirmed. */
+  ibCommissionHoldHours: number;
 }
 
 export interface RivalSettingsRow {
