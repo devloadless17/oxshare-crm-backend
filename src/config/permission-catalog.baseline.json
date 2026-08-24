@@ -90,6 +90,7 @@
     "trading.deposit",
     "trading.view",
     "trading.withdraw",
+    "transactions.view",
     "wallets.create",
     "wallets.credit",
     "wallets.delete",

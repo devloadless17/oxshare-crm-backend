@@ -83,6 +83,62 @@ export function enumQuery<T extends string>(
 }
 
 /**
+ * An optional `uuid`-valued QUERY parameter — the query-string sibling of
+ * `UuidParam`, for the same 500 (`invalid input syntax for type uuid`) on the
+ * same class of typo. Absent is not invalid: an omitted filter is no filter.
+ */
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function uuidQuery(value: string | undefined, field: string): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (!UUID_SHAPE.test(value)) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: [`${field} must be a UUID`],
+      fields: { [field]: 'must be a UUID' },
+    });
+  }
+  return value;
+}
+
+/**
+ * An optional `YYYY-MM-DD` date-bound query parameter.
+ *
+ * The shape check matters for the same reason the enum one does: the value
+ * lands in a `::date` cast, so `?from=nonsense` would surface as a Postgres
+ * `invalid input syntax for type date` 500 rather than a sentence. The regex
+ * pins the FORMAT; the round-trip through Date.UTC is what refuses a
+ * well-shaped impossibility like `2026-02-31` — V8 does NOT reject it
+ * (`new Date('2026-02-31')` rolls over to March 3rd, verified), while
+ * Postgres refuses it with the 500 this helper exists to prevent. Building
+ * the date from its parts and reading them back is the check that cannot be
+ * fooled by rollover: a rolled-over day no longer equals the day sent.
+ */
+const DATE_SHAPE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isRealCalendarDate(value: string): boolean {
+  const [year, month, day] = value.split('-').map((part) => Number.parseInt(part, 10));
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+  );
+}
+
+export function dateQuery(value: string | undefined, field: string): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (!DATE_SHAPE.test(value) || !isRealCalendarDate(value)) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: [`${field} must be a date formatted YYYY-MM-DD`],
+      fields: { [field]: 'must be a date formatted YYYY-MM-DD' },
+    });
+  }
+  return value;
+}
+
+/**
  * A free-text search term.
  *
  * Bounded because it reaches a `LIKE`/`pg_trgm` predicate: an unbounded term is

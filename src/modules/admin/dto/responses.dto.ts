@@ -677,11 +677,25 @@ export { MessageResponseDto } from '../../../common/dto/message-response.dto';
 
 // ── Money (ARCHITECTURE §6: every monetary field is a STRING) ────────────────
 
+/**
+ * The client behind a payout — and the reason three of its four fields are
+ * OPTIONAL.
+ *
+ * RBAC-03 masks by OMISSION, so a desk read by a restricted admin returns this
+ * object without `email`, `firstName` or `lastName`. Declaring them required
+ * would put that lie into `types.gen.ts` in both frontends: the admin app would
+ * compile `user.email.toLowerCase()` happily and throw at runtime, on the one
+ * code path only a restricted operator ever reaches — which is to say, the path
+ * least likely to be exercised before a customer finds it.
+ *
+ * `id` stays required. The row is addressed by it, which is why the catalog
+ * marks `client.id` unmaskable.
+ */
 export class WithdrawalUserDto {
   @ApiProperty() id: string;
-  @ApiProperty() email: string;
-  @ApiProperty() firstName: string;
-  @ApiProperty() lastName: string;
+  @ApiPropertyOptional() email?: string;
+  @ApiPropertyOptional() firstName?: string;
+  @ApiPropertyOptional() lastName?: string;
 }
 
 export class WithdrawalRowDto {
@@ -767,6 +781,156 @@ export class WithdrawalListResponseDto {
   @ApiProperty() limit: number;
   @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
   counts: Record<string, number>;
+  /**
+   * RBAC-03: the `withdrawal.*` keys hidden from this viewer, omitted from
+   * every row's `user`.
+   *
+   * A property of the VIEWER, not of a row, so it is sent once at the top
+   * rather than repeated per item. Without it the desk renders an em dash and
+   * "hidden from you" becomes indistinguishable from "no email on file".
+   */
+  @ApiPropertyOptional({ type: [String] }) maskedFields?: string[];
+}
+
+// ── The Financial page: every money movement, platform-wide ─────────────────
+
+export class AdminTransactionRowDto {
+  @ApiProperty() id: string;
+  /**
+   * What a renderer BRANCHES on — a `payment` crossed the platform boundary
+   * through a provider, a `transfer` moved wallet ⇄ trading account, a
+   * `commission_transfer` moved a partner's earnings to their main wallet.
+   * The vocabulary is the union's own (`TransactionsService.movementsCte`),
+   * not a table enum.
+   */
+  @ApiProperty({ enum: ['payment', 'transfer', 'commission_transfer'] })
+  kind: string;
+  /**
+   * Stated FROM THE WALLET'S SIDE for every kind — a wallet→account transfer
+   * reads as a withdrawal. Screens print the direction ONLY for payments and
+   * branch on `kind` for the rest, the rule the client portal already follows.
+   */
+  @ApiProperty({ enum: ['deposit', 'withdrawal'] })
+  direction: string;
+  /**
+   * One vocabulary for both tables: transfer states arrive pre-mapped
+   * (settled→success, failed→failure). `approved`/`rejected` can only occur
+   * on `kind: payment` withdrawal rows — tabs and tiles must not promise them
+   * for transfers.
+   */
+  @ApiProperty({ enum: ['pending', 'approved', 'success', 'failure', 'rejected'] })
+  state: string;
+  @ApiProperty({
+    type: 'string',
+    example: '250.00000000',
+    description:
+      'Monetary value — ALWAYS a string, never a number. NUMERIC(28,8) exceeds what a ' +
+      'JavaScript number represents exactly (§6.1).',
+  })
+  amount: string;
+  // A CODE, not a fixed set — currencies are operator data (see WalletDto).
+  @ApiProperty({ description: 'A currency code.', example: 'USD' }) currency: string;
+  /**
+   * What to CALL the rail on screen, resolved server-side — the
+   * `WithdrawalRowDto.methodName` rule. Falls back to `provider` where no
+   * method was named: historical rows, and both transfer kinds, whose
+   * providers ('transfer' / 'commission') the screens translate via `kind`.
+   */
+  @ApiProperty({ example: 'Whish Money' }) methodName: string;
+  /** An OPEN set no screen may switch on exhaustively (see TransactionDto). */
+  @ApiProperty() provider: string;
+  @ApiPropertyOptional({ type: String, nullable: true }) providerRef?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true }) destination?: string | null;
+  /** Also carries a transfer's failure reason — one column for "why not". */
+  @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'The trading account a TRANSFER moved money to or from. Null on other kinds.',
+  })
+  tradingAccountId?: string | null;
+  @ApiProperty() walletId: string;
+  @ApiProperty() createdAt: Date;
+  @ApiPropertyOptional({ type: Date, nullable: true }) settledAt?: Date | null;
+  @ApiProperty({ type: WithdrawalUserDto }) user: WithdrawalUserDto;
+}
+
+export class AdminTransactionListResponseDto {
+  @ApiProperty({ type: [AdminTransactionRowDto] }) items: AdminTransactionRowDto[];
+  /** Pass back as `?cursor=` for the next page; `null` on the last (R-2.4). */
+  @ApiProperty({ type: String, nullable: true })
+  nextCursor: string | null;
+  @ApiProperty() total: number;
+  @ApiProperty() page: number;
+  @ApiProperty() limit: number;
+  /**
+   * Per-STATE sizes plus `all`, ignoring the active state filter but never
+   * the scope — the withdrawal queue's two-axis rule, so the state tabs show
+   * every state's size whichever tab is active.
+   */
+  @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
+  counts: Record<string, number>;
+  /**
+   * Per-DIRECTION sizes plus `all`, ignoring the direction/kind filter but
+   * never the scope — the same rule on the other axis, for the page's
+   * deposit/withdrawal tabs.
+   */
+  @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
+  directionCounts: Record<string, number>;
+  /**
+   * RBAC-03 — which `financial.*` catalog keys were REMOVED from these rows
+   * for this viewer, so the screen can say "hidden by your permissions"
+   * rather than rendering an absence that reads as "this client has no
+   * email". Only ever `financial.`-prefixed: a response announces its own
+   * paths and nobody else's.
+   */
+  @ApiPropertyOptional({ type: [String] }) maskedFields?: string[];
+}
+
+export class AdminTransactionSummaryRowDto {
+  @ApiProperty({ enum: ['deposit', 'withdrawal'] }) direction: string;
+  @ApiProperty({ enum: ['payment', 'transfer', 'commission_transfer'] }) kind: string;
+  @ApiProperty({ enum: ['pending', 'approved', 'success', 'failure', 'rejected'] })
+  state: string;
+  /**
+   * Part of the GROUP KEY, not decoration: a sum across currencies is not a
+   * number, so totals only ever arrive per-currency and the page may render
+   * them or drop them — never add them.
+   */
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty() count: number;
+  @ApiProperty({
+    type: 'string',
+    example: '1250.50000000',
+    description: 'Server-computed SUM as a string — the page renders it, never recomputes it.',
+  })
+  total: string;
+}
+
+/**
+ * One direction's total over the filtered set, per currency — what the page's
+ * headline tiles render. Coarser than `rows` on purpose: a tile saying
+ * "Deposits — $12,400" must be ONE server-computed number, and deriving it
+ * from `rows` would mean the page adding decimal strings, which it never does.
+ */
+export class AdminTransactionDirectionTotalDto {
+  @ApiProperty({ enum: ['deposit', 'withdrawal'] }) direction: string;
+  /** Part of the group key — a sum across currencies is not a number. */
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty() count: number;
+  @ApiProperty({
+    type: 'string',
+    example: '12400.00000000',
+    description: 'Server-computed SUM as a string — rendered, never recomputed.',
+  })
+  total: string;
+}
+
+export class AdminTransactionsSummaryDto {
+  @ApiProperty({ type: [AdminTransactionSummaryRowDto] })
+  rows: AdminTransactionSummaryRowDto[];
+  @ApiProperty({ type: [AdminTransactionDirectionTotalDto] })
+  directions: AdminTransactionDirectionTotalDto[];
 }
 
 // ── Client holdings: wallets and trading accounts ───────────────────────────

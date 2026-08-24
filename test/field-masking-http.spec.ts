@@ -9,7 +9,9 @@ import {
   ibPrograms,
   kycSubmissions,
   roles,
+  transactions,
   users,
+  wallets,
 } from '../src/database/schema';
 
 /**
@@ -91,6 +93,9 @@ beforeAll(async () => {
         'roles.create',
         'roles.edit',
         'ib.view',
+        // Same trap the two comments above name: without this the desk answers
+        // 403 and the assertion below would pass while proving nothing.
+        'withdrawals.view',
       ],
       maskedFields: ['client.email', 'client.phone'],
     })
@@ -151,6 +156,25 @@ beforeAll(async () => {
     lastName: 'Client',
     referredByIbUserId: clientId,
   });
+
+  /*
+   * A PENDING WITHDRAWAL, because the money queues join the same person under
+   * a different name. See the withdrawal-desk block at the end of this file.
+   */
+  const [wallet] = await db
+    .insert(wallets)
+    .values({ userId: clientId, currency: 'USD', balance: '0', onHold: '0' })
+    .returning();
+  await db.insert(transactions).values({
+    userId: clientId,
+    walletId: wallet.id,
+    direction: 'withdrawal',
+    amount: '25.00000000',
+    currency: 'USD',
+    state: 'pending',
+    provider: 'manual_test',
+    destination: 'mask-test-destination',
+  });
 });
 
 afterAll(async () => {
@@ -194,6 +218,15 @@ describe('the client list', () => {
     const body = res.body as ListBody;
     expect(body.maskedFields).toContain('client.email');
     expect(body.maskedFields).toContain('client.phone');
+    /*
+     * A RESPONSE ONLY ANNOUNCES ITS OWN PATHS.
+     *
+     * `client.email` expands to aliases on four other surfaces — the KYC
+     * screens, the profile's downline, the withdrawal desk, the CSV export.
+     * None of them belongs here: a UI reading this list would render "hidden"
+     * markers for fields these rows never carried.
+     */
+    expect(body.maskedFields.some((k) => !k.startsWith('client.'))).toBe(false);
   });
 
   it('leaves unmasked fields exactly as they were', async () => {
@@ -412,5 +445,91 @@ describe('anti-escalation on the mask itself', () => {
 
     expect(res.status).toBe(400);
     expect((res.body as { message?: string }).message).toMatch(/client-fields/);
+  });
+});
+
+/*
+ * THE MONEY QUEUES JOIN THE SAME PERSON UNDER A DIFFERENT NAME.
+ *
+ * Every masking bypass this file has caught was the same mistake wearing a new
+ * hat: a screen that shows a client without going through the client service.
+ * First the client-edit endpoints, then the KYC review screen and its queue,
+ * then the KYC export, then the profile's referrer and downline. The withdrawal
+ * desk is the next one along — it selects `users.email/firstName/lastName` into
+ * a nested `user` object so the operator can tell whose payout they are looking
+ * at, and nothing on that path has ever consulted the mask.
+ *
+ * It is worth being precise about why this keeps happening, because the answer
+ * is not "somebody forgot". `applyMask` is opt-in per response, so the DEFAULT
+ * for any new screen is unmasked, and the failure is invisible: the screen works
+ * perfectly, and only an admin who is supposed to be restricted can tell. The
+ * mask is a property of the VIEWER, so every surface that renders a person owes
+ * it a call — and the only thing that makes that reliable is a test per surface.
+ *
+ * The keys travel as `withdrawal.user.*` aliases of `client.email` and the two
+ * name fields, for the same reason `kyc.user.*` exists: the catalog is
+ * path-qualified, so a bare `email` cannot be masked in one response and left in
+ * another. An operator ticks "Email address" once and it goes everywhere.
+ */
+describe('the withdrawal desk', () => {
+  const WITHDRAWALS = '/v1/admin/withdrawals';
+
+  it('OMITS the masked field from the client attached to each payout', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get(`${WITHDRAWALS}?state=pending`);
+    expect(res.status).toBe(200);
+
+    const body = res.body as ListBody;
+    // Guards the fixture: an empty desk would make every assertion vacuous.
+    expect(body.items.length, 'no withdrawals to assert on').toBeGreaterThan(0);
+
+    for (const row of body.items) {
+      const user = row['user'] as Record<string, unknown> | undefined;
+      expect(user, 'the desk stopped attaching the client').toBeDefined();
+      expect('email' in (user ?? {}), 'email survived masking on the desk').toBe(false);
+      // The id has to stay — the row is addressed by it, and the catalog says
+      // `client.id` is not maskable for exactly that reason.
+      expect(user?.['id']).toBeDefined();
+    }
+  });
+
+  it('never puts the masked value anywhere in the desk response', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get(`${WITHDRAWALS}?state=pending`);
+
+    expect(JSON.stringify(res.body)).not.toContain('mask-target@oxshare-e2e.test');
+  });
+
+  it('tells the screen which fields it is missing, so it can say "hidden"', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get(`${WITHDRAWALS}?state=pending`);
+
+    const body = res.body as ListBody;
+    /*
+     * The key is the one that names the path ON THIS RESPONSE, matching the
+     * `kyc.*` convention: the frontend keys off the catalog key it was
+     * configured from, and the desk nests the person under `user`. The CSV
+     * export's flat spelling lives under its own prefix precisely so it does
+     * not show up here, on rows that have no such field.
+     */
+    expect(body.maskedFields).toContain('withdrawal.user.email');
+    expect(body.maskedFields, 'the export spelling leaked into the desk').not.toContain(
+      'withdrawalExport.userEmail',
+    );
+  });
+
+  it('still shows the master the client behind the payout', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`${WITHDRAWALS}?state=pending`);
+    expect(res.status).toBe(200);
+
+    const body = res.body as ListBody;
+    const row = body.items.find(
+      (r) => (r['user'] as Record<string, unknown> | undefined)?.['id'] === clientId,
+    );
+    expect(row, 'the fixture withdrawal is not on the master desk').toBeDefined();
+    expect((row?.['user'] as Record<string, unknown>)['email']).toBe(
+      'mask-target@oxshare-e2e.test',
+    );
   });
 });

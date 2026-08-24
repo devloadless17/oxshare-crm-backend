@@ -147,6 +147,16 @@
       }
     ]
   },
+  "transactions": {
+    "moduleName": "Financial Transactions",
+    "description": "The platform-wide money-movement list: every deposit, withdrawal and internal transfer, across every client, with the client named on each row. Its own key rather than `withdrawals.view` for the reason the ledger got `ledger.view`: granting payout review must not also hand over every client deposit and every partner transfer on the platform. Its own key rather than `ledger.view` because the two screens answer different questions — the ledger is the append-only accounting record under Audit & Reconciliation, while this list shows lifecycle states, client identity and payment rails, and coupling them would mean granting either screen always grants both.",
+    "permissions": [
+      {
+        "key": "transactions.view",
+        "label": "View All Money Movements"
+      }
+    ]
+  },
   "trading": {
     "moduleName": "Trading Accounts",
     "description": "No longer read-only: the MT5 bridge is live, so the console can open an account on the broker's server and move its balance. The three write keys are separate because they are three different powers — opening an account costs nothing, crediting one is giving away money, and debiting one is taking it. An operator who onboards clients needs the first and neither of the others.",

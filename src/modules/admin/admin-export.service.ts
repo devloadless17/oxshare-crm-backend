@@ -8,7 +8,11 @@ import { RolesStore } from '../../store/roles.store';
 import { AuthorizationError, ValidationError } from '../../common/errors/domain-errors';
 import { actorHasPermission, assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import { applyMaskAll } from '../../common/security/field-mask';
-import { TransactionsService } from '../payments/transactions.service';
+import {
+  TransactionsService,
+  type AdminMovementsFilter,
+  type AdminTransactionExportRow,
+} from '../payments/transactions.service';
 import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { CsvColumn } from '../../common/export/csv';
@@ -212,12 +216,96 @@ export class AdminExportService {
     limit: number,
   ): Promise<WithdrawalExportRow[]> {
     assertActorCan(actor, 'withdrawals.view', 'export withdrawals');
-    return this.transactions.listForExport({
+    const rows = await this.transactions.listForExport({
       state: query.state,
       offset,
       limit,
       scope: actor.clientScope,
     });
+
+    /*
+     * The same mask the desk applies — because the route comment one file over
+     * says "an export must never be a way around one", and until this line it
+     * was exactly that. The KYC export was the same hole and was closed the same
+     * way today.
+     *
+     * The export row is FLAT (`userEmail`) where the desk nests (`user.email`),
+     * so it carries its own `withdrawalExport.` prefix rather than sharing the
+     * desk's. Sharing one would make the DESK's `maskedFields` announce a flat
+     * key that appears on none of the rows it returned — a screen reading it
+     * would report a second hidden field that never existed. A CSV has nowhere
+     * to put `maskedFields`, so this prefix is invisible and costs nothing.
+     *
+     * A masked column leaves an EMPTY CELL rather than vanishing, and the header
+     * stays. That is deliberate: dropping a column mid-file shifts every later
+     * value into the wrong heading, which corrupts the export for anyone who
+     * re-imports it. A CSV has nowhere to put `maskedFields`, so the header is
+     * the only place left to say the column exists at all.
+     */
+    return applyMaskAll('withdrawalExport', rows, actor.fieldMask);
+  }
+
+  // ── Financial transactions (the platform-wide movement list) ──────────────
+
+  readonly transactionColumns: readonly CsvColumn<AdminTransactionExportRow>[] = [
+    { header: 'Transaction ID', value: (r) => r.id },
+    /*
+     * Kind beside Direction, because the two are read together: 'withdrawal,
+     * transfer' is money moving to a trading account, 'withdrawal, payment' is
+     * money leaving the platform — and a spreadsheet summing "withdrawals"
+     * without the kind column would conflate them.
+     */
+    { header: 'Kind', value: (r) => r.kind },
+    { header: 'Direction', value: (r) => r.direction },
+    /*
+     * The amount, as the STRING the database produced — §6.1, and the same
+     * note as `withdrawalColumns`: a CSV is the output most likely to be
+     * re-imported into something that does arithmetic on it.
+     */
+    { header: 'Amount', value: (r) => r.amount },
+    { header: 'Currency', value: (r) => r.currency },
+    { header: 'State', value: (r) => r.state },
+    { header: 'Client ID', value: (r) => r.userId },
+    { header: 'Client email', value: (r) => r.userEmail },
+    { header: 'Client first name', value: (r) => r.userFirstName },
+    { header: 'Client last name', value: (r) => r.userLastName },
+    { header: 'Method', value: (r) => r.methodName },
+    { header: 'Provider', value: (r) => r.provider },
+    { header: 'Provider reference', value: (r) => r.providerRef },
+    { header: 'Destination', value: (r) => r.destination },
+    { header: 'Rejection / failure reason', value: (r) => r.rejectionReason },
+    { header: 'Created at', value: (r) => r.createdAt },
+    { header: 'Settled at', value: (r) => r.settledAt },
+  ];
+
+  /**
+   * Financial movements, scoped exactly as `GET /admin/transactions`: the
+   * batch runs through the same `adminMovements` predicate builder the list
+   * uses, scope applied per union arm. R-4.3 asserted here as everywhere in
+   * this file — this method decides which rows the caller gets.
+   */
+  async transactionBatch(
+    query: Omit<AdminMovementsFilter, 'scope'>,
+    actor: AuthenticatedAdmin,
+    offset: number,
+    limit: number,
+  ): Promise<AdminTransactionExportRow[]> {
+    assertActorCan(actor, 'transactions.view', 'export financial transactions');
+    const rows = await this.transactions.listAllForExport({
+      ...query,
+      offset,
+      limit,
+      scope: actor.clientScope,
+    });
+    /*
+     * RBAC-03 on the FLAT export shape — its own `financialExport.` prefix,
+     * for the reason the withdrawal export's split records: `maskedFields` is
+     * a promise about a response's own rows, and the CSV's keys are not the
+     * list's. A masked column emits an EMPTY CELL under a kept header — the
+     * CSV writer renders the removed field as blank, never a dropped column
+     * that shifts every later value under the wrong heading.
+     */
+    return applyMaskAll('financialExport', rows, actor.fieldMask);
   }
 
   // ── Wallets ───────────────────────────────────────────────────────────────

@@ -430,6 +430,12 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * balance, which is the single most sensitive table a CRM export can produce.
    */
   { action: 'export.wallets', label: 'Wallet balances exported', group: 'Exports' },
+  /*
+   * The Financial page's file: every money movement with the client named on
+   * each row — client PII and money together, which is exactly the class the
+   * block above says gets recorded.
+   */
+  { action: 'export.transactions', label: 'Financial transactions exported', group: 'Exports' },
   {
     action: 'export.trading_accounts',
     label: 'Trading accounts exported',

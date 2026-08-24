@@ -2,7 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { closeDb, resetDb } from '../src/database/db';
-import { WITHDRAWAL_SORT_COLUMNS } from '../src/modules/payments/transactions.service';
+import {
+  ADMIN_TRANSACTION_SORT_COLUMNS,
+  WITHDRAWAL_SORT_COLUMNS,
+} from '../src/modules/payments/transactions.service';
 import { KYC_SORT_COLUMNS } from '../src/store/kyc.store';
 import { AUDIT_SORT_COLUMNS } from '../src/store/audit-log.store';
 import { IB_APPLICATION_SORT_COLUMNS, IB_PARTNER_SORT_COLUMNS } from '../src/store/ib.store';
@@ -65,6 +68,8 @@ beforeAll(async () => {
     'ib_accounts',
     'admins',
     'roles',
+    'transfers',
+    'ib_wallet_transfers',
   ]) {
     await ctx.db.execute(sql.raw(`ANALYZE ${table}`));
   }
@@ -272,6 +277,43 @@ describeSortIndexes(
   TRADING_ACCOUNT_SORT_COLUMNS,
 );
 
+// ── The financial union's other arms (migration 0093) ────────────────────────
+//
+// GET /admin/transactions orders a `transactions UNION ALL transfers UNION ALL
+// ib_wallet_transfers`. Postgres can only merge-append an inlined union when
+// EVERY branch is index-ordered; the `transactions` indexes above already
+// exist, so what 0093 adds — and what these assert — is that each transfer
+// arm can serve the union's three sorts alone. The allowlist objects passed
+// here are shaped from ADMIN_TRANSACTION_SORT_COLUMNS so a key added to the
+// union's sort surface arrives in this spec automatically.
+describeSortIndexes(
+  'the financial union: transfers arm',
+  'transfers',
+  'id',
+  {
+    createdAt: { sql: 'transfers.created_at' },
+    amount: { sql: 'transfers.amount' },
+    state: { sql: 'transfers.state' },
+  },
+  ADMIN_TRANSACTION_SORT_COLUMNS,
+);
+
+// `ib_wallet_transfers` has NO state column — the union states a constant
+// ('success'), and ordering by a constant needs no index — so `state` is
+// deliberately absent from both maps here.
+const { state: _adminStateSort, ...IWT_SORTABLE } = ADMIN_TRANSACTION_SORT_COLUMNS;
+void _adminStateSort;
+describeSortIndexes(
+  'the financial union: commission-transfer arm',
+  'ib_wallet_transfers',
+  'id',
+  {
+    createdAt: { sql: 'ib_wallet_transfers.created_at' },
+    amount: { sql: 'ib_wallet_transfers.amount' },
+  },
+  IWT_SORTABLE,
+);
+
 /**
  * The index DIRECTIONS, asserted directly.
  *
@@ -288,6 +330,12 @@ describe('the composites are direction-pinned in the shape the queries order by'
     ['admins_name_id_idx', 'name DESC', 'id DESC'],
     ['roles_name_id_idx', 'name DESC', 'id DESC'],
     ['ib_accounts_level_user_idx', 'level DESC', 'user_id DESC'],
+    // Migration 0093 — the financial union's transfer arms.
+    ['transfers_created_at_id_idx', 'created_at DESC', 'id DESC'],
+    ['transfers_amount_id_idx', 'amount DESC', 'id DESC'],
+    ['transfers_state_id_idx', 'state DESC', 'id DESC'],
+    ['ib_wallet_transfers_created_at_id_idx', 'created_at DESC', 'id DESC'],
+    ['ib_wallet_transfers_amount_id_idx', 'amount DESC', 'id DESC'],
   ];
 
   for (const [index, first, second] of CASES) {

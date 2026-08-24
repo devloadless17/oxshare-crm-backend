@@ -24,7 +24,26 @@
     "work, and then file a bug about it.",
     "",
     "'kyc.user.*' aliases: both KYC responses (the queue row and the detail) also carry the",
-    "person under a nested `user` object, so a masked client field has to be removed there too."
+    "person under a nested `user` object, so a masked client field has to be removed there too.",
+    "",
+    "'withdrawal.user.*' aliases: the payout desk joins the same person under the same nested",
+    "shape, so an operator who ticks 'Email address' once has it hidden there too. Every bypass",
+    "this feature has had was a screen that showed a client without going through the client",
+    "service; the alias is only half the fix, because applyMask is opt-in per response — the",
+    "other half is that each such surface has its own test.",
+    "",
+    "The desk and its CSV export carry SEPARATE prefixes — 'withdrawal.' nests the person under",
+    "`user`, 'withdrawalExport.' flattens it to `userEmail` — because `maskedFields` is a promise",
+    "to the screen about THIS response. One shared prefix would have the desk report a flat key",
+    "that does not exist on any row it returned, so a UI reading the list would announce a second",
+    "hidden field that was never there. The export emits no `maskedFields` (a CSV has nowhere to",
+    "put one), so its prefix is invisible and costs nothing. An export must never be a way around",
+    "the list it exports, and it no longer is.",
+    "",
+    "'financial.*' / 'financialExport.*': the Financial page (GET /admin/transactions) joins the",
+    "same person in both shapes again — nested `user` on the list rows ('financial.'), flattened",
+    "`userEmail` in its CSV ('financialExport.') — split for exactly the desk's reason above:",
+    "`maskedFields` is a promise about THIS response's rows."
   ],
   "identity": {
     "groupName": "Identity",
@@ -44,7 +63,11 @@
           "kyc.personalInfo.firstName",
           "kyc.user.firstName",
           "client.referrer.firstName",
-          "client.referredClients.firstName"
+          "client.referredClients.firstName",
+          "withdrawal.user.firstName",
+          "withdrawalExport.userFirstName",
+          "financial.user.firstName",
+          "financialExport.userFirstName"
         ]
       },
       {
@@ -55,7 +78,11 @@
           "kyc.personalInfo.lastName",
           "kyc.user.lastName",
           "client.referrer.lastName",
-          "client.referredClients.lastName"
+          "client.referredClients.lastName",
+          "withdrawal.user.lastName",
+          "withdrawalExport.userLastName",
+          "financial.user.lastName",
+          "financialExport.userLastName"
         ]
       }
     ]
@@ -72,7 +99,11 @@
           "kyc.personalInfo.email",
           "kyc.user.email",
           "client.referrer.email",
-          "client.referredClients.email"
+          "client.referredClients.email",
+          "withdrawal.user.email",
+          "withdrawalExport.userEmail",
+          "financial.user.email",
+          "financialExport.userEmail"
         ]
       },
       {

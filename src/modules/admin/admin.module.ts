@@ -19,6 +19,7 @@ import { AdminRbacService } from './admin-rbac.service';
 import { ApiKeysService } from './api-keys.service';
 import { AdminMoneyService } from './admin-money.service';
 import { AdminMoneyController } from './admin-money.controller';
+import { AdminFinancialController } from './admin-financial.controller';
 import { AdminStatsService } from './admin-stats.service';
 import { AdminStatsController } from './admin-stats.controller';
 import { AdminHoldingsController } from './admin-holdings.controller';
@@ -104,6 +105,7 @@ const ADMIN_SERVICES = [
     AdminApiKeysController,
     AdminIpAllowlistController,
     AdminMoneyController,
+    AdminFinancialController,
     AdminStatsController,
     AdminHoldingsController,
     AdminBridgeController,

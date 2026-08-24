@@ -1,6 +1,19 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomBytes } from 'crypto';
-import { and, asc, desc, eq, gte, ilike, isNull, ne, or, sql, type SQLWrapper } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  ilike,
+  isNull,
+  ne,
+  or,
+  sql,
+  type SQL,
+  type SQLWrapper,
+} from 'drizzle-orm';
 import {
   tradingAccounts,
   transactions,
@@ -37,6 +50,21 @@ type TransactionRow = typeof transactions.$inferSelect;
  * null" is also true of a manual admin credit.
  */
 export type MovementKind = 'payment' | 'transfer' | 'commission_transfer';
+
+/**
+ * The kind values as a runtime list, for validating `?kind=` at the edge.
+ *
+ * `MovementKind` is a type and erases at runtime; this is its one runtime
+ * mirror, and `satisfies` is what keeps the two from drifting — add a kind to
+ * either and the compiler demands the other. NOT a pgEnum's `.enumValues`:
+ * `kind` is the union's own vocabulary, stated in SQL below, and exists in no
+ * table.
+ */
+export const TRANSACTION_KINDS = [
+  'payment',
+  'transfer',
+  'commission_transfer',
+] as const satisfies readonly MovementKind[];
 
 /**
  * One row of a client's money history, from either table.
@@ -80,6 +108,55 @@ interface CombinedRow {
   method_name: string | null;
   kind: MovementKind;
   trading_account_id: string | null;
+}
+
+/** The admin Financial list's raw rows: the union's columns plus the client. */
+interface AdminCombinedRow extends CombinedRow {
+  user_email: string;
+  user_first_name: string;
+  user_last_name: string;
+}
+
+/**
+ * The filters every admin read of the union shares — the list, its counts, the
+ * summary and the CSV export all build their predicates from THIS shape, so a
+ * row the list hides cannot appear in a count, a tile or a file.
+ */
+export interface AdminMovementsFilter {
+  /** Row-level visibility. Admin callers pass the actor's; defaults to open. */
+  scope?: ClientScope;
+  /** Narrow to one client — already validated as a UUID at the edge. */
+  userId?: string;
+  direction?: string;
+  kind?: string;
+  state?: string;
+  currency?: string;
+  /** Free text over the client's email and name — see `listForAdmin.q`. */
+  q?: string;
+  /** Inclusive date bounds, compared by DATE PART — see the union's filters. */
+  from?: string;
+  to?: string;
+}
+
+/** One row of the Financial CSV export — flattened, the amount a STRING. */
+export interface AdminTransactionExportRow {
+  id: string;
+  kind: MovementKind;
+  direction: string;
+  state: string;
+  amount: string;
+  currency: string;
+  methodName: string;
+  provider: string;
+  providerRef: string | null;
+  destination: string | null;
+  rejectionReason: string | null;
+  userId: string;
+  userEmail: string;
+  userFirstName: string;
+  userLastName: string;
+  createdAt: Date;
+  settledAt: Date | null;
 }
 
 /**
@@ -246,6 +323,34 @@ export type WithdrawalSortKey = keyof typeof WITHDRAWAL_SORT_COLUMNS;
 
 /** Newest first — what the queue showed before it was sortable. */
 export const DEFAULT_WITHDRAWAL_SORT: WithdrawalSortKey = 'createdAt';
+
+/**
+ * Sort keys for the admin Financial list — R-2.5, over the UNION.
+ *
+ * SQL FRAGMENTS rather than Drizzle columns, because the list reads the
+ * `combined` CTE assembled as raw SQL below — there is no column object to
+ * hand the query builder. The map stays a CLOSED, compiled-in lookup for the
+ * reason `listForUser`'s own `sortable` map records: this statement is
+ * assembled as SQL text, so the only path from a request string to a SQL
+ * identifier must be a lookup that either finds a known fragment or throws
+ * (`sortKey` in common/sorting.ts does the throwing — GHSA-gpj5-g38j-94v9).
+ *
+ * Three keys, deliberately fewer than the withdrawal queue's five: the joined
+ * `users` columns are not offered, because sorting the union by a joined
+ * column defeats the per-arm indexes 0093 adds and needs its own index story
+ * before it is honest to expose (R-2.5: the allowlist may not exceed the
+ * indexes).
+ */
+export const ADMIN_TRANSACTION_SORT_COLUMNS = {
+  createdAt: sql`combined.created_at`,
+  amount: sql`combined.amount`,
+  state: sql`combined.state`,
+} as const;
+
+export type AdminTransactionSortKey = keyof typeof ADMIN_TRANSACTION_SORT_COLUMNS;
+
+/** Newest first, like every other money list. */
+export const DEFAULT_ADMIN_TRANSACTION_SORT: AdminTransactionSortKey = 'createdAt';
 
 /**
  * Which withdrawal lifecycle an approval follows — see `approve()`.
@@ -936,73 +1041,54 @@ export class TransactionsService {
   }
 
   /**
-   * A client's own history — filtered, ordered and paged BY THE DATABASE.
+   * The `combined` CTE — every money movement on the platform, from the three
+   * tables that hold one, unioned in SQL. Shared VERBATIM by the client's own
+   * history (`listForUser`) and the admin Financial list (`listAllForAdmin`),
+   * so the two screens cannot drift on what counts as a movement.
    *
-   * ## ⚠️ What this replaced, and why it was wrong
+   * ── TRANSFERS ARE IN THIS LIST, AND THEY LIVE IN ANOTHER TABLE ───────────
    *
-   * This method used to be a bare `SELECT ... ORDER BY created_at DESC LIMIT
-   * 100` with no parameters, and the portal did the filtering, the sorting and
-   * the counting in the browser. Both apps documented that as "the client's
-   * whole history"; the `LIMIT 100` had made it false without anybody updating
-   * the sentence.
+   * A money history is deposits, withdrawals AND wallet ⇄ account transfers.
+   * The first two are rows in `transactions`; the third is a row in
+   * `transfers`, because a transfer has two legs and a bridge confirmation
+   * that a payment does not. Two tables, one history.
    *
-   * So a client with 150 movements was filtering the newest 100 and being told
-   * "showing 4 of 100". PLATFORM-CONVENTIONS R-2.5 names that failure exactly —
-   * and this is the screen a client uses to check the ledger against their own
-   * records, which makes an under-report here worse than on any other list.
+   * They are unioned HERE, in SQL, rather than merged by the caller — and that
+   * is not a preference. Both endpoints page, sort, filter and COUNT. A
+   * client-side merge of two paged lists gives a page whose rows come from one
+   * table and a total that describes the other, which is exactly the
+   * "showing 4 of 100" failure `listForUser`'s own history records. The union
+   * is the only place where one predicate can govern both.
    *
-   * Every constraint is now a WHERE, the ordering is an ORDER BY, and `total` is
-   * a COUNT over the same predicate. A filter therefore covers every row the
-   * client has, not the newest hundred.
+   * ── The mapping, and why each choice is the honest one ──────────────────
    *
-   * ## Ordering amounts is the database's job, and it is better at it
+   * `direction` is stated FROM THE WALLET'S SIDE, because that is what every
+   * other row in this list describes: `account_to_wallet` brings money in, so
+   * it reads as a deposit; `wallet_to_account` takes it out, so it reads as a
+   * withdrawal. A screen must not print those words for a transfer — `kind`
+   * exists for that — but the DIRECTION is the same fact, and inventing a
+   * third enum value would break both frontends' exhaustive switches over a
+   * Postgres enum this row is not stored in.
    *
-   * `amount` is `NUMERIC(28,8)`. Postgres orders it numerically and exactly —
-   * no decimal.js, no `Number()`, and no risk of the text comparison that puts
-   * '9.00000000' above '100.00000000'. §6.1 is satisfied by never taking the
-   * value out of the database to compare it.
+   * `state` is mapped rather than passed through: a transfer is
+   * pending/settled/failed and a transaction is pending/…/success/failure, and
+   * a list that mixes two vocabularies makes "settled" and "success" look like
+   * different outcomes. Mapped once, here, where both sets are visible.
+   *
+   * `kind` is what a renderer branches on. It is the one new field, and it is
+   * NOT nullable: every row says what it is.
+   *
+   * ── The one parameter: WHO MAY BE SEEN, decided PER ARM ──────────────────
+   *
+   * Each arm hands its own user-id column to `armWhere`, which returns that
+   * arm's whole WHERE clause — or an empty fragment for "no restriction".
+   * Per arm rather than on the outer SELECT, so each branch keeps its own
+   * `user_idx` usable and Postgres prunes before the union rather than after:
+   * on the admin list the clause is the actor's client-scope predicate, an
+   * EXISTS that would otherwise run over every row the union produced.
    */
-  async listForUser(
-    userId: string,
-    query: ListTransactionsQueryDto = {},
-  ): Promise<{ items: TransactionListRow[]; total: number; page: number; limit: number }> {
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 25;
-
-    /*
-     * ── TRANSFERS ARE IN THIS LIST, AND THEY LIVE IN ANOTHER TABLE ───────────
-     *
-     * A client's money history is deposits, withdrawals AND wallet ⇄ account
-     * transfers. The first two are rows in `transactions`; the third is a row in
-     * `transfers`, because a transfer has two legs and a bridge confirmation
-     * that a payment does not. Two tables, one history.
-     *
-     * They are unioned HERE, in SQL, rather than merged by the caller — and that
-     * is not a preference. This endpoint pages, sorts, filters and COUNTS. A
-     * client-side merge of two paged lists gives a page whose rows come from one
-     * table and a total that describes the other, which is exactly the
-     * "showing 4 of 100" failure this method's own history records. The union is
-     * the only place where one predicate can govern both.
-     *
-     * ── The mapping, and why each choice is the honest one ──────────────────
-     *
-     * `direction` is stated FROM THE WALLET'S SIDE, because that is what every
-     * other row in this list describes: `account_to_wallet` brings money in, so
-     * it reads as a deposit; `wallet_to_account` takes it out, so it reads as a
-     * withdrawal. A screen must not print those words for a transfer — `kind`
-     * exists for that — but the DIRECTION is the same fact, and inventing a
-     * third enum value would break both frontends' exhaustive switches over a
-     * Postgres enum this row is not stored in.
-     *
-     * `state` is mapped rather than passed through: a transfer is
-     * pending/settled/failed and a transaction is pending/…/success/failure, and
-     * a list that mixes two vocabularies makes "settled" and "success" look like
-     * different outcomes. Mapped once, here, where both sets are visible.
-     *
-     * `kind` is what a renderer branches on. It is the one new field, and it is
-     * NOT nullable: every row says what it is.
-     */
-    const selection = sql`
+  private movementsCte(armWhere: (userIdColumn: SQL) => SQL): SQL {
+    return sql`
       WITH combined AS (
         SELECT
           t.id,
@@ -1040,7 +1126,7 @@ export class TransactionsService {
         FROM transactions t
         LEFT JOIN payment_methods pm ON pm.key = t.method_key
         LEFT JOIN withdrawal_payment_methods wpm ON wpm.key = t.withdrawal_method_key
-        WHERE t.user_id = ${userId}
+        ${armWhere(sql`t.user_id`)}
 
         UNION ALL
 
@@ -1088,16 +1174,18 @@ export class TransactionsService {
           'transfer'::text                        AS kind,
           tr.trading_account_id
         FROM transfers tr
-        WHERE tr.user_id = ${userId}
+        ${armWhere(sql`tr.user_id`)}
 
         UNION ALL
 
         /*
          * A partner moving commission into their main wallet.
          *
-         * NO BACKTICKS anywhere in this block, and none in the two arms above
-         * either: this whole query is a TEMPLATE LITERAL, so one backtick in a
-         * comment ends the string and the rest of the file parses as code.
+         * NO BACKTICKS in any COMMENT in this block, or the two arms above:
+         * this whole query is a TEMPLATE LITERAL, so one backtick in a comment
+         * ends the string and the rest of the file parses as code. (The
+         * armWhere interpolations carry nested template literals — those are
+         * code, not comment text, and compose fine.)
          *
          * ## direction is stated from the MAIN wallet's side
          *
@@ -1152,8 +1240,53 @@ export class TransactionsService {
           'commission_transfer'::text             AS kind,
           NULL::uuid                              AS trading_account_id
         FROM ib_wallet_transfers iwt
-        WHERE iwt.user_id = ${userId}
+        ${armWhere(sql`iwt.user_id`)}
       )
+    `;
+  }
+
+  /**
+   * A client's own history — filtered, ordered and paged BY THE DATABASE.
+   *
+   * ## ⚠️ What this replaced, and why it was wrong
+   *
+   * This method used to be a bare `SELECT ... ORDER BY created_at DESC LIMIT
+   * 100` with no parameters, and the portal did the filtering, the sorting and
+   * the counting in the browser. Both apps documented that as "the client's
+   * whole history"; the `LIMIT 100` had made it false without anybody updating
+   * the sentence.
+   *
+   * So a client with 150 movements was filtering the newest 100 and being told
+   * "showing 4 of 100". PLATFORM-CONVENTIONS R-2.5 names that failure exactly —
+   * and this is the screen a client uses to check the ledger against their own
+   * records, which makes an under-report here worse than on any other list.
+   *
+   * Every constraint is now a WHERE, the ordering is an ORDER BY, and `total` is
+   * a COUNT over the same predicate. A filter therefore covers every row the
+   * client has, not the newest hundred.
+   *
+   * ## Ordering amounts is the database's job, and it is better at it
+   *
+   * `amount` is `NUMERIC(28,8)`. Postgres orders it numerically and exactly —
+   * no decimal.js, no `Number()`, and no risk of the text comparison that puts
+   * '9.00000000' above '100.00000000'. §6.1 is satisfied by never taking the
+   * value out of the database to compare it.
+   */
+  async listForUser(
+    userId: string,
+    query: ListTransactionsQueryDto = {},
+  ): Promise<{ items: TransactionListRow[]; total: number; page: number; limit: number }> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 25;
+
+    /*
+     * The union of the three money tables — `movementsCte` below, which
+     * carries this method's original design commentary and is shared with the
+     * admin Financial list. This caller pins one OWNER: every arm reads
+     * `WHERE <arm>.user_id = the session's user`, so the owner comes from the
+     * session and never from a parameter (R-4.4).
+     */
+    const selection = sql`${this.movementsCte((owner) => sql` WHERE ${owner} = ${userId}`)}
       SELECT * FROM combined
     `;
 
@@ -1270,6 +1403,358 @@ export class TransactionsService {
       total: (counted.rows[0] as unknown as { value: number } | undefined)?.value ?? 0,
       page,
       limit,
+    };
+  }
+
+  /**
+   * The pieces every admin read of the union assembles — the CTE with the
+   * actor's scope applied PER ARM, the `users` join, and one predicate builder
+   * shared by the page, the total, both count facets, the summary and the
+   * export. Sharing the builder is the point: two separately-assembled WHERE
+   * clauses are two things that can drift, and here the failure would be a
+   * count or a file describing rows the list refused to show.
+   */
+  private adminMovements(filter: AdminMovementsFilter) {
+    const scope = filter.scope ?? UNRESTRICTED;
+
+    const cte = this.movementsCte((owner) => {
+      const conditions: SQL[] = [];
+      /*
+       * In the ARM's WHERE clause: an out-of-scope movement never enters the
+       * union, so it also cannot appear in the counts, the summary or the
+       * export computed from it — the same rule `listForAdmin` states for the
+       * withdrawal queue, applied one level deeper.
+       */
+      const scoped = clientScopePredicate(scope, owner);
+      if (scoped) conditions.push(scoped);
+      // Validated as a UUID at the edge — an unvalidated value against a uuid
+      // column is the 500 common/query-params.ts documents.
+      if (filter.userId) conditions.push(sql`${owner} = ${filter.userId}::uuid`);
+      return conditions.length ? sql` WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
+    });
+
+    /*
+     * The client columns, joined once for display, search and the export —
+     * INNER, because every movement's user_id is a NOT NULL FK onto users, so
+     * the join can drop nothing.
+     */
+    const joined = sql`${cte}
+      SELECT
+        combined.*,
+        u.email      AS user_email,
+        u.first_name AS user_first_name,
+        u.last_name  AS user_last_name
+      FROM combined
+      JOIN users u ON u.id = combined.user_id`;
+
+    const term = filter.q?.trim() ? `%${filter.q.trim()}%` : undefined;
+
+    /*
+     * `omit` is how the two count facets stay honest — the same two-axis rule
+     * the withdrawal queue documents: the state tabs must show every state's
+     * size regardless of the active state filter, and the direction tabs every
+     * direction's, but NOTHING may ever omit the scope (it lives in the CTE's
+     * arms, upstream of every caller of this builder).
+     */
+    const conditionsFor = (omit: { state?: boolean; directionKind?: boolean } = {}): SQL[] => {
+      const conditions: SQL[] = [];
+      if (!omit.directionKind && filter.direction) {
+        conditions.push(sql`combined.direction = ${filter.direction}`);
+      }
+      if (!omit.directionKind && filter.kind) {
+        conditions.push(sql`combined.kind = ${filter.kind}`);
+      }
+      if (!omit.state && filter.state) conditions.push(sql`combined.state = ${filter.state}`);
+      if (filter.currency) conditions.push(sql`combined.currency = ${filter.currency}`);
+      /*
+       * INCLUSIVE at both ends, compared by DATE PART — the same clause the
+       * client list uses, for the same "my newest transaction vanished when I
+       * set an end date" reason.
+       */
+      if (filter.from) conditions.push(sql`combined.created_at::date >= ${filter.from}::date`);
+      if (filter.to) conditions.push(sql`combined.created_at::date <= ${filter.to}::date`);
+      // The same three columns every admin queue searches (see `listForAdmin`).
+      if (term) {
+        conditions.push(
+          sql`(u.email ILIKE ${term} OR u.first_name ILIKE ${term} OR u.last_name ILIKE ${term})`,
+        );
+      }
+      return conditions;
+    };
+
+    const whereOf = (conditions: SQL[]): SQL =>
+      conditions.length ? sql` WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
+
+    return { joined, conditionsFor, whereOf };
+  }
+
+  /**
+   * The platform-wide money-movement list — GET /admin/transactions.
+   *
+   * The union `listForUser` reads, minus the pinned owner, plus the actor's
+   * client scope, the `users` join, a keyset cursor and two count facets. The
+   * response never carries a monetary NUMBER: `money()` normalises every
+   * amount to the string the column holds (§6.1).
+   */
+  async listAllForAdmin(
+    filter: AdminMovementsFilter & {
+      page?: number;
+      limit?: number;
+      /** Keyset position — R-2.4. When present, `page` is ignored. */
+      cursor?: CursorPosition;
+      /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
+      sort?: AdminTransactionSortKey;
+      order?: SortOrder;
+    },
+  ) {
+    const page = Math.max(1, filter.page ?? 1);
+    const limit = pageSize(filter.limit);
+    const sortKey: AdminTransactionSortKey = filter.sort ?? DEFAULT_ADMIN_TRANSACTION_SORT;
+    const direction = filter.order ?? 'desc';
+    const sortColumn = ADMIN_TRANSACTION_SORT_COLUMNS[sortKey];
+
+    const { joined, conditionsFor, whereOf } = this.adminMovements(filter);
+
+    /*
+     * Keyset seek — R-2.4, the same tuple comparison `listForAdmin` documents:
+     * the comparator follows the sort direction, and the cursor value casts to
+     * the sort column's own type — `::numeric` for amount, never a float, so
+     * the seek compares at full precision. `state` is already text in the
+     * union (each arm casts or states it), so it needs no cast on either side.
+     */
+    const pageConditions = conditionsFor();
+    if (filter.cursor) {
+      const comparator = direction === 'asc' ? sql`>` : sql`<`;
+      const cast =
+        sortKey === 'createdAt'
+          ? sql`${filter.cursor.value}::timestamptz`
+          : sortKey === 'amount'
+            ? sql`${filter.cursor.value}::numeric`
+            : sql`${filter.cursor.value}::text`;
+      pageConditions.push(
+        sql`(${sortColumn}, combined.id) ${comparator} (${cast}, ${filter.cursor.id}::uuid)`,
+      );
+    }
+
+    const orderDir = direction === 'asc' ? sql`ASC` : sql`DESC`;
+    const usingCursor = Boolean(filter.cursor) || page <= 1;
+
+    /*
+     * Four reads, one predicate builder. The total and the facets deliberately
+     * EXCLUDE the cursor seek — a total that shrank as the admin paged would
+     * describe "what is after where I am", not the list — and each facet
+     * excludes its own axis (see `adminMovements.conditionsFor`).
+     */
+    const [rows, counted, stateRows, directionRows] = await Promise.all([
+      this.db.execute(sql`
+        ${joined}${whereOf(pageConditions)}
+        ORDER BY ${sortColumn} ${orderDir}, combined.id ${orderDir}
+        LIMIT ${limit + 1} OFFSET ${usingCursor ? 0 : (page - 1) * limit}
+      `),
+      this.db.execute(sql`
+        WITH counted AS (${joined}${whereOf(conditionsFor())})
+        SELECT count(*)::int AS value FROM counted
+      `),
+      this.db.execute(sql`
+        WITH counted AS (${joined}${whereOf(conditionsFor({ state: true }))})
+        SELECT state, count(*)::int AS value FROM counted GROUP BY state
+      `),
+      this.db.execute(sql`
+        WITH counted AS (${joined}${whereOf(conditionsFor({ directionKind: true }))})
+        SELECT direction, count(*)::int AS value FROM counted GROUP BY direction
+      `),
+    ]);
+
+    const total = (counted.rows[0] as unknown as { value: number } | undefined)?.value ?? 0;
+
+    const counts: Record<string, number> = { all: 0 };
+    for (const row of stateRows.rows as unknown as { state: string; value: number }[]) {
+      counts[row.state] = row.value;
+      counts['all'] += row.value;
+    }
+    const directionCounts: Record<string, number> = { all: 0 };
+    for (const row of directionRows.rows as unknown as { direction: string; value: number }[]) {
+      directionCounts[row.direction] = row.value;
+      directionCounts['all'] += row.value;
+    }
+
+    /*
+     * Relabelled before `buildCursorPage` for the reason `listForAdmin`
+     * records: the cursor is minted by reading `row[sort]`, so the row must
+     * carry the sort key under that name — and `created_at` arrives as the
+     * Postgres literal, which `instantOf` turns into the Date the cursor
+     * serialises as ISO-8601.
+     */
+    const paged = buildCursorPage(
+      (rows.rows as unknown as AdminCombinedRow[]).map((row) => ({
+        ...row,
+        createdAt: instantOf(row.created_at),
+      })),
+      limit,
+      total,
+      sortKey,
+    );
+
+    const items = paged.items.map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      direction: row.direction,
+      state: row.state,
+      amount: money(row.amount), // money crosses the boundary as a string
+      currency: row.currency,
+      /*
+       * The rail's display name, falling back to `provider` — the queue's own
+       * rule. For the two transfer kinds the union names no method, so the
+       * fallback is their stated provider ('transfer' / 'commission'), which
+       * the frontends already translate through `kind`.
+       */
+      methodName: row.method_name ?? row.provider,
+      provider: row.provider,
+      providerRef: row.provider_ref,
+      destination: row.destination,
+      rejectionReason: row.rejection_reason,
+      tradingAccountId: row.trading_account_id,
+      walletId: row.wallet_id,
+      createdAt: row.createdAt,
+      settledAt: instantOrNull(row.settled_at),
+      user: {
+        id: row.user_id,
+        email: row.user_email,
+        firstName: row.user_first_name,
+        lastName: row.user_last_name,
+      },
+    }));
+
+    return { items, nextCursor: paged.nextCursor, total, page, limit, counts, directionCounts };
+  }
+
+  /**
+   * One batch of the Financial list for a CSV export — the same filters and
+   * the same scope as `listAllForAdmin`, without the page-size ceiling, for
+   * the reasons `listForExport` records (an export's promise is every matching
+   * row, and offset batches over a total `created_at DESC, id DESC` ordering
+   * cannot shift a row across a batch boundary).
+   */
+  async listAllForExport(
+    filter: AdminMovementsFilter & { offset: number; limit: number },
+  ): Promise<AdminTransactionExportRow[]> {
+    const { joined, conditionsFor, whereOf } = this.adminMovements(filter);
+
+    const rows = await this.db.execute(sql`
+      ${joined}${whereOf(conditionsFor())}
+      ORDER BY combined.created_at DESC, combined.id DESC
+      LIMIT ${filter.limit} OFFSET ${filter.offset}
+    `);
+
+    return (rows.rows as unknown as AdminCombinedRow[]).map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      direction: row.direction,
+      state: row.state,
+      // The STRING the database produced — a CSV is the output most likely to
+      // be re-imported into something that does arithmetic on it (§6.1).
+      amount: money(row.amount),
+      currency: row.currency,
+      methodName: row.method_name ?? row.provider,
+      provider: row.provider,
+      providerRef: row.provider_ref,
+      destination: row.destination,
+      rejectionReason: row.rejection_reason,
+      userId: row.user_id,
+      userEmail: row.user_email,
+      userFirstName: row.user_first_name,
+      userLastName: row.user_last_name,
+      createdAt: instantOf(row.created_at),
+      settledAt: instantOrNull(row.settled_at),
+    }));
+  }
+
+  /**
+   * Server-computed totals for the Financial page's tiles — every group keyed
+   * by CURRENCY, because a sum across currencies is not a number (one group's
+   * '100.00000000' USD and another's USDT share no unit). The page renders
+   * these strings or nothing; it never adds them.
+   *
+   * Two granularities from one predicate: `rows` is the full breakdown
+   * (direction × kind × state × currency) and `directions` the headline pair
+   * a tile shows — both computed HERE so no caller ever aggregates the fine
+   * rows into the coarse ones client-side.
+   */
+  async summarizeForAdmin(filter: AdminMovementsFilter): Promise<{
+    rows: {
+      direction: string;
+      kind: MovementKind;
+      state: string;
+      currency: string;
+      count: number;
+      total: string;
+    }[];
+    directions: { direction: string; currency: string; count: number; total: string }[];
+  }> {
+    const { joined, conditionsFor, whereOf } = this.adminMovements(filter);
+
+    const [grouped, byDirection] = await Promise.all([
+      this.db.execute(sql`
+        WITH counted AS (${joined}${whereOf(conditionsFor())})
+        SELECT
+          direction,
+          kind,
+          state,
+          currency,
+          count(*)::int AS value,
+          -- ::text, so the NUMERIC(28,8) crosses this boundary as a string
+          -- whatever the driver does (§6.1); coalesce is belt-and-braces — a
+          -- group only exists because rows do, so the sum cannot be null.
+          coalesce(sum(amount), 0)::text AS total
+        FROM counted
+        GROUP BY direction, kind, state, currency
+        ORDER BY direction, kind, state, currency
+      `),
+      this.db.execute(sql`
+        WITH counted AS (${joined}${whereOf(conditionsFor())})
+        SELECT
+          direction,
+          currency,
+          count(*)::int AS value,
+          coalesce(sum(amount), 0)::text AS total
+        FROM counted
+        GROUP BY direction, currency
+        ORDER BY direction, currency
+      `),
+    ]);
+
+    return {
+      rows: (
+        grouped.rows as unknown as {
+          direction: string;
+          kind: MovementKind;
+          state: string;
+          currency: string;
+          value: number;
+          total: string;
+        }[]
+      ).map((row) => ({
+        direction: row.direction,
+        kind: row.kind,
+        state: row.state,
+        currency: row.currency,
+        count: row.value,
+        // Never Number(row.total) — the string IS the value (§6.1).
+        total: row.total,
+      })),
+      directions: (
+        byDirection.rows as unknown as {
+          direction: string;
+          currency: string;
+          value: number;
+          total: string;
+        }[]
+      ).map((row) => ({
+        direction: row.direction,
+        currency: row.currency,
+        count: row.value,
+        total: row.total,
+      })),
     };
   }
 

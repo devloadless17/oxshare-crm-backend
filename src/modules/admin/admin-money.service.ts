@@ -5,12 +5,16 @@ import {
   type NotificationDispatchPort,
 } from '../../common/provisioning/notification-dispatch.port';
 import {
+  ADMIN_TRANSACTION_SORT_COLUMNS,
+  DEFAULT_ADMIN_TRANSACTION_SORT,
   DEFAULT_WITHDRAWAL_SORT,
   MANUAL_ADMIN_PROVIDER,
   TransactionsService,
   WITHDRAWAL_SORT_COLUMNS,
+  type AdminMovementsFilter,
 } from '../payments/transactions.service';
 import { sortKey, sortOrder } from '../../common/sorting';
+import { applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
 import { WalletService } from '../wallet/wallet.service';
 import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
@@ -292,7 +296,7 @@ export class AdminMoneyService {
     );
     const order = sortOrder(query.order);
 
-    return this.transactions.listForAdmin({
+    const page = await this.transactions.listForAdmin({
       scope: actor.clientScope,
       state: query.state,
       q: query.q,
@@ -304,6 +308,34 @@ export class AdminMoneyService {
       sort,
       order,
     });
+
+    /*
+     * RBAC-03, and the fifth surface to need this line.
+     *
+     * The desk joins `users.email/firstName/lastName` into a nested `user` so an
+     * operator can see whose payout they are approving — which makes it a screen
+     * that shows a client without going through the client service, the exact
+     * shape of every masking bypass this feature has had. `applyMask` is opt-in
+     * per response, so the DEFAULT for a new surface is unmasked and the failure
+     * is invisible: the page works perfectly, and only an admin who is supposed
+     * to be restricted can tell.
+     *
+     * `user.id` survives — the row is addressed by it, which is why the catalog
+     * marks `client.id` unmaskable. `maskedFields` is not decoration: without it
+     * the screen renders an em dash, and "hidden from you" becomes
+     * indistinguishable from "this client has no email on file".
+     *
+     * The `q` filter still searches the masked columns, deliberately. Search is
+     * a lookup the operator already has to know the value to perform, and the
+     * scope predicate is what decides which rows they may reach; narrowing the
+     * search instead would let them binary-search a hidden value out of the
+     * result COUNT, which is a worse leak than the one it would close.
+     */
+    return {
+      ...page,
+      items: applyMaskAll('withdrawal', page.items, actor.fieldMask),
+      maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
+    };
   }
   /*
    * Every withdrawal transition below records its audit row INSIDE the
@@ -721,6 +753,94 @@ export class AdminMoneyService {
       cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
     });
   }
+  // ─── The Financial page: every money movement, platform-wide ──────────────
+
+  async listTransactions(
+    query: {
+      direction?: string;
+      kind?: string;
+      state?: string;
+      userId?: string;
+      currency?: string;
+      /** Free text over the client's email and name — see `listForAdmin`. */
+      q?: string;
+      from?: string;
+      to?: string;
+      page?: string;
+      limit?: string;
+      cursor?: string;
+      sort?: string;
+      order?: string;
+    },
+    actor: AuthenticatedAdmin,
+  ) {
+    /*
+     * R-4.3: asserted HERE as well as in the guard — a guard runs on an HTTP
+     * request; this method is what a queued job would call.
+     *
+     * `transactions.view`, its own key: not `withdrawals.view` (the leak the
+     * ledger already fixed — payout review must not hand over every deposit)
+     * and not `ledger.view` (the accounting record is a different screen
+     * answering a different question). See config/permissions.json.
+     */
+    assertActorCan(actor, 'transactions.view', 'list money movements');
+
+    // Sort validated BEFORE the cursor is decoded — `listWithdrawals` records
+    // why the order matters.
+    const sort = sortKey(
+      query.sort,
+      ADMIN_TRANSACTION_SORT_COLUMNS,
+      DEFAULT_ADMIN_TRANSACTION_SORT,
+      'transactions',
+    );
+    const order = sortOrder(query.order);
+
+    const page = await this.transactions.listAllForAdmin({
+      scope: actor.clientScope,
+      direction: query.direction,
+      kind: query.kind,
+      state: query.state,
+      userId: query.userId,
+      currency: query.currency,
+      q: query.q,
+      from: query.from,
+      to: query.to,
+      page: parseInt(query.page ?? '1', 10) || 1,
+      limit: parseInt(query.limit ?? '25', 10) || 25,
+      // R-2.4 — an archive the whole platform keeps writing to while it is
+      // being read, which is the concurrent-insert case offset paging gets
+      // wrong.
+      cursor: query.cursor ? decodeCursor(query.cursor, sort) : undefined,
+      sort,
+      order,
+    });
+
+    /*
+     * RBAC-03, the `listWithdrawals` shape: the joined client is the same
+     * person the client list masks, reached without going through the client
+     * service — which is every bypass this feature has ever had. `applyMask`
+     * is opt-in per response, so a new surface that forgets this line leaks
+     * silently and only a restricted operator can tell; the HTTP spec's
+     * masking cases are the other half of the fix.
+     */
+    return {
+      ...page,
+      items: applyMaskAll('financial', page.items, actor.fieldMask),
+      maskedFields: maskedFieldsFor('financial', actor.fieldMask),
+    };
+  }
+
+  async transactionsSummary(query: Omit<AdminMovementsFilter, 'scope'>, actor: AuthenticatedAdmin) {
+    // R-4.3, and the SAME key as the list: the tiles are the list aggregated,
+    // so a different key would let one screen leak what the other refuses.
+    assertActorCan(actor, 'transactions.view', 'summarise money movements');
+
+    return this.transactions.summarizeForAdmin({
+      ...query,
+      scope: actor.clientScope,
+    });
+  }
+
   /*
    * The commission-plan methods were HERE and went with the engine.
    *
