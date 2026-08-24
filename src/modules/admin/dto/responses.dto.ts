@@ -775,6 +775,13 @@ export class HoldingOwnerDto {
 export class WalletRowDto {
   @ApiProperty() id: string;
   @ApiProperty({
+    example: '4f7kq2nm8xcb',
+    description:
+      'Human-friendly wallet number — 12 lowercase Crockford base32 chars. ' +
+      'Display and support reference only; `id` remains the key.',
+  })
+  walletNumber: string;
+  @ApiProperty({
     type: 'string',
     example: '250.00000000',
     description:
@@ -1030,6 +1037,11 @@ export class IssuedApiKeyDto {
  */
 export class WalletDiscrepancyDto {
   @ApiProperty() walletId: string;
+  @ApiProperty({
+    example: '4f7kq2nm8xcb',
+    description: 'The wallet’s human-friendly number — display only; `walletId` is the key.',
+  })
+  walletNumber: string;
   @ApiProperty() userId: string;
   @ApiProperty() currency: string;
 

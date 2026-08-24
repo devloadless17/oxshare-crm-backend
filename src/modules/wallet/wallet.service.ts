@@ -473,6 +473,7 @@ export class WalletService {
       .select({
         id: ledgerEntries.id,
         walletId: ledgerEntries.walletId,
+        walletNumber: wallets.walletNumber,
         amount: ledgerEntries.amount,
         balanceAfter: ledgerEntries.balanceAfter,
         entryType: ledgerEntries.entryType,

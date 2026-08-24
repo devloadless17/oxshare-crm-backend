@@ -10550,6 +10550,11 @@
           "id": {
             "type": "string"
           },
+          "walletNumber": {
+            "type": "string",
+            "example": "4f7kq2nm8xcb",
+            "description": "Human-friendly wallet number — 12 lowercase Crockford base32 chars. Display and support reference only; `id` remains the key."
+          },
           "userId": {
             "type": "string"
           },
@@ -10588,6 +10593,7 @@
         },
         "required": [
           "id",
+          "walletNumber",
           "userId",
           "currency",
           "kind",
@@ -11928,6 +11934,11 @@
           "walletId": {
             "type": "string"
           },
+          "walletNumber": {
+            "type": "string",
+            "example": "4f7kq2nm8xcb",
+            "description": "The wallet’s human-friendly number — display only; `walletId` is the key."
+          },
           "userId": {
             "type": "string"
           },
@@ -11969,6 +11980,7 @@
         "required": [
           "id",
           "walletId",
+          "walletNumber",
           "userId",
           "amount",
           "balanceAfter",
@@ -15841,6 +15853,11 @@
           "walletId": {
             "type": "string"
           },
+          "walletNumber": {
+            "type": "string",
+            "example": "4f7kq2nm8xcb",
+            "description": "The wallet’s human-friendly number — display only; `walletId` is the key."
+          },
           "userId": {
             "type": "string"
           },
@@ -15865,6 +15882,7 @@
         },
         "required": [
           "walletId",
+          "walletNumber",
           "userId",
           "currency",
           "balance",
@@ -16305,6 +16323,11 @@
           "id": {
             "type": "string"
           },
+          "walletNumber": {
+            "type": "string",
+            "example": "4f7kq2nm8xcb",
+            "description": "Human-friendly wallet number — 12 lowercase Crockford base32 chars. Display and support reference only; `id` remains the key."
+          },
           "balance": {
             "type": "string",
             "example": "250.00000000",
@@ -16341,6 +16364,7 @@
         },
         "required": [
           "id",
+          "walletNumber",
           "balance",
           "onHold",
           "currency",

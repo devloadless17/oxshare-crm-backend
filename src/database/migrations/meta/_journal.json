@@ -631,6 +631,13 @@
       "when": 1787101216007,
       "tag": "0089_drop_client_tags_is_system",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1787101216008,
+      "tag": "0090_a_wallet_gets_a_number",
+      "breakpoints": true
     }
   ]
 }
