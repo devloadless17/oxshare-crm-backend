@@ -9,7 +9,14 @@ import {
   type Session,
 } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, auditLog, refreshTokens, roles, users } from '../src/database/schema';
+import {
+  admins,
+  auditLog,
+  refreshTokens,
+  roles,
+  tradingAccounts,
+  users,
+} from '../src/database/schema';
 
 /**
  * CORE-18's admin half, over HTTP, through the real guard chain.
@@ -387,5 +394,81 @@ describe('changing the sign-in email', () => {
 
     // Validation runs before revocation, so a typo does not log the client out.
     await client.get('/v1/identity/me').expect(200);
+  });
+});
+
+/**
+ * ADM-01's trading-accounts card, which was DECLARED on the response and
+ * populated by nothing.
+ *
+ * Every profile therefore reported no trading accounts — including a client
+ * holding three — and because the field is optional the console rendered an
+ * empty section rather than an error. That is the same failure the portal's own
+ * accounts page once had, on the console this time, and in front of the reader
+ * most likely to act on it.
+ *
+ * Asserted on the WIRE, because the distinction that matters is between an
+ * ABSENT section and an EMPTY one: absent means "your permissions hide this",
+ * empty means "this client has none", and a card cannot say the right one
+ * unless the two arrive differently.
+ */
+describe('the client profile lists the client’s trading accounts', () => {
+  beforeEach(async () => {
+    await ctx.db.db.delete(tradingAccounts).where(eq(tradingAccounts.userId, clientId));
+  });
+
+  it('returns the accounts to a reader holding trading.view', async () => {
+    await ctx.db.db.insert(tradingAccounts).values([
+      {
+        userId: clientId,
+        login: '5100001',
+        mt5Group: 'real\\Standard',
+        environment: 'live',
+        currency: 'USD',
+        leverage: 100,
+      },
+      {
+        userId: clientId,
+        login: '5100002',
+        mt5Group: 'demo\\Standard',
+        environment: 'demo',
+        currency: 'USD',
+      },
+    ]);
+
+    const res = await master.get(`/v1/admin/clients/${clientId}`).expect(200);
+
+    expect(res.body.tradingAccounts).toHaveLength(2);
+    // LIVE first: the accounts holding real money are what the card is opened
+    // for, and enum order rather than an alphabetical accident decides it.
+    expect(res.body.tradingAccounts[0].mt5Login).toBe('5100001');
+    expect(res.body.tradingAccounts[0].environment).toBe('live');
+    expect(res.body.tradingAccounts[0].mt5Group).toBe('real\\Standard');
+    expect(res.body.tradingAccounts[1].environment).toBe('demo');
+  });
+
+  it('returns an EMPTY array for a client who genuinely has none', async () => {
+    const res = await master.get(`/v1/admin/clients/${clientId}`).expect(200);
+
+    /*
+     * Present and empty, never absent. Absent is reserved for "hidden by your
+     * permissions", and collapsing the two is what let this card report an
+     * account-less client and a hidden section with the same rendering.
+     */
+    expect(res.body).toHaveProperty('tradingAccounts');
+    expect(res.body.tradingAccounts).toEqual([]);
+  });
+
+  it('omits the section entirely from a reader without trading.view', async () => {
+    await ctx.db.db.insert(tradingAccounts).values({
+      userId: clientId,
+      login: '5100003',
+      environment: 'live',
+      currency: 'USD',
+    });
+
+    const res = await viewer.get(`/v1/admin/clients/${clientId}`).expect(200);
+
+    expect(res.body).not.toHaveProperty('tradingAccounts');
   });
 });

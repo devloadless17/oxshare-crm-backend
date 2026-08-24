@@ -181,6 +181,7 @@ export class SettingsService {
       maxDemoAccounts: terms.maxDemoAccounts,
       maxDemoDeposit: terms.maxDemoDeposit,
       ibMaxRevenueSharePct: terms.ibMaxRevenueSharePct,
+      ibCommissionHoldHours: terms.ibCommissionHoldHours,
       updatedAt: row?.updatedAt.toISOString() ?? null,
     };
   }
@@ -202,6 +203,7 @@ export class SettingsService {
         maxDemoAccounts: dto.maxDemoAccounts,
         maxDemoDeposit: dto.maxDemoDeposit,
         ibMaxRevenueSharePct: dto.ibMaxRevenueSharePct,
+        ibCommissionHoldHours: dto.ibCommissionHoldHours,
       },
       actor.id,
     );
@@ -217,6 +219,7 @@ export class SettingsService {
       maxDemoAccounts: row.maxDemoAccounts,
       maxDemoDeposit: row.maxDemoDeposit,
       ibMaxRevenueSharePct: row.ibMaxRevenueSharePct,
+      ibCommissionHoldHours: row.ibCommissionHoldHours,
       updatedAt: row.updatedAt.toISOString(),
     };
 
@@ -227,6 +230,10 @@ export class SettingsService {
       'maxDemoDeposit',
       // The broker's own margin — the single most consequential number here.
       'ibMaxRevenueSharePct',
+      // The settlement window. Shortening it to 0 makes every pending
+      // accrual payable on the next run, which is a decision with a date on
+      // it rather than a preference.
+      'ibCommissionHoldHours',
     ] as const) {
       if (previous[field] !== after[field]) {
         changed[field] = { before: previous[field], after: after[field] };

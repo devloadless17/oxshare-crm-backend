@@ -158,6 +158,14 @@ export class TradingSettingsDto {
   })
   ibMaxRevenueSharePct: string;
 
+  @ApiProperty({
+    example: 24,
+    description:
+      'Hours a commission is HELD before it may be confirmed — the rule between earned and ' +
+      'spendable. 0 pays as soon as it is calculated.',
+  })
+  ibCommissionHoldHours: number;
+
   @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
   updatedAt: string | null;
 }
@@ -210,4 +218,25 @@ export class UpdateTradingSettingsDto {
     message: 'ibMaxRevenueSharePct must be a percentage between 0 and 100',
   })
   ibMaxRevenueSharePct: string;
+
+  /**
+   * The settlement window, in hours.
+   *
+   * ZERO IS LEGAL and means "pay as soon as it is calculated" — a broker
+   * running no reversal desk may genuinely want that, and refusing it here
+   * would make them set it in the environment instead, which is where this
+   * number came from and the reason nobody could see it.
+   *
+   * The ceiling is a year. It is not a policy limit — no window anybody
+   * chooses is close to it — it is the typo guard: a mistyped 24000 would
+   * hold every partner's commission for three years while every component
+   * reported success, which is indistinguishable from the engine having
+   * stopped. The same bound is a CHECK on the column, so it holds against a
+   * writer that never sees this DTO.
+   */
+  @ApiProperty({ example: 24, minimum: 0, maximum: 8760 })
+  @IsInt()
+  @Min(0)
+  @Max(8760)
+  ibCommissionHoldHours: number;
 }

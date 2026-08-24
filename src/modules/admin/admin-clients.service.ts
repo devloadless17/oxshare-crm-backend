@@ -62,6 +62,7 @@ function documentFilenames(submission: KycSubmission | undefined): string[] {
     .filter((p): p is string => typeof p === 'string' && p.length > 0)
     .map((p) => p.split('/').pop() as string);
 }
+import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 
 /**
@@ -85,6 +86,7 @@ export class AdminClientsService {
     private readonly users: UsersStore,
     private readonly tags: ClientTagsStore,
     private readonly kyc: KycStore,
+    private readonly holdings: AdminHoldingsService,
     private readonly audit: AdminAuditService,
     /*
      * `EmailModule` and `SecurityModule` are both @Global, so these resolve
@@ -289,11 +291,23 @@ export class AdminClientsService {
      * `referral_attributions` table was replaced by in 0032.
      */
     const canSeeNetwork = may('ib.view');
-    const [tags, kyc, referrer, referredClients] = await Promise.all([
+    const [tags, kyc, referrer, referredClients, trading] = await Promise.all([
       this.tags.tagsForClient(clientId),
       may('kyc.view') || may('kyc.review') ? this.kyc.findByUserId(clientId) : undefined,
       canSeeNetwork ? this.referrerOf(client) : undefined,
       canSeeNetwork ? this.referredClientsOf(clientId) : undefined,
+      /*
+       * ABSENT without `trading.view`, an empty array with it — the same rule
+       * the Network sections below follow, for the same reason. The card can
+       * then say "hidden by your permissions" rather than "no accounts", which
+       * are opposite facts about a client who may hold three.
+       *
+       * This section was DECLARED on the response and populated by nothing, so
+       * every profile reported no trading accounts — the same wrong answer the
+       * portal's own accounts page once gave, on the console this time, and to
+       * the reader most likely to act on it.
+       */
+      may('trading.view') ? this.holdings.accountsForProfile(clientId) : undefined,
     ]);
 
     const profile = {
@@ -332,6 +346,7 @@ export class AdminClientsService {
       ...(may('kyc.documents.view') && kyc !== undefined
         ? { documents: documentFilenames(kyc) }
         : {}),
+      ...(trading === undefined ? {} : { tradingAccounts: trading }),
       /*
        * The Network sections, absent without ib.view — the same key the screen
        * gates its whole tab on. `referrer` is additionally absent when nobody

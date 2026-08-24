@@ -415,6 +415,44 @@ export class AdminHoldingsService {
 
   // ── Trading accounts ──────────────────────────────────────────────────────
 
+  /**
+   * One client's trading accounts, for the ADM-01 profile card.
+   *
+   * ## Why this is not `listTradingAccounts` with a userId
+   *
+   * That one is the directory: paged, sorted, counted, and shaped for a table
+   * of every client's accounts. A profile shows the handful belonging to the
+   * client already open, so it wants none of that machinery and no page size to
+   * be wrong about — a client with more accounts than a page would otherwise
+   * see a truncated list with nothing saying so.
+   *
+   * ## No client scope here, deliberately
+   *
+   * The caller has ALREADY resolved this client through `findForAdmin` with the
+   * actor's scope, and an out-of-scope client 404s there. Re-applying the scope
+   * would be a second, quieter check whose only distinct outcome is a profile
+   * that renders with an empty accounts card for a client the reader was
+   * allowed to open — which is the exact failure this card exists to end.
+   */
+  async accountsForProfile(userId: string) {
+    return (
+      this.db
+        .select({
+          id: tradingAccounts.id,
+          mt5Login: tradingAccounts.login,
+          mt5Group: tradingAccounts.mt5Group,
+          environment: tradingAccounts.environment,
+          leverage: tradingAccounts.leverage,
+          createdAt: tradingAccounts.createdAt,
+        })
+        .from(tradingAccounts)
+        .where(eq(tradingAccounts.userId, userId))
+        // Live before demo, newest first within each: the accounts that hold real
+        // money are what an operator opened this card to see.
+        .orderBy(asc(tradingAccounts.environment), desc(tradingAccounts.createdAt))
+    );
+  }
+
   async listTradingAccounts(
     query: {
       userId?: string;

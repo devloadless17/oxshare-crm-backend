@@ -108,6 +108,12 @@ afterEach(async () => {
   if (originalHold === undefined) delete process.env['IB_COMMISSION_HOLD_HOURS'];
   else process.env['IB_COMMISSION_HOLD_HOURS'] = originalHold;
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
+  /*
+   * The SETTING outranks the environment, so a row left behind by one case
+   * would silently decide the next one — and the cases above are about what a
+   * deployment configures, which only answers while no row exists.
+   */
+  await ctx.db.execute(sql`DELETE FROM trading_settings`);
 });
 
 describe('the settlement window decides what is payable', () => {
@@ -213,5 +219,70 @@ describe('how the window is configured', () => {
     await accrue(partner, client, '00000000-0000-4000-8000-00000000e009', 3);
 
     expect((await serviceWithHold('-5').confirmPending()).confirmed).toBe(0);
+  });
+});
+
+/**
+ * The window moved from the environment to `trading_settings`, and these are
+ * the two facts that move has to be true for.
+ *
+ * It mattered because the one rule between earned and spendable took a deploy
+ * to change and was invisible to everybody running the platform — while every
+ * other commercial control on that row (the account caps, the demo ceiling, the
+ * broker's revenue-share floor) had been operator-visible for months.
+ */
+describe('the saved setting outranks the environment', () => {
+  async function saveWindow(hours: number): Promise<void> {
+    await ctx.db.execute(sql`
+      INSERT INTO trading_settings (id, ib_commission_hold_hours)
+      VALUES (true, ${hours})
+      ON CONFLICT (id) DO UPDATE SET ib_commission_hold_hours = ${hours}
+    `);
+  }
+
+  it('pays on the saved window even when the environment says otherwise', async () => {
+    const partner = await makeClient('hold-setting-partner@test.local');
+    const client = await makeClient('hold-setting-client@test.local');
+    await accrue(partner, client, '00000000-0000-4000-8000-00000000e011', 2);
+
+    // The environment would hold this for another 22 hours. The operator set 1.
+    await saveWindow(1);
+    const result = await serviceWithHold('24').confirmPending();
+
+    expect(result.confirmed).toBe(1);
+    expect(result.held).toBe(0);
+  });
+
+  it('holds on the saved window even when the environment would have paid', async () => {
+    const partner = await makeClient('hold-setting-long-partner@test.local');
+    const client = await makeClient('hold-setting-long-client@test.local');
+    await accrue(partner, client, '00000000-0000-4000-8000-00000000e012', 30);
+
+    await saveWindow(72);
+    const result = await serviceWithHold('24').confirmPending();
+
+    /*
+     * The direction that matters more: a longer saved window must not be
+     * shortened by a variable somebody set once and forgot, because the failure
+     * is money becoming spendable before the desk has seen it.
+     */
+    expect(result.confirmed).toBe(0);
+    expect(result.held).toBe(1);
+  });
+
+  it('pays immediately on a saved window of zero', async () => {
+    const partner = await makeClient('hold-setting-zero-partner@test.local');
+    const client = await makeClient('hold-setting-zero-client@test.local');
+    await accrue(partner, client, '00000000-0000-4000-8000-00000000e013', 0);
+
+    /*
+     * Zero is a CHOICE here, unlike a malformed environment variable, which
+     * still falls back to 24 rather than to zero. The difference is that
+     * somebody typed this one into a form that says what it does.
+     */
+    await saveWindow(0);
+    const result = await serviceWithHold(undefined).confirmPending();
+
+    expect(result.confirmed).toBe(1);
   });
 });
