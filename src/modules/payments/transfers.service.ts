@@ -13,6 +13,7 @@ import { WalletService } from '../wallet/wallet.service';
 import Decimal from 'decimal.js';
 import { money, toDecimal } from '../wallet/money';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
+import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
@@ -277,6 +278,7 @@ export class TransfersService {
         await this.writeAccountBalance(
           tx,
           transfer.tradingAccountId,
+          transfer.id,
           mt5Balance,
           amount,
           settledAt,
@@ -306,6 +308,7 @@ export class TransfersService {
         await this.writeAccountBalance(
           tx,
           transfer.tradingAccountId,
+          transfer.id,
           mt5Balance,
           amount.negated(),
           settledAt,
@@ -391,6 +394,7 @@ export class TransfersService {
   private async writeAccountBalance(
     tx: Parameters<Parameters<Db['transaction']>[0]>[0],
     tradingAccountId: string,
+    transferId: string,
     mt5Balance: string | null,
     delta: Decimal,
     settledAt: Date,
@@ -419,9 +423,46 @@ export class TransfersService {
       .returning({ id: tradingAccounts.id });
 
     if (moved.length === 0) {
+      /*
+       * ── THIS REFUSES AFTER THE MONEY HAS ALREADY MOVED ────────────────────
+       *
+       * Reaching here means MT5 confirmed the movement — `settle` is only
+       * called once the executor has a verdict — and then the follow-up balance
+       * read failed, so we computed against a mirror that is stale and low.
+       *
+       * The throw rolls back the wallet leg posted alongside it, so the client's
+       * money has left the trading account and not arrived in their wallet. The
+       * transfer stays `pending`, which is the recoverable state: a later settle
+       * with a readable balance completes it. What must NOT happen is `fail()`,
+       * which releases a hold against money MT5 has already moved.
+       *
+       * So this is an alert, not a log line. Nothing else in the system will
+       * notice — the transfer looks pending, which is also what a transfer
+       * waiting on the bridge looks like.
+       *
+       * WHETHER IT SHOULD REFUSE AT ALL IS AN OPEN DESIGN QUESTION. 0081 makes
+       * MT5 the authority on this column and says nothing here computes it, so
+       * refusing on OUR arithmetic is refusing on a number that file calls
+       * non-authoritative — but `transfer-flow.spec.ts` deliberately pins the
+       * refusal as the overdraw protection. Both readings are defensible and the
+       * choice belongs with whoever owns the money rules, so this makes the
+       * situation visible and attributes it honestly rather than settling it.
+       */
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.PAYMENT_STATE_MISMATCH,
+        'page',
+        `Transfer ${transferId} could not be settled: MT5 moved the money, the balance read ` +
+          'afterwards failed, and the computed mirror would go negative. The wallet leg is ' +
+          'rolled back and the transfer is left pending — settle it again once the balance ' +
+          'reads, and do NOT fail it, which would release a hold against money already moved.',
+        { transferId, tradingAccountId },
+      );
+
       throw new ValidationError(
-        'The trading account does not hold enough to cover this transfer. Its balance may have ' +
-          'moved since the transfer was requested.',
+        `Transfer ${transferId} could not be settled from the mirrored balance, which is stale ` +
+          'because MT5 could not be read after the movement. The transfer remains pending and ' +
+          'settles once the balance is readable; it has not been rejected.',
       );
     }
   }
