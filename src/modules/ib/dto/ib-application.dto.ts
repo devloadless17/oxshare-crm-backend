@@ -282,6 +282,18 @@ export class ChangeIbLevelDto {
 }
 
 /**
+ * The terms a partner is paid on.
+ *
+ * A UUID rather than a name: the name is editable, and an assignment keyed on
+ * one would follow a rename somewhere nobody intended.
+ */
+export class ChangeIbProgramDto {
+  @ApiProperty({ format: 'uuid', description: 'Must be an ENABLED programme.' })
+  @IsUUID()
+  programId: string;
+}
+
+/**
  * `null` is a real value here, not an omission: it means "deals with the broker
  * directly", which is the top of a chain. So the field is required and
  * explicitly nullable rather than optional — omitting it would be
@@ -354,6 +366,14 @@ export class IbPartnerDetailDto {
     description: 'The rung’s percentage of the broker’s revenue. A decimal string, never a number.',
   })
   rateValue: string | null;
+  @ApiProperty({ format: 'uuid', description: 'The terms this partner is paid on.' })
+  programId: string;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'Null only if the programme row vanished, which the foreign key prevents.',
+  })
+  programName: string | null;
   @ApiProperty() referralCode: string;
   @ApiProperty({ description: 'A suspended partner keeps their code and tree, and stops earning.' })
   active: boolean;

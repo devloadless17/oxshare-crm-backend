@@ -141,6 +141,14 @@ each closes a different door:
    done, because its revenue is real and is paid by the close that consumes it.
 3. `calculate` refuses `source: 'deposit'` outright, whatever the rate.
 
+**An open leg is excluded in the QUERY, never skipped in the loop.** It must stay unprocessed —
+its revenue is paid by the close that consumes it — but skipping it inside the loop leaves it at
+the FRONT of an oldest-first queue for as long as the position runs. A broker holding `limit`
+positions open then fills every batch with rows that can never complete, no closing deal is ever
+reached, and commission stops for everybody with nothing but one ordinary log line to show for it.
+The failure gets worse the busier the platform is, which is the worst shape a money job can have.
+`test/deal-commission.spec.ts` pins it with a batch limit of two.
+
 **A close pays on the whole position, not on its own row.** MT5 splits a round turn's charges
 across the legs however the broker configured it — all on the open, all on the close, or half each
 — so paying the closing row alone would silently pay nothing on the most common configuration
@@ -155,6 +163,22 @@ The deposit path (`accrueForSettledDeposit` → `accrueForDeposit`) has **no cal
 `positions.service.ts` injects the port, and it calls `accrueForClosedPosition`. It is kept,
 unwired and `@deprecated`, because CPA is a real model that triggers on a deposit: a FIXED amount
 per qualified client, never a percentage. `test/deal-commission.spec.ts` pins all of the above.
+
+### A partner's programme can be changed, and that is what makes the catalogue real
+
+`PATCH /admin/ib/partners/:userId/program` (`ib.partners.edit`, audited as `ib.program_change`
+with the programme on both sides). Without it the terms were written once at approval, always to
+whichever programme sorted first, and never again — an operator could build Gold, Silver and
+Platinum and assign nobody, while two of this module's own refusals told them to "move them to
+another programme first".
+
+It refuses a DISABLED programme, and that is the other half of an existing guarantee:
+`IbProgramsService.update` refuses to disable a programme partners stand on, so without this
+refusal an operator could route around it by moving people ONTO a disabled row.
+
+A change applies to the next trade only. Accruals record the rate they were calculated at, so
+nothing already credited is restated — which is why this is an ordinary update rather than an
+operation that has to reason about history.
 
 ### The client's rebate is an accrual row, not a direct credit
 

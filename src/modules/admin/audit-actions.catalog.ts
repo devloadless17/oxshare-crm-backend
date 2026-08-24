@@ -276,6 +276,11 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * looks wrong, and the level is what decides the rate.
    */
   { action: 'ib.level_change', label: 'Partner level changed', group: 'Compliance' },
+  {
+    action: 'ib.program_change',
+    label: 'Partner moved to another commission programme',
+    group: 'Partners',
+  },
   { action: 'ib.parent_change', label: 'Partner parent reassigned', group: 'Compliance' },
   /*
    * `ib.partners.suspend`, matching what is actually written.

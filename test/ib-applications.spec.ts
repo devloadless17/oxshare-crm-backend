@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { sql } from 'drizzle-orm';
 import { IbApplicationsService } from '../src/modules/ib/ib-applications.service';
 import { IbLevelsService } from '../src/modules/ib/ib-levels.service';
+import { IbProgramsService } from '../src/modules/ib/ib-programs.service';
 import { IbStore } from '../src/store/ib.store';
 import { ProductsStore } from '../src/store/products.store';
 import { UsersStore } from '../src/store/users.store';
@@ -51,6 +52,7 @@ beforeAll(async () => {
     store,
     users,
     new IbLevelsService(ctx.db, auditStubAs()),
+    new IbProgramsService(ctx.db, auditStubAs()),
     new ClientVisibilityService(users),
     email,
     auditStubAs(),
@@ -177,6 +179,72 @@ async function defaultProgram(store: IbStore): Promise<string> {
   if (!id) throw new Error('No enabled commission programme — migration 0084 seeds one.');
   return id;
 }
+
+describe('moving a partner onto different terms', () => {
+  /*
+   * The premise of the programme catalogue. Before this existed an operator
+   * could create Gold, Silver and Platinum and assign nobody: every partner sat
+   * on whichever programme sorted first, permanently.
+   */
+  it('changes the programme a partner is paid on', async () => {
+    const userId = await makeClient('program-move@test.local');
+    await store.createAccount({
+      userId,
+      level: 1,
+      programId: await defaultProgram(store),
+      referralCode: 'PROGMOVE',
+    });
+
+    const target = await new IbProgramsService(ctx.db, auditStubAs()).create(
+      { name: 'Gold', level1Rate: '20', level2Rate: '5' },
+      REVIEWER,
+    );
+
+    const updated = await service.changeProgram(userId, target.id, UNRESTRICTED, REVIEWER);
+
+    expect(updated.programId).toBe(target.id);
+  });
+
+  /*
+   * A disabled programme pays NOTHING, so moving somebody onto one stops their
+   * earnings silently instead of changing their terms visibly. It is also the
+   * other half of the disable guard: without this refusal an operator could
+   * route around "move them off first" by moving people ONTO a disabled row.
+   */
+  it('refuses to move a partner onto a disabled programme', async () => {
+    const userId = await makeClient('program-disabled@test.local');
+    await store.createAccount({
+      userId,
+      level: 1,
+      programId: await defaultProgram(store),
+      referralCode: 'PROGDIS1',
+    });
+
+    const programs = new IbProgramsService(ctx.db, auditStubAs());
+    const target = await programs.create(
+      { name: 'Retired', level1Rate: '10', enabled: false },
+      REVIEWER,
+    );
+
+    await expect(service.changeProgram(userId, target.id, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /disabled/i,
+    );
+  });
+
+  it('refuses a programme that does not exist', async () => {
+    const userId = await makeClient('program-ghost@test.local');
+    await store.createAccount({
+      userId,
+      level: 1,
+      programId: await defaultProgram(store),
+      referralCode: 'PROGGHST',
+    });
+
+    await expect(
+      service.changeProgram(userId, '00000000-0000-4000-8000-000000000000', UNRESTRICTED, REVIEWER),
+    ).rejects.toThrow(/does not exist/i);
+  });
+});
 
 describe('applying', () => {
   it('accepts an application from a verified client', async () => {

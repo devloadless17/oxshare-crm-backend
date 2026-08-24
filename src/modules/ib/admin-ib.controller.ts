@@ -33,6 +33,7 @@ import { exportFormat, streamCsv } from '../../common/export/export-response';
 import {
   ApproveIbApplicationDto,
   ChangeIbLevelDto,
+  ChangeIbProgramDto,
   IbAccountDto,
   IbApplicationDto,
   IbPartnerDetailDto,
@@ -409,6 +410,29 @@ export class AdminIbController {
     @Body() dto: ChangeIbLevelDto,
   ) {
     return this.applications.changeLevel(userId, dto.level, req.admin.clientScope, req.admin);
+  }
+
+  @Patch('partners/:userId/program')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.partners.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Move a partner onto a different commission programme',
+    description:
+      'The terms a partner is paid on. Applies to the NEXT trade — accruals record the rate they ' +
+      'were calculated at, so nothing already credited is restated. The target must be ENABLED: a ' +
+      'disabled programme pays nothing, so moving somebody onto one would stop their earnings ' +
+      'silently instead of changing their terms visibly.',
+  })
+  @ApiOkResponse({ type: IbAccountDto })
+  @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
+  @Audited('ib.program_change')
+  changeProgram(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: ChangeIbProgramDto,
+  ) {
+    return this.applications.changeProgram(userId, dto.programId, req.admin.clientScope, req.admin);
   }
 
   @Patch('partners/:userId/parent')

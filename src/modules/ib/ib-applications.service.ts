@@ -21,6 +21,7 @@ import {
 import { sortKey, sortOrder } from '../../common/sorting';
 import { UsersStore } from '../../store/users.store';
 import { IbLevelsService } from './ib-levels.service';
+import { IbProgramsService } from './ib-programs.service';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import { EmailService } from '../email/email.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
@@ -86,6 +87,7 @@ export class IbApplicationsService {
     private readonly ib: IbStore,
     private readonly users: UsersStore,
     private readonly levels: IbLevelsService,
+    private readonly programs: IbProgramsService,
     private readonly visibility: ClientVisibilityService,
     private readonly email: EmailService,
     private readonly audit: AdminAuditService,
@@ -1017,13 +1019,25 @@ export class IbApplicationsService {
       ? ((await this.users.findById(account.parentIbUserId)) ?? null)
       : null;
 
+    const program = await this.programs.findOne(account.programId);
+
     return {
       userId,
       level: account.level,
       levelName: level?.name ?? null,
-      /* The rung's own rate, so the profile can say what this partner is paid
-         rather than only which rung they stand on. */
+      /*
+       * The rung's own rate. Kept for continuity of the response, and it no
+       * longer decides anything: since named programmes landed, the rung is
+       * PLACEMENT and the programme below is what the partner is paid on.
+       */
       rateValue: level?.rateValue ?? null,
+      /*
+       * The TERMS, which is the half an operator is usually looking for. Both
+       * the id and the name: the id is what the change control posts back, and
+       * the name is the only part a person can act on.
+       */
+      programId: account.programId,
+      programName: program?.name ?? null,
       referralCode: account.referralCode,
       active: account.active,
       approvedAt: account.approvedAt,
@@ -1119,6 +1133,67 @@ export class IbApplicationsService {
     this.audit.record(actor.id, 'ib.level_change', 'ib_account', userId, {
       before: account.level,
       after: updated.level,
+    });
+    return updated;
+  }
+
+  /**
+   * Move a partner onto different terms.
+   *
+   * ## Why this had to exist for the catalogue to mean anything
+   *
+   * A partner's programme was written once, at approval, always to whichever
+   * one sorted first — and never again. So an operator could create Gold,
+   * Silver and Platinum and assign nobody to any of them, while every partner
+   * on the platform sat on the same row. Two of this service's own refusals
+   * ("move them to another programme first") named an operation the system did
+   * not have.
+   *
+   * ## The target must be ENABLED
+   *
+   * Same rule, and the same reason, as `changeLevel`: a disabled programme pays
+   * nothing, so moving somebody onto one stops their earnings silently instead
+   * of changing their terms visibly. `IbProgramsService.update` refuses to
+   * disable a programme partners are standing on, and this is the other half of
+   * that guarantee — without it, an operator could route around the refusal by
+   * moving people onto an already-disabled programme.
+   *
+   * ## It applies to the NEXT trade, never to what has been earned
+   *
+   * Accruals record the rate they were calculated at, so nothing already
+   * credited is restated. That is what makes this an ordinary update rather
+   * than an operation that has to reason about history — and it is why the
+   * audit row keeps the programme id on both sides: "who moved this partner,
+   * and what were they on before" is the question asked when a payout is
+   * disputed, and the current row answers half of it.
+   */
+  async changeProgram(
+    userId: string,
+    programId: string,
+    scope: ClientScope,
+    actor: Actor,
+  ): Promise<IbAccountRow> {
+    await this.visibility.assertVisible(userId, scope);
+
+    const account = await this.ib.findAccount(userId);
+    if (!account) throw new NotFoundError('That partner does not exist.');
+
+    const program = await this.programs.findOne(programId);
+    if (!program) throw new NotFoundError('That commission programme does not exist.');
+    if (!program.enabled) {
+      throw new ValidationError(
+        `"${program.name}" is disabled, and a disabled programme pays nothing. Enable it first, ` +
+          'or choose another.',
+      );
+    }
+
+    const updated = await this.ib.updateAccount(userId, { programId });
+    if (!updated) throw new NotFoundError('That partner does not exist.');
+
+    this.audit.record(actor.id, 'ib.program_change', 'ib_account', userId, {
+      before: account.programId,
+      after: updated.programId,
+      programName: program.name,
     });
     return updated;
   }
