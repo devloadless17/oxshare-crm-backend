@@ -46,6 +46,14 @@ export const ALERT_KINDS = {
   /** An operator-controlled security control is switched OFF. */
   SECURITY_CONTROL_DISABLED: 'security.control_disabled',
   /**
+   * `TRUSTED_PROXY_HOPS` no longer matches the infrastructure in front of us.
+   *
+   * The boot line states the number, but a boot line only describes the moment
+   * it was written — and the likeliest failure is a CDN added months later by
+   * somebody who does not know the variable exists.
+   */
+  PROXY_DEPTH_MISMATCH: 'security.proxy_depth_mismatch',
+  /**
    * Rival and the CRM disagree about a money movement — a deposit PAID there
    * against a terminal row here, a reversal of settled funds, a payout state
    * that contradicts ours. Money is sitting on the wrong side of a boundary
@@ -141,6 +149,10 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.SECURITY_CONTROL_DISABLED]: {
     severity: 'notify',
     rule: 'Any occurrence at `page` severity — an admin has just turned a control off. The `notify` stream repeats for as long as it STAYS off, which is the point: a control disabled "for an afternoon" before go-live is the one that is still off two quarters later. Route the recurring form to a dashboard rather than a pager, and treat its DISAPPEARANCE as the resolution.',
+  },
+  [ALERT_KINDS.PROXY_DEPTH_MISMATCH]: {
+    severity: 'page',
+    rule: 'Raised when ~90% of a 200-request sample disagrees with the configured hop count, repeating hourly while it stands. `page` for the SHALLOWER form — the trusted address is then caller-supplied text, so an IP allowlist can be walked through and the rate limiter evaded, which is a live authentication bypass. The DEEPER form is raised at `notify`: every control is keying on our own proxy rather than the caller, which corrupts the audit trail and collapses the limiter but cannot be steered by an attacker. Its disappearance is the resolution.',
   },
   [ALERT_KINDS.LOGIN_LOCKOUT]: {
     severity: 'notify',

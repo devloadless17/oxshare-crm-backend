@@ -322,6 +322,22 @@ moving `FOR UPDATE` across a new boundary would cost real risk. `test/di-wiring.
 each money service from the real module graph, which the hand-constructed money specs cannot. `database/db.ts` exports an `Executor` type so a store method can join a
 caller's transaction.
 
+## `TRUSTED_PROXY_HOPS` is watched at RUNTIME, not just stated at boot
+
+One number decides which `X-Forwarded-For` entry is believed, and three controls key on it: the
+RBAC-08 allowlist, the rate limiter, and the audit trail. `main.ts` prints it on every boot — but a
+boot line describes the moment it was written, and the failure this actually has is a CDN put in
+front months later by somebody who does not know the variable exists. Nothing restarts and nothing
+errors; every control just starts reading the CDN's address.
+
+`common/security/proxy-depth.ts` counts the shape of each request and reports a STANDING
+disagreement — ~90% of a 200-request sample, never a single request, because anyone can put anything
+in that header and a detector that believed one request would be steerable by the party it defends
+against. Consistently deeper than configured means a proxy was added (`notify`); consistently
+shallower means we trust further left than our infrastructure reaches, into caller-supplied text, so
+an allowlist can be walked through (`page`). It reports and changes nothing — inferring the hop
+count from traffic is the same "trust the header" mistake `client-ip.ts` refuses.
+
 ## Realtime — a second listener, on purpose
 
 The WebSocket does **not** run on :3001. `REALTIME_ENGINE=uws` (the default) runs Socket.IO on
