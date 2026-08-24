@@ -13,6 +13,7 @@ import {
   admins,
   clientTagAssignments,
   clientTags,
+  kycSubmissions,
   roles,
   transactions,
   users,
@@ -52,6 +53,8 @@ import { cell } from '../src/common/export/csv';
 const MASTER = { email: 'export-master@oxshare.com', password: 'admin-password-123' };
 const SCOPED = { email: 'export-scoped@oxshare.com', password: 'admin-password-123' };
 const UNPRIVILEGED = { email: 'export-nobody@oxshare.com', password: 'admin-password-123' };
+/** Unrestricted territory, but `client.email` is masked — the mask alone. */
+const MASKED = { email: 'export-masked@oxshare.com', password: 'admin-password-123' };
 
 /**
  * An amount that survives no coercion.
@@ -129,6 +132,30 @@ beforeAll(async () => {
     })
     .returning();
 
+  /*
+   * The masked admin sees EVERY client (no territory) and holds every read the
+   * exports need — the only thing constraining them is the field mask. Same
+   * isolation logic as the scoped fixture above: if the mask test passed
+   * because of a scope or a missing permission, it would prove nothing.
+   */
+  const [maskedRole] = await db
+    .insert(roles)
+    .values({
+      name: 'Export Masked',
+      permissions: ['clients.view', 'kyc.view'],
+      maskedFields: ['client.email'],
+    })
+    .returning();
+  await db.insert(admins).values({
+    email: MASKED.email,
+    passwordHash: await passwords.hash(MASKED.password),
+    name: 'Export Masked',
+    role: 'sub_admin',
+    roleId: maskedRole.id,
+    permissions: [],
+    status: 'active',
+  });
+
   // Holds a permission, but not the ones the exports below require — so a 403
   // is about the specific permission rather than about being a sub-admin.
   const [nobodyRole] = await db
@@ -177,6 +204,9 @@ beforeAll(async () => {
   theirsId = theirs.id;
 
   await db.insert(clientTagAssignments).values({ userId: mineId, tagId: mineTag.id });
+  // A submission for the in-scope client, so the KYC export has a row whose
+  // email the mask tests below can look for.
+  await db.insert(kycSubmissions).values({ userId: mineId, status: 'submitted' });
   await db.insert(adminClientTagScopes).values({
     adminId: scopedAdmin.id,
     tagId: mineTag.id,
@@ -387,6 +417,43 @@ describe('THE LEAK TEST: a scoped admin exports only their own territory', () =>
 
     expect(res.status).toBe(200);
     expect(res.text).not.toContain('export-theirs@oxshare-e2e.test');
+  });
+});
+
+describe('the mask reaches the FILE — an export is not a bypass', () => {
+  /*
+   * The companion to the leak test above, for FIELDS instead of ROWS. A
+   * reviewer whose screens withhold `client.email` must not be able to
+   * download it: the value has to be absent from every file, while the row
+   * itself remains (an empty file would pass vacuously).
+   */
+  it('clients: the masked email is absent while the row remains', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get('/v1/admin/clients/export');
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('InScope');
+    expect(res.text).not.toContain('export-mine@oxshare-e2e.test');
+    expect(res.text).not.toContain('export-theirs@oxshare-e2e.test');
+  });
+
+  it('kyc: the queue export withholds the email exactly as the queue does', async () => {
+    // The regression: this export applied territory scoping but not the field
+    // mask, so it was the one KYC surface handing a masked reviewer the email.
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get('/v1/admin/kyc/export');
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain(mineId);
+    expect(res.text).not.toContain('export-mine@oxshare-e2e.test');
+  });
+
+  it('masks NOTHING for the master — on the file, as on the screen', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get('/v1/admin/kyc/export');
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('export-mine@oxshare-e2e.test');
   });
 });
 

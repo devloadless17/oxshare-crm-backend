@@ -376,7 +376,10 @@ export class AdminExportService {
       limit,
       scope: actor.clientScope,
     });
-    return items;
+    // The same mask the queue applies (admin-compliance.service.ts). Without
+    // it the export was the one KYC surface that handed a masked reviewer the
+    // client email — a downloadable copy of exactly what every screen withheld.
+    return applyMaskAll('kyc', items, actor.fieldMask);
   }
 
   // ── Audit log ─────────────────────────────────────────────────────────────
