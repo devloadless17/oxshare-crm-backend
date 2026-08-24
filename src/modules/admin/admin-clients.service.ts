@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { UsersStore, clientSortKey, clientSortOrder } from '../../store/users.store';
+import { UsersStore, clientSortKey, clientSortOrder, type User } from '../../store/users.store';
+import { IbStore } from '../../store/ib.store';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import { ClientNotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { buildCursorPage, decodeCursor, pageSize } from '../../common/pagination';
@@ -64,6 +65,14 @@ function documentFilenames(submission: KycSubmission | undefined): string[] {
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 
 /**
+ * How many referred clients the profile carries — one screen's worth. The
+ * response says how many came (`referredShown`) so the UI can tell "all of
+ * them" from "the newest 50"; the full book stays reachable through the
+ * client list filtered by referrer.
+ */
+const REFERRED_CLIENTS_SHOWN = 50;
+
+/**
  * ADM-01 client directory and ADM-02 suspension.
  *
  * Filtering, sorting and pagination happen in SQL (see UsersStore.findPage) —
@@ -85,6 +94,12 @@ export class AdminClientsService {
      */
     private readonly email: EmailService,
     private readonly refreshTokens: RefreshTokensService,
+    /*
+     * For the Network sections of the profile: the introducer's partner row
+     * (active flag) and, when the client IS a partner, nothing — their
+     * downline is read from `users` by attribution. @Global StoreModule.
+     */
+    private readonly ib: IbStore,
   ) {}
 
   // ─── Clients list (ADM-01 / ADM-14) ───────────────────────────────────────
@@ -263,15 +278,22 @@ export class AdminClientsService {
     const may = (permission: string) => actorHasPermission(actor, permission);
 
     /*
-     * Trading accounts and referral relationships were assembled here too, from
-     * `ClientProfileStore`. Both went with the teardown: trading accounts had no
-     * table left, and the referral pair belonged to the old IB model. The
-     * rebuilt IB feature will put the partner relationship back on this profile
-     * — deliberately, rather than by restoring the old shape.
+     * Trading accounts were assembled here too once, from `ClientProfileStore`;
+     * they went with the teardown and return with the bridge. The REFERRAL pair
+     * went with the same teardown — and then stayed gone by accident: the DTO
+     * kept promising `referrer`/`referredClients`, nothing here assigned them,
+     * and the admin's Network tab said "Not introduced by a partner" about
+     * every client, including the ones whose Referral badge (derived from the
+     * same column!) proved otherwise. Assembled again below, from
+     * `users.referred_by_ib_user_id` — the attribution the old
+     * `referral_attributions` table was replaced by in 0032.
      */
-    const [tags, kyc] = await Promise.all([
+    const canSeeNetwork = may('ib.view');
+    const [tags, kyc, referrer, referredClients] = await Promise.all([
       this.tags.tagsForClient(clientId),
       may('kyc.view') || may('kyc.review') ? this.kyc.findByUserId(clientId) : undefined,
+      canSeeNetwork ? this.referrerOf(client) : undefined,
+      canSeeNetwork ? this.referredClientsOf(clientId) : undefined,
     ]);
 
     const profile = {
@@ -310,6 +332,17 @@ export class AdminClientsService {
       ...(may('kyc.documents.view') && kyc !== undefined
         ? { documents: documentFilenames(kyc) }
         : {}),
+      /*
+       * The Network sections, absent without ib.view — the same key the screen
+       * gates its whole tab on. `referrer` is additionally absent when nobody
+       * introduced this client, which the UI renders as its own message;
+       * `referredClients` when permitted is ALWAYS an array, because "may see,
+       * has none" must not look like "may not see" (the rule above).
+       */
+      ...(referrer ? { referrer } : {}),
+      ...(referredClients !== undefined
+        ? { referredClients, referredShown: referredClients.length }
+        : {}),
     };
 
     /*
@@ -323,6 +356,51 @@ export class AdminClientsService {
       ...applyMask('client', profile, actor.fieldMask),
       maskedFields: maskedFieldsFor('client', actor.fieldMask),
     };
+  }
+
+  /**
+   * Who introduced this client, shaped for `ProfileReferrerDto`.
+   *
+   * Undefined when nobody did — the ordinary case. The introducer and their
+   * partner row are looked up UNSCOPED on purpose: the reader was allowed to
+   * open this client, and hiding who introduced them because the introducer
+   * is outside the reader's own tag scope would render the false sentence
+   * "not introduced by a partner" — the exact bug this method fixes.
+   *
+   * `active` is the partner row's flag (a suspended partner still introduced
+   * them; the screen labels it), and `since` is the CLIENT's registration —
+   * attribution is written once at register and never re-pointed.
+   */
+  private async referrerOf(client: User) {
+    if (!client.referredByIbUserId) return undefined;
+    const [introducer, account] = await Promise.all([
+      this.users.findById(client.referredByIbUserId),
+      this.ib.findAccount(client.referredByIbUserId),
+    ]);
+    // Unreachable while the users→ib_accounts FK stands; refusing to fabricate
+    // a half-empty card is still better than trusting that forever.
+    if (!introducer || !account) return undefined;
+    return {
+      ibUserId: introducer.id,
+      email: introducer.email,
+      firstName: introducer.firstName,
+      lastName: introducer.lastName,
+      active: account.active,
+      since: client.createdAt,
+    };
+  }
+
+  /** The client's downline, shaped for `ProfileReferredClientDto`. */
+  private async referredClientsOf(clientId: string) {
+    const clients = await this.users.listReferredBy(clientId, REFERRED_CLIENTS_SHOWN);
+    return clients.map((referred) => ({
+      clientUserId: referred.id,
+      email: referred.email,
+      firstName: referred.firstName,
+      lastName: referred.lastName,
+      active: referred.status === 'active',
+      since: referred.createdAt,
+    }));
   }
 
   // ─── Client suspension (clients.suspend) ────────────────────────────────────

@@ -435,12 +435,17 @@ export class ClientProfileDto {
   })
   tradingAccounts?: ProfileTradingAccountDto[];
 
-  @ApiPropertyOptional({ type: ProfileReferrerDto, description: 'Absent without partners.view.' })
+  @ApiPropertyOptional({
+    type: ProfileReferrerDto,
+    description:
+      'Absent without ib.view, and absent when nobody introduced this client — the UI tells ' +
+      'the two apart by its own permission check.',
+  })
   referrer?: ProfileReferrerDto;
 
   @ApiPropertyOptional({
     type: [ProfileReferredClientDto],
-    description: 'Capped — see referredTotal. Absent without partners.view.',
+    description: 'Capped — see referredShown. Absent without ib.view; empty when none.',
   })
   referredClients?: ProfileReferredClientDto[];
 

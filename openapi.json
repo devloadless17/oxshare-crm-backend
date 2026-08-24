@@ -14388,7 +14388,7 @@
             }
           },
           "referrer": {
-            "description": "Absent without partners.view.",
+            "description": "Absent without ib.view, and absent when nobody introduced this client — the UI tells the two apart by its own permission check.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/ProfileReferrerDto"
@@ -14396,7 +14396,7 @@
             ]
           },
           "referredClients": {
-            "description": "Capped — see referredTotal. Absent without partners.view.",
+            "description": "Capped — see referredShown. Absent without ib.view; empty when none.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ProfileReferredClientDto"
