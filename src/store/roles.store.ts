@@ -1,7 +1,7 @@
 import { eq, type SQLWrapper } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
-import type { Db } from '../database/db';
+import type { Db, Executor } from '../database/db';
 import { roles } from '../database/schema';
 import { orderTerms, type SortOrder } from '../common/sorting';
 
@@ -94,8 +94,13 @@ export class RolesStore {
   async update(
     id: string,
     patch: Partial<Pick<Role, 'name' | 'description' | 'permissions' | 'maskedFields'>>,
+    tx?: Executor,
   ): Promise<Role | undefined> {
-    const [row] = await this.db.update(roles).set(patch).where(eq(roles.id, id)).returning();
+    const [row] = await (tx ?? this.db)
+      .update(roles)
+      .set(patch)
+      .where(eq(roles.id, id))
+      .returning();
     return row ? toRole(row) : undefined;
   }
 
