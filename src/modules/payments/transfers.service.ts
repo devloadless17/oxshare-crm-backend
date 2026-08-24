@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
 import { tradingAccounts, transfers, users } from '../../database/schema';
@@ -227,8 +227,17 @@ export class TransfersService {
    * @param mt5Balance What MT5 holds after the movement, from the executor's own
    * read. Null when it could not be read — the column is then left alone rather
    * than computed, because a known-stale figure beats a confident wrong one.
+   * @param balanceReadAt WHEN that figure was read from MT5 — not when this
+   * settled. The mirror's staleness guard compares MT5 READ TIMES, so a figure
+   * stamped with the settlement time claims to be fresher than it is and can
+   * overwrite a newer snapshot. Null falls back to the settlement time, which
+   * is the old behaviour and is only safe when there is no figure to write.
    */
-  async settle(transferId: string, mt5Balance: string | null = null) {
+  async settle(
+    transferId: string,
+    mt5Balance: string | null = null,
+    balanceReadAt: Date | null = null,
+  ) {
     const transfer = await this.findOne(transferId);
     if (!transfer) throw new NotFoundError('Transfer not found.');
     if (transfer.state !== 'pending') {
@@ -239,8 +248,8 @@ export class TransfersService {
 
     const amount = toDecimal(transfer.amount);
 
-    // One timestamp for the whole settlement, so both legs and the mirror's
-    // `balanceSyncedAt` agree about when this happened.
+    // One timestamp for the whole settlement, so both legs agree about when
+    // this happened. NOT used for `balanceSyncedAt` — see `writeAccountBalance`.
     const settledAt = new Date();
 
     await this.db.transaction(async (tx) => {
@@ -280,6 +289,7 @@ export class TransfersService {
           transfer.tradingAccountId,
           transfer.id,
           mt5Balance,
+          balanceReadAt,
           amount,
           settledAt,
         );
@@ -310,6 +320,7 @@ export class TransfersService {
           transfer.tradingAccountId,
           transfer.id,
           mt5Balance,
+          balanceReadAt,
           amount.negated(),
           settledAt,
         );
@@ -396,14 +407,49 @@ export class TransfersService {
     tradingAccountId: string,
     transferId: string,
     mt5Balance: string | null,
+    balanceReadAt: Date | null,
     delta: Decimal,
     settledAt: Date,
   ): Promise<void> {
     if (mt5Balance !== null) {
+      /*
+       * ── STAMPED WITH THE MT5 READ TIME, AND GUARDED LIKE EVERY OTHER WRITE ─
+       *
+       * This used to stamp `settledAt` — "now" — and carry no guard at all,
+       * while the two other writers of this column (`ingestSnapshot` and
+       * `recordFromOperation`) both stamp the moment MT5 was ASKED and refuse
+       * to move a figure read more recently than their own.
+       *
+       * That combination loses data. The executor reads the balance at T1; the
+       * sweep reads a fresher one at T2 and writes it; this then writes the T1
+       * figure stamped T3 and wins, because it compared nothing. The mirror
+       * goes backwards while its `balanceSyncedAt` says it went forwards, which
+       * is worse than being stale — every other writer then trusts a timestamp
+       * that is not a read time.
+       *
+       * The window is narrow and the sweep repairs it within the hour, which is
+       * exactly why it would never be noticed from a balance alone.
+       */
+      const syncedAt = balanceReadAt ?? settledAt;
+
+      /*
+       * Nothing updated means a FRESHER figure already exists, which is success
+       * — that read already reflects this movement or supersedes it. It must
+       * not throw: the money has moved and the wallet leg is posted in this
+       * same transaction.
+       */
       await tx
         .update(tradingAccounts)
-        .set({ balance: mt5Balance, balanceSyncedAt: settledAt, updatedAt: settledAt })
-        .where(eq(tradingAccounts.id, tradingAccountId));
+        .set({ balance: mt5Balance, balanceSyncedAt: syncedAt, updatedAt: settledAt })
+        .where(
+          and(
+            eq(tradingAccounts.id, tradingAccountId),
+            or(
+              isNull(tradingAccounts.balanceSyncedAt),
+              lt(tradingAccounts.balanceSyncedAt, syncedAt),
+            ),
+          ),
+        );
       return;
     }
 

@@ -158,9 +158,22 @@ export class TransferExecutor {
      * worse than a mirror that is briefly stale. Null means "leave the column
      * alone", and the sweep corrects it.
      */
+    /*
+     * Stamped BEFORE the call, not after.
+     *
+     * `getAccount` carries no read time of its own, so the CRM has to supply
+     * one — and the honest answer is the earliest instant the figure could
+     * describe, which is the moment we asked. Taking it afterwards would claim
+     * the value is fresher than it is, and `balanceSyncedAt` is the timestamp
+     * every other writer of this column compares against before overwriting.
+     *
+     * Erring early only ever costs a skipped write that the sweep repairs;
+     * erring late lets a stale figure overwrite a newer one.
+     */
+    const balanceReadAt = new Date();
     const settled = await this.bridge.getAccount(account.login).catch(() => null);
 
-    await this.transfers.settle(transferId, settled?.balance ?? null);
+    await this.transfers.settle(transferId, settled?.balance ?? null, balanceReadAt);
     return await this.transfers.findById(transferId);
   }
 }

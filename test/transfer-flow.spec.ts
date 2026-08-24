@@ -404,3 +404,103 @@ describe('settling twice', () => {
     expect(await accountBalance(accountId)).toBe('100.00000000');
   });
 });
+
+/**
+ * ── THE MIRROR IS STAMPED WITH MT5'S READ TIME, NOT THE SETTLEMENT'S ──────
+ *
+ * `trading_accounts.balance` mirrors MT5 (0081) and has three writers: the
+ * bridge's sweep, the balance-operation path, and this one. The other two stamp
+ * `balance_synced_at` with the moment MT5 was ASKED, and refuse to move a
+ * figure that was read more recently than their own.
+ *
+ * This path stamped "now" and compared nothing, so it could overwrite a fresher
+ * reading with an older figure AND mark it as the newest — which is worse than
+ * being stale, because every other writer then trusts a timestamp that is not a
+ * read time. The window is narrow and the sweep repairs it within the hour,
+ * which is exactly why it would never be spotted from a balance alone.
+ */
+describe('the transfer mirror respects read times', () => {
+  it('does not overwrite a balance MT5 reported more recently', async () => {
+    const userId = await makeClient('mirror-stale@test.local');
+    const accountId = await makeAccount(userId, { balance: '500' });
+    const transfer = await transfers.request({
+      userId,
+      tradingAccountId: accountId,
+      direction: 'wallet_to_account',
+      amount: '100',
+      currency: 'USD',
+    });
+
+    // The sweep already wrote a NEWER reading than the one this settle carries.
+    const sweepReadAt = new Date();
+    await ctx.db.execute(sql`
+      UPDATE trading_accounts
+         SET balance = '999.00000000', balance_synced_at = ${sweepReadAt.toISOString()}
+       WHERE id = ${accountId}
+    `);
+
+    // The executor's read happened a minute BEFORE that sweep.
+    const staleReadAt = new Date(sweepReadAt.getTime() - 60_000);
+    await transfers.settle(transfer.id, '600.00000000', staleReadAt);
+
+    // The newer figure stands. The wallet leg still settled — a skipped mirror
+    // write is success, not a reason to undo money that has already moved.
+    expect(await accountBalance(accountId)).toBe('999.00000000');
+    const wallet = await walletOf(userId);
+    expect(wallet.balance).toBe('900.00000000');
+    expect(wallet.onHold).toBe('0.00000000');
+  });
+
+  it('writes MT5s figure when its read is the freshest thing we hold', async () => {
+    const userId = await makeClient('mirror-fresh@test.local');
+    const accountId = await makeAccount(userId, { balance: '500' });
+    const transfer = await transfers.request({
+      userId,
+      tradingAccountId: accountId,
+      direction: 'wallet_to_account',
+      amount: '100',
+      currency: 'USD',
+    });
+
+    const olderSweep = new Date(Date.now() - 120_000);
+    await ctx.db.execute(sql`
+      UPDATE trading_accounts
+         SET balance = '500.00000000', balance_synced_at = ${olderSweep.toISOString()}
+       WHERE id = ${accountId}
+    `);
+
+    await transfers.settle(transfer.id, '600.00000000', new Date());
+
+    expect(await accountBalance(accountId)).toBe('600.00000000');
+  });
+
+  it('stamps the READ time, so a later sweep of an earlier read cannot win', async () => {
+    /*
+     * The half that makes the guard mean anything. If this stamped the
+     * settlement time instead, a sweep whose read predates the transfer would
+     * compare against a timestamp from the future and lose — correctly, by
+     * accident — while a sweep read AFTER the transfer would also lose, which
+     * is the data loss.
+     */
+    const userId = await makeClient('mirror-stamp@test.local');
+    const accountId = await makeAccount(userId, { balance: '500' });
+    const transfer = await transfers.request({
+      userId,
+      tradingAccountId: accountId,
+      direction: 'wallet_to_account',
+      amount: '100',
+      currency: 'USD',
+    });
+
+    const readAt = new Date(Date.now() - 90_000);
+    await transfers.settle(transfer.id, '600.00000000', readAt);
+
+    const { rows } = await ctx.db.execute<{ balance_synced_at: string }>(
+      sql`SELECT balance_synced_at FROM trading_accounts WHERE id = ${accountId}`,
+    );
+    // Within a second of the READ, not of the settlement a minute and a half later.
+    expect(Math.abs(new Date(rows[0].balance_synced_at).getTime() - readAt.getTime())).toBeLessThan(
+      1000,
+    );
+  });
+});
