@@ -10,10 +10,8 @@ import {
 } from '../../common/errors/domain-errors';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { WalletService } from '../wallet/wallet.service';
-import Decimal from 'decimal.js';
 import { money, toDecimal } from '../wallet/money';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
-import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
@@ -26,10 +24,16 @@ type Db = ReturnType<typeof getDb>;
  *
  * ## The CRM owns one side of this and not the other
  *
- * Wallet balances are ours. Trading-account balances are MT5's, and there is no
- * bridge yet. Everything below is shaped by refusing to pretend otherwise —
- * `trading_accounts` has no balance column, so there is no CRM number that can
- * disagree with what the client sees in their terminal.
+ * Wallet balances are ours. Trading-account balances are MT5's: since 0081
+ * `trading_accounts.balance` is a MIRROR, and its schema comment is categorical
+ * — "nothing here computes it", "anything that adds to this column reintroduces
+ * the bug". Everything below is shaped by that split. The CRM DECIDES the wallet
+ * leg and merely REPORTS the account leg.
+ *
+ * This paragraph used to say the column did not exist, which stopped being true
+ * when the bridge landed. The stale half was not harmless: it is what let a
+ * computed account balance go on living in `settle`, and a computed balance is
+ * what could refuse a settlement after MT5 had already moved the money.
  *
  * ## The two directions are deliberately asymmetric
  *
@@ -164,6 +168,63 @@ export class TransfersService {
       );
     }
 
+    /*
+     * ── A PRE-FLIGHT CHECK, and deliberately NOT the authority ─────────────
+     *
+     * Refusing an overdraw belongs here, because here it is free: no money has
+     * moved, there is no wallet leg to roll back, and the client gets a sentence
+     * naming their own balance instead of a transfer left `pending` or a raw MT5
+     * rejection quoted back at them.
+     *
+     * It used to live at the far end, in `settle`, guarding a computed mirror.
+     * That guard could only fire AFTER MT5 had moved the money — `settle` is
+     * reachable only through a bridge call that already succeeded — so what it
+     * caught was never an overdraw, only a mirror gone stale, and the price of
+     * catching it was the client's credit rolled back into limbo.
+     *
+     * The mirror is not authoritative (0081) and can be stale in either
+     * direction, so this cannot be the gate and does not pretend to be: MT5
+     * checks the real balance and can still refuse, and that is the answer that
+     * counts. Erring against a stale-LOW mirror costs a client one retry after
+     * the next snapshot; erring the other way costs a support ticket about money
+     * that is visibly in neither place.
+     *
+     * No `FOR UPDATE`. `settle` locks the transfer row, then the wallet, then
+     * writes `trading_accounts`; taking an account lock here would take those in
+     * the opposite order and deadlock the two paths against each other — a real
+     * cost, to serialise a check that is advisory by construction anyway.
+     *
+     * In-flight transfers count against it, because two `pending` withdrawals of
+     * 50 against an account holding 60 both pass a check that reads only the
+     * column — and a check defeated by clicking twice is not worth its query.
+     */
+    if (params.direction === 'account_to_wallet') {
+      const [inFlight] = await this.db
+        .select({ total: sql<string>`coalesce(sum(${transfers.amount}), 0)` })
+        .from(transfers)
+        .where(
+          and(
+            eq(transfers.tradingAccountId, account.id),
+            eq(transfers.direction, 'account_to_wallet'),
+            eq(transfers.state, 'pending'),
+          ),
+        );
+
+      const mirrored = toDecimal(account.balance);
+      const committed = toDecimal(inFlight?.total ?? '0');
+      const spendable = mirrored.minus(committed);
+
+      if (spendable.lessThan(amount)) {
+        throw new ValidationError(
+          `That trading account holds ${money(mirrored)} ${account.currency}` +
+            (committed.isZero()
+              ? ''
+              : `, of which ${money(committed)} is already committed to a transfer in progress`) +
+            `, so ${money(amount)} cannot be moved out of it.`,
+        );
+      }
+    }
+
     return this.db.transaction(async (tx) => {
       /*
        * The hold and the transfer row commit together.
@@ -197,16 +258,19 @@ export class TransfersService {
   /**
    * Settle both legs: the wallet's, and the trading account's.
    *
-   * ## The account leg is new, and it is temporary
+   * ## The account leg REPORTS, it does not decide
    *
-   * The version this restores posted only the WALLET leg, because MT5 owned the
-   * account balance and the bridge moved it. There is no bridge
-   * (ARCHITECTURE open decision #1), so `trading_accounts.balance` is a CRM
-   * column — see its schema comment, which records that this reverses a
-   * deliberate decision and must be reversed back.
+   * By the time this runs, MT5 has already moved the money: the only path to
+   * `settle` is a bridge call that returned a deal id. So the account leg is not
+   * a decision this method gets to make — it is a note of what the authority
+   * did, and the wallet leg is the half the CRM actually owns.
    *
-   * While that holds, a transfer that moved only the wallet would take money
-   * out of a client's balance and put it nowhere.
+   * That ordering is what makes the rule below absolute: NOTHING here may refuse
+   * on the strength of `trading_accounts.balance`. A mirror the schema calls
+   * non-authoritative cannot be allowed to veto a fact the authority has already
+   * established — and when it did, the veto rolled back the client's wallet
+   * credit and left their money in neither place. Overdraw protection lives in
+   * `request`, before anything moves. See `writeAccountBalance`.
    *
    * ## Idempotency, and where it does NOT reach
    *
@@ -290,7 +354,6 @@ export class TransfersService {
           transfer.id,
           mt5Balance,
           balanceReadAt,
-          amount,
           settledAt,
         );
       } else {
@@ -308,12 +371,12 @@ export class TransfersService {
           tx,
         );
         /*
-         * The same writer as the deposit leg, and the guard is inside it.
+         * The same writer as the other direction, and it takes no amount.
          *
-         * `writeAccountBalance` refuses to drive the column negative when it has
-         * to compute — the rule 0082 removed from the schema and this restored:
-         * MT5 may REPORT a negative balance, but the CRM must never CREATE one by
-         * paying out money the account does not hold.
+         * A withdrawal is the only direction that could ever drive this column
+         * down, and the CRM no longer computes the figure at all — it writes
+         * MT5's or nothing. So there is nothing here to subtract and nothing to
+         * clamp: what the account HOLDS afterwards is MT5's answer.
          */
         await this.writeAccountBalance(
           tx,
@@ -321,7 +384,6 @@ export class TransfersService {
           transfer.id,
           mt5Balance,
           balanceReadAt,
-          amount.negated(),
           settledAt,
         );
       }
@@ -378,29 +440,40 @@ export class TransfersService {
   }
 
   /**
-   * Write the trading account's balance: MT5's figure when we have it.
+   * Write the trading account's balance: MT5's figure, or nothing at all.
    *
-   * ## Why there are two paths and only one of them is arithmetic
+   * ## One path, because only one was ever allowed
    *
-   * `trading_accounts.balance` mirrors MT5 (0081), and MT5 is the authority. When
+   * `trading_accounts.balance` mirrors MT5 (0081) and MT5 is the authority. When
    * the executor managed to read the account back after moving the money, that
    * number is the truth and it is written verbatim — stamped with
    * `balanceSyncedAt` so the sweep's staleness guard cannot later overwrite it
    * with a snapshot read BEFORE this transfer.
    *
-   * The fallback exists because the read can fail while the movement succeeded.
-   * Then we compute, and deliberately do NOT stamp a sync time: the figure is our
-   * best guess rather than MT5's word, so the next snapshot — however old —
-   * should win. That is the one case where a stale mirror is preferable to a
-   * confident one.
+   * When the read failed there is no figure, and this writes NOTHING. Not a
+   * computed one. The column's schema comment is categorical — "nothing here
+   * computes it", "anything that adds to this column reintroduces the bug" — and
+   * it names the three legitimate writers, every one of which stamps the moment
+   * MT5 was ASKED. Arithmetic cannot stamp that, and that is the tell that it
+   * does not belong: swap, commission and P/L move this balance without passing
+   * through the CRM, so `balance ± amount` is exact only for an account that
+   * does nothing else, and every real account does something else.
    *
-   * ## The refusal
+   * `settle`'s own `@param` has said this all along — "the column is then left
+   * alone rather than computed, because a known-stale figure beats a confident
+   * wrong one" — while the code below computed anyway. The doc was right.
    *
-   * Only the computed path can drive the column negative, and only a withdrawal
-   * can compute downward. The guard lives in the WHERE clause rather than a
-   * read-then-check because a check-then-update races itself and a stale read
-   * pays out twice; `returning()` makes the refusal visible so the throw rolls
-   * back the wallet leg posted alongside it.
+   * ## What deleting the arithmetic also deleted
+   *
+   * The computed path carried a `>= 0` guard whose failure THREW, rolling back
+   * the wallet leg posted beside it. It read as overdraw protection and could
+   * not have been: `settle` is reachable only through a bridge call that already
+   * succeeded, and MT5 checks the real balance before it moves anything. So the
+   * account was never short — the MIRROR was, which is a thing a mirror is
+   * allowed to be. A non-authoritative copy vetoing a fact the authority had
+   * already established, at the cost of stranding a client's money in neither
+   * place, is the inversion this removes. The real check now runs in `request`,
+   * where a refusal costs a sentence instead of a stranded transfer.
    */
   private async writeAccountBalance(
     tx: Parameters<Parameters<Db['transaction']>[0]>[0],
@@ -408,7 +481,6 @@ export class TransfersService {
     transferId: string,
     mt5Balance: string | null,
     balanceReadAt: Date | null,
-    delta: Decimal,
     settledAt: Date,
   ): Promise<void> {
     if (mt5Balance !== null) {
@@ -453,64 +525,29 @@ export class TransfersService {
       return;
     }
 
-    const moved = await tx
-      .update(tradingAccounts)
-      .set({
-        balance: sql`${tradingAccounts.balance} + ${money(delta)}::numeric`,
-        updatedAt: settledAt,
-      })
-      .where(
-        and(
-          eq(tradingAccounts.id, tradingAccountId),
-          // Only a withdrawal can go negative; a deposit satisfies this trivially.
-          sql`${tradingAccounts.balance} + ${money(delta)}::numeric >= 0`,
-        ),
-      )
-      .returning({ id: tradingAccounts.id });
-
-    if (moved.length === 0) {
-      /*
-       * ── THIS REFUSES AFTER THE MONEY HAS ALREADY MOVED ────────────────────
-       *
-       * Reaching here means MT5 confirmed the movement — `settle` is only
-       * called once the executor has a verdict — and then the follow-up balance
-       * read failed, so we computed against a mirror that is stale and low.
-       *
-       * The throw rolls back the wallet leg posted alongside it, so the client's
-       * money has left the trading account and not arrived in their wallet. The
-       * transfer stays `pending`, which is the recoverable state: a later settle
-       * with a readable balance completes it. What must NOT happen is `fail()`,
-       * which releases a hold against money MT5 has already moved.
-       *
-       * So this is an alert, not a log line. Nothing else in the system will
-       * notice — the transfer looks pending, which is also what a transfer
-       * waiting on the bridge looks like.
-       *
-       * WHETHER IT SHOULD REFUSE AT ALL IS AN OPEN DESIGN QUESTION. 0081 makes
-       * MT5 the authority on this column and says nothing here computes it, so
-       * refusing on OUR arithmetic is refusing on a number that file calls
-       * non-authoritative — but `transfer-flow.spec.ts` deliberately pins the
-       * refusal as the overdraw protection. Both readings are defensible and the
-       * choice belongs with whoever owns the money rules, so this makes the
-       * situation visible and attributes it honestly rather than settling it.
-       */
-      raiseAlert(
-        this.logger,
-        ALERT_KINDS.PAYMENT_STATE_MISMATCH,
-        'page',
-        `Transfer ${transferId} could not be settled: MT5 moved the money, the balance read ` +
-          'afterwards failed, and the computed mirror would go negative. The wallet leg is ' +
-          'rolled back and the transfer is left pending — settle it again once the balance ' +
-          'reads, and do NOT fail it, which would release a hold against money already moved.',
-        { transferId, tradingAccountId },
-      );
-
-      throw new ValidationError(
-        `Transfer ${transferId} could not be settled from the mirrored balance, which is stale ` +
-          'because MT5 could not be read after the movement. The transfer remains pending and ' +
-          'settles once the balance is readable; it has not been rejected.',
-      );
-    }
+    /*
+     * ── NO FIGURE, SO NO WRITE ──────────────────────────────────────────────
+     *
+     * MT5 moved the money and then could not be read back. There is no honest
+     * number for this column, and the arithmetic that used to stand here is the
+     * one thing 0081 forbids outright.
+     *
+     * A warn, not an alert, and emphatically not a throw. Both sides that
+     * actually HOLD money are correct — MT5 moved it, and the wallet leg is
+     * posted in this same transaction — so nothing is stuck and no one needs
+     * waking. What is stale is a mirror, which is a state a mirror is allowed to
+     * be in and which the next snapshot repairs on its own.
+     *
+     * `balanceSyncedAt` is deliberately left untouched, so the figure keeps its
+     * real age instead of claiming this settlement's: the console renders it as
+     * last confirmed whenever it truly was, and the next snapshot — however old
+     * — still wins over it.
+     */
+    this.logger.warn(
+      `Transfer ${transferId} settled, but MT5 could not be read back afterwards. Trading ` +
+        `account ${tradingAccountId} keeps its previous mirrored balance and its true sync ` +
+        'age until the next snapshot; the transfer itself is complete.',
+    );
   }
 
   /**
