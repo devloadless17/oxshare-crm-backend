@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { TransfersService } from '../src/modules/payments/transfers.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -6,6 +7,7 @@ import { CurrenciesService } from '../src/modules/currencies/currencies.service'
 import { auditStubAs } from './audit-stub';
 import { notificationsStubAs } from './notifications-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { ALERT_KINDS } from '../src/common/logging/alerts';
 
 /**
  * Moving money between a wallet and a trading account.
@@ -230,12 +232,58 @@ describe('account → wallet', () => {
     });
 
     /*
-     * `trading_accounts_balance_non_negative` is what refuses this, not a
-     * read-modify-write in the service — the balance is decremented in SQL, so
-     * a stale read cannot slip past.
+     * The guard lives in the WHERE clause, not in a read-modify-write in the
+     * service — the balance is decremented in SQL, so a stale read cannot slip
+     * past.
+     *
+     * ## What the refusal costs, and why it now alerts
+     *
+     * `settle` is only reached once MT5 has confirmed the movement, so a
+     * refusal here rolls back the wallet leg AFTER the money has left the
+     * trading account. The transfer stays `pending`, which is recoverable — a
+     * later settle with a readable balance completes it — but nothing else in
+     * the system can tell that state apart from a transfer still waiting on the
+     * bridge. Hence the alert, and hence a message that does not blame the
+     * client's balance for what is a failed balance READ.
      */
-    await expect(transfers.settle(transfer.id)).rejects.toThrow();
+    await expect(transfers.settle(transfer.id)).rejects.toThrow(/remains pending/i);
     expect(await accountBalance(accountId)).toBe('50.00000000');
+  });
+
+  it('raises a payment-state alert when it refuses after the money moved', async () => {
+    /*
+     * The transfer is left in the one state nothing else distinguishes from
+     * normal: pending. Money has left MT5 and reached nobody, and the only
+     * thing that can say so is this alert.
+     */
+    const userId = await makeClient('acct-overdraw-alert@test.local');
+    const accountId = await makeAccount(userId, { balance: '50' });
+    const transfer = await transfers.request({
+      userId,
+      tradingAccountId: accountId,
+      direction: 'account_to_wallet',
+      amount: '200',
+      currency: 'USD',
+    });
+
+    const raised: Record<string, unknown>[] = [];
+    const spy = vi.spyOn(Logger.prototype, 'error').mockImplementation((arg: unknown) => {
+      if (typeof arg === 'object' && arg !== null && 'alert' in arg) {
+        raised.push(arg);
+      }
+    });
+
+    try {
+      await expect(transfers.settle(transfer.id)).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(raised).toHaveLength(1);
+    expect(raised[0].kind).toBe(ALERT_KINDS.PAYMENT_STATE_MISMATCH);
+    // `page`, because a human has to settle it again and must not fail it —
+    // failing releases a hold against money MT5 has already moved.
+    expect(raised[0].severity).toBe('page');
   });
 });
 
