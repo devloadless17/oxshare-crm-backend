@@ -73,7 +73,9 @@ const pool = new pg.Pool({
  */
 async function appliedCount() {
   try {
-    const { rows } = await pool.query('SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations');
+    const { rows } = await pool.query(
+      'SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations',
+    );
     return rows[0].n;
   } catch {
     return 0;

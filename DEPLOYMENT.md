@@ -115,34 +115,34 @@ is explicitly reloaded after each deploy, every remote `compose exec` ends in
 end-to-end (containerized UDP listener on 443/udp, probed from the public
 internet, 17 Aug 2026).
 
-| Secret | What |
-|---|---|
-| `DOCKER_USERNAME` | Docker Hub username. The image is pushed to `<username>/oxshare-crm-backend`. |
-| `DOCKER_SECRET` | Docker Hub access token (Account Settings → Security → New access token). |
-| `VPS_HOST` | `2.24.160.189` (Hostinger `srv1802477`, Ubuntu 24.04, Docker + Compose v2 already installed). |
-| `VPS_USER` | `deploy` — already exists on the box, key-only, in the `docker` group. |
-| `VPS_SSH_KEY_B64` | The `deploy` user's private key, **base64-encoded to a single line**: `base64 -w0 <keyfile>`. Single-line because a pasted multi-line key gets its newlines mangled. |
-| `VPS_PORT` | Optional. SSH port, default 22. |
-| `API_DOMAIN` | The API's domain, with an **A record pointing at `2.24.160.189`** (grey-cloud / DNS-only if the DNS is on Cloudflare). Caddy issues the certificate itself over HTTP-01 — the record must be live before the first deploy. |
-| `ACME_EMAIL` | Where Let's Encrypt sends certificate expiry notices. |
+| Secret            | What                                                                                                                                                                                                                       |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DOCKER_USERNAME` | Docker Hub username. The image is pushed to `<username>/oxshare-crm-backend`.                                                                                                                                              |
+| `DOCKER_SECRET`   | Docker Hub access token (Account Settings → Security → New access token).                                                                                                                                                  |
+| `VPS_HOST`        | `2.24.160.189` (Hostinger `srv1802477`, Ubuntu 24.04, Docker + Compose v2 already installed).                                                                                                                              |
+| `VPS_USER`        | `deploy` — already exists on the box, key-only, in the `docker` group.                                                                                                                                                     |
+| `VPS_SSH_KEY_B64` | The `deploy` user's private key, **base64-encoded to a single line**: `base64 -w0 <keyfile>`. Single-line because a pasted multi-line key gets its newlines mangled.                                                       |
+| `VPS_PORT`        | Optional. SSH port, default 22.                                                                                                                                                                                            |
+| `API_DOMAIN`      | The API's domain, with an **A record pointing at `2.24.160.189`** (grey-cloud / DNS-only if the DNS is on Cloudflare). Caddy issues the certificate itself over HTTP-01 — the record must be live before the first deploy. |
+| `ACME_EMAIL`      | Where Let's Encrypt sends certificate expiry notices.                                                                                                                                                                      |
 
 ### Application
 
 Every one of these is load-bearing: `src/config/env.validation.ts` refuses to boot the
 production container without them.
 
-| Secret | Constraint |
-|---|---|
-| `POSTGRES_PASSWORD` | Only `A-Z a-z 0-9 . _ ~ -` (it is interpolated into `DATABASE_URL`). Generate: `openssl rand -hex 32`. |
-| `ADMIN_JWT_SECRET` | ≥ 32 chars. `openssl rand -base64 48`. |
-| `ADMIN_JWT_REFRESH_SECRET` | ≥ 32 chars, **different from the other three**. |
-| `JWT_ACCESS_SECRET` | ≥ 32 chars, different. |
-| `JWT_REFRESH_SECRET` | ≥ 32 chars, different. The validator throws on any duplicate among the four — a reused secret makes a token minted for one surface valid on the other. |
-| `APP_ENCRYPTION_KEY` | ≥ 32 chars. Seals secrets stored via the settings screens (the SMTP relay password, API keys). **Never rotate it casually**: a changed key means stored ciphertexts stop decrypting. |
-| `PORTAL_URL` | `https://…`, **no trailing slash** (compared to the browser's `Origin` header by exact string equality — a slash kills every WebSocket handshake silently). |
-| `ADMIN_URL` | Same rules. These two decide CORS *and* cookie security — both must be the real Vercel-served domains. |
-| `R2_ACCOUNT_ID` `R2_ACCESS_KEY_ID` `R2_SECRET_ACCESS_KEY` `R2_BUCKET` | All four. Production refuses `STORAGE_DRIVER=disk` outright, so there is no running without R2. |
-| `RIVAL_BASE_URL` `RIVAL_API_KEY` `RIVAL_WEBHOOK_KEY` | Optional — omit until Rival credentials exist. |
+| Secret                                                                | Constraint                                                                                                                                                                           |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POSTGRES_PASSWORD`                                                   | Only `A-Z a-z 0-9 . _ ~ -` (it is interpolated into `DATABASE_URL`). Generate: `openssl rand -hex 32`.                                                                               |
+| `ADMIN_JWT_SECRET`                                                    | ≥ 32 chars. `openssl rand -base64 48`.                                                                                                                                               |
+| `ADMIN_JWT_REFRESH_SECRET`                                            | ≥ 32 chars, **different from the other three**.                                                                                                                                      |
+| `JWT_ACCESS_SECRET`                                                   | ≥ 32 chars, different.                                                                                                                                                               |
+| `JWT_REFRESH_SECRET`                                                  | ≥ 32 chars, different. The validator throws on any duplicate among the four — a reused secret makes a token minted for one surface valid on the other.                               |
+| `APP_ENCRYPTION_KEY`                                                  | ≥ 32 chars. Seals secrets stored via the settings screens (the SMTP relay password, API keys). **Never rotate it casually**: a changed key means stored ciphertexts stop decrypting. |
+| `PORTAL_URL`                                                          | `https://…`, **no trailing slash** (compared to the browser's `Origin` header by exact string equality — a slash kills every WebSocket handshake silently).                          |
+| `ADMIN_URL`                                                           | Same rules. These two decide CORS _and_ cookie security — both must be the real Vercel-served domains.                                                                               |
+| `R2_ACCOUNT_ID` `R2_ACCESS_KEY_ID` `R2_SECRET_ACCESS_KEY` `R2_BUCKET` | All four. Production refuses `STORAGE_DRIVER=disk` outright, so there is no running without R2.                                                                                      |
+| `RIVAL_BASE_URL` `RIVAL_API_KEY` `RIVAL_WEBHOOK_KEY`                  | Optional — omit until Rival credentials exist.                                                                                                                                       |
 
 **There is no `SMTP_*` secret, deliberately.** Mail is configured by an administrator
 on **Settings → Email** and stored (password encrypted under `APP_ENCRYPTION_KEY`) in
@@ -218,7 +218,7 @@ Then, in this order:
 
 1. Sign in at the admin app and **change that password** — it lives in a repository
    secret and in the VPS `.env`, which is the wrong home for a standing credential.
-2. **Settings → Email** — configure the SMTP relay and use *Send test message*.
+2. **Settings → Email** — configure the SMTP relay and use _Send test message_.
    Nothing is delivered until this is done: no invites, no verification links, no KYC
    decisions. The API logs `NO MAIL SERVER IS CONFIGURED` at every boot until then.
 3. Only now invite the other admins — invites arrive by mail.
@@ -246,23 +246,23 @@ independent bug — the per-refresh rotation race — is 96e3af0. Both were real
 **What was exercised against the fixed build, and the result.** API level with
 curl; journeys in a real browser (Playwright) against both apps.
 
-| Area | Case | Result |
-|---|---|---|
-| CSRF guard | correct request (cookie + header + origin) | 201 |
-| | missing header / wrong header / foreign origin / no origin+referer | 403 each |
-| | header present but no session cookie | 401 (nothing to forge) |
-| | GET needs no CSRF | 200 |
-| Sessions | logout → old cookie on /me | 401; cookies cleared; browser-BACK lands on /login |
-| | refresh rotates the refresh token; new session works | 200 |
-| | replay of a rotated token INSIDE the 30s grace | accepted as a retry (by design, `RETRY_GRACE_MS`) |
-| | replay of a rotated token OUTSIDE the grace | 401, and the whole family is revoked (live session → 401) |
-| | two tabs refresh simultaneously | loser gets `401 SESSION_SUPERSEDED`, frontend retries once, both tabs stay signed in |
-| | expired access token | 401 → silent refresh 200 → write with the PRE-refresh CSRF token 201 |
-| Surfaces | admin cookie on portal routes | 401 (isolated) |
-| | admin + portal sessions in ONE jar (both cookie sets present) | admin writes 201, also after refresh; portal writes 200 |
-| Browser (admin) | write after login / after HARD REFRESH / after nav×3+refresh / in tab 2 / back in tab 1 / after re-login | 201 each |
-| | logout in tab 1 → tab 2 untouched | tab 2 lands on /login (session-channel sync) |
-| Browser (portal) | write after login / after hard refresh / after nav+refresh | 200 each, CSRF header learned every time |
+| Area             | Case                                                                                                     | Result                                                                               |
+| ---------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| CSRF guard       | correct request (cookie + header + origin)                                                               | 201                                                                                  |
+|                  | missing header / wrong header / foreign origin / no origin+referer                                       | 403 each                                                                             |
+|                  | header present but no session cookie                                                                     | 401 (nothing to forge)                                                               |
+|                  | GET needs no CSRF                                                                                        | 200                                                                                  |
+| Sessions         | logout → old cookie on /me                                                                               | 401; cookies cleared; browser-BACK lands on /login                                   |
+|                  | refresh rotates the refresh token; new session works                                                     | 200                                                                                  |
+|                  | replay of a rotated token INSIDE the 30s grace                                                           | accepted as a retry (by design, `RETRY_GRACE_MS`)                                    |
+|                  | replay of a rotated token OUTSIDE the grace                                                              | 401, and the whole family is revoked (live session → 401)                            |
+|                  | two tabs refresh simultaneously                                                                          | loser gets `401 SESSION_SUPERSEDED`, frontend retries once, both tabs stay signed in |
+|                  | expired access token                                                                                     | 401 → silent refresh 200 → write with the PRE-refresh CSRF token 201                 |
+| Surfaces         | admin cookie on portal routes                                                                            | 401 (isolated)                                                                       |
+|                  | admin + portal sessions in ONE jar (both cookie sets present)                                            | admin writes 201, also after refresh; portal writes 200                              |
+| Browser (admin)  | write after login / after HARD REFRESH / after nav×3+refresh / in tab 2 / back in tab 1 / after re-login | 201 each                                                                             |
+|                  | logout in tab 1 → tab 2 untouched                                                                        | tab 2 lands on /login (session-channel sync)                                         |
+| Browser (portal) | write after login / after hard refresh / after nav+refresh                                               | 200 each, CSRF header learned every time                                             |
 
 **The one thing that is a design choice, not a gap:** a rotated refresh token
 replayed within 30 seconds is honoured as a retry rather than treated as theft,

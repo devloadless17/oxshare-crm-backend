@@ -56,9 +56,9 @@ const TICK_MS = 2_000;
  * values being accurate — only on them moving the way prices move.
  */
 const SYMBOLS = [
-  { symbol: 'EURUSD', price: 1.0850, tick: 0.0004, digits: 5, valuePerLot: 100_000 },
-  { symbol: 'GBPUSD', price: 1.2710, tick: 0.0006, digits: 5, valuePerLot: 100_000 },
-  { symbol: 'USDJPY', price: 157.20, tick: 0.05, digits: 3, valuePerLot: 1_000 },
+  { symbol: 'EURUSD', price: 1.085, tick: 0.0004, digits: 5, valuePerLot: 100_000 },
+  { symbol: 'GBPUSD', price: 1.271, tick: 0.0006, digits: 5, valuePerLot: 100_000 },
+  { symbol: 'USDJPY', price: 157.2, tick: 0.05, digits: 3, valuePerLot: 1_000 },
   { symbol: 'XAUUSD', price: 2_350.0, tick: 1.2, digits: 2, valuePerLot: 100 },
   { symbol: 'BTCUSD', price: 61_500.0, tick: 45.0, digits: 2, valuePerLot: 1 },
 ];
@@ -67,7 +67,10 @@ const db = new pg.Client({ connectionString: process.env.DATABASE_URL });
 
 function assertNotProduction() {
   const url = process.env.DATABASE_URL ?? '';
-  if ((process.env.NODE_ENV ?? 'development') === 'production' || /\b(prod|production)\b/i.test(url)) {
+  if (
+    (process.env.NODE_ENV ?? 'development') === 'production' ||
+    /\b(prod|production)\b/i.test(url)
+  ) {
     throw new Error('This writes fixture trades and does not run against production.');
   }
 }
@@ -86,7 +89,9 @@ const next = () => {
 const money = (value, digits = 2) => value.toFixed(digits);
 
 async function purge() {
-  const { rowCount } = await db.query(`DELETE FROM positions WHERE ticket LIKE '${TICKET_PREFIX}%'`);
+  const { rowCount } = await db.query(
+    `DELETE FROM positions WHERE ticket LIKE '${TICKET_PREFIX}%'`,
+  );
   console.log(`removed ${rowCount} simulated position(s)`);
 }
 
@@ -186,7 +191,8 @@ async function main() {
      * every number on the screen look plausible and be wrong.
      */
     const direction = row.side === 'buy' ? 1 : -1;
-    const profit = (row.price - row.openPrice) * direction * row.volume * row.instrument.valuePerLot;
+    const profit =
+      (row.price - row.openPrice) * direction * row.volume * row.instrument.valuePerLot;
 
     await db.query(`UPDATE positions SET profit = $1, updated_at = now() WHERE id = $2`, [
       money(profit, 2),
@@ -197,7 +203,8 @@ async function main() {
 
   const closeOne = async (row) => {
     const direction = row.side === 'buy' ? 1 : -1;
-    const profit = (row.price - row.openPrice) * direction * row.volume * row.instrument.valuePerLot;
+    const profit =
+      (row.price - row.openPrice) * direction * row.volume * row.instrument.valuePerLot;
 
     /*
      * `positions_closed_has_close_data` requires close_price AND closed_at on a
@@ -237,7 +244,9 @@ async function main() {
 
   // Leave the tape with open positions on it — an empty table at the end would
   // undo the point of running this.
-  console.log(`\ndone: ${opened} opened, ${closed} closed, ${open.length} left open, ${ticks} price updates`);
+  console.log(
+    `\ndone: ${opened} opened, ${closed} closed, ${open.length} left open, ${ticks} price updates`,
+  );
   console.log(`\nRemove them with:  node scripts/simulate-positions.mjs --purge`);
 }
 

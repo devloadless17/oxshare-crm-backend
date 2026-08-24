@@ -107,8 +107,9 @@ try {
   // result as a failure.
   const roleId =
     role?.id ??
-    (await db.select({ id: roles.id }).from(roles).where(eq(roles.name, 'Administrator')).limit(1))
-      .at(0)?.id;
+    (
+      await db.select({ id: roles.id }).from(roles).where(eq(roles.name, 'Administrator')).limit(1)
+    ).at(0)?.id;
 
   if (!roleId) throw new Error('Administrator role could not be created or found.');
 

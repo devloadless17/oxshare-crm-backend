@@ -128,12 +128,21 @@ const dateFor = (index, spreadDays = 730) =>
 async function purge() {
   const order = [
     ['ib_accruals', `client_user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
-    ['ledger_entries', `wallet_id IN (SELECT w.id FROM wallets w JOIN users u ON u.id = w.user_id WHERE u.email LIKE '%@${SEED_DOMAIN}')`],
+    [
+      'ledger_entries',
+      `wallet_id IN (SELECT w.id FROM wallets w JOIN users u ON u.id = w.user_id WHERE u.email LIKE '%@${SEED_DOMAIN}')`,
+    ],
     ['transactions', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
-    ['kyc_submission_attempts', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
+    [
+      'kyc_submission_attempts',
+      `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`,
+    ],
     ['kyc_submissions', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
     ['ib_applications', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
-    ['client_tag_assignments', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
+    [
+      'client_tag_assignments',
+      `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`,
+    ],
     ['trading_accounts', `login LIKE 'SEED-%'`],
     ['wallets', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
     ['users', `email LIKE '%@${SEED_DOMAIN}'`],
@@ -156,7 +165,9 @@ async function main() {
   await db.connect();
 
   console.log(`database : ${redact(process.env.DATABASE_URL ?? '')}`);
-  console.log(`mode     : ${PURGE ? 'PURGE' : 'SEED'}${APPLY ? '' : '  (dry run — nothing is written)'}`);
+  console.log(
+    `mode     : ${PURGE ? 'PURGE' : 'SEED'}${APPLY ? '' : '  (dry run — nothing is written)'}`,
+  );
 
   if (PURGE) {
     if (!APPLY) {
@@ -388,7 +399,11 @@ async function main() {
       ['user_id', 'tag_id'],
       userIds.flatMap((userId, at) =>
         // Roughly half the clients carry one or two tags.
-        at % 2 === 0 ? [[userId, pick(tagIds, at)]] : at % 7 === 0 ? [[userId, pick(tagIds, at + 1)]] : [],
+        at % 2 === 0
+          ? [[userId, pick(tagIds, at)]]
+          : at % 7 === 0
+            ? [[userId, pick(tagIds, at + 1)]]
+            : [],
       ),
       { onConflict: 'ON CONFLICT DO NOTHING' },
     ),
@@ -524,7 +539,11 @@ async function main() {
         .map((userId, at) => [
           userId,
           pick(states, at),
-          JSON.stringify({ firstName: 'Seed', lastName: `Client ${at}`, country: pick(countries, at) }),
+          JSON.stringify({
+            firstName: 'Seed',
+            lastName: `Client ${at}`,
+            country: pick(countries, at),
+          }),
           dateFor(at, 400),
           dateFor(at, 400),
         ]),

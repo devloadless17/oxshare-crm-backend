@@ -133,7 +133,8 @@ async function main() {
      * a uuid it just read; this script passes e-mail addresses and symbols, and
      * a fixture that concatenates those is a habit worth not forming.
      */
-    const all = async (strings, ...values) => (await db.execute(sql(strings, ...values))).rows ?? [];
+    const all = async (strings, ...values) =>
+      (await db.execute(sql(strings, ...values))).rows ?? [];
     const one = async (strings, ...values) => (await all(strings, ...values))[0];
 
     if (PURGE) {
@@ -147,7 +148,10 @@ async function main() {
     const parentAccount =
       await one`SELECT user_id, level, referral_code, agency_id FROM ib_accounts WHERE user_id = ${parent.id}`;
     if (!parentAccount) return bad('the parent is a partner', PARENT_EMAIL);
-    ok('parent partner', `${PARENT_EMAIL} — level ${parentAccount.level}, code ${parentAccount.referral_code}`);
+    ok(
+      'parent partner',
+      `${PARENT_EMAIL} — level ${parentAccount.level}, code ${parentAccount.referral_code}`,
+    );
 
     /*
      * The ladder has to have a rung BELOW the parent, or this whole tree is
@@ -213,7 +217,8 @@ async function main() {
 
     // ── 2. Appoint them beneath the parent ────────────────────────────────
     console.log('\n=== 2. appoint them under the parent ===');
-    let account = await one`SELECT user_id, level, referral_code FROM ib_accounts WHERE user_id = ${partnerId}`;
+    let account =
+      await one`SELECT user_id, level, referral_code FROM ib_accounts WHERE user_id = ${partnerId}`;
 
     if (account) {
       ok('already a partner', `level ${account.level}, code ${account.referral_code}`);
@@ -227,11 +232,12 @@ async function main() {
       if (applicationId) {
         ok('resuming the pending application', applicationId);
       } else {
-        applicationId = (await ib.apply(partnerId, {
-          agencyId: agency.id,
-          motivation: 'Created by seed-partner-tree.',
-        }))
-          .id;
+        applicationId = (
+          await ib.apply(partnerId, {
+            agencyId: agency.id,
+            motivation: 'Created by seed-partner-tree.',
+          })
+        ).id;
         ok('application submitted', applicationId);
       }
 
@@ -291,7 +297,10 @@ async function main() {
 
       const accountId = await ensureTradingAccount({ db, sql, one }, clientId, at);
       const opened = await ensurePositions({ db, sql, one }, clientId, accountId, at);
-      ok(email, `account ${LOGIN_PREFIX}${String(at + 1).padStart(4, '0')} · ${opened} open position(s)`);
+      ok(
+        email,
+        `account ${LOGIN_PREFIX}${String(at + 1).padStart(4, '0')} · ${opened} open position(s)`,
+      );
     }
 
     const refloated = await refloatOpenPositions({ db, sql, all });
@@ -318,7 +327,8 @@ async function main() {
  * for somebody who already exists at any stage of the journey.
  */
 async function ensureVerifiedUser({ db, sql, one, auth, kyc, admin }, input) {
-  let user = await one`SELECT id, email, email_verified, verification_level FROM users WHERE email = ${input.email}`;
+  let user =
+    await one`SELECT id, email, email_verified, verification_level FROM users WHERE email = ${input.email}`;
 
   if (!user) {
     /*
@@ -334,7 +344,8 @@ async function ensureVerifiedUser({ db, sql, one, auth, kyc, admin }, input) {
       lastName: input.lastName,
       referralCode: input.referralCode,
     });
-    user = await one`SELECT id, email, email_verified, verification_level FROM users WHERE email = ${input.email}`;
+    user =
+      await one`SELECT id, email, email_verified, verification_level FROM users WHERE email = ${input.email}`;
     if (!user) throw new Error(`register() did not create ${input.email}`);
     ok('registered', input.email);
   }
@@ -345,9 +356,8 @@ async function ensureVerifiedUser({ db, sql, one, auth, kyc, admin }, input) {
      * client's click takes. Writing `email_verified = true` would leave the
      * token live and the account in a state the real flow never produces.
      */
-    const token = (
-      await one`SELECT email_verification_token AS t FROM users WHERE id = ${user.id}`
-    )?.t;
+    const token = (await one`SELECT email_verification_token AS t FROM users WHERE id = ${user.id}`)
+      ?.t;
     if (token) await auth.verifyEmail(token);
     else await db.execute(sql`UPDATE users SET email_verified = true WHERE id = ${user.id}`);
     ok('e-mail verified', input.email);
@@ -551,7 +561,8 @@ main().catch((error) => {
  * rather than adding a second every run.
  */
 async function ensureAgency({ db, sql, one }) {
-  const existing = await one`SELECT id, name FROM agencies WHERE enabled = true ORDER BY sort_order, name LIMIT 1`;
+  const existing =
+    await one`SELECT id, name FROM agencies WHERE enabled = true ORDER BY sort_order, name LIMIT 1`;
   if (existing) return existing;
 
   const created = await one`

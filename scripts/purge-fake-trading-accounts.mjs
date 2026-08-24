@@ -50,7 +50,9 @@ try {
 
   console.log(`${accounts.length} trading account(s) with a login MT5 never issued:\n`);
   for (const a of accounts) {
-    console.log(`   ${a.login.padEnd(12)} ${a.environment.padEnd(5)} balance ${a.balance}  ${a.email}`);
+    console.log(
+      `   ${a.login.padEnd(12)} ${a.environment.padEnd(5)} balance ${a.balance}  ${a.email}`,
+    );
   }
 
   /*
@@ -73,7 +75,9 @@ try {
     (t) => t.state === 'pending' && t.direction === 'wallet_to_account',
   );
 
-  console.log(`\n${transfers.length} transfer(s) reference them, ${holding.length} still holding wallet funds:`);
+  console.log(
+    `\n${transfers.length} transfer(s) reference them, ${holding.length} still holding wallet funds:`,
+  );
   for (const t of transfers) {
     console.log(`   ${t.state.padEnd(8)} ${t.direction.padEnd(18)} ${t.amount} ${t.currency}`);
   }

@@ -154,7 +154,9 @@ async function run({ all, db, sql, partner }) {
       commission,
     });
     const revenue = (Number(commission) + Number(swap)).toFixed(2);
-    console.log(`  ${padEnd(row.email, 30)} ${padEnd(row.symbol, 7)} broker kept ${pad(revenue, 7)}`);
+    console.log(
+      `  ${padEnd(row.email, 30)} ${padEnd(row.symbol, 7)} broker kept ${pad(revenue, 7)}`,
+    );
   }
 
   // ── Mature and credit them ───────────────────────────────────────────────
@@ -247,6 +249,8 @@ async function report(all, partnerId) {
       FROM ib_accruals WHERE ib_user_id = ${partnerId} GROUP BY status ORDER BY status`;
   console.log('\n=== sub-partner accruals by status ===');
   for (const row of pending) {
-    console.log(`  ${padEnd(row.status, 12)} ${pad(row.n, 4)}  ${pad(Number(row.total).toFixed(2), 10)}`);
+    console.log(
+      `  ${padEnd(row.status, 12)} ${pad(row.n, 4)}  ${pad(Number(row.total).toFixed(2), 10)}`,
+    );
   }
 }

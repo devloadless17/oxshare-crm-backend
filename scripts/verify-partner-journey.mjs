@@ -57,11 +57,17 @@ async function main() {
     const { sql } = await import('drizzle-orm');
     const { UNRESTRICTED } = await import('../dist/common/security/client-scope.js');
 
-    const one = async (text, ...params) => (await db.execute(sql.raw(fill(text, params)))).rows?.[0];
-    const all = async (text, ...params) => (await db.execute(sql.raw(fill(text, params)))).rows ?? [];
+    const one = async (text, ...params) =>
+      (await db.execute(sql.raw(fill(text, params)))).rows?.[0];
+    const all = async (text, ...params) =>
+      (await db.execute(sql.raw(fill(text, params)))).rows ?? [];
 
-    const partner = await one(`SELECT id, email, verification_level FROM users WHERE email = '${PARTNER_EMAIL}'`);
-    const client = await one(`SELECT id, email, referred_by_ib_user_id FROM users WHERE email = '${CLIENT_EMAIL}'`);
+    const partner = await one(
+      `SELECT id, email, verification_level FROM users WHERE email = '${PARTNER_EMAIL}'`,
+    );
+    const client = await one(
+      `SELECT id, email, referred_by_ib_user_id FROM users WHERE email = '${CLIENT_EMAIL}'`,
+    );
 
     if (!partner || !client) {
       bad('both users exist', `${PARTNER_EMAIL} / ${CLIENT_EMAIL}`);
@@ -69,7 +75,9 @@ async function main() {
     }
     ok('both users exist');
 
-    const admin = await one(`SELECT id, email, role FROM admins WHERE role = 'master_admin' ORDER BY created_at LIMIT 1`);
+    const admin = await one(
+      `SELECT id, email, role FROM admins WHERE role = 'master_admin' ORDER BY created_at LIMIT 1`,
+    );
     if (!admin) return bad('a master admin exists to act as');
 
     /*
@@ -123,7 +131,9 @@ async function main() {
         );
       } else if (before.status !== 'submitted' && before.status !== 'under_review') {
         await db.execute(
-          sql.raw(`UPDATE kyc_submissions SET status = 'submitted', submitted_at = now() WHERE user_id = '${partner.id}'`),
+          sql.raw(
+            `UPDATE kyc_submissions SET status = 'submitted', submitted_at = now() WHERE user_id = '${partner.id}'`,
+          ),
         );
       }
       await kyc.approve(partner.id, admin.id);
@@ -141,7 +151,9 @@ async function main() {
       (await import('../dist/modules/ib/ib-applications.service.js')).IbApplicationsService,
     );
 
-    let account = await one(`SELECT user_id, level, referral_code, agency_id FROM ib_accounts WHERE user_id = '${partner.id}'`);
+    let account = await one(
+      `SELECT user_id, level, referral_code, agency_id FROM ib_accounts WHERE user_id = '${partner.id}'`,
+    );
     if (account) {
       ok('already a partner', `code ${account.referral_code}`);
     } else {
@@ -194,7 +206,9 @@ async function main() {
        * a helper that makes it look routine.
        */
       await db.execute(
-        sql.raw(`UPDATE users SET referred_by_ib_user_id = '${partner.id}' WHERE id = '${client.id}'`),
+        sql.raw(
+          `UPDATE users SET referred_by_ib_user_id = '${partner.id}' WHERE id = '${client.id}'`,
+        ),
       );
       ok('attributed (direct write — see the note in the script)');
     }
@@ -291,7 +305,9 @@ async function reconcile(one, all, ctx) {
           : null;
       const actual = Number(row.amount).toFixed(2);
       if (expected === null) {
-        console.log(`        depth ${row.depth}: ${actual} (per_lot — not checkable from a deposit)`);
+        console.log(
+          `        depth ${row.depth}: ${actual} (per_lot — not checkable from a deposit)`,
+        );
       } else if (expected === actual) {
         ok(`  depth ${row.depth} amount`, `${row.base_amount} × ${row.rate_value}% = ${actual}`);
       } else {
@@ -324,7 +340,8 @@ main().catch((error) => {
  * rather than adding a second every run.
  */
 async function ensureAgency({ db, sql, one }) {
-  const existing = await one`SELECT id, name FROM agencies WHERE enabled = true ORDER BY sort_order, name LIMIT 1`;
+  const existing =
+    await one`SELECT id, name FROM agencies WHERE enabled = true ORDER BY sort_order, name LIMIT 1`;
   if (existing) return existing;
 
   const created = await one`
