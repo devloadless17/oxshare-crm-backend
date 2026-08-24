@@ -41,12 +41,19 @@ const STALE_KEY = 'ledger.view';
 function capturingLogger() {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const logs: string[] = [];
   return {
     errors,
     warnings,
+    logs,
     logger: {
       error: (message: string) => errors.push(message),
       warn: (message: string) => warnings.push(message),
+      // Required, not decoration: the repair reports at `log` level, and a stub
+      // missing the method throws inside the function's own try/catch — which
+      // would surface as a swallowed warning and a test failing for the wrong
+      // reason entirely.
+      log: (message: string) => logs.push(message),
     } as never,
   };
 }
@@ -80,6 +87,14 @@ describe('an Administrator role frozen at an older catalog', () => {
     `);
   }
 
+  /** Every role EXCEPT the top one, by name, so a snapshot can be compared. */
+  async function otherRoles(): Promise<{ name: string; permissions: string[] }[]> {
+    const result = await ctx.db.execute<{ name: string; permissions: string[] }>(
+      sql`SELECT name, permissions FROM roles WHERE name <> 'Administrator' ORDER BY name`,
+    );
+    return result.rows;
+  }
+
   async function heldKeys(): Promise<string[]> {
     const result = await ctx.db.execute<{ permissions: string[] }>(
       sql`SELECT permissions FROM roles WHERE name = 'Administrator'`,
@@ -87,33 +102,70 @@ describe('an Administrator role frozen at an older catalog', () => {
     return result.rows[0]?.permissions ?? [];
   }
 
-  describe('the boot check reports it', () => {
-    it('names the missing key, and says what to do about it', async () => {
-      await seedStaleAdministrator();
-      const { errors, logger } = capturingLogger();
-
-      await reportPermissionDrift(logger);
-
-      expect(errors).toHaveLength(1);
-      // The key itself, because "some permissions are missing" sends whoever
-      // reads it back to the database to find out which.
-      expect(errors[0]).toContain(STALE_KEY);
-      // And the remedy, because the person reading `docker logs` at deploy time
-      // is not necessarily the person who knows that a migration is the answer.
-      expect(errors[0]).toContain('migration');
-    });
-
-    it('does NOT repair the row', async () => {
+  describe('the boot check repairs it', () => {
+    /*
+     * The behaviour reversed on 24 Aug 2026, on the owner's decision:
+     * `Administrator` is the TOP-LEVEL role inside the system, so the catalog is
+     * its definition rather than a suggestion. The old pair of cases here
+     * asserted that it named the gap and left the row alone — correct while
+     * "an operator narrowed this deliberately" was a case worth preserving, and
+     * wrong once it is not a supported operation at all.
+     */
+    it('GRANTS the missing key, so the gap is closed rather than announced', async () => {
       await seedStaleAdministrator();
       const { logger } = capturingLogger();
 
       await reportPermissionDrift(logger);
 
-      // The whole point of reporting rather than fixing. Writing the keys here
-      // would be the same re-widening `onConflictDoNothing` exists to prevent,
-      // except in production, on every boot, with no migration recording that a
-      // role's authority changed or who decided it.
-      expect(await heldKeys()).not.toContain(STALE_KEY);
+      expect(await heldKeys()).toContain(STALE_KEY);
+    });
+
+    it('names every key it granted, because granting authority needs an author', async () => {
+      await seedStaleAdministrator();
+      const { logs, logger } = capturingLogger();
+
+      await reportPermissionDrift(logger);
+
+      expect(logs).toHaveLength(1);
+      // The key itself — "some permissions were granted" sends whoever reads it
+      // back to the database to find out which.
+      expect(logs[0]).toContain(STALE_KEY);
+    });
+
+    /*
+     * ADDS only. A key somebody put on the role by hand that the catalog does
+     * not define must survive: this closes a gap, it does not enforce equality,
+     * and tidying away a key nobody asked about is the destructive half of
+     * "sync" that this deliberately is not.
+     */
+    it('keeps a key the catalog does not define', async () => {
+      const stale = CATALOG_KEYS.filter((key) => key !== STALE_KEY);
+      await ctx.db.execute(sql`
+        INSERT INTO roles (name, description, permissions)
+        VALUES ('Administrator', 'hand-edited',
+                ${JSON.stringify([...stale, 'legacy.custom.key'])}::jsonb)
+      `);
+      const { logger } = capturingLogger();
+
+      await reportPermissionDrift(logger);
+
+      const held = await heldKeys();
+      expect(held).toContain(STALE_KEY); // the gap closed
+      expect(held).toContain('legacy.custom.key'); // and nothing was tidied away
+    });
+
+    it('is safe to run twice, and says nothing the second time', async () => {
+      await seedStaleAdministrator();
+      const first = capturingLogger();
+      await reportPermissionDrift(first.logger);
+
+      const second = capturingLogger();
+      await reportPermissionDrift(second.logger);
+
+      // Boot happens on every deploy and every restart. A repair that announced
+      // itself forever would be filtered out, and then it is not a signal.
+      expect(second.logs).toEqual([]);
+      expect(await heldKeys()).toContain(STALE_KEY);
     });
 
     it('says nothing when the role holds the whole catalog', async () => {
@@ -121,7 +173,7 @@ describe('an Administrator role frozen at an older catalog', () => {
         INSERT INTO roles (name, description, permissions)
         VALUES ('Administrator', 'current', ${JSON.stringify(CATALOG_KEYS)}::jsonb)
       `);
-      const { errors, warnings, logger } = capturingLogger();
+      const { errors, warnings, logs, logger } = capturingLogger();
 
       await reportPermissionDrift(logger);
 
@@ -129,6 +181,46 @@ describe('an Administrator role frozen at an older catalog', () => {
       // then it is not a check.
       expect(errors).toEqual([]);
       expect(warnings).toEqual([]);
+      expect(logs).toEqual([]);
+    });
+
+    /*
+     * ⚠️ THE BLAST-RADIUS TEST. Every other role is narrow ON PURPOSE — a
+     * Support Agent lacking `payments.edit` is the role, not drift — so widening
+     * one would be exactly the destructive act this module was first written to
+     * refuse. Only the top role is the catalog's.
+     */
+    it('leaves every other role untouched', async () => {
+      // Removed first AND after: `beforeEach` clears only `Administrator`, and
+      // `roles.name` is unique — a leftover row would fail the file's SECOND run
+      // on the same database with a constraint error that says nothing about
+      // what this test is for.
+      await ctx.db.execute(sql`DELETE FROM roles WHERE name LIKE 'Drift Bystander%'`);
+      /*
+       * THREE bystanders, and they exist because of how this test first failed
+       * to earn its place. With one, deleting the `WHERE name = 'Administrator'`
+       * filter from the query still left it passing: the read takes `limit(1)`,
+       * so a mutant that widens "whichever role comes back first" happened to
+       * pick Administrator anyway and the bystander was untouched by luck.
+       *
+       * Several rows plus a full before/after comparison removes the luck: any
+       * mutant that updates a role chosen by anything other than its NAME moves
+       * one of these, and the snapshot says which.
+       */
+      for (const n of [1, 2, 3]) {
+        await ctx.db.execute(sql`
+          INSERT INTO roles (name, description, permissions)
+          VALUES (${'Drift Bystander ' + String(n)}, 'narrow on purpose',
+                  ${JSON.stringify(['clients.view'])}::jsonb)
+        `);
+      }
+      const before = await otherRoles();
+      const { logger } = capturingLogger();
+
+      await reportPermissionDrift(logger);
+
+      expect(await otherRoles()).toEqual(before);
+      await ctx.db.execute(sql`DELETE FROM roles WHERE name LIKE 'Drift Bystander%'`);
     });
 
     it('says nothing when there is no Administrator role at all', async () => {

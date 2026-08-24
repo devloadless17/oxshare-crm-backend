@@ -169,11 +169,12 @@ async function bootstrap() {
     await runSeeds();
   }
 
-  // Report — read-only, never repairs — an `Administrator` role that has fallen
-  // behind config/permissions.json. Deliberately OUTSIDE the guard above: the
-  // seed is what keeps development in step, so production is the environment
-  // where this drifts, and it is where the last two occurrences were found by a
-  // person hitting a 403 in a browser. See database/permission-drift.ts.
+  // Bring the `Administrator` role up to config/permissions.json — the top-level
+  // role in the system, so the catalog is its definition. It ADDS only, touches
+  // no other role, and names every key it grants. Deliberately OUTSIDE the guard
+  // above: the seed is what keeps development in step, so production is the
+  // environment where this drifts, and it is where four of these gaps were found
+  // by a person hitting a 403 in a browser. See database/permission-drift.ts.
   const { reportPermissionDrift } = await import('./database/permission-drift');
   await reportPermissionDrift();
 

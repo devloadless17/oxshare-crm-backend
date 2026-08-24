@@ -29,18 +29,43 @@ import { roles } from './schema';
  * twice in PRODUCTION. Nothing reported it, because from the application's
  * point of view a role that lacks a permission is not an error; it is a role.
  *
- * ── Why a log line and not a fix ───────────────────────────────────────────
+ * ── It REPAIRS the Administrator role, and only that role ─────────────────
  *
- * Writing the missing keys here would be the same re-widening the seed's
- * `onConflictDoNothing` exists to prevent, except worse: it would run in
- * production, on every boot, with no migration recording that a role's
- * permissions had changed or who decided it. Granting authority is a decision,
- * and a decision needs an author.
+ * This used to report and stop, on the reasoning that "a migration was
+ * forgotten" and "an operator deliberately narrowed this role" look identical
+ * in the row, so only a human can tell which apart. The reasoning was sound and
+ * its premise was wrong.
  *
- * It also cannot distinguish the two reasons a key can be missing. "A migration
- * was forgotten" and "an operator deliberately narrowed this role" look
- * identical in the row. Only a human knows which, so this hands them the fact
- * and the remedy and stops.
+ * The owner settled it (24 Aug 2026): **`Administrator` is the top-level role
+ * INSIDE the system.** Above it sits only the project owner, who is not a row in
+ * this table at all. So "somebody deliberately narrowed the top role" is not a
+ * case worth preserving — it is not a supported operation, and the ambiguity
+ * that justified stopping does not exist. A key the catalog defines belongs to
+ * this role by definition of what the role is.
+ *
+ * That is a DECISION and it is recorded here because the code cannot derive it:
+ * the row is `is_system = false`, and `seed.ts` still describes it as something
+ * somebody "can read, rename, narrow and delete". It stays narrowable in the
+ * mechanical sense and is no longer narrowable in the intended one.
+ *
+ * The repair is deliberately narrow on three axes:
+ *
+ *  - **Only the role named `Administrator`.** Every other role is read, never
+ *    written. The whole point of the other thirteen seeded roles is that they
+ *    are narrow — a Support Agent lacking `payments.edit` is not drift, it is
+ *    the role — so widening any of them would be the destructive act this
+ *    module was originally written to refuse.
+ *  - **It only ever ADDS.** A key somebody put on the role by hand that the
+ *    catalog does not define is left alone rather than tidied away. This closes
+ *    a gap; it does not enforce equality.
+ *  - **It names every key it grants, in the log.** Granting authority is still a
+ *    decision needing an author, and the author is now this rule — so it says
+ *    so, next to the startup banner where somebody is already looking.
+ *
+ * ⚠️ The consequence worth knowing before it surprises somebody: narrowing the
+ * Administrator role from the console now reverts on the next boot. If a
+ * genuinely limited operator is wanted, the answer is a DIFFERENT role — which
+ * is what the other thirteen exist for — not a smaller top role.
  *
  * ── Why bootstrap, and why every environment ──────────────────────────────
  *
@@ -54,14 +79,14 @@ import { roles } from './schema';
  * `Administrator` role yet, and on that path the seed is about to create it
  * holding the whole catalog.
  *
- * It is READ-ONLY and never throws. An API that refuses to serve because a
- * reporting query failed would be a worse outage than the one it reports.
+ * It never throws. An API that refuses to serve because this query failed would
+ * be a worse outage than the gap it closes.
  */
 export async function reportPermissionDrift(logger = new Logger('PermissionDrift')): Promise<void> {
   try {
     const db = getDb();
     const [role] = await db
-      .select({ permissions: roles.permissions })
+      .select({ id: roles.id, permissions: roles.permissions })
       .from(roles)
       .where(eq(roles.name, 'Administrator'))
       .limit(1);
@@ -70,18 +95,36 @@ export async function reportPermissionDrift(logger = new Logger('PermissionDrift
     // something else. Neither is drift, and neither is this function's business.
     if (!role) return;
 
-    const held = new Set(role.permissions ?? []);
-    const missing = CATALOG_KEYS.filter((key) => !held.has(key)).sort();
+    const held = role.permissions ?? [];
+    const heldSet = new Set(held);
+    const missing = CATALOG_KEYS.filter((key) => !heldSet.has(key)).sort();
     if (missing.length === 0) return;
 
-    logger.error(
-      `The "Administrator" role is missing ${missing.length} permission ` +
-        `${missing.length === 1 ? 'key' : 'keys'} that config/permissions.json defines: ` +
-        `${missing.join(', ')}. ` +
-        'Anyone on that role gets 403 on the matching screens and cannot grant these to ' +
-        'anybody else either. If a migration was forgotten, add one modelled on ' +
-        'src/database/migrations/0085_grant_ledger_view.sql. If this role was narrowed ' +
-        'deliberately, this line is expected and can be ignored.',
+    /*
+     * UNION, not replace. The write is `held ∪ catalog`, so a key somebody added
+     * by hand that the catalog does not define survives — this closes a gap
+     * rather than enforcing equality, and tidying away a key nobody asked about
+     * would be the destructive half of "sync" that this deliberately is not.
+     *
+     * Sorted so the stored array has a stable order and two databases that took
+     * different routes to the same set compare equal by eye.
+     */
+    const granted = [...new Set([...held, ...CATALOG_KEYS])].sort();
+
+    await db.update(roles).set({ permissions: granted }).where(eq(roles.id, role.id));
+
+    /*
+     * `log`, not `warn`. Having closed the gap, this is a normal and expected
+     * consequence of a deploy that added a key — the abnormal thing was the
+     * silence before it. It still names every key, because granting authority
+     * is a decision that needs an author and the author is this rule.
+     */
+    logger.log(
+      `Granted the "Administrator" role ${missing.length} permission ` +
+        `${missing.length === 1 ? 'key' : 'keys'} that config/permissions.json defines and the ` +
+        `role lacked: ${missing.join(', ')}. ` +
+        'It is the top-level role in the system, so the catalog is its definition — see the ' +
+        'note at the top of database/permission-drift.ts. Other roles are never touched.',
     );
   } catch (error) {
     // Reporting must never be the reason the process does not start.
