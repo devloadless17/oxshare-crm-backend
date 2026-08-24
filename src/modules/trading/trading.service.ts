@@ -467,6 +467,27 @@ export class TradingService {
         dealtAt: new Date(deal.dealtAt),
       }))
       /*
+       * ── TRIMMED BACK TO WHAT THE CLIENT ASKED FOR ────────────────────────
+       *
+       * The bridge widens its query past `to` to absorb the trading server's
+       * clock zone: MT5 compares absolute unix seconds against deal times
+       * recorded in its OWN local zone, so a window ending at "now" lands the
+       * offset in the past and the most recent hours are invisible. Measured
+       * live at +3 on this deployment.
+       *
+       * That margin is why a client asking for today now SEES today — and it
+       * also means the bridge can hand back deals past the requested end. This
+       * is a statement screen, so the range a client chose is the range they
+       * are shown, and the filter belongs HERE rather than in the bridge: it
+       * rests on the deal's own reported time being true UTC, which is an
+       * assumption only a live server can settle, and a wrong assumption costs
+       * a one-line change here instead of a redeploy of the bridge.
+       */
+      .filter(
+        (deal) =>
+          deal.dealtAt.getTime() >= from.getTime() && deal.dealtAt.getTime() <= to.getTime(),
+      )
+      /*
        * Newest first, with the TICKET breaking ties. Two deals can share a
        * timestamp at MT5's one-second resolution, and without a total order the
        * list reshuffles between two renders of identical data.
