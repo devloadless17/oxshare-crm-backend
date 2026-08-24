@@ -286,8 +286,17 @@ export class RefreshTokensService {
     const live = rows.find(
       (r) => !r.usedAt && !r.revokedAt && r.expiresAt.getTime() > now && r.id !== presented.id,
     );
+    /*
+     * >= and not >, deliberately. Two consumptions stamped in the SAME
+     * millisecond compare equal, and with a strict comparison a replay of the
+     * older token read as "nothing consumed after me" — graced toward the
+     * live successor, which hands an attacker a session for the price of
+     * landing in the right millisecond. When order cannot be told, fail
+     * CLOSED: a genuine retry has no OTHER consumed row at its own timestamp,
+     * because the client that never received a response never rotated again.
+     */
     const consumedAfterPresented = rows.some(
-      (r) => r.id !== presented.id && r.usedAt !== null && r.usedAt > presented.usedAt,
+      (r) => r.id !== presented.id && r.usedAt !== null && r.usedAt >= presented.usedAt,
     );
 
     return { liveJti: live?.id ?? null, consumedAfterPresented };
