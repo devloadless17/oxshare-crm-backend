@@ -94,6 +94,35 @@ export class DealCommissionScheduler {
       const run = await this.deals.accruePending();
 
       /*
+       * ── THE RUN THAT DID NOTHING, ON PURPOSE ──────────────────────────────
+       *
+       * There is a backlog of historical trades and nobody has said whether
+       * they are owed. Paying them is months of real money at once; skipping
+       * them silently is money partners earned and never see. Neither is a
+       * default, so the engine stopped and this says so.
+       *
+       * Told at every level that can reach a person: an alert for whatever
+       * watches the drain, and a warn line for whoever is reading a log
+       * wondering why no commission is being calculated. This is the one
+       * message in this file that must not be throttled — it does not resolve
+       * itself, and a deployment can sit in it indefinitely without any other
+       * symptom, because "no commission yet" looks exactly like "no trades yet".
+       */
+      if (run.awaitingBacklogDecision) {
+        raiseAlert(
+          this.logger,
+          ALERT_KINDS.COMMISSION_QUEUE_STALLED,
+          'notify',
+          'The commission engine is HOLDING: ingested trades predate it and IB_ACCRUAL_START is ' +
+            'not set, so nobody has said whether that backlog is owed. Nothing has been paid and ' +
+            'nothing has been discarded. Set IB_ACCRUAL_START to an ISO instant to pay from that ' +
+            'point on, or to "all" to pay the whole backlog deliberately.',
+          { awaitingBacklogDecision: 1, unlinked: run.orphaned },
+        );
+        return;
+      }
+
+      /*
        * The quiet path, and the common one once a backlog has drained. Logged at
        * nothing rather than at info: a line every minute saying "no deals" is
        * how a log stops being read.
@@ -109,6 +138,13 @@ export class DealCommissionScheduler {
       if (run.accrued > 0) {
         this.logger.log(
           `Accrued commission on ${run.accrued} deal(s): ${run.accrualRows} accrual row(s) written.`,
+        );
+      }
+
+      if (run.predating > 0) {
+        this.logger.log(
+          `${run.predating} deal(s) predate IB_ACCRUAL_START and were marked decided without ` +
+            'accruing. They are finished, not queued — nothing will revisit them.',
         );
       }
 

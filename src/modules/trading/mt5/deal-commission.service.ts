@@ -35,6 +35,47 @@ const RETRY_CAP_MINUTES = 60;
  */
 const RETRY_EXPONENT_CEILING = 20;
 
+/**
+ * How old an unprocessed deal has to be before it counts as BACKLOG rather than
+ * ordinary queue.
+ *
+ * Two days, because the sweep runs 24 hours behind the push feed and a deal
+ * legitimately arriving late must not look like history. Anything older than
+ * this predates the decision to switch the engine on, and paying for it is a
+ * commercial choice rather than a consequence of deployment.
+ */
+const BACKLOG_AGE_MS = 48 * 60 * 60 * 1000;
+
+/** What `IB_ACCRUAL_START` says, resolved once per run. */
+type AccrualWindow =
+  /** Pay for everything, deliberately. */
+  | { mode: 'all' }
+  /** Pay from this instant on; older deals are decided and accrue nothing. */
+  | { mode: 'from'; at: Date }
+  /** Nobody has chosen. Refuse an aged backlog rather than pay it. */
+  | { mode: 'unset' };
+
+/**
+ * Read straight from `process.env`, like the scheduler's cron and for the same
+ * reason: this service is constructed by hand in the money suites, which do not
+ * build a Nest container to ask a ConfigService with.
+ *
+ * `env.validation.ts` has already refused to boot on a malformed value, so this
+ * only has to interpret one it has been told is well formed.
+ */
+export function accrualWindow(raw = process.env['IB_ACCRUAL_START']): AccrualWindow {
+  if (raw === undefined || raw.trim() === '') return { mode: 'unset' };
+  if (raw.trim() === 'all') return { mode: 'all' };
+
+  const at = new Date(raw.trim());
+  /*
+   * A value that survived validation but does not parse here would silently
+   * become "pay nothing, forever". Treated as UNSET so the engine refuses and
+   * says so, rather than quietly deciding every deal is out of scope.
+   */
+  return Number.isNaN(at.getTime()) ? { mode: 'unset' } : { mode: 'from', at };
+}
+
 /** What one drain of the queue did. Every deal lands in exactly one bucket. */
 export interface DealAccrualRun {
   /** Rows the query returned — the size of the batch, not of the backlog. */
@@ -73,6 +114,22 @@ export interface DealAccrualRun {
   deferred: number;
   /** Deals the engine refused or could not process IN THIS BATCH. */
   failed: number;
+  /**
+   * Deals decided as out of scope because they predate `IB_ACCRUAL_START`.
+   *
+   * Marked done rather than left queued: the operator has said these are not
+   * owed, and a deal left NULL would be re-examined on every run forever while
+   * inflating a backlog nobody intends to pay.
+   */
+  predating: number;
+  /**
+   * True when the run did NOTHING because nobody has chosen what to do with an
+   * aged backlog.
+   *
+   * Not an error and not a failure — a refusal. It appears exactly once per
+   * deployment, before any commission has ever been paid.
+   */
+  awaitingBacklogDecision: boolean;
 }
 
 /**
@@ -168,6 +225,42 @@ export class DealCommissionService {
    * without a leader election.
    */
   async accruePending(limit = 200): Promise<DealAccrualRun> {
+    const window = accrualWindow();
+
+    /*
+     * ── NOBODY HAS SAID WHAT TO DO WITH THE BACKLOG, SO NOTHING IS PAID ────
+     *
+     * `mt5_deals` has been filled by ingestion since long before anything read
+     * it. Draining it on the first run pays partners for every historical trade
+     * at once — months of real money, from a job whose entire design is to be
+     * safe to re-run. The engine is not wrong to do it; the point is that it is
+     * a commercial decision and no deployment has ever been asked to make it.
+     *
+     * So an AGED backlog with no `IB_ACCRUAL_START` stops the run. Not the
+     * whole job forever — the moment somebody sets a date, or `all`, this never
+     * fires again. It can only happen before any commission has been paid,
+     * which is the one moment where doing nothing costs nothing.
+     *
+     * Deliberately NOT defaulted to "today". A default is a decision nobody
+     * made, and this one is not reversible by a code change: money paid to a
+     * partner for a trade nobody meant to pay for comes back by conversation,
+     * not by deploy.
+     */
+    if (window.mode === 'unset' && (await this.hasAgedBacklog())) {
+      return {
+        examined: 0,
+        accrued: 0,
+        accrualRows: 0,
+        nothingOwed: 0,
+        legsConsumed: 0,
+        orphaned: await this.stuckCounts().then((c) => c.orphaned),
+        deferred: 0,
+        failed: 0,
+        predating: 0,
+        awaitingBacklogDecision: true,
+      };
+    }
+
     const batch = await this.db
       .select({
         id: mt5Deals.id,
@@ -181,6 +274,8 @@ export class DealCommissionService {
         volume: mt5Deals.volume,
         commission: mt5Deals.commission,
         swap: mt5Deals.swap,
+        /* Needed to decide whether a deal predates `IB_ACCRUAL_START`. */
+        dealtAt: mt5Deals.dealtAt,
         userId: tradingAccounts.userId,
         /*
          * The ACCOUNT's currency, because that is what MT5 denominates a deal
@@ -289,6 +384,8 @@ export class DealCommissionService {
       orphaned: 0,
       deferred: 0,
       failed: 0,
+      predating: 0,
+      awaitingBacklogDecision: false,
     };
 
     for (const deal of batch) {
@@ -299,6 +396,17 @@ export class DealCommissionService {
       if (!isTradeAction(deal.action)) {
         await this.markProcessed([deal.id]);
         run.nothingOwed += 1;
+        continue;
+      }
+
+      /*
+       * Out of scope by the operator's own decision. DONE rather than skipped:
+       * leaving it NULL would re-examine it on every run forever and keep
+       * inflating a backlog nobody intends to pay.
+       */
+      if (window.mode === 'from' && deal.dealtAt < window.at) {
+        await this.markProcessed([deal.id]);
+        run.predating += 1;
         continue;
       }
 
@@ -454,6 +562,29 @@ export class DealCommissionService {
     run.deferred = stuck.deferred;
 
     return run;
+  }
+
+  /**
+   * Is there unprocessed work old enough to be HISTORY rather than queue?
+   *
+   * Only trade deals count. A balance operation accrues nothing whenever it is
+   * assessed, so a pile of old deposits is not a commercial decision waiting to
+   * be made and must not hold the engine shut.
+   */
+  private async hasAgedBacklog(): Promise<boolean> {
+    const [row] = await this.db
+      .select({ id: mt5Deals.id })
+      .from(mt5Deals)
+      .where(
+        and(
+          isNull(mt5Deals.commissionProcessedAt),
+          inArray(mt5Deals.action, [...TRADE_ACTIONS]),
+          lte(mt5Deals.dealtAt, new Date(Date.now() - BACKLOG_AGE_MS)),
+        ),
+      )
+      .limit(1);
+
+    return row !== undefined;
   }
 
   /** How many deals are waiting, for the log line that makes a backlog visible. */

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
@@ -886,5 +886,112 @@ describe('a deposit cannot accrue a revenue share', () => {
         currency: 'USD',
       }),
     ).resolves.toBe(0);
+  });
+});
+
+/**
+ * ── THE BACKLOG IS A DECISION, NOT A CONSEQUENCE OF DEPLOYING ─────────────
+ *
+ * `mt5_deals` was filled by ingestion long before anything read it, so the
+ * first run of this engine faces months of historical trades. Draining them
+ * pays partners for every one at once — real money, from a job whose whole
+ * design is that it is safe to run.
+ *
+ * That is a commercial decision and no deployment had ever been asked to make
+ * it. `IB_ACCRUAL_START` is where the answer goes; absent it, an aged backlog
+ * stops the run rather than being paid or silently discarded.
+ */
+describe('what the engine is allowed to pay for', () => {
+  const ENV = process.env['IB_ACCRUAL_START'];
+
+  afterEach(() => {
+    if (ENV === undefined) delete process.env['IB_ACCRUAL_START'];
+    else process.env['IB_ACCRUAL_START'] = ENV;
+  });
+
+  /** A deal MT5 says happened `days` ago. */
+  async function aged(ticket: string, days: number): Promise<string> {
+    return ingest({
+      ticket,
+      login: LOGIN,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+      secondsAgo: days * 86_400,
+    });
+  }
+
+  it('refuses to drain an aged backlog nobody has decided about', async () => {
+    delete process.env['IB_ACCRUAL_START'];
+    const old = await aged('90300', 30);
+
+    const run = await deals.accruePending();
+
+    expect(run.awaitingBacklogDecision).toBe(true);
+    expect(run.accrued).toBe(0);
+    // Neither paid NOR discarded — the deal is exactly as it was.
+    expect(await processedAt(old)).toBeNull();
+    expect(await accrualsFor(old)).toHaveLength(0);
+  });
+
+  it('runs normally when the only queued work is recent', async () => {
+    /*
+     * A deal arriving late is not history. The sweep runs 24 hours behind the
+     * push feed, so the grace period has to clear that or every ordinary
+     * catch-up would read as a backlog and hold the engine shut.
+     */
+    delete process.env['IB_ACCRUAL_START'];
+    const fresh = await ingest({
+      ticket: '90301',
+      login: LOGIN,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+    });
+
+    const run = await deals.accruePending();
+
+    expect(run.awaitingBacklogDecision).toBe(false);
+    expect(run.accrued).toBe(1);
+    expect((await accrualsFor(fresh))[0].amount).toBe('3.00000000');
+  });
+
+  it('pays the whole backlog when somebody says so out loud', async () => {
+    process.env['IB_ACCRUAL_START'] = 'all';
+    const old = await aged('90302', 30);
+
+    const run = await deals.accruePending();
+
+    expect(run.awaitingBacklogDecision).toBe(false);
+    expect(run.accrued).toBe(1);
+    expect((await accrualsFor(old))[0].amount).toBe('3.00000000');
+  });
+
+  it('pays from the chosen instant and FINISHES what predates it', async () => {
+    process.env['IB_ACCRUAL_START'] = new Date(Date.now() - 10 * 86_400_000).toISOString();
+    const before = await aged('90303', 30);
+    const after = await aged('90304', 3);
+
+    const run = await deals.accruePending();
+
+    expect(run.accrued).toBe(1);
+    expect((await accrualsFor(after))[0].amount).toBe('3.00000000');
+
+    // Out of scope, and DONE — not left to be re-examined on every run forever
+    // while inflating a backlog nobody intends to pay.
+    expect(run.predating).toBe(1);
+    expect(await accrualsFor(before)).toHaveLength(0);
+    expect(await processedAt(before)).not.toBeNull();
+  });
+
+  it('treats an unparseable value as unset rather than as "pay nothing"', async () => {
+    /*
+     * Validation refuses this at boot, so reaching it means something bypassed
+     * that. Falling back to "no deal is ever in scope" would mark every trade
+     * decided and discard commission permanently, which is the one outcome that
+     * cannot be undone by fixing the value.
+     */
+    process.env['IB_ACCRUAL_START'] = 'not-a-date';
+    await aged('90305', 30);
+
+    expect((await deals.accruePending()).awaitingBacklogDecision).toBe(true);
   });
 });

@@ -157,6 +157,33 @@ const envSchema = z
      * idempotent, so running this less often delays a partner's pending balance
      * and cannot change what they are owed.
      */
+    /**
+     * WHICH deals the commission engine is allowed to pay for — the one setting
+     * that must be chosen rather than defaulted.
+     *
+     * `mt5_deals` is filled by ingestion, which has been running since long
+     * before anything read it. So the first run of the accrual job faces a
+     * backlog of historical trades and, left alone, pays partners for every one
+     * of them — months of commission, all at once, from a job whose whole
+     * design is to be safe to run. That is not a bug in the engine; it is a
+     * commercial decision nobody has been asked to make.
+     *
+     *   <ISO date>  pay for deals dealt at or after this instant. Anything
+     *               older is marked decided and accrues nothing.
+     *   all         pay for the entire backlog, deliberately.
+     *   (unset)     the engine REFUSES to drain an aged backlog and says so.
+     *
+     * Unset is safe rather than convenient, and that is the point: the failure
+     * mode of guessing is paying real money to real people for trades nobody
+     * intended to pay for, and it is not reversible by a code change.
+     */
+    IB_ACCRUAL_START: z
+      .string()
+      .refine(
+        (value) => value === 'all' || !Number.isNaN(Date.parse(value)),
+        'IB_ACCRUAL_START must be "all" or an ISO 8601 instant, e.g. "2026-08-24T00:00:00Z"',
+      )
+      .optional(),
     IB_DEAL_ACCRUAL_CRON: z
       .string()
       .regex(

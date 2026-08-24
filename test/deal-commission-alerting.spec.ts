@@ -36,6 +36,8 @@ function run(overrides: Partial<DealAccrualRun> = {}): DealAccrualRun {
     orphaned: 0,
     deferred: 0,
     failed: 0,
+    predating: 0,
+    awaitingBacklogDecision: false,
     ...overrides,
   };
 }

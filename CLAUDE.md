@@ -261,6 +261,30 @@ the model they actually want. Not `isLiveRevenueFeed`, because a deposit is not 
 all — flipping `LIVE_REVENUE_FEED` to `position` must never make this payable.
 `accrueForSettledDeposit` still swallows it per its no-throw contract, so the deposit itself stands.
 
+### The backlog is a DECISION — `IB_ACCRUAL_START`
+
+`mt5_deals` has been filled by ingestion since long before anything read it, so the first run of
+the engine faces months of historical trades and, left alone, pays partners for every one of them
+at once. That is not a bug in a job designed to be safe to re-run; it is a commercial decision no
+deployment had ever been asked to make.
+
+| value | meaning |
+|---|---|
+| *(unset)* | an AGED backlog (>48h of unprocessed TRADE deals) **stops the run** — nothing paid, nothing discarded |
+| `<ISO instant>` | pay from there on; older deals are marked decided and accrue nothing |
+| `all` | pay the whole backlog, deliberately |
+
+48 hours because the sweep runs 24 behind the push feed — a deal arriving late is not history, and
+a shorter grace would hold the engine shut on every ordinary catch-up. Deliberately **not**
+defaulted to "today": a default is a decision nobody made, and this one does not reverse by
+deploying — money paid to a partner for a trade nobody meant to pay for comes back by conversation.
+An unparseable value falls back to UNSET rather than to "nothing is in scope", because the second
+would mark every trade decided and discard the commission permanently.
+
+The holding state alerts and logs on every run and is never throttled: it does not resolve itself,
+and a deployment can sit in it indefinitely with no other symptom — "no commission yet" looks
+exactly like "no trades yet".
+
 ### Three refusals worth knowing about
 
 - **`per_lot` levels accrue nothing on a deposit.** The rate is an amount per standard lot and a
@@ -370,6 +394,22 @@ against. Consistently deeper than configured means a proxy was added (`notify`);
 shallower means we trust further left than our infrastructure reaches, into caller-supplied text, so
 an allowlist can be walked through (`page`). It reports and changes nothing — inferring the hop
 count from traffic is the same "trust the header" mistake `client-ip.ts` refuses.
+
+## The trading-account balance mirror has THREE writers and one rule
+
+`trading_accounts.balance` mirrors MT5 (0081) and MT5 is the authority. Three paths write it —
+`ingestSnapshot` (the sweep), `recordFromOperation`, and `TransfersService.settle` — and every one
+of them must stamp `balance_synced_at` with **the moment MT5 was ASKED**, then refuse to move a
+figure read more recently than its own.
+
+The transfer path used to stamp `settledAt` — "now" — and compare nothing. That loses data: the
+executor reads at T1, the sweep reads a fresher figure at T2 and writes it, then settle writes the
+T1 figure stamped T3 and wins. The mirror goes backwards while its timestamp says forwards, which
+is worse than stale — every other writer then trusts a number that is not a read time. It now takes
+`balanceReadAt` from the executor, which stamps it **before** calling the bridge: the earliest
+instant the figure could describe. Erring early costs a skipped write the sweep repairs; erring
+late lets a stale figure overwrite a newer one. A skipped write is SUCCESS and must never throw —
+the money has already moved and the wallet leg is posted in the same transaction.
 
 ## Realtime — a second listener, on purpose
 
