@@ -8968,6 +8968,404 @@
         ]
       }
     },
+    "/v1/admin/transactions/export": {
+      "get": {
+        "description": "The same filters as GET /admin/transactions, over every matching row rather than one page. Amounts are the exact decimal strings the ledger holds — never rounded, never locale-formatted (§6.1).",
+        "operationId": "AdminFinancialController_exportTransactions",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "direction",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "deposit",
+                "withdrawal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "payment",
+                "transfer",
+                "commission_transfer"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `transactions-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered money-movement list as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/transactions/summary": {
+      "get": {
+        "operationId": "AdminFinancialController_transactionsSummary",
+        "parameters": [
+          {
+            "name": "direction",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "deposit",
+                "withdrawal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "payment",
+                "transfer",
+                "commission_transfer"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminTransactionsSummaryDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Totals over the filtered movement list, grouped per currency (amounts are strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/transactions": {
+      "get": {
+        "operationId": "AdminFinancialController_listTransactions",
+        "parameters": [
+          {
+            "name": "direction",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "deposit",
+                "withdrawal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "required": false,
+            "in": "query",
+            "description": "payment = crossed the platform boundary through a provider; transfer = wallet ⇄ trading account; commission_transfer = partner earnings to their main wallet.",
+            "schema": {
+              "enum": [
+                "payment",
+                "transfer",
+                "commission_transfer"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Narrow to one client (UUID).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Search the client’s email and name — the same columns every other queue searches.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "description": "amount sorts on the NUMERIC value in SQL — never cast, never in JS (§6).",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "amount",
+                "state"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminTransactionListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every money movement, platform-wide — deposits, withdrawals and transfers (amounts are strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/stats/overview": {
       "get": {
         "description": "Each section is gated on its own permission and is ABSENT when the caller lacks it — deliberately different from present-and-zero, so a screen can distinguish \"hidden from you\" from \"there are none\". `sections` lists what came back. Every counter is a real COUNT/SUM in SQL, restricted to the clients this administrator may see; `scoped` says whether that restriction is in force. Withdrawal amounts are STRINGS.",
@@ -15723,10 +16121,7 @@
           }
         },
         "required": [
-          "id",
-          "email",
-          "firstName",
-          "lastName"
+          "id"
         ]
       },
       "WithdrawalRowDto": {
@@ -15849,6 +16244,12 @@
             "type": "object",
             "additionalProperties": {
               "type": "number"
+            }
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         },
@@ -16016,6 +16417,253 @@
           "discrepancyCount",
           "totalDifference",
           "balanced"
+        ]
+      },
+      "AdminTransactionSummaryRowDto": {
+        "type": "object",
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "payment",
+              "transfer",
+              "commission_transfer"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "success",
+              "failure",
+              "rejected"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "count": {
+            "type": "number"
+          },
+          "total": {
+            "type": "string",
+            "example": "1250.50000000",
+            "description": "Server-computed SUM as a string — the page renders it, never recomputes it."
+          }
+        },
+        "required": [
+          "direction",
+          "kind",
+          "state",
+          "currency",
+          "count",
+          "total"
+        ]
+      },
+      "AdminTransactionDirectionTotalDto": {
+        "type": "object",
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "count": {
+            "type": "number"
+          },
+          "total": {
+            "type": "string",
+            "example": "12400.00000000",
+            "description": "Server-computed SUM as a string — rendered, never recomputed."
+          }
+        },
+        "required": [
+          "direction",
+          "currency",
+          "count",
+          "total"
+        ]
+      },
+      "AdminTransactionsSummaryDto": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminTransactionSummaryRowDto"
+            }
+          },
+          "directions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminTransactionDirectionTotalDto"
+            }
+          }
+        },
+        "required": [
+          "rows",
+          "directions"
+        ]
+      },
+      "AdminTransactionRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "payment",
+              "transfer",
+              "commission_transfer"
+            ]
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "success",
+              "failure",
+              "rejected"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "example": "250.00000000",
+            "description": "Monetary value — ALWAYS a string, never a number. NUMERIC(28,8) exceeds what a JavaScript number represents exactly (§6.1)."
+          },
+          "currency": {
+            "type": "string",
+            "description": "A currency code.",
+            "example": "USD"
+          },
+          "methodName": {
+            "type": "string",
+            "example": "Whish Money"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "providerRef": {
+            "type": "string",
+            "nullable": true
+          },
+          "destination": {
+            "type": "string",
+            "nullable": true
+          },
+          "rejectionReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "tradingAccountId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The trading account a TRANSFER moved money to or from. Null on other kinds."
+          },
+          "walletId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "settledAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "user": {
+            "$ref": "#/components/schemas/WithdrawalUserDto"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "direction",
+          "state",
+          "amount",
+          "currency",
+          "methodName",
+          "provider",
+          "walletId",
+          "createdAt",
+          "user"
+        ]
+      },
+      "AdminTransactionListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminTransactionRowDto"
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "directionCounts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "total",
+          "page",
+          "limit",
+          "counts",
+          "directionCounts"
         ]
       },
       "ClientRegistrationWindowDto": {
