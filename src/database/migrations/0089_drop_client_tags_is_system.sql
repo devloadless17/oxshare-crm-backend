@@ -1,0 +1,16 @@
+-- 0089 · drop the vestigial client_tags.is_system column
+--
+-- Hand-written (see the 0040 header: committed drizzle snapshots stop at 0026,
+-- so drizzle-kit generate diffs against a stale baseline).
+--
+-- D-60's first answer materialised a `new-client` intake tag and guarded it
+-- with this flag (migrations 0055/0056). The owner superseded that design the
+-- same day: untriaged is the DERIVED state of carrying no tag assignments,
+-- gated by admins.sees_untriaged (0057 deleted the tag itself). The code that
+-- read this column — the delete guard, the DTO field, the console badge —
+-- was removed on 24 Aug 2026 (backend d423778); the owner confirmed the flag
+-- is dead ("is_system is old — we changed it to the tick behavior").
+--
+-- No data to migrate: nothing in any environment ever wrote a TRUE here after
+-- 0057 removed the only system tag.
+ALTER TABLE "client_tags" DROP COLUMN IF EXISTS "is_system";
