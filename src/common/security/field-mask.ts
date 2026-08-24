@@ -138,7 +138,13 @@ function removePath(
    */
   if (Array.isArray(child)) {
     let changed = false;
-    const next = child.map((item) => {
+    /*
+     * `unknown[]`, not the `any[]` `Array.isArray` narrows to. Every element
+     * here is data from a response being masked, and an `any` flowing back out
+     * of this map is exactly the shape that let a field inside a list go
+     * unmasked in the first place.
+     */
+    const next = (child as unknown[]).map((item) => {
       if (item === null || typeof item !== 'object' || Array.isArray(item)) return item;
       const masked = removePath(item as Record<string, unknown>, rest, false);
       if (masked !== item) changed = true;

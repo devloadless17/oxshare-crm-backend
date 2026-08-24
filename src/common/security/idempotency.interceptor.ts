@@ -111,8 +111,15 @@ export class IdempotencyInterceptor implements NestInterceptor {
      * into the hash turns that into the "same key, different request" refusal
      * it should always have been.
      */
+    /*
+     * `req.body` is `any` on Express's own type, and it is about to be hashed
+     * into a value that decides whether a withdrawal is approved twice. Widened
+     * to `unknown` at the boundary rather than trusted: nothing here reads a
+     * field off it, so there is no reason for `any` to travel any further.
+     */
+    const body: unknown = req.body ?? {};
     const requestHash = createHash('sha256')
-      .update(JSON.stringify({ params: req.params ?? {}, body: req.body ?? {} }))
+      .update(JSON.stringify({ params: req.params ?? {}, body }))
       .digest('hex');
 
     return from(this.claim({ key, endpoint, actorId, requestHash })).pipe(
