@@ -40,30 +40,75 @@ export class CatalogueService {
   }
 
   async createProduct(
-    input: { name: string; description?: string | null; enabled: boolean; sortOrder: number },
+    input: {
+      name: string;
+      description?: string | null;
+      enabled: boolean;
+      type?: 'real' | 'demo';
+      sortOrder: number;
+    },
     actor: Actor,
   ): Promise<ProductDto> {
-    const row = await this.store.createProduct({
-      name: input.name.trim(),
-      description: emptyToNull(input.description),
-      enabled: input.enabled,
-      sortOrder: input.sortOrder,
-    });
+    const type = input.type ?? 'real';
+
+    /*
+     * At most one demo product. This check is the readable sentence; the
+     * partial unique index `trading_products_single_demo_uq` is the guarantee
+     * a concurrent create cannot slip past, hence the catch below translating
+     * the constraint into the same message.
+     */
+    if (type === 'demo') {
+      const existing = (await this.store.listProducts()).find((product) => product.type === 'demo');
+      if (existing) throw singleDemoError(existing.name);
+    }
+
+    const row = await this.store
+      .createProduct({
+        name: input.name.trim(),
+        description: emptyToNull(input.description),
+        enabled: input.enabled,
+        type,
+        sortOrder: input.sortOrder,
+      })
+      .catch((error: unknown) => {
+        if (violatesSingleDemo(error)) throw singleDemoError();
+        throw error;
+      });
 
     this.audit.record(actor.id, 'product.create', 'trading_products', row.id, {
       name: row.name,
       enabled: row.enabled,
+      type: row.type,
     });
     return toProductDto(row);
   }
 
   async updateProduct(
     id: string,
-    input: { name: string; description?: string | null; enabled: boolean; sortOrder: number },
+    input: {
+      name: string;
+      description?: string | null;
+      enabled: boolean;
+      type?: 'real' | 'demo';
+      sortOrder: number;
+    },
     actor: Actor,
   ): Promise<ProductDto> {
     const before = (await this.store.listProducts()).find((product) => product.id === id);
     if (!before) throw new NotFoundError('Product not found.');
+
+    /*
+     * The type is FIXED at creation. real→demo would strand the agency links
+     * this product carries and contradict its live groups; demo→real would
+     * silently withdraw the demo offering from every client at once. Both are
+     * "create the product you mean" operations, not edits.
+     */
+    if (input.type !== undefined && input.type !== before.type) {
+      throw new ValidationError(
+        "A product's type is fixed when it is created. To change what is offered as " +
+          'demo, create the product you want and move the groups instead.',
+      );
+    }
 
     const row = await this.store.updateProduct(id, {
       name: input.name.trim(),
@@ -172,6 +217,26 @@ export class CatalogueService {
     const products = await this.store.listProducts();
     const product = products.find((candidate) => candidate.id === productId);
     if (!product) throw new NotFoundError('Product not found.');
+
+    /*
+     * The group's environment must match the product's type. A demo group on a
+     * real product would never be offered to anybody (demo resolution reads
+     * only the demo product), and a live group on the demo product would sell
+     * real accounts through a programme no agency carries. Both are dead
+     * weight that reads as configured.
+     */
+    if (product.type === 'demo' && input.environment !== 'demo') {
+      throw new ValidationError(
+        `'${product.name}' is the demo product — it takes demo groups only. ` +
+          'Attach live groups to a real product instead.',
+      );
+    }
+    if (product.type === 'real' && input.environment !== 'live') {
+      throw new ValidationError(
+        `'${product.name}' is a real product — it takes live groups only. ` +
+          'Demo groups belong on the demo product, which is offered to every client.',
+      );
+    }
 
     /*
      * ── The group must EXIST on the server, and we ask ───────────────────────
@@ -360,6 +425,16 @@ export class CatalogueService {
       throw new ValidationError('One of those products does not exist. Reload and try again.');
     }
 
+    const demoIds = new Set(
+      products.filter((product) => product.type === 'demo').map((product) => product.id),
+    );
+    if (productIds.some((productId) => demoIds.has(productId))) {
+      throw new ValidationError(
+        'The demo product is offered to every client automatically — agencies carry ' +
+          'real products only.',
+      );
+    }
+
     // De-duplicated: the join table's composite key would reject a repeat with
     // a constraint error, and a repeated checkbox is a client bug, not an
     // operator's intent.
@@ -390,9 +465,33 @@ function toProductDto(row: ProductRow): ProductDto {
     name: row.name,
     description: row.description,
     enabled: row.enabled,
+    type: row.type,
     sortOrder: row.sortOrder,
     groups: row.groups,
   };
+}
+
+function singleDemoError(existingName?: string): ValidationError {
+  const carrier = existingName ? `'${existingName}' is it` : 'one already exists';
+  return new ValidationError(
+    `Only one demo product can exist — ${carrier}. It is offered to every client ` +
+      'automatically, so edit that product instead of creating another.',
+  );
+}
+
+/**
+ * Did this insert hit `trading_products_single_demo_uq`? drizzle-orm wraps the
+ * driver error and moves the original to `cause` (see `pgErrorCode` in
+ * AllExceptionsFilter for the history), so the constraint name is found by
+ * walking the chain rather than read off the top.
+ */
+function violatesSingleDemo(error: unknown): boolean {
+  for (let current: unknown = error, depth = 0; current && depth < 5; depth++) {
+    const constraint = (current as { constraint?: unknown }).constraint;
+    if (constraint === 'trading_products_single_demo_uq') return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 function toAgencyDto(row: AgencyRow): AgencyDto {

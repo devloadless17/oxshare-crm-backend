@@ -13399,6 +13399,14 @@
             "type": "boolean",
             "description": "A disabled product stops being sold and keeps its accounts."
           },
+          "type": {
+            "type": "string",
+            "enum": [
+              "real",
+              "demo"
+            ],
+            "description": "Fixed at creation. At most ONE demo product exists; it is offered to every client for demo accounts regardless of agency, and cannot be assigned to an agency. Real products carry live groups, the demo product carries demo groups."
+          },
           "sortOrder": {
             "type": "number",
             "example": 0
@@ -13414,6 +13422,7 @@
           "id",
           "name",
           "enabled",
+          "type",
           "sortOrder",
           "groups"
         ]
@@ -13464,6 +13473,13 @@
           "enabled": {
             "type": "boolean",
             "example": true
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "real",
+              "demo"
+            ]
           },
           "sortOrder": {
             "type": "number",
@@ -14018,10 +14034,6 @@
           "description": {
             "type": "string"
           },
-          "isSystem": {
-            "type": "boolean",
-            "description": "A tag the platform itself assigns (new-client intake, D-60). Undeletable; label and colour editable; un-assigning from a client is how they are triaged out of it."
-          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -14031,7 +14043,6 @@
           "id",
           "slug",
           "label",
-          "isSystem",
           "createdAt"
         ]
       },
@@ -14549,10 +14560,6 @@
           "description": {
             "type": "string"
           },
-          "isSystem": {
-            "type": "boolean",
-            "description": "A tag the platform itself assigns (new-client intake, D-60). Undeletable; label and colour editable; un-assigning from a client is how they are triaged out of it."
-          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -14566,7 +14573,6 @@
           "id",
           "slug",
           "label",
-          "isSystem",
           "createdAt",
           "clientCount"
         ]

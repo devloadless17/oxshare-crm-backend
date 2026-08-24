@@ -109,8 +109,27 @@ export class SelfServiceGroups implements OnModuleInit {
     if (products.length === 0) return;
     if (products.some((product) => product.groups.length > 0)) return;
 
-    const target = products[0];
+    /*
+     * Since products carry a TYPE, each environment goes to the product that
+     * may hold it: live groups to the first real product, demo groups to THE
+     * demo product (migration 0088 guarantees one exists). A missing target is
+     * logged rather than worked around — attaching a demo group to a real
+     * product would be refused by the service and ignored by the resolution.
+     */
+    const targetFor = {
+      live: products.find((product) => product.type === 'real'),
+      demo: products.find((product) => product.type === 'demo'),
+    };
+
     for (const { environment, mt5Group } of legacy) {
+      const target = targetFor[environment];
+      if (!target) {
+        this.logger.warn(
+          `Cannot import ${environment} group "${mt5Group}" from the environment: no ` +
+            `${environment === 'demo' ? 'demo' : 'real'} product exists to hold it.`,
+        );
+        continue;
+      }
       try {
         await this.products.addGroup({ productId: target.id, environment, mt5Group, currency: '' });
         this.logger.log(

@@ -46,6 +46,15 @@ export class ProductDto {
   @ApiProperty({ description: 'A disabled product stops being sold and keeps its accounts.' })
   enabled: boolean;
 
+  @ApiProperty({
+    enum: ['real', 'demo'],
+    description:
+      'Fixed at creation. At most ONE demo product exists; it is offered to every client for ' +
+      'demo accounts regardless of agency, and cannot be assigned to an agency. Real products ' +
+      'carry live groups, the demo product carries demo groups.',
+  })
+  type: 'real' | 'demo';
+
   @ApiProperty({ example: 0 })
   sortOrder: number;
 
@@ -69,6 +78,16 @@ export class UpsertProductDto {
   @ApiProperty({ example: true })
   @IsBoolean()
   enabled: boolean;
+
+  /**
+   * Optional so a PUT (full replace) that omits it keeps the stored type.
+   * On create it defaults to `real`; on update a value that DIFFERS from the
+   * stored type is refused — the type is fixed at creation.
+   */
+  @ApiPropertyOptional({ enum: ['real', 'demo'] })
+  @IsOptional()
+  @IsIn(['real', 'demo'])
+  type?: 'real' | 'demo';
 
   @ApiProperty({ example: 0, minimum: 0, maximum: 1000 })
   @IsInt()

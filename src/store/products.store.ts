@@ -37,6 +37,11 @@ export interface ProductRow {
   name: string;
   description: string | null;
   enabled: boolean;
+  /**
+   * Fixed at creation. `demo` exists at most once and is offered globally;
+   * see the column comment in schema.ts for the full rule set.
+   */
+  type: 'real' | 'demo';
   sortOrder: number;
   groups: ProductGroupRow[];
 }
@@ -96,6 +101,7 @@ export class ProductsStore {
       name: row.name,
       description: row.description,
       enabled: row.enabled,
+      type: row.type,
       sortOrder: row.sortOrder,
       groups: groups
         .filter((group) => group.productId === row.id)
@@ -112,12 +118,14 @@ export class ProductsStore {
     name: string;
     description: string | null;
     enabled: boolean;
+    type: 'real' | 'demo';
     sortOrder: number;
   }): Promise<ProductRow> {
     const [row] = await this.db.insert(tradingProducts).values(values).returning();
     return { ...row, groups: [] };
   }
 
+  /** `type` is deliberately absent from the values: it is fixed at creation. */
   async updateProduct(
     id: string,
     values: { name: string; description: string | null; enabled: boolean; sortOrder: number },
@@ -192,13 +200,23 @@ export class ProductsStore {
 
     if (rows.length === 0) return [];
 
+    /*
+     * The join to products drops links to non-real products. The service
+     * refuses to CREATE such a link and migration 0088 deleted the existing
+     * ones, so this filter is the read-side guarantee against a row that
+     * arrived by hand: an agency lists real products only, everywhere.
+     */
     const links = await this.db
-      .select()
+      .select({ agencyId: agencyProducts.agencyId, productId: agencyProducts.productId })
       .from(agencyProducts)
+      .innerJoin(tradingProducts, eq(tradingProducts.id, agencyProducts.productId))
       .where(
-        inArray(
-          agencyProducts.agencyId,
-          rows.map((row) => row.id),
+        and(
+          inArray(
+            agencyProducts.agencyId,
+            rows.map((row) => row.id),
+          ),
+          eq(tradingProducts.type, 'real'),
         ),
       );
 
@@ -248,7 +266,8 @@ export class ProductsStore {
     const rows = await this.db
       .select({ productId: agencyProducts.productId })
       .from(agencyProducts)
-      .where(eq(agencyProducts.agencyId, agencyId));
+      .innerJoin(tradingProducts, eq(tradingProducts.id, agencyProducts.productId))
+      .where(and(eq(agencyProducts.agencyId, agencyId), eq(tradingProducts.type, 'real')));
     return rows.map((row) => row.productId);
   }
 
@@ -298,17 +317,22 @@ export class ProductsStore {
    *
    * ## The rule, in one place
    *
-   * A client under a partner is offered their partner's agency's products and
-   * nothing else. A client under nobody is offered every enabled product. There
-   * is no third case and no per-product visibility flag — see the note on
-   * `trading_products` about the state such a flag would create.
+   * LIVE: a client under a partner is offered their partner's agency's real
+   * products and nothing else. A client under nobody is offered every enabled
+   * real product. There is no third case and no per-product visibility flag —
+   * see the note on `trading_products` about the state such a flag would
+   * create.
    *
-   * DISABLED products are excluded from both branches. A disabled product keeps
+   * DEMO: the single demo product, for EVERYBODY. Practice accounts are not a
+   * commercial decision an agency makes, so the agency is never consulted —
+   * which is also why the demo product cannot be assigned to one.
+   *
+   * DISABLED products are excluded from every branch. A disabled product keeps
    * its open accounts trading and stops being sold, which is the same rule a
    * disabled currency and a disabled IB level follow.
    */
   async offeredTo(userId: string, environment: 'live' | 'demo'): Promise<OfferedGroup[]> {
-    const agencyId = await this.agencyForClient(userId);
+    const agencyId = environment === 'live' ? await this.agencyForClient(userId) : null;
 
     const rows = await this.db
       .select({
@@ -324,6 +348,7 @@ export class ProductsStore {
         and(
           eq(tradingProductGroups.environment, environment),
           eq(tradingProducts.enabled, true),
+          eq(tradingProducts.type, environment === 'demo' ? 'demo' : 'real'),
           ...(agencyId
             ? [
                 inArray(

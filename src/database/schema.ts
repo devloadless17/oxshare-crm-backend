@@ -1430,6 +1430,16 @@ export const transferStateEnum = pgEnum('transfer_state', ['pending', 'settled',
 export const tradingEnvironmentEnum = pgEnum('trading_environment', ['live', 'demo']);
 
 /*
+ * A pgEnum despite the currency and notification-kind precedents above and
+ * below arguing against them: those value sets grow as DATA (an operator adds
+ * a currency, a feature adds a kind). `real` vs `demo` is a closed pair whose
+ * meanings are hard-wired into the offering resolution and the agency rules —
+ * a third value would need code before it needed a row, so the migration a
+ * pgEnum costs buys actual integrity here.
+ */
+export const productTypeEnum = pgEnum('product_type', ['real', 'demo']);
+
+/*
  * ── What the broker SELLS, and who is allowed to sell it ─────────────────────
  *
  * Four tables for what used to be one comma-separated environment variable. The
@@ -1471,38 +1481,61 @@ export const tradingEnvironmentEnum = pgEnum('trading_environment', ['live', 'de
  * tables, this decision has to be revisited — two partners selling "Standard"
  * would then genuinely need two groups.
  */
-export const tradingProducts = pgTable('trading_products', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  /** What the client sees. "Standard", "ECN", "Raw Spread". */
-  name: varchar('name', { length: 80 }).notNull().unique(),
-  /** Shown to a client choosing, and to an applicant reading an agency. */
-  description: text('description'),
-  /**
-   * A disabled product stops being OFFERED and keeps its accounts trading.
-   *
-   * The same rule as a disabled currency or a disabled IB level: retiring a
-   * product must never reach into accounts that are already open, because the
-   * client did nothing and their positions are real.
-   */
-  enabled: boolean('enabled').notNull().default(true),
-  /*
-   * There is deliberately NO `is_public` column.
-   *
-   * A draft had one, to make a product agency-exclusive — invisible to clients
-   * who walked in off the website. The rule is simpler than that: a client
-   * under an introducing broker sees exactly their agency's products, and a
-   * client under nobody sees ALL of them. `enabled` is the only thing that
-   * takes a product out of circulation.
-   *
-   * Worth knowing before adding the flag back: it would create a fourth state
-   * ("exists, enabled, and yet nobody unattached can see it") that an operator
-   * looking at an empty portal has no way to diagnose from this table.
-   */
-  /** The order a client sees them in. Ties broken by name. */
-  sortOrder: integer('sort_order').notNull().default(0),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const tradingProducts = pgTable(
+  'trading_products',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** What the client sees. "Standard", "ECN", "Raw Spread". */
+    name: varchar('name', { length: 80 }).notNull().unique(),
+    /** Shown to a client choosing, and to an applicant reading an agency. */
+    description: text('description'),
+    /**
+     * A disabled product stops being OFFERED and keeps its accounts trading.
+     *
+     * The same rule as a disabled currency or a disabled IB level: retiring a
+     * product must never reach into accounts that are already open, because the
+     * client did nothing and their positions are real.
+     */
+    enabled: boolean('enabled').notNull().default(true),
+    /*
+     * There is deliberately NO `is_public` column.
+     *
+     * A draft had one, to make a product agency-exclusive — invisible to clients
+     * who walked in off the website. The rule is simpler than that: a client
+     * under an introducing broker sees exactly their agency's products, and a
+     * client under nobody sees ALL of them. `enabled` is the only thing that
+     * takes a product out of circulation.
+     *
+     * Worth knowing before adding the flag back: it would create a fourth state
+     * ("exists, enabled, and yet nobody unattached can see it") that an operator
+     * looking at an empty portal has no way to diagnose from this table.
+     */
+    /**
+     * `real` or `demo`, and the rules hang off it:
+     *
+     * - At most ONE demo product exists (the partial unique index below), and
+     *   it is offered to EVERY client for demo accounts, agency or no agency.
+     * - Agencies carry real products only; the demo product cannot be assigned.
+     * - A product's groups must match: live groups on real products, demo
+     *   groups on the demo product.
+     * - The type is IMMUTABLE after creation — flipping real→demo would strand
+     *   agency links, demo→real would silently withdraw the global demo offer.
+     *   Migration 0088 was the one legitimate bulk conversion.
+     */
+    type: productTypeEnum('type').notNull().default('real'),
+    /** The order a client sees them in. Ties broken by name. */
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /* Max one demo product, enforced where a race cannot slip past it. The
+       service's readable refusal is the message; this is the guarantee. */
+    uniqueIndex('trading_products_single_demo_uq')
+      .on(t.type)
+      .where(sql`${t.type} = 'demo'`),
+  ],
+);
 
 export const tradingProductGroups = pgTable(
   'trading_product_groups',
