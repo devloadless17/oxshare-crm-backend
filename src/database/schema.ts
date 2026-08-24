@@ -1806,6 +1806,19 @@ export const wallets = pgTable(
   'wallets',
   {
     id: uuid('id').defaultRandom().primaryKey(),
+    /**
+     * The human handle — 12 lowercase Crockford base32 characters (no i/l/o/u),
+     * minted by the `wallet_number()` DB function (migration 0090) as a column
+     * DEFAULT so every INSERT gets one, including the set-based
+     * `openForAllClients` backfill no application generator could reach.
+     *
+     * DISPLAY ONLY. The uuid stays the key everywhere money depends on one:
+     * every FK, and the `ledger_entries_wallet_reference_uq` idempotency
+     * guarantee, key on `id`. Nothing may join or dedupe on this column.
+     */
+    walletNumber: varchar('wallet_number', { length: 12 })
+      .notNull()
+      .default(sql`wallet_number()`),
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
@@ -1854,6 +1867,13 @@ export const wallets = pgTable(
      * a runtime `ON CONFLICT` failure on a money path.
      */
     uniqueIndex('wallets_user_currency_kind_uq').on(t.userId, t.currency, t.kind),
+    /*
+     * The real collision guarantee for `wallet_number` — the generator's retry
+     * loop is best-effort; this is what makes two wallets sharing a number
+     * impossible rather than unlikely.
+     */
+    uniqueIndex('wallets_wallet_number_uq').on(t.walletNumber),
+    check('wallets_wallet_number_format', sql`${t.walletNumber} ~ '^[0-9a-hjkmnp-tv-z]{12}$'`),
     index('wallets_user_idx').on(t.userId),
     check('wallets_balance_non_negative', sql`${t.balance} >= 0`),
     check('wallets_on_hold_non_negative', sql`${t.onHold} >= 0`),

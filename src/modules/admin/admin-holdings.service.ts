@@ -278,6 +278,7 @@ export class AdminHoldingsService {
     const rows = await db
       .select({
         id: wallets.id,
+        walletNumber: wallets.walletNumber,
         // Selected as the strings the columns hold. No cast, no aggregate, no
         // arithmetic — §6.1.
         balance: wallets.balance,
@@ -323,6 +324,11 @@ export class AdminHoldingsService {
     return {
       items: paged.items.map((r) => ({
         id: r.id,
+        walletNumber: r.walletNumber,
+        // `kind` was selected but never mapped, so the response silently
+        // omitted a field WalletRowDto declares — a partner's two same-currency
+        // rows were indistinguishable. Fixed alongside walletNumber.
+        kind: r.kind,
         /*
          * The STRING the database produced, unmodified.
          *
@@ -384,6 +390,7 @@ export class AdminHoldingsService {
       this.db
         .select({
           id: wallets.id,
+          walletNumber: wallets.walletNumber,
           balance: wallets.balance,
           onHold: wallets.onHold,
           currency: wallets.currency,

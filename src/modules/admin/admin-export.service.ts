@@ -225,6 +225,11 @@ export class AdminExportService {
   readonly walletColumns: readonly CsvColumn<WalletExportRow>[] = [
     { header: 'Wallet ID', value: (r) => r.id },
     /*
+     * The human handle beside the key — 'Wallet ID' stays because existing
+     * reconciliation spreadsheets may already join on it.
+     */
+    { header: 'Wallet Number', value: (r) => r.walletNumber },
+    /*
      * Balance and hold, as the STRINGS the database produced.
      *
      * ARCHITECTURE §6.1, and a CSV is the output where this matters most: it is
@@ -589,6 +594,8 @@ export interface WithdrawalExportRow {
 
 export interface WalletExportRow {
   id: string;
+  /** The human handle — see the `Wallet Number` column. */
+  walletNumber: string;
   /** A STRING, always — see `walletColumns`. */
   balance: string;
   /** A STRING, always. */

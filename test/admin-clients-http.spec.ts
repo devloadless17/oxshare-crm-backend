@@ -2,7 +2,15 @@ import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, kycSubmissions, roles, users } from '../src/database/schema';
+import {
+  admins,
+  ibAccounts,
+  ibPrograms,
+  kycSubmissions,
+  roles,
+  users,
+} from '../src/database/schema';
+import { eq } from 'drizzle-orm';
 
 /**
  * The client directory's query surface — ADM-01.
@@ -33,6 +41,8 @@ const ADMIN = { email: 'clients-http@oxshare.com', password: 'admin-password-123
 const CLIENTS = '/v1/admin/clients';
 
 let ctx: HttpTestContext;
+/** A seeded client's uuid, for the search-by-pasted-ID cases. */
+let approvedId: string;
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -99,6 +109,7 @@ beforeAll(async () => {
   ]);
 
   void noKyc;
+  approvedId = approved.id;
 });
 
 afterAll(async () => {
@@ -162,6 +173,53 @@ describe('valid filters keep working', () => {
     const res = await session.get(`${CLIENTS}?limit=100000`).expect(200);
     const body = res.body as { limit: number };
     expect(body.limit).toBeLessThanOrEqual(100);
+  });
+});
+
+/**
+ * `?q=` now answers a PASTED CLIENT ID as well as a name or email — the admin
+ * UI shows the uuid on every client surface, so the search box has to take it
+ * back. A full uuid is an exact primary-key match; anything else stays on the
+ * name/email ILIKE path, where a uuid fragment truthfully matches nothing
+ * (and, crucially, does not error — comparing a non-uuid string against the
+ * uuid column would be a Postgres cast failure, not an empty page).
+ */
+describe('searching by a pasted client ID', () => {
+  it('returns exactly that client for a full uuid', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.get(`${CLIENTS}?q=${approvedId}&withTotal=true`).expect(200);
+    const body = res.body as { items: { id: string }[]; total: number };
+    expect(body.items.map((c) => c.id)).toEqual([approvedId]);
+    // The count carries the same predicate, so it describes the same set.
+    expect(body.total).toBe(1);
+  });
+
+  it('matches case-insensitively, since uuids are often pasted upper-case', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.get(`${CLIENTS}?q=${approvedId.toUpperCase()}`).expect(200);
+    const body = res.body as { items: { id: string }[] };
+    expect(body.items.map((c) => c.id)).toEqual([approvedId]);
+  });
+
+  it('answers an empty page — not an error — for an unknown uuid', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.get(`${CLIENTS}?q=00000000-0000-4000-8000-000000000000`).expect(200);
+    const body = res.body as { items: unknown[] };
+    expect(body.items).toEqual([]);
+  });
+
+  it('leaves a uuid FRAGMENT on the name/email path rather than erroring', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.get(`${CLIENTS}?q=${approvedId.slice(0, 8)}`).expect(200);
+    const body = res.body as { items: unknown[] };
+    expect(body.items).toEqual([]);
+  });
+
+  it('still searches name and email as before', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.get(`${CLIENTS}?q=fully-verified`).expect(200);
+    const body = res.body as { items: { id: string }[] };
+    expect(body.items.map((c) => c.id)).toEqual([approvedId]);
   });
 });
 
@@ -283,5 +341,134 @@ describe('verification state is two columns, not one vague status', () => {
       const body = res.body as { items: { emailVerified: boolean }[] };
       for (const row of body.items) expect(row.emailVerified).toBe(value === 'true');
     }
+  });
+});
+
+/*
+ * ── The Network sections: referrer and referredClients ──
+ *
+ * These two fields sat in the DTO with NO code assigning them — the old
+ * assembly died with the `referral_attributions` teardown (0028) and the
+ * replacement read against `users.referred_by_ib_user_id` was never written.
+ * Every client profile said "Not introduced by a partner", including clients
+ * whose Referral badge derives from the very column that names the introducer.
+ * These tests are what would have caught it: they drive the real endpoint and
+ * assert the fields ARRIVE, not merely that the screen renders their absence.
+ */
+describe('the Network sections of the client profile', () => {
+  const LIMITED = { email: 'clients-http-no-ib@oxshare.com', password: 'admin-password-123' };
+  let partnerId: string;
+  let referredId: string;
+  let soloId: string;
+
+  beforeAll(async () => {
+    const passwords = new PasswordService();
+    const passwordHash = await passwords.hash('client-password-123');
+
+    // An admin who may open clients but NOT the partner programme — the
+    // sections must be ABSENT for them, not empty.
+    await ctx.db.db.insert(admins).values({
+      email: LIMITED.email,
+      passwordHash: await passwords.hash(LIMITED.password),
+      name: 'Clients HTTP No IB View',
+      permissions: ['clients.view'],
+      status: 'active',
+    });
+
+    const [partner, referred, solo] = await ctx.db.db
+      .insert(users)
+      .values([
+        {
+          email: 'network-partner@oxshare.com',
+          passwordHash,
+          firstName: 'Networked',
+          lastName: 'Partner',
+          emailVerified: true,
+          verificationLevel: 1,
+        },
+        {
+          email: 'network-referred@oxshare.com',
+          passwordHash,
+          firstName: 'Referred',
+          lastName: 'Client',
+          emailVerified: true,
+        },
+        {
+          email: 'network-solo@oxshare.com',
+          passwordHash,
+          firstName: 'Walked',
+          lastName: 'InAlone',
+          emailVerified: true,
+        },
+      ])
+      .returning();
+    partnerId = partner.id;
+    referredId = referred.id;
+    soloId = solo.id;
+
+    // The partner row, on the migration-seeded ladder and Default programme.
+    const [program] = await ctx.db.db.select().from(ibPrograms).limit(1);
+    await ctx.db.db.insert(ibAccounts).values({
+      userId: partnerId,
+      level: 1,
+      referralCode: 'HTTP-NETWORK-1',
+      programId: program.id,
+      active: true,
+    });
+
+    // Attribution AFTER the ib_accounts row — the FK points at it.
+    await ctx.db.db
+      .update(users)
+      .set({ referredByIbUserId: partnerId })
+      .where(eq(users.id, referredId));
+  });
+
+  it('names the introducer on a referred client, matching the Referral badge', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.get(`${CLIENTS}/${referredId}`).expect(200);
+    const body = res.body as {
+      type: string;
+      referrer?: { ibUserId: string; email: string; active: boolean };
+    };
+
+    // The badge and the card must agree — they derive from the same column.
+    expect(body.type).toBe('referral');
+    expect(body.referrer).toBeDefined();
+    expect(body.referrer?.ibUserId).toBe(partnerId);
+    expect(body.referrer?.email).toBe('network-partner@oxshare.com');
+    expect(body.referrer?.active).toBe(true);
+  });
+
+  it("lists the partner's downline with the shown count", async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.get(`${CLIENTS}/${partnerId}`).expect(200);
+    const body = res.body as {
+      type: string;
+      referredClients?: { clientUserId: string; email: string }[];
+      referredShown?: number;
+    };
+
+    expect(body.type).toBe('partner');
+    expect(body.referredClients?.map((c) => c.clientUserId)).toContain(referredId);
+    expect(body.referredShown).toBe(body.referredClients?.length);
+  });
+
+  it('sends an EMPTY downline for a client nobody introduced — visible, not missing', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.get(`${CLIENTS}/${soloId}`).expect(200);
+    const body = res.body as { referrer?: unknown; referredClients?: unknown[] };
+
+    // "May see, has none": referrer absent, the list present and empty.
+    expect(body.referrer).toBeUndefined();
+    expect(body.referredClients).toEqual([]);
+  });
+
+  it('withholds both sections from a reader without ib.view', async () => {
+    const session = await actingAs(ctx, 'admin', LIMITED);
+    const res = await session.get(`${CLIENTS}/${referredId}`).expect(200);
+    const body = res.body as { referrer?: unknown; referredClients?: unknown };
+
+    expect('referrer' in body).toBe(false);
+    expect('referredClients' in body).toBe(false);
   });
 });

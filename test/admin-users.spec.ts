@@ -8,6 +8,8 @@ import {
 } from '../src/common/errors/domain-errors';
 import { AdminAuditService } from '../src/modules/admin/admin-audit.service';
 import { ClientFieldsService } from '../src/modules/admin/client-fields.service';
+import { RefreshTokensService } from '../src/common/security/refresh-tokens.service';
+import { DRIZZLE_DB } from '../src/database/database.module';
 import { AdminRbacService } from '../src/modules/admin/admin-rbac.service';
 import { AdminsStore, InvitesStore, type Admin } from '../src/store/admins.store';
 import { RolesStore, type Role } from '../src/store/roles.store';
@@ -153,6 +155,17 @@ async function build(overrides: { admin?: Partial<Admin>; role?: Role | undefine
       { provide: InvitesStore, useValue: { findPendingByRoleId: vi.fn().mockResolvedValue([]) } },
       { provide: RolesStore, useValue: rolesFake },
       { provide: AdminAuditService, useValue: auditFake },
+      {
+        provide: RefreshTokensService,
+        useValue: { revokeAllForSubject: vi.fn().mockResolvedValue(0) },
+      },
+      {
+        provide: DRIZZLE_DB,
+        useValue: {
+          transaction: (fn: (tx: unknown) => Promise<unknown>) =>
+            fn({ execute: () => Promise.resolve() }),
+        },
+      },
       // Real, not a fake: it reads a committed JSON file and has no dependencies,
       // so substituting it would only let a mask key that the catalog rejects
       // pass here and fail in production.
@@ -188,7 +201,11 @@ describe('updateAdmin — changing what an administrator may do', () => {
     const { service, adminsFake } = await build();
     await service.updateAdmin(TARGET.id, { name: 'Renamed' }, MASTER);
 
-    expect(adminsFake.update).toHaveBeenCalledWith(TARGET.id, { name: 'Renamed' });
+    expect(adminsFake.update).toHaveBeenCalledWith(
+      TARGET.id,
+      { name: 'Renamed' },
+      expect.anything(),
+    );
   });
 
   it('keeps the current name when the patch omits it', async () => {
@@ -199,6 +216,7 @@ describe('updateAdmin — changing what an administrator may do', () => {
     expect(adminsFake.update).toHaveBeenCalledWith(
       TARGET.id,
       expect.objectContaining({ name: TARGET.name }),
+      expect.anything(),
     );
   });
 
@@ -211,6 +229,7 @@ describe('updateAdmin — changing what an administrator may do', () => {
     expect(adminsFake.update).toHaveBeenCalledWith(
       TARGET.id,
       expect.objectContaining({ roleId: 'role-1', permissions: CUSTOM_ROLE.permissions }),
+      expect.anything(),
     );
   });
 
@@ -223,6 +242,7 @@ describe('updateAdmin — changing what an administrator may do', () => {
     expect(adminsFake.update).toHaveBeenCalledWith(
       TARGET.id,
       expect.objectContaining({ roleId: undefined, permissions: ['ib.view'] }),
+      expect.anything(),
     );
   });
 
@@ -333,7 +353,11 @@ describe('setAdminStatus — cutting off an administrator', () => {
     const { service, adminsFake, auditFake } = await build();
     await service.setAdminStatus(TARGET.id, 'suspended', MASTER);
 
-    expect(adminsFake.update).toHaveBeenCalledWith(TARGET.id, { status: 'suspended' });
+    expect(adminsFake.update).toHaveBeenCalledWith(
+      TARGET.id,
+      { status: 'suspended' },
+      expect.anything(),
+    );
     expect(auditFake.record).toHaveBeenCalledWith(
       MASTER.id,
       'admin.suspend',
@@ -374,7 +398,11 @@ describe('setAdminStatus — cutting off an administrator', () => {
     const { service, adminsFake } = await build();
     await service.setAdminStatus(TARGET.id, 'suspended', OPERATOR);
 
-    expect(adminsFake.update).toHaveBeenCalledWith(TARGET.id, { status: 'suspended' });
+    expect(adminsFake.update).toHaveBeenCalledWith(
+      TARGET.id,
+      { status: 'suspended' },
+      expect.anything(),
+    );
   });
 
   it('refuses suspending YOURSELF', async () => {

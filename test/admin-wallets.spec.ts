@@ -56,6 +56,7 @@ let hugeWalletId: string;
 
 interface WalletRow {
   id: string;
+  walletNumber: string;
   balance: string;
   onHold: string;
   currency: string;
@@ -240,6 +241,8 @@ describe('listing and paging', () => {
     const row = body(res).items.find((w) => w.id === hugeWalletId);
     expect(row?.user.id).toBe(mineId);
     expect(row?.user.email).toBe('wallets-mine@oxshare-e2e.test');
+    // The human handle rides every row — minted by the DB, never absent.
+    expect(row?.walletNumber).toMatch(/^[0-9a-hjkmnp-tv-z]{12}$/);
   });
 
   it('pages with a cursor, and the second page does not repeat the first', async () => {
@@ -493,6 +496,15 @@ describe('the CSV export', () => {
     // A CSV is the output most likely to be re-imported into a spreadsheet that
     // does arithmetic on it.
     expect(res.text).toContain(HUGE_BALANCE);
+
+    // Both identifiers: 'Wallet ID' stays (existing spreadsheets may join on
+    // it), 'Wallet Number' is the handle an operator quotes. The exact value
+    // is taken from the list, so this cannot pass on a uuid fragment — a
+    // uuid's 12-hex tail also matches the number's alphabet.
+    expect(res.text).toContain('Wallet ID');
+    expect(res.text).toContain('Wallet Number');
+    const list = await session.get(`/v1/admin/wallets?userId=${mineId}`);
+    expect(res.text).toContain(body(list).items[0].walletNumber);
   });
 
   it('applies the client scope to the file, exactly as to the list', async () => {

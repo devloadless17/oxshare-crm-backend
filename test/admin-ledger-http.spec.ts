@@ -8,7 +8,7 @@ import {
   type HttpTestContext,
 } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, roles } from '../src/database/schema';
+import { admins, ledgerEntries, roles, users, wallets } from '../src/database/schema';
 
 /**
  * ADM-13 — who may read the ledger, over HTTP, through the real guard chain.
@@ -115,6 +115,43 @@ describe('what the ledger returns', () => {
     expect(Array.isArray(body.items)).toBe(true);
     expect(body.items.length).toBeLessThanOrEqual(5);
     expect(typeof body.total).toBe('number');
+  });
+
+  it('carries the wallet number on every entry, joined from the wallet', async () => {
+    // This file seeds no money elsewhere — the other reads tolerate an empty
+    // ledger — so this test writes the one entry it asserts about.
+    const [client] = await ctx.db.db
+      .insert(users)
+      .values({
+        email: 'ledger-numbered@test.local',
+        passwordHash: 'x',
+        firstName: 'L',
+        lastName: 'N',
+      })
+      .returning();
+    const [wallet] = await ctx.db.db
+      .insert(wallets)
+      .values({ userId: client.id, currency: 'USD', balance: '10' })
+      .returning();
+    await ctx.db.db.insert(ledgerEntries).values({
+      walletId: wallet.id,
+      amount: '10',
+      balanceAfter: '10',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: 'ledger-numbered',
+    });
+
+    const session = await actingAs(ctx, 'admin', FULL);
+    const res = await session.get(`${LEDGER}?userId=${client.id}`).expect(200);
+    const body = res.body as { items: Array<{ walletId: string; walletNumber: string }> };
+
+    // ADM-13's wallet column renders this; without it the screen falls back
+    // to a uuid nobody can compare across rows.
+    expect(body.items.length).toBe(1);
+    expect(body.items[0].walletId).toBe(wallet.id);
+    expect(body.items[0].walletNumber).toBe(wallet.walletNumber);
+    expect(body.items[0].walletNumber).toMatch(/^[0-9a-hjkmnp-tv-z]{12}$/);
   });
 
   it('bounds the page size rather than trusting the querystring', async () => {

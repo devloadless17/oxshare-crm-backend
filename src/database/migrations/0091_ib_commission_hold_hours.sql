@@ -20,6 +20,12 @@ ALTER TABLE trading_settings
 -- the bound stops is the other end — a mistyped 24000 would hold every partner's
 -- commission for three years while every component reported success. A year is
 -- far past any settlement window anybody would choose and far short of a typo.
+-- DROP-then-ADD so the file is re-runnable: this migration was numbered 0090
+-- before a wallet-numbering migration took that slot upstream, and any database
+-- that applied the earlier copy already carries the constraint.
+ALTER TABLE trading_settings
+  DROP CONSTRAINT IF EXISTS trading_settings_hold_hours_ck;
+
 ALTER TABLE trading_settings
   ADD CONSTRAINT trading_settings_hold_hours_ck
   CHECK (ib_commission_hold_hours >= 0 AND ib_commission_hold_hours <= 8760);

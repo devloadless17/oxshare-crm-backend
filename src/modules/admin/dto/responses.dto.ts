@@ -443,12 +443,17 @@ export class ClientProfileDto {
   })
   tradingAccounts?: ProfileTradingAccountDto[];
 
-  @ApiPropertyOptional({ type: ProfileReferrerDto, description: 'Absent without partners.view.' })
+  @ApiPropertyOptional({
+    type: ProfileReferrerDto,
+    description:
+      'Absent without ib.view, and absent when nobody introduced this client — the UI tells ' +
+      'the two apart by its own permission check.',
+  })
   referrer?: ProfileReferrerDto;
 
   @ApiPropertyOptional({
     type: [ProfileReferredClientDto],
-    description: 'Capped — see referredTotal. Absent without partners.view.',
+    description: 'Capped — see referredShown. Absent without ib.view; empty when none.',
   })
   referredClients?: ProfileReferredClientDto[];
 
@@ -783,6 +788,13 @@ export class HoldingOwnerDto {
 export class WalletRowDto {
   @ApiProperty() id: string;
   @ApiProperty({
+    example: '4f7kq2nm8xcb',
+    description:
+      'Human-friendly wallet number — 12 lowercase Crockford base32 chars. ' +
+      'Display and support reference only; `id` remains the key.',
+  })
+  walletNumber: string;
+  @ApiProperty({
     type: 'string',
     example: '250.00000000',
     description:
@@ -1038,6 +1050,11 @@ export class IssuedApiKeyDto {
  */
 export class WalletDiscrepancyDto {
   @ApiProperty() walletId: string;
+  @ApiProperty({
+    example: '4f7kq2nm8xcb',
+    description: 'The wallet’s human-friendly number — display only; `walletId` is the key.',
+  })
+  walletNumber: string;
   @ApiProperty() userId: string;
   @ApiProperty() currency: string;
 

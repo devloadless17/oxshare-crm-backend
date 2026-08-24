@@ -9,6 +9,8 @@ import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { AdminAuditService } from '../src/modules/admin/admin-audit.service';
 import { ClientFieldsService } from '../src/modules/admin/client-fields.service';
+import { RefreshTokensService } from '../src/common/security/refresh-tokens.service';
+import { DRIZZLE_DB } from '../src/database/database.module';
 import { AdminRbacService } from '../src/modules/admin/admin-rbac.service';
 import {
   AdminAuthenticator,
@@ -127,6 +129,17 @@ async function buildRbacService(
       },
       { provide: RolesStore, useValue: rolesFake },
       { provide: AdminAuditService, useValue: { record: vi.fn() } },
+      // Suspension revokes sessions; the paths under test here never reach it.
+      { provide: RefreshTokensService, useValue: { revokeAllForSubject: vi.fn() } },
+      // The manager-invariant lock wraps writes in a transaction; a
+      // pass-through executor keeps the store fakes in charge.
+      {
+        provide: DRIZZLE_DB,
+        useValue: {
+          transaction: (fn: (tx: unknown) => Promise<unknown>) =>
+            fn({ execute: () => Promise.resolve() }),
+        },
+      },
     ],
   }).compile();
 
@@ -189,14 +202,22 @@ describe('AdminRbacService anti-escalation', () => {
     const { service, rolesFake } = await buildRbacService();
 
     await service.updateRole('role-1', { permissions: ['ib.approve'] }, SUB_ADMIN);
-    expect(rolesFake.update).toHaveBeenCalledWith('role-1', { permissions: ['ib.approve'] });
+    expect(rolesFake.update).toHaveBeenCalledWith(
+      'role-1',
+      { permissions: ['ib.approve'] },
+      expect.anything(),
+    );
   });
 
   it('a sub-admin may grant a permission they do hold', async () => {
     const { service, rolesFake } = await buildRbacService();
 
     await service.updateRole('role-1', { permissions: ['roles.view'] }, SUB_ADMIN);
-    expect(rolesFake.update).toHaveBeenCalledWith('role-1', { permissions: ['roles.view'] });
+    expect(rolesFake.update).toHaveBeenCalledWith(
+      'role-1',
+      { permissions: ['roles.view'] },
+      expect.anything(),
+    );
   });
 
   it('refuses to untick the LAST roles.edit from the only role carrying it', async () => {

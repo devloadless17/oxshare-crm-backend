@@ -174,6 +174,40 @@ describe('POST /admin/password-reset/complete', () => {
     await signedIn.get('/v1/admin/auth/me').expect(200);
   });
 
+  it('stamps passwordChangedAt, so a pre-reset access token has a cutoff', async () => {
+    /*
+     * Family revocation reaches every token carrying a `fam` claim, and
+     * today that is every token this surface mints — but the cutoff is the
+     * control that does not depend on that stays true. The portal's reset
+     * has stamped it since it shipped, `changePassword` on this surface
+     * stamps it, and the reset was the one writer that forgot: an access
+     * token minted seconds before a duress reset deserves both locks.
+     */
+    const before = new Date();
+    const token = await armReset(TARGET.email);
+    await anonymous(ctx)
+      .post('/v1/admin/password-reset/complete')
+      .set('Origin', SURFACES.admin.origin)
+      .send({ token, password: 'cutoff-checking-password-123' })
+      .expect(200);
+
+    const [row] = await ctx.db.db
+      .select()
+      .from(admins)
+      .where(eq(admins.email, TARGET.email))
+      .limit(1);
+    expect(row?.passwordChangedAt).toBeTruthy();
+    expect(row.passwordChangedAt!.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
+
+    // Put the fixture's password back — the tests below sign in with it.
+    const restore = await armReset(TARGET.email);
+    await anonymous(ctx)
+      .post('/v1/admin/password-reset/complete')
+      .set('Origin', SURFACES.admin.origin)
+      .send({ token: restore, password: TARGET.password })
+      .expect(200);
+  });
+
   it('kills every existing session for that admin', async () => {
     /*
      * The reason a reset exists is often that somebody should no longer be in
@@ -185,7 +219,9 @@ describe('POST /admin/password-reset/complete', () => {
      * particular request 401s.
      */
     const password = 'session-kill-password-123';
-    await actingAs(ctx, 'admin', { email: TARGET.email, password: 'a-brand-new-password-123' });
+    // The fixture password: the cutoff test above restores it, so this test no
+    // longer leans on a SIDE EFFECT of the single-use test two above it.
+    await actingAs(ctx, 'admin', TARGET);
 
     const live = async () =>
       (

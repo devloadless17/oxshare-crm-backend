@@ -327,6 +327,23 @@ describe('concurrency — §6.2, the lost update', () => {
     // would leave several here, with a balance split across them.
     expect(rows[0].count).toBe(1);
   });
+
+  it('carries a well-formed wallet number, stable across the idempotent re-call', async () => {
+    const userId = await makeUser('numbered-svc@test.local');
+
+    const first = await wallets.getOrCreateWallet(userId, 'USD');
+    // Minted by the column DEFAULT — the service names no number.
+    expect(first.walletNumber).toMatch(/^[0-9a-hjkmnp-tv-z]{12}$/);
+
+    /*
+     * The second call hits ON CONFLICT DO NOTHING and returns the EXISTING
+     * row. Asserted because a re-mint here would hand a client a new "wallet
+     * number" on every retried request — an identifier is only one if it
+     * holds still.
+     */
+    const again = await wallets.getOrCreateWallet(userId, 'USD');
+    expect(again.walletNumber).toBe(first.walletNumber);
+  });
 });
 
 describe('holds', () => {
@@ -525,6 +542,26 @@ describe('the bulk wallet backfill', () => {
     // ON CONFLICT DO NOTHING, not an upsert that resets the row — a backfill
     // that zeroed a funded wallet would be the worst possible bug in this file.
     expect(await balanceOf(userId)).toBe('250.00000000');
+  });
+
+  it('numbers every wallet the set-based backfill creates, all distinct', async () => {
+    /*
+     * `openForAllClients` is one INSERT…SELECT over every user — the creation
+     * site no application-side generator could reach, and the reason the
+     * wallet number is a column DEFAULT. Several users at once, so a
+     * generator that produced one value per STATEMENT rather than per ROW
+     * would collide here and nowhere else.
+     */
+    for (const n of [1, 2, 3]) await makeUser(`bulk-number-${n}@test.local`);
+
+    await provisioning.openWalletForAllClients('USD');
+
+    const { rows } = await ctx.db.execute<{ wallet_number: string }>(
+      sql`SELECT wallet_number FROM wallets WHERE currency = 'USD'`,
+    );
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    for (const row of rows) expect(row.wallet_number).toMatch(/^[0-9a-hjkmnp-tv-z]{12}$/);
+    expect(new Set(rows.map((r) => r.wallet_number)).size).toBe(rows.length);
   });
 
   it('NEVER throws, even for a currency that does not exist', async () => {

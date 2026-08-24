@@ -34,6 +34,14 @@ import { ApiProperty } from '@nestjs/swagger';
  */
 export class WalletDto {
   @ApiProperty() id: string;
+  @ApiProperty({
+    example: '4f7kq2nm8xcb',
+    description:
+      'Human-friendly wallet number — 12 lowercase Crockford base32 chars. ' +
+      'Display and support reference only; `id` remains the key.',
+  })
+  walletNumber: string;
+
   @ApiProperty() userId: string;
   @ApiProperty({
     description:
@@ -96,6 +104,11 @@ export class WalletDto {
 export class LedgerEntryDto {
   @ApiProperty() id: string;
   @ApiProperty() walletId: string;
+  @ApiProperty({
+    example: '4f7kq2nm8xcb',
+    description: 'The wallet’s human-friendly number — display only; `walletId` is the key.',
+  })
+  walletNumber: string;
   @ApiProperty() userId: string;
   @ApiProperty({ description: 'Signed monetary value as a string' })
   amount: string;

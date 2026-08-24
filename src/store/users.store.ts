@@ -106,6 +106,19 @@ export function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
+/**
+ * Is this search term a complete uuid — i.e. a pasted client ID?
+ *
+ * Full uuids only, on purpose: a fragment stays on the name/email ILIKE path,
+ * because "matches nothing" is a truthful answer for half an ID while an
+ * accidental prefix match against the wrong client is not. Comparing a
+ * non-uuid string to the `users.id` column would also be a Postgres cast
+ * error, not an empty result.
+ */
+export function isUuid(term: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(term.trim());
+}
+
 export const DEFAULT_CLIENT_SORT: ClientSortKey = 'createdAt';
 
 /**
@@ -227,6 +240,26 @@ export class UsersStore {
       .from(users)
       .where(eq(users.referredByIbUserId, ibUserId));
     return value;
+  }
+
+  /**
+   * The clients this partner introduced, newest first — the LIST the count
+   * above deliberately avoids, for the one screen that shows the people
+   * rather than the figure: the admin client profile's Network tab.
+   *
+   * CAPPED by the caller, because a profile renders one screen of names and a
+   * partner's book grows without bound. Unscoped for `countReferredBy`'s
+   * reason: the subject was already checked visible, and silently filtering
+   * their downline by the reader's own tags would under-report it.
+   */
+  async listReferredBy(ibUserId: string, limit: number): Promise<User[]> {
+    const rows = await this.db
+      .select(USER_COLUMNS)
+      .from(users)
+      .where(eq(users.referredByIbUserId, ibUserId))
+      .orderBy(desc(users.createdAt), asc(users.id))
+      .limit(limit);
+    return rows.map(toUser);
   }
 
   /**
@@ -526,7 +559,20 @@ export class UsersStore {
     // design. `undefined` for an unrestricted actor, and `and()` drops it.
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, users.id);
     if (scoped) conditions.push(scoped);
-    if (filter.q) {
+    if (filter.q && isUuid(filter.q)) {
+      /*
+       * A pasted client ID. The admin UI now shows the uuid everywhere a client
+       * appears, so the search box has to answer it — and an exact primary-key
+       * match is the only honest reading of a full uuid: it is not a name
+       * fragment, and pushing 36 hex characters through the trgm ILIKE below
+       * would only ever match an email that happens to contain them.
+       *
+       * Deliberately NOT OR-ed into the ILIKE predicate — its comment explains
+       * that the concatenation must stay character-for-character identical to
+       * the expression index in migration 0010.
+       */
+      conditions.push(eq(users.id, filter.q.trim()));
+    } else if (filter.q) {
       /*
        * ONE predicate over the three searchable columns concatenated, matching
        * the expression index in migration 0010 exactly.

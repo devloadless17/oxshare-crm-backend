@@ -130,6 +130,11 @@ function build(
     ),
     findByToken: vi.fn().mockResolvedValue(options.stored),
     markAccepted: vi.fn().mockResolvedValue(undefined),
+    // The conditional single-use claim: wins exactly when the stored invite is
+    // live and unaccepted, mirroring `WHERE accepted = false`.
+    claim: vi.fn(() =>
+      Promise.resolve(options.stored && !options.stored.accepted ? options.stored : undefined),
+    ),
     findPendingByRoleId: vi.fn().mockResolvedValue([]),
     // Default: no invite outstanding for this address. The one-live-invite-per-
     // email rule is exercised explicitly in the suite below.
@@ -181,6 +186,15 @@ function build(
      * with scoping.
      */
     { describeFor: vi.fn().mockResolvedValue([]) } as never,
+    // RefreshTokensService — setAdminStatus revokes sessions on suspend; the
+    // invite paths under test here never reach it.
+    { revokeAllForSubject: vi.fn().mockResolvedValue(0) } as never,
+    // DRIZZLE_DB — the manager-invariant lock wraps role/admin writes in a
+    // transaction; a pass-through keeps the store mocks in charge.
+    {
+      transaction: (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({ execute: () => Promise.resolve() }),
+    } as never,
   );
 
   const service = new AdminAuthService(
@@ -202,6 +216,10 @@ function build(
     // UsersStore — createInvite refuses an address that already belongs to a
     // client. Appended for the same positional reason as `scopes` above.
     users as never,
+    // DRIZZLE_DB — acceptInvite wraps claim + create + scope in one
+    // transaction. The mock hands the callback a pass-through executor: the
+    // store mocks above ignore it, which is exactly what a unit test wants.
+    { transaction: (fn: (tx: unknown) => Promise<unknown>) => fn({}) } as never,
   );
 
   return { service, admins, invites, roles, email, audit, refreshTokens, scopes, users };
@@ -346,12 +364,26 @@ describe('createInvite', () => {
     expect(result).not.toHaveProperty('inviteUrl');
   });
 
-  it('echoes the link outside production, to keep local development workable', async () => {
+  it('echoes the link in DEVELOPMENT, to keep local work workable', async () => {
     const h = build({ env: { NODE_ENV: 'development' } });
     const result = await h.service.createInvite('new@oxshare.com', 'New', MASTER, undefined, [
       'kyc.review',
     ]);
     expect(result).toHaveProperty('inviteUrl');
+  });
+
+  it('does NOT echo the link on STAGING — the echo is an allowlist, not a production check', async () => {
+    /*
+     * `NODE_ENV !== 'production'` also matched 'staging' and every typo, and
+     * this is a bearer token that mints an administrator account. Only
+     * development and test opt in; every other environment behaves like
+     * production.
+     */
+    const h = build({ env: { NODE_ENV: 'staging' } });
+    const result = await h.service.createInvite('new@oxshare.com', 'New', MASTER, undefined, [
+      'kyc.review',
+    ]);
+    expect(result).not.toHaveProperty('inviteUrl');
   });
 });
 
@@ -429,6 +461,7 @@ describe('acceptInvite', () => {
         role: 'sub_admin',
         permissions: ['kyc.review', 'clients.view'],
       }),
+      expect.anything(), // the accept transaction's executor
     );
   });
 
@@ -440,6 +473,7 @@ describe('acceptInvite', () => {
     await h.service.acceptInvite('token-abc', PASSWORD, fakeResponse());
     expect(h.admins.create).toHaveBeenCalledWith(
       expect.objectContaining({ email: 'invited@oxshare.com' }),
+      expect.anything(), // the accept transaction's executor
     );
   });
 
@@ -454,7 +488,9 @@ describe('acceptInvite', () => {
   it('marks the invite spent, so the link dies on first use', async () => {
     const h = build({ stored: invite() });
     await h.service.acceptInvite('token-abc', PASSWORD, fakeResponse());
-    expect(h.invites.markAccepted).toHaveBeenCalledWith('token-abc');
+    // The CLAIM is the spend now — conditional on `accepted = false`, inside
+    // the accept transaction, so two racing accepts cannot both pass.
+    expect(h.invites.claim).toHaveBeenCalledWith('token-abc', expect.anything());
   });
 
   it('falls back to a minimal permission set when the invite carries none', async () => {
@@ -570,6 +606,35 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
     expect(h.invites.create).toHaveBeenCalledWith(
       expect.objectContaining({ scopedTagIds: undefined, seesUntriaged: true }),
     );
+  });
+
+  it('REFUSES an empty territory list from a SCOPED inviter — [] means everyone', async () => {
+    /*
+     * The laundering this closes: [] used to be normalised to absent BEFORE
+     * assertScopable ran, so a scoped inviter sending an empty list skipped
+     * both the admins.scope gate and the empty-list refusal — and minted an
+     * admin who saw EVERY client, sight the inviter could not grant.
+     * Normalisation is now unrestricted-actors-only; a scoped actor's []
+     * falls through to assertScopable's refusal by name.
+     */
+    const h = build();
+    const scopedInviter = {
+      ...MASTER,
+      permissions: ['admins.create', 'admins.scope'],
+      clientScope: { unrestricted: false, tagIds: ['tag-1'], includesUntriaged: false },
+    };
+    await expect(
+      h.service.createInvite(
+        'laundered@oxshare.com',
+        'Laundered',
+        scopedInviter as never,
+        undefined,
+        ['kyc.review'],
+        undefined,
+        [],
+      ),
+    ).rejects.toThrow(AuthorizationError);
+    expect(h.invites.create).not.toHaveBeenCalled();
   });
 
   it('defaults the intake grant to FALSE for an inviter who cannot grant it', async () => {

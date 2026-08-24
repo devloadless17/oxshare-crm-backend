@@ -1,4 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { sql } from 'drizzle-orm';
+import { DRIZZLE_DB } from '../../database/database.module';
+import type { Db, Executor } from '../../database/db';
+
+/**
+ * One key for one global invariant: "at least one active admin can manage the
+ * console". Arbitrary constant, unique within this codebase's advisory-lock
+ * usage (grep pg_advisory before adding another).
+ */
+const MANAGER_INVARIANT_LOCK = 715_001;
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -28,6 +38,7 @@ import { assertActorCan, normalizePermissionKey } from '../../common/security/ac
 import { ClientFieldsService } from './client-fields.service';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
+import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { adminAvatarUrl } from '../../common/uploads/stored-files.service';
 
@@ -70,7 +81,29 @@ export class AdminRbacService {
     private readonly clientFields: ClientFieldsService,
     private readonly clientTags: ClientTagsStore,
     private readonly scopes: AdminClientScopesStore,
+    private readonly refreshTokens: RefreshTokensService,
+    /** The db handle — manager-invariant writes serialise on an advisory lock. */
+    @Inject(DRIZZLE_DB) private readonly db: Db,
   ) {}
+
+  /**
+   * Serialise every write that can remove management capability.
+   *
+   * `assertKeepsAManager` predicts the post-write state, and prediction is a
+   * read: two concurrent demotions each saw the OTHER admin as still a
+   * manager, both passed, and the console was left with nobody able to manage
+   * roles or admins — the classic TOCTOU. A transaction-scoped advisory lock
+   * makes these writes take turns: the second transaction's check runs after
+   * the first has committed, so it sees the world its write would actually
+   * land in. One constant key, because the invariant is global — it counts
+   * managers across ALL roles and admins, so per-row locking cannot protect it.
+   */
+  private withManagerLock<T>(fn: (tx: Executor) => Promise<T>): Promise<T> {
+    return this.db.transaction(async (tx: Executor) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${MANAGER_INVARIANT_LOCK})`);
+      return fn(tx);
+    });
+  }
 
   // ─── RBAC: permission catalog ─────────────────────────────────────────────
   /**
@@ -509,19 +542,21 @@ export class AdminRbacService {
      * `admins.edit` away from the role, every holder loses it at once — so
      * the write is refused when it would leave nobody able to undo it.
      */
-    if (patch.permissions) {
-      const next = patch.permissions;
-      await this.assertKeepsAManager(
-        role.permissions,
-        async (candidate) => ({
-          active: candidate.status === 'active',
-          permissions:
-            candidate.roleId === role.id ? next : await this.effectivePermissions(candidate),
-        }),
-        next,
-      );
-    }
-    const updated = await this.roles.update(id, patch);
+    const updated = await this.withManagerLock(async (tx) => {
+      if (patch.permissions) {
+        const next = patch.permissions;
+        await this.assertKeepsAManager(
+          role.permissions,
+          async (candidate) => ({
+            active: candidate.status === 'active',
+            permissions:
+              candidate.roleId === role.id ? next : await this.effectivePermissions(candidate),
+          }),
+          next,
+        );
+      }
+      return this.roles.update(id, patch, tx);
+    });
     this.audit.record(actor.id, 'role.update', 'role', id, {
       before: role.permissions,
       after: updated?.permissions,
@@ -701,18 +736,6 @@ export class AdminRbacService {
      * assertKeepsAManager. Checked against what this admin holds NOW (role
      * over snapshot) and what the write would leave them with.
      */
-    if (patch.roleId || patch.permissions) {
-      const next = update.permissions ?? admin.permissions;
-      await this.assertKeepsAManager(
-        await this.effectivePermissions(admin),
-        async (candidate) => ({
-          active: candidate.status === 'active',
-          permissions: candidate.id === id ? next : await this.effectivePermissions(candidate),
-        }),
-        next,
-      );
-    }
-
     if (patch.maskedFields !== undefined) {
       // `null` clears the override; an array pins this person's own answer.
       if (patch.maskedFields !== null) this.assertMaskAllowed(actor, patch.maskedFields);
@@ -741,13 +764,33 @@ export class AdminRbacService {
       await this.assertScopable(actor, patch.scopedTagIds);
     }
 
-    const updated = (await this.admins.update(id, update))!;
-
-    // After the admin row, so a rejected mask or permission change does not
-    // leave a territory applied to an admin whose update failed.
-    if (patch.scopedTagIds !== undefined) {
-      await this.scopes.replace(id, patch.scopedTagIds, actor.id);
-    }
+    const updated = await this.withManagerLock(async (tx) => {
+      /*
+       * Demoting the last manager is the same outage as suspending them — see
+       * assertKeepsAManager. Checked against what this admin holds NOW (role
+       * over snapshot) and what the write would leave them with — INSIDE the
+       * lock, so a concurrent demotion cannot count this admin as still a
+       * manager while this one counts them.
+       */
+      if (patch.roleId || patch.permissions) {
+        const next = update.permissions ?? admin.permissions;
+        await this.assertKeepsAManager(
+          await this.effectivePermissions(admin),
+          async (candidate) => ({
+            active: candidate.status === 'active',
+            permissions: candidate.id === id ? next : await this.effectivePermissions(candidate),
+          }),
+          next,
+        );
+      }
+      const written = (await this.admins.update(id, update, tx))!;
+      // After the admin row, so a rejected mask or permission change does not
+      // leave a territory applied to an admin whose update failed.
+      if (patch.scopedTagIds !== undefined) {
+        await this.scopes.replace(id, patch.scopedTagIds, actor.id, tx);
+      }
+      return written;
+    });
 
     this.audit.record(actor.id, 'admin.update', 'admin', id, {
       before: { permissions: admin.permissions, roleId: admin.roleId, mask: admin.maskedFields },
@@ -832,30 +875,49 @@ export class AdminRbacService {
      * back, and there is none now. Refused against the state this write would
      * produce, not the current one.
      */
-    if (status === 'suspended') {
-      // Both manager keys, not only `admins.edit`: suspending the last holder
-      // of `roles.edit` leaves roles frozen just as surely.
-      const held = await this.effectivePermissions(admin);
-      await this.assertKeepsAManager(
-        held,
-        async (candidate) => ({
-          active: candidate.id === id ? false : candidate.status === 'active',
-          permissions: await this.effectivePermissions(candidate),
-        }),
-        [],
-      );
-    }
     if (admin.status === status) {
       throw new ValidationError(`Administrator is already ${status}.`);
     }
 
-    const updated = (await this.admins.update(id, { status }))!;
+    const updated = await this.withManagerLock(async (tx) => {
+      if (status === 'suspended') {
+        // Both manager keys, not only `admins.edit`: suspending the last holder
+        // of `roles.edit` leaves roles frozen just as surely. Inside the lock —
+        // two concurrent suspensions of the two remaining managers each saw the
+        // other as still active, both passed, and nobody could manage anything.
+        const held = await this.effectivePermissions(admin);
+        await this.assertKeepsAManager(
+          held,
+          async (candidate) => ({
+            active: candidate.id === id ? false : candidate.status === 'active',
+            permissions: await this.effectivePermissions(candidate),
+          }),
+          [],
+        );
+      }
+      return (await this.admins.update(id, { status }, tx))!;
+    });
+    /*
+     * Suspension ends the SESSIONS, not only the account's standing. The
+     * guard already refuses a suspended admin on every request, so this is
+     * not what locks them out today — it is what stops their cookies quietly
+     * resuming the moment somebody reactivates them. Suspension is "we are
+     * taking this person's access away NOW"; whether they come back is a
+     * separate decision, and coming back means signing in again.
+     */
+    const sessionsRevoked =
+      status === 'suspended' ? await this.refreshTokens.revokeAllForSubject('admin', id) : 0;
     this.audit.record(
       actor.id,
       status === 'suspended' ? 'admin.suspend' : 'admin.activate',
       'admin',
       id,
-      { email: admin.email, before: admin.status, after: status },
+      {
+        email: admin.email,
+        before: admin.status,
+        after: status,
+        ...(status === 'suspended' ? { sessionsRevoked } : {}),
+      },
     );
     return await this.sanitize(updated);
   }

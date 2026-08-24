@@ -8,6 +8,8 @@ import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 
 export interface WalletDiscrepancy {
   walletId: string;
+  /** The human handle an operator quotes; `walletId` is what queries key on. */
+  walletNumber: string;
   userId: string;
   currency: string;
   balance: string;
@@ -136,6 +138,7 @@ export class ReconciliationService {
   private async findWalletDiscrepancies(): Promise<WalletDiscrepancy[]> {
     const rows = await this.db.execute<{
       id: string;
+      wallet_number: string;
       user_id: string;
       currency: string;
       balance: string;
@@ -143,6 +146,7 @@ export class ReconciliationService {
       difference: string;
     }>(sql`
       SELECT w.id,
+             w.wallet_number,
              w.user_id,
              w.currency,
              w.balance::text                                   AS balance,
@@ -150,7 +154,7 @@ export class ReconciliationService {
              (w.balance - COALESCE(SUM(le.amount), 0))::text   AS difference
         FROM ${wallets} w
         LEFT JOIN ${ledgerEntries} le ON le.wallet_id = w.id
-       GROUP BY w.id, w.user_id, w.currency, w.balance
+       GROUP BY w.id, w.wallet_number, w.user_id, w.currency, w.balance
       HAVING w.balance <> COALESCE(SUM(le.amount), 0)
        -- Worst first, and CAPPED at SAMPLE_LIMIT. Without the limit this
        -- materialised every mismatched wallet: thirty thousand rows through the
@@ -168,6 +172,7 @@ export class ReconciliationService {
     // a pg QueryResult, which is not itself iterable.
     return rows.rows.map((row) => ({
       walletId: row.id,
+      walletNumber: row.wallet_number,
       userId: row.user_id,
       currency: row.currency,
       balance: money(row.balance),

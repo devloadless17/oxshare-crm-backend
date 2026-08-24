@@ -360,6 +360,10 @@ describe('recorded: the feature modules', () => {
       // Required since the broker's revenue cap arrived. A PUT missing it is a
       // 400, and the audit row this test is about never gets written.
       ibMaxRevenueSharePct: '50.00',
+      // Same again for the settlement window (migration 0091). This is a PUT,
+      // so every field on the form travels together — an omitted one is a
+      // malformed request, not an unchanged setting.
+      ibCommissionHoldHours: 24,
     });
     expect([200, 201, 204]).toContain(res.status);
 

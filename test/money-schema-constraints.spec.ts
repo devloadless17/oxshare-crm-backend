@@ -265,6 +265,56 @@ describe('wallets', () => {
     ).toBe('wallets_on_hold_non_negative');
   });
 
+  it('mints a wallet number on every INSERT, in the promised format', async () => {
+    const userId = await makeUser('numbered@test.local');
+    const walletId = await makeWallet(userId, 'USD');
+
+    /*
+     * `makeWallet` names no wallet_number, exactly like every real creation
+     * site — the DEFAULT is what covers them all, including the set-based
+     * `openForAllClients` INSERT…SELECT no app-side generator could reach.
+     * 12 lowercase Crockford chars: no i, l, o or u to misread.
+     */
+    const { rows } = await ctx.db.execute<{ wallet_number: string }>(
+      sql`SELECT wallet_number FROM wallets WHERE id = ${walletId}`,
+    );
+    expect(rows[0].wallet_number).toMatch(/^[0-9a-hjkmnp-tv-z]{12}$/);
+  });
+
+  it('refuses two wallets sharing a number', async () => {
+    const userId = await makeUser('collision@test.local');
+    // USDT, not an invented currency — `wallets.currency` FKs `currencies.code`
+    // and the platform seeds exactly USD and USDT.
+    const first = await makeWallet(userId, 'USD');
+    const second = await makeWallet(userId, 'USDT');
+
+    const { rows } = await ctx.db.execute<{ wallet_number: string }>(
+      sql`SELECT wallet_number FROM wallets WHERE id = ${first}`,
+    );
+    // The unique index is the guarantee; the generator's retry loop is only
+    // what makes hitting it astronomically rare.
+    expect(
+      await constraintViolatedBy(
+        ctx.db.execute(
+          sql`UPDATE wallets SET wallet_number = ${rows[0].wallet_number} WHERE id = ${second}`,
+        ),
+      ),
+    ).toBe('wallets_wallet_number_uq');
+  });
+
+  it('refuses a malformed wallet number — wrong length, uppercase, lookalikes', async () => {
+    const userId = await makeUser('malformed@test.local');
+    const walletId = await makeWallet(userId, 'USD');
+
+    for (const bad of ['short', '4F7KQ2NM8XCB', 'il0u56789abc']) {
+      expect(
+        await constraintViolatedBy(
+          ctx.db.execute(sql`UPDATE wallets SET wallet_number = ${bad} WHERE id = ${walletId}`),
+        ),
+      ).toBe('wallets_wallet_number_format');
+    }
+  });
+
   it('allows a hold equal to the whole balance', async () => {
     const userId = await makeUser('fullhold@test.local');
     const walletId = await makeWallet(userId, 'USD', '50');
