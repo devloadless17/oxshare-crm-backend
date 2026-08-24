@@ -189,6 +189,12 @@ function build(
     // RefreshTokensService — setAdminStatus revokes sessions on suspend; the
     // invite paths under test here never reach it.
     { revokeAllForSubject: vi.fn().mockResolvedValue(0) } as never,
+    // DRIZZLE_DB — the manager-invariant lock wraps role/admin writes in a
+    // transaction; a pass-through keeps the store mocks in charge.
+    {
+      transaction: (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({ execute: () => Promise.resolve() }),
+    } as never,
   );
 
   const service = new AdminAuthService(
