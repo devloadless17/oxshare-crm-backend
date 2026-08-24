@@ -35,6 +35,21 @@ export const ALERT_KINDS = {
    * silence means partners are not being paid.
    */
   COMMISSION_QUEUE_STALLED: 'money.commission_queue_stalled',
+  /**
+   * A dealer CANCELLED a trade that has already paid somebody.
+   *
+   * The engine excludes a cancellation from accruing — `isTradeAction` does not
+   * count it — but excluding it says nothing about the accrual already written
+   * against the trade it cancels. Nothing else in the system notices: the
+   * cancellation is marked done like any other non-trade row, and a partner
+   * keeps money earned on a trade that did not happen.
+   *
+   * Deliberately NOT an automatic clawback. A reversal moves money out of a
+   * partner's wallet and that is a decision with a person behind it, not
+   * something a feed does because a code arrived. This is how the person finds
+   * out — `POST /admin/ib/accruals/:id/reverse` is how they act.
+   */
+  COMMISSION_CLAWBACK_REQUIRED: 'money.commission_clawback_required',
   /** A rotated refresh token was presented again: a credential has leaked. */
   REFRESH_TOKEN_REUSE: 'auth.refresh_reuse',
   /** A signed webhook failed verification — someone is probing an integration endpoint. */
@@ -129,6 +144,10 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.COMMISSION_CEILING_BREACH]: {
     severity: 'page',
     rule: 'Any occurrence. Almost certainly the D-11 spread unit; accrual is refused, so deals are accumulating un-accrued until it is fixed.',
+  },
+  [ALERT_KINDS.COMMISSION_CLAWBACK_REQUIRED]: {
+    severity: 'notify',
+    rule: 'Any occurrence: a dealer cancelled a trade that has already accrued. Notify rather than page because nothing is broken and nothing is bleeding — the money has already been paid, and one more night makes no difference to a decision a person has to make in working hours anyway. What it MUST NOT do is get muted: no automatic clawback exists by design, so this alert is the only thing that will ever say a partner is holding money for a trade that did not happen. Reverse it with POST /admin/ib/accruals/:id/reverse; if the partner has already withdrawn it, the reversal refuses and the recovery is a conversation.',
   },
   [ALERT_KINDS.COMMISSION_QUEUE_STALLED]: {
     severity: 'notify',

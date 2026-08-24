@@ -5,6 +5,7 @@ import {
   Param,
   ParseUUIDPipe,
   Patch,
+  Post,
   Query,
   Req,
   Res,
@@ -17,9 +18,10 @@ import {
   PermissionsGuard,
   RequirePermissions,
 } from '../admin/guards/admin.guard';
-import { ScopedToClients } from '../admin/guards/client-scope.decorator';
+import { NotClientScoped, ScopedToClients } from '../admin/guards/client-scope.decorator';
 import { Audited } from '../admin/guards/audited.decorator';
 import { IbApplicationsService } from './ib-applications.service';
+import { CommissionService } from './commission.service';
 import {
   IB_ACCRUAL_SORT_COLUMNS,
   IB_APPLICATION_SORT_COLUMNS,
@@ -34,6 +36,7 @@ import {
   ApproveIbApplicationDto,
   ChangeIbLevelDto,
   ChangeIbProgramDto,
+  ReverseAccrualDto,
   IbAccountDto,
   IbApplicationDto,
   IbPartnerDetailDto,
@@ -72,6 +75,7 @@ export class AdminIbController {
     private readonly applications: IbApplicationsService,
     private readonly exports: AdminExportService,
     private readonly audit: AdminAuditService,
+    private readonly commissions: CommissionService,
   ) {}
 
   @Get('applications')
@@ -294,6 +298,69 @@ export class AdminIbController {
       },
       req.admin.clientScope,
     );
+  }
+
+  /**
+   * Take one accrual back.
+   *
+   * NOT scoped to clients. Every other partner operation here carries
+   * `@ScopedToClients`, and this deliberately does not: the scope predicates in
+   * `IbStore` filter on `ib_accruals.ib_user_id`, which on a REBATE row is the
+   * partner whose programme produced it and not the person being debited. A
+   * scope that reads the wrong column would let an operator reverse a client's
+   * rebate they cannot otherwise see, which is worse than not scoping at all.
+   * The permission is the gate, and it is a new one rather than `ib.view` —
+   * reading accruals and clawing one back are not the same authority.
+   */
+  @Post('accruals/:id/reverse')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.commissions.reverse')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Reverse a commission or rebate accrual',
+    description:
+      'The remedy for a dealer-cancelled trade, a mistyped rate caught late, or a duplicate. ' +
+      'A PENDING accrual reverses for free — the money never moved. A CONFIRMED one posts a ' +
+      'compensating ledger entry against the wallet that was credited, because `ledger_entries` ' +
+      'is append-only and a credit is never edited. Reversing twice is a no-op, not a second ' +
+      'debit. If the beneficiary has already spent or withdrawn the money the reversal REFUSES: ' +
+      'wallets cannot go negative, so the recovery is a conversation rather than an API call.',
+  })
+  @Audited('ib.accrual_reverse')
+  @NotClientScoped(
+    'The scope predicates filter ib_accruals.ib_user_id, which on a REBATE row is the ' +
+      'attributing partner rather than the person debited — scoping on it would be a check ' +
+      'that reads the wrong column. `ib.commissions.reverse` is the gate.',
+  )
+  async reverseAccrual(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReverseAccrualDto,
+  ) {
+    const result = await this.commissions.reverseAccrual(id, dto.reason);
+
+    /*
+     * WRITTEN HERE, because `@Audited` is metadata and nothing reads it at
+     * runtime — the decorator names the action for the audit SCREEN, and the
+     * row only exists if somebody calls `record`. Declaring without recording
+     * leaves the filter showing "no results", which reads as "it never
+     * happened" for the one operation on this surface that removes money from
+     * a wallet (D-21).
+     *
+     * AFTER the call, never before: a reversal that refuses because the
+     * beneficiary already spent the money throws, and an audit row written
+     * ahead of it would assert a clawback that did not occur.
+     *
+     * `movedMoney` is on the row because it is the difference between a status
+     * change and a debit, and it is the first thing anybody reading this back
+     * needs to know.
+     */
+    this.audit.record(req.admin.id, 'ib.accrual_reverse', 'ib_accrual', id, {
+      reason: dto.reason,
+      movedMoney: result.movedMoney,
+    });
+
+    return result;
   }
 
   @Get('partners')

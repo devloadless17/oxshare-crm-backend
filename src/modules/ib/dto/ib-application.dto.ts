@@ -294,6 +294,27 @@ export class ChangeIbProgramDto {
 }
 
 /**
+ * Why this accrual is being taken back.
+ *
+ * REQUIRED, and not for tidiness. This is the one operation in the module that
+ * removes money from somebody who has already been paid, and the audit row is
+ * the only place a partner's "where did my commission go" is ever answered
+ * from. A reversal with no stated cause is indistinguishable from a mistake,
+ * including to whoever made it.
+ */
+export class ReverseAccrualDto {
+  @ApiProperty({
+    minLength: 3,
+    maxLength: 500,
+    example: 'MT5 deal 41207 cancelled by the dealer on 2026-08-24.',
+    description: 'Recorded on the audit row. Name the cancellation or the decision behind it.',
+  })
+  @IsString()
+  @Length(3, 500)
+  reason: string;
+}
+
+/**
  * `null` is a real value here, not an omission: it means "deals with the broker
  * directly", which is the top of a chain. So the field is required and
  * explicitly nullable rather than optional — omitting it would be

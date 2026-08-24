@@ -96,6 +96,19 @@ export function isRealisedTrade(deal: { action: number; entry: number }): boolea
 export const CANCELLED_ACTIONS = [DEAL_BUY_CANCELED, DEAL_SELL_CANCELED] as const;
 
 /**
+ * Is this deal a dealer's cancellation of a trade?
+ *
+ * Expressed the same way as `isTradeAction` — "is it one of these" — so a build
+ * that adds a new action cannot silently become a cancellation. The cost of a
+ * false positive here is an alert nobody needed; the cost of the inverted form
+ * would be treating an unknown action as a cancellation and telling a desk to
+ * claw back money on the strength of a code we do not recognise.
+ */
+export function isCancelledAction(action: number): boolean {
+  return (CANCELLED_ACTIONS as readonly number[]).includes(action);
+}
+
+/**
  * A stable label for MT5's action, for a screen that must name the row.
  *
  * Unknown codes render as `action <n>` rather than as a guess or a blank. A

@@ -12,7 +12,7 @@ rewrite, which now targets `http://localhost:3001/v1/:path*`.
 
 **Anything that decides something from `req.path` must strip the prefix with `stripApiPrefix()`,
 never match a literal.** And in a **middleware** it must not read `req.path` at all: inside a
-`NestMiddleware` mounted with `forRoutes('*')`, Express reports `req.path` *relative to the mount*
+`NestMiddleware` mounted with `forRoutes('*')`, Express reports `req.path` _relative to the mount_
 — it is `"/"` for every request. Use `req.originalUrl`. `CsrfEchoMiddleware` read `req.path`,
 classified every admin request as portal, and echoed no anti-forgery token, so every cross-host
 admin write failed 403 (17164fd). Guards are unaffected — they run inside the route handler and
@@ -54,14 +54,14 @@ with a `code`, not a new HTTP throw.
 
 Both are authenticated but **not** permission-gated, so the owner comes from the session and
 **never** from a parameter (R-4.4). That is the entire distance between "my data" and "anyone's
-data" — the admin equivalents take a `userId` filter precisely because they *are* gated.
+data" — the admin equivalents take a `userId` filter precisely because they _are_ gated.
 
 - **`GET /trading/accounts`** (`modules/trading/`) — the client's own accounts, live before demo,
   unpaginated because a client holds a handful rather than a growing log. Returns `balance` (the
   CRM-held figure a transfer credits) and deliberately **no equity, margin or open positions**:
   there is no MT5 bridge, nothing here holds them, and a fabricated equity beside a real login is
   the most expensive kind of wrong number on a trading product. `GET /trading/accounts/transferable`
-  narrows to live+active for the transfer screen — it shapes what is *offered*; `TransfersService`
+  narrows to live+active for the transfer screen — it shapes what is _offered_; `TransfersService`
   still owns the refusal.
 - **`GET /ib/overview`** (`modules/ib/ib-overview.service.ts`) — the partner dashboard: level and
   rate, earnings, referred clients, direct sub-partners. 404s for a non-partner, because zeroes
@@ -114,12 +114,12 @@ FR-IB-06 asks for "a named program driving commission/rebate" per partner, which
 cannot express — every level-1 partner was paid identically and there was nowhere at all to put a
 client rebate. So `ib_accounts.program_id` is NOT NULL and `ib_programs` carries:
 
-| column | meaning |
-|---|---|
-| `level1Rate` | what the holder earns from their **own** clients |
-| `level2Rate` | what they earn from a **sub-partner's** clients |
-| `rebateRate` | what goes back to the **trading client** |
-| `mode` | `commission_only` / `rebate_only` / `hybrid` — which legs pay |
+| column       | meaning                                                       |
+| ------------ | ------------------------------------------------------------- |
+| `level1Rate` | what the holder earns from their **own** clients              |
+| `level2Rate` | what they earn from a **sub-partner's** clients               |
+| `rebateRate` | what goes back to the **trading client**                      |
+| `mode`       | `commission_only` / `rebate_only` / `hybrid` — which legs pay |
 
 **The rates are keyed on DEPTH, not on the rung.** A level-2 partner who introduced the client
 themselves is paid `level1Rate`; under the old model they took the level-2 rate for business they
@@ -147,11 +147,11 @@ changes — and one batch's worth means no payable deal is ever reached again. C
 everybody, with nothing but one ordinary log line to show for it, and the failure gets worse the
 busier the platform is. That is the worst shape a money job can have, and it had **three** doors:
 
-| stuck row | must stay unprocessed because | how it re-enters |
-|---|---|---|
-| an OPEN leg | its revenue is paid by the close that consumes it | `unconsumedLegs`, when the close arrives |
-| an ORPHAN — a login no `trading_accounts` row claims | the account may be linked minutes from now | the join, the moment it is linked |
-| a REFUSED deal | the money is owed; a refusal is a settings mistake | `commission_retry_after`, on a backoff (0092) |
+| stuck row                                            | must stay unprocessed because                      | how it re-enters                              |
+| ---------------------------------------------------- | -------------------------------------------------- | --------------------------------------------- |
+| an OPEN leg                                          | its revenue is paid by the close that consumes it  | `unconsumedLegs`, when the close arrives      |
+| an ORPHAN — a login no `trading_accounts` row claims | the account may be linked minutes from now         | the join, the moment it is linked             |
+| a REFUSED deal                                       | the money is owed; a refusal is a settings mistake | `commission_retry_after`, on a backoff (0092) |
 
 The first two need no column — a join and a position id already find them. A refusal has nothing in
 the row to recognise it by, so 0092 gives it `commission_attempts` / `commission_retry_after` /
@@ -268,11 +268,11 @@ the engine faces months of historical trades and, left alone, pays partners for 
 at once. That is not a bug in a job designed to be safe to re-run; it is a commercial decision no
 deployment had ever been asked to make.
 
-| value | meaning |
-|---|---|
-| *(unset)* | an AGED backlog (>48h of unprocessed TRADE deals) **stops the run** — nothing paid, nothing discarded |
-| `<ISO instant>` | pay from there on; older deals are marked decided and accrue nothing |
-| `all` | pay the whole backlog, deliberately |
+| value           | meaning                                                                                               |
+| --------------- | ----------------------------------------------------------------------------------------------------- |
+| _(unset)_       | an AGED backlog (>48h of unprocessed TRADE deals) **stops the run** — nothing paid, nothing discarded |
+| `<ISO instant>` | pay from there on; older deals are marked decided and accrue nothing                                  |
+| `all`           | pay the whole backlog, deliberately                                                                   |
 
 48 hours because the sweep runs 24 behind the push feed — a deal arriving late is not history, and
 a shorter grace would hold the engine shut on every ordinary catch-up. Deliberately **not**
@@ -284,6 +284,51 @@ would mark every trade decided and discard the commission permanently.
 The holding state alerts and logs on every run and is never throttled: it does not resolve itself,
 and a deployment can sit in it indefinitely with no other symptom — "no commission yet" looks
 exactly like "no trades yet".
+
+### A dealer-cancelled trade is DETECTED here and REVERSED by a person
+
+`isTradeAction` has always excluded `DEAL_BUY_CANCELED` / `DEAL_SELL_CANCELED`, so a cancellation
+accrues nothing. That says nothing whatever about the accrual already written against the trade it
+cancels — which was marked done like any other non-trade row while a partner kept earnings from a
+trade that did not happen, with **nothing anywhere saying so**.
+
+Two halves, and the split is deliberate:
+
+|                  |                                                                                                                                                                                         |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Detection**    | `DealCommissionService.reportClawback` — on a cancellation, looks for accruals on that position and raises `COMMISSION_CLAWBACK_REQUIRED` (notify) naming how many are already CREDITED |
+| **The decision** | `POST /admin/ib/accruals/:id/reverse` (`ib.commissions.reverse`, audited `ib.accrual_reverse`)                                                                                          |
+
+**Nothing reverses automatically, and that is the rule rather than an omission.** A reversal takes
+money out of somebody's wallet; a feed must not do that because a code arrived, and a broker
+re-sending a day of deals must not empty a partner's balance as a side effect.
+
+`reverseAccrual` is what finally SETS `ib_accrual_status = 'reversed'` — a value the enum and the
+admin DTO have published since the table existed while nothing anywhere wrote it, leaving
+hand-written SQL against an append-only ledger as the only remedy.
+
+- **`pending` → free.** The money never moved; a status change and nothing else. That asymmetry is
+  what the settlement window buys, and it is visible in one `if`.
+- **`confirmed` → a compensating entry.** `ledger_entries` is append-only, so a clawback is a new
+  row and never an edit. `adjustment`, not a negative `commission`: entry types are what reports sum
+  by, and a negative commission row nets against real earnings, shrinking a lifetime figure with no
+  line explaining why.
+- **`LEDGER_REFERENCE.accrualReversal`, keyed on the accrual id.** A _different_ reference type from
+  the credit — reusing `accrual` makes the debit look like a replay and
+  `ledger_entries_wallet_reference_uq` drops it in silence, so the desk sees success and the partner
+  keeps the money. The _same id_ is the idempotency: one accrual reverses once, and a double-click
+  cannot debit twice.
+- **A rebate is taken back from the CLIENT.** Same rule as `confirmPending`: on a rebate row
+  `ib_user_id` is attribution, `client_user_id` is who was paid. Debiting `ib_user_id` balances
+  perfectly and takes it from the introducer.
+- **It REFUSES when the money is gone**, and the row stays `confirmed`. `wallets_balance_non_negative`
+  is a CHECK constraint, so no `allowOverdraft` exists to route around it — a negative wallet is a
+  debt the CRM cannot collect or display. Marking it `reversed` on a failed debit is the one lie
+  this table must never tell: the desk would stop chasing it.
+
+`test/ib-accrual-reversal.spec.ts` and `test/deal-cancellation-clawback.spec.ts` pin both halves.
+The quiet case is pinned hardest: a cancellation on a position that never accrued must raise
+**nothing**, or the alarm fires constantly, gets muted, and takes the real cases with it.
 
 ### Three refusals worth knowing about
 
@@ -340,7 +385,7 @@ Both layers now take the db by constructor injection. `store/*.store.ts` classes
 `@Inject(DRIZZLE_DB)`; the four money services (`wallet`, `transactions`, `commission`,
 `programs`) do the same and use Drizzle inline — they previously called the module-level
 `getDb()` singleton from inside each method, and a lint rule now blocks importing it here.
-Not extracting a *store layer* for money is deliberate: §11 requires those tests to run against
+Not extracting a _store layer_ for money is deliberate: §11 requires those tests to run against
 **real Postgres via Testcontainers**, so a fake-substitution seam would buy them nothing, while
 moving `FOR UPDATE` across a new boundary would cost real risk. `test/di-wiring.spec.ts` resolves
 each money service from the real module graph, which the hand-constructed money specs cannot. `database/db.ts` exports an `Executor` type so a store method can join a
@@ -411,6 +456,41 @@ instant the figure could describe. Erring early costs a skipped write the sweep 
 late lets a stale figure overwrite a newer one. A skipped write is SUCCESS and must never throw —
 the money has already moved and the wallet leg is posted in the same transaction.
 
+### The mirror never vetoes a settlement, and never computes
+
+`settle` writes MT5's figure or **nothing**. It used to have a second path: when the balance could
+not be read back, it computed `balance ± amount` and guarded the result with `>= 0`, throwing when
+that failed. The throw rolled back the wallet leg beside it, so the money had left the trading
+account and arrived nowhere, with the transfer left `pending` — the one state nothing distinguishes
+from a transfer still waiting on the bridge.
+
+That guard read as overdraw protection and could not have been. `settle` is reachable **only**
+through a bridge call that already succeeded, and MT5 checks the real balance before it moves
+anything, so the account was never short — the MIRROR was, which is a thing a mirror is allowed to
+be. A non-authoritative copy vetoing a fact the authority has already established is an inversion,
+and it charged the client for a failed HTTP read.
+
+Both halves are now settled the way the column's own schema comment always demanded — _"nothing here
+computes it"_, _"anything that adds to this column reintroduces the bug"_:
+
+|                          | before                                | now                                                 |
+| ------------------------ | ------------------------------------- | --------------------------------------------------- |
+| balance unreadable       | compute `balance ± amount`, unstamped | write nothing; keep the figure **and its real age** |
+| computed figure negative | throw, rolling back the wallet leg    | cannot arise — there is no computed figure          |
+| overdraw check           | `settle`, after MT5 moved the money   | `request`, before anything moves                    |
+
+`settle`'s own `@param` had described the correct behaviour all along — "the column is then left
+alone rather than computed, because a known-stale figure beats a confident wrong one" — while the
+code computed anyway. **When this file's doc and its code disagree about a money rule, the doc is
+evidence, not decoration.**
+
+The `request`-time check counts **in-flight** pending transfers against the balance, because a check
+reading only the column is defeated by clicking twice. It takes no `FOR UPDATE`: `settle` locks
+transfer → wallet → `trading_accounts`, so an account lock here would invert that order and deadlock
+the two paths. It is advisory by construction anyway — the mirror can be stale in either direction
+and **MT5 is still the gate**. Erring against a stale-low mirror costs a client one retry after the
+next snapshot; erring the other way costs a support ticket about money in neither place.
+
 ## Realtime — a second listener, on purpose
 
 The WebSocket does **not** run on :3001. `REALTIME_ENGINE=uws` (the default) runs Socket.IO on
@@ -420,7 +500,7 @@ uWebSockets.js, which owns its own TCP listener, so the socket is on **`REALTIME
 is running.
 
 **In production the realtime origin must share the API's HOSTNAME.** Cookies ignore the port, so a
-different port is fine; `__Host-` cookies are host-scoped by design, so a realtime *subdomain*
+different port is fine; `__Host-` cookies are host-scoped by design, so a realtime _subdomain_
 would receive no cookie and every handshake would be refused with nothing to explain why. Route
 `wss://api…` to the realtime port at the ingress.
 
@@ -523,7 +603,7 @@ the Claude `Stop` hook skips it here and CI owns it. Run it by hand before any m
 - **Don't run `src/database/migrate.ts` or `run-migrate.js`** — they need `dotenv`/`bcrypt`,
   which are not dependencies, and force Neon-style SSL.
 - `@casl/ability` is installed with **0 imports**; real enforcement is `PermissionsGuard` plus
-  `config/permissions.json` (which *is* wired, via `admin-rbac.service.ts`). The dep is kept
+  `config/permissions.json` (which _is_ wired, via `admin-rbac.service.ts`). The dep is kept
   only as a marker for the unbuilt ARCHITECTURE §2 item — same for `bullmq`/`ioredis` and §9.
 - `src/workers/` is a placeholder with no worker code.
 - Seeds re-run on every boot in dev and are idempotent.

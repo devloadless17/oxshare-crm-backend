@@ -220,6 +220,10 @@
         "label": "View Accrued Commission"
       },
       {
+        "key": "ib.commissions.reverse",
+        "label": "Reverse an accrual (claw back commission)"
+      },
+      {
         "key": "ib.programs.create",
         "label": "Create commission programmes"
       },

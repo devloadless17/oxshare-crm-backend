@@ -3,14 +3,23 @@ import Decimal from 'decimal.js';
 import { and, asc, eq, inArray, isNotNull, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
-import { mt5Deals, tradingAccounts } from '../../../database/schema';
+import { ibAccruals, mt5Deals, tradingAccounts } from '../../../database/schema';
+import { LEDGER_REFERENCE } from '../../../database/ledger-reference';
+import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
 import {
   COMMISSION_ACCRUAL,
   CommissionRefusedError,
   type CommissionAccrualPort,
 } from '../../../common/provisioning/commission-accrual.port';
 import { brokerRevenueOf } from '../broker-revenue';
-import { CLOSING_ENTRIES, TRADE_ACTIONS, isClosingEntry, isTradeAction } from './deal-codes';
+import {
+  CLOSING_ENTRIES,
+  TRADE_ACTIONS,
+  dealActionLabel,
+  isCancelledAction,
+  isClosingEntry,
+  isTradeAction,
+} from './deal-codes';
 
 /**
  * The longest a failed deal waits before it is tried again.
@@ -394,6 +403,22 @@ export class DealCommissionService {
        * nothing ever will be, so this is DONE rather than skipped.
        */
       if (!isTradeAction(deal.action)) {
+        /*
+         * ── A CANCELLATION IS THE ONE NON-TRADE THAT OWES SOMEBODY A LOOK ───
+         *
+         * Everything else in this branch is a row that never earned anything.
+         * A cancellation is different in kind: it says a trade that DID earn
+         * something never happened. Marking it done and moving on — which is
+         * all this branch used to do — leaves a partner holding money for a
+         * trade the dealer struck out, and nothing anywhere says so.
+         *
+         * It still accrues nothing and is still marked done. What is added is
+         * that somebody is TOLD. See the alert's own note on why this does not
+         * reverse anything by itself.
+         */
+        if (isCancelledAction(deal.action)) {
+          await this.reportClawback(deal);
+        }
         await this.markProcessed([deal.id]);
         run.nothingOwed += 1;
         continue;
@@ -679,6 +704,99 @@ export class DealCommissionService {
         commissionLastError: reason.slice(0, 500),
       })
       .where(eq(mt5Deals.id, dealRowId));
+  }
+
+  /**
+   * A dealer cancelled a trade. Did that trade already pay somebody?
+   *
+   * Reads only, and raises the alarm when the answer is yes. It does NOT
+   * reverse: a reversal takes money out of a partner's wallet, which needs a
+   * person — `CommissionService.reverseAccrual` is what they call, and this is
+   * how they learn there is something to call it about.
+   *
+   * ## Silence is the correct answer most of the time
+   *
+   * A cancellation whose position never accrued — cancelled before the close,
+   * or on an account with no introducer — is ordinary and must produce no
+   * alert. An alarm that fires on every cancellation is one that gets muted,
+   * taking the real cases with it.
+   *
+   * ## Why this can never block the queue
+   *
+   * It is wrapped, and a failure is logged rather than thrown. This runs inside
+   * the branch that marks a deal DONE, and the deal is genuinely done — it
+   * accrues nothing whatever happens here. Letting a failed lookup escape would
+   * leave a cancellation unprocessed at the FRONT of an oldest-first queue,
+   * which is precisely the stall that three separate doors in this file exist
+   * to prevent. A missed alert is recoverable; a stalled engine is not.
+   */
+  private async reportClawback(deal: {
+    id: string;
+    ticket: string | number | bigint;
+    login: string;
+    action: number;
+    positionId: string | null;
+  }): Promise<void> {
+    try {
+      /*
+       * No position id, nothing to trace it back to. MT5 does not always carry
+       * one, and without it there is no honest way to say which trade this
+       * cancels — a guess here would tell a desk to claw back the wrong money.
+       */
+      if (!deal.positionId) return;
+
+      /*
+       * Scoped by LOGIN as well as position id, for the same reason
+       * `unconsumedLegs` is: a position id is unique per SERVER, not per
+       * account, so a cross-account match would report one client's partner
+       * over another client's cancelled trade.
+       *
+       * `sourceType` is the deal feed's, because that is the only path that
+       * writes accruals today — `LIVE_REVENUE_FEED` names it and the position
+       * path is written by nothing. If that ever inverts, this needs the other
+       * id space too, and the constant is where it would be noticed.
+       */
+      const affected = await this.db
+        .select({ id: ibAccruals.id, status: ibAccruals.status, amount: ibAccruals.amount })
+        .from(ibAccruals)
+        .innerJoin(mt5Deals, eq(mt5Deals.id, ibAccruals.sourceId))
+        .where(
+          and(
+            eq(ibAccruals.sourceType, LEDGER_REFERENCE.deal),
+            eq(mt5Deals.mt5PositionId, deal.positionId),
+            eq(mt5Deals.login, deal.login),
+          ),
+        );
+
+      /* The ordinary case: cancelled before it ever paid anybody. */
+      const live = affected.filter((a) => a.status !== 'reversed');
+      if (live.length === 0) return;
+
+      const paid = live.filter((a) => a.status === 'confirmed').length;
+
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.COMMISSION_CLAWBACK_REQUIRED,
+        'notify',
+        `MT5 ${dealActionLabel(deal.action)} deal ${String(deal.ticket)} cancels position ` +
+          `${deal.positionId} on login ${deal.login}, which has ${live.length} accrual(s) ` +
+          `standing — ${paid} already CREDITED to a wallet. Nothing has been reversed: review ` +
+          'them and POST /admin/ib/accruals/:id/reverse for each that should come back. A ' +
+          'still-pending accrual reverses for free; a credited one posts a compensating entry.',
+        {
+          login: deal.login,
+          positionId: deal.positionId,
+          accruals: live.length,
+          credited: paid,
+        },
+      );
+    } catch (error) {
+      this.logger.error(
+        `Could not check deal ${String(deal.ticket)} for accruals to claw back: ` +
+          `${error instanceof Error ? error.message : String(error)}. The cancellation is still ` +
+          'marked processed — it accrues nothing either way.',
+      );
+    }
   }
 
   /**

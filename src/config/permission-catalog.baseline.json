@@ -44,6 +44,7 @@
     "currencies.edit",
     "currencies.view",
     "ib.approve",
+    "ib.commissions.reverse",
     "ib.commissions.view",
     "ib.levels.create",
     "ib.levels.delete",

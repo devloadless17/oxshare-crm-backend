@@ -294,6 +294,18 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   },
   { action: 'ib.parent_change', label: 'Partner parent reassigned', group: 'Compliance' },
   /*
+   * `Money` rather than `Partners`: this is the only IB action that can DEBIT a
+   * wallet. Somebody auditing where a partner's balance went filters by money,
+   * and a reversal filed under partner administration is one they would not
+   * find — which is the same "no results reads as it never happened" failure
+   * this catalog exists to prevent.
+   */
+  {
+    action: 'ib.accrual_reverse',
+    label: 'Commission accrual reversed',
+    group: 'Money',
+  },
+  /*
    * `ib.partners.suspend`, matching what is actually written.
    *
    * The action was renamed to sit alongside its permission key and this entry

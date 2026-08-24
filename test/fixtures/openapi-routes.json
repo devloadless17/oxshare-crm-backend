@@ -169,6 +169,7 @@
   "POST /v1/admin/currencies",
   "POST /v1/admin/ib-levels",
   "POST /v1/admin/ib-programs",
+  "POST /v1/admin/ib/accruals/{id}/reverse",
   "POST /v1/admin/invite",
   "POST /v1/admin/invite/accept",
   "POST /v1/admin/ip-allowlist",

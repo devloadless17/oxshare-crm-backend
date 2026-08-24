@@ -2232,6 +2232,46 @@
         ]
       }
     },
+    "/v1/admin/ib/accruals/{id}/reverse": {
+      "post": {
+        "description": "The remedy for a dealer-cancelled trade, a mistyped rate caught late, or a duplicate. A PENDING accrual reverses for free — the money never moved. A CONFIRMED one posts a compensating ledger entry against the wallet that was credited, because `ledger_entries` is append-only and a credit is never edited. Reversing twice is a no-op, not a second debit. If the beneficiary has already spent or withdrawn the money the reversal REFUSES: wallets cannot go negative, so the recovery is a conversation rather than an API call.",
+        "operationId": "AdminIbController_reverseAccrual",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReverseAccrualDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Reverse a commission or rebate accrual",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ib/partners": {
       "get": {
         "description": "Joined to the person and their level, newest approval first.",
@@ -11423,6 +11463,21 @@
             "description": "The reviewer's own words, appended to the label."
           }
         }
+      },
+      "ReverseAccrualDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 500,
+            "example": "MT5 deal 41207 cancelled by the dealer on 2026-08-24.",
+            "description": "Recorded on the audit row. Name the cancellation or the decision behind it."
+          }
+        },
+        "required": [
+          "reason"
+        ]
       },
       "IbPartnerPersonDto": {
         "type": "object",

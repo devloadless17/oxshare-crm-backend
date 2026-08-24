@@ -7,6 +7,8 @@ import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
 import { ibAccounts, ibAccruals, ibPrograms, users } from '../../database/schema';
 import { LEDGER_REFERENCE, type LedgerReferenceType } from '../../database/ledger-reference';
+import { NotFoundError } from '../../common/errors/domain-errors';
+import { money, toDecimal } from '../wallet/money';
 import { LIVE_REVENUE_FEED, isLiveRevenueFeed } from './revenue-feed';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { WalletService } from '../wallet/wallet.service';
@@ -753,6 +755,130 @@ export class CommissionService implements CommissionAccrualPort {
       this.logger.log(`Commission confirm run: ${confirmed} credited, ${failed} left pending.`);
     }
     return { confirmed, failed, held };
+  }
+
+  /**
+   * Take one accrual back — the third status the schema has always promised.
+   *
+   * `ib_accrual_status` has carried `reversed` since the table existed and the
+   * API publishes it, but nothing anywhere SET it. A dealer-cancelled trade,
+   * a mistyped rate caught after the window, a duplicate the desk spotted — all
+   * of them had exactly one remedy: hand-written SQL against a ledger whose
+   * whole design is that it cannot be edited. This is the operation that was
+   * missing, not a new policy.
+   *
+   * ## Deliberately MANUAL, and that is not indecision
+   *
+   * `DealCommissionService` raises `COMMISSION_CLAWBACK_REQUIRED` when a
+   * cancellation lands on a trade that already paid, and stops there. It does
+   * not call this. A reversal moves money out of somebody's wallet, which is a
+   * decision with a person behind it — a feed should not do it because a code
+   * arrived, and a broker that re-sends a day of deals should not empty a
+   * partner's balance as a side effect.
+   *
+   * ## What it costs depends entirely on when you catch it
+   *
+   * That asymmetry is the reason the settlement window exists at all, and it is
+   * visible right here:
+   *
+   *   PENDING    the money never moved. A status change, and nothing else.
+   *   CONFIRMED  the partner has been paid. This posts a compensating entry —
+   *              `ledger_entries` is append-only, so taking money back is a new
+   *              row and never an edit of the credit.
+   *
+   * ## The refusal that has no code path around it
+   *
+   * If the partner has already spent or withdrawn the money, `post` refuses:
+   * `wallets_balance_non_negative` is a CHECK constraint, so there is no
+   * `allowOverdraft` that would rescue this — the database would reject the row
+   * regardless. That refusal is CORRECT and is left to surface. A wallet driven
+   * negative is a debt the CRM has no concept of, no way to collect and no way
+   * to show a partner; the honest outcome is that the desk is told this cannot
+   * be recovered from the wallet and recovers it some other way.
+   *
+   * The accrual stays `confirmed` when that happens, because it IS confirmed —
+   * money was paid and has not come back. Marking it `reversed` on a failed
+   * debit would be the one lie this table must never tell.
+   */
+  async reverseAccrual(
+    accrualId: string,
+    reason: string,
+  ): Promise<{ id: string; status: 'reversed'; movedMoney: boolean }> {
+    return this.db.transaction(async (tx) => {
+      /*
+       * Locked before it is read. Two desks reversing the same accrual is the
+       * obvious race, and the ledger's unique constraint would already absorb
+       * the second debit — but the STATUS write below has no such guard, and a
+       * lost update there would leave a reversed accrual reported as confirmed.
+       */
+      const [accrual] = await tx
+        .select()
+        .from(ibAccruals)
+        .where(eq(ibAccruals.id, accrualId))
+        .for('update')
+        .limit(1);
+
+      if (!accrual) throw new NotFoundError('Accrual not found.');
+
+      /*
+       * Idempotent rather than an error. A desk that double-submits, or retries
+       * after a timeout, is asking for a state the row is already in — and the
+       * ledger constraint means the debit cannot have been posted twice anyway.
+       * Answering "done" is both true and the answer that stops them trying
+       * again on a money screen.
+       */
+      if (accrual.status === 'reversed') {
+        return { id: accrual.id, status: 'reversed' as const, movedMoney: false };
+      }
+
+      const paid = accrual.status === 'confirmed';
+
+      if (paid) {
+        /*
+         * The exact mirror of the confirm credit — same beneficiary, same
+         * wallet, same currency, negated. Read `confirmPending`'s note on why
+         * `ibUserId` is not the beneficiary of a rebate: getting that wrong
+         * here would debit the introducer for their client's rebate, which
+         * balances perfectly and takes money from the wrong person.
+         */
+        const rebate = accrual.kind === 'rebate';
+
+        await this.wallets.post(
+          {
+            userId: rebate ? accrual.clientUserId : accrual.ibUserId,
+            currency: accrual.currency,
+            kind: rebate ? 'main' : 'commission',
+            amount: money(toDecimal(accrual.amount).negated()),
+            /*
+             * `adjustment`, not `commission`. The entry types are what every
+             * report sums by, and a negative `commission` row would net against
+             * real earnings — a partner's lifetime figure would quietly shrink
+             * with no line explaining it. An adjustment is visible as its own
+             * thing, which is what a clawback needs to be.
+             */
+            entryType: 'adjustment',
+            /*
+             * A DIFFERENT reference type from the credit, keyed on the same
+             * accrual — see `LEDGER_REFERENCE.accrualReversal`. Reusing
+             * `accrual` would make this look like a replay of the credit and be
+             * dropped in silence.
+             */
+            referenceType: LEDGER_REFERENCE.accrualReversal,
+            referenceId: accrual.id,
+          },
+          tx,
+        );
+      }
+
+      await tx.update(ibAccruals).set({ status: 'reversed' }).where(eq(ibAccruals.id, accrual.id));
+
+      this.logger.warn(
+        `Accrual ${accrual.id} REVERSED (${accrual.kind}, ${accrual.amount} ${accrual.currency}, ` +
+          `was ${accrual.status}): ${reason}`,
+      );
+
+      return { id: accrual.id, status: 'reversed' as const, movedMoney: paid };
+    });
   }
 
   /**

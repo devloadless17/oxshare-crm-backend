@@ -92,6 +92,24 @@ export const LEDGER_REFERENCE = {
    * nothing today; if a feed ever fills it, the deal path is what has to go.
    */
   deal: 'deal',
+  /**
+   * The compensating entry that takes a CONFIRMED accrual back.
+   *
+   * A separate reference type from `accrual`, keyed on the same accrual id, and
+   * both halves of that are load-bearing.
+   *
+   * SEPARATE, because `ledger_entries_wallet_reference_uq` is over (wallet,
+   * referenceType, referenceId). Reusing `accrual` would make the reversal look
+   * like a replay of the credit it undoes, and ON CONFLICT would drop it in
+   * silence — the desk would see a successful reversal and the partner would
+   * keep the money.
+   *
+   * The SAME id, because that is exactly the idempotency this needs: one
+   * accrual can be reversed once. A double-clicked reversal is absorbed by the
+   * constraint rather than debiting a partner twice, which is the failure that
+   * would turn a clawback into theft.
+   */
+  accrualReversal: 'accrual_reversal',
 } as const;
 
 export type LedgerReferenceType = (typeof LEDGER_REFERENCE)[keyof typeof LEDGER_REFERENCE];
