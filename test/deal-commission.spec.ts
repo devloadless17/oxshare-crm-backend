@@ -59,6 +59,14 @@ async function ingest(deal: {
   volume?: string;
   /** Ties the legs of one round turn together. */
   positionId?: string;
+  /**
+   * How far in the past MT5 says this happened.
+   *
+   * The queue is drained OLDEST FIRST, so anything asserting that a payable
+   * deal is reached past a stuck one has to control the order rather than trust
+   * the millisecond two inserts happened to land on.
+   */
+  secondsAgo?: number;
 }): Promise<string> {
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO mt5_deals
@@ -67,10 +75,62 @@ async function ingest(deal: {
     VALUES
       (${deal.ticket}, ${deal.login}, 'EURUSD', ${deal.action ?? 0}, ${deal.entry ?? 1},
        ${deal.volume ?? '1.00000000'}, '1.08542000', '0', ${deal.commission}, ${deal.swap},
-       ${deal.positionId ?? null}, now())
+       ${deal.positionId ?? null},
+       now() - ((${deal.secondsAgo ?? 0})::text || ' seconds')::interval)
     RETURNING id
   `);
   return rows[0].id;
+}
+
+/**
+ * The retry record 0092 added — what a failure wrote on the row.
+ *
+ * `dueInMs` rather than the raw column, because this path returns a timestamptz
+ * as a STRING: typing it `Date` compiles and then fails at the first `getTime`,
+ * which is a test that looks written and is not.
+ */
+async function retryState(dealRowId: string) {
+  const { rows } = await ctx.db.execute<{
+    commission_attempts: number;
+    commission_retry_after: string | null;
+    commission_last_error: string | null;
+  }>(sql`
+    SELECT commission_attempts, commission_retry_after, commission_last_error
+      FROM mt5_deals WHERE id = ${dealRowId}
+  `);
+
+  const row = rows[0];
+  return {
+    ...row,
+    dueInMs: row.commission_retry_after
+      ? new Date(row.commission_retry_after).getTime() - Date.now()
+      : null,
+  };
+}
+
+/**
+ * Make a deferred deal due again, as the clock would.
+ *
+ * The alternative is a test that sleeps for the backoff, which is a minute on
+ * the first failure and an hour by the fifth — so the delay is asserted from
+ * the row and then stepped over, rather than waited out.
+ */
+async function makeDue(dealRowId: string): Promise<void> {
+  await ctx.db.execute(
+    sql`UPDATE mt5_deals SET commission_retry_after = now() - interval '1 second'
+         WHERE id = ${dealRowId}`,
+  );
+}
+
+/** A service whose accrual always refuses — a wrong rate, in one object. */
+function refusingService(): DealCommissionService {
+  return new DealCommissionService(ctx.db, {
+    accrueForDeal: vi
+      .fn()
+      .mockRejectedValue(new CommissionRefusedError('total exceeds the revenue')),
+    accrueForClosedPosition: vi.fn(),
+    accrueForSettledDeposit: vi.fn(),
+  });
 }
 
 /** Has an accrual taken this deal's revenue yet? */
@@ -504,21 +564,179 @@ describe('what is finished, and what waits', () => {
       swap: '0.00000000',
     });
 
-    const refusing = new DealCommissionService(ctx.db, {
-      accrueForDeal: vi
-        .fn()
-        .mockRejectedValue(new CommissionRefusedError('total exceeds the revenue')),
-      accrueForClosedPosition: vi.fn(),
-      accrueForSettledDeposit: vi.fn(),
-    });
-
-    const run = await refusing.accruePending();
+    const run = await refusingService().accruePending();
 
     expect(run.failed).toBe(1);
     expect(await processedAt(id)).toBeNull();
 
-    // And the real engine picks it up on the next run.
+    /*
+     * Queued but NOT due. Retrying a refusal immediately is what let a wrong
+     * rate stop commission for everybody — see the starvation test below — so
+     * the deal comes back on a delay rather than on the very next run.
+     */
+    const deferred = await retryState(id);
+    expect(deferred.commission_attempts).toBe(1);
+    expect(deferred.dueInMs!).toBeGreaterThan(0);
+    expect(deferred.commission_last_error).toContain('exceeds the revenue');
+
+    // Still owed, and still counted, so nothing about it is quiet.
+    expect(await deals.backlog()).toBe(1);
+    expect((await deals.accruePending()).deferred).toBe(1);
+
+    // And the real engine pays it in full once the delay is up — which is what
+    // makes the backoff a delay rather than a write-off.
+    await makeDue(id);
     expect((await deals.accruePending()).accrued).toBe(1);
+    expect((await accrualsFor(id))[0].amount).toBe('3.00000000');
+  });
+
+  it('backs a repeatedly refused deal off further each time', async () => {
+    const id = await ingest({
+      ticket: '90241',
+      login: LOGIN,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+    });
+
+    const refusing = refusingService();
+
+    await refusing.accruePending();
+    const first = await retryState(id);
+
+    await makeDue(id);
+    await refusing.accruePending();
+    const second = await retryState(id);
+
+    /*
+     * The count is what the delay is computed from, and it is read from the ROW
+     * rather than from anything this process remembers — two instances may each
+     * have failed the same deal, and the backoff should reflect how often it
+     * actually failed.
+     */
+    expect(first.commission_attempts).toBe(1);
+    expect(second.commission_attempts).toBe(2);
+
+    // Doubling: ~1 minute, then ~2. Asserted as "longer", not as an exact
+    // instant, because the two runs are seconds apart on a real clock.
+    expect(second.dueInMs!).toBeGreaterThan(first.dueInMs!);
+  });
+});
+
+/**
+ * ── THE QUEUE CANNOT BE STARVED BY WORK IT CANNOT DO ──────────────────────
+ *
+ * The batch is bounded and drained oldest-first, so any deal left unmarked sits
+ * at the FRONT of it until something changes. Open legs were taken out of the
+ * queue in SQL for exactly that reason, and two other kinds of row were still
+ * skipped inside the loop:
+ *
+ *   * a deal whose login no trading account claims — which for a manager's own
+ *     login or a broker-side test account is never linked at all;
+ *   * a deal the engine REFUSED — a settings mistake, which by definition fails
+ *     identically on every run until a human changes a rate.
+ *
+ * A batch's worth of either and no payable deal is ever reached again:
+ * commission stops for everybody, silently, and it gets worse the busier the
+ * platform is.
+ *
+ * The batch limit is two here so the condition fits in a test; in production it
+ * is two hundred and a real book reaches that easily. Every assertion below is
+ * the same one: a payable deal BEHIND a full batch of stuck ones still gets
+ * paid.
+ */
+describe('a stuck deal does not block the ones behind it', () => {
+  it('reaches a payable deal queued behind a full batch of unlinked logins', async () => {
+    await ingest({
+      ticket: '90260',
+      login: ORPHAN_LOGIN,
+      commission: '-4.00000000',
+      swap: '0.00000000',
+      secondsAgo: 300,
+    });
+    await ingest({
+      ticket: '90261',
+      login: ORPHAN_LOGIN,
+      commission: '-4.00000000',
+      swap: '0.00000000',
+      secondsAgo: 240,
+    });
+    const payable = await ingest({
+      ticket: '90262',
+      login: LOGIN,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+    });
+
+    // A batch the two orphans would have filled entirely.
+    const run = await deals.accruePending(2);
+
+    expect(run.accrued).toBe(1);
+    expect((await accrualsFor(payable))[0].amount).toBe('3.00000000');
+
+    // Held out of the batch, not lost: still queued, still counted, and still
+    // the number that reaches an operator.
+    expect(run.orphaned).toBe(2);
+    expect(await deals.orphanBacklog()).toBe(2);
+  });
+
+  it('reaches a payable deal queued behind a full batch of refused ones', async () => {
+    await ingest({
+      ticket: '90263',
+      login: LOGIN,
+      commission: '-4.00000000',
+      swap: '0.00000000',
+      secondsAgo: 300,
+    });
+    await ingest({
+      ticket: '90264',
+      login: LOGIN,
+      commission: '-4.00000000',
+      swap: '0.00000000',
+      secondsAgo: 240,
+    });
+
+    // The wrong rate is in place, and both deals fail against it.
+    expect((await refusingService().accruePending(2)).failed).toBe(2);
+
+    const payable = await ingest({
+      ticket: '90265',
+      login: LOGIN,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+    });
+
+    /*
+     * The rate is still wrong. Before the backoff, this run would have re-tried
+     * the same two oldest deals, failed identically, and never reached the deal
+     * behind them — for as long as nobody noticed.
+     */
+    const run = await deals.accruePending(2);
+
+    expect(run.accrued).toBe(1);
+    expect((await accrualsFor(payable))[0].amount).toBe('3.00000000');
+    expect(run.deferred).toBe(2);
+  });
+
+  it('finishes a balance operation on an unlinked login rather than stranding it', async () => {
+    /*
+     * The orphan filter must not swallow these. A deposit reaches MT5 as a
+     * balance deal and earns nobody anything, so it is DONE — and holding it
+     * back on the "no account claims this login" rule would strand it in
+     * exactly the way that rule exists to prevent.
+     */
+    const id = await ingest({
+      ticket: '90266',
+      login: ORPHAN_LOGIN,
+      commission: '0.00000000',
+      swap: '0.00000000',
+      action: 2,
+    });
+
+    const run = await deals.accruePending();
+
+    expect(run.nothingOwed).toBe(1);
+    expect(await processedAt(id)).not.toBeNull();
+    expect(await deals.backlog()).toBe(0);
   });
 });
 

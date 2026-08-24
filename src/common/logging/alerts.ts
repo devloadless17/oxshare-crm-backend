@@ -25,6 +25,16 @@ export const ALERT_KINDS = {
   UNPAID_CONFIRMED_ACCRUAL: 'reconciliation.unpaid_accrual',
   /** An accrual exceeded the §12.4 ceiling — almost certainly a wrong spread unit. */
   COMMISSION_CEILING_BREACH: 'money.commission_ceiling',
+  /**
+   * Trades are queued for commission that nothing is going to pay — refused by
+   * the engine, or belonging to an MT5 login no trading account claims.
+   *
+   * The §9 "failed-job depth" alert this file was written for and the deal
+   * queue never had. Its own log line is throttled to once an hour by design,
+   * which is right for a log and wrong for the one job on the platform whose
+   * silence means partners are not being paid.
+   */
+  COMMISSION_QUEUE_STALLED: 'money.commission_queue_stalled',
   /** A rotated refresh token was presented again: a credential has leaked. */
   REFRESH_TOKEN_REUSE: 'auth.refresh_reuse',
   /** A signed webhook failed verification — someone is probing an integration endpoint. */
@@ -111,6 +121,10 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.COMMISSION_CEILING_BREACH]: {
     severity: 'page',
     rule: 'Any occurrence. Almost certainly the D-11 spread unit; accrual is refused, so deals are accumulating un-accrued until it is fixed.',
+  },
+  [ALERT_KINDS.COMMISSION_QUEUE_STALLED]: {
+    severity: 'notify',
+    rule: 'Raised while deals sit un-accruable: more than 10 the engine REFUSED, or more than a batch (200) belonging to unlinked MT5 logins. Repeats hourly while it holds, and its DISAPPEARANCE is the resolution. Notify rather than page because both fixes are working-hours actions by a human — correct a rate, or link an account — and neither is faster at 3am. Escalate if it survives a working day: every hour it stands is commission earned and unpaid.',
   },
   [ALERT_KINDS.REFRESH_TOKEN_REUSE]: {
     severity: 'page',

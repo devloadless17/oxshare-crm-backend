@@ -141,13 +141,36 @@ each closes a different door:
    done, because its revenue is real and is paid by the close that consumes it.
 3. `calculate` refuses `source: 'deposit'` outright, whatever the rate.
 
-**An open leg is excluded in the QUERY, never skipped in the loop.** It must stay unprocessed —
-its revenue is paid by the close that consumes it — but skipping it inside the loop leaves it at
-the FRONT of an oldest-first queue for as long as the position runs. A broker holding `limit`
-positions open then fills every batch with rows that can never complete, no closing deal is ever
-reached, and commission stops for everybody with nothing but one ordinary log line to show for it.
-The failure gets worse the busier the platform is, which is the worst shape a money job can have.
-`test/deal-commission.spec.ts` pins it with a batch limit of two.
+**A deal that cannot be accrued is excluded in the QUERY, never skipped in the loop.** The batch is
+bounded and drained oldest-first, so anything left unmarked owns the FRONT of it until something
+changes — and one batch's worth means no payable deal is ever reached again. Commission stops for
+everybody, with nothing but one ordinary log line to show for it, and the failure gets worse the
+busier the platform is. That is the worst shape a money job can have, and it had **three** doors:
+
+| stuck row | must stay unprocessed because | how it re-enters |
+|---|---|---|
+| an OPEN leg | its revenue is paid by the close that consumes it | `unconsumedLegs`, when the close arrives |
+| an ORPHAN — a login no `trading_accounts` row claims | the account may be linked minutes from now | the join, the moment it is linked |
+| a REFUSED deal | the money is owed; a refusal is a settings mistake | `commission_retry_after`, on a backoff (0092) |
+
+The first two need no column — a join and a position id already find them. A refusal has nothing in
+the row to recognise it by, so 0092 gives it `commission_attempts` / `commission_retry_after` /
+`commission_last_error`: a minute, then two, four, up to an hour, and an hour forever after. It
+never gives up, because abandoning a refused deal turns a mistyped rate into permanently lost
+commission — the exact failure §12.4's refusal exists to avoid. What the cap buys is that a hundred
+permanently-stuck deals cost ONE batch an hour instead of every batch forever.
+
+**Making them harmless makes them silent, which is why the alarm is part of the same change.** A
+stuck deal used to jam a visible queue; now it sits quietly, harming nothing and paying nobody, and
+it is not in `examined` at all. `ALERT_KINDS.COMMISSION_QUEUE_STALLED` is what replaces the symptom
+— raised past 10 refused or 200 unlinked, repeating hourly, and its window resets when the condition
+clears so a second incident is not silenced by the first one's fix. `accruePending` therefore
+returns `orphaned` and `deferred` as BACKLOGS rather than batch tallies: a batch never contains one
+of these any more, so a per-batch count would be permanently zero.
+
+`test/deal-commission.spec.ts` pins each door with a batch limit of two;
+`test/deal-commission-alerting.spec.ts` pins the alarm. Both were verified by deliberately breaking
+the filter each one covers.
 
 **A close pays on the whole position, not on its own row.** MT5 splits a round turn's charges
 across the legs however the broker configured it — all on the open, all on the close, or half each
@@ -376,6 +399,21 @@ the Claude `Stop` hook skips it here and CI owns it. Run it by hand before any m
 
 ## Gotchas specific to this repo
 
+- **A RENUMBERED migration poisons every database that applied the old number, silently.**
+  drizzle-kit applies only migrations whose journal `when` exceeds the highest `created_at` in
+  `drizzle.__drizzle_migrations`, and it stores the journal's `when` as that `created_at`. So when
+  a migration is renumbered upstream and its `when` is hand-lowered to fit the sequence — which is
+  what 0091's own header describes — any database that already applied it keeps a watermark AHEAD
+  of every entry in the journal, and skips everything from then on. `npm run db:migrate` prints
+  "migrations applied successfully" and applies nothing. This is the same silent-success failure
+  `drizzle.config.ts` documents, through a second door: it cost this dev database 0090
+  (`wallets.wallet_number`) and 0092 before anyone noticed.
+  **Check `count(*)` in `drizzle.__drizzle_migrations` against the journal's entry count** — they
+  must be equal. To repair, DELETE the bookkeeping row whose `created_at` matches no journal entry
+  and re-run `db:migrate`; the renumbered migration re-applies, which is why one that is renumbered
+  must also be made re-runnable (`ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` before
+  `ADD`), exactly as 0091 was. Do NOT fix it by inflating the new migration's `when`: that rescues
+  the machine in front of you and re-arms the trap for everyone whose database is in the same state.
 - **Don't run `src/database/migrate.ts` or `run-migrate.js`** — they need `dotenv`/`bcrypt`,
   which are not dependencies, and force Neon-style SSL.
 - `@casl/ability` is installed with **0 imports**; real enforcement is `PermissionsGuard` plus

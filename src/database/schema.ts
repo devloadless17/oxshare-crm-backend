@@ -2234,6 +2234,37 @@ export const mt5Deals = pgTable(
      * backfill and no replay.
      */
     commissionProcessedAt: timestamp('commission_processed_at', { withTimezone: true }),
+    /**
+     * How many times the engine tried this deal and failed (0092).
+     *
+     * A failure is not a reason to consider a deal finished — the money is
+     * still owed — so a refused deal must come back. What it must NOT do is
+     * come back on the very next run, forever, from the FRONT of an
+     * oldest-first queue: one batch's worth of permanently-refusing deals and
+     * no payable deal is ever reached again.
+     *
+     * This is the count the backoff is computed from, and the number that
+     * distinguishes "a database blip a minute ago" from "a rate nobody has
+     * fixed in three days".
+     */
+    commissionAttempts: integer('commission_attempts').notNull().default(0),
+    /**
+     * Not before this instant — NULL means eligible now.
+     *
+     * Deliberately not a "give up" flag. A refusal is a settings mistake with a
+     * human fix, and the deal pays in full once that fix lands; capping the
+     * retries would turn a wrong rate into permanently lost commission. The
+     * backoff only ever makes a stuck deal CHEAP, never abandoned.
+     */
+    commissionRetryAfter: timestamp('commission_retry_after', { withTimezone: true }),
+    /**
+     * Why it last failed, so a stuck row can be diagnosed from the row.
+     *
+     * The log line that named the reason has usually rotated away by the time
+     * anybody asks why a partner is short — and "which deals are stuck, and on
+     * what" is a question the deals table should be able to answer by itself.
+     */
+    commissionLastError: text('commission_last_error'),
   },
   (t) => [
     uniqueIndex('mt5_deals_deal_id_uq').on(t.mt5DealId),
@@ -2249,6 +2280,12 @@ export const mt5Deals = pgTable(
      * `commission_processed_at` would be almost entirely rows the queue query
      * can never return, and would keep growing while the thing it exists to
      * make fast stays the same size.
+     *
+     * `dealt_at` alone, and 0092 deliberately left it that way. Leading with
+     * `commission_retry_after` looks right and is not: the gate is `IS NULL OR
+     * <= now()`, and two ranges of one index is a bitmap scan and a SORT, where
+     * this gives an ordered scan that stops at `limit` — the whole reason a
+     * bounded oldest-first batch is cheap. The retry gate is a row filter.
      */
     index('mt5_deals_unaccrued_idx')
       .on(t.dealtAt)

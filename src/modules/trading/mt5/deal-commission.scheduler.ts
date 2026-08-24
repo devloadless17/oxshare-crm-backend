@@ -2,6 +2,31 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { DealCommissionService } from './deal-commission.service';
 import { pendingMigrationHint } from '../../../common/logging/pending-migration';
+import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
+
+/**
+ * Refused deals beyond which this is a SETTINGS problem rather than a blip.
+ *
+ * A transient failure — a lock timeout, a connection dropped mid-batch — takes
+ * a handful of deals with it and clears on the next run. Ten deals failing at
+ * once is the shape of a rate nobody can accrue against, and that does not fix
+ * itself no matter how long the queue is left alone.
+ */
+const REFUSED_DEAL_ALERT = 10;
+
+/**
+ * Unlinked-login deals beyond which the backlog is worth waking a system
+ * rather than a log reader.
+ *
+ * Deliberately a whole batch. A handful of orphans is ordinary and permanent —
+ * a manager's own login, a broker-side test account — and alerting on those
+ * teaches everybody to ignore this kind. Two hundred is a real client's trading
+ * going unattributed.
+ */
+const ORPHAN_DEAL_ALERT = 200;
+
+/** How often the stall alert repeats while the condition holds. */
+const ALERT_REPEAT_MS = 3_600_000;
 
 /**
  * Drains the deal → commission queue, on a schedule.
@@ -44,6 +69,16 @@ export class DealCommissionScheduler {
    */
   private lastOrphanWarn: { count: number; at: number } | null = null;
 
+  /**
+   * When the stall alert last fired, so it repeats rather than streams.
+   *
+   * An alert that says the same thing every minute is one a drain deduplicates
+   * badly and a human silences — and this is the alert whose silence means
+   * partners are not being paid, so it is the last one that can afford to be
+   * filtered out by whoever is tired of it.
+   */
+  private lastStallAlert = 0;
+
   constructor(private readonly deals: DealCommissionService) {}
 
   /*
@@ -62,8 +97,14 @@ export class DealCommissionScheduler {
        * The quiet path, and the common one once a backlog has drained. Logged at
        * nothing rather than at info: a line every minute saying "no deals" is
        * how a log stops being read.
+       *
+       * `examined` alone is no longer enough to call a run quiet. Orphaned and
+       * refused deals are held OUT of the batch now — that is what stops them
+       * jamming the queue — so a platform whose only queued work is stuck reads
+       * as zero examined, and returning here on that would make the exact
+       * condition this job must report the one condition it never mentions.
        */
-      if (run.examined === 0) return;
+      if (run.examined === 0 && run.orphaned === 0 && run.deferred === 0) return;
 
       if (run.accrued > 0) {
         this.logger.log(
@@ -73,8 +114,9 @@ export class DealCommissionScheduler {
 
       if (run.failed > 0) {
         this.logger.warn(
-          `${run.failed} deal(s) could not be accrued and remain queued; the next run retries ` +
-            'them. Nothing is lost — the deals are the record, and the accrual is idempotent.',
+          `${run.failed} deal(s) could not be accrued and remain queued, on a backoff that ` +
+            'doubles to an hour so they cannot crowd out payable ones. Nothing is lost — the ' +
+            'deals are the record, and the accrual is idempotent.',
         );
       }
 
@@ -91,7 +133,13 @@ export class DealCommissionScheduler {
        * system stays silent.
        */
       if (run.orphaned > 0) {
-        const waiting = await this.deals.orphanBacklog();
+        /*
+         * Already the backlog, not a batch tally — `accruePending` counts it on
+         * every run precisely because these deals never appear in a batch any
+         * more. The second query this used to make asked the same question
+         * twice, and could disagree with itself across the gap between them.
+         */
+        const waiting = run.orphaned;
 
         /*
          * Said when the NUMBER changes, and otherwise at most hourly.
@@ -128,6 +176,8 @@ export class DealCommissionScheduler {
       if (run.examined >= 200) {
         this.logger.log(`Batch was full; ${await this.deals.backlog()} deal(s) still queued.`);
       }
+
+      this.alertOnStall(run);
     } catch (error) {
       /*
        * Per-deal failures are already isolated inside the service, so reaching
@@ -141,5 +191,63 @@ export class DealCommissionScheduler {
           pendingMigrationHint(error),
       );
     }
+  }
+
+  /**
+   * The §9 failed-job-depth alert, on the job that pays partners.
+   *
+   * ## Why this exists even though the queue no longer jams
+   *
+   * Holding stuck deals out of the batch fixes the CATASTROPHE — commission
+   * stopping for everybody because a hundred un-accruable rows owned the front
+   * of an oldest-first queue. It does nothing about the deals themselves, and
+   * making them harmless is exactly what makes them quiet: they no longer show
+   * up in `examined`, no longer fill a log with retries, and no longer break
+   * anything a person would notice.
+   *
+   * So the fix removes the symptom that used to be the only evidence. This is
+   * what replaces it: money is owed, nothing is going to pay it, and somebody
+   * has to be told in a form a machine can route — which is the one thing
+   * `logger.warn` throttled to once an hour could never be.
+   *
+   * ## Two conditions, one kind
+   *
+   * A refusal and an unlinked login need different people — an operator who can
+   * edit a rate, and one who can link an account — but they are the same
+   * ALERT: trades are queued for commission and nothing is going to pay them.
+   * The context says which, so a drain can route on it without the taxonomy
+   * growing a kind per cause.
+   */
+  private alertOnStall(run: { orphaned: number; deferred: number }): void {
+    const refused = run.deferred >= REFUSED_DEAL_ALERT;
+    const unlinked = run.orphaned >= ORPHAN_DEAL_ALERT;
+
+    if (!refused && !unlinked) {
+      /*
+       * Cleared — or never raised. Reset so the NEXT occurrence alerts
+       * immediately rather than waiting out a window that started before the
+       * problem was fixed, which is how a second incident goes unreported for
+       * fifty minutes.
+       */
+      this.lastStallAlert = 0;
+      return;
+    }
+
+    if (Date.now() - this.lastStallAlert < ALERT_REPEAT_MS) return;
+    this.lastStallAlert = Date.now();
+
+    raiseAlert(
+      this.logger,
+      ALERT_KINDS.COMMISSION_QUEUE_STALLED,
+      'notify',
+      refused
+        ? `${run.deferred} ingested deal(s) were REFUSED by the commission engine and are ` +
+            'retrying on a backoff. Every future run fails the same way until the commission ' +
+            'configuration is corrected; the deals stay queued and pay in full once it is.'
+        : `${run.orphaned} ingested deal(s) belong to MT5 logins no trading account claims, so ` +
+            'the commission on them cannot be attributed to anybody. They accrue automatically ' +
+            'once the accounts are linked — no backfill needed.',
+      { refused: run.deferred, unlinked: run.orphaned },
+    );
   }
 }

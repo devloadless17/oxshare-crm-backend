@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { and, asc, eq, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { mt5Deals, tradingAccounts } from '../../../database/schema';
@@ -11,6 +11,29 @@ import {
 } from '../../../common/provisioning/commission-accrual.port';
 import { brokerRevenueOf } from '../broker-revenue';
 import { CLOSING_ENTRIES, TRADE_ACTIONS, isClosingEntry, isTradeAction } from './deal-codes';
+
+/**
+ * The longest a failed deal waits before it is tried again.
+ *
+ * An hour, because the two failures this backs off have opposite shapes and the
+ * cap is set for the worse one. A transient failure is fixed by the next run
+ * and never reaches the cap; a REFUSAL is a settings mistake that fails
+ * identically until a human edits a rate, so its retries are pure cost — and an
+ * hour is short enough that the fix takes effect while the operator is still at
+ * the screen, and long enough that a thousand stuck deals cannot crowd out the
+ * payable ones.
+ */
+const RETRY_CAP_MINUTES = 60;
+
+/**
+ * The exponent is clamped before it is raised, not after.
+ *
+ * `power(2, attempts)` on a deal that has failed daily for two months is a
+ * number no integer holds, and the cast that follows it raises rather than
+ * saturating — which would turn a stuck deal into a FAILING one, on the single
+ * write whose job is to stop a stuck deal from causing damage.
+ */
+const RETRY_EXPONENT_CEILING = 20;
 
 /** What one drain of the queue did. Every deal lands in exactly one bucket. */
 export interface DealAccrualRun {
@@ -31,9 +54,24 @@ export interface DealAccrualRun {
    * whether the entry charge is actually reaching partners.
    */
   legsConsumed: number;
-  /** Deals whose login matches no trading account. Left for the next run. */
+  /**
+   * Deals waiting on an account link — the whole BACKLOG, not this batch.
+   *
+   * A backlog rather than a batch count because these are no longer queued at
+   * all: they are held out in SQL, so a batch never contains one and a count of
+   * "orphans seen this run" would be permanently zero. The number an operator
+   * needs is how many are waiting, which is a question about the table.
+   */
   orphaned: number;
-  /** Deals the engine refused or could not process. Left for the next run. */
+  /**
+   * Deals held back by a retry delay right now — again the whole backlog.
+   *
+   * A processing backlog drains itself and a rising DEFERRED backlog does not:
+   * every one of these is a deal the engine tried and could not accrue, and a
+   * refusal fails identically until somebody changes a setting.
+   */
+  deferred: number;
+  /** Deals the engine refused or could not process IN THIS BATCH. */
   failed: number;
 }
 
@@ -154,10 +192,15 @@ export class DealCommissionService {
       })
       .from(mt5Deals)
       /*
-       * LEFT, so an orphan is RETURNED rather than filtered away. An inner join
-       * would make a deal for an unlinked login invisible to this query and to
-       * every count it produces — the backlog would be silently uncounted
-       * rather than reported, which is how an unpaid partner goes unnoticed.
+       * LEFT rather than INNER even though an orphaned TRADE is now excluded
+       * below, because the exclusion is narrower than the join would be.
+       *
+       * A non-trade deal on an unlinked login — a dealer moving a balance on an
+       * account the CRM has not claimed yet — still has to be RETURNED and
+       * marked done. An inner join would hold it back on a rule written about
+       * deals that could pay somebody, and strand it in exactly the way that
+       * rule exists to prevent. The orphan filter says which of the two this
+       * is; the join must not decide it first.
        */
       .leftJoin(tradingAccounts, eq(tradingAccounts.login, mt5Deals.login))
       /*
@@ -185,9 +228,52 @@ export class DealCommissionService {
       .where(
         and(
           isNull(mt5Deals.commissionProcessedAt),
+          /*
+           * ── A DEAL THE ENGINE REFUSED IS NOT DUE YET ────────────────────
+           *
+           * Third door onto the same failure. A refusal is a settings mistake,
+           * so it fails IDENTICALLY on every run until a human changes a rate —
+           * and an unmarked deal is at the front of an oldest-first queue. One
+           * batch's worth of refusals and nothing payable is ever reached, for
+           * as long as the mistake stands.
+           *
+           * A refused deal is still OWED, so this delays rather than abandons:
+           * the backoff makes a permanently-stuck deal cost one batch an hour
+           * instead of the whole queue forever, and the moment the rate is
+           * fixed it pays in full with no backfill.
+           */
+          or(isNull(mt5Deals.commissionRetryAfter), lte(mt5Deals.commissionRetryAfter, new Date())),
           or(
-            inArray(mt5Deals.entry, [...CLOSING_ENTRIES]),
+            /*
+             * Not a trade — a balance, credit or correction. Fetched whatever
+             * its login, because the loop's whole job for one of these is to
+             * mark it DONE. Holding them out on the orphan rule below would
+             * strand them exactly the way it is written to prevent.
+             */
             notInArray(mt5Deals.action, [...TRADE_ACTIONS]),
+            and(
+              inArray(mt5Deals.entry, [...CLOSING_ENTRIES]),
+              /*
+               * ── AN ORPHAN IS EXCLUDED HERE, NOT SKIPPED IN THE LOOP ──────
+               *
+               * Second door onto the failure the open-leg filter above closed.
+               * A deal whose login no `trading_accounts` row claims must stay
+               * unprocessed — it accrues the moment the account is linked —
+               * but skipping it in the loop left it at the FRONT of the queue
+               * for as long as it went unlinked, which for a manager's own
+               * login or a broker-side test account is FOREVER. The scheduler's
+               * own docblock concedes as much.
+               *
+               * Filtering in SQL means an orphan is not queued at all, and the
+               * join is what puts it back: link the account and the next run
+               * returns it, with no backfill and no replay. Same mechanism as
+               * the open leg, which re-enters when its close arrives.
+               *
+               * It is still COUNTED — `stuckCounts` reports the backlog, and
+               * that number is what reaches an operator.
+               */
+              isNotNull(tradingAccounts.id),
+            ),
           ),
         ),
       )
@@ -201,6 +287,7 @@ export class DealCommissionService {
       nothingOwed: 0,
       legsConsumed: 0,
       orphaned: 0,
+      deferred: 0,
       failed: 0,
     };
 
@@ -216,13 +303,16 @@ export class DealCommissionService {
       }
 
       /*
-       * Left unmarked ON PURPOSE. The account may be linked minutes from now,
+       * Defensive only: the query no longer returns an orphaned TRADE, so this
+       * should never fire. Kept for the same reason as the open-leg guard
+       * below — the alternative on a money path is a crash the day somebody
+       * widens that WHERE clause, or worse, an accrual against a `userId` that
+       * does not exist.
+       *
+       * Left unmarked either way. The account may be linked minutes from now,
        * and this deal must accrue when it is — see the column's own note.
        */
-      if (!deal.userId || !deal.currency) {
-        run.orphaned += 1;
-        continue;
-      }
+      if (!deal.userId || !deal.currency) continue;
 
       /*
        * ── COMMISSION IS EARNED ON A CLOSED POSITION, NEVER ON AN OPEN ONE ──
@@ -313,15 +403,22 @@ export class DealCommissionService {
         }
       } catch (error) {
         /*
-         * Deliberately NOT marked, so the next run retries it.
+         * Deliberately NOT marked, so a later run retries it.
          *
          * `accrueForDeal` throws only on a refused accrual or a database
          * failure, and neither is a reason to consider this deal finished. A
          * refusal is a settings mistake a human fixes — the ceiling alert names
          * it — and until then the deals accumulate un-accrued, which is exactly
          * what should happen: the money is still owed and still recorded.
+         *
+         * LATER, not next. Retrying immediately is what made a settings mistake
+         * stop commission for everybody: the deal fails identically every run
+         * and holds the front of an oldest-first queue while it does. The
+         * backoff is the whole difference between "this deal is stuck" and
+         * "this deal is stuck AND nothing behind it can be paid".
          */
         run.failed += 1;
+        await this.deferRetry(deal.id, error);
 
         /*
          * The two failures need different people. A refusal is a SETTINGS
@@ -344,6 +441,17 @@ export class DealCommissionService {
         }
       }
     }
+
+    /*
+     * Counted AFTER the loop, so a deal this run deferred is already included
+     * and a link made mid-run is already reflected. Both numbers are backlogs
+     * rather than batch tallies — see the field docs — and they come from one
+     * query because the scheduler needs them on every run, including the quiet
+     * ones where nothing was queued at all.
+     */
+    const stuck = await this.stuckCounts();
+    run.orphaned = stuck.orphaned;
+    run.deferred = stuck.deferred;
 
     return run;
   }
@@ -368,13 +476,78 @@ export class DealCommissionService {
    * operator rather than a queue.
    */
   async orphanBacklog(): Promise<number> {
+    return (await this.stuckCounts()).orphaned;
+  }
+
+  /**
+   * The two backlogs that do NOT drain themselves, in one query.
+   *
+   * Both are now held out of the batch rather than retried into a jam, which is
+   * what makes them invisible to `examined` — so this is the only thing left
+   * that can report them, and it runs on every drain rather than only on runs
+   * that happened to see one.
+   *
+   * One query rather than two because the scheduler needs both every minute and
+   * they are the same scan: the unprocessed set, joined to the accounts that
+   * claim it. Written as FILTERed counts so a deal that is BOTH orphaned and
+   * previously attempted is counted honestly in each, rather than assigned to
+   * whichever query ran first.
+   */
+  private async stuckCounts(): Promise<{ orphaned: number; deferred: number }> {
     const [row] = await this.db
-      .select({ count: sql<number>`count(*)::int` })
+      .select({
+        orphaned: sql<number>`count(*) FILTER (WHERE ${tradingAccounts.id} IS NULL)::int`,
+        deferred: sql<number>`count(*) FILTER (WHERE ${mt5Deals.commissionAttempts} > 0)::int`,
+      })
       .from(mt5Deals)
       .leftJoin(tradingAccounts, eq(tradingAccounts.login, mt5Deals.login))
-      .where(and(isNull(mt5Deals.commissionProcessedAt), isNull(tradingAccounts.id)));
+      .where(isNull(mt5Deals.commissionProcessedAt));
 
-    return row?.count ?? 0;
+    return { orphaned: row?.orphaned ?? 0, deferred: row?.deferred ?? 0 };
+  }
+
+  /**
+   * Push one failed deal to the back of the queue, for a while.
+   *
+   * ## Exponential, and capped rather than exhausted
+   *
+   * A minute, then two, four, eight — up to an hour, and an hour forever after
+   * that. The early retries are for the transient half (a database blip, a
+   * lock timeout) where the next run genuinely does fix it. The cap is for the
+   * other half: a refusal fails identically until a human edits a rate, and
+   * there is no number of attempts after which the right answer is to stop.
+   *
+   * So this never gives up. The deal is still owed, and abandoning it would
+   * turn a mistyped rate into permanently lost commission — the failure mode
+   * §12.4's refusal exists to avoid. What the cap buys is that a hundred
+   * permanently-stuck deals cost ONE batch an hour instead of every batch
+   * forever.
+   *
+   * ## It writes rather than throws
+   *
+   * Called from inside the catch that already handled the accrual failure. If
+   * this write fails too the run's own catch takes it and the deal is simply
+   * retried next minute — the old behaviour, which is degraded rather than
+   * wrong.
+   */
+  private async deferRetry(dealRowId: string, error: unknown): Promise<void> {
+    const reason = error instanceof Error ? error.message : String(error);
+
+    await this.db
+      .update(mt5Deals)
+      .set({
+        commissionAttempts: sql`${mt5Deals.commissionAttempts} + 1`,
+        /*
+         * Computed from the STORED count, not from one this run read earlier:
+         * two instances may have failed the same deal, and the backoff should
+         * reflect how often it has actually failed rather than how often this
+         * process watched it fail.
+         */
+        commissionRetryAfter: sql`now() + (least(power(2, least(${mt5Deals.commissionAttempts}, ${RETRY_EXPONENT_CEILING}))::int, ${RETRY_CAP_MINUTES}) || ' minutes')::interval`,
+        /* Truncated: this is a diagnosis, not a transcript. */
+        commissionLastError: reason.slice(0, 500),
+      })
+      .where(eq(mt5Deals.id, dealRowId));
   }
 
   /**
