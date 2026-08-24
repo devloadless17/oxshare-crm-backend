@@ -264,7 +264,7 @@ export class AdminAuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    return this.auth.acceptInvite(dto.token, dto.password, res, deviceOf(req));
+    return this.auth.acceptInvite(dto.token, dto.password, res, deviceOf(req), req);
   }
 
   /**

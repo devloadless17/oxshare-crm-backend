@@ -169,6 +169,40 @@ describe('invite → accept → sign in with the granted role', () => {
   });
 });
 
+describe('accepting an invite on a browser that already holds a session', () => {
+  it("ENDS the signed-in admin's session — it cannot be resumed from another tab", async () => {
+    /*
+     * /invite/accept deliberately works WITH a session: the invitee may be
+     * signed in as somebody else on a shared machine. Accepting overwrites the
+     * cookies with the new admin's — but until this change the DISPLACED
+     * admin's refresh family stayed live, so a pre-accept tab (or a snapshot
+     * of the old cookies) resumed a session its owner believed was gone.
+     */
+    const { token, master } = await invite('journey-displacer@oxshare.com', 'Journey Displacer');
+    // The master's own live session presents its cookies on the accept —
+    // exactly what a browser would send following the emailed link.
+    await master
+      .post('/v1/admin/invite/accept', { token, password: NEW_ADMIN_PASSWORD })
+      .expect(200);
+
+    // The displaced session is dead everywhere, not merely overwritten here.
+    await master.get('/v1/admin/auth/me').expect(401);
+
+    // And the displaced admin can simply sign in again — nothing about the
+    // ACCOUNT changed, only the session ended.
+    const back = await actingAs(ctx, 'admin', MASTER);
+    await back.get('/v1/admin/auth/me').expect(200);
+  });
+
+  it('a session-free accept displaces nobody', async () => {
+    const live = await actingAs(ctx, 'admin', MASTER);
+    const { token } = await invite('journey-cleanaccept@oxshare.com', 'Journey Clean');
+    await acceptInvite(token, NEW_ADMIN_PASSWORD).expect(200);
+    // An anonymous accept (the common case) must not end anyone's session.
+    await live.get('/v1/admin/auth/me').expect(200);
+  });
+});
+
 describe('outstanding invites are visible and cancellable', () => {
   it('lists an invite that has been sent and not accepted', async () => {
     // Without this an invite vanished on send: the directory lists accepted

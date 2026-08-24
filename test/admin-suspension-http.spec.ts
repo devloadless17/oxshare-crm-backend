@@ -145,6 +145,30 @@ describe('a suspension reaches a live session', () => {
     const restored = await actingAs(ctx, 'admin', TARGET);
     await restored.get(ADMIN_ME).expect(200);
   });
+
+  it('suspension REVOKES the sessions — reactivation does not resurrect them', async () => {
+    /*
+     * The guard blocking a suspended admin is necessary and not sufficient:
+     * it reads the STATUS, so the moment somebody reactivates the account the
+     * old cookies work again — a session nobody signed in resumes on its own.
+     * Suspension now ends the refresh families, which reaches the access
+     * token too (its `fam` claim fails the revocation check), so coming back
+     * means signing in again.
+     */
+    await reactivate();
+    const victim = await actingAs(ctx, 'admin', TARGET);
+    await victim.get(ADMIN_ME).expect(200);
+
+    const master = await actingAs(ctx, 'admin', MASTER);
+    await master.patch(`/v1/admin/users/${targetId}/status`, { status: 'suspended' }).expect(200);
+    await master.patch(`/v1/admin/users/${targetId}/status`, { status: 'active' }).expect(200);
+
+    // The ACCOUNT is back; the old session is not.
+    await victim.get(ADMIN_ME).expect(401);
+    // And a fresh sign-in works — the account itself is healthy.
+    const fresh = await actingAs(ctx, 'admin', TARGET);
+    await fresh.get(ADMIN_ME).expect(200);
+  });
 });
 
 describe('who may suspend', () => {

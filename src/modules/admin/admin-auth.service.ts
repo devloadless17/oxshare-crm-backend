@@ -425,7 +425,13 @@ export class AdminAuthService {
     };
   }
   // ─── Accept Invite ─────────────────────────────────────────────────────────
-  async acceptInvite(token: string, password: string, res: Response, device?: DeviceFingerprint) {
+  async acceptInvite(
+    token: string,
+    password: string,
+    res: Response,
+    device?: DeviceFingerprint,
+    req?: Request,
+  ) {
     const invite = await this.invites.findByToken(token);
     if (!invite) throw new NotFoundError('Invite not found or already used.');
     if (invite.accepted) throw new ValidationError('This invite has already been used.');
@@ -499,6 +505,30 @@ export class AdminAuthService {
       roleId: invite.roleId,
       permissions: admin.permissions,
     });
+
+    /*
+     * Whoever was signed in on THIS browser is being replaced, so their
+     * session ends — not merely their cookies. `/invite/accept` deliberately
+     * works with a session (the invitee may be signed in as somebody else on a
+     * shared machine, D-44's sibling case), and overwriting the cookies alone
+     * left the displaced admin's refresh family live and resumable from any
+     * other tab or a pre-accept storage snapshot. Identity comes from the
+     * fully-verified refresh cookie, exactly as logout takes it — never from
+     * an unverified claim.
+     */
+    if (req) {
+      const displacedId = this.subjectFromRefreshCookie(req);
+      if (displacedId) {
+        const ended = await this.refreshTokens.revokeAllForSubject('admin', displacedId);
+        if (ended > 0) {
+          this.audit.record(displacedId, 'admin.session_displaced', 'admin', displacedId, {
+            by: 'invite_accept',
+            invitedEmail: invite.email,
+            sessionsRevoked: ended,
+          });
+        }
+      }
+    }
 
     // Minted before signing, so the access token can carry it as `fam` — the
     // same reason as `login`.

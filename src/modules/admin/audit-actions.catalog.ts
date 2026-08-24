@@ -130,6 +130,17 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     group: 'Administrators',
   },
   /*
+   * Accepting an invite on a browser that already held a DIFFERENT admin's
+   * session ends that session. The row belongs to the displaced admin — it is
+   * their session that ended, and on a shared machine this is the line that
+   * explains a sign-out nobody clicked.
+   */
+  {
+    action: 'admin.session_displaced',
+    label: 'Session ended by an invite acceptance',
+    group: 'Administrators',
+  },
+  /*
    * The three SELF-service actions. Recorded for the same reason the reset pair
    * above is: they are the moves an attacker makes with a session they have
    * just stolen — rotate the password so the owner cannot get back in, then end

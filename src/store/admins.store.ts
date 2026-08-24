@@ -275,6 +275,14 @@ export class AdminsStore {
       .update(admins)
       .set({
         passwordHash,
+        /*
+         * The cutoff the guard compares token `iat` against. Family revocation
+         * alone leaves an ACCESS token minted seconds before the reset working
+         * for its remaining 15 minutes — on the console that approves payouts,
+         * that is the window somebody resetting under duress is closing. The
+         * portal's reset has set this since it shipped; this side had not.
+         */
+        passwordChangedAt: new Date(),
         // Cleared in the same statement, so the token cannot be replayed even
         // if the request that spent it is retried.
         passwordResetTokenHash: null,

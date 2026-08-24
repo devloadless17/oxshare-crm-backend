@@ -28,6 +28,7 @@ import { assertActorCan, normalizePermissionKey } from '../../common/security/ac
 import { ClientFieldsService } from './client-fields.service';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
+import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { adminAvatarUrl } from '../../common/uploads/stored-files.service';
 
@@ -70,6 +71,7 @@ export class AdminRbacService {
     private readonly clientFields: ClientFieldsService,
     private readonly clientTags: ClientTagsStore,
     private readonly scopes: AdminClientScopesStore,
+    private readonly refreshTokens: RefreshTokensService,
   ) {}
 
   // ─── RBAC: permission catalog ─────────────────────────────────────────────
@@ -850,12 +852,27 @@ export class AdminRbacService {
     }
 
     const updated = (await this.admins.update(id, { status }))!;
+    /*
+     * Suspension ends the SESSIONS, not only the account's standing. The
+     * guard already refuses a suspended admin on every request, so this is
+     * not what locks them out today — it is what stops their cookies quietly
+     * resuming the moment somebody reactivates them. Suspension is "we are
+     * taking this person's access away NOW"; whether they come back is a
+     * separate decision, and coming back means signing in again.
+     */
+    const sessionsRevoked =
+      status === 'suspended' ? await this.refreshTokens.revokeAllForSubject('admin', id) : 0;
     this.audit.record(
       actor.id,
       status === 'suspended' ? 'admin.suspend' : 'admin.activate',
       'admin',
       id,
-      { email: admin.email, before: admin.status, after: status },
+      {
+        email: admin.email,
+        before: admin.status,
+        after: status,
+        ...(status === 'suspended' ? { sessionsRevoked } : {}),
+      },
     );
     return await this.sanitize(updated);
   }

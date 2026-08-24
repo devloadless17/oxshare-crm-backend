@@ -181,6 +181,9 @@ function build(
      * with scoping.
      */
     { describeFor: vi.fn().mockResolvedValue([]) } as never,
+    // RefreshTokensService — setAdminStatus revokes sessions on suspend; the
+    // invite paths under test here never reach it.
+    { revokeAllForSubject: vi.fn().mockResolvedValue(0) } as never,
   );
 
   const service = new AdminAuthService(
