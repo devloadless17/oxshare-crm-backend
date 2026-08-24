@@ -30,27 +30,31 @@ import {
 /**
  * The commission pipeline: accrue on revenue, confirm into the wallet.
  *
- *   accrueForDeposit  resolve chain → calculate → INSERT accruals (idempotent)
+ *   accrueForDeal     resolve chain → calculate → INSERT accruals (idempotent)
  *   confirmPending    pending accruals → locked wallet credit → mark confirmed
+ *
+ * A CLOSED TRADE is the only thing that accrues. `accrueForDeposit` survives as
+ * a named refusal and nothing else — this docblock described it as the pipeline
+ * long after it stopped being one, which is how a dead path keeps looking like
+ * the supported one.
  *
  * ## Two steps, not one, and the split is the point
  *
- * A commission is EARNED when a client deposits and PAYABLE once that deposit
- * is settled and beyond reversal. Crediting the partner's wallet in the same
- * breath as the accrual would make every commission irreversible before the
- * revenue behind it was final — and a reversed deposit would leave a partner
- * holding money recoverable only by a compensating entry with no record of what
- * it compensates.
+ * A commission is EARNED when a trade closes and PAYABLE once the revenue
+ * behind it is beyond reversal. Crediting the partner's wallet in the same
+ * breath as the accrual would make every commission irreversible before that —
+ * and a reversed trade would leave a partner holding money recoverable only by
+ * a compensating entry with no record of what it compensates.
  *
- * So `accrueForDeposit` writes a `pending` row and moves no money. Nothing a
- * partner can spend exists until `confirmPending` runs.
+ * So an accrual writes a `pending` row and moves no money. Nothing a partner
+ * can spend exists until `confirmPending` runs, a settlement window later.
  *
  * ## Every step is idempotent, deliberately
  *
  * These are called directly today and become queue handlers when BullMQ lands.
  * The logic is identical either way, which is the whole reason it is written
  * this way: at-least-once delivery is safe, and re-running the pipeline over
- * the same deposits changes no balance.
+ * the same trades changes no balance.
  *
  * The guarantees are DATABASE constraints, never check-then-insert:
  *   - `ib_accruals_source_earner_uq` absorbs a replayed accrual.
@@ -528,7 +532,33 @@ export class CommissionService implements CommissionAccrualPort {
    * Kept — unwired — because CPA is a real model that triggers on a deposit: a
    * FIXED amount per qualified client. Whoever builds that starts here and pays
    * a flat sum, never a percentage.
+   *
+   * ## It REFUSES at the door, rather than working and finding nothing
+   *
+   * `calculate` already declines a `deposit` term, so re-wiring this could not
+   * have paid a percentage — but it would have resolved the chain, loaded the
+   * programmes, produced zero rows and returned 0. Silently. Which is exactly
+   * what "this client's partner earns nothing" looks like, so whoever wired it
+   * would go looking for the reason, find the deposit branch inside `calculate`,
+   * and delete the one thing standing between them and the original bug.
+   *
+   * Refusing HERE names the reason at the point somebody is holding the wire,
+   * and names the model they actually want. The other two feeds refuse the same
+   * way and for the same reason; this is the third, and it is not
+   * `isLiveRevenueFeed` because a deposit is not a revenue feed at all — that is
+   * the whole point. Flipping `LIVE_REVENUE_FEED` must never make this payable.
+   *
+   * `accrueForSettledDeposit` swallows this, per its no-throw contract, and logs
+   * it — so a caller who wires it up gets a loud line and a deposit that still
+   * credits, rather than a failed deposit.
    */
+  /*
+   * `async` with nothing to await, on purpose: the port's contract is a REJECTED
+   * PROMISE, and a synchronous throw is a different thing to every caller that
+   * handles this with `.catch()` rather than `try`/`await`. The refusal is the
+   * whole implementation, so there is nothing left in here to await.
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async accrueForDeposit(
     deposit: {
       transactionId: string;
@@ -536,100 +566,23 @@ export class CommissionService implements CommissionAccrualPort {
       amount: string;
       currency: string;
     },
-    executor?: Executor,
+    /**
+     * Still on the signature, unused, because it is part of the shape a CPA
+     * implementation needs: the accrual must be able to join the caller's
+     * transaction so the deposit's state change and the payment it causes
+     * commit together. Dropping it would lose that requirement silently.
+     */
+    _executor?: Executor,
   ): Promise<number> {
-    const db = executor ?? this.db;
-
-    /*
-     * Attribution is read from the CLIENT, not passed in. `referred_by_ib_user_id`
-     * is written once at registration and is permanent per client — taking it as
-     * a parameter would let a caller credit a partner who never introduced them.
-     */
-    const [client] = await db
-      .select({ referredBy: users.referredByIbUserId })
-      .from(users)
-      .where(eq(users.id, deposit.clientUserId))
-      .limit(1);
-
-    if (!client?.referredBy) return 0; // Not referred — nobody earns. Not an error.
-
-    const chainNodes = await this.loadChain(db, client.referredBy);
-    const chain = resolveChain(client.referredBy, (id) => chainNodes.get(id));
-    if (chain.length === 0) return 0;
-
-    const programs = await this.loadPrograms(
-      db,
-      chain.map((entry) => entry.programId),
+    throw new CommissionRefusedError(
+      `Transaction ${deposit.transactionId} was not accrued: commission is not earned on a ` +
+        'deposit. The money is the client’s, not the broker’s revenue — a percentage of it pays ' +
+        'a partner out of the broker’s own funds while the client keeps the right to withdraw ' +
+        'every cent, unbounded and scaling with deposit volume. Commission is earned on closed ' +
+        'trades (accrueForDeal). If you want to pay for a funded client, that is CPA: a FIXED ' +
+        'amount per qualified client, which needs its own column and its own rate — never this ' +
+        'path with a percentage.',
     );
-
-    const event: RevenueEvent = {
-      grossAmount: deposit.amount,
-      currency: deposit.currency,
-      source: 'deposit',
-    };
-
-    const result = calculate(event, chain, programs, await this.maxSharePct());
-
-    if (result.skippedReason) {
-      /*
-       * Logged rather than swallowed. "This level is per_lot and a deposit has
-       * no lots" is a CONFIGURATION problem somebody must fix, and an empty
-       * result with no explanation is indistinguishable from "nobody was owed
-       * anything" — which is exactly the ambiguity the portal's `engineLive`
-       * flag exists to prevent one layer up.
-       */
-      this.logger.warn(
-        `Commission partially skipped for transaction ${deposit.transactionId}: ${result.skippedReason}`,
-      );
-    }
-
-    if (result.accruals.length === 0) return 0;
-
-    /*
-     * The plausibility backstop, BEFORE anything is written.
-     *
-     * A rate entered as `70` meaning 70× rather than 70% would otherwise accrue
-     * seventy times the deposit. Refusing outright — rather than clamping — is
-     * deliberate: a clamped payout is a wrong number that looks deliberate, and
-     * the deposit stays re-accruable once the rate is corrected because nothing
-     * was written.
-     */
-    const plausible = checkPlausible(event, result.accruals);
-    if (!plausible.ok) {
-      this.logger.error(
-        `Refusing commission for transaction ${deposit.transactionId}: ${plausible.reason}`,
-      );
-      return 0;
-    }
-
-    const inserted = await db
-      .insert(ibAccruals)
-      .values(
-        result.accruals.map((accrual) => ({
-          ibUserId: accrual.ibUserId,
-          clientUserId: deposit.clientUserId,
-          sourceType: LEDGER_REFERENCE.transaction,
-          sourceId: deposit.transactionId,
-          depth: accrual.depth,
-          level: accrual.level,
-          rateValue: accrual.rateValue,
-          baseAmount: deposit.amount,
-          amount: accrual.amount,
-          currency: deposit.currency,
-        })),
-      )
-      /*
-       * The replay guard, in the DATABASE. A retried job, a redelivered webhook
-       * and a double-clicked approval all land here and all become no-ops —
-       * which a service-level "have I seen this transaction?" could not
-       * guarantee, because every check-then-insert loses under concurrency.
-       */
-      .onConflictDoNothing({
-        target: [ibAccruals.sourceType, ibAccruals.sourceId, ibAccruals.ibUserId, ibAccruals.kind],
-      })
-      .returning({ id: ibAccruals.id });
-
-    return inserted.length;
   }
 
   /**

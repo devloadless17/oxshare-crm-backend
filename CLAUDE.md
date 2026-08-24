@@ -244,6 +244,23 @@ hourly @Cron  → confirmPending   → commission → partner's commission walle
   partners, and keying on the transaction would make the L2 credit look like a replay of the L1's
   and silently drop it.
 
+### A deposit is refused AT THE DOOR, and the percentage code is gone
+
+`accrueForDeposit` paid a share of the client's own money — $700 to a partner on a $1,000 deposit
+at 70%, out of the broker's funds, while the client kept the right to withdraw all $1,000. It was
+abandoned correctly, but the abandonment rested on nothing calling it, and the percentage
+implementation was still sitting there for whoever wired it up next.
+
+`calculate` would have declined the term, so re-wiring could not have paid — it would have resolved
+the chain, loaded programmes, written nothing and returned 0. **Silently**, which is exactly what
+"nobody was owed anything" looks like, so whoever wired it would go find the deposit branch inside
+`calculate` and delete the one thing standing between them and the original bug.
+
+So the implementation is deleted and the entry point throws `CommissionRefusedError` naming CPA as
+the model they actually want. Not `isLiveRevenueFeed`, because a deposit is not a revenue feed at
+all — flipping `LIVE_REVENUE_FEED` to `position` must never make this payable.
+`accrueForSettledDeposit` still swallows it per its no-throw contract, so the deposit itself stands.
+
 ### Three refusals worth knowing about
 
 - **`per_lot` levels accrue nothing on a deposit.** The rate is an amount per standard lot and a

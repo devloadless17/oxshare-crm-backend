@@ -822,3 +822,69 @@ describe('only one feed pays for a trade', () => {
     expect(accrual.amount).toBe('3.00000000');
   });
 });
+
+/**
+ * ── A DEPOSIT IS NOT REVENUE, AND RE-WIRING IT MUST SAY SO ────────────────
+ *
+ * `accrueForDeposit` paid a share of the client's OWN money: on a $1,000
+ * deposit at 70% the partner took $700 of the broker's funds while the client
+ * kept the right to withdraw all $1,000. Unbounded, and it scaled with deposit
+ * volume.
+ *
+ * It was abandoned correctly, but the only thing keeping it abandoned was that
+ * nothing called it — and the percentage implementation was still sitting there
+ * for whoever wired it up next. The implementation is gone and the entry point
+ * refuses by name, so the failure mode is a loud error rather than a silent
+ * zero somebody would "fix" by deleting the guard inside `calculate`.
+ */
+describe('a deposit cannot accrue a revenue share', () => {
+  it('refuses, and names the model somebody actually wants', async () => {
+    await expect(
+      commissions.accrueForDeposit({
+        transactionId: randomUUID(),
+        clientUserId: clientId,
+        amount: '1000.00000000',
+        currency: 'USD',
+      }),
+    ).rejects.toThrow(CommissionRefusedError);
+  });
+
+  it('writes no accrual row for a referred client with a working ladder', async () => {
+    /*
+     * The client below IS referred and the programme DOES pay 30% — the exact
+     * fixture every other test in this file uses to prove commission lands. So
+     * a zero here is the refusal and not an unreferred client or a dead rate.
+     */
+    const transactionId = randomUUID();
+
+    await expect(
+      commissions.accrueForDeposit({
+        transactionId,
+        clientUserId: clientId,
+        amount: '1000.00000000',
+        currency: 'USD',
+      }),
+    ).rejects.toThrow(/not earned on a deposit/i);
+
+    const { rows } = await ctx.db.execute<{ n: number }>(
+      sql`SELECT count(*)::int n FROM ib_accruals WHERE source_id = ${transactionId}`,
+    );
+    expect(rows[0].n).toBe(0);
+  });
+
+  it('keeps the deposit itself whole — the port swallows the refusal', async () => {
+    /*
+     * The no-throw contract, and it is load-bearing: by the time this runs the
+     * client's deposit has already credited their wallet. A commission refusal
+     * must not roll that back or report the deposit as failed.
+     */
+    await expect(
+      commissions.accrueForSettledDeposit({
+        transactionId: randomUUID(),
+        clientUserId: clientId,
+        amount: '1000.00000000',
+        currency: 'USD',
+      }),
+    ).resolves.toBe(0);
+  });
+});
