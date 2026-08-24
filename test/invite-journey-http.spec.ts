@@ -169,6 +169,27 @@ describe('invite → accept → sign in with the granted role', () => {
   });
 });
 
+describe('two accepts racing one token', () => {
+  it('exactly one wins; the loser gets a clean refusal, never a 500', async () => {
+    /*
+     * Both used to pass the accepted-flag read and collide on the
+     * admins.email unique constraint — the loser's onboarding ended in a
+     * 500. The claim is conditional now (UPDATE ... WHERE accepted = false),
+     * so the race has a defined winner and an honest message for the loser.
+     */
+    const { token } = await invite('journey-raced@oxshare.com', 'Journey Raced');
+    const [a, b] = await Promise.all([
+      acceptInvite(token, NEW_ADMIN_PASSWORD),
+      acceptInvite(token, NEW_ADMIN_PASSWORD),
+    ]);
+    const statuses = [a.status, b.status].sort((x, y) => x - y);
+    expect(statuses[0]).toBe(200);
+    expect(statuses[1], 'the losing accept must fail CLEANLY').toBe(400);
+    const loser = a.status === 200 ? b : a;
+    expect((loser.body as { message: string }).message).toMatch(/already been used/i);
+  });
+});
+
 describe('accepting an invite on a browser that already holds a session', () => {
   it("ENDS the signed-in admin's session — it cannot be resumed from another tab", async () => {
     /*

@@ -1,9 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import { Request, Response } from 'express';
 import { Admin, AdminsStore, hashInviteToken, InvitesStore } from '../../store/admins.store';
+import { DRIZZLE_DB } from '../../database/database.module';
+import type { Db, Executor } from '../../database/db';
 import { RolesStore } from '../../store/roles.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
 import { UsersStore } from '../../store/users.store';
@@ -95,6 +97,8 @@ export class AdminAuthService {
     private readonly scopes: AdminClientScopesStore,
     /** Clients — read ONLY to refuse inviting one as an admin. See createInvite. */
     private readonly users: UsersStore,
+    /** The db handle — acceptInvite's claim + create + scope run in ONE transaction. */
+    @Inject(DRIZZLE_DB) private readonly db: Db,
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
@@ -364,11 +368,18 @@ export class AdminAuthService {
      * - the territory obeys the subset rule via `assertScopable`;
      * - the intake grant cannot be handed out by a scoped actor who does not
      *   hold it themselves.
-     * An EMPTY scope list is normalised to absent — at invite it can only mean
-     * "unrestricted", and storing `[]` would read as a choice that was never
-     * made.
+     * An EMPTY scope list from an UNRESTRICTED actor is normalised to absent —
+     * from them it can only mean "unrestricted", and storing `[]` would read
+     * as a choice that was never made. From a SCOPED actor it is NOT
+     * normalised: `[]` means unrestricted too, which is sight they cannot
+     * grant — so it falls through to `assertScopable`, whose empty-list
+     * refusal exists for exactly this. Normalising first (as this used to)
+     * silently skipped both that refusal and the `admins.scope` gate: a
+     * scoped inviter sending `[]` minted an admin who saw EVERY client.
      */
-    if (scopedTagIds !== undefined && scopedTagIds.length === 0) scopedTagIds = undefined;
+    if (scopedTagIds !== undefined && scopedTagIds.length === 0 && actor.clientScope.unrestricted) {
+      scopedTagIds = undefined;
+    }
     if (maskedFields !== undefined || scopedTagIds !== undefined || seesUntriaged !== undefined) {
       assertActorCan(actor, 'admins.scope', "choose an invitee's client visibility");
     }
@@ -418,10 +429,17 @@ export class AdminAuthService {
     // to the invitee's mailbox and nowhere else — not the response body, which
     // would land in proxy logs, SPA memory and error-reporting tools.
     // The link is echoed only outside production, to keep local dev workable.
-    const isProduction = this.config.get('NODE_ENV') === 'production';
+    /*
+     * Echoed in DEVELOPMENT and TEST only — an allowlist, not a production
+     * check. `NODE_ENV !== 'production'` also matched 'staging' and every
+     * typo, and this is a bearer token that mints an administrator account:
+     * a staging deploy was returning it in the response body, into proxy
+     * logs and error reporters. Environments must opt IN by being dev.
+     */
+    const echoesInviteUrl = ['development', 'test'].includes(this.config.get('NODE_ENV') ?? '');
     return {
       message: `Invite sent to ${email}`,
-      ...(isProduction ? {} : { inviteUrl }),
+      ...(echoesInviteUrl ? { inviteUrl } : {}),
     };
   }
   // ─── Accept Invite ─────────────────────────────────────────────────────────
@@ -451,39 +469,55 @@ export class AdminAuthService {
     }
 
     const passwordHash = await this.passwords.hash(password);
-    const admin = await this.admins.create({
-      email: invite.email,
-      passwordHash,
-      name: invite.name,
-      role: 'sub_admin',
-      roleId: invite.roleId,
-      permissions: invite.permissions ?? ['kyc.review', 'admins.view'],
-      // Carried from the invite. Without it the mask was always the role's
-      // default and the inviter's choice was silently discarded.
-      maskedFields: invite.maskedFields,
-      // D-60 — same carry, same reason: the intake grant is part of the
-      // visibility the inviter chose.
-      seesUntriaged: invite.seesUntriaged,
-      status: 'active',
-    });
-
     /*
-     * The territory the inviter chose, applied BEFORE the session below is
-     * minted.
+     * ONE transaction, claim first — three failure shapes closed at once:
      *
-     * Ordering is the whole point: `acceptInvite` signs the new admin in on this
-     * very response, so a scope written afterwards would leave a real window —
-     * small, but the same kind of window this fixes, and harder to see.
-     *
-     * An empty or absent list means unrestricted, which is the store's own
-     * convention; writing nothing in that case keeps "no restriction" as the
-     * absence of rows rather than as an empty row set that reads as a mistake.
+     *  - Two accepts racing the same token both passed the `accepted` read
+     *    above and collided on the admins.email unique constraint — the loser
+     *    got a 500 at the end of onboarding. The CLAIM is conditional
+     *    (`WHERE accepted = false`, rowcount checked), so exactly one wins and
+     *    the other is told the invite is spent, which is the truth.
+     *  - A scope write failing AFTER the admin row existed left an admin with
+     *    NO scope rows — and no scope rows means UNRESTRICTED
+     *    (client-scope.ts). The invite named a territory; a crash must not
+     *    widen it to everyone. Row and territory now commit together or not
+     *    at all.
+     *  - A crash between create and markAccepted left a spent-looking invite
+     *    and a live admin, or the reverse, depending on ordering. Gone with
+     *    the transaction.
      */
-    if (invite.scopedTagIds?.length) {
-      await this.scopes.replace(admin.id, invite.scopedTagIds, admin.id);
-    }
-
-    await this.invites.markAccepted(token);
+    const admin = await this.db.transaction(async (tx: Executor) => {
+      const claimed = await this.invites.claim(token, tx);
+      if (!claimed) throw new ValidationError('This invite has already been used.');
+      const created = await this.admins.create(
+        {
+          email: invite.email,
+          passwordHash,
+          name: invite.name,
+          role: 'sub_admin',
+          roleId: invite.roleId,
+          permissions: invite.permissions ?? ['kyc.review', 'admins.view'],
+          // Carried from the invite. Without it the mask was always the role's
+          // default and the inviter's choice was silently discarded.
+          maskedFields: invite.maskedFields,
+          // D-60 — same carry, same reason: the intake grant is part of the
+          // visibility the inviter chose.
+          seesUntriaged: invite.seesUntriaged,
+          status: 'active',
+        },
+        tx,
+      );
+      /*
+       * The territory the inviter chose, applied BEFORE the session below is
+       * minted — a scope written after sign-in would leave a real window. An
+       * empty or absent list means unrestricted (the store's own convention);
+       * writing nothing keeps "no restriction" as the absence of rows.
+       */
+      if (invite.scopedTagIds?.length) {
+        await this.scopes.replace(created.id, invite.scopedTagIds, created.id, tx);
+      }
+      return created;
+    });
 
     /*
      * The moment an ADMINISTRATOR ACCOUNT COMES INTO EXISTENCE, and it was the

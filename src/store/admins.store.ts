@@ -2,7 +2,7 @@ import { and, count, desc, eq, gt, notExists, sql, type SQLWrapper } from 'drizz
 import { createHash } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
-import type { Db } from '../database/db';
+import type { Db, Executor } from '../database/db';
 import { adminInvites, admins } from '../database/schema';
 import { orderTerms, type SortOrder } from '../common/sorting';
 
@@ -178,8 +178,8 @@ export class AdminsStore {
    * register); this is the admin side of the same rule, placed in the store so
    * no future caller has to remember it.
    */
-  async create(data: Omit<Admin, 'id' | 'createdAt'>): Promise<Admin> {
-    const [row] = await this.db
+  async create(data: Omit<Admin, 'id' | 'createdAt'>, tx?: Executor): Promise<Admin> {
+    const [row] = await (tx ?? this.db)
       .insert(admins)
       .values({ ...data, email: data.email.toLowerCase() })
       .returning();
@@ -398,6 +398,26 @@ export class InvitesStore {
       .update(adminInvites)
       .set({ accepted: true })
       .where(eq(adminInvites.tokenHash, hashInviteToken(token)));
+  }
+
+  /**
+   * CLAIM the invite — conditional single-use, §8.7's shape.
+   *
+   * `accepted = false` in the WHERE and the rowcount checked by the caller:
+   * two accepts racing the same token used to both pass the read-then-check
+   * and collide on the admins.email unique constraint — the loser's onboarding
+   * ended in a 500. Now exactly one caller claims; the other is told the
+   * invite is spent, which is the truth.
+   */
+  async claim(token: string, tx?: Executor): Promise<AdminInvite | undefined> {
+    const [row] = await (tx ?? this.db)
+      .update(adminInvites)
+      .set({ accepted: true })
+      .where(
+        and(eq(adminInvites.tokenHash, hashInviteToken(token)), eq(adminInvites.accepted, false)),
+      )
+      .returning();
+    return row ? toInvite(row) : undefined;
   }
 
   /**

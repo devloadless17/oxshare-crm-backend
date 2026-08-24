@@ -83,8 +83,13 @@ export class AdminClientScopesStore {
    * them able to see every client, and nothing about the resulting state would
    * look wrong.
    */
-  async replace(adminId: string, tagIds: readonly string[], actorId: string): Promise<void> {
-    await this.db.transaction(async (tx: Executor) => {
+  async replace(
+    adminId: string,
+    tagIds: readonly string[],
+    actorId: string,
+    outerTx?: Executor,
+  ): Promise<void> {
+    const run = async (tx: Executor) => {
       await tx.delete(adminClientTagScopes).where(eq(adminClientTagScopes.adminId, adminId));
       if (tagIds.length === 0) return;
       await tx.insert(adminClientTagScopes).values(
@@ -94,7 +99,13 @@ export class AdminClientScopesStore {
           createdBy: actorId,
         })),
       );
-    });
+    };
+    // Join the caller's transaction when one is offered — acceptInvite writes
+    // the admin row and its territory atomically, because a scope write that
+    // fails AFTER the row exists leaves an admin with no scope rows, and no
+    // scope rows means UNRESTRICTED (client-scope.ts).
+    if (outerTx) return run(outerTx);
+    await this.db.transaction(async (tx: Executor) => run(tx));
   }
 
   /** Whether any admin is scoped to these tags — blocks deleting one. */
