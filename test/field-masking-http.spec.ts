@@ -2,7 +2,15 @@ import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, kycSubmissions, roles, users } from '../src/database/schema';
+import {
+  admins,
+  ibAccounts,
+  ibLevels,
+  ibPrograms,
+  kycSubmissions,
+  roles,
+  users,
+} from '../src/database/schema';
 
 /**
  * RBAC-03 field masking, END TO END.
@@ -73,7 +81,17 @@ beforeAll(async () => {
       // covers changing an existing one. Same trap the comment above names:
       // with the wrong key the guard refuses first and the mask assertion
       // never runs.
-      permissions: ['clients.view', 'kyc.view', 'kyc.review', 'roles.create', 'roles.edit'],
+      // `ib.view` gates the profile's partner-network block. Without it that
+      // block is absent and the downline mask assertion below would pass
+      // vacuously — the strongest way for this file to lie.
+      permissions: [
+        'clients.view',
+        'kyc.view',
+        'kyc.review',
+        'roles.create',
+        'roles.edit',
+        'ib.view',
+      ],
       maskedFields: ['client.email', 'client.phone'],
     })
     .returning();
@@ -99,6 +117,40 @@ beforeAll(async () => {
     })
     .returning();
   clientId = client.id;
+
+  /*
+   * A DOWNLINE, because the leak this file now guards was inside a LIST.
+   *
+   * `referredClients[].email` was unmaskable by construction: the mask walk
+   * gave up the moment a path segment was an array, so a scoped reviewer could
+   * read every referred client's name and address off the profile response
+   * while their own screens withheld exactly those fields. A fixture with no
+   * referred clients would make the assertion below pass without proving
+   * anything at all.
+   */
+  const [level] = await db
+    .insert(ibLevels)
+    .values({ level: 1, name: 'Mask Level', rateValue: '10.0000' })
+    .onConflictDoNothing()
+    .returning();
+  const [program] = await db
+    .insert(ibPrograms)
+    .values({ name: 'Mask Programme', mode: 'commission_only', level1Rate: '10.0000' })
+    .returning();
+  await db.insert(ibAccounts).values({
+    userId: clientId,
+    level: level?.level ?? 1,
+    programId: program.id,
+    referralCode: 'MASKIB1',
+    active: true,
+  });
+  await db.insert(users).values({
+    email: 'mask-downline@oxshare-e2e.test',
+    passwordHash: 'x',
+    firstName: 'Downline',
+    lastName: 'Client',
+    referredByIbUserId: clientId,
+  });
 });
 
 afterAll(async () => {
@@ -177,6 +229,36 @@ describe('the client profile', () => {
     expect('email' in body).toBe(false);
     expect('phone' in body).toBe(false);
     expect(body['maskedFields']).toContain('client.email');
+  });
+
+  /*
+   * ── THE LIST CASE, on the wire ────────────────────────────────────────────
+   *
+   * A field inside an array was unmaskable BY CONSTRUCTION: the mask walk
+   * returned early the moment a path segment was a list, so no alias could
+   * have closed this. The profile shipped a partner's whole downline — names
+   * and email addresses — to a reviewer whose every other screen withheld
+   * exactly those fields.
+   *
+   * Asserted with `toHaveProperty`, because RBAC-03's promise is that a masked
+   * field is ABSENT rather than nulled, and only the key's absence proves it.
+   */
+  it('masks the same fields inside the referred-clients LIST', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get(`${CLIENTS}/${clientId}`);
+    const body = res.body as Record<string, unknown>;
+
+    const downline = body['referredClients'] as Record<string, unknown>[] | undefined;
+    // Guards the fixture: an empty list would make every assertion below vacuous.
+    expect(Array.isArray(downline) && downline.length > 0).toBe(true);
+
+    for (const row of downline!) {
+      expect(row).not.toHaveProperty('email');
+      // The row itself survives — a mask hides a field, not the relationship.
+      expect(row).toHaveProperty('clientUserId');
+    }
+    // And nowhere in the serialised body, which is the only claim that counts.
+    expect(JSON.stringify(body)).not.toContain('mask-downline@oxshare-e2e.test');
   });
 
   it('still returns the unmasked parts of the profile', async () => {

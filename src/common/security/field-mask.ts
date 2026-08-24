@@ -120,7 +120,36 @@ function removePath(
   const child = source[head];
   // A null or primitive part-way down the path is "the nested object is not
   // here", which is the same no-op as a missing key — not a reason to fail.
-  if (child === null || typeof child !== 'object' || Array.isArray(child)) return source;
+  if (child === null || typeof child !== 'object') return source;
+
+  /*
+   * AN ARRAY IS A BRANCH, NOT A DEAD END — and this line used to return
+   * `source`, which made every field inside a list UNMASKABLE BY CONSTRUCTION.
+   *
+   * That is not a theoretical hole. `client.referredClients[].email` was
+   * shipping a scoped admin's whole downline — up to fifty names and email
+   * addresses — to somebody whose every screen withholds exactly those fields,
+   * and no alias could have fixed it: the walk gave up before it reached them.
+   *
+   * `a.b.email` over a list means "that field on EVERY element", which is the
+   * only reading that makes a mask a mask. Applied elementwise, cloning only
+   * the elements that actually change, so a list nothing touches is returned
+   * by identity exactly as before and the no-op case stays free.
+   */
+  if (Array.isArray(child)) {
+    let changed = false;
+    const next = child.map((item) => {
+      if (item === null || typeof item !== 'object' || Array.isArray(item)) return item;
+      const masked = removePath(item as Record<string, unknown>, rest, false);
+      if (masked !== item) changed = true;
+      return masked;
+    });
+    if (!changed) return source;
+
+    const copy = alreadyCloned ? source : { ...source };
+    copy[head] = next;
+    return copy;
+  }
 
   const nextChild = removePath(child as Record<string, unknown>, rest, false);
   if (nextChild === child) return source;

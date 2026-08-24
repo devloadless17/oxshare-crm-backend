@@ -147,6 +147,72 @@ describe('applyMask — nested paths', () => {
   });
 });
 
+describe('applyMask — a field INSIDE a list', () => {
+  /*
+   * ── The leak this block exists for ────────────────────────────────────────
+   *
+   * `removePath` used to bail out the moment a path segment was an array:
+   * `if (... || Array.isArray(child)) return source;`. Every field inside a
+   * list was therefore UNMASKABLE BY CONSTRUCTION — not "missing an alias",
+   * unmaskable, because the walk gave up before it reached them.
+   *
+   * It shipped: the client profile returned a partner's downline — up to fifty
+   * names and email addresses — to an admin whose every screen withholds
+   * exactly those fields. Adding the alias would not have closed it, which is
+   * what makes this the interesting half of the fix.
+   *
+   * A path through a list means "that field on EVERY element". Any other
+   * reading makes a mask something a caller can defeat by putting the data in
+   * an array.
+   */
+  const profile = () => ({
+    id: 'c1',
+    referredClients: [
+      { clientUserId: 'r1', email: 'one@example.test', firstName: 'One', active: true },
+      { clientUserId: 'r2', email: 'two@example.test', firstName: 'Two', active: false },
+    ],
+  });
+
+  it('removes the field from EVERY element of the list', () => {
+    const masked = applyMask('client', profile(), ['client.referredClients.email']);
+
+    expect(masked.referredClients.map((r) => 'email' in r)).toEqual([false, false]);
+    // The rest of each row survives — a mask hides a field, not a record.
+    expect(masked.referredClients[0]?.clientUserId).toBe('r1');
+    expect(masked.referredClients[1]?.active).toBe(false);
+  });
+
+  it('does not mutate the caller’s array or its elements', () => {
+    const row = profile();
+    applyMask('client', row, ['client.referredClients.email']);
+    expect(row.referredClients[0]?.email).toBe('one@example.test');
+  });
+
+  it('leaves the list identical when the mask touches nothing in it', () => {
+    const row = profile();
+    const masked = applyMask('client', row, ['client.phone']);
+    // Identity, not equality: the no-op case must stay free of cloning.
+    expect(masked.referredClients).toBe(row.referredClients);
+  });
+
+  it('copes with an empty list, and with elements that are not objects', () => {
+    expect(() =>
+      applyMask('client', { referredClients: [] }, ['client.referredClients.email']),
+    ).not.toThrow();
+    expect(() =>
+      applyMask('client', { referredClients: [null, 'x', 7] }, ['client.referredClients.email']),
+    ).not.toThrow();
+  });
+
+  it('masks a single nested object on the same profile, as it always did', () => {
+    const masked = applyMask('client', { referrer: { email: 'ib@example.test', active: true } }, [
+      'client.referrer.email',
+    ]);
+    expect('email' in masked.referrer).toBe(false);
+    expect(masked.referrer.active).toBe(true);
+  });
+});
+
 describe('applyMask — shapes that are not errors', () => {
   it('is a no-op for a path the row does not have', () => {
     /*

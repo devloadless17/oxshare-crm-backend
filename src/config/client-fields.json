@@ -42,7 +42,9 @@
         "maskable": true,
         "aliases": [
           "kyc.personalInfo.firstName",
-          "kyc.user.firstName"
+          "kyc.user.firstName",
+          "client.referrer.firstName",
+          "client.referredClients.firstName"
         ]
       },
       {
@@ -51,7 +53,9 @@
         "maskable": true,
         "aliases": [
           "kyc.personalInfo.lastName",
-          "kyc.user.lastName"
+          "kyc.user.lastName",
+          "client.referrer.lastName",
+          "client.referredClients.lastName"
         ]
       }
     ]
@@ -66,17 +70,16 @@
         "maskable": true,
         "aliases": [
           "kyc.personalInfo.email",
-          "kyc.user.email"
+          "kyc.user.email",
+          "client.referrer.email",
+          "client.referredClients.email"
         ]
       },
       {
         "key": "client.phone",
         "label": "Phone number",
         "maskable": true,
-        "aliases": [
-          "kyc.personalInfo.phone",
-          "kyc.user.phone"
-        ]
+        "aliases": ["kyc.personalInfo.phone", "kyc.user.phone"]
       }
     ]
   },
@@ -88,10 +91,7 @@
         "key": "client.country",
         "label": "Country",
         "maskable": true,
-        "aliases": [
-          "kyc.personalInfo.country",
-          "kyc.user.country"
-        ]
+        "aliases": ["kyc.personalInfo.country", "kyc.user.country"]
       },
       {
         "key": "client.type",

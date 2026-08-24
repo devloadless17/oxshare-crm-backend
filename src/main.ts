@@ -7,6 +7,7 @@ import { AppModule } from './app.module';
 import { VALIDATION_PIPE_OPTIONS } from './common/validation.config';
 import { buildSwaggerConfig } from './common/swagger-config';
 import { applyApiPrefix, createHttpAdapter } from './common/api-prefix';
+import { Logger } from '@nestjs/common';
 import { JsonLogger } from './common/logging/json.logger';
 import { RealtimeIoAdapter, type RealtimeEngine } from './common/realtime/realtime-io.adapter';
 import { trustedProxyHops } from './common/security/client-ip';
@@ -59,6 +60,39 @@ async function bootstrap() {
    * our own infrastructure wrote. See common/security/client-ip.ts.
    */
   app.set('trust proxy', trustedProxyHops());
+
+  /*
+   * ONE SETTING, THREE CONTROLS — say so at boot, because getting it wrong is
+   * silent and the symptom appears somewhere else entirely.
+   *
+   * `TRUSTED_PROXY_HOPS` decides which entry of `X-Forwarded-For` is believed,
+   * and THREE things key on the answer: the RBAC-08 network allowlist, the
+   * per-IP rate limiter, and the audit trail. Set it too low and all three read
+   * the proxy's address — one allowlist rule admits the world, the limiter
+   * throttles every caller as one, and every audit row names the load balancer.
+   * Set it too high and the caller picks their own address.
+   *
+   * The likeliest way it goes wrong is not a typo: it is putting a CDN in front
+   * of a domain that already had one proxy, and not knowing this variable
+   * exists. So the number is stated on every boot, next to what depends on it,
+   * and a production deploy claiming ZERO proxies is called out — that is the
+   * default, and a public API with no proxy in front of it is rare enough to be
+   * worth a second look.
+   */
+  const bootLogger = new Logger('Bootstrap');
+  const hops = trustedProxyHops();
+  const proxyNote =
+    `TRUSTED_PROXY_HOPS=${hops} — the IP allowlist (RBAC-08), the rate limiter and the ` +
+    'audit trail all read the caller address through this. Raise it by one for each ' +
+    'reverse proxy or CDN you put in front.';
+  if (hops === 0 && process.env['NODE_ENV'] === 'production') {
+    bootLogger.warn(
+      `${proxyNote} It is 0 in production, so the SOCKET address is used and any ` +
+        'X-Forwarded-For is ignored. Correct only if this process is exposed directly.',
+    );
+  } else {
+    bootLogger.log(proxyNote);
+  }
 
   app.use(cookieParser());
 
