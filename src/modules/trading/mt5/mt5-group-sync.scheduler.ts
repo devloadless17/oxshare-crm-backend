@@ -2,6 +2,7 @@ import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common'
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Mt5GroupSyncService } from './mt5-group-sync.service';
 import { pendingMigrationHint } from '../../../common/logging/pending-migration';
+import { JobLeaseService } from '../../../common/scheduling/job-lease.service';
 
 /**
  * Re-reads the MT5 group catalogue on a schedule, and once at boot.
@@ -29,7 +30,10 @@ import { pendingMigrationHint } from '../../../common/logging/pending-migration'
 export class Mt5GroupSyncScheduler implements OnApplicationBootstrap {
   private readonly logger = new Logger(Mt5GroupSyncScheduler.name);
 
-  constructor(private readonly groups: Mt5GroupSyncService) {}
+  constructor(
+    private readonly groups: Mt5GroupSyncService,
+    private readonly leases: JobLeaseService,
+  ) {}
 
   onApplicationBootstrap(): void {
     void this.sync();
@@ -39,6 +43,17 @@ export class Mt5GroupSyncScheduler implements OnApplicationBootstrap {
     name: 'mt5.syncGroups',
   })
   async sync(): Promise<void> {
+    /*
+     * ONE INSTANCE. Cheap and idempotent, so a duplicate run is harmless — but
+     * "harmless" is not free: on four replicas it is four times the queries for
+     * one result, and a job nobody leases is a job that quietly stops being
+     * counted when the estate grows. Every scheduled job on this platform now
+     * runs once per tick; the exceptions were the ones people forget.
+     */
+    await this.leases.run('mt5.syncGroups', 30 * 60_000, () => this.runOnce());
+  }
+
+  private async runOnce(): Promise<void> {
     try {
       const run = await this.groups.sync();
 

@@ -680,6 +680,34 @@
       "when": 1787101216014,
       "tag": "0096_grant_ib_commission_reverse",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1787101216015,
+      "tag": "0097_mt5_deals_login_position_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1787101216016,
+      "tag": "0098_job_leases",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1787101216017,
+      "tag": "0099_trading_accounts_credit",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1787101216018,
+      "tag": "0100_ib_accrual_start_setting",
+      "breakpoints": true
     }
   ]
 }

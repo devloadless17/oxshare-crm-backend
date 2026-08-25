@@ -182,6 +182,7 @@ export class SettingsService {
       maxDemoDeposit: terms.maxDemoDeposit,
       ibMaxRevenueSharePct: terms.ibMaxRevenueSharePct,
       ibCommissionHoldHours: terms.ibCommissionHoldHours,
+      ibAccrualStart: terms.ibAccrualStart,
       updatedAt: row?.updatedAt.toISOString() ?? null,
     };
   }
@@ -204,6 +205,14 @@ export class SettingsService {
         maxDemoDeposit: dto.maxDemoDeposit,
         ibMaxRevenueSharePct: dto.ibMaxRevenueSharePct,
         ibCommissionHoldHours: dto.ibCommissionHoldHours,
+        /*
+         * `undefined` means the caller did not send the field, which must not
+         * silently clear a decision somebody already made — a form that predates
+         * this field would otherwise reset the engine to HOLDING on every save.
+         * Explicit `null` is a real value and does clear it.
+         */
+        ibAccrualStart:
+          dto.ibAccrualStart === undefined ? previous.ibAccrualStart : dto.ibAccrualStart,
       },
       actor.id,
     );
@@ -220,6 +229,7 @@ export class SettingsService {
       maxDemoDeposit: row.maxDemoDeposit,
       ibMaxRevenueSharePct: row.ibMaxRevenueSharePct,
       ibCommissionHoldHours: row.ibCommissionHoldHours,
+      ibAccrualStart: row.ibAccrualStart,
       updatedAt: row.updatedAt.toISOString(),
     };
 
@@ -234,6 +244,13 @@ export class SettingsService {
       // accrual payable on the next run, which is a decision with a date on
       // it rather than a preference.
       'ibCommissionHoldHours',
+      /*
+       * The backlog decision, and the reason this field left the environment.
+       * Setting it to "all" can pay months of commission in one run and cannot
+       * be undone by a redeploy — so "who decided, when, and from what" has to
+       * be answerable, and an environment variable answers none of it.
+       */
+      'ibAccrualStart',
     ] as const) {
       if (previous[field] !== after[field]) {
         changed[field] = { before: previous[field], after: after[field] };

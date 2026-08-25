@@ -8,6 +8,7 @@ import { TransactionsService } from '../transactions.service';
 import { RivalClient } from './rival.client';
 import { RivalConfigService } from './rival-config.service';
 import { RivalWithdrawalsService } from './rival-withdrawals.service';
+import { JobLeaseService } from '../../../common/scheduling/job-lease.service';
 
 /**
  * The poll backstop behind Rival's webhook — the sweep half of push + sweep.
@@ -54,11 +55,23 @@ export class RivalPollScheduler {
     private readonly rival: RivalClient,
     private readonly transactions: TransactionsService,
     private readonly withdrawals: RivalWithdrawalsService,
+    private readonly leases: JobLeaseService,
   ) {}
 
   @Cron(CronExpression.EVERY_5_MINUTES, { name: 'rival.reconcile' })
   async sweep(): Promise<void> {
     if (!(await this.config.isEnabled())) return;
+
+    /*
+     * ONE INSTANCE. Every settle this reaches is idempotent — it shares the
+     * webhook's path, which is why "the two can race freely" — so this is about
+     * cost: four replicas polling Rival for the same pending deposits is four
+     * times the provider traffic for one answer, against an API that rate-limits.
+     */
+    await this.leases.run('rival.reconcile', 10 * 60_000, () => this.runOnce());
+  }
+
+  private async runOnce(): Promise<void> {
     try {
       await this.sweepDeposits();
     } catch (error) {

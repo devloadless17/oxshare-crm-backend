@@ -440,6 +440,133 @@ shallower means we trust further left than our infrastructure reaches, into call
 an allowlist can be walked through (`page`). It reports and changes nothing — inferring the hop
 count from traffic is the same "trust the header" mistake `client-ip.ts` refuses.
 
+## The snapshot carries MORE than a balance (0099)
+
+`ingestSnapshot` mirrors `balance`, `credit`, `mt5_group` and `leverage` — all four from one read,
+all four under the same `balance_synced_at` staleness guard, because they describe one instant. A
+fresher read already stored means every one of them is stale, not just the balance.
+
+`group` and `leverage` were being **sent, accepted, and discarded**: the bridge put them on every
+snapshot, the DTO documented them, `trading_accounts` had columns — and they were written only at
+account CREATION and never again. A broker moving an account between groups, or changing its
+leverage in the manager terminal, was invisible for ever, with the console rendering the value from
+the day the account was opened and nothing marking it as old.
+
+**Absent ≠ null.** All three extra fields are optional on the wire, so a read that did not ask for
+them leaves what is stored alone. Blanking a known group because one snapshot was silent is worse
+than the staleness it replaces.
+
+### What may be mirrored, and what may never be
+
+The line is not usefulness — it is whether a stored copy stops being true a second later.
+
+|                                              |                                                                   |
+| -------------------------------------------- | ----------------------------------------------------------------- |
+| `balance`, `credit`, `group`, `leverage`     | move on a DISCRETE event: a trade, a dealer action, a broker edit |
+| `equity`, `margin`, `marginFree`, `floating` | recomputed from live prices on every tick                         |
+
+The second row is available **only** through `/accounts/:id/live` and is deliberately absent from
+every table. `credit` earns its column because it is discrete — and because `floating` is defined
+as equity − balance − **credit**, so without it a client's tradeable position could not be shown on
+a list without one live MT5 call per row, which is the read the mirror exists to avoid.
+
+**`credit` is never summed into `balance`.** It is not the client's money to withdraw, and a balance
+that quietly included bonus credit would overstate what a withdrawal can pay out.
+
+### The live endpoints are throttled and write through
+
+`/trading/accounts/:id/live` and `/:id/positions` carry **12/min per client**, not the global 120.
+Every call takes the single MT5 session lock, and these sit behind a refresh button — the control
+users press hardest when a number looks wrong. Per CLIENT rather than per account, because the cost
+is the lock and the lock does not care which login is read.
+
+`snapshotMine` also writes its result through `recordFromOperation`. That read just paid for the
+most expensive thing the bridge does; rendering it once and discarding it left the mirror beside it
+minutes older, so the next screen showed the stale one.
+
+### The sweep STREAMS its deals
+
+`StreamDealsAsync` hands the sweep one login at a time. The list form materialised a rolling 24-hour
+window across every account — the platform's entire trading day in memory, rebuilt every five
+minutes, 288 times a day. The MT5 calls are identical either way; only the peak moves, from the
+whole estate to the largest single account. `GetDealsAsync` remains, implemented on top of the
+stream, for the bounded callers (the diagnostic endpoint, the probe).
+
+## Scheduled jobs: ONE INSTANCE RUNS EACH (migration 0098)
+
+`@Cron` fires on **every** instance. Correctness survives that and always has — every money job here
+is idempotent by construction and says so in its own docblock: the accrual is guarded by
+`ib_accruals_source_earner_uq`, the confirm credit by `ledger_entries_wallet_reference_uq`, a
+transfer resume by the transfer id being the bridge's own idempotency key.
+
+What does not survive is the COST. Four replicas are four drains of the same commission queue,
+contending on the same rows to reach the outcome one of them would have reached alone — and the
+drain budgets make each run long enough to overlap the next tick. Correct-but-quadruple is what
+stops a platform scaling horizontally, which is the only way it reaches the size this one is
+planned for.
+
+`JobLeaseService.run(name, ttlMs, work)` takes a row in `job_leases` and runs the work only if it
+got it. Five jobs are leased — the two commission drains, `payments.resumeTransfers`,
+`rival.reconcile` and `wallet.reconcile`. The other three (`notifications.prune`, `security.sweep`,
+`mt5.groupSync`) are cheap and idempotent, so a duplicate run costs less than the coordination
+would.
+
+- **A lease row, not `pg_try_advisory_lock`.** The advisory lock is SESSION-scoped, and behind a
+  connection pool the unlock can land on a different pooled connection than the lock — leaving it
+  held until that connection recycles, a hang with no trace in any application log. A row with an
+  expiry is one SELECT to inspect, names its holder, and heals itself.
+- **`expires_at` is a CRASH BACKSTOP, not the release path.** A job that ends sets it to `now()`, so
+  the next tick is never blocked by work that already finished. It must exceed the job's own time
+  budget — every caller passes double — or a second instance starts while the first is still
+  draining, which is the duplicate run this removes.
+- **It FAILS OPEN.** If the lease cannot be taken the job runs anyway. The alternative turns a
+  database blip into "no commission was paid today", which is far worse than duplicate work — and
+  it is only safe _because_ the jobs tolerate running twice. **That ordering is the whole design:
+  this is an optimisation, and an optimisation that becomes load-bearing is a single point of
+  failure nobody designed.**
+
+`test/job-lease.spec.ts` pins all of it against real Postgres, including the fail-open path and the
+`WHERE expires_at < now()` predicate — without which the upsert always wins, every instance takes
+the lease from every other one on every tick, and the table looks busy while coordinating nothing.
+
+## The bridge push surface is ONE REQUEST PER ACCOUNT, and needs its own limit
+
+`POST /webhooks/mt5/accounts` takes a single snapshot, and the bridge's sweep calls it once per
+account every `SweepIntervalSeconds` (300). The global throttle is **120/min** — sized for a human
+clicking a console — so a server with more than ~120 accounts exhausted a person's budget about
+eight seconds into every sweep.
+
+That was **data loss, not slowness**, because of the other side:
+`AccountSyncWorker.DeliverAsync` treated any 4xx as permanent and did not retry. Right for 400 and
+404, catastrophic for 429. Snapshots past the budget were DROPPED, and since the sweep pushes in a
+stable order it was the same tail every round — a permanent blind spot in the mirror, widening as
+the broker opens accounts, announced by nothing louder than one warning per account.
+
+Both halves are fixed, and each alone would have left the failure reachable:
+
+|        |                                                                                            |
+| ------ | ------------------------------------------------------------------------------------------ |
+| CRM    | `@Throttle({ default: { limit: 6_000, ttl: 60_000 } })` on `Mt5WebhooksController`         |
+| bridge | 429 and 408 are transient — retried, and logged as RATE LIMITED rather than as a rejection |
+
+**Raised, never `@SkipThrottle`.** `BridgeSecretGuard` is what protects this surface, so the limit
+is not the control — but a ceiling still bounds a leaked secret and a bridge wedged in a retry
+loop. 6000/min is ~100/s against ~16/s observed, and is past this design's own ceiling anyway: at
+16/s a 300s sweep cannot push more than ~4,800 accounts before the next one starts, whatever the
+limit says.
+
+**Beyond that the answer is a BATCH endpoint, not a bigger number.** One request per account is
+what does not scale — at 100k accounts the sweep is 333 req/s sustained, and if the CRM owns 1k of
+them, 99% of it is discarded after two queries. Neither webhook batches today. `test/bridge-webhook-throttling.spec.ts`
+asserts the limit clears the sweep rate by an order of magnitude rather than merely existing,
+because inheriting the global limit by omission is exactly how this happened.
+
+**Snapshots deliberately have no outbox, unlike deals.** A deal is a financial event that must
+never be lost, so `OutboxDispatcher` persists it in SQLite and retries until the CRM takes it. A
+balance snapshot is re-read every sweep, and a superseded one must NOT be delivered later — the
+staleness guard would reject it anyway. Fire-and-forget is correct here; what was wrong was
+dropping the CURRENT one and calling it a rejection.
+
 ## The trading-account balance mirror has THREE writers and one rule
 
 `trading_accounts.balance` mirrors MT5 (0081) and MT5 is the authority. Three paths write it —

@@ -12,6 +12,13 @@ import type { AdminClientScopesStore } from '../src/store/admin-client-scopes.st
 import type { ClientVisibilityService } from '../src/common/security/client-visibility.service';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
+/*
+ * A lease this instance always wins. Leader election has its own suite; a lease
+ * mocked to refuse here would make every case pass by never running the job.
+ */
+const alwaysLeads = () =>
+  ({ run: (_n: string, _t: number, work: () => Promise<void>) => work() }) as never;
+
 /**
  * IB-15 — the settlement window, which is the rule deciding WHEN a partner's
  * commission becomes money they can spend.
@@ -97,6 +104,7 @@ beforeAll(async () => {
     {} as unknown as RolesStore,
     {} as unknown as AdminClientScopesStore,
     {} as unknown as ClientVisibilityService,
+    alwaysLeads(),
   );
 }, 180_000);
 

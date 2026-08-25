@@ -47,11 +47,19 @@ function schedulerReturning(...runs: DealAccrualRun[]): DealCommissionScheduler 
   const accruePending = vi.fn();
   for (const r of runs) accruePending.mockResolvedValueOnce(r);
 
-  return new DealCommissionScheduler({
-    accruePending,
-    backlog: vi.fn().mockResolvedValue(0),
-    orphanBacklog: vi.fn().mockResolvedValue(0),
-  } as never);
+  return new DealCommissionScheduler(
+    {
+      accruePending,
+      backlog: vi.fn().mockResolvedValue(0),
+      orphanBacklog: vi.fn().mockResolvedValue(0),
+    } as never,
+    /*
+     * A lease this instance always wins. Leader election has its own suite; if
+     * it were mocked to refuse here, every case in this file would pass by
+     * never running the job at all — the worst kind of green.
+     */
+    { run: (_n: string, _t: number, work: () => Promise<void>) => work() } as never,
+  );
 }
 
 /** Every alert line raised, in order — `raiseAlert` logs the payload as-is. */

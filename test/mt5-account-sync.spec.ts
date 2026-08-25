@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { Mt5AccountSyncService } from '../src/modules/trading/mt5/mt5-account-sync.service';
 import { tradingAccounts, users } from '../src/database/schema';
@@ -50,6 +50,9 @@ async function stored(login = LOGIN) {
     .select({
       balance: tradingAccounts.balance,
       balanceSyncedAt: tradingAccounts.balanceSyncedAt,
+      mt5Group: tradingAccounts.mt5Group,
+      leverage: tradingAccounts.leverage,
+      credit: tradingAccounts.credit,
     })
     .from(tradingAccounts)
     .where(eq(tradingAccounts.login, login))
@@ -175,6 +178,85 @@ describe('ingesting a pushed snapshot', () => {
     expect((await stored(OTHER_LOGIN)).balance).toBe('500.00000000');
     expect((await stored(OTHER_LOGIN)).balanceSyncedAt).toBeNull();
   });
+
+  /*
+   * LAST in this describe, deliberately: the cases above share one row and read
+   * each other's state, so a test that advances the balance has to run after
+   * them or it moves the ground under the assertions that follow.
+   */
+  it('mirrors the CREDIT, which is discrete like the balance', async () => {
+    /*
+     * Credit moves on a dealer action, not on a tick — which is the whole test
+     * for whether a figure belongs in this table. It was already arriving on
+     * every snapshot and being discarded, so showing a client's tradeable
+     * position on a LIST meant one live MT5 call per row: the exact read this
+     * mirror exists to avoid.
+     *
+     * It is stored BESIDE the balance and never summed into it. Credit is not
+     * the client's money to withdraw.
+     */
+    const result = await service.ingestSnapshot(
+      snapshot({
+        balance: '2400.00000000',
+        credit: '250.00000000',
+        readAt: new Date(LATER.getTime() + 60_000).toISOString(),
+      }),
+    );
+
+    expect(result.applied).toBe(true);
+    const after = await stored();
+    expect(after.credit).toBe('250.00000000');
+    // Untouched by the credit — the two are separate figures.
+    expect(after.balance).toBe('2400.00000000');
+  });
+
+  it('mirrors the GROUP and LEVERAGE, not only the balance', async () => {
+    /*
+     * The bridge sends both on every snapshot and this DTO has always documented
+     * them — and they were written only at account CREATION and never again. A
+     * broker moving an account to a different group, or changing its leverage in
+     * the manager terminal, was invisible here for ever: the console kept
+     * rendering the value from the day the account was opened, with nothing to
+     * mark it as old. The same failure the balance mirror exists to end, on the
+     * two fields sitting beside it.
+     */
+    const result = await service.ingestSnapshot(
+      snapshot({
+        balance: '2100.00000000',
+        readAt: new Date(LATER.getTime() + 120_000).toISOString(),
+        group: 'real\\VIP',
+        leverage: 200,
+      }),
+    );
+
+    expect(result.applied).toBe(true);
+    const after = await stored();
+    expect(after.balance).toBe('2100.00000000');
+    expect(after.mt5Group).toBe('real\\VIP');
+    expect(after.leverage).toBe(200);
+  });
+
+  it('an OMITTED group does not blank the one already known', async () => {
+    /*
+     * Absent means "no news", not "no group". Both fields are optional on the
+     * wire, so a read that did not ask for them must leave what is stored alone
+     * — writing null over a known group because this particular snapshot was
+     * silent is worse than the staleness it replaces.
+     */
+    expect((await stored()).mt5Group).toBe('real\\VIP');
+
+    await service.ingestSnapshot(
+      snapshot({
+        balance: '2200.00000000',
+        readAt: new Date(LATER.getTime() + 180_000).toISOString(),
+      }),
+    );
+
+    const after = await stored();
+    expect(after.balance).toBe('2200.00000000');
+    expect(after.mt5Group).toBe('real\\VIP');
+    expect(after.leverage).toBe(200);
+  });
 });
 
 describe('recording what a CRM-initiated operation left behind', () => {
@@ -200,5 +282,48 @@ describe('recording what a CRM-initiated operation left behind', () => {
 
     expect(result.applied).toBe(false);
     expect((await stored()).balance).toBe('2000.00000000');
+  });
+});
+
+describe('the login set the bridge reconciles against', () => {
+  it('lists every login the CRM holds, ascending', async () => {
+    /*
+     * The bridge used to enumerate the broker's WHOLE BOOK every balance round
+     * — one call per group returning every account on the server — to reconcile
+     * the handful the CRM owns. Its own log said so: `unknown-login; ignored`
+     * lines are snapshots read from MT5, pushed over HTTP, and discarded after
+     * two queries.
+     *
+     * The CRM is the only component that knows which logins matter, so it says.
+     */
+    const { logins } = await service.knownLogins();
+
+    expect(logins).toContain(LOGIN);
+    expect(logins).toContain(OTHER_LOGIN);
+
+    // Ordered, so the bridge's watermark walks a stable sequence rather than
+    // whatever order Postgres felt like returning.
+    expect([...logins].sort()).toEqual(logins);
+  });
+
+  it('omits accounts with no MT5 login yet', async () => {
+    /*
+     * An account created in the CRM but not yet opened on MT5 has nothing to
+     * reconcile, and a null in this list would become a login the bridge tries
+     * to read.
+     */
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO users (email, password_hash, first_name, last_name)
+      VALUES ('nologin@oxshare-e2e.test', 'x', 'No', 'Login')
+      RETURNING id
+    `);
+    await ctx.db.execute(sql`
+      INSERT INTO trading_accounts (user_id, login, environment, currency, balance, status)
+      VALUES (${rows[0].id}, NULL, 'live', 'USD', '0', 'active')
+    `);
+
+    const { logins } = await service.knownLogins();
+
+    expect(logins.every((login) => typeof login === 'string' && login.length > 0)).toBe(true);
   });
 });

@@ -9,6 +9,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 
 /* ── SMTP ─────────────────────────────────────────────────────────────────── */
@@ -166,6 +167,17 @@ export class TradingSettingsDto {
   })
   ibCommissionHoldHours: number;
 
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    example: '2026-08-24T00:00:00.000Z',
+    description:
+      'When commission starts being paid from. NULL means NOBODY HAS DECIDED, and the engine ' +
+      'holds rather than paying a historical backlog by accident. "all" pays the whole history ' +
+      'deliberately; an ISO instant pays from there and marks everything older decided-and-unpaid.',
+  })
+  ibAccrualStart: string | null;
+
   @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
   updatedAt: string | null;
 }
@@ -239,4 +251,42 @@ export class UpdateTradingSettingsDto {
   @Min(0)
   @Max(8760)
   ibCommissionHoldHours: number;
+
+  /**
+   * The backlog decision, and the only IRREVERSIBLE field on this form.
+   *
+   * Three meanings, one of which is a moment: `null` holds, `'all'` pays the
+   * whole history, an ISO instant pays from there. Validated as exactly those
+   * three so a typo cannot become a silent "pay nothing for ever" — the parse in
+   * `accrualWindow` treats anything unreadable as UNSET for the same reason, but
+   * being refused at the form is where an operator can still fix it.
+   *
+   * ## It applies to deals NOT YET DECIDED, and nothing else
+   *
+   * The sharp edge, and the reason it is spelled out on the form rather than
+   * only here. Once a run has looked at a deal it carries
+   * `commission_processed_at` — paid or deliberately not — and no later change
+   * to this field revisits it.
+   *
+   * So this is effectively a ONE-TIME decision that keeps looking like a live
+   * control. Somebody six months from now, moving the date back to recover
+   * history they think was missed, will see nothing happen and no error: those
+   * deals were decided long ago. Recovering genuinely missed commission is a
+   * deliberate re-open of specific rows, not a settings change.
+   */
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    example: '2026-08-24T00:00:00.000Z',
+    description:
+      'null holds the engine, "all" pays the whole backlog, or an ISO 8601 instant. Applies ONLY ' +
+      'to deals not yet decided — a deal already processed is never revisited, so moving this ' +
+      'date backwards later recovers nothing and reports no error.',
+  })
+  @IsOptional()
+  @ValidateIf((_object: unknown, value: unknown) => value !== null)
+  @Matches(/^(all|\d{4}-\d{2}-\d{2}T[\d:.]+Z?)$/, {
+    message: 'ibAccrualStart must be null, "all", or an ISO 8601 instant',
+  })
+  ibAccrualStart?: string | null;
 }

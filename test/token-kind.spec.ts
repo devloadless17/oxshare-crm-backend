@@ -305,6 +305,15 @@ describe('env.validation — object storage', () => {
         TRUSTED_PROXY_HOPS: '1',
         PORTAL_URL: 'https://portal.example.com',
         ADMIN_URL: 'https://admin.example.com',
+        /*
+         * Satisfied here for the same reason `base()` states STORAGE_DRIVER: a
+         * production config must now also name the MT5 bridge, and an unrelated
+         * refusal underneath this case would fail it for the wrong reason. See
+         * `bridge-env-validation.spec.ts` for what these assert on their own.
+         */
+        MT5_BRIDGE_URL: 'https://bridge.internal:8443',
+        MT5_BRIDGE_API_KEY: 'k'.repeat(32),
+        MT5_BRIDGE_SECRET: 's'.repeat(32),
       }),
     ).toThrow(/STORAGE_DRIVER=disk/);
   });

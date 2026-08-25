@@ -8,6 +8,13 @@ import type { NotificationsStore } from '../src/store/notifications.store';
 import type { ClientVisibilityService } from '../src/common/security/client-visibility.service';
 import { UNRESTRICTED, scopeOf } from '../src/common/security/client-scope';
 
+/*
+ * A lease this instance always wins. Leader election has its own suite; a lease
+ * mocked to refuse here would make every case pass by never running the job.
+ */
+const alwaysLeads = () =>
+  ({ run: (_n: string, _t: number, work: () => Promise<void>) => work() }) as never;
+
 /**
  * The admin fan-out's two filters — permission and client scope — applied at
  * WRITE time. A wrong include here is a disclosure (a scoped admin holding a
@@ -64,6 +71,7 @@ function build(opts: {
         return Promise.resolve();
       }),
     } as unknown as ClientVisibilityService,
+    alwaysLeads(),
   );
   return { service, insertMany };
 }
@@ -131,6 +139,7 @@ describe('notifyAdminsWithPermission', () => {
         }),
       } as unknown as AdminClientScopesStore,
       visibility as unknown as ClientVisibilityService,
+      alwaysLeads(),
     );
 
     await service.notifyAdminsWithPermission(
@@ -168,6 +177,7 @@ describe('notifyAdminsWithPermission', () => {
         // "not visible" would silently drop the admin with no log anywhere.
         assertVisible: vi.fn().mockRejectedValue(new Error('connection reset')),
       } as unknown as ClientVisibilityService,
+      alwaysLeads(),
     );
 
     await expect(
@@ -191,6 +201,7 @@ describe('notifyAdminsWithPermission', () => {
       {} as unknown as RolesStore,
       {} as unknown as AdminClientScopesStore,
       {} as unknown as ClientVisibilityService,
+      alwaysLeads(),
     );
 
     await expect(
@@ -212,6 +223,7 @@ describe('notifyAdminsWithPermission', () => {
       {} as unknown as RolesStore,
       {} as unknown as AdminClientScopesStore,
       {} as unknown as ClientVisibilityService,
+      alwaysLeads(),
     );
     void service;
 

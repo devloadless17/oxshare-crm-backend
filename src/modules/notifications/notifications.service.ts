@@ -17,6 +17,7 @@ import {
 } from '../../store/notifications.store';
 import { RolesStore } from '../../store/roles.store';
 import type { CursorPage, CursorPosition } from '../../common/pagination';
+import { JobLeaseService } from '../../common/scheduling/job-lease.service';
 
 /** How long a bell row lives. The audit log and the ledger are the records. */
 const RETENTION_DAYS = 90;
@@ -40,6 +41,7 @@ export class NotificationsService implements NotificationDispatchPort {
     private readonly roles: RolesStore,
     private readonly scopes: AdminClientScopesStore,
     private readonly visibility: ClientVisibilityService,
+    private readonly leases: JobLeaseService,
   ) {}
 
   async notify(input: NotificationInput, executor?: Executor): Promise<void> {
@@ -182,6 +184,17 @@ export class NotificationsService implements NotificationDispatchPort {
    */
   @Cron(CronExpression.EVERY_DAY_AT_4AM, { name: 'notifications.prune' })
   async prune(): Promise<void> {
+    /*
+     * ONE INSTANCE. Cheap and idempotent, so a duplicate run is harmless — but
+     * "harmless" is not free: on four replicas it is four times the queries for
+     * one result, and a job nobody leases is a job that quietly stops being
+     * counted when the estate grows. Every scheduled job on this platform now
+     * runs once per tick; the exceptions were the ones people forget.
+     */
+    await this.leases.run('notifications.prune', 30 * 60_000, () => this.pruneOnce());
+  }
+
+  private async pruneOnce(): Promise<void> {
     try {
       const removed = await this.store.pruneOlderThan(RETENTION_DAYS);
       if (removed > 0) {

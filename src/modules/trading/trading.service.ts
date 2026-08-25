@@ -22,6 +22,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
+import { Mt5AccountSyncService } from './mt5/mt5-account-sync.service';
 import { dealActionLabel, isRealisedTrade } from './mt5/deal-codes';
 import type { TradingAccountDto } from './dto/trading-account.dto';
 import type { PositionDto } from './dto/position.dto';
@@ -75,6 +76,12 @@ export class TradingService {
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly bridge: Mt5BridgeClient,
+    /*
+     * The mirror's writer, so a live read is not thrown away after paying for
+     * the MT5 session lock. It owns the staleness guard, which is why this
+     * writes THROUGH it rather than issuing its own UPDATE — see `snapshotMine`.
+     */
+    private readonly accountSync: Mt5AccountSyncService,
   ) {}
 
   /**
@@ -283,7 +290,34 @@ export class TradingService {
     const snapshot = await this.viaBridge('snapshot', accountId, () =>
       this.bridge.getAccount(account.login as string),
     );
+    const readAt = new Date();
     if (!snapshot) return null;
+
+    /*
+     * ── THE FRESHEST FIGURE IN THE SYSTEM, WRITTEN DOWN ───────────────────
+     *
+     * This read just cost the MT5 session lock — the most expensive thing the
+     * bridge does — and the answer was rendered once and thrown away, while the
+     * mirror beside it kept a figure minutes older. The next screen the client
+     * opened showed the stale one.
+     *
+     * So it writes through, exactly as the admin operation path already does.
+     * The staleness guard inside `recordFromOperation` decides whether it wins:
+     * a sweep snapshot read more recently still takes precedence, because the
+     * comparison is between MT5 READ TIMES rather than between writers.
+     *
+     * `readAt` is stamped AFTER the call returns, for the reason the operation
+     * path records: the direct response carries no read time of its own, and
+     * understating it is the dangerous direction — an older sweep read carrying
+     * a newer stamp would overwrite this one.
+     *
+     * Failure here must never reach the client. They asked for a balance and the
+     * balance is in hand; a mirror that did not update is the next sweep's
+     * problem, not a reason to fail a read that succeeded.
+     */
+    void this.accountSync
+      .recordFromOperation(account.login, snapshot.balance, readAt)
+      .catch(() => undefined);
 
     const floating = new Decimal(snapshot.equity)
       .minus(snapshot.balance)

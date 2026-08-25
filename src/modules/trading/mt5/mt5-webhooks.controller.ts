@@ -1,11 +1,23 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiExcludeController, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { NoOriginCheck } from '../../../common/security/csrf.guard';
 import { BridgeSecretGuard } from './bridge-secret.guard';
 import { Mt5DealsService } from './mt5-deals.service';
 import { Mt5AccountSyncService } from './mt5-account-sync.service';
 import { Mt5AccountSnapshotDto } from './dto/mt5-account-snapshot.dto';
 import { Mt5DealDto } from './dto/mt5-deal.dto';
+import { Mt5DealBatchDto } from './dto/mt5-deal-batch.dto';
+import { Mt5AccountBatchDto } from './dto/mt5-account-batch.dto';
 
 /**
  * Where the MT5 bridge posts closed deals — the push half of ARCHITECTURE
@@ -61,6 +73,33 @@ import { Mt5DealDto } from './dto/mt5-deal.dto';
   'Server-to-server delivery from the MT5 bridge: authenticated by the shared secret in ' +
     'X-Bridge-Secret, compared in fixed time. No browser, no cookie, no Origin.',
 )
+/*
+ * ── A MACHINE SURFACE MUST NOT SHARE A LIMIT SIZED FOR PEOPLE ──────────────
+ *
+ * The global limit is 120/min, chosen for a human clicking a console. The
+ * bridge's account sweep sends ONE REQUEST PER ACCOUNT every
+ * `SweepIntervalSeconds` (300), so a server with more than ~120 accounts
+ * exhausts a limit meant for a person within seconds of every sweep.
+ *
+ * What made that a DATA LOSS bug rather than a slow one: `AccountSyncWorker`
+ * treats any 4xx as a permanent rejection and does not retry it — correctly for
+ * 400 or 404, disastrously for 429. So the accounts after the budget were
+ * dropped, and because the sweep pushes in a stable order the SAME tail was
+ * dropped on every sweep. Not a delay: a permanent blind spot, growing with the
+ * account count, in the mirror an operator reads balances from.
+ *
+ * Raised rather than SKIPPED. `BridgeSecretGuard` already authenticates this,
+ * so the limit is not what protects it — but a ceiling still bounds a leaked
+ * secret and a bridge stuck in a retry loop, and "unlimited" is a decision
+ * nobody would make deliberately.
+ *
+ * 6000/min is ~100/s, against ~16/s observed from a real sweep. It is also
+ * comfortably past this design's OWN ceiling: at 16/s a 300s sweep cannot push
+ * more than ~4,800 accounts before the next one starts, whatever the limit
+ * says. Beyond that the answer is a batch endpoint, not a bigger number — one
+ * request per account is the thing that does not scale, and no limit fixes it.
+ */
+@Throttle({ default: { limit: 6_000, ttl: 60_000 } })
 @UseGuards(BridgeSecretGuard)
 export class Mt5WebhooksController {
   constructor(
@@ -87,6 +126,47 @@ export class Mt5WebhooksController {
   ) {
     const result = await this.deals.ingest(deal, source === 'sweep' ? 'sweep' : 'push');
     return { dealId: deal.dealId, ...result };
+  }
+
+  /**
+   * The logins this CRM holds, for the bridge's reconciliation pass.
+   *
+   * A GET on a webhook controller because it shares this surface's
+   * authentication and its exemptions — the bridge is the only caller, and
+   * giving it a second door with its own guard is how two authorisation paths
+   * drift until one is missing a check.
+   */
+  @Get('logins')
+  @ApiOperation({ summary: 'MT5 logins the CRM owns, so the bridge need not enumerate the book' })
+  @ApiOkResponse({
+    description:
+      'Every login with a trading account here, ascending. The bridge reconciles against THIS ' +
+      'set instead of every account on the broker server — most of which the CRM has never ' +
+      'heard of and discards on arrival.',
+  })
+  async listKnownLogins() {
+    return await this.accounts.knownLogins();
+  }
+
+  /**
+   * The SWEEP's delivery: many deals, one round trip.
+   *
+   * Per-deal outcomes come back so the bridge's outbox can mark entries
+   * individually. Answering only "the batch worked" would force it to retire
+   * all-or-nothing, and one bad row would either strand the good deliveries or
+   * falsely retire them.
+   */
+  @Post('deals/batch')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Mirror MANY closed deals pushed by the MT5 bridge' })
+  @ApiOkResponse({
+    description:
+      'One result per ticket, in the order given. `ingested: false` means the CRM already held ' +
+      'that deal — normal, and not retried. `orphaned: true` means it was stored against a login ' +
+      'no trading account claims, which accrues once the account is linked.',
+  })
+  async ingestDealBatch(@Body() batch: Mt5DealBatchDto) {
+    return await this.deals.ingestBatch(batch.deals, 'sweep');
   }
 
   /**
@@ -121,5 +201,25 @@ export class Mt5WebhooksController {
   async ingestAccount(@Body() snapshot: Mt5AccountSnapshotDto) {
     const result = await this.accounts.ingestSnapshot(snapshot);
     return { login: snapshot.login, ...result };
+  }
+
+  /**
+   * A whole sweep round's balances, in one request.
+   *
+   * Same contract as the single-snapshot endpoint, per login: `applied: false`
+   * with `unknown-login` or `stale` is an ordinary outcome and is NOT retried.
+   * The per-login answer matters here for the same reason it does for deals —
+   * the bridge decides what to re-send from it.
+   */
+  @Post('accounts/batch')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Mirror MANY account balances pushed by the MT5 bridge' })
+  @ApiOkResponse({
+    description:
+      'One result per login. `applied: false` with `reason: "unknown-login"` means the login ' +
+      'names no account here; `"stale"` means a fresher read already landed. Both are normal.',
+  })
+  async ingestAccountBatch(@Body() batch: Mt5AccountBatchDto) {
+    return await this.accounts.ingestSnapshotBatch(batch.snapshots);
   }
 }

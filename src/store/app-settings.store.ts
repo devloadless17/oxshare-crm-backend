@@ -68,6 +68,8 @@ export interface TradingSettingsRow {
   ibMaxRevenueSharePct: string;
   /** Hours an accrual is held before it may be confirmed. */
   ibCommissionHoldHours: number;
+  /** `null` (undecided), `'all'`, or an ISO instant — see the column comment. */
+  ibAccrualStart: string | null;
   updatedBy: string | null;
   updatedAt: Date;
 }
@@ -79,6 +81,8 @@ export interface TradingSettingsWrite {
   ibMaxRevenueSharePct: string;
   /** Hours an accrual is held before it may be confirmed. */
   ibCommissionHoldHours: number;
+  /** `null` (undecided), `'all'`, or an ISO instant — see the column comment. */
+  ibAccrualStart: string | null;
 }
 
 export interface RivalSettingsRow {

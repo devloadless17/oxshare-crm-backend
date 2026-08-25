@@ -72,6 +72,18 @@ export class Mt5AccountSnapshotDto {
   group?: string;
 
   @ApiPropertyOptional({
+    description:
+      'MT5 bonus CREDIT, if read in the same call. A decimal string like every money field ' +
+      'here. Stored beside the balance because it moves on a discrete dealer action rather ' +
+      'than on every tick — and it is never summed into the balance, because it is not the ' +
+      "client's money to withdraw.",
+    example: '250.00000000',
+  })
+  @IsOptional()
+  @Matches(/^-?\d+(\.\d+)?$/, { message: 'credit must be a decimal string' })
+  credit?: string;
+
+  @ApiPropertyOptional({
     description: 'Leverage as MT5 reports it, if read in the same call.',
     example: 500,
   })

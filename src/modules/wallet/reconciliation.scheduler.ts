@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ReconciliationService } from './reconciliation.service';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
+import { JobLeaseService } from '../../common/scheduling/job-lease.service';
 
 /**
  * Runs reconciliation against live data, on a schedule.
@@ -22,10 +23,25 @@ import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 export class ReconciliationScheduler {
   private readonly logger = new Logger(ReconciliationScheduler.name);
 
-  constructor(private readonly reconciliation: ReconciliationService) {}
+  constructor(
+    private readonly reconciliation: ReconciliationService,
+    private readonly leases: JobLeaseService,
+  ) {}
 
   @Cron(CronExpression.EVERY_HOUR, { name: 'wallet.reconcile' })
   async reconcile(): Promise<void> {
+    /*
+     * ONE INSTANCE. This job RAISES ALERTS, so duplicates are not merely wasted
+     * queries — four replicas page four times for one discrepancy, and an alarm
+     * that cries four times is one people learn to skim.
+     *
+     * Two hours against an hourly cron: the backstop must outlast a slow
+     * reconciliation over a large ledger, not the interval.
+     */
+    await this.leases.run('wallet.reconcile', 2 * 3_600_000, () => this.runOnce());
+  }
+
+  private async runOnce(): Promise<void> {
     try {
       await this.reconciliation.run();
     } catch (error) {

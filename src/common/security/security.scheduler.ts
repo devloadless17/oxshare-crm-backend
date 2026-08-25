@@ -7,6 +7,7 @@ import { idempotencyKeys } from '../../database/schema';
 import { IDEMPOTENCY_RETENTION_HOURS } from './idempotency.interceptor';
 import { RefreshTokensService } from './refresh-tokens.service';
 import { LoginAttemptsService } from './login-attempts.service';
+import { JobLeaseService } from '../scheduling/job-lease.service';
 
 /**
  * Retention sweeps for the two tables this milestone added.
@@ -37,10 +38,22 @@ export class SecurityScheduler {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly refreshTokens: RefreshTokensService,
     private readonly loginAttempts: LoginAttemptsService,
+    private readonly leases: JobLeaseService,
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR, { name: 'security.sweep' })
   async sweep(): Promise<void> {
+    /*
+     * ONE INSTANCE. Cheap and idempotent, so a duplicate run is harmless — but
+     * "harmless" is not free: on four replicas it is four times the queries for
+     * one result, and a job nobody leases is a job that quietly stops being
+     * counted when the estate grows. Every scheduled job on this platform now
+     * runs once per tick; the exceptions were the ones people forget.
+     */
+    await this.leases.run('security.sweep', 30 * 60_000, () => this.sweepOnce());
+  }
+
+  private async sweepOnce(): Promise<void> {
     await Promise.all([
       this.sweepIdempotencyKeys(),
       this.sweepRefreshTokens(),

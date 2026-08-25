@@ -1,0 +1,53 @@
+-- Index the POSITION lookup that runs on every closing deal.
+--
+-- ── What it serves ─────────────────────────────────────────────────────────
+--
+-- `DealCommissionService.unconsumedLegs` — "every deal on this position whose
+-- revenue no accrual has taken yet" — filters on `mt5_position_id` AND `login`.
+-- Both, because a position id is unique per SERVER rather than per account, and
+-- a cross-account match would pay one client's partner out of another client's
+-- trade. `reportClawback` (the dealer-cancellation check) asks the same shape.
+--
+-- Neither column was indexed together. The planner's best option was
+-- `mt5_deals_login_dealt_idx`, which finds the login and then scans every deal
+-- that account has ever made, discarding all but the handful on the position.
+--
+-- ── Why this is worth a migration rather than a note ───────────────────────
+--
+-- It is invisible until it is expensive. `mt5_deals` has no retention — it is
+-- the audit record of what MT5 told us, deliberately kept — so an active
+-- account's deal count only ever grows, and this lookup runs ONCE PER CLOSING
+-- DEAL. The cost therefore scales with account AGE, not with load: a test
+-- database and a launch week both look fine, and the platform gets slower every
+-- month with nothing in the code changing.
+--
+-- At the size this is planned for — 100k clients, two MT5 accounts each — the
+-- accrual job is the thing that stops keeping up first, and it is the one job
+-- whose falling behind means partners are not paid.
+--
+-- ── Ordering: login first ──────────────────────────────────────────────────
+--
+-- The higher-cardinality column, and the one both callers always supply. A
+-- position-first index would serve the same two queries, and nothing else asks
+-- for a position id without a login.
+--
+-- ── Operational note for a LARGE table ─────────────────────────────────────
+--
+-- Plain `CREATE INDEX` takes a lock that blocks writes for the duration, and the
+-- migration runner wraps everything in one transaction, so `CONCURRENTLY` cannot
+-- be used here — Postgres refuses it inside a transaction block.
+--
+-- That is fine now and is the reason to do it NOW: the table is small, so the
+-- lock is momentary. If this is ever applied to a database where `mt5_deals` has
+-- grown to millions of rows, do NOT run it as part of a deploy — create it by
+-- hand first, outside a transaction:
+--
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS mt5_deals_login_position_idx
+--     ON mt5_deals (login, mt5_position_id);
+--
+-- then let this migration no-op through `IF NOT EXISTS`.
+--
+-- `IF NOT EXISTS` also keeps this re-runnable, which is what the renumbering
+-- trap in CLAUDE.md requires of every migration here.
+CREATE INDEX IF NOT EXISTS mt5_deals_login_position_idx
+  ON mt5_deals (login, mt5_position_id);

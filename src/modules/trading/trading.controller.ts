@@ -383,6 +383,29 @@ export class TradingController {
   }
 
   @Get('accounts/:id/live')
+  /*
+   * ── EVERY CALL HERE TAKES THE MT5 SESSION LOCK ─────────────────────────
+   *
+   * The bridge serialises every MT5 call behind ONE lock, and
+   * `Mt5ConnectionSupervisor` needs that same lock to rebuild a dropped
+   * session. That is not a theory: the admin account list used to read balances
+   * live, one call per row, and the screen that displayed the estate became the
+   * reason the estate could not reconnect.
+   *
+   * This route is the client-side shape of the same risk. It is one account per
+   * call rather than twenty-five, but it is reachable by every client on the
+   * platform and it sits behind a REFRESH BUTTON — the one control users press
+   * repeatedly when a number looks wrong.
+   *
+   * The global limit is 120/min, sized for a person browsing. Twelve a minute is
+   * still far more than a human reading a balance needs, and it turns
+   * refresh-mashing from a queue of MT5 calls into a 429 that costs nothing.
+   *
+   * Per CLIENT, not per account: the cost is the lock, and the lock does not
+   * care which login is being read. Throttling per account would let one client
+   * with ten accounts take ten times the budget.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: 12 } })
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Balance, equity, margin and floating P/L for one account, read live from MT5',
@@ -403,6 +426,10 @@ export class TradingController {
   }
 
   @Get('accounts/:id/positions')
+  // Same lock, same reasoning as `:id/live` above — and this one is worse to
+  // leave open, because open positions are what a client watches while the
+  // market moves, which is exactly when they refresh hardest.
+  @Throttle({ default: { ttl: 60_000, limit: 12 } })
   @ApiCookieAuth()
   @ApiOperation({
     summary: "One account's OPEN positions, read live from MT5",

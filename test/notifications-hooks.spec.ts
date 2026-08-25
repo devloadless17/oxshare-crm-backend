@@ -21,6 +21,13 @@ import { gatewayStub } from './gateway-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
+/*
+ * A lease this instance always wins. Leader election has its own suite; a lease
+ * mocked to refuse here would make every case pass by never running the job.
+ */
+const alwaysLeads = () =>
+  ({ run: (_n: string, _t: number, work: () => Promise<void>) => work() }) as never;
+
 /**
  * The domain hooks, against real Postgres — the half a stub cannot answer.
  *
@@ -55,6 +62,7 @@ beforeAll(async () => {
     {} as unknown as RolesStore,
     {} as unknown as AdminClientScopesStore,
     {} as unknown as ClientVisibilityService,
+    alwaysLeads(),
   );
 
   const currencies = new CurrenciesService(ctx.db, auditStubAs());

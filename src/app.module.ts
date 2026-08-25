@@ -38,6 +38,7 @@ import { CsrfEchoMiddleware } from './common/security/csrf-echo.middleware';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { StoreModule } from './store/store.module';
+import { SchedulingModule } from './common/scheduling/scheduling.module';
 import { UploadsModule } from './common/uploads/uploads.module';
 import { EmailModule } from './modules/email/email.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -126,6 +127,13 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     // Infrastructure
     DatabaseModule,
     StoreModule,
+    /*
+     * @Global(), so the eight `@Cron` jobs spread across five feature modules
+     * can take a lease without importing a module into each of them. See its own
+     * note: this is an optimisation against duplicate work on multiple
+     * instances, never a correctness control.
+     */
+    SchedulingModule,
     /*
      * @Global(), like StoreModule: StoredFilesService is needed by identity, admin,
      * payments and compliance, and used to be provided by two of them and

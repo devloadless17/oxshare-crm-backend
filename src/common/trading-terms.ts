@@ -52,6 +52,19 @@ export interface TradingTerms {
    * silently becoming zero.
    */
   ibCommissionHoldHours: number;
+
+  /**
+   * When commission starts being paid from — the backlog decision.
+   *
+   * `null` means nobody has decided, and the engine HOLDS rather than guessing.
+   * `'all'` pays the whole history deliberately. An ISO instant pays from there.
+   *
+   * A string rather than a Date because it carries three meanings, only one of
+   * which is a moment — and because the parse belongs in `accrualWindow`, which
+   * is pure and already treats an unreadable value as "hold" rather than as
+   * "nothing is in scope".
+   */
+  ibAccrualStart: string | null;
 }
 
 /**
@@ -70,6 +83,8 @@ export const DEFAULT_TRADING_TERMS: TradingTerms = {
   maxDemoDeposit: '1000000',
   ibMaxRevenueSharePct: '50',
   ibCommissionHoldHours: 24,
+  /* Undecided, deliberately. A default here would be a decision nobody made. */
+  ibAccrualStart: null,
 };
 
 /**
@@ -89,6 +104,7 @@ export function tradingTermsFrom(row: TradingSettingsRow | null): TradingTerms {
     maxDemoDeposit: row.maxDemoDeposit,
     ibMaxRevenueSharePct: row.ibMaxRevenueSharePct,
     ibCommissionHoldHours: row.ibCommissionHoldHours,
+    ibAccrualStart: row.ibAccrualStart,
   };
 }
 

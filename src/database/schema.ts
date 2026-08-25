@@ -1023,6 +1023,41 @@ export const tradingSettings = pgTable(
      * This caps the chain's total and scales it pro rata to fit, so the
      * guarantee holds however many rungs somebody adds later.
      */
+    /**
+     * When the commission engine starts paying from — the BACKLOG DECISION.
+     *
+     * NULL is "nobody has decided", and it is the safe state: an aged backlog of
+     * unprocessed trades stops the engine rather than paying months of history
+     * at once. `all` pays the whole backlog deliberately; an ISO instant pays
+     * from that point and marks everything older decided-and-unpaid.
+     *
+     * ── Why a COLUMN and not an environment variable ──────────────────────
+     *
+     * It was `IB_ACCRUAL_START`, and that was the wrong home for the same
+     * reasons `ibCommissionHoldHours` stopped being one: a commercial decision
+     * that took a deploy to make, that the people who actually make it cannot
+     * reach, and that was invisible to everybody running the platform.
+     *
+     * The stronger reason is the audit. This decision is IRREVERSIBLE — money
+     * paid to a partner for a trade nobody meant to pay for comes back by
+     * conversation, not by redeploy — and an environment variable records no
+     * actor, no timestamp and no reason. A settings write records all three.
+     * Friction is not a substitute for accountability.
+     *
+     * ── It decides only deals NOT YET DECIDED ─────────────────────────────
+     *
+     * A deal a run has looked at carries `commission_processed_at` — paid, or
+     * deliberately not — and no later change here revisits it. So this is a
+     * one-time decision wearing the clothes of a live control: moving the date
+     * backwards later recovers nothing and says nothing, because those rows were
+     * settled long ago. That is stated on the settings form too, where the
+     * person likely to try it will be standing.
+     *
+     * It is also why a bulk re-ingestion cannot re-pay history: `mt5_deals` is
+     * unique on the MT5 ticket and ingestion is `onConflictDoNothing`, so
+     * re-delivered deals create no rows at all.
+     */
+    ibAccrualStart: varchar('ib_accrual_start', { length: 40 }),
     ibMaxRevenueSharePct: numeric('ib_max_revenue_share_pct', { precision: 5, scale: 2 })
       .notNull()
       .default('50'),
@@ -2084,6 +2119,26 @@ export const tradingAccounts = pgTable(
      */
     balance: numeric('balance', { precision: 28, scale: 8 }).notNull().default('0'),
     /**
+     * MT5's CREDIT — bonus the broker granted, mirrored like the balance.
+     *
+     * Discrete, which is the whole reason it is stored at all. Credit moves when
+     * a dealer grants or removes it, exactly as balance moves on a discrete
+     * event — unlike equity and margin, which are recomputed from live prices on
+     * every tick and are therefore absent from this table by design.
+     *
+     * It was reaching the CRM already and being discarded: the bridge reads it,
+     * `/accounts/:id/live` returns it, and `floating` is literally defined as
+     * equity minus balance minus CREDIT. So a client's tradeable position could
+     * not be shown on a list without a live MT5 call per row — which is the read
+     * this whole mirror exists to avoid.
+     *
+     * NOT added to any sum. It is not the client's money to withdraw, and a
+     * balance figure that quietly included bonus credit would overstate what a
+     * withdrawal can pay out. Same rule as `trading_products.spread_markup_per_lot`:
+     * recorded, and reading it as spendable is the mistake to guard against.
+     */
+    credit: numeric('credit', { precision: 28, scale: 8 }).notNull().default('0'),
+    /**
      * When MT5 last CONFIRMED the balance above (0081).
      *
      * NULL means never: the figure is the CRM's last word rather than the
@@ -2318,6 +2373,26 @@ export const mt5Deals = pgTable(
     index('mt5_deals_unaccrued_idx')
       .on(t.dealtAt)
       .where(sql`${t.commissionProcessedAt} IS NULL`),
+    /*
+     * The POSITION lookup, which runs on every closing deal the engine accrues.
+     *
+     * `unconsumedLegs` asks "every deal on this position that no accrual has
+     * taken yet" — filtered by `mt5_position_id` AND `login`, because a position
+     * id is unique per SERVER and a cross-account match would pay one client's
+     * partner out of another client's trade. Without this the planner reaches
+     * for `mt5_deals_login_dealt_idx` and scans every deal that login ever made,
+     * discarding all but the handful on the position.
+     *
+     * Harmless on a small table and quietly quadratic on the real one: deals
+     * accumulate for ever (there is no retention on this table, deliberately —
+     * it is the audit record), an active account reaches tens of thousands of
+     * rows, and this runs once per closing deal. The cost grows with account
+     * AGE, so it is invisible in testing and arrives months after launch.
+     *
+     * Login first: it is the higher-cardinality column here and the one both
+     * callers always supply.
+     */
+    index('mt5_deals_login_position_idx').on(t.login, t.mt5PositionId),
   ],
 );
 
@@ -3613,3 +3688,52 @@ export const storedObjects = pgTable(
     index('stored_objects_key_idx').on(t.storageKey),
   ],
 );
+
+/*
+ * ── job_leases — ONE INSTANCE RUNS EACH SCHEDULED JOB ────────────────────────
+ *
+ * `@Cron` fires on EVERY instance. That is fine for correctness here — every
+ * money job on this platform is idempotent by construction, and each one says so
+ * in its own docblock: the accrual is guarded by `ib_accruals_source_earner_uq`,
+ * the confirm credit by `ledger_entries_wallet_reference_uq`, a transfer resume
+ * by the transfer id being the bridge's idempotency key. Two instances racing
+ * produce one outcome.
+ *
+ * What it is not is AFFORDABLE. Four replicas mean four drains of the same
+ * commission queue, contending on the same rows, doing four times the database
+ * work for one result — and the drain budgets make each run long enough to
+ * overlap the next. Correct and wasteful is what stops a platform scaling
+ * horizontally, which is the only way it reaches the size this one is planned
+ * for.
+ *
+ * ── A LEASE, not an advisory lock ───────────────────────────────────────────
+ *
+ * `pg_try_advisory_lock` is session-scoped, and with a connection pool the
+ * unlock can land on a different pooled connection than the lock — leaking the
+ * lock until that connection recycles. A row with an expiry has no such
+ * coupling: it is visible, debuggable in one SELECT, and self-healing. An
+ * instance that dies mid-job simply stops renewing, and the lease expires.
+ *
+ * `expires_at` is therefore a CRASH BACKSTOP rather than the normal path. A job
+ * that finishes releases immediately; the expiry only matters when nothing ever
+ * releases, and it must exceed the job's own time budget or a second instance
+ * would start while the first is still working.
+ */
+export const jobLeases = pgTable('job_leases', {
+  /** The job's `@Cron` name — `ib.confirmAccruals`, `wallet.reconcile`. */
+  name: varchar('name', { length: 100 }).primaryKey(),
+  /**
+   * Which instance holds it. Host and process, for the operator staring at a
+   * lease that has not moved: "who is stuck" is the first question, and a
+   * boolean cannot answer it.
+   */
+  holder: varchar('holder', { length: 160 }).notNull(),
+  acquiredAt: timestamp('acquired_at', { withTimezone: true }).notNull().defaultNow(),
+  /**
+   * When another instance may take it, whatever the holder is doing.
+   *
+   * Released early on a clean finish by setting this to `now()`, so the next
+   * tick is not blocked by a job that already ended.
+   */
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+});

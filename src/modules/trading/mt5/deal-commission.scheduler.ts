@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { DealCommissionService } from './deal-commission.service';
+import { DealCommissionService, type DealAccrualRun } from './deal-commission.service';
 import { pendingMigrationHint } from '../../../common/logging/pending-migration';
 import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
+import { JobLeaseService } from '../../../common/scheduling/job-lease.service';
 
 /**
  * Refused deals beyond which this is a SETTINGS problem rather than a blip.
@@ -27,6 +28,22 @@ const ORPHAN_DEAL_ALERT = 200;
 
 /** How often the stall alert repeats while the condition holds. */
 const ALERT_REPEAT_MS = 3_600_000;
+
+/**
+ * One bite of the deal queue. Unchanged from the batch this job used to take
+ * once per run — what changed is that a run no longer stops after one.
+ */
+const ACCRUE_BATCH = 200;
+
+/**
+ * How long one accrual run may spend draining, against a one-minute cron.
+ *
+ * Under the interval deliberately: overlapping runs are CORRECT here — the
+ * accrual is idempotent through `ib_accruals_source_earner_uq` — but two runs
+ * competing for the same rows finish slower than one, so the margin is there to
+ * make overlap rare rather than to make it safe.
+ */
+const ACCRUE_TIME_BUDGET_MS = 45_000;
 
 /**
  * Drains the deal → commission queue, on a schedule.
@@ -79,7 +96,10 @@ export class DealCommissionScheduler {
    */
   private lastStallAlert = 0;
 
-  constructor(private readonly deals: DealCommissionService) {}
+  constructor(
+    private readonly deals: DealCommissionService,
+    private readonly leases: JobLeaseService,
+  ) {}
 
   /*
    * `process.env` rather than ConfigService, for the reason `CommissionScheduler`
@@ -90,8 +110,22 @@ export class DealCommissionScheduler {
     name: 'ib.accrueDeals',
   })
   async accrue(): Promise<void> {
+    /*
+     * ONE INSTANCE. The accrual is idempotent — two runs racing the same deal
+     * both hit `ib_accruals_source_earner_uq` and the second writes nothing — so
+     * this is about cost, not safety, and that ordering matters: the lease may
+     * fail open (see `JobLeaseService`) precisely because the job tolerates it.
+     *
+     * TTL is double the drain budget: it is the crash backstop, and a backstop
+     * shorter than the work would hand the job to a second instance while the
+     * first was still draining.
+     */
+    await this.leases.run('ib.accrueDeals', 2 * ACCRUE_TIME_BUDGET_MS, () => this.runOnce());
+  }
+
+  private async runOnce(): Promise<void> {
     try {
-      const run = await this.deals.accruePending();
+      const run = await this.drain();
 
       /*
        * ── THE RUN THAT DID NOTHING, ON PURPOSE ──────────────────────────────
@@ -285,5 +319,89 @@ export class DealCommissionScheduler {
             'once the accounts are linked — no backfill needed.',
       { refused: run.deferred, unlinked: run.orphaned },
     );
+  }
+
+  /**
+   * Drain the queue within a time budget, instead of taking one bite per minute.
+   *
+   * ## The ceiling this removes
+   *
+   * `accruePending` takes a batch — 200 — and this job called it ONCE a minute:
+   * a hard ceiling of 200 deals per minute, about 288,000 a day, whatever the
+   * platform actually traded.
+   *
+   * That is comfortable for a broker with a few hundred accounts and marginal at
+   * the size this platform is planned for: 100k clients holding two MT5 accounts
+   * each, trading twice a day, is 400,000 deals — past the ceiling, every day,
+   * permanently. The backlog would grow silently, because a full batch and a
+   * healthy batch report identically.
+   *
+   * ## Bounded by TIME, under the interval
+   *
+   * A bigger batch moves the ceiling; a budget removes it. Quiet minutes stop
+   * after one short batch and cost one indexed query.
+   *
+   * 45s against a one-minute cron. `accruePending` documents itself as safe to
+   * run concurrently with itself — two workers racing the same deal both hit
+   * `ib_accruals_source_earner_uq` and the second writes nothing — so an overlap
+   * is correct rather than dangerous. It is still slower than not overlapping,
+   * which is what the margin buys.
+   *
+   * ## The fields do NOT all aggregate the same way
+   *
+   * Tallies (`examined`, `accrued`, `failed`, …) sum across batches. `orphaned`
+   * and `deferred` are BACKLOG readings, not batch counts — `accruePending`
+   * re-counts them on every run precisely because such deals never appear in a
+   * batch — so summing them would multiply one stuck backlog by the number of
+   * batches and alarm on a number that does not exist. The last reading wins.
+   */
+  private async drain(): Promise<DealAccrualRun> {
+    const startedAt = Date.now();
+    const total: DealAccrualRun = {
+      examined: 0,
+      accrued: 0,
+      accrualRows: 0,
+      nothingOwed: 0,
+      legsConsumed: 0,
+      orphaned: 0,
+      deferred: 0,
+      failed: 0,
+      predating: 0,
+      awaitingBacklogDecision: false,
+    };
+
+    for (;;) {
+      const run = await this.deals.accruePending(ACCRUE_BATCH);
+
+      total.examined += run.examined;
+      total.accrued += run.accrued;
+      total.accrualRows += run.accrualRows;
+      total.nothingOwed += run.nothingOwed;
+      total.legsConsumed += run.legsConsumed;
+      total.failed += run.failed;
+      total.predating += run.predating;
+
+      // Live readings, not tallies — see the note above.
+      total.orphaned = run.orphaned;
+      total.deferred = run.deferred;
+
+      /*
+       * The engine is holding for a decision nobody has made. It will hold
+       * identically on the next call, so asking again inside one run only turns
+       * one honest message into a loop.
+       */
+      if (run.awaitingBacklogDecision) {
+        total.awaitingBacklogDecision = true;
+        break;
+      }
+
+      /* A short batch means the payable queue is empty. What is left is held
+         out of it on purpose, and no number of extra calls reaches it. */
+      if (run.examined < ACCRUE_BATCH) break;
+
+      if (Date.now() - startedAt >= ACCRUE_TIME_BUDGET_MS) break;
+    }
+
+    return total;
   }
 }

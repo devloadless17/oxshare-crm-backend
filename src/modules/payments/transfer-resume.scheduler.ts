@@ -5,6 +5,7 @@ import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { transfers } from '../../database/schema';
 import { TransferExecutor } from './transfer-executor.service';
+import { JobLeaseService } from '../../common/scheduling/job-lease.service';
 
 /**
  * Finishes transfers that were left pending, so a client never has to ask.
@@ -49,6 +50,7 @@ export class TransferResumeScheduler {
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly executor: TransferExecutor,
+    private readonly leases: JobLeaseService,
   ) {}
 
   /*
@@ -72,6 +74,19 @@ export class TransferResumeScheduler {
     name: 'payments.resumeTransfers',
   })
   async resume(): Promise<void> {
+    /*
+     * ONE INSTANCE. Safe either way — the bridge's idempotency key is the
+     * transfer id, so a duplicated resume returns the SAME deal rather than
+     * moving money twice — but every duplicate is a real MT5 call queued behind
+     * the one session lock that client reads and reconnects also need.
+     *
+     * Five minutes against a one-minute cron, because a resume round waits on
+     * the bridge and can outlast its own interval.
+     */
+    await this.leases.run('payments.resumeTransfers', 5 * 60_000, () => this.runOnce());
+  }
+
+  private async runOnce(): Promise<void> {
     try {
       /*
        * A GRACE PERIOD, so this never races the request that created the row.

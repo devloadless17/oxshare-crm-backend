@@ -197,6 +197,74 @@ const envSchema = z
      * so there is no burst to keep up with, and `GET /groups` costs ~4.9s on the
      * MT5 side.
      */
+    /*
+     * ── THE BRIDGE'S ADDRESS AND ITS TWO SECRETS ───────────────────────────
+     *
+     * Declared here because they were declared NOWHERE, and this file exists to
+     * refuse boot on bad config. Nine `MT5_*` variables are read across the
+     * codebase and exactly one of them was validated, so every way of getting
+     * the bridge wrong produced a clean boot and a runtime that quietly does
+     * less:
+     *
+     *   MT5_BRIDGE_URL missing   `Mt5BridgeClient.isConfigured` is false, so
+     *                            every transfer is left PENDING for ever and
+     *                            account creation has nothing to call. One warn
+     *                            line per transfer, and nothing else.
+     *   MT5_BRIDGE_SECRET missing
+     *                            `BridgeSecretGuard` fails closed — correctly —
+     *                            so every push is 401. The bridge treats 4xx on
+     *                            a snapshot as permanent and DROPS it; deals
+     *                            retry for ever and fill the outbox instead.
+     *
+     * Both of those are the "silent downgrade" the STORAGE_DRIVER block in this
+     * same file refuses by name. A typo in a URL should not be the difference
+     * between a working platform and one that stops moving money without
+     * saying so.
+     *
+     * Optional in development, where a bridge often is not running and the
+     * unconfigured path is a legitimate way to work. REQUIRED in production —
+     * see PROD_REQUIRED.
+     */
+    /*
+     * The SCHEME is checked explicitly, because `z.string().url()` is not
+     * enough on its own: WHATWG parsing reads `bridge.internal:8443` as the
+     * scheme `bridge.internal:` with path `8443`, so the most likely typo — a
+     * host and port with the scheme left off — sails through `.url()` and fails
+     * later inside `fetch`, hours after the deploy, as an unreadable parse
+     * error in a log nobody is watching.
+     */
+    MT5_BRIDGE_URL: z
+      .string()
+      .url('MT5_BRIDGE_URL must be an absolute URL, e.g. https://bridge.internal:8443')
+      .refine(
+        (value) => /^https?:$/.test(new URL(value).protocol),
+        'MT5_BRIDGE_URL must start with http:// or https:// — a bare host:port parses as a URL ' +
+          'with a nonsense scheme and fails only when the first transfer tries to call it.',
+      )
+      .optional(),
+    MT5_BRIDGE_API_KEY: z.string().min(1).optional(),
+    /*
+     * What the bridge presents in `X-Bridge-Secret`, compared in fixed time.
+     * A length floor rather than a pattern: this is the only thing standing
+     * between the open internet and an endpoint that writes deals to the
+     * ledger, and a short shared secret is a guessable one.
+     */
+    MT5_BRIDGE_SECRET: z
+      .string()
+      .min(
+        16,
+        'MT5_BRIDGE_SECRET must be at least 16 characters — it is the only authentication on ' +
+          'an endpoint that writes to the ledger.',
+      )
+      .optional(),
+    MT5_BRIDGE_TIMEOUT_MS: z
+      .string()
+      .regex(/^\d+$/, 'MT5_BRIDGE_TIMEOUT_MS must be a whole number of milliseconds')
+      .optional(),
+    MT5_BRIDGE_READ_TIMEOUT_MS: z
+      .string()
+      .regex(/^\d+$/, 'MT5_BRIDGE_READ_TIMEOUT_MS must be a whole number of milliseconds')
+      .optional(),
     MT5_GROUP_SYNC_CRON: z
       .string()
       .regex(
@@ -423,6 +491,26 @@ const PROD_REQUIRED = [
   // configure mail. The failure would land on an operator mid-form rather than
   // on the deploy that omitted it. Refuse, do not degrade.
   'APP_ENCRYPTION_KEY',
+  /*
+   * ── THE BRIDGE IS NOT OPTIONAL IN PRODUCTION ──────────────────────────────
+   *
+   * Without these the platform boots, serves every screen, and cannot move a
+   * single unit of money to or from MT5: transfers sit `pending` for ever,
+   * account creation has nothing to call, and every pushed snapshot is answered
+   * 401 and dropped by a bridge that treats 4xx as permanent.
+   *
+   * That is a worse failure than not starting, because it is indistinguishable
+   * from a quiet trading day. `STORAGE_DRIVER` in this same file refuses the
+   * identical shape of mistake — "use R2 if configured, else disk" — for the
+   * identical reason: one typo, no error, and the consequence found weeks later.
+   *
+   * Development is deliberately exempt. Running the CRM without a bridge is a
+   * normal way to work on everything that is not trading, and
+   * `TransferExecutor` has a documented, tested path for it.
+   */
+  'MT5_BRIDGE_URL',
+  'MT5_BRIDGE_API_KEY',
+  'MT5_BRIDGE_SECRET',
 ] as const;
 
 export function validateEnv(config: Record<string, unknown>): Record<string, unknown> {

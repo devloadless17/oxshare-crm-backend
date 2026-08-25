@@ -12,6 +12,7 @@ import {
   type CommissionAccrualPort,
 } from '../../../common/provisioning/commission-accrual.port';
 import { brokerRevenueOf } from '../broker-revenue';
+import { AppSettingsStore } from '../../../store/app-settings.store';
 import {
   CLOSING_ENTRIES,
   TRADE_ACTIONS,
@@ -55,7 +56,7 @@ const RETRY_EXPONENT_CEILING = 20;
  */
 const BACKLOG_AGE_MS = 48 * 60 * 60 * 1000;
 
-/** What `IB_ACCRUAL_START` says, resolved once per run. */
+/** What the backlog decision says, resolved once per run. */
 type AccrualWindow =
   /** Pay for everything, deliberately. */
   | { mode: 'all' }
@@ -65,15 +66,35 @@ type AccrualWindow =
   | { mode: 'unset' };
 
 /**
- * Read straight from `process.env`, like the scheduler's cron and for the same
- * reason: this service is constructed by hand in the money suites, which do not
- * build a Nest container to ask a ConfigService with.
+ * Interpret the backlog decision. PURE — the caller supplies the raw value.
  *
- * `env.validation.ts` has already refused to boot on a malformed value, so this
- * only has to interpret one it has been told is well formed.
+ * The SETTING wins and the environment is the fallback, exactly as `holdHours`
+ * resolves the settlement window: `trading_settings.ib_accrual_start` is the
+ * answer once a row exists, and `IB_ACCRUAL_START` answers only when none does.
+ *
+ * ## Why this stopped being environment-only
+ *
+ * It is a COMMERCIAL decision — how much history to pay partners for — and it
+ * lived where only a deploy could reach it, invisible to everybody running the
+ * platform. That is the same objection `ibCommissionHoldHours` was moved for.
+ *
+ * The stronger one is the audit. This decision is IRREVERSIBLE: money paid for
+ * a trade nobody meant to pay for comes back by conversation, not by redeploy.
+ * An environment variable records no actor, no timestamp and no reason; a
+ * settings write records all three. Friction is not a substitute for
+ * accountability.
  */
-export function accrualWindow(raw = process.env['IB_ACCRUAL_START']): AccrualWindow {
-  if (raw === undefined || raw.trim() === '') return { mode: 'unset' };
+export function accrualWindow(raw: string | null | undefined): AccrualWindow {
+  /*
+   * EXPLICIT, with no default reading `process.env`.
+   *
+   * It used to default to the environment variable, and that made the fallback
+   * unavoidable: a caller resolving "the operator saved UNDECIDED" has nothing
+   * to pass but `undefined`, which re-triggered the default and handed the
+   * decision straight back to the variable it had just overridden. The caller
+   * decides where the value comes from; this only interprets it.
+   */
+  if (raw === undefined || raw === null || raw.trim() === '') return { mode: 'unset' };
   if (raw.trim() === 'all') return { mode: 'all' };
 
   const at = new Date(raw.trim());
@@ -213,6 +234,12 @@ export class DealCommissionService {
      * the wallet side to pay commissions out; see the port's own note.
      */
     @Inject(COMMISSION_ACCRUAL) private readonly commissions: CommissionAccrualPort,
+    /*
+     * Read fresh on every run, never cached: an operator who finally makes the
+     * backlog decision should see the NEXT run honour it, not wait out a TTL on
+     * the one job whose silence means partners are not being paid.
+     */
+    private readonly settings: AppSettingsStore,
   ) {}
 
   /**
@@ -234,7 +261,24 @@ export class DealCommissionService {
    * without a leader election.
    */
   async accruePending(limit = 200): Promise<DealAccrualRun> {
-    const window = accrualWindow();
+    /*
+     * The SETTING first, the environment only when no row exists. Once an
+     * operator saves the form the table is the single answer — a variable that
+     * keeps overriding a saved setting is the bug this move removes.
+     */
+    /*
+     * A ROW is the answer, even when the value in it is NULL.
+     *
+     * `?? process.env[...]` was wrong here and the suite caught it: `null` is
+     * nullish, so an operator who deliberately left the decision undecided had
+     * it silently overridden by a stale variable on the box — the exact failure
+     * moving this setting out of the environment was meant to end. Only the
+     * ABSENCE of a row falls back.
+     */
+    const settings = await this.settings.getTrading();
+    const window = accrualWindow(
+      settings ? settings.ibAccrualStart : process.env['IB_ACCRUAL_START'],
+    );
 
     /*
      * ── NOBODY HAS SAID WHAT TO DO WITH THE BACKLOG, SO NOTHING IS PAID ────

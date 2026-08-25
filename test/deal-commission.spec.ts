@@ -9,6 +9,15 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CommissionRefusedError } from '../src/common/provisioning/commission-accrual.port';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
+/*
+ * The backlog decision now lives in `trading_settings`, with the environment as
+ * the fallback for a deployment configured before the column existed. These
+ * suites drive the ENGINE, so they hand it a store with no row and keep setting
+ * `IB_ACCRUAL_START` — which is exactly the fallback path, and the one every
+ * existing deployment is on until an operator saves the form.
+ */
+const noSettingsRow = () => ({ getTrading: () => Promise.resolve(null) }) as never;
+
 /**
  * The deal → commission seam, against real Postgres.
  *
@@ -124,13 +133,17 @@ async function makeDue(dealRowId: string): Promise<void> {
 
 /** A service whose accrual always refuses — a wrong rate, in one object. */
 function refusingService(): DealCommissionService {
-  return new DealCommissionService(ctx.db, {
-    accrueForDeal: vi
-      .fn()
-      .mockRejectedValue(new CommissionRefusedError('total exceeds the revenue')),
-    accrueForClosedPosition: vi.fn(),
-    accrueForSettledDeposit: vi.fn(),
-  });
+  return new DealCommissionService(
+    ctx.db,
+    {
+      accrueForDeal: vi
+        .fn()
+        .mockRejectedValue(new CommissionRefusedError('total exceeds the revenue')),
+      accrueForClosedPosition: vi.fn(),
+      accrueForSettledDeposit: vi.fn(),
+    },
+    noSettingsRow(),
+  );
 }
 
 /** Has an accrual taken this deal's revenue yet? */
@@ -227,7 +240,7 @@ beforeAll(async () => {
     new ConfigService(),
     new AppSettingsStore(ctx.db),
   );
-  deals = new DealCommissionService(ctx.db, commissions);
+  deals = new DealCommissionService(ctx.db, commissions, noSettingsRow());
 }, 180_000);
 
 afterAll(async () => {
