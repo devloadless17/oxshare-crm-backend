@@ -11,6 +11,7 @@ import type {
   UpdateTradingSettingsDto,
 } from './dto/settings.dto';
 import { tradingTermsFrom } from '../../common/trading-terms';
+import { revenueBasisOf } from '../../common/revenue-basis';
 
 /**
  * Reads and writes the two singleton settings rows.
@@ -183,6 +184,7 @@ export class SettingsService {
       ibMaxRevenueSharePct: terms.ibMaxRevenueSharePct,
       ibCommissionHoldHours: terms.ibCommissionHoldHours,
       ibAccrualStart: terms.ibAccrualStart,
+      ibRevenueBasis: terms.ibRevenueBasis,
       updatedAt: row?.updatedAt.toISOString() ?? null,
     };
   }
@@ -213,6 +215,17 @@ export class SettingsService {
          */
         ibAccrualStart:
           dto.ibAccrualStart === undefined ? previous.ibAccrualStart : dto.ibAccrualStart,
+        /*
+         * Same preserve-on-`undefined` contract as the field above, and the
+         * one below it in consequence. This form is a full replace, so a
+         * console that predates the field sends every OTHER value on every
+         * save — and defaulting a missing basis would re-price the entire book
+         * as a side effect of somebody adjusting the demo account cap. There
+         * is no `null` case: unlike the backlog decision this setting has no
+         * undecided state, because the platform is always paying on something.
+         */
+        ibRevenueBasis:
+          dto.ibRevenueBasis === undefined ? previous.ibRevenueBasis : dto.ibRevenueBasis,
       },
       actor.id,
     );
@@ -230,6 +243,7 @@ export class SettingsService {
       ibMaxRevenueSharePct: row.ibMaxRevenueSharePct,
       ibCommissionHoldHours: row.ibCommissionHoldHours,
       ibAccrualStart: row.ibAccrualStart,
+      ibRevenueBasis: revenueBasisOf(row.ibRevenueBasis),
       updatedAt: row.updatedAt.toISOString(),
     };
 
@@ -251,6 +265,15 @@ export class SettingsService {
        * be answerable, and an environment variable answers none of it.
        */
       'ibAccrualStart',
+      /*
+       * WHAT a partner is paid on, as against how long it is held or when it
+       * starts. This is the field that decides the SIZE of every future
+       * accrual, and it was a constant in a source file until now — reachable
+       * only by whoever could open a pull request, and recorded nowhere. A
+       * partner disputing their statement six months from now is asking a
+       * question only this audit row can answer.
+       */
+      'ibRevenueBasis',
     ] as const) {
       if (previous[field] !== after[field]) {
         changed[field] = { before: previous[field], after: after[field] };

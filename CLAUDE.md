@@ -108,6 +108,12 @@ rebuilding against them would be an engine that can never run.
 This one computes from what the system actually has: an **ingested MT5 deal**, attributed by
 `users.referred_by_ib_user_id`, split by the earner's **named programme** (`ib_programs`).
 
+**WHAT it computes on is a setting, not a constant** — `trading_settings.ib_revenue_basis`,
+defaulting to the `commission + swap` the platform shipped with. See "The spread markup drives
+money ONLY when an operator says so" below before changing anything that reaches
+`brokerRevenueFor`; the short version is that FR-IB-16 asks for the agreed method to be
+*configured*, and a constant in a source file is not a configuration.
+
 ### Programmes carry the rates; the ladder carries placement (migration 0084)
 
 FR-IB-06 asks for "a named program driving commission/rebate" per partner, which a rung-keyed rate
@@ -387,42 +393,94 @@ Both layers now take the db by constructor injection. `store/*.store.ts` classes
 `getDb()` singleton from inside each method, and a lint rule now blocks importing it here.
 Not extracting a _store layer_ for money is deliberate: §11 requires those tests to run against
 **real Postgres via Testcontainers**, so a fake-substitution seam would buy them nothing, while
-moving `FOR UPDATE` across a new boundary would cost real risk. `test/di-wiring.spec.ts` resolves
-each money service from the real module graph, which the hand-constructed money specs cannot. `database/db.ts` exports an `Executor` type so a store method can join a
-caller's transaction.
+moving `FOR UPDATE` across a new boundary would cost real risk. `database/db.ts` exports an
+`Executor` type so a store method can join a caller's transaction.
 
-## A product's spread markup is RECORDED and drives nothing (ADM-07, 0093)
+> **`test/di-wiring.spec.ts` does not exist.** This section claimed it resolved each money
+> service from the real module graph — a thing the hand-constructed money specs genuinely
+> cannot do, and a real gap rather than a wording slip. What covers the graph today is
+> incidental: the HTTP specs boot the whole `AppModule`, so a constructor dependency Nest
+> cannot resolve fails all of them at once. That is a backstop, not a test of the thing.
+
+## The spread markup drives money ONLY when an operator says so (ADM-07, FR-IB-16, 0095/0101)
 
 `trading_products.spread_markup_per_lot` is the broker's markup per standard lot, in the account
 currency. It is on the PRODUCT because **the product IS the tier** — `trading_accounts.tier` is
 inert and labelled dead precisely because "a tier would be a second name for the same thing", and a
 `tiers` table would recreate the name that column was retired for.
 
-**Nothing reads it, and that is deliberate.** In particular it is NOT part of `brokerRevenueOf`,
-which is `commission + swap` and decides what every partner is paid. Adding it to that sum is a
-reasonable next step — spread is the other half of what a broker earns on a trade — but it changes
-what every partner is paid on every future trade, and MT5 reports no per-deal spread revenue to
-check the result against. That needs a person, not a column. The database carries the same warning
-as a `COMMENT ON COLUMN`, because the failure being guarded is somebody two quarters from now
-finding a populated, plausible number and reading it as live.
+**Until 0101 nothing read it, and the reason is still the right one.** The FSD calls commission
+"spread-based" (FR-IB-04, FR-IB-16) while the engine computes on `commission + swap`, because MT5
+reports no per-deal spread revenue — there is neither a figure to compute from nor a figure to check
+a result against. Migration 0095 recorded the conclusion that follows: wiring the markup into the
+base "changes what every partner is paid on every future trade", and **that needs a person, not a
+column**.
 
-**It is not a mirror of MT5, and that was checked rather than assumed.** The obvious objection is
-that markup is really the server's to own — but the Manager API the bridge ships has no per-GROUP
-markup at all. It has `AskMarkup`, `BidMarkup`, `SpreadDiff` and `SpreadBalance` on
-`IMTConGroupSymbol`: per group **and symbol**, in **points**, split by side. A product maps to one
-or more groups and a group covers every symbol it trades, so the honest mirror of one product is
-group × symbol × 2 values in points — and converting any of it to currency-per-lot needs each
-symbol's `ContractSize` and `TickValue` at a price, which is a calculation that moves with the
-market, not a reading. There is no single MT5 number this column could copy, so it is not competing
-with one: it is the DESK's figure. Per-symbol truth, if ever wanted, is a different table
-`(group, symbol, ask_markup, bid_markup)` fed by a bridge endpoint that does not exist — additive
-to this, not a replacement.
+So the gap between the specification and the system was never missing arithmetic. It was that the
+arithmetic **had no owner**: one number decided what every partner earns, it lived as a constant in
+a source file, it could only be changed by deploy, and nothing recorded who changed it.
+
+`trading_settings.ib_revenue_basis` is that owner.
+
+| value                    | the base a partner's rate applies to                        |
+| ------------------------ | ----------------------------------------------------------- |
+| `commission_swap`        | MT5's charged commission + swap. **The default, and what shipped** |
+| `spread`                 | lots × the product's `spread_markup_per_lot`                |
+| `commission_swap_spread` | both, summed                                                 |
+
+Three rules hold it together, and each closes a different door:
+
+- **The default is the status quo.** A new setting whose default changes behaviour is a silent
+  repricing wearing a migration's clothes. `test/deal-commission.spec.ts` pins this directly: an
+  account linked to a product with a 7.50 markup, trading 2 lots, still accrues on the 10.00 of
+  charges alone. If that assertion ever fails, a deployment somewhere has been re-priced by a deploy.
+- **It is AUDITED like the backlog decision.** `SettingsService` records both sides. A partner
+  disputing a statement six months from now is asking a question only that row can answer.
+- **Every call site must state the basis AND the markup.** `brokerRevenueFor` takes both as required
+  arguments, so the dormant `positions.service.ts` path cannot inherit the old pricing by omission
+  the day somebody flips `LIVE_REVENUE_FEED`. Two paths paying two different amounts for one trade
+  is the exact failure `brokerRevenueOf` was extracted into a function to prevent.
+
+### Where each half lives, and why the split is not arbitrary
+
+`common/revenue-basis.ts` holds the VOCABULARY — the union, the list, the narrowing. Four layers
+need to name a basis and two of them (`common/`, `store/`) are forbidden by lint from importing
+`modules/`. `modules/trading/broker-revenue.ts` holds the ARITHMETIC, beside the sign convention it
+has to honour. Naming a thing is not computing with it.
+
+### ⚠️ The ORDER, which is irreversible
+
+Like `ib_accrual_start`, this decides only deals NOT YET DECIDED — a row carrying
+`commission_processed_at` is never revisited.
+
+The trap: under `'spread'`, a product whose markup is still 0 produces zero revenue, and a
+zero-revenue deal is **marked done rather than retried**, because MT5's amounts are final the moment
+they are reported. **Switching the basis before the markups are populated drains the queue paying
+nothing, permanently, and switching back recovers none of it.** Nothing can detect the mistake,
+because a zero markup is also a legitimate raw-spread product. The admin form says so, conditionally,
+beside the control; migration 0101 says why.
+
+**An account linked to NO product is refused, not priced at zero.** That distinction is the whole
+reason `spreadMarkupPerLot` is `string | null` rather than defaulting: zero is a price, `null` is a
+configuration hole. A refusal defers the deal on the 0092 backoff with the reason on the row, so the
+money stays owed and one relinked account pays it on the next run.
+
+**It is not a mirror of MT5, and that was checked rather than assumed.** The Manager API the bridge
+ships has no per-GROUP markup at all. It has `AskMarkup`, `BidMarkup`, `SpreadDiff` and
+`SpreadBalance` on `IMTConGroupSymbol`: per group **and symbol**, in **points**, split by side. A
+product maps to one or more groups and a group covers every symbol it trades, so the honest mirror of
+one product is group × symbol × 2 values in points — and converting any of it to currency-per-lot
+needs each symbol's `ContractSize` and `TickValue` at a price, which is a calculation that moves with
+the market, not a reading. There is no single MT5 number this column could copy, so it is not
+competing with one: it is the DESK's figure. Per-symbol truth, if ever wanted, is a different table
+`(group, symbol, ask_markup, bid_markup)` fed by a bridge endpoint that does not exist — additive to
+this, not a replacement.
 
 A decimal **string** end to end, like every `NUMERIC(28,8)` here, with `@ApiProperty({ type:
-'string' })` so the generated frontend type says `string` — the same reason ADM-10's commission
-rates are spelled that way. **Omitting it on the PUT keeps the stored value**: this endpoint is a
-full replace, so a caller that predates the field would otherwise zero a negotiated markup every
-time somebody renamed a product, and the audit row would faithfully record a change nobody made.
+'string' })` so the generated frontend type says `string`. **Omitting the markup on the product PUT
+keeps the stored value**: that endpoint is a full replace, so a caller predating the field would
+otherwise zero a negotiated markup every time somebody renamed a product — and now that the markup
+can drive money, that would silently stop paying on it.
 
 ## `TRUSTED_PROXY_HOPS` is watched at RUNTIME, not just stated at boot
 

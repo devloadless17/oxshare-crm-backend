@@ -1074,6 +1074,46 @@ export const tradingSettings = pgTable(
      * commission for three years with every component reporting success.
      */
     ibCommissionHoldHours: integer('ib_commission_hold_hours').notNull().default(24),
+    /**
+     * WHICH of the broker's earnings a partner's rate applies to — FR-IB-16.
+     *
+     * `'commission_swap'` (the default, and what the platform shipped on) is
+     * MT5's charged commission plus swap. `'spread'` is lots × the product's
+     * `spread_markup_per_lot`. `'commission_swap_spread'` is both.
+     *
+     * ── Why this is a column and not a constant ──────────────────────────
+     *
+     * The FSD calls commission "spread-based" and the engine computes on
+     * charges, for a reason that survives scrutiny: MT5 reports no per-deal
+     * spread revenue, so there is nothing to compute from and nothing to check
+     * a result against. Migration 0095 and `broker-revenue.ts` both close that
+     * argument the same way — wiring the markup in "changes what every partner
+     * is paid on every future trade", and that needs a PERSON, not a column.
+     *
+     * This is that person's switch, and it is here rather than in the source
+     * for the reason `ibCommissionHoldHours` and `ibAccrualStart` are here: the
+     * single number deciding what a partner earns should not be reachable only
+     * by whoever can open a pull request. `SettingsService` records both sides
+     * of every change to this table, so "who re-priced the book, and when" has
+     * an answer.
+     *
+     * ── The default is the status quo, deliberately ──────────────────────
+     *
+     * A new setting whose default changes behaviour is a silent repricing. Every
+     * deployment keeps paying what it paid yesterday until somebody chooses.
+     *
+     * ── It re-prices the FUTURE only ─────────────────────────────────────
+     *
+     * Same edge as `ibAccrualStart`: a deal carrying `commission_processed_at`
+     * is never revisited. And the specific trap worth knowing before switching —
+     * under `'spread'` alone a product with a zero markup yields zero revenue,
+     * and a zero-revenue deal is marked DONE rather than retried. Populate the
+     * product markups before selecting a spread-inclusive basis, or the queue
+     * drains paying nothing and cannot be re-opened by changing this back.
+     */
+    ibRevenueBasis: varchar('ib_revenue_basis', { length: 30 })
+      .notNull()
+      .default('commission_swap'),
     updatedBy: uuid('updated_by'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1082,6 +1122,16 @@ export const tradingSettings = pgTable(
     check(
       'trading_settings_hold_hours_ck',
       sql`${t.ibCommissionHoldHours} >= 0 AND ${t.ibCommissionHoldHours} <= 8760`,
+    ),
+    /*
+     * The set is closed at the database as well as at the DTO. `revenueBasisOf`
+     * falls back to the default on an unrecognised value — the safe reading at
+     * runtime, and exactly why an unrecognised value must not be storable: a
+     * fallback that works silently is a fallback nobody notices.
+     */
+    check(
+      'trading_settings_revenue_basis_ck',
+      sql`${t.ibRevenueBasis} IN ('commission_swap', 'spread', 'commission_swap_spread')`,
     ),
   ],
 );

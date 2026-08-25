@@ -2,13 +2,16 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { positions, tradingAccounts } from '../../database/schema';
+import { positions, tradingAccounts, tradingProducts } from '../../database/schema';
 import {
   COMMISSION_ACCRUAL,
   type CommissionAccrualPort,
 } from '../../common/provisioning/commission-accrual.port';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
-import { brokerRevenueOf } from './broker-revenue';
+import { brokerRevenueFor } from './broker-revenue';
+import { basisCountsSpread } from '../../common/revenue-basis';
+import { AppSettingsStore } from '../../store/app-settings.store';
+import { tradingTermsFrom } from '../../common/trading-terms';
 
 /**
  * Open positions, and what happens when one closes.
@@ -43,6 +46,7 @@ export class PositionsService {
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     @Inject(COMMISSION_ACCRUAL) private readonly commissions: CommissionAccrualPort,
+    private readonly settings: AppSettingsStore,
   ) {}
 
   /** Every open position on one client's accounts, newest first. */
@@ -130,10 +134,50 @@ export class PositionsService {
      */
     if (!row) throw new NotFoundError('No open position with that id.');
 
-    const brokerRevenue = brokerRevenueOf({
-      commission: row.commission ?? '0',
-      swap: row.swap ?? '0',
+    /*
+     * ── The basis applies HERE TOO, and that is not decoration ────────────
+     *
+     * This path is dormant: `LIVE_REVENUE_FEED` is `deal`, so the accrual below
+     * refuses and nothing writes `positions` anyway. It would therefore have
+     * been easy to leave this computing `commission + swap` directly.
+     *
+     * That is exactly the trap the deal feed's own notes warn about. The day
+     * somebody flips the feed to `position`, a hardcoded base here would
+     * silently ignore a repricing an operator had already made and audited —
+     * two paths paying two different amounts for one trade, which is the failure
+     * `brokerRevenueOf` was extracted into a function to prevent in the first
+     * place. `brokerRevenueFor` takes the basis and the markup as required
+     * arguments so that a call site cannot inherit the old pricing by omission.
+     */
+    const basis = tradingTermsFrom(await this.settings.getTrading()).ibRevenueBasis;
+
+    /*
+     * Looked up ONLY when the basis needs it. A dormant path should not pay for
+     * a join on every close to satisfy a setting nobody has switched on — and
+     * under the default the markup is not read at all, so a missing product
+     * link cannot refuse a close that would otherwise have succeeded.
+     */
+    const spreadMarkupPerLot = basisCountsSpread(basis)
+      ? await this.markupFor(row.tradingAccountId)
+      : null;
+
+    const revenue = brokerRevenueFor({
+      basis,
+      legs: [{ commission: row.commission ?? '0', swap: row.swap ?? '0' }],
+      lots: row.volume,
+      spreadMarkupPerLot,
     });
+
+    /*
+     * A close is a CLIENT-FACING write that has already happened — the row above
+     * is updated and committed logic-wise — so an unpriceable trade must not
+     * take the close down with it. It throws a ValidationError naming the
+     * missing link, which is the same shape every other refusal on this path
+     * takes, rather than a 500 that says nothing an operator can act on.
+     */
+    if (!revenue.ok) throw new ValidationError(revenue.reason);
+
+    const brokerRevenue = revenue.revenue;
 
     const accrued = await this.commissions.accrueForClosedPosition({
       positionId: row.id,
@@ -151,5 +195,26 @@ export class PositionsService {
     }
 
     return row;
+  }
+
+  /**
+   * The spread markup the account's product is sold on, or `null` when the
+   * account is linked to no product.
+   *
+   * `null` is deliberately NOT collapsed to `'0'`. Zero is a real markup — a
+   * raw-spread product carries none — and a missing product link is a
+   * configuration hole. Returning zero for both would price an unconfigured
+   * account at nothing and pay a partner nothing, silently, which is the one
+   * answer this whole module is built to avoid.
+   */
+  private async markupFor(tradingAccountId: string): Promise<string | null> {
+    const [row] = await this.db
+      .select({ spreadMarkupPerLot: tradingProducts.spreadMarkupPerLot })
+      .from(tradingAccounts)
+      .innerJoin(tradingProducts, eq(tradingProducts.id, tradingAccounts.productId))
+      .where(eq(tradingAccounts.id, tradingAccountId))
+      .limit(1);
+
+    return row?.spreadMarkupPerLot ?? null;
   }
 }

@@ -708,6 +708,13 @@
       "when": 1787101216018,
       "tag": "0100_ib_accrual_start_setting",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1787101216019,
+      "tag": "0101_ib_revenue_basis",
+      "breakpoints": true
     }
   ]
 }

@@ -9,8 +9,10 @@ import {
   MaxLength,
   Min,
   MinLength,
+  IsIn,
   ValidateIf,
 } from 'class-validator';
+import { REVENUE_BASES, type RevenueBasis } from '../../../common/revenue-basis';
 
 /* ── SMTP ─────────────────────────────────────────────────────────────────── */
 
@@ -178,6 +180,17 @@ export class TradingSettingsDto {
   })
   ibAccrualStart: string | null;
 
+  @ApiProperty({
+    enum: REVENUE_BASES,
+    example: 'commission_swap',
+    description:
+      "Which of the broker's earnings a partner's rate applies to. 'commission_swap' (the " +
+      "default, and what the platform shipped on) is MT5's charged commission + swap; 'spread' " +
+      "is lots x the product's spread markup per lot; 'commission_swap_spread' is both. Changing " +
+      'it re-prices every FUTURE trade and nothing already decided.',
+  })
+  ibRevenueBasis: RevenueBasis;
+
   @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
   updatedAt: string | null;
 }
@@ -289,4 +302,40 @@ export class UpdateTradingSettingsDto {
     message: 'ibAccrualStart must be null, "all", or an ISO 8601 instant',
   })
   ibAccrualStart?: string | null;
+
+  /**
+   * WHICH of the broker's earnings a partner is paid a share of — FR-IB-16.
+   *
+   * ## Optional, and it must stay optional
+   *
+   * `undefined` means the caller did not send the field, and preserves what is
+   * stored — the same contract `ibAccrualStart` carries and for a sharper
+   * reason. This form is a full replace, so a console that predates the field
+   * would otherwise send a payload without it on every unrelated save, and a
+   * required field would either 400 that save or reset the basis to the default.
+   * Re-pricing the whole book as a side effect of somebody changing the demo
+   * account cap is precisely the accident this field exists to make impossible.
+   *
+   * ## The order that matters, said where it will be read
+   *
+   * Under `'spread'` a product whose markup is still 0 yields zero revenue, and
+   * a zero-revenue deal is marked decided rather than retried. So the markups go
+   * in FIRST. Nothing can validate that here — a zero markup is also a
+   * legitimate raw-spread product — which is why it is stated rather than
+   * enforced.
+   */
+  @ApiPropertyOptional({
+    enum: REVENUE_BASES,
+    example: 'commission_swap',
+    description:
+      "'commission_swap' (default) pays on MT5's charged commission + swap; 'spread' pays on " +
+      "lots x the product's spread markup; 'commission_swap_spread' pays on both. Applies to " +
+      'FUTURE trades only. Populate product spread markups BEFORE choosing a spread-inclusive ' +
+      'basis: a zero markup yields zero revenue, and a zero-revenue deal is decided permanently.',
+  })
+  @IsOptional()
+  @IsIn(REVENUE_BASES, {
+    message: `ibRevenueBasis must be one of: ${REVENUE_BASES.join(', ')}`,
+  })
+  ibRevenueBasis?: RevenueBasis;
 }

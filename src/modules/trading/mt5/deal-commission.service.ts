@@ -3,7 +3,7 @@ import Decimal from 'decimal.js';
 import { and, asc, eq, inArray, isNotNull, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
-import { ibAccruals, mt5Deals, tradingAccounts } from '../../../database/schema';
+import { ibAccruals, mt5Deals, tradingAccounts, tradingProducts } from '../../../database/schema';
 import { LEDGER_REFERENCE } from '../../../database/ledger-reference';
 import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
 import {
@@ -11,8 +11,9 @@ import {
   CommissionRefusedError,
   type CommissionAccrualPort,
 } from '../../../common/provisioning/commission-accrual.port';
-import { brokerRevenueOf } from '../broker-revenue';
+import { brokerRevenueFor } from '../broker-revenue';
 import { AppSettingsStore } from '../../../store/app-settings.store';
+import { tradingTermsFrom } from '../../../common/trading-terms';
 import {
   CLOSING_ENTRIES,
   TRADE_ACTIONS,
@@ -281,6 +282,20 @@ export class DealCommissionService {
     );
 
     /*
+     * ── WHAT A PARTNER IS PAID ON, resolved ONCE for the whole run ─────────
+     *
+     * FR-IB-16. Read here rather than per deal so a batch cannot be split
+     * across two bases by an operator saving the form mid-drain: every deal in
+     * one run is priced the same way, and the run's log line can name which.
+     *
+     * There is no environment fallback and there never was one — unlike
+     * `ibAccrualStart`, this setting has no predecessor variable to be
+     * compatible with. A deployment with no settings row gets the default,
+     * which is what the platform already paid.
+     */
+    const basis = tradingTermsFrom(settings).ibRevenueBasis;
+
+    /*
      * ── NOBODY HAS SAID WHAT TO DO WITH THE BACKLOG, SO NOTHING IS PAID ────
      *
      * `mt5_deals` has been filled by ingestion since long before anything read
@@ -337,6 +352,19 @@ export class DealCommissionService {
          * accrue a EUR account's commission as USD, at par.
          */
         currency: tradingAccounts.currency,
+        /*
+         * What the DESK says this account's product is sold on, per standard
+         * lot — the spread half of `brokerRevenueFor`.
+         *
+         * NULL means two different things and the difference matters: the
+         * column itself is `NOT NULL DEFAULT 0`, so a product always carries a
+         * figure and zero is a legitimate one. A null arriving here can only
+         * come from the LEFT JOIN — the account is linked to no product at all,
+         * so nothing in the system knows what it is sold on. Under a
+         * spread-inclusive basis that is a configuration hole rather than a
+         * price, and `brokerRevenueFor` refuses it.
+         */
+        spreadMarkupPerLot: tradingProducts.spreadMarkupPerLot,
       })
       .from(mt5Deals)
       /*
@@ -351,6 +379,16 @@ export class DealCommissionService {
        * is; the join must not decide it first.
        */
       .leftJoin(tradingAccounts, eq(tradingAccounts.login, mt5Deals.login))
+      /*
+       * LEFT for the same reason as the join above it, one step further out: an
+       * account with no product must still be RETURNED so the loop can decide
+       * what that costs. Under the default basis it costs nothing — the markup
+       * is never read. Under a spread-inclusive one it is a refusal that defers
+       * the deal on the existing backoff. An inner join would silently strand
+       * every such deal instead, which is the failure the orphan note above
+       * describes and the one this module works hardest to avoid.
+       */
+      .leftJoin(tradingProducts, eq(tradingProducts.id, tradingAccounts.productId))
       /*
        * ── OPEN LEGS ARE EXCLUDED HERE, NOT SKIPPED IN THE LOOP ──────────────
        *
@@ -538,15 +576,62 @@ export class DealCommissionService {
        * partner, which is the one thing this number exists to report.
        */
       run.legsConsumed += Math.max(0, legs.length - 1);
-      const brokerRevenue = legs
-        .reduce((sum, leg) => sum.plus(brokerRevenueOf(leg)), new Decimal(0))
-        .toFixed(8);
+
+      /*
+       * ── WHAT THE BROKER EARNED, under the basis the operator chose ────────
+       *
+       * The charges half sums the position's unconsumed LEGS; the spread half
+       * prices the CLOSING deal's volume once. Both halves and the reason they
+       * are counted differently live in `brokerRevenueFor` — a round turn's
+       * legs each carry the same lot count, so summing the markup across them
+       * would charge one trade's spread twice.
+       */
+      const revenue = brokerRevenueFor({
+        basis,
+        legs,
+        lots: deal.volume,
+        spreadMarkupPerLot: deal.spreadMarkupPerLot,
+      });
+
+      /*
+       * The account is linked to no product under a basis that prices on one.
+       *
+       * Deferred on the existing backoff and left UNMARKED, exactly like a
+       * refused accrual — because it is one, and for the same reason: the money
+       * is owed, and what is missing is a setting a person fixes on a screen.
+       * Marking it done would discard commission permanently over a link
+       * somebody can restore in ten seconds.
+       *
+       * Counted as `failed` rather than as its own tally so it reaches the
+       * COMMISSION_QUEUE_STALLED alarm through the machinery already watching
+       * for refusals — a new silent counter would be a second thing to notice.
+       */
+      if (!revenue.ok) {
+        run.failed += 1;
+        const refusal = new CommissionRefusedError(revenue.reason);
+        await this.deferRetry(deal.id, refusal);
+        this.logger.error(
+          `Deal ${deal.ticket} was REFUSED and stays queued; retrying will keep failing until ` +
+            `the commission configuration is corrected. ${refusal.message}`,
+        );
+        continue;
+      }
+
+      const brokerRevenue = revenue.revenue;
 
       /*
        * The broker kept nothing on this deal, so there is no share to take.
        * Marked done rather than retried: the amounts are final the moment MT5
        * reports them, so re-reading this row can only ever reach the same
        * answer.
+       *
+       * ⚠️ That finality is what makes a spread-inclusive basis order-sensitive.
+       * Under `'spread'` a product whose markup is still 0 produces zero revenue
+       * here, and this branch decides the deal for good — so switching the basis
+       * BEFORE populating the markups drains the queue paying nothing, and
+       * switching back recovers none of it. The settings form says so; migration
+       * 0101 says why. Nothing here can detect the mistake, because a zero
+       * markup is also a legitimate raw-spread product.
        */
       if (new Decimal(brokerRevenue).isZero()) {
         await this.markProcessed(legs.map((leg) => leg.id));

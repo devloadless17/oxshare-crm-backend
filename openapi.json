@@ -13587,6 +13587,22 @@
             "example": 24,
             "description": "Hours a commission is HELD before it may be confirmed — the rule between earned and spendable. 0 pays as soon as it is calculated."
           },
+          "ibAccrualStart": {
+            "type": "string",
+            "nullable": true,
+            "example": "2026-08-24T00:00:00.000Z",
+            "description": "When commission starts being paid from. NULL means NOBODY HAS DECIDED, and the engine holds rather than paying a historical backlog by accident. \"all\" pays the whole history deliberately; an ISO instant pays from there and marks everything older decided-and-unpaid."
+          },
+          "ibRevenueBasis": {
+            "type": "string",
+            "enum": [
+              "commission_swap",
+              "spread",
+              "commission_swap_spread"
+            ],
+            "example": "commission_swap",
+            "description": "Which of the broker's earnings a partner's rate applies to. 'commission_swap' (the default, and what the platform shipped on) is MT5's charged commission + swap; 'spread' is lots x the product's spread markup per lot; 'commission_swap_spread' is both. Changing it re-prices every FUTURE trade and nothing already decided."
+          },
           "updatedAt": {
             "type": "string",
             "nullable": true,
@@ -13598,7 +13614,8 @@
           "maxDemoAccounts",
           "maxDemoDeposit",
           "ibMaxRevenueSharePct",
-          "ibCommissionHoldHours"
+          "ibCommissionHoldHours",
+          "ibRevenueBasis"
         ]
       },
       "UpdateTradingSettingsDto": {
@@ -13631,6 +13648,22 @@
             "example": 24,
             "minimum": 0,
             "maximum": 8760
+          },
+          "ibAccrualStart": {
+            "type": "string",
+            "nullable": true,
+            "example": "2026-08-24T00:00:00.000Z",
+            "description": "null holds the engine, \"all\" pays the whole backlog, or an ISO 8601 instant. Applies ONLY to deals not yet decided — a deal already processed is never revisited, so moving this date backwards later recovers nothing and reports no error."
+          },
+          "ibRevenueBasis": {
+            "type": "string",
+            "enum": [
+              "commission_swap",
+              "spread",
+              "commission_swap_spread"
+            ],
+            "example": "commission_swap",
+            "description": "'commission_swap' (default) pays on MT5's charged commission + swap; 'spread' pays on lots x the product's spread markup; 'commission_swap_spread' pays on both. Applies to FUTURE trades only. Populate product spread markups BEFORE choosing a spread-inclusive basis: a zero markup yields zero revenue, and a zero-revenue deal is decided permanently."
           }
         },
         "required": [

@@ -1008,3 +1008,204 @@ describe('what the engine is allowed to pay for', () => {
     expect((await deals.accruePending()).awaitingBacklogDecision).toBe(true);
   });
 });
+
+/**
+ * WHICH of the broker's earnings the accrual is a share of — FR-IB-04, FR-IB-16.
+ *
+ * The unit suite proves the arithmetic. This proves the SEAM: that the setting
+ * an operator saves reaches the query, that the query finds the product behind
+ * the trading account, and that the number written to `ib_accruals.base_amount`
+ * is the one the basis names.
+ *
+ * The first case is the one that matters most on the day this shipped — under
+ * the default, nothing moved. A settings migration that re-prices a live book by
+ * existing is the failure every comment in this feature is written against.
+ */
+describe('what the accrual is a share of', () => {
+  const PRODUCT_LOGIN = '5000003';
+  let productClientId: string;
+
+  /** A settings row, as an operator who has saved the form would have left it. */
+  function settingsWith(basis: string) {
+    return {
+      getTrading: () =>
+        Promise.resolve({
+          maxLiveAccounts: 5,
+          maxDemoAccounts: 5,
+          maxDemoDeposit: '1000000',
+          ibMaxRevenueSharePct: '50',
+          ibCommissionHoldHours: 24,
+          /* A row is the answer, so the environment is not consulted at all. */
+          ibAccrualStart: 'all',
+          ibRevenueBasis: basis,
+          updatedBy: null,
+          updatedAt: new Date(),
+        }),
+    } as never;
+  }
+
+  const engineOn = (basis: string) =>
+    new DealCommissionService(ctx.db, commissions, settingsWith(basis));
+
+  beforeAll(async () => {
+    productClientId = await makeUser('deal-product-client@oxshare-e2e.test');
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${productClientId}`,
+    );
+
+    /*
+     * 7.50 per standard lot — the DESK's figure for this product, which under a
+     * spread basis is the entire revenue a partner is paid from.
+     */
+    await ctx.db.execute(sql`
+      INSERT INTO trading_products (name, enabled, type, sort_order, spread_markup_per_lot)
+      VALUES ('E2E Spread Product', true, 'real', 900, 7.50000000)
+      ON CONFLICT (name) DO UPDATE SET spread_markup_per_lot = 7.50000000
+    `);
+
+    await ctx.db.execute(sql`
+      INSERT INTO trading_accounts (user_id, login, currency, product_id)
+      VALUES (${productClientId}, ${PRODUCT_LOGIN}, 'USD',
+              (SELECT id FROM trading_products WHERE name = 'E2E Spread Product'))
+    `);
+  });
+
+  it('ignores the markup entirely under the default, however large it is', async () => {
+    /*
+     * The compatibility guarantee, at the seam. The account below is linked to a
+     * product carrying a 7.50 markup and trades 2 lots — 15.00 of spread sitting
+     * right there in the join — and the accrual is still 30% of the 10.00 of
+     * charges, exactly as it was before the basis existed.
+     */
+    const id = await ingest({
+      ticket: '90300',
+      login: PRODUCT_LOGIN,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+      volume: '2.00000000',
+    });
+
+    await engineOn('commission_swap').accruePending();
+
+    const [accrual] = await accrualsFor(id);
+    expect(accrual.base_amount).toBe('10.00000000');
+    expect(accrual.amount).toBe('3.00000000');
+  });
+
+  it('pays on lots x the product markup when that is the agreed method', async () => {
+    const id = await ingest({
+      ticket: '90301',
+      login: PRODUCT_LOGIN,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+      volume: '2.00000000',
+    });
+
+    await engineOn('spread').accruePending();
+
+    const [accrual] = await accrualsFor(id);
+    // 2 lots x 7.50. The 10.00 of charges is deliberately NOT in the base.
+    expect(accrual.base_amount).toBe('15.00000000');
+    expect(accrual.amount).toBe('4.50000000');
+  });
+
+  it('sums both halves under the hybrid basis', async () => {
+    const id = await ingest({
+      ticket: '90302',
+      login: PRODUCT_LOGIN,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+      volume: '2.00000000',
+    });
+
+    await engineOn('commission_swap_spread').accruePending();
+
+    const [accrual] = await accrualsFor(id);
+    expect(accrual.base_amount).toBe('25.00000000');
+    expect(accrual.amount).toBe('7.50000000');
+  });
+
+  it('REFUSES a deal on an account with no product, and keeps it queued', async () => {
+    /*
+     * `LOGIN` is linked to no product. Under a spread basis nothing in the system
+     * knows what that account is sold on, so there is no honest number — and the
+     * money is still owed. The deal is deferred on the existing backoff with the
+     * reason on the row, exactly as a wrong rate would be, rather than marked
+     * decided-and-unpaid.
+     */
+    const id = await ingest({
+      ticket: '90303',
+      login: LOGIN,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+      volume: '2.00000000',
+    });
+
+    const run = await engineOn('spread').accruePending();
+
+    expect(run.failed).toBe(1);
+    expect(await accrualsFor(id)).toHaveLength(0);
+    expect(await isProcessed(id)).toBe(false);
+
+    const state = await retryState(id);
+    expect(state.commission_attempts).toBe(1);
+    expect(state.commission_last_error).toContain('linked to no product');
+    expect(state.dueInMs).toBeGreaterThan(0);
+  });
+
+  it('pays that same deal the moment the basis is put back', async () => {
+    /*
+     * The other half of the refusal, and the reason it must not mark the row
+     * done: a deferred deal is RECOVERABLE. Correcting the setting — or linking
+     * the product — pays it on the next run, with nothing lost.
+     */
+    const id = await ingest({
+      ticket: '90304',
+      login: LOGIN,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+      volume: '2.00000000',
+    });
+
+    await engineOn('spread').accruePending();
+    expect(await accrualsFor(id)).toHaveLength(0);
+
+    await makeDue(id);
+    await engineOn('commission_swap').accruePending();
+
+    const [accrual] = await accrualsFor(id);
+    expect(accrual.base_amount).toBe('10.00000000');
+  });
+
+  it('charges one round turn ONE markup, across both its legs', async () => {
+    /*
+     * The double-billing this shape exists to prevent. Both legs of a round turn
+     * carry the full 2 lots, and the close consumes both — so a spread term
+     * summed per leg would bill 30.00 for one trade that earned 15.00.
+     */
+    await ingest({
+      ticket: '90305',
+      login: PRODUCT_LOGIN,
+      commission: '-4.00000000',
+      swap: '0.00000000',
+      entry: 0,
+      volume: '2.00000000',
+      positionId: 'P-SPREAD',
+      secondsAgo: 10,
+    });
+    const closing = await ingest({
+      ticket: '90306',
+      login: PRODUCT_LOGIN,
+      commission: '-6.00000000',
+      swap: '0.00000000',
+      entry: 1,
+      volume: '2.00000000',
+      positionId: 'P-SPREAD',
+    });
+
+    await engineOn('spread').accruePending();
+
+    const [accrual] = await accrualsFor(closing);
+    expect(accrual.base_amount).toBe('15.00000000');
+  });
+});

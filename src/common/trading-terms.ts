@@ -1,4 +1,5 @@
 import type { TradingSettingsRow } from '../store/app-settings.store';
+import { DEFAULT_REVENUE_BASIS, revenueBasisOf, type RevenueBasis } from './revenue-basis';
 
 /**
  * The terms self-service account opening runs on, in one place.
@@ -65,6 +66,21 @@ export interface TradingTerms {
    * "nothing is in scope".
    */
   ibAccrualStart: string | null;
+
+  /**
+   * WHICH of the broker's earnings a partner's rate applies to — FR-IB-16.
+   *
+   * The one number deciding what a partner is paid on used to be a constant in
+   * `broker-revenue.ts`, reachable only by deploy and invisible to everyone
+   * running the platform. It is a setting for the same reason
+   * `ibCommissionHoldHours` is: the people who make a commercial decision should
+   * be able to see it and make it, and the change should record who made it.
+   *
+   * Already narrowed by `revenueBasisOf`, so a value that reaches here is one of
+   * the three the engine implements — never whatever the column happened to
+   * hold.
+   */
+  ibRevenueBasis: RevenueBasis;
 }
 
 /**
@@ -85,6 +101,15 @@ export const DEFAULT_TRADING_TERMS: TradingTerms = {
   ibCommissionHoldHours: 24,
   /* Undecided, deliberately. A default here would be a decision nobody made. */
   ibAccrualStart: null,
+  /*
+   * The status quo, and NOT for the reason `ibAccrualStart` is null.
+   *
+   * That one is undecided because every candidate answer is expensive and
+   * irreversible. This one has a right default: whatever the platform was
+   * already paying. A new setting that re-prices the book the moment it is
+   * deployed is a repricing nobody authorised.
+   */
+  ibRevenueBasis: DEFAULT_REVENUE_BASIS,
 };
 
 /**
@@ -105,6 +130,13 @@ export function tradingTermsFrom(row: TradingSettingsRow | null): TradingTerms {
     ibMaxRevenueSharePct: row.ibMaxRevenueSharePct,
     ibCommissionHoldHours: row.ibCommissionHoldHours,
     ibAccrualStart: row.ibAccrualStart,
+    /*
+     * Narrowed on the way OUT of the database, not on the way in. The CHECK
+     * stops a bad value being stored; this stops one that predates the CHECK —
+     * or arrives from a restored dump — from reaching the engine as a basis it
+     * does not implement.
+     */
+    ibRevenueBasis: revenueBasisOf(row.ibRevenueBasis),
   };
 }
 
