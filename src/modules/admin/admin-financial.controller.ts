@@ -2,7 +2,16 @@
 // admin-money.controller.ts for why several controllers share one @Controller
 // prefix and what test/openapi-routes.spec.ts asserts about the inventory.
 
-import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  applyDecorators,
+  BadRequestException,
+  Controller,
+  Get,
+  Query,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import {
@@ -13,6 +22,7 @@ import {
 import { AdminMoneyService } from './admin-money.service';
 import { AdminExportService } from './admin-export.service';
 import { AdminAuditService } from './admin-audit.service';
+import { CurrenciesService } from '../currencies/currencies.service';
 import { exportFormat, streamCsv } from '../../common/export/export-response';
 import { AdminTransactionListResponseDto, AdminTransactionsSummaryDto } from './dto/responses.dto';
 import {
@@ -24,6 +34,56 @@ import { dateQuery, enumQuery, searchQuery, uuidQuery } from '../../common/query
 import { transactionDirectionEnum, transactionStateEnum } from '../../database/schema';
 import { ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
+
+/**
+ * The 8 filter parameters all three routes accept, declared ONCE.
+ *
+ * Swagger reads these decorators, and the frontends' `types.gen.ts` is
+ * generated from what Swagger says — so three hand-maintained copies of this
+ * inventory is three chances for one route to silently advertise a different
+ * filter set than its siblings honour. A ninth filter is added here and in
+ * `filters()` below, and every route carries it or none does.
+ */
+function FinancialFilterQueries() {
+  return applyDecorators(
+    ApiQuery({ name: 'direction', required: false, enum: transactionDirectionEnum.enumValues }),
+    ApiQuery({
+      name: 'kind',
+      required: false,
+      enum: TRANSACTION_KINDS,
+      description:
+        'payment = crossed the platform boundary through a provider; transfer = wallet ⇄ ' +
+        'trading account; commission_transfer = partner earnings to their main wallet.',
+    }),
+    ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues }),
+    ApiQuery({ name: 'userId', required: false, description: 'Narrow to one client (UUID).' }),
+    ApiQuery({
+      name: 'currency',
+      required: false,
+      description: 'A currency code the platform holds. Case-insensitive; unknown codes are 400.',
+    }),
+    ApiQuery({
+      name: 'q',
+      required: false,
+      description:
+        'Search the client’s email and name — the same columns every other queue searches.',
+    }),
+    ApiQuery({ name: 'from', required: false, description: 'Inclusive, YYYY-MM-DD.' }),
+    ApiQuery({ name: 'to', required: false, description: 'Inclusive, YYYY-MM-DD.' }),
+  );
+}
+
+/** The raw strings the routes hand to `filters()` — one name per query param. */
+interface RawFilterParams {
+  direction?: string;
+  kind?: string;
+  state?: string;
+  userId?: string;
+  currency?: string;
+  q?: string;
+  from?: string;
+  to?: string;
+}
 
 /**
  * The Financial page — ADM's platform-wide money-movement surface.
@@ -45,30 +105,45 @@ export class AdminFinancialController {
     private readonly money: AdminMoneyService,
     private readonly exports: AdminExportService,
     private readonly audit: AdminAuditService,
+    private readonly currencies: CurrenciesService,
   ) {}
 
   /**
    * One validation path for the filters all three routes share, so "which
    * values does `?state=` accept" cannot drift between the list, its tiles and
-   * its file. Every enum is checked against its own source of truth — a bad
-   * value is a 400 with a sentence, never a database error (R-2.1).
+   * its file. Every value is checked against its own source of truth — a bad
+   * value is a 400 with a sentence, never a database error and NEVER a
+   * silently empty result (R-2.1/R-2.5).
+   *
+   * `currency` is resolved against the currencies table rather than merely
+   * trimmed: codes are operator DATA, so no enum can close the set — but
+   * `?currency=usd` answering an empty list with a 200 is the report-shaped
+   * failure the other validators exist to prevent (an operator exporting "all
+   * usd movements" would read the empty file as "there were none"). The
+   * lookup is case-insensitive and returns the STORED code, so the SQL
+   * equality below it compares like with like; a DISABLED currency still
+   * resolves, because its historical movements remain real and filterable.
    */
-  private static filters(raw: {
-    direction?: string;
-    kind?: string;
-    state?: string;
-    userId?: string;
-    currency?: string;
-    q?: string;
-    from?: string;
-    to?: string;
-  }): Omit<AdminMovementsFilter, 'scope'> {
+  private async filters(raw: RawFilterParams): Promise<Omit<AdminMovementsFilter, 'scope'>> {
+    let currency: string | undefined;
+    if (raw.currency?.trim()) {
+      const row = await this.currencies.findOne(raw.currency);
+      if (!row) {
+        throw new BadRequestException({
+          code: 'VALIDATION_FAILED',
+          message: ['currency must be a currency code the platform holds'],
+          fields: { currency: 'must be a currency code the platform holds' },
+        });
+      }
+      currency = row.code;
+    }
+
     return {
       direction: enumQuery(raw.direction, transactionDirectionEnum.enumValues, 'direction'),
       kind: enumQuery(raw.kind, TRANSACTION_KINDS, 'kind'),
       state: enumQuery(raw.state, transactionStateEnum.enumValues, 'state'),
       userId: uuidQuery(raw.userId, 'userId'),
-      currency: raw.currency?.trim() || undefined,
+      currency,
       q: searchQuery(raw.q),
       from: dateQuery(raw.from, 'from'),
       to: dateQuery(raw.to, 'to'),
@@ -80,6 +155,11 @@ export class AdminFinancialController {
    * Amounts are the exact decimal strings the ledger holds (§6.1), and the
    * export carries the SAME permission as the list: a file must never be a way
    * around a screen.
+   *
+   * Batches are KEYSET-chained under a snapshot bound (`startedAt` +
+   * `after`): the result set is frozen at the moment the export began, so a
+   * deposit settling mid-export can neither duplicate a boundary row into the
+   * file nor shift rows between batches — see `listAllForExport`.
    */
   @Get('transactions/export')
   @UseGuards(PermissionsGuard)
@@ -97,14 +177,7 @@ export class AdminFinancialController {
     content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
   })
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
-  @ApiQuery({ name: 'direction', required: false, enum: transactionDirectionEnum.enumValues })
-  @ApiQuery({ name: 'kind', required: false, enum: TRANSACTION_KINDS })
-  @ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues })
-  @ApiQuery({ name: 'userId', required: false })
-  @ApiQuery({ name: 'currency', required: false })
-  @ApiQuery({ name: 'q', required: false })
-  @ApiQuery({ name: 'from', required: false, description: 'Inclusive, YYYY-MM-DD.' })
-  @ApiQuery({ name: 'to', required: false, description: 'Inclusive, YYYY-MM-DD.' })
+  @FinancialFilterQueries()
   @ScopedToClients(
     'AdminExportService.transactionBatch → TransactionsService.listAllForExport, the same per-arm clientScopePredicate the list applies inside the union.',
   )
@@ -123,24 +196,33 @@ export class AdminFinancialController {
     @Query('to') to?: string,
   ) {
     const chosen = exportFormat(format);
-    const query = AdminFinancialController.filters({
-      direction,
-      kind,
-      state,
-      userId,
-      currency,
-      q,
-      from,
-      to,
-    });
+    const query = await this.filters({ direction, kind, state, userId, currency, q, from, to });
 
     this.audit.record(req.admin.id, 'export.transactions', 'transaction_list', req.admin.id, {
       format: chosen,
       filters: query,
     });
 
-    await streamCsv(res, 'transactions', chosen, this.exports.transactionColumns, (offset, limit) =>
-      this.exports.transactionBatch(query, req.admin, offset, limit),
+    /*
+     * The keyset state lives in this closure: `streamCsv` calls the batch
+     * function sequentially, and each batch's last row names where the next
+     * one starts. The offset `streamCsv` passes is ignored on purpose — an
+     * OFFSET over a set the platform keeps writing to is how a boundary row
+     * lands in the file twice.
+     */
+    const startedAt = new Date();
+    let after: { createdAt: string; id: string } | undefined;
+    await streamCsv(
+      res,
+      'transactions',
+      chosen,
+      this.exports.transactionColumns,
+      async (_offset, limit) => {
+        const rows = await this.exports.transactionBatch(query, req.admin, limit, startedAt, after);
+        const last = rows[rows.length - 1];
+        if (last) after = { createdAt: last.cursorCreatedAt, id: last.id };
+        return rows;
+      },
     );
   }
 
@@ -157,18 +239,11 @@ export class AdminFinancialController {
     summary: 'Totals over the filtered movement list, grouped per currency (amounts are strings)',
   })
   @ApiOkResponse({ type: AdminTransactionsSummaryDto })
-  @ApiQuery({ name: 'direction', required: false, enum: transactionDirectionEnum.enumValues })
-  @ApiQuery({ name: 'kind', required: false, enum: TRANSACTION_KINDS })
-  @ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues })
-  @ApiQuery({ name: 'userId', required: false })
-  @ApiQuery({ name: 'currency', required: false })
-  @ApiQuery({ name: 'q', required: false })
-  @ApiQuery({ name: 'from', required: false, description: 'Inclusive, YYYY-MM-DD.' })
-  @ApiQuery({ name: 'to', required: false, description: 'Inclusive, YYYY-MM-DD.' })
+  @FinancialFilterQueries()
   @ScopedToClients(
     'TransactionsService.summarizeForAdmin aggregates over the same scoped union the list reads.',
   )
-  transactionsSummary(
+  async transactionsSummary(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('direction') direction?: string,
     @Query('kind') kind?: string,
@@ -180,7 +255,7 @@ export class AdminFinancialController {
     @Query('to') to?: string,
   ) {
     return this.money.transactionsSummary(
-      AdminFinancialController.filters({ direction, kind, state, userId, currency, q, from, to }),
+      await this.filters({ direction, kind, state, userId, currency, q, from, to }),
       req.admin,
     );
   }
@@ -197,30 +272,12 @@ export class AdminFinancialController {
   })
   @ApiOkResponse({ type: AdminTransactionListResponseDto })
   /*
-   * Declared OPTIONAL, explicitly — the listWithdrawals note: without these,
-   * Swagger emits every `@Query()` as required and the frontends' generated
-   * types then demand every parameter on a call that legitimately passes none.
+   * Declared OPTIONAL, explicitly (inside FinancialFilterQueries) — the
+   * listWithdrawals note: without that, Swagger emits every `@Query()` as
+   * required and the frontends' generated types then demand every parameter
+   * on a call that legitimately passes none.
    */
-  @ApiQuery({ name: 'direction', required: false, enum: transactionDirectionEnum.enumValues })
-  @ApiQuery({
-    name: 'kind',
-    required: false,
-    enum: TRANSACTION_KINDS,
-    description:
-      'payment = crossed the platform boundary through a provider; transfer = wallet ⇄ ' +
-      'trading account; commission_transfer = partner earnings to their main wallet.',
-  })
-  @ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues })
-  @ApiQuery({ name: 'userId', required: false, description: 'Narrow to one client (UUID).' })
-  @ApiQuery({ name: 'currency', required: false })
-  @ApiQuery({
-    name: 'q',
-    required: false,
-    description:
-      'Search the client’s email and name — the same columns every other queue searches.',
-  })
-  @ApiQuery({ name: 'from', required: false, description: 'Inclusive, YYYY-MM-DD.' })
-  @ApiQuery({ name: 'to', required: false, description: 'Inclusive, YYYY-MM-DD.' })
+  @FinancialFilterQueries()
   @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
@@ -234,7 +291,7 @@ export class AdminFinancialController {
   @ScopedToClients(
     'TransactionsService.adminMovements applies clientScopePredicate inside EACH ARM of the union, so out-of-scope rows also never reach the counts.',
   )
-  listTransactions(
+  async listTransactions(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('direction') direction?: string,
     @Query('kind') kind?: string,
@@ -252,16 +309,7 @@ export class AdminFinancialController {
   ) {
     return this.money.listTransactions(
       {
-        ...AdminFinancialController.filters({
-          direction,
-          kind,
-          state,
-          userId,
-          currency,
-          q,
-          from,
-          to,
-        }),
+        ...(await this.filters({ direction, kind, state, userId, currency, q, from, to })),
         page,
         limit,
         cursor,

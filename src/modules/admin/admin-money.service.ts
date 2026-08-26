@@ -756,16 +756,14 @@ export class AdminMoneyService {
   // ─── The Financial page: every money movement, platform-wide ──────────────
 
   async listTransactions(
-    query: {
-      direction?: string;
-      kind?: string;
-      state?: string;
-      userId?: string;
-      currency?: string;
-      /** Free text over the client's email and name — see `listForAdmin`. */
-      q?: string;
-      from?: string;
-      to?: string;
+    /*
+     * The FILTER half is `AdminMovementsFilter` itself (minus the scope this
+     * method supplies from the actor), spread through UNTOUCHED — the same
+     * rule the summary and the export follow. Re-declaring the fields here
+     * and copying them one by one is how a filter added to the shared shape
+     * flows into the file and the tiles but silently vanishes from the list.
+     */
+    query: Omit<AdminMovementsFilter, 'scope'> & {
       page?: string;
       limit?: string;
       cursor?: string;
@@ -794,23 +792,26 @@ export class AdminMoneyService {
       'transactions',
     );
     const order = sortOrder(query.order);
+    const {
+      page: rawPage,
+      limit: rawLimit,
+      cursor: rawCursor,
+      sort: _s,
+      order: _o,
+      ...filters
+    } = query;
+    void _s;
+    void _o;
 
     const page = await this.transactions.listAllForAdmin({
+      ...filters,
       scope: actor.clientScope,
-      direction: query.direction,
-      kind: query.kind,
-      state: query.state,
-      userId: query.userId,
-      currency: query.currency,
-      q: query.q,
-      from: query.from,
-      to: query.to,
-      page: parseInt(query.page ?? '1', 10) || 1,
-      limit: parseInt(query.limit ?? '25', 10) || 25,
+      page: parseInt(rawPage ?? '1', 10) || 1,
+      limit: parseInt(rawLimit ?? '25', 10) || 25,
       // R-2.4 — an archive the whole platform keeps writing to while it is
       // being read, which is the concurrent-insert case offset paging gets
       // wrong.
-      cursor: query.cursor ? decodeCursor(query.cursor, sort) : undefined,
+      cursor: rawCursor ? decodeCursor(rawCursor, sort) : undefined,
       sort,
       order,
     });

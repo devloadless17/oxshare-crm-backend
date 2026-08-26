@@ -287,14 +287,18 @@ export class AdminExportService {
   async transactionBatch(
     query: Omit<AdminMovementsFilter, 'scope'>,
     actor: AuthenticatedAdmin,
-    offset: number,
     limit: number,
+    /** The export run's snapshot instant — the SAME value on every batch. */
+    startedAt: Date,
+    /** The previous batch's last row; the keyset the next batch seeks from. */
+    after?: { createdAt: string; id: string },
   ): Promise<AdminTransactionExportRow[]> {
     assertActorCan(actor, 'transactions.view', 'export financial transactions');
     const rows = await this.transactions.listAllForExport({
       ...query,
-      offset,
       limit,
+      startedAt,
+      after,
       scope: actor.clientScope,
     });
     /*

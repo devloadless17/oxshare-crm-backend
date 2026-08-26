@@ -277,15 +277,30 @@ describeSortIndexes(
   TRADING_ACCOUNT_SORT_COLUMNS,
 );
 
-// ── The financial union's other arms (migration 0093) ────────────────────────
+// ── The financial union's other arms (migration 0094) ────────────────────────
 //
 // GET /admin/transactions orders a `transactions UNION ALL transfers UNION ALL
 // ib_wallet_transfers`. Postgres can only merge-append an inlined union when
 // EVERY branch is index-ordered; the `transactions` indexes above already
-// exist, so what 0093 adds — and what these assert — is that each transfer
-// arm can serve the union's three sorts alone. The allowlist objects passed
-// here are shaped from ADMIN_TRANSACTION_SORT_COLUMNS so a key added to the
-// union's sort surface arrives in this spec automatically.
+// exist, so what 0094 adds — and what these assert — is that each transfer
+// arm can serve the union's INDEXABLE sorts alone. The allowlist objects
+// passed here are shaped from ADMIN_TRANSACTION_SORT_COLUMNS so a key added
+// to the union's sort surface arrives in this spec automatically.
+//
+// `state` is deliberately in NEITHER map, and not because it is unsortable:
+// the union's state is `t.state::text` in one arm and a CASE mapping
+// (settled→success, failed→failure) in another — expressions no plain btree
+// can order, and the CASE is not even monotone over the enum's own order. An
+// earlier revision of this spec asserted `ORDER BY transfers.state` — a
+// query the endpoint never issues — and passed while proving nothing; the
+// index it vouched for (`transfers_state_id_idx`, 0094) was dead on arrival
+// and is dropped by 0102. The state sort legitimately carries a Sort node
+// over the filtered set (three values; fine), and R-2.5's "allowlist may not
+// exceed the indexes" is answered here in words rather than by a vacuous
+// EXPLAIN.
+const { state: _adminStateSort, ...INDEXABLE_ADMIN_TRANSACTION_SORTS } =
+  ADMIN_TRANSACTION_SORT_COLUMNS;
+void _adminStateSort;
 describeSortIndexes(
   'the financial union: transfers arm',
   'transfers',
@@ -293,16 +308,12 @@ describeSortIndexes(
   {
     createdAt: { sql: 'transfers.created_at' },
     amount: { sql: 'transfers.amount' },
-    state: { sql: 'transfers.state' },
   },
-  ADMIN_TRANSACTION_SORT_COLUMNS,
+  INDEXABLE_ADMIN_TRANSACTION_SORTS,
 );
 
-// `ib_wallet_transfers` has NO state column — the union states a constant
-// ('success'), and ordering by a constant needs no index — so `state` is
-// deliberately absent from both maps here.
-const { state: _adminStateSort, ...IWT_SORTABLE } = ADMIN_TRANSACTION_SORT_COLUMNS;
-void _adminStateSort;
+// `ib_wallet_transfers` additionally has NO state column at all — the union
+// states a constant ('success'), and ordering by a constant needs no index.
 describeSortIndexes(
   'the financial union: commission-transfer arm',
   'ib_wallet_transfers',
@@ -311,7 +322,7 @@ describeSortIndexes(
     createdAt: { sql: 'ib_wallet_transfers.created_at' },
     amount: { sql: 'ib_wallet_transfers.amount' },
   },
-  IWT_SORTABLE,
+  INDEXABLE_ADMIN_TRANSACTION_SORTS,
 );
 
 /**
@@ -330,10 +341,11 @@ describe('the composites are direction-pinned in the shape the queries order by'
     ['admins_name_id_idx', 'name DESC', 'id DESC'],
     ['roles_name_id_idx', 'name DESC', 'id DESC'],
     ['ib_accounts_level_user_idx', 'level DESC', 'user_id DESC'],
-    // Migration 0093 — the financial union's transfer arms.
+    // Migration 0094 — the financial union's transfer arms. (0094's
+    // transfers_state_id_idx is absent on purpose: dropped by 0102, see the
+    // union-arm block above.)
     ['transfers_created_at_id_idx', 'created_at DESC', 'id DESC'],
     ['transfers_amount_id_idx', 'amount DESC', 'id DESC'],
-    ['transfers_state_id_idx', 'state DESC', 'id DESC'],
     ['ib_wallet_transfers_created_at_id_idx', 'created_at DESC', 'id DESC'],
     ['ib_wallet_transfers_amount_id_idx', 'amount DESC', 'id DESC'],
   ];
