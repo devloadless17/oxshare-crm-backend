@@ -4,7 +4,6 @@ import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { DealCommissionService } from '../src/modules/trading/mt5/deal-commission.service';
-import { AppSettingsStore } from '../src/store/app-settings.store';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { ALERT_KINDS } from '../src/common/logging/alerts';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
@@ -16,7 +15,6 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  * `IB_ACCRUAL_START` — which is exactly the fallback path, and the one every
  * existing deployment is on until an operator saves the form.
  */
-const noSettingsRow = () => ({ getTrading: () => Promise.resolve(null) }) as never;
 
 /**
  * A dealer cancelled a trade that had already paid somebody. Who finds out?
@@ -100,30 +98,30 @@ let errors: unknown[];
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
 
-  await ctx.db.execute(sql`
-    INSERT INTO ib_levels (level, name, rate_value, enabled)
-    VALUES (1, 'Master Partner', 0.0000, true)
-    ON CONFLICT (level) DO UPDATE SET enabled = true
-  `);
-
   const { rows } = await ctx.db.execute<{ id: string }>(
     sql`SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1`,
   );
   programId = rows[0].id;
 
-  await ctx.db.execute(sql`
-    UPDATE ib_programs
-       SET mode = 'commission_only'::ib_program_mode, level1_rate = 10, level2_rate = 0,
-           rebate_rate = 0, enabled = true
-     WHERE id = ${programId}
-  `);
+  /* One level at 10%, replacing the level1/level2 pair those columns held. */
+  await ctx.db.transaction(async (tx) => {
+    await tx.execute(sql`
+      UPDATE ib_programs
+         SET mode = 'commission_only'::ib_program_mode, rebate_rate = 0, enabled = true
+       WHERE id = ${programId}
+    `);
+    await tx.execute(sql`DELETE FROM ib_program_tiers WHERE program_id = ${programId}`);
+    await tx.execute(
+      sql`INSERT INTO ib_program_tiers (program_id, depth, rate) VALUES (${programId}, 1, 10)`,
+    );
+  });
 
   partnerId = await makeUser('clawback-partner@oxshare-e2e.test');
   clientId = await makeUser('clawback-client@oxshare-e2e.test');
 
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, level, referral_code, active, program_id)
-    VALUES (${partnerId}, 1, 'CLAWBCK1', true, ${programId})
+    INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
+      VALUES (${partnerId}, 'CLAWBCK1', true, ${programId})
   `);
   await ctx.db.execute(
     sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,
@@ -137,9 +135,8 @@ beforeAll(async () => {
       notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
     },
     new ConfigService(),
-    new AppSettingsStore(ctx.db),
   );
-  deals = new DealCommissionService(ctx.db, commissions, noSettingsRow());
+  deals = new DealCommissionService(ctx.db, commissions);
 }, 180_000);
 
 afterAll(async () => {

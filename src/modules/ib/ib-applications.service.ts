@@ -20,7 +20,6 @@ import {
 } from '../../store/ib.store';
 import { sortKey, sortOrder } from '../../common/sorting';
 import { UsersStore } from '../../store/users.store';
-import { IbLevelsService } from './ib-levels.service';
 import { IbProgramsService } from './ib-programs.service';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import { EmailService } from '../email/email.service';
@@ -53,21 +52,24 @@ const REQUIRED_VERIFICATION_LEVEL = 1;
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 8;
 
-/**
- * What a client is told when the ladder has no rung left beneath the partner
- * who introduced them.
+/*
+ * `CHAIN_FULL_REASON` IS GONE (0102), because the condition it described cannot
+ * arise any more.
  *
- * Worded for the CLIENT, unlike the sentence `resolveLevel` throws at a
- * reviewer. That one ends "Add a level or choose a different parent", which are
- * two things an applicant cannot do and would read as instructions.
+ * It told an applicant "there is no rung left to place you on" — true while
+ * `ib_levels` bounded the hierarchy and `resolveLevel` refused to place anybody
+ * below the deepest enabled rung. With the ladder gone, depth is a property of
+ * each PROGRAMME's tier count rather than a platform-wide ceiling, and nesting
+ * a partner under another is always structurally possible.
  *
- * It names the cause without blaming the introducer: their placement is an
- * operator's decision, not something the client's contact did wrong.
+ * What that ceiling used to protect against is now stated where it is true:
+ * a partner deeper than their ancestors' programmes reach simply earns those
+ * ancestors nothing, which `calculate` reports per trade with the programme and
+ * depth named. That is a commercial fact about somebody's terms, not a reason to
+ * refuse an application — and refusing one was the worse failure, because it
+ * turned an operator's ladder configuration into a locked door for a verified
+ * client who had done nothing wrong.
  */
-const CHAIN_FULL_REASON =
-  'The partner programme has no space beneath the partner who introduced you — they are ' +
-  'already on its deepest level, so there is no rung left to place you on. Contact support ' +
-  'if you would like to join the programme another way.';
 
 /**
  * Partner applications and the accounts they grant.
@@ -86,7 +88,6 @@ export class IbApplicationsService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly ib: IbStore,
     private readonly users: UsersStore,
-    private readonly levels: IbLevelsService,
     private readonly programs: IbProgramsService,
     private readonly visibility: ClientVisibilityService,
     private readonly email: EmailService,
@@ -196,20 +197,17 @@ export class IbApplicationsService {
     const verified = (user?.verificationLevel ?? 0) >= REQUIRED_VERIFICATION_LEVEL;
 
     /*
-     * The second requirement, and the one that used to be discovered too late.
+     * There is no second requirement any more, and that is the change 0102 made
+     * to this method.
      *
-     * `resolveLevel` has always refused to place a partner beneath a parent who
-     * is on the deepest enabled rung — but only at APPROVAL, which meant a
-     * client in that position was shown the application form, filled it in,
-     * waited, and was then rejected for a fact that was already knowable the
-     * moment they opened the screen. Asking it here is what turns that into an
-     * explanation before the effort rather than a refusal after it.
+     * `chainFull` asked whether the ladder had a rung left beneath the client's
+     * introducer, because `resolveLevel` would refuse the approval otherwise.
+     * With `ib_levels` gone there is no platform-wide ceiling to be full: any
+     * partner may be nested under any other, and how far earnings travel is
+     * each programme's own tier count.
      *
-     * Skipped entirely for somebody who is already a partner: `account` wins on
-     * the portal, so computing an eligibility they cannot act on is a query for
-     * a field nothing reads.
+     * VERIFICATION is what FR-IB-01 gates on, and now it is the only thing.
      */
-    const chainFull = account ? false : await this.introducerChainIsFull(user?.referredByIbUserId);
 
     /*
      * The agency NAMES, resolved once for both halves.
@@ -225,9 +223,8 @@ export class IbApplicationsService {
      * `inheritedAgencyIdFor`, which would fetch that row a second time for an
      * answer this method is holding.
      *
-     * Skipped for somebody who is already a partner, like `chainFull` above and
-     * for the same reason: they will never see the application form, so this is
-     * a query for a field nothing reads.
+     * Skipped for somebody who is already a partner: they will never see the
+     * application form, so this is a query for a field nothing reads.
      */
     const inheritedAgencyId =
       account || !user?.referredByIbUserId
@@ -264,61 +261,22 @@ export class IbApplicationsService {
         ? { ...application, agencyName: agencyOf(application.agencyId)?.name ?? null }
         : null,
       /*
-       * Verification is reported FIRST when both are unmet.
+       * One gate, and it is the one the client can act on.
        *
-       * Not arbitrary: it is the one the client can do something about. Leading
-       * with "there is no room beneath your introducer" to somebody who also has
-       * not verified would hand them a dead end when the actionable step is
-       * sitting right there — and if the operator later adds a level, the dead
-       * end was never true.
+       * `chain_full` was the other, and its removal is why this reads as a
+       * single condition now. `ineligibleCode` keeps its union shape rather than
+       * collapsing to a boolean: the portal branches on the code, and a future
+       * gate should extend the union rather than reintroduce a second field.
        */
-      eligible: verified && !chainFull,
-      ineligibleReason: !verified
-        ? 'Your identity must be verified before you can apply to the partner programme.'
-        : chainFull
-          ? CHAIN_FULL_REASON
-          : null,
-      ineligibleCode: !verified ? 'unverified' : chainFull ? 'chain_full' : null,
+      eligible: verified,
+      ineligibleReason: verified
+        ? null
+        : 'Your identity must be verified before you can apply to the partner programme.',
+      ineligibleCode: verified ? null : 'unverified',
       inheritedAgency: inheritedAgency
         ? { id: inheritedAgency.id, name: inheritedAgency.name }
         : null,
     };
-  }
-
-  /**
-   * Would a partner beneath this client's introducer have a rung to stand on?
-   *
-   * The same question `resolveLevel` asks at approval, asked early so the portal
-   * can explain rather than present a form that is already refused. Both read
-   * `listEnabled()` and compare against the introducer's level, so they cannot
-   * give different answers about the same ladder.
-   *
-   * FALSE — meaning "not full", so carry on — in every uncertain case:
-   *
-   *  - No introducer. They joined unattributed and would be placed at the top
-   *    enabled level, which is the one case the ladder always has room for.
-   *  - The introducer is not a partner. Nothing constrains the placement, and a
-   *    reviewer is free to appoint them anywhere.
-   *  - No levels are enabled at all. `resolveLevel` refuses that with its own
-   *    sentence naming the real problem — an empty ladder is an operator
-   *    misconfiguration, and reporting it to the client as "no room beneath your
-   *    introducer" would send them to support with the wrong story.
-   *
-   * The bias is deliberate: a false positive here HIDES the application form
-   * from somebody entitled to it, which is worse than a refusal they can be
-   * given a reason for.
-   */
-  private async introducerChainIsFull(introducerId: string | null | undefined): Promise<boolean> {
-    if (!introducerId) return false;
-
-    const [introducer, enabled] = await Promise.all([
-      this.ib.findAccount(introducerId),
-      this.levels.listEnabled(),
-    ]);
-
-    if (!introducer || enabled.length === 0) return false;
-
-    return !enabled.some((level) => level.level > introducer.level);
   }
 
   /**
@@ -378,17 +336,6 @@ export class IbApplicationsService {
     /*
      * The same refusal the portal already renders, enforced rather than assumed.
      *
-     * `statusFor` hides the form for this client, but hiding a form is a UX
-     * decision and not a control: the endpoint is reachable directly, and a
-     * stale tab still holds a form that was valid when it loaded. Without this
-     * the application is accepted and then sits in the review queue as work that
-     * can only ever end in a rejection — which is precisely the outcome the
-     * eligibility check exists to prevent, moved from the client to a reviewer.
-     */
-    if (await this.introducerChainIsFull(user.referredByIbUserId)) {
-      throw new ValidationError(CHAIN_FULL_REASON);
-    }
-
     /*
      * The advisory half of "one pending application per client".
      *
@@ -590,13 +537,13 @@ export class IbApplicationsService {
    *
    * The only one of the five actions here that does. Approving does not merely
    * change a status: it CREATES THE PAYABLE RELATIONSHIP — an `ib_accounts` row
-   * with a level, a parent and a referral code, which is what every future
+   * with a PROGRAMME, a parent and a referral code, which is what every future
    * commission is calculated from and attributed through. R-6.5's rule is that
    * where the money relationship is established the record of who established it
    * commits with it, so a partner who exists and is being paid with no record of
    * who let them in is not a state this system can reach.
    *
-   * The other four (`reject`, `level_change`, `parent_change`, `suspend`) use
+   * The other four (`reject`, `program_change`, `parent_change`, `suspend`) use
    * fire-and-forget `record`: they change an existing row rather than creating
    * the relationship, and an audit-write failure should not undo a correct
    * rejection.
@@ -605,7 +552,22 @@ export class IbApplicationsService {
     applicationId: string,
     actor: Actor,
     scope: ClientScope,
-    options: { level?: number; parentIbUserId?: string | null; agencyId?: string | null } = {},
+    options: {
+      /**
+       * The terms to appoint them on — FR-IB-06's "exactly one named program".
+       *
+       * Replaces `level`, and it is the same field promoted to the thing that
+       * actually decides money. A rung was a placement a reviewer picked and the
+       * engine then ignored; a programme is what the engine reads.
+       *
+       * Optional, defaulting to the first ENABLED programme by `sortOrder`, so
+       * the ordinary approval stays one click. A reviewer who has built Bronze /
+       * Silver / Gold names one here.
+       */
+      programId?: string;
+      parentIbUserId?: string | null;
+      agencyId?: string | null;
+    } = {},
   ): Promise<IbAccountRow> {
     const reviewerId = actor.id;
     const application = await this.ib.findById(applicationId);
@@ -624,7 +586,6 @@ export class IbApplicationsService {
       );
     }
 
-    const level = await this.resolveLevel(options.level, options.parentIbUserId ?? null);
     const parentIbUserId = options.parentIbUserId ?? null;
 
     if (parentIbUserId) {
@@ -714,16 +675,42 @@ export class IbApplicationsService {
      * program", resolved BEFORE the transaction opens so a misconfiguration
      * refuses the approval instead of rolling one back.
      *
-     * Refused rather than defaulted when every programme is disabled: a partner
-     * on no terms earns nothing, cannot see why, and the reviewer who approved
-     * them would have been told it worked.
+     * The REVIEWER's choice wins, and this is what makes the catalogue real at
+     * the moment it matters most. Approval used to take whatever sorted first,
+     * always, so an operator could build Gold, Silver and Platinum and have
+     * every new partner land on Bronze — the change endpoint being the only way
+     * to correct a decision that should have been made here.
+     *
+     * A DISABLED programme is refused, matching `changeProgram`. A disabled
+     * programme pays nothing, so appointing somebody onto one creates a partner
+     * whose referral link works and whose earnings are silently zero.
+     *
+     * Falling back to the default is refused rather than defaulted when every
+     * programme is disabled: a partner on no terms earns nothing, cannot see
+     * why, and the reviewer would have been told it worked.
      */
-    const programId = await this.ib.defaultProgramId();
-    if (!programId) {
-      throw new ValidationError(
-        'No commission programme is enabled, so an approved partner would have no terms to be ' +
-          'paid on. Enable a programme first.',
-      );
+    let programId: string;
+    if (options.programId) {
+      const chosen = await this.programs.findOne(options.programId);
+      if (!chosen) {
+        throw new ValidationError('That commission programme does not exist.');
+      }
+      if (!chosen.enabled) {
+        throw new ValidationError(
+          `"${chosen.name}" is disabled, and a disabled programme pays nothing. Enable it, or ` +
+            'appoint this partner on another programme.',
+        );
+      }
+      programId = chosen.id;
+    } else {
+      const fallback = await this.ib.defaultProgramId();
+      if (!fallback) {
+        throw new ValidationError(
+          'No commission programme is enabled, so an approved partner would have no terms to be ' +
+            'paid on. Enable a programme first.',
+        );
+      }
+      programId = fallback;
     }
 
     const account = await this.db.transaction(async (tx) => {
@@ -746,7 +733,6 @@ export class IbApplicationsService {
       const created = await this.ib.createAccount(
         {
           userId: application.userId,
-          level,
           programId,
           parentIbUserId,
           referralCode,
@@ -767,7 +753,7 @@ export class IbApplicationsService {
        */
       await this.audit.recordWithin(tx, actor.id, 'ib.approve', 'ib_account', application.userId, {
         applicationId,
-        level,
+        programId,
         parentIbUserId,
         /*
          * Both what was asked for and what was granted. They are usually the
@@ -997,15 +983,13 @@ export class IbApplicationsService {
     const account = await this.ib.findAccount(userId);
     if (!account) return null;
 
-    const [level, directPartners, earningsMap, referredCount, agencies, products] =
-      await Promise.all([
-        this.levels.findOne(account.level),
-        this.ib.findDirectPartners(userId),
-        this.ib.earningsByPartner([userId]),
-        this.users.countReferredBy(userId),
-        account.agencyId ? this.catalogue.listAgencies() : Promise.resolve([]),
-        account.agencyId ? this.catalogue.listProducts() : Promise.resolve([]),
-      ]);
+    const [directPartners, earningsMap, referredCount, agencies, products] = await Promise.all([
+      this.ib.findDirectPartners(userId),
+      this.ib.earningsByPartner([userId]),
+      this.users.countReferredBy(userId),
+      account.agencyId ? this.catalogue.listAgencies() : Promise.resolve([]),
+      account.agencyId ? this.catalogue.listProducts() : Promise.resolve([]),
+    ]);
 
     const agency = agencies.find((entry) => entry.id === account.agencyId) ?? null;
     const productName = new Map(products.map((product) => [product.id, product.name]));
@@ -1019,25 +1003,31 @@ export class IbApplicationsService {
       ? ((await this.users.findById(account.parentIbUserId)) ?? null)
       : null;
 
-    const program = await this.programs.findOne(account.programId);
+    /*
+     * The TERMS, with the LADDER — the whole of what this partner is paid on.
+     *
+     * `level` / `levelName` / `rateValue` used to sit here too, describing the
+     * rung. They went in 0102 with the ladder itself: the rung decided nothing
+     * after 0084, so the response carried three fields that read like the
+     * partner's economics beside the one that actually was.
+     *
+     * `tiers` is what replaces them, and it says more than a rung ever did: how
+     * far this partner's earnings reach, and what they take at each depth.
+     */
+    const program = await this.programs.findOneWithTiers(account.programId);
 
     return {
       userId,
-      level: account.level,
-      levelName: level?.name ?? null,
       /*
-       * The rung's own rate. Kept for continuity of the response, and it no
-       * longer decides anything: since named programmes landed, the rung is
-       * PLACEMENT and the programme below is what the partner is paid on.
-       */
-      rateValue: level?.rateValue ?? null,
-      /*
-       * The TERMS, which is the half an operator is usually looking for. Both
-       * the id and the name: the id is what the change control posts back, and
-       * the name is the only part a person can act on.
+       * The id is what the change control posts back; the name is the only part
+       * a person can act on; the ladder is what an operator is usually looking
+       * for when they open this screen.
        */
       programId: account.programId,
       programName: program?.name ?? null,
+      programMode: program?.mode ?? null,
+      programTiers: program?.tiers ?? [],
+      programRebateRate: program?.rebateRate ?? null,
       referralCode: account.referralCode,
       active: account.active,
       approvedAt: account.approvedAt,
@@ -1097,45 +1087,20 @@ export class IbApplicationsService {
     });
   }
 
-  /**
-   * Move a partner to a different rung.
+  /*
+   * `changeLevel` IS GONE (0102), and `changeProgram` below is what replaced it.
    *
-   * The level must be ENABLED: a disabled level takes no share, so placing
-   * somebody on one is a silent stop to their earnings rather than a demotion
-   * they could see.
+   * It moved a partner to a different RUNG, refusing a disabled one on the
+   * reasoning that "a disabled level takes no share, so placing somebody on one
+   * is a silent stop to their earnings". That reasoning stopped being true in
+   * 0084, when the rate moved to the programme — after which the endpoint
+   * changed a number that decided nothing, while presenting itself to an
+   * operator as the control over what a partner earns.
+   *
+   * The two questions it conflated now have one owner each: what a partner is
+   * PAID on is `changeProgram`, and where they sit in the tree is
+   * `changeParent`.
    */
-  async changeLevel(
-    userId: string,
-    level: number,
-    scope: ClientScope,
-    actor: Actor,
-  ): Promise<IbAccountRow> {
-    await this.visibility.assertVisible(userId, scope);
-
-    const account = await this.ib.findAccount(userId);
-    if (!account) throw new NotFoundError('That partner does not exist.');
-
-    const enabled = await this.levels.listEnabled();
-    if (!enabled.some((l) => l.level === level)) {
-      throw new ValidationError(
-        `Level ${level} is not an enabled partner level. Enabled levels: ${enabled
-          .map((l) => l.level)
-          .join(', ')}.`,
-      );
-    }
-
-    const updated = await this.ib.updateAccount(userId, { level });
-    if (!updated) throw new NotFoundError('That partner does not exist.');
-
-    // The OLD level, because the level is what decides the rate — "who moved
-    // this partner to level 2, and what were they on before" is the question
-    // asked when a payout looks wrong, and the current row answers half of it.
-    this.audit.record(actor.id, 'ib.level_change', 'ib_account', userId, {
-      before: account.level,
-      after: updated.level,
-    });
-    return updated;
-  }
 
   /**
    * Move a partner onto different terms.
@@ -1315,50 +1280,19 @@ export class IbApplicationsService {
 
   // ── placement rules ────────────────────────────────────────────────────────
 
-  /**
-   * Which rung a new partner lands on.
+  /*
+   * `resolveLevel` IS GONE (0102).
    *
-   * With no parent they are dealing with the broker directly, so they go to the
-   * shallowest enabled level. With a parent they go one below the parent's —
-   * that IS what the hierarchy means — and the ladder's depth is the limit: a
-   * partner placed below the deepest enabled level would never be paid,
-   * because no level exists to pay them.
+   * It answered "which rung does this partner land on", walking `ib_levels` to
+   * find the shallowest enabled one, or the one below the parent's. Both the
+   * table and the question went with the second catalogue: a partner's DEPTH is
+   * a fact about the trade being paid on — how many hops above the client they
+   * stand — computed per accrual by `resolveChain`, not a number written against
+   * them at approval and then free to disagree with the tree.
+   *
+   * What approval still resolves is the PROGRAMME, which is the thing FR-IB-06
+   * actually asks to be assigned. See `approve`.
    */
-  private async resolveLevel(explicit: number | undefined, parentIbUserId: string | null) {
-    const enabled = await this.levels.listEnabled();
-    if (enabled.length === 0) {
-      throw new ValidationError(
-        'No partner levels are enabled, so no partner can be approved. Enable a level first.',
-      );
-    }
-
-    if (explicit !== undefined) {
-      const chosen = enabled.find((l) => l.level === explicit);
-      if (!chosen) {
-        throw new ValidationError(
-          `Level ${explicit} is not an enabled partner level. Enabled levels: ${enabled
-            .map((l) => l.level)
-            .join(', ')}.`,
-        );
-      }
-      return chosen.level;
-    }
-
-    if (!parentIbUserId) return enabled[0].level;
-
-    const parent = await this.ib.findAccount(parentIbUserId);
-    if (!parent) throw new ValidationError('The chosen parent partner does not exist.');
-
-    const below = enabled.find((l) => l.level > parent.level);
-    if (!below) {
-      throw new ValidationError(
-        `The partner ladder is ${enabled.length} level(s) deep and this parent is already at the ` +
-          'deepest enabled level, so a partner beneath them would never earn. Add a level or ' +
-          'choose a different parent.',
-      );
-    }
-    return below.level;
-  }
 
   /**
    * The chosen parent is real and not suspended.

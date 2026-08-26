@@ -55,8 +55,8 @@ async function makeUser(email: string): Promise<string> {
 async function makePartner(email: string, active = true): Promise<string> {
   const userId = await makeUser(email);
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, referral_code, level, active, program_id)
-    VALUES (${userId}, ${email.slice(0, 8)}, 1, ${active},
+    INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
+      VALUES (${userId}, ${email.slice(0, 8)}, ${active},
             (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
   `);
   return userId;

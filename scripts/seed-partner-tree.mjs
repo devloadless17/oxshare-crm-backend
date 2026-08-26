@@ -148,26 +148,33 @@ async function main() {
     const parentAccount =
       await one`SELECT user_id, level, referral_code, agency_id FROM ib_accounts WHERE user_id = ${parent.id}`;
     if (!parentAccount) return bad('the parent is a partner', PARENT_EMAIL);
-    ok(
-      'parent partner',
-      `${PARENT_EMAIL} — level ${parentAccount.level}, code ${parentAccount.referral_code}`,
-    );
+    ok('parent partner', `${PARENT_EMAIL} — code ${parentAccount.referral_code}`);
 
     /*
-     * The ladder has to have a rung BELOW the parent, or this whole tree is
-     * unbuildable — `resolveLevel` refuses it and so does the new eligibility
-     * check. Said here rather than discovered three steps in.
+     * There is no longer a rung to check for beneath the parent. `ib_levels`
+     * bounded the hierarchy platform-wide and 0102 removed it, so nesting a
+     * partner under another is always structurally possible — how far earnings
+     * travel is the tier count on each earner's own programme.
+     *
+     * What IS worth reporting is the terms the parent is on, because that is
+     * what decides whether they earn anything from the sub-tree this builds.
      */
-    const below = await one`
-      SELECT level FROM ib_levels WHERE enabled = true AND level > ${parentAccount.level}
-      ORDER BY level LIMIT 1`;
-    if (!below) {
-      return bad(
-        'the ladder has a level beneath the parent',
-        `parent is level ${parentAccount.level} and it is the deepest enabled one`,
+    const parentTerms = await one`
+      SELECT p.name, count(t.depth)::int AS depth
+        FROM ib_programs p
+        LEFT JOIN ib_program_tiers t ON t.program_id = p.id
+       WHERE p.id = ${parentAccount.program_id}
+       GROUP BY p.name`;
+    if (!parentTerms || parentTerms.depth < 2) {
+      ok(
+        'note',
+        `the parent is on "${parentTerms?.name ?? 'unknown'}", which reaches ` +
+          `${parentTerms?.depth ?? 0} level(s) — they will earn nothing from the sub-partners ` +
+          'below unless that programme gains a depth-2 tier',
       );
+    } else {
+      ok('parent terms', `${parentTerms.name}, reaching ${parentTerms.depth} level(s)`);
     }
-    ok('a rung is free beneath them', `level ${below.level}`);
 
     if (!APPLY) {
       console.log('\nReport only. Re-run with --apply to build the tree.');

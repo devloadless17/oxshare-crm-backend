@@ -17,11 +17,14 @@ import { money, toDecimal } from '../wallet/money';
  * bridge, no deal feed, and no programs table. Rebuilding against them would be
  * an engine that can never run.
  *
- * What this one computes from is what the system actually HAS: a client
- * deposit, attributed to a partner by `users.referred_by_ib_user_id`, paid out
- * along the `ib_levels` ladder. When a deal feed lands, `RevenueEvent` gains a
- * `deal` source and `poolFor` gains a branch — the chain resolution and the
- * split below do not change.
+ * What this one computes from is what the system actually HAS: an ingested MT5
+ * deal, attributed to a partner by `users.referred_by_ib_user_id`, paid out
+ * along the tier ladder of each earner's own named programme
+ * (`ib_programs` + `ib_program_tiers`).
+ *
+ * The second catalogue this used to read — `ib_levels`, a rung-keyed ladder —
+ * was dropped in 0102. The FSD describes one catalogue and this schema had two;
+ * see the header of the IB block in `database/schema.ts` for the full account.
  *
  * ## Both payout models work, and each has its own base
  *
@@ -32,8 +35,27 @@ import { money, toDecimal } from '../wallet/money';
  * live and losing the broker money on every funded account.
  */
 
-/** How many rungs earnings travel. Matches ARCHITECTURE: resolution stops at L2. */
-export const MAX_CHAIN_DEPTH = 2;
+/**
+ * A CYCLE GUARD, and deliberately not a payout policy.
+ *
+ * This used to be 2 — the two-level cap, written into the engine as a constant
+ * while the console derived a payout depth from a rung count. The two disagreed
+ * in the direction that costs money quietly: enabling a third level told an
+ * operator earnings travelled three levels, and the third ancestor silently
+ * earned nothing on every trade.
+ *
+ * How far earnings travel is now the number of tiers on the EARNER'S programme
+ * (`ib_program_tiers`), which is FR-IB-17's "configured per the agreed program
+ * ladder". What remains here is the reason a walk over a self-referencing
+ * foreign key needs a stop at all: Postgres cannot prevent a cycle in
+ * `parent_ib_user_id`, and this is the money path.
+ *
+ * `seen` below already terminates a true cycle. This bounds the other shape —
+ * a chain so deep that walking it costs more than any programme could ever pay
+ * on — and matches `ib_program_tiers_depth_range` and `ib_accruals_depth_range`
+ * so a configurable depth can never exceed what the database will store.
+ */
+export const MAX_CHAIN_DEPTH = 10;
 
 /** One partner in the chain above an earning event. */
 export interface ChainNode {
@@ -41,18 +63,22 @@ export interface ChainNode {
   parentIbUserId: string | null;
   /** A suspended partner keeps their tree and stops earning. */
   active: boolean;
-  /** Their rung. It names their placement; it no longer decides their rate. */
-  level: number;
-  /** The programme that DOES decide their rate — FR-IB-06, one per partner. */
+  /** The programme that decides their rate — FR-IB-06, exactly one per partner. */
   programId: string;
 }
 
 /** A resolved earner: who, and at what depth above the client. */
 export interface ChainEntry {
   ibUserId: string;
-  /** 1 is the partner who introduced the client; 2 is that partner's parent. */
+  /**
+   * How many hops above the trading client this partner stands.
+   *
+   * 1 is the introducer, 2 is their parent, and so on. It is a property of THIS
+   * TRADE, not of the partner: the same partner is at depth 1 on their own
+   * client's trade and at depth 2 on a sub-partner's, and is paid the matching
+   * tier of their own programme in each case.
+   */
   depth: number;
-  level: number;
   programId: string;
 }
 
@@ -66,7 +92,17 @@ export interface ChainEntry {
  *    decision about that partner's whole subtree; letting their parent keep
  *    collecting through them would pay somebody for a relationship the operator
  *    has just switched off.
- *  - Anything above depth 2 earns nothing, ever.
+ *  - The walk stops at `MAX_CHAIN_DEPTH`, which is a CYCLE GUARD. It is not
+ *    where earnings stop: `calculate` pays each entry from the tier its own
+ *    programme configures at that depth, and an entry whose programme does not
+ *    reach that far is skipped with a reason.
+ *
+ * ## Resolving further than a programme pays is the point, not waste
+ *
+ * A depth-3 ancestor on a three-tier programme must be REACHED before anyone
+ * can ask what their programme says, and their own terms are the only thing
+ * entitled to answer. Stopping the walk at the introducer's reach would let one
+ * partner's contract silently cancel another's.
  *
  * `lookup` injects the data so this stays pure. A CYCLE — which Postgres cannot
  * prevent on a self-referencing key — terminates the walk rather than hanging
@@ -90,7 +126,7 @@ export function resolveChain(
     const node: ChainNode | undefined = lookup(currentId);
     if (!node || !node.active) break;
 
-    chain.push({ ibUserId: node.userId, depth, level: node.level, programId: node.programId });
+    chain.push({ ibUserId: node.userId, depth, programId: node.programId });
     currentId = node.parentIbUserId;
   }
 
@@ -134,16 +170,29 @@ export interface RevenueEvent {
 export type ProgramMode = 'commission_only' | 'rebate_only' | 'hybrid';
 
 /**
- * One programme's terms, as configured on `ib_programs`.
+ * One programme's terms — `ib_programs` plus its `ib_program_tiers`.
  *
- * ## The rate is chosen by DEPTH, not by the holder's rung
+ * ## The rate is chosen by DEPTH, and the LADDER is how many depths there are
  *
- * `level1Rate` applies when the trade belongs to the holder's OWN client;
- * `level2Rate` when it belongs to a sub-partner's client. That is what makes a
- * programme portable — it pays the same way wherever in a chain its holder
- * stands — and it is the thing the old rung-keyed ladder could not say: under
- * that model what you earned depended on which rung you occupied rather than on
- * whose client had traded.
+ * `tiers` maps depth → rate: depth 1 is what the holder earns when the trade
+ * belongs to their OWN client, depth 2 when it belongs to a sub-partner's, and
+ * so on. That is what makes a programme portable — it pays the same way wherever
+ * in a chain its holder stands — and it is the thing the old rung-keyed ladder
+ * could not say: under that model what you earned depended on which rung you
+ * occupied rather than on whose client had traded.
+ *
+ * It replaces a fixed `level1Rate` / `level2Rate` pair, which wrote a two-level
+ * ceiling into the type itself. `tiers.size` is now how far this programme's
+ * earnings reach, so a broker who wants five levels configures five rows —
+ * FR-IB-17's "per-level split ... configured per the agreed program ladder".
+ *
+ * ## An absent depth is not a zero
+ *
+ * `tiers.get(3)` returning `undefined` means "this programme does not reach
+ * depth 3", which is a different statement from "it pays 0% there" and produces
+ * a different message when `calculate` explains itself. The database agrees:
+ * `ib_program_tiers_rate_positive` refuses a zero-rate row, so a configured
+ * depth always pays something.
  *
  * Every value is a PERCENTAGE of the broker's revenue. One unit, always:
  * `payoutModel` used to sit beside the rate and decide whether the number meant
@@ -153,8 +202,8 @@ export type ProgramMode = 'commission_only' | 'rebate_only' | 'hybrid';
 export interface ProgramTerms {
   id: string;
   mode: ProgramMode;
-  level1Rate: string;
-  level2Rate: string;
+  /** depth → rate, as a percentage string. Absent depth = this far and no further. */
+  tiers: Map<number, string>;
   /** What returns to the TRADING CLIENT, as a percentage of the same revenue. */
   rebateRate: string;
   enabled: boolean;
@@ -163,7 +212,6 @@ export interface ProgramTerms {
 export interface Accrual {
   ibUserId: string;
   depth: number;
-  level: number;
   /** Which programme paid it, and at what rate — both recorded on the row. */
   programId: string;
   rateValue: string;
@@ -222,14 +270,6 @@ export function calculate(
   chain: ChainEntry[],
   /** Every programme held by anybody in `chain`, keyed by id. */
   programs: Map<string, ProgramTerms>,
-  /**
-   * The most of this event's revenue that may go to partners, as a percentage.
-   *
-   * The broker's margin, guaranteed by arithmetic rather than by everyone
-   * remembering to keep the ladder under 100. Omitted means uncapped, which is
-   * what the pure unit tests use — every production caller passes it.
-   */
-  maxSharePct?: string,
 ): CommissionResult {
   if (chain.length === 0) return { accruals: [] };
 
@@ -310,16 +350,37 @@ export function calculate(
     }
 
     /*
-     * DEPTH decides the rate, not the rung. Depth 1 is the partner's own
-     * client; depth 2 is a sub-partner's. `MAX_CHAIN_DEPTH` is 2, so there is
-     * no third case to fall through to.
+     * DEPTH decides the rate, and the EARNER'S OWN programme decides whether
+     * this depth is one it pays at all.
+     *
+     * This replaced `entry.depth === 1 ? level1Rate : level2Rate`, a ternary
+     * that had no third branch and so paid `level2Rate` to a depth-3 ancestor —
+     * silently treating "as deep as the type can express" as "as deep as the
+     * broker configured". `tiers` has no such fallthrough: a depth nobody
+     * configured is absent, and absent means this programme stops here.
      */
-    const rateValue = entry.depth === 1 ? program.level1Rate : program.level2Rate;
+    const rateValue = program.tiers.get(entry.depth);
+
+    if (rateValue === undefined) {
+      skipped.push(
+        `programme ${program.id} reaches ${program.tiers.size} level(s), so the partner at ` +
+          `depth ${entry.depth} earns nothing from it`,
+      );
+      continue;
+    }
+
     const rate = toDecimal(rateValue);
-    // `greaterThan(0)` for the reason the base check above records: a rate of
-    // exactly zero is `isPositive()` in decimal.js, so a programme deliberately
-    // paying nothing at this depth would silently produce an unexplained empty
-    // result instead of saying so.
+    /*
+     * `greaterThan(0)` for the reason the base check above records: a rate of
+     * exactly zero is `isPositive()` in decimal.js, so a zero would silently
+     * produce an unexplained empty result instead of saying so.
+     *
+     * Belt and braces rather than dead code — `ib_program_tiers_rate_positive`
+     * refuses a zero-rate row, so this is unreachable through the database. It
+     * stays because this function is a pure seam every test constructs terms for
+     * by hand, and a guard that only the CHECK enforces is one an in-memory
+     * caller can walk straight past.
+     */
     if (!rate.greaterThan(0)) {
       skipped.push(`programme ${program.id} pays nothing at depth ${entry.depth}`);
       continue;
@@ -353,7 +414,6 @@ export function calculate(
     accruals.push({
       ibUserId: entry.ibUserId,
       depth: entry.depth,
-      level: entry.level,
       programId: program.id,
       rateValue,
       amount,
@@ -398,107 +458,41 @@ export function calculate(
   }
 
   /*
-   * ── THE BROKER'S FLOOR ───────────────────────────────────────────────────
+   * ── THERE IS NO BROKER-SIDE CAP HERE, AND THAT IS DELIBERATE ─────────────
    *
-   * Each rung's rate is a share of the FULL revenue, so the rates ADD UP: a
-   * two-level chain at 70 + 30 pays out everything the house earned and leaves
-   * it nothing on that client. `checkPlausible` cannot catch it either — it
-   * refuses totals GREATER than the revenue, and exactly 100% is not greater.
+   * `ibMaxRevenueSharePct` used to sit at this point: it summed every leg,
+   * compared the total against a configured percentage of the revenue, and
+   * scaled all of them PRO RATA when they exceeded it. It was removed at the
+   * operator's request, along with the "Maximum paid to partners" setting that
+   * fed it. The FSD asks for no such ceiling — FR-IB-05 and FR-IB-17 describe
+   * what each leg is owed, and nothing about a floor the house keeps.
    *
-   * So the total is capped here and scaled PRO RATA, which keeps the ladder's
-   * proportions intact: a rung worth twice another still earns twice as much,
-   * everyone simply earns less. The alternative — paying the rungs in order
-   * until the pool runs out — would silently zero the deepest partner, who
-   * would have no way to know why.
+   * ## What still stops an over-payment, and how it differs
    *
-   * ── It applies to EVERY leg, and that took two fixes to get right ──────────
+   * Two guards remain, and between them nothing pays out more than the broker
+   * earned:
    *
-   * The condition used to read `event.lots === undefined`, exempting any event
-   * that carried a lot count. Every real commission carries one:
-   * `CommissionService` sets `lots: position.lots` on the deal event, and a deal
-   * is the only source that pays since deposits stopped being revenue. So the
-   * broker's floor was bypassed on every commission the running system produced,
-   * while every test of it passed by using a fixture with no lots.
+   *  - `IbProgramsService.assertShareFits` plus the `ib_program_tiers_share_fits`
+   *    constraint trigger bound ONE programme's tiers and rebate to 100%, at
+   *    configuration time, where an operator can still fix it.
+   *  - `checkPlausible` refuses an accrual set whose total exceeds the revenue
+   *    it is a share of — the runtime backstop, per trade, across whatever mix
+   *    of programmes the chain happens to hold.
    *
-   * The exemption was meant for the per-lot PAYOUT — a rebate priced on size is
-   * not a share of revenue and may legitimately exceed it — so it was narrowed
-   * to the per-accrual model. Migration 0055 then removed the model entirely:
-   * every leg is a percentage of the broker's revenue now, so every leg is
-   * capped, and the distinction is gone with the thing it distinguished.
+   * ## The behaviour that CHANGED, stated plainly
+   *
+   * A chain that pays out more than the revenue is now REFUSED rather than
+   * scaled. The deal is not lost: `CommissionRefusedError` defers it on the
+   * 0092 backoff with the reason on the row, so it pays in full once the
+   * programmes are corrected. Previously it paid a reduced amount immediately
+   * and logged that it had scaled — which is the friendlier failure and the
+   * less honest one, because nobody was ever told their rates were wrong.
+   *
+   * Exactly 100% now pays out in full and leaves the house nothing on that
+   * trade. That is a configuration an operator can reach and is no longer
+   * prevented here; the per-programme ceiling is what makes it deliberate
+   * rather than accidental.
    */
-  /*
-   * ── The REBATE is inside the cap, not beside it ──────────────────────────
-   *
-   * It is a share of the same revenue as every commission leg, so a cap that
-   * scaled the partners and left the client's leg untouched would let the total
-   * paid out exceed the broker's floor by exactly the rebate — while reporting
-   * that it had enforced the floor. Everything that comes out of this revenue
-   * is scaled together, and the proportions between the legs survive it.
-   */
-  if (maxSharePct !== undefined && (accruals.length > 0 || rebate)) {
-    const cap = toDecimal(maxSharePct);
-    if (cap.isPositive()) {
-      const ceiling = gross.times(cap).dividedBy(100);
-      const total = accruals
-        .reduce((sum, a) => sum.plus(toDecimal(a.amount)), new Decimal(0))
-        .plus(rebate ? toDecimal(rebate.amount) : 0);
-
-      if (total.greaterThan(ceiling)) {
-        const factor = ceiling.dividedBy(total);
-        for (const accrual of accruals) {
-          accrual.amount = money(toDecimal(accrual.amount).times(factor));
-        }
-        if (rebate) rebate.amount = money(toDecimal(rebate.amount).times(factor));
-        skipped.push(
-          `chain total ${money(total)} exceeded the broker's ${maxSharePct}% cap; ` +
-            `scaled to ${money(ceiling)}`,
-        );
-
-        /*
-         * ── DROP WHAT SCALED AWAY ─────────────────────────────────────────
-         *
-         * The same rule the per-leg rounding above enforces, re-applied because
-         * SCALING can recreate exactly what that guard removed: a cap of 0 —
-         * which the settings DTO permits, meaning "partners earn nothing" —
-         * takes every leg to `0.00000000`, and a small enough cap does it to the
-         * smallest leg alone.
-         *
-         * `ib_accruals_amount_positive` is a CHECK constraint, so a zero row
-         * does not store a harmless nothing: it refuses the INSERT, and the
-         * service inserts every earner on the trade in ONE statement. One
-         * dust-sized leg would take down the commission of every legitimate
-         * earner beside it.
-         *
-         * Filtered rather than clamped to a minimum: a leg worth less than the
-         * column can represent is worth nothing, and inventing a satoshi to keep
-         * the row would pay a number the cap says is not owed.
-         */
-        const survivors = accruals.filter((accrual) => !toDecimal(accrual.amount).isZero());
-        if (survivors.length !== accruals.length) {
-          skipped.push(
-            `${accruals.length - survivors.length} leg(s) scaled below the storable minimum ` +
-              'and were dropped',
-          );
-        }
-        /*
-         * The client's leg is dropped by the same rule as a partner's: a rebate
-         * scaled below what the column can store is worth nothing, and inventing
-         * a satoshi to keep the row would pay an amount the cap says is not
-         * owed.
-         */
-        if (rebate && toDecimal(rebate.amount).isZero()) {
-          skipped.push('the rebate scaled below the storable minimum and was dropped');
-          rebate = undefined;
-        }
-
-        return {
-          accruals: survivors,
-          rebate,
-          skippedReason: skipped.length > 0 ? skipped.join('; ') : undefined,
-        };
-      }
-    }
-  }
 
   return {
     accruals,

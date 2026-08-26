@@ -27,8 +27,9 @@
  *
  * ## Two things it deliberately does NOT do
  *
- *  - It never touches `ib_levels`. The payout ladder is real configuration with
- *    real partners standing on it, and renumbering levels cascades.
+ *  - It never touches `ib_programs` or `ib_program_tiers`. The commission
+ *    catalogue is real configuration with real partners standing on it, and a
+ *    seeded programme would change what somebody is paid.
  *  - Seeded PRODUCTS and PAYMENT METHODS are created DISABLED. Both drive live
  *    client journeys — a product is offered in the portal's account-opening
  *    dialog and a payment method in the deposit flow — and a seeded one points

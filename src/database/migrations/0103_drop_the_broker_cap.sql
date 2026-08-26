@@ -1,0 +1,46 @@
+-- ─────────────────────────────────────────────────────────────────────────────
+-- The broker-side cap on partner payouts is removed, at the operator's request.
+--
+-- `ib_max_revenue_share_pct` was the "Maximum paid to partners (%)" control on
+-- the Trading settings form. `calculate` summed every leg of a trade —
+-- commission at each depth, plus the client rebate — and when the total
+-- exceeded this share of the broker's revenue it scaled ALL of them pro rata to
+-- fit, keeping their proportions and logging that it had done so.
+--
+-- The FSD asks for no such ceiling. FR-IB-05 and FR-IB-17 describe what each leg
+-- is owed; nothing anywhere describes a floor the house keeps.
+--
+-- ── What still prevents an over-payment ─────────────────────────────────────
+--
+-- Two guards remain, and between them nothing pays out more than the broker
+-- earned on a trade:
+--
+--   * `ib_program_tiers_share_fits` (0102) plus `IbProgramsService` bound ONE
+--     programme's tiers and its rebate to 100%, at CONFIGURATION time, where an
+--     operator can still fix it.
+--   * `checkPlausible` refuses an accrual set whose total exceeds the revenue it
+--     is a share of — at RUNTIME, per trade, across whatever mix of programmes
+--     the chain happens to hold.
+--
+-- ── ⚠️ The behaviour that CHANGES, stated plainly ───────────────────────────
+--
+-- A chain paying out more than the revenue is now REFUSED rather than scaled.
+-- The deal is not lost: `CommissionRefusedError` defers it on the 0092 backoff
+-- with the reason on the row, so it pays in full once the programmes are
+-- corrected. The old behaviour paid a reduced amount immediately — friendlier,
+-- and less honest, because nobody was ever told their rates were wrong.
+--
+-- Exactly 100% now pays out in full and leaves the house nothing on that trade.
+-- That is a configuration an operator can reach and is no longer prevented at
+-- runtime; the per-programme ceiling is what keeps it deliberate rather than
+-- accidental.
+--
+-- ── Nothing already accrued is affected ─────────────────────────────────────
+--
+-- `ib_accruals` stores the AMOUNT it was calculated at, along with the rate and
+-- (since 0102) the programme. A row scaled by the old cap keeps the figure it
+-- was credited at, and nothing here recomputes it — the ledger is append-only
+-- and a migration is not the place a partner's paid balance changes.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "trading_settings" DROP COLUMN IF EXISTS "ib_max_revenue_share_pct";

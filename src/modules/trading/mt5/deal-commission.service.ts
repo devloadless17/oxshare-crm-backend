@@ -12,8 +12,7 @@ import {
   type CommissionAccrualPort,
 } from '../../../common/provisioning/commission-accrual.port';
 import { brokerRevenueFor } from '../broker-revenue';
-import { AppSettingsStore } from '../../../store/app-settings.store';
-import { tradingTermsFrom } from '../../../common/trading-terms';
+import { DEFAULT_REVENUE_BASIS, type RevenueBasis } from '../../../common/revenue-basis';
 import {
   CLOSING_ENTRIES,
   TRADE_ACTIONS,
@@ -236,11 +235,11 @@ export class DealCommissionService {
      */
     @Inject(COMMISSION_ACCRUAL) private readonly commissions: CommissionAccrualPort,
     /*
-     * Read fresh on every run, never cached: an operator who finally makes the
-     * backlog decision should see the NEXT run honour it, not wait out a TTL on
-     * the one job whose silence means partners are not being paid.
+     * `AppSettingsStore` used to be injected here, for the backlog decision and
+     * the revenue basis. Both left this form in 0104 — the first is
+     * `IB_ACCRUAL_START` again, the second is a constant — so this service
+     * reads no settings at all.
      */
-    private readonly settings: AppSettingsStore,
   ) {}
 
   /**
@@ -268,32 +267,40 @@ export class DealCommissionService {
      * keeps overriding a saved setting is the bug this move removes.
      */
     /*
-     * A ROW is the answer, even when the value in it is NULL.
+     * `IB_ACCRUAL_START` is the ONLY answer again (0104).
      *
-     * `?? process.env[...]` was wrong here and the suite caught it: `null` is
-     * nullish, so an operator who deliberately left the decision undecided had
-     * it silently overridden by a stale variable on the box — the exact failure
-     * moving this setting out of the environment was meant to end. Only the
-     * ABSENCE of a row falls back.
+     * It was a settings column for a while, on the reasoning that a commercial
+     * decision belongs where an operator can see it. It went back to the
+     * environment at the operator's request, with the rest of the IB block on
+     * the Trading settings form: commission is configured on the Commission
+     * Programmes page, and a second screen that also decides what partners are
+     * paid is the "two catalogues" problem 0102 removed.
+     *
+     * ⚠️ THE GUARD IS UNCHANGED, and it is what makes this safe. An AGED
+     * backlog with no value set still STOPS the run — nothing paid, nothing
+     * discarded — rather than paying months of ingested history at once. See
+     * `accrualWindow` and the holding branch below.
      */
-    const settings = await this.settings.getTrading();
-    const window = accrualWindow(
-      settings ? settings.ibAccrualStart : process.env['IB_ACCRUAL_START'],
-    );
+    const window = accrualWindow(process.env['IB_ACCRUAL_START']);
 
     /*
-     * ── WHAT A PARTNER IS PAID ON, resolved ONCE for the whole run ─────────
+     * ── WHAT A PARTNER IS PAID ON ──────────────────────────────────────────
      *
-     * FR-IB-16. Read here rather than per deal so a batch cannot be split
-     * across two bases by an operator saving the form mid-drain: every deal in
-     * one run is priced the same way, and the run's log line can name which.
+     * FR-IB-16, and it is now a CONSTANT rather than a setting (0104).
      *
-     * There is no environment fallback and there never was one — unlike
-     * `ibAccrualStart`, this setting has no predecessor variable to be
-     * compatible with. A deployment with no settings row gets the default,
-     * which is what the platform already paid.
+     * `trading_settings.ib_revenue_basis` let an operator choose between MT5's
+     * charged commission + swap and the product's spread markup. It was removed
+     * at the operator's request: commission is configured on the Commission
+     * Programmes page, and a control on a different screen that changes what
+     * every partner earns is a second place to look when a payout surprises
+     * somebody.
+     *
+     * `commission_swap` is what the platform has always shipped and paid on, so
+     * removing the choice moved nobody's money. The spread-markup arithmetic
+     * stays in `brokerRevenueFor` — reachable by changing this one line, which
+     * is where a broker who wants it should have the conversation.
      */
-    const basis = tradingTermsFrom(settings).ibRevenueBasis;
+    const basis: RevenueBasis = DEFAULT_REVENUE_BASIS;
 
     /*
      * ── NOBODY HAS SAID WHAT TO DO WITH THE BACKLOG, SO NOTHING IS PAID ────

@@ -3,7 +3,6 @@ import { sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
 import { rivalSettings, smtpSettings, tradingSettings } from '../database/schema';
-import type { RevenueBasis } from '../common/revenue-basis';
 
 /**
  * The singleton settings rows — `smtp_settings`, `trading_settings` and
@@ -65,12 +64,10 @@ export interface TradingSettingsRow {
   maxDemoAccounts: number;
   /** A decimal string, never a number — see §6. */
   maxDemoDeposit: string;
+  ibMaxLevels: number;
   /** The most of its revenue the broker will pay partners, as a percentage. */
-  ibMaxRevenueSharePct: string;
   /** Hours an accrual is held before it may be confirmed. */
-  ibCommissionHoldHours: number;
   /** `null` (undecided), `'all'`, or an ISO instant — see the column comment. */
-  ibAccrualStart: string | null;
   /**
    * Raw from the column — narrow it with `revenueBasisOf` before use.
    *
@@ -79,7 +76,6 @@ export interface TradingSettingsRow {
    * CHECK can hold anything. Typing it as the union here would make every
    * reader believe a narrowing that had not happened.
    */
-  ibRevenueBasis: string;
   updatedBy: string | null;
   updatedAt: Date;
 }
@@ -88,13 +84,10 @@ export interface TradingSettingsWrite {
   maxLiveAccounts: number;
   maxDemoAccounts: number;
   maxDemoDeposit: string;
-  ibMaxRevenueSharePct: string;
+  ibMaxLevels: number;
   /** Hours an accrual is held before it may be confirmed. */
-  ibCommissionHoldHours: number;
   /** `null` (undecided), `'all'`, or an ISO instant — see the column comment. */
-  ibAccrualStart: string | null;
   /** One of `REVENUE_BASES` — the writer narrows before it reaches here. */
-  ibRevenueBasis: RevenueBasis;
 }
 
 export interface RivalSettingsRow {

@@ -249,8 +249,8 @@ async function makeClient(options: {
 
   if (options.ibPartner) {
     await db.execute(sql`
-      INSERT INTO ib_accounts (user_id, level, referral_code, program_id)
-      VALUES (${userId}, (SELECT min(level) FROM ib_levels), ${`STATS-${userId.slice(0, 8)}`},
+      INSERT INTO ib_accounts (user_id, referral_code, program_id)
+      VALUES (${userId}, ${`STATS-${userId.slice(0, 8)}`},
               (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
     `);
   }
@@ -278,15 +278,11 @@ beforeAll(async () => {
   });
 
   /*
-   * `ib_levels` must have at least one rung before an `ib_accounts` row can
-   * reference one. Inserted defensively — an empty ladder would fail the FK
-   * with a message about a level rather than about the fixture.
+   * No ladder fixture is needed any more. `ib_accounts` used to carry a `level`
+   * referencing `ib_levels`, so every partner fixture had to seed a rung first;
+   * 0102 dropped both, and `program_id` is satisfied by the seeded Default
+   * programme.
    */
-  await db.execute(sql`
-    INSERT INTO ib_levels (level, name, rate_value)
-    SELECT 1, 'Stats Level', '10'
-    WHERE NOT EXISTS (SELECT 1 FROM ib_levels)
-  `);
 
   /*
    * ── The fixture ───────────────────────────────────────────────────────────

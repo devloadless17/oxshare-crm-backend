@@ -5,7 +5,7 @@ import { PasswordService } from '../src/common/security/password.service';
 import {
   admins,
   ibAccounts,
-  ibLevels,
+  ibProgramTiers,
   ibPrograms,
   kycSubmissions,
   roles,
@@ -133,18 +133,13 @@ beforeAll(async () => {
    * referred clients would make the assertion below pass without proving
    * anything at all.
    */
-  const [level] = await db
-    .insert(ibLevels)
-    .values({ level: 1, name: 'Mask Level', rateValue: '10.0000' })
-    .onConflictDoNothing()
-    .returning();
   const [program] = await db
     .insert(ibPrograms)
-    .values({ name: 'Mask Programme', mode: 'commission_only', level1Rate: '10.0000' })
+    .values({ name: 'Mask Programme', mode: 'commission_only' })
     .returning();
+  await db.insert(ibProgramTiers).values({ programId: program.id, depth: 1, rate: '10.0000' });
   await db.insert(ibAccounts).values({
     userId: clientId,
-    level: level?.level ?? 1,
     programId: program.id,
     referralCode: 'MASKIB1',
     active: true,

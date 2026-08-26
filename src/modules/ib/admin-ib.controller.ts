@@ -34,7 +34,6 @@ import { AdminAuditService } from '../admin/admin-audit.service';
 import { exportFormat, streamCsv } from '../../common/export/export-response';
 import {
   ApproveIbApplicationDto,
-  ChangeIbLevelDto,
   ChangeIbProgramDto,
   ReverseAccrualDto,
   IbAccountDto,
@@ -50,7 +49,7 @@ import {
 /**
  * Reviewing partner applications.
  *
- * ## `@ScopedToClients`, unlike the levels controller
+ * ## `@ScopedToClients`, unlike the programmes controller
  *
  * Every route here reaches a CLIENT — an application names the person who made
  * it — so an admin restricted to a subset of the client base must not see or
@@ -192,7 +191,10 @@ export class AdminIbController {
     description:
       'One transaction: the application moves out of pending and the account is created ' +
       'together, so there is no state where a client has been told they were accepted and has ' +
-      'no referral code. Refuses if another reviewer already decided it.',
+      'no referral code. Refuses if another reviewer already decided it. `programId` names the ' +
+      'terms to appoint them on (FR-IB-06) and defaults to the first enabled programme; a ' +
+      'disabled one is refused, because it would pay them nothing while their referral link ' +
+      'kept working.',
   })
   @ApiOkResponse({ type: IbAccountDto })
   @ScopedToClients('Decides on one client’s application; out-of-scope 404s like a missing one.')
@@ -203,7 +205,7 @@ export class AdminIbController {
     @Body() dto: ApproveIbApplicationDto,
   ) {
     return this.applications.approve(id, req.admin, req.admin.clientScope, {
-      level: dto.level,
+      programId: dto.programId,
       parentIbUserId: dto.parentIbUserId ?? null,
       /*
        * `undefined` deliberately, not `?? null`. Undefined means "the reviewer
@@ -245,7 +247,7 @@ export class AdminIbController {
    *
    * `ib_accruals` was written on every settled deposit and never read back by
    * anything: no endpoint, no screen, no export. An operator could see partners
-   * and levels but not one commission — not who had earned what, not pending
+   * and programmes but not one commission — not who had earned what, not pending
    * against confirmed, not which client produced it. "What do we owe our
    * partners" was answerable only by opening the database.
    *
@@ -369,7 +371,7 @@ export class AdminIbController {
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'The partner list',
-    description: 'Joined to the person and their level, newest approval first.',
+    description: 'Joined to the person and the programme they are paid on, newest approval first.',
   })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
@@ -402,7 +404,7 @@ export class AdminIbController {
   @ApiOperation({
     summary: 'Export the partner list as CSV',
     description:
-      'Every partner the acting admin may see, joined to the person and their level. The list ' +
+      'Every partner the acting admin may see, joined to the person and their programme. The list ' +
       'takes no filters, so neither does its export.',
   })
   @ApiOkResponse({
@@ -444,7 +446,8 @@ export class AdminIbController {
   @ApiOperation({
     summary: 'One partner’s standing, their line and their earnings',
     description:
-      'The partner account joined to its level and agency, the partner above them, the partners ' +
+      'The partner account joined to its programme (with its tier ladder) and agency, the partner ' +
+      'above them, the partners ' +
       'directly beneath them, how many clients they introduced, and their confirmed and pending ' +
       'earnings. Answers `null` when the client is not a partner — every client profile asks, ' +
       'and most clients are not one, so that is an ordinary answer rather than a 404.',
@@ -458,26 +461,16 @@ export class AdminIbController {
     return this.applications.partnerDetailFor(userId, req.admin.clientScope);
   }
 
-  @Patch('partners/:userId/level')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.partners.edit')
-  @ApiCookieAuth()
-  @ApiOperation({
-    summary: 'Move a partner to a different level',
-    description:
-      'The target level must be ENABLED — a disabled one takes no share, so placing somebody on ' +
-      'it stops their earnings silently rather than demoting them visibly.',
-  })
-  @ApiOkResponse({ type: IbAccountDto })
-  @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
-  @Audited('ib.level_change')
-  changeLevel(
-    @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ParseUUIDPipe) userId: string,
-    @Body() dto: ChangeIbLevelDto,
-  ) {
-    return this.applications.changeLevel(userId, dto.level, req.admin.clientScope, req.admin);
-  }
+  /*
+   * `PATCH partners/:userId/level` IS GONE (0102), and `/program` below is what
+   * replaced it.
+   *
+   * It moved a partner to a different RUNG and described itself as the control
+   * over their earnings — "a disabled one takes no share, so placing somebody on
+   * it stops their earnings silently". That stopped being true in 0084, when the
+   * rate moved to the programme, leaving an endpoint that changed a number
+   * deciding nothing while reading as the one that mattered.
+   */
 
   @Patch('partners/:userId/program')
   @UseGuards(PermissionsGuard)

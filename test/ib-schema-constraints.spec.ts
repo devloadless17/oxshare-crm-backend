@@ -117,7 +117,8 @@ describe('ib_accounts', () => {
     const second = await makeUser('code-b@test.local');
 
     await ctx.db.execute(
-      sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${first}, 1, 'SHARED', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
+      sql`INSERT INTO ib_accounts (user_id, referral_code, program_id)
+      VALUES (${first}, 'SHARED', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
     );
 
     // Attribution is permanent per client, so a reissued code would credit one
@@ -125,7 +126,8 @@ describe('ib_accounts', () => {
     expect(
       await constraintViolatedBy(
         ctx.db.execute(
-          sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${second}, 1, 'SHARED', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
+          sql`INSERT INTO ib_accounts (user_id, referral_code, program_id)
+      VALUES (${second}, 'SHARED', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
         ),
       ),
     ).toBe('ib_accounts_referral_code_unique');
@@ -140,7 +142,8 @@ describe('ib_accounts', () => {
     expect(
       await constraintViolatedBy(
         ctx.db.execute(sql`
-          INSERT INTO ib_accounts (user_id, level, parent_ib_user_id, referral_code, program_id) VALUES (${partner}, 2, ${stranger}, 'CHILD1', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
+          INSERT INTO ib_accounts (user_id, parent_ib_user_id, referral_code, program_id)
+      VALUES (${partner}, ${stranger}, 'CHILD1', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
         `),
       ),
     ).toBe('ib_accounts_parent_fk');
@@ -151,10 +154,12 @@ describe('ib_accounts', () => {
     const child = await makeUser('sub@test.local');
 
     await ctx.db.execute(
-      sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${parent}, 1, 'PARENT1', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
+      sql`INSERT INTO ib_accounts (user_id, referral_code, program_id)
+      VALUES (${parent}, 'PARENT1', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
     );
     await ctx.db.execute(sql`
-      INSERT INTO ib_accounts (user_id, level, parent_ib_user_id, referral_code, program_id) VALUES (${child}, 2, ${parent}, 'CHILD1', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
+      INSERT INTO ib_accounts (user_id, parent_ib_user_id, referral_code, program_id)
+      VALUES (${child}, ${parent}, 'CHILD1', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
     `);
 
     const { rows } = await ctx.db.execute<{ parent_ib_user_id: string }>(
@@ -168,10 +173,12 @@ describe('ib_accounts', () => {
     const b = await makeUser('cycle-b@test.local');
 
     await ctx.db.execute(
-      sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${a}, 1, 'CYCA', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
+      sql`INSERT INTO ib_accounts (user_id, referral_code, program_id)
+      VALUES (${a}, 'CYCA', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
     );
     await ctx.db.execute(sql`
-      INSERT INTO ib_accounts (user_id, level, parent_ib_user_id, referral_code, program_id) VALUES (${b}, 2, ${a}, 'CYCB', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
+      INSERT INTO ib_accounts (user_id, parent_ib_user_id, referral_code, program_id)
+      VALUES (${b}, ${a}, 'CYCB', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
     `);
 
     // A → B → A. Postgres accepts it: a self-FK checks only that the target
@@ -185,29 +192,149 @@ describe('ib_accounts', () => {
     expect(rows[0].parent_ib_user_id).toBe(b);
   });
 
-  it('refuses a level that is not on the ladder', async () => {
-    const userId = await makeUser('bad-level@test.local');
+  /*
+   * The two ladder-FK cases that stood here went with `ib_levels` (0102). The
+   * guarantee they described — a partner cannot stand on terms that do not
+   * exist, and terms somebody stands on cannot be deleted — moved intact to
+   * `program_id`, so it is asserted against the constraint that now carries it.
+   */
+  it('refuses a partner on a programme that does not exist', async () => {
+    const userId = await makeUser('bad-program@test.local');
 
     expect(
       await constraintViolatedBy(
         ctx.db.execute(
-          sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${userId}, 99, 'NOPE', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
+          sql`INSERT INTO ib_accounts (user_id, referral_code, program_id)
+              VALUES (${userId}, 'NOPE', '00000000-0000-4000-8000-000000000000')`,
         ),
       ),
-    ).toBe('ib_accounts_level_ib_levels_level_fk');
+    ).toBe('ib_accounts_program_id_ib_programs_id_fk');
   });
 
-  it('refuses to delete a level that a partner is placed at', async () => {
+  it('refuses to delete a programme that a partner is paid on', async () => {
     const userId = await makeUser('placed@test.local');
     await ctx.db.execute(
-      sql`INSERT INTO ib_accounts (user_id, level, referral_code, program_id) VALUES (${userId}, 2, 'PLACED', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
+      sql`INSERT INTO ib_accounts (user_id, referral_code, program_id)
+          VALUES (${userId}, 'PLACED', (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))`,
     );
 
-    // `restrict`, so removing a rung out from under somebody standing on it
+    // `restrict`, so removing terms out from under somebody being paid by them
     // fails loudly rather than orphaning them.
     expect(
-      await constraintViolatedBy(ctx.db.execute(sql`DELETE FROM ib_levels WHERE level = 2`)),
-    ).toBe('ib_accounts_level_ib_levels_level_fk');
+      await constraintViolatedBy(
+        ctx.db.execute(
+          sql`DELETE FROM ib_programs
+               WHERE id = (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1)`,
+        ),
+      ),
+    ).toBe('ib_accounts_program_id_ib_programs_id_fk');
+  });
+
+  /*
+   * The TIERS cascade, which is the one cascade in this schema and therefore
+   * worth pinning. A tier is a line of a rate card, meaningless without the
+   * card — and a programme nobody stands on is the only one that can be deleted
+   * at all, per the test above.
+   */
+  it('takes a programme’s ladder with it when the programme is deleted', async () => {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO ib_programs (name, mode) VALUES ('Cascade Test', 'commission_only') RETURNING id
+    `);
+    const programId = rows[0].id;
+    await ctx.db.execute(
+      sql`INSERT INTO ib_program_tiers (program_id, depth, rate) VALUES (${programId}, 1, 10)`,
+    );
+
+    await ctx.db.execute(sql`DELETE FROM ib_programs WHERE id = ${programId}`);
+
+    const { rows: left } = await ctx.db.execute<{ n: string }>(
+      sql`SELECT count(*)::text AS n FROM ib_program_tiers WHERE program_id = ${programId}`,
+    );
+    expect(left[0].n).toBe('0');
+  });
+
+  /*
+   * A tier that pays nothing is not a configured zero — it is a row that should
+   * not exist. The ROW COUNT is a programme's reach, so a zero at depth 3 claims
+   * a reach the programme does not have and strands depth 4 beneath it.
+   */
+  it('refuses a tier that pays nothing', async () => {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO ib_programs (name, mode) VALUES ('Zero Tier', 'commission_only') RETURNING id
+    `);
+
+    expect(
+      await constraintViolatedBy(
+        ctx.db.execute(
+          sql`INSERT INTO ib_program_tiers (program_id, depth, rate) VALUES (${rows[0].id}, 1, 0)`,
+        ),
+      ),
+    ).toBe('ib_program_tiers_rate_positive');
+  });
+
+  /*
+   * THE CONFIGURATION-TIME FLOOR (0102), and it is DEFERRED on purpose.
+   *
+   * Every tier and the rebate are shares of the SAME revenue, so they add up: a
+   * programme paying 70 + 30 + a 10 rebate hands out 110% of what the house
+   * earned. The trigger fires at COMMIT rather than per statement, so a ladder
+   * being rewritten row by row is judged on what it ends as — which is why this
+   * has to be asserted through a committed transaction rather than a bare
+   * INSERT.
+   *
+   * It bounds ONE programme. What one TRADE pays out is `checkPlausible` plus
+   * `ibMaxRevenueSharePct`, because the earners on a trade may hold different
+   * programmes.
+   */
+  it('refuses a programme whose tiers and rebate exceed the revenue', async () => {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO ib_programs (name, mode, rebate_rate)
+      VALUES ('Over Hundred', 'hybrid', 10) RETURNING id
+    `);
+    const programId = rows[0].id;
+
+    expect(
+      await constraintViolatedBy(
+        ctx.db.transaction(async (tx) => {
+          await tx.execute(
+            sql`INSERT INTO ib_program_tiers (program_id, depth, rate) VALUES (${programId}, 1, 70)`,
+          );
+          await tx.execute(
+            sql`INSERT INTO ib_program_tiers (program_id, depth, rate) VALUES (${programId}, 2, 30)`,
+          );
+        }),
+      ),
+    ).toBe('ib_program_tiers_share_fits');
+  });
+
+  /*
+   * The other half of DEFERRED: a ladder swapped 60/40 → 40/60 in one
+   * transaction is valid at both ends and must not be refused for the moment in
+   * between. Checked per statement, the delete leaves an empty ladder and the
+   * first insert is judged against a half-written one.
+   */
+  it('allows a ladder to be rewritten wholesale inside one transaction', async () => {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO ib_programs (name, mode) VALUES ('Rewritable', 'commission_only') RETURNING id
+    `);
+    const programId = rows[0].id;
+    await ctx.db.execute(sql`
+      INSERT INTO ib_program_tiers (program_id, depth, rate)
+      VALUES (${programId}, 1, 60), (${programId}, 2, 40)
+    `);
+
+    await ctx.db.transaction(async (tx) => {
+      await tx.execute(sql`DELETE FROM ib_program_tiers WHERE program_id = ${programId}`);
+      await tx.execute(sql`
+        INSERT INTO ib_program_tiers (program_id, depth, rate)
+        VALUES (${programId}, 1, 40), (${programId}, 2, 60)
+      `);
+    });
+
+    const { rows: after } = await ctx.db.execute<{ depth: number; rate: string }>(
+      sql`SELECT depth, rate FROM ib_program_tiers WHERE program_id = ${programId} ORDER BY depth`,
+    );
+    expect(after.map((r) => r.rate)).toEqual(['40.0000', '60.0000']);
   });
 });
 

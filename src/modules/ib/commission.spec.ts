@@ -3,6 +3,7 @@ import {
   calculate,
   checkPlausible,
   resolveChain,
+  MAX_CHAIN_DEPTH,
   type ChainEntry,
   type ChainNode,
   type ProgramTerms,
@@ -27,12 +28,21 @@ import {
  * ## What changed when programmes landed, and why some numbers are mirrored
  *
  * The rate used to be keyed on the RUNG an earner occupied. It is keyed on
- * DEPTH now: `level1Rate` is what you earn from your OWN client, `level2Rate`
- * from a sub-partner's. So a sub-partner who introduced this client is paid the
- * level-1 rate — under the old model they were paid the level-2 rate for
- * business they had brought in themselves, which is the defect the change
- * fixes and the reason several expectations below are the mirror of what they
- * were.
+ * DEPTH now: tier 1 is what you earn from your OWN client, tier 2 from a
+ * sub-partner's. So a sub-partner who introduced this client is paid the tier-1
+ * rate — under the old model they were paid the level-2 rate for business they
+ * had brought in themselves, which is the defect the change fixes and the
+ * reason several expectations below are the mirror of what they were.
+ *
+ * ## What changed again in 0102: the ladder is a LIST
+ *
+ * `level1Rate` / `level2Rate` were a fixed PAIR, so two levels was the deepest
+ * anything could express and `MAX_CHAIN_DEPTH` was 2 to match. A programme now
+ * carries `tiers`, a map from depth to rate, and its SIZE is how far its
+ * holder's earnings reach. `MAX_CHAIN_DEPTH` is 10 and is a cycle guard.
+ *
+ * `ladder()` below builds that map, so most expectations here are unchanged —
+ * the arithmetic did not move, only where the rates are read from.
  */
 
 /**
@@ -61,7 +71,7 @@ const DEPOSIT: RevenueEvent = {
 };
 
 function node(overrides: Partial<ChainNode> & { userId: string }): ChainNode {
-  return { parentIbUserId: null, active: true, level: 1, programId: 'prog-a', ...overrides };
+  return { parentIbUserId: null, active: true, programId: 'prog-a', ...overrides };
 }
 
 function lookupFrom(nodes: ChainNode[]): (id: string) => ChainNode | undefined {
@@ -69,12 +79,28 @@ function lookupFrom(nodes: ChainNode[]): (id: string) => ChainNode | undefined {
   return (id) => map.get(id);
 }
 
-/** One programme, defaulted to terms that pay both depths and no rebate. */
+/**
+ * A tier ladder from depth 1 upward.
+ *
+ * `null` OMITS that depth, which is a different statement from a zero: absent
+ * means "this programme does not reach here", zero means "it reaches here and
+ * pays nothing". `calculate` distinguishes them in the reason it reports, and
+ * the database refuses the second outright — so both paths need a way to be
+ * constructed, and this is it.
+ */
+function ladder(...rates: (string | null)[]): Map<number, string> {
+  const map = new Map<number, string>();
+  rates.forEach((rate, index) => {
+    if (rate !== null) map.set(index + 1, rate);
+  });
+  return map;
+}
+
+/** One programme, defaulted to terms that pay two depths and no rebate. */
 function program(overrides: Partial<ProgramTerms> & { id: string }): ProgramTerms {
   return {
     mode: 'commission_only',
-    level1Rate: '10.0000',
-    level2Rate: '5.0000',
+    tiers: ladder('10.0000', '5.0000'),
     rebateRate: '0.0000',
     enabled: true,
     ...overrides,
@@ -87,7 +113,7 @@ function programs(entries: ProgramTerms[]): Map<string, ProgramTerms> {
 
 /** A chain entry. Every field of it decides a payment, so none is implicit. */
 function earner(over: Partial<ChainEntry> & { ibUserId: string; depth: number }): ChainEntry {
-  return { level: over.depth, programId: 'prog-a', ...over };
+  return { programId: 'prog-a', ...over };
 }
 
 describe('resolveChain', () => {
@@ -97,10 +123,8 @@ describe('resolveChain', () => {
   });
 
   it('resolves the introducer alone when they have no parent', () => {
-    const chain = resolveChain('ib-1', lookupFrom([node({ userId: 'ib-1', level: 1 })]));
-    expect(chain).toEqual<ChainEntry[]>([
-      { ibUserId: 'ib-1', depth: 1, level: 1, programId: 'prog-a' },
-    ]);
+    const chain = resolveChain('ib-1', lookupFrom([node({ userId: 'ib-1' })]));
+    expect(chain).toEqual<ChainEntry[]>([{ ibUserId: 'ib-1', depth: 1, programId: 'prog-a' }]);
   });
 
   /*
@@ -112,8 +136,8 @@ describe('resolveChain', () => {
     const chain = resolveChain(
       'ib-2',
       lookupFrom([
-        node({ userId: 'ib-2', parentIbUserId: 'ib-1', level: 2, programId: 'prog-b' }),
-        node({ userId: 'ib-1', level: 1, programId: 'prog-a' }),
+        node({ userId: 'ib-2', parentIbUserId: 'ib-1', programId: 'prog-b' }),
+        node({ userId: 'ib-1', programId: 'prog-a' }),
       ]),
     );
 
@@ -123,7 +147,16 @@ describe('resolveChain', () => {
     ]);
   });
 
-  it('never returns more than two rungs, however deep the tree is', () => {
+  /*
+   * THE 0102 regression, and the reason the walk had to stop being capped at 2.
+   *
+   * A three-deep chain used to return two entries, so the third ancestor was
+   * unreachable however their programme was configured — while the console
+   * derived a payout depth from the rung count and told an operator earnings
+   * travelled three levels. `calculate` is what decides who is PAID; resolution
+   * must reach far enough for it to be asked.
+   */
+  it('resolves past two, so a third-level ancestor can be considered at all', () => {
     const chain = resolveChain(
       'ib-3',
       lookupFrom([
@@ -133,8 +166,31 @@ describe('resolveChain', () => {
       ]),
     );
 
-    expect(chain).toHaveLength(2);
-    expect(chain.map((c) => c.ibUserId)).toEqual(['ib-3', 'ib-2']);
+    expect(chain.map((c) => [c.ibUserId, c.depth])).toEqual([
+      ['ib-3', 1],
+      ['ib-2', 2],
+      ['ib-1', 3],
+    ]);
+  });
+
+  /*
+   * The cycle guard, on a chain with no cycle in it. `MAX_CHAIN_DEPTH` is not a
+   * payout policy — how far earnings travel is each programme's tier count —
+   * but an unbounded walk over a self-referencing key is the one thing that
+   * hangs the money path, so the bound is asserted rather than assumed.
+   */
+  it('stops walking at MAX_CHAIN_DEPTH, however deep the tree is', () => {
+    const deep = Array.from({ length: MAX_CHAIN_DEPTH + 5 }, (_, index) =>
+      node({
+        userId: `ib-${index}`,
+        parentIbUserId: index === MAX_CHAIN_DEPTH + 4 ? null : `ib-${index + 1}`,
+      }),
+    );
+
+    const chain = resolveChain('ib-0', lookupFrom(deep));
+
+    expect(chain).toHaveLength(MAX_CHAIN_DEPTH);
+    expect(chain.at(-1)?.depth).toBe(MAX_CHAIN_DEPTH);
   });
 
   /*
@@ -191,20 +247,17 @@ describe('calculate — whose rate applies', () => {
   /*
    * THE regression the programme model exists for.
    *
-   * `ib-2` is a level-2 partner who introduced this client themselves, so they
-   * are paid the LEVEL-1 rate — what you earn from your own business. Their
-   * parent, one hop from the trade, takes the level-2 rate. Keyed on the rung
-   * instead, `ib-2` would collect 5% on a client they brought in while the
-   * parent collected 10% on one they never met.
+   * `ib-2` is a sub-partner who introduced this client themselves, so they are
+   * paid the TIER-1 rate — what you earn from your own business. Their parent,
+   * one hop further from the trade, takes tier 2. Keyed on a rung instead,
+   * `ib-2` would collect 5% on a client they brought in while the parent
+   * collected 10% on one they never met.
    */
-  it('pays by DEPTH, not by the rung the earner sits on', () => {
+  it('pays by DEPTH, not by where the earner sits in the tree', () => {
     const result = calculate(
       DEAL,
-      [
-        earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
-        earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
-      ],
-      programs([program({ id: 'prog-a', level1Rate: '10.0000', level2Rate: '5.0000' })]),
+      [earner({ ibUserId: 'ib-2', depth: 1 }), earner({ ibUserId: 'ib-1', depth: 2 })],
+      programs([program({ id: 'prog-a', tiers: ladder('10.0000', '5.0000') })]),
     );
 
     expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([
@@ -225,8 +278,8 @@ describe('calculate — whose rate applies', () => {
         earner({ ibUserId: 'ib-1', depth: 2, programId: 'prog-a' }),
       ],
       programs([
-        program({ id: 'prog-a', level2Rate: '5.0000' }),
-        program({ id: 'prog-b', level1Rate: '25.0000' }),
+        program({ id: 'prog-a', tiers: ladder('10.0000', '5.0000') }),
+        program({ id: 'prog-b', tiers: ladder('25.0000', '5.0000') }),
       ]),
     );
 
@@ -234,6 +287,120 @@ describe('calculate — whose rate applies', () => {
       ['ib-2', '250.00000000', '25.0000'],
       ['ib-1', '50.00000000', '5.0000'],
     ]);
+  });
+
+  /*
+   * ── FR-IB-17: MULTI-LEVEL DISTRIBUTION ─────────────────────────────────────
+   *
+   * "Commission is distributed up the chain" past two, which the fixed
+   * `level1Rate` / `level2Rate` pair could not express at all. Three tiers, three
+   * earners, each on their own depth's rate.
+   *
+   * The ugly middle rate is deliberate: 60/25/12.5 of 1000 would pass with the
+   * depth-2 and depth-3 rates transposed if they were the same number.
+   */
+  it('pays every depth its own tier, past the old two-level ceiling', () => {
+    const result = calculate(
+      DEAL,
+      [
+        earner({ ibUserId: 'ib-3', depth: 1 }),
+        earner({ ibUserId: 'ib-2', depth: 2 }),
+        earner({ ibUserId: 'ib-1', depth: 3 }),
+      ],
+      programs([program({ id: 'prog-a', tiers: ladder('60.0000', '25.0000', '12.5000') })]),
+    );
+
+    expect(result.accruals.map((a) => [a.ibUserId, a.depth, a.amount])).toEqual([
+      ['ib-3', 1, '600.00000000'],
+      ['ib-2', 2, '250.00000000'],
+      ['ib-1', 3, '125.00000000'],
+    ]);
+  });
+
+  /*
+   * ## The ROW COUNT is the reach, and this is what that means at runtime
+   *
+   * A two-tier programme pays its holder nothing on a client three hops below
+   * them. Not zero — NOTHING, with no accrual row written, because a zero-amount
+   * row is refused by `ib_accruals_amount_positive` and would take every
+   * legitimate earner on the same trade down with it.
+   *
+   * The old engine had no third branch: `depth === 1 ? level1Rate : level2Rate`
+   * paid `level2Rate` to a depth-3 ancestor, silently treating "as deep as the
+   * type can express" as "as deep as the broker configured".
+   */
+  it('pays nobody past the end of their OWN programme’s ladder', () => {
+    const result = calculate(
+      DEAL,
+      [
+        earner({ ibUserId: 'ib-3', depth: 1 }),
+        earner({ ibUserId: 'ib-2', depth: 2 }),
+        earner({ ibUserId: 'ib-1', depth: 3 }),
+      ],
+      programs([program({ id: 'prog-a', tiers: ladder('10.0000', '5.0000') })]),
+    );
+
+    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['ib-3', 'ib-2']);
+    expect(result.skippedReason).toContain('reaches 2 level(s)');
+  });
+
+  /*
+   * Reach is per PROGRAMME, so one partner's contract cannot cancel another's.
+   *
+   * The introducer here is on a one-tier programme and the two above them are on
+   * a three-tier one. If reach were read from the introducer — or capped
+   * platform-wide, as the rung ladder did — both ancestors would earn nothing on
+   * terms they had negotiated and were never told had been overridden.
+   */
+  it('lets a deep programme pay through a shallow one below it', () => {
+    const result = calculate(
+      DEAL,
+      [
+        earner({ ibUserId: 'ib-3', depth: 1, programId: 'shallow' }),
+        earner({ ibUserId: 'ib-2', depth: 2, programId: 'deep' }),
+        earner({ ibUserId: 'ib-1', depth: 3, programId: 'deep' }),
+      ],
+      programs([
+        program({ id: 'shallow', tiers: ladder('40.0000') }),
+        program({ id: 'deep', tiers: ladder('10.0000', '8.0000', '4.0000') }),
+      ]),
+    );
+
+    expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([
+      ['ib-3', '400.00000000'],
+      ['ib-2', '80.00000000'],
+      ['ib-1', '40.00000000'],
+    ]);
+  });
+
+  /*
+   * An ABSENT tier and a ZERO tier are different statements, and the reason each
+   * is reported differently is that they need different fixes: "your programme
+   * does not reach that far" is a ladder to extend, "it pays nothing there" is a
+   * rate to correct. An empty result with one message for both sends an operator
+   * to the wrong screen.
+   *
+   * The database refuses the zero outright (`ib_program_tiers_rate_positive`), so
+   * this path is reachable only through an in-memory caller — which is exactly
+   * why the pure function keeps its own guard.
+   */
+  it('distinguishes a ladder that ends from a tier that pays nothing', () => {
+    const ended = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 2 })],
+      programs([program({ id: 'prog-a', tiers: ladder('10.0000') })]),
+    );
+    const zeroed = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 2 })],
+      programs([program({ id: 'prog-a', tiers: ladder('10.0000', '0.0000') })]),
+    );
+
+    expect(ended.accruals).toEqual([]);
+    expect(ended.skippedReason).toContain('reaches 1 level(s)');
+
+    expect(zeroed.accruals).toEqual([]);
+    expect(zeroed.skippedReason).toContain('pays nothing at depth 2');
   });
 
   /*
@@ -245,7 +412,7 @@ describe('calculate — whose rate applies', () => {
     const result = calculate(
       { grossAmount: '12345678901234567.89', currency: 'USD', source: 'deal' },
       [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([program({ id: 'prog-a', level1Rate: '2.5000' })]),
+      programs([program({ id: 'prog-a', tiers: ladder('2.5000', '5.0000') })]),
     );
 
     expect(result.accruals[0]?.amount).toBe('308641972530864.19725000');
@@ -260,7 +427,7 @@ describe('calculate — whose rate applies', () => {
     const result = calculate(
       DEPOSIT,
       [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([program({ id: 'prog-a', level1Rate: '70.0000' })]),
+      programs([program({ id: 'prog-a', tiers: ladder('70.0000', '5.0000') })]),
     );
 
     expect(result.accruals).toEqual([]);
@@ -289,7 +456,7 @@ describe('calculate — whose rate applies', () => {
     const result = calculate(
       DEAL,
       [earner({ ibUserId: 'ib-1', depth: 2 })],
-      programs([program({ id: 'prog-a', level2Rate: '0.0000' })]),
+      programs([program({ id: 'prog-a', tiers: ladder('10.0000', '0.0000') })]),
     );
 
     expect(result.accruals).toEqual([]);
@@ -316,7 +483,7 @@ describe('calculate — whose rate applies', () => {
     const result = calculate(
       { ...DEAL, grossAmount: '0.00000001' },
       [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([program({ id: 'prog-a', level1Rate: '0.0001' })]),
+      programs([program({ id: 'prog-a', tiers: ladder('0.0001', '5.0000') })]),
     );
 
     expect(result.accruals).toEqual([]);
@@ -331,7 +498,7 @@ describe('calculate — whose rate applies', () => {
       ],
       programs([
         program({ id: 'prog-a', enabled: false }),
-        program({ id: 'prog-b', level1Rate: '10.0000' }),
+        program({ id: 'prog-b', tiers: ladder('10.0000', '5.0000') }),
       ]),
     );
 
@@ -362,7 +529,12 @@ describe('calculate — the client’s rebate', () => {
       DEAL,
       [earner({ ibUserId: 'ib-1', depth: 1 })],
       programs([
-        program({ id: 'prog-a', mode: 'hybrid', level1Rate: '10.0000', rebateRate: '5.0000' }),
+        program({
+          id: 'prog-a',
+          mode: 'hybrid',
+          tiers: ladder('10.0000', '5.0000'),
+          rebateRate: '5.0000',
+        }),
       ]),
     );
 
@@ -381,7 +553,12 @@ describe('calculate — the client’s rebate', () => {
       DEAL,
       [earner({ ibUserId: 'ib-1', depth: 1 })],
       programs([
-        program({ id: 'prog-a', mode: 'rebate_only', level1Rate: '10.0000', rebateRate: '5.0000' }),
+        program({
+          id: 'prog-a',
+          mode: 'rebate_only',
+          tiers: ladder('10.0000', '5.0000'),
+          rebateRate: '5.0000',
+        }),
       ]),
     );
 
@@ -466,113 +643,26 @@ describe('calculate — the client’s rebate', () => {
   });
 });
 
-describe('the broker’s revenue cap', () => {
-  /*
-   * Each rung's rate is a share of the FULL revenue, so the rates ADD: a chain
-   * at 70 + 30 pays out everything the house earned and leaves it nothing.
-   */
-  it('scales a chain that would pay out everything the broker earned', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-2', depth: 1 }), earner({ ibUserId: 'ib-1', depth: 2 })],
-      programs([program({ id: 'prog-a', level1Rate: '70.0000', level2Rate: '30.0000' })]),
-      '50',
-    );
-
-    expect(result.accruals.map((a) => a.amount)).toEqual(['350.00000000', '150.00000000']);
-    expect(result.skippedReason).toContain('cap');
-  });
-
-  it('keeps the proportions between the legs when it scales', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-2', depth: 1 }), earner({ ibUserId: 'ib-1', depth: 2 })],
-      programs([program({ id: 'prog-a', level1Rate: '60.0000', level2Rate: '30.0000' })]),
-      '45',
-    );
-
-    // 2:1 before the cap, and 2:1 after it.
-    expect(result.accruals[0].amount).toBe('300.00000000');
-    expect(result.accruals[1].amount).toBe('150.00000000');
-  });
-
-  /*
-   * THE hole the rebate could have opened. The client's leg comes out of the
-   * same revenue, so a cap that scaled only the partners would let the total
-   * exceed the broker's floor by exactly the rebate — while reporting that the
-   * floor had been enforced.
-   */
-  it('counts the rebate inside the cap and scales it with the rest', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([
-        program({ id: 'prog-a', mode: 'hybrid', level1Rate: '60.0000', rebateRate: '40.0000' }),
-      ]),
-      '50',
-    );
-
-    // 60:40 before, 60:40 after, and 500 in total rather than 1000.
-    expect(result.accruals[0].amount).toBe('300.00000000');
-    expect(result.rebate?.amount).toBe('200.00000000');
-  });
-
-  it('leaves a chain that already fits alone', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([program({ id: 'prog-a', level1Rate: '10.0000' })]),
-      '50',
-    );
-
-    expect(result.accruals[0].amount).toBe('100.00000000');
-    expect(result.skippedReason).toBeUndefined();
-  });
-
-  it('ignores a non-positive cap, which the settings layer cannot produce', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([program({ id: 'prog-a', level1Rate: '10.0000' })]),
-      '-5',
-    );
-
-    expect(result.accruals[0].amount).toBe('100.00000000');
-  });
-
-  /*
-   * Scaling can recreate exactly what the per-leg rounding guard removes, and a
-   * zero row is refused by a CHECK constraint rather than stored harmlessly.
-   */
-  it('drops a leg that the cap scales below the storable minimum', () => {
-    const result = calculate(
-      { ...DEAL, grossAmount: '1.00000000' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([program({ id: 'prog-a', level1Rate: '99.0000' })]),
-      '0.0000001',
-    );
-
-    expect(result.accruals).toEqual([]);
-    expect(result.skippedReason).toContain('storable minimum');
-  });
-
-  it('drops the rebate when the cap scales it away', () => {
-    const result = calculate(
-      { ...DEAL, grossAmount: '1.00000000' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([program({ id: 'prog-a', mode: 'rebate_only', rebateRate: '99.0000' })]),
-      '0.0000001',
-    );
-
-    expect(result.rebate).toBeUndefined();
-  });
-});
+/*
+ * `describe('the broker's revenue cap')` IS GONE (0103), with the cap itself.
+ *
+ * Six cases covered `maxSharePct`: that it scaled the chain pro rata rather
+ * than paying rungs in order until the pool ran out, that the rebate was inside
+ * the cap rather than beside it, and that a leg scaled below the storable
+ * minimum was dropped instead of stored as a zero the CHECK constraint would
+ * refuse.
+ *
+ * All of it went with the "Maximum paid to partners" setting. What still stops
+ * an over-payment is `checkPlausible` below — which REFUSES rather than scales,
+ * so a chain configured past 100% defers on the retry backoff and pays in full
+ * once the programmes are corrected, instead of paying a reduced amount and
+ * logging that it had.
+ */
 
 describe('checkPlausible', () => {
   const leg = (ibUserId: string, amount: string) => ({
     ibUserId,
     depth: 1,
-    level: 1,
     programId: 'prog-a',
     rateValue: '10.0000',
     amount,
@@ -642,12 +732,12 @@ describe('the numbers', () => {
     const withLots = calculate(
       { ...DEAL, lots: '10000' },
       [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([program({ id: 'prog-a', level1Rate: '10.0000' })]),
+      programs([program({ id: 'prog-a', tiers: ladder('10.0000', '5.0000') })]),
     );
     const without = calculate(
       DEAL_NO_LOTS,
       [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([program({ id: 'prog-a', level1Rate: '10.0000' })]),
+      programs([program({ id: 'prog-a', tiers: ladder('10.0000', '5.0000') })]),
     );
 
     expect(withLots.accruals[0].amount).toBe(without.accruals[0].amount);
@@ -657,7 +747,7 @@ describe('the numbers', () => {
     const result = calculate(
       { ...DEAL, grossAmount: '0.00000005' },
       [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([program({ id: 'prog-a', level1Rate: '50.0000' })]),
+      programs([program({ id: 'prog-a', tiers: ladder('50.0000', '5.0000') })]),
     );
 
     // 0.00000005 × 50% = 0.000000025 → 0.00000003, not 0.00000002.
@@ -674,7 +764,7 @@ describe('the numbers', () => {
     const result = calculate(
       DEAL,
       [earner({ ibUserId: 'ib-1', depth: 1 })],
-      programs([program({ id: 'prog-a', level1Rate: '200.0000' })]),
+      programs([program({ id: 'prog-a', tiers: ladder('200.0000', '5.0000') })]),
     );
 
     expect(result.accruals[0].amount).toBe('2000.00000000');

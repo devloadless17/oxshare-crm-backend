@@ -1,10 +1,8 @@
 import { Global, Module } from '@nestjs/common';
 import { AdminIbController } from './admin-ib.controller';
-import { AdminIbLevelsController } from './admin-ib-levels.controller';
 import { AdminIbProgramsController } from './admin-ib-programs.controller';
 import { IbController } from './ib.controller';
 import { IbApplicationsService } from './ib-applications.service';
-import { IbLevelsService } from './ib-levels.service';
 import { IbProgramsService } from './ib-programs.service';
 import { IbOverviewService } from './ib-overview.service';
 import { IbWalletService } from './ib-wallet.service';
@@ -19,11 +17,14 @@ import { AdminExportModule } from '../admin/admin-export.module';
 /**
  * The introducing-broker programme.
  *
- * Rebuilt from zero after the commission engine was removed. It owns the payout
- * LADDER, partner APPLICATIONS and partner ACCOUNTS together, because they share
- * the one rule that matters — a partner's level decides both what they earn and
- * how many partners they may recruit, so splitting them would leave one side
- * re-deriving the other.
+ * It owns the programme CATALOGUE, partner APPLICATIONS and partner ACCOUNTS
+ * together, because they share the one rule that matters: FR-IB-06 puts every
+ * partner on exactly one named programme, so approving an application is the
+ * moment terms are assigned. Splitting them would leave one side re-deriving
+ * the other.
+ *
+ * `IbLevelsService` and its controller went in 0102 with the second catalogue
+ * they served — see the IB block header in `database/schema.ts`.
  *
  * `AdminAuthModule` for `PermissionsGuard`, the same import the settings,
  * platform-links and currencies modules make. `IdentityModule` for
@@ -43,15 +44,9 @@ import { AdminExportModule } from '../admin/admin-export.module';
   // `AdminExportModule` for the two partner exports. A narrow import, like
   // `AdminAuthModule` above — never the whole `AdminModule`.
   imports: [AdminAuthModule, IdentityModule, EmailModule, AdminExportModule],
-  controllers: [
-    IbController,
-    AdminIbController,
-    AdminIbLevelsController,
-    AdminIbProgramsController,
-  ],
+  controllers: [IbController, AdminIbController, AdminIbProgramsController],
   providers: [
     IbApplicationsService,
-    IbLevelsService,
     IbProgramsService,
     IbOverviewService,
     IbWalletService,
@@ -75,7 +70,6 @@ import { AdminExportModule } from '../admin/admin-export.module';
   ],
   exports: [
     IbApplicationsService,
-    IbLevelsService,
     IbOverviewService,
     IbWalletService,
     CommissionService,

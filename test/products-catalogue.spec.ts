@@ -100,8 +100,8 @@ async function makeUser(email: string, referredBy?: string): Promise<string> {
 async function makePartner(email: string, agencyId: string): Promise<string> {
   const partnerId = await makeUser(email);
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, level, referral_code, agency_id, program_id)
-    VALUES (${partnerId}, 1, ${'PC-' + email.slice(0, 20)}, ${agencyId},
+    INSERT INTO ib_accounts (user_id, referral_code, agency_id, program_id)
+      VALUES (${partnerId}, ${'PC-' + email.slice(0, 20)}, ${agencyId},
             (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
   `);
   return partnerId;

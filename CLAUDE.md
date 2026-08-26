@@ -63,8 +63,9 @@ data" — the admin equivalents take a `userId` filter precisely because they _a
   the most expensive kind of wrong number on a trading product. `GET /trading/accounts/transferable`
   narrows to live+active for the transfer screen — it shapes what is _offered_; `TransfersService`
   still owns the refusal.
-- **`GET /ib/overview`** (`modules/ib/ib-overview.service.ts`) — the partner dashboard: level and
-  rate, earnings, referred clients, direct sub-partners. 404s for a non-partner, because zeroes
+- **`GET /ib/overview`** (`modules/ib/ib-overview.service.ts`) — the partner dashboard: their
+  programme WITH its tier ladder, earnings, referred clients, direct sub-partners. The rung and its
+  `rateValue` used to lead this response and decided nothing (0102). 404s for a non-partner, because zeroes
   across the board would render as a partner dashboard belonging to somebody who is not one.
 - **`GET /trading/positions`** — open (default) or closed trades. See the empty-table note below.
 - **`GET /dashboard`** (`modules/trading/dashboard.service.ts`) — wallets, recent transactions,
@@ -96,8 +97,12 @@ changes on every tick, so a stored copy is stale the moment it is written.
 
 Referred clients come from `users.referred_by_ib_user_id` (written at registration) and carry
 **no email address**: a partner is owed attribution, not their referrals' contact details.
-Sub-partners are **direct only** — one hop — because payout resolution stops at a single
-`parent_ib_id`, and showing a deep tree would display a structure the payout logic does not honour.
+Sub-partners on the dashboard are **direct only** — one hop. That used to match the payout logic
+exactly, because resolution stopped at L2; since 0102 it does not, and the reason has changed rather
+than lapsed. FR-IB-17 gives a parent visibility of its sub-tree **earnings**, not a roster, and a
+successful partner's sub-tree is unbounded — rendering it whole is a page that gets slower as
+somebody succeeds. What they are owed from the whole tree is in `earnings`, which sums accruals at
+every depth.
 
 ## The commission engine (`modules/ib/commission*`)
 
@@ -106,35 +111,108 @@ MT5 `deals` (spread × volume) through an `ib_programs` table, and both are gone
 rebuilding against them would be an engine that can never run.
 
 This one computes from what the system actually has: an **ingested MT5 deal**, attributed by
-`users.referred_by_ib_user_id`, split by the earner's **named programme** (`ib_programs`).
+`users.referred_by_ib_user_id`, split by each earner's **named programme** (`ib_programs` +
+`ib_program_tiers`) at their own depth in the chain.
 
-**WHAT it computes on is a setting, not a constant** — `trading_settings.ib_revenue_basis`,
-defaulting to the `commission + swap` the platform shipped with. See "The spread markup drives
-money ONLY when an operator says so" below before changing anything that reaches
-`brokerRevenueFor`; the short version is that FR-IB-16 asks for the agreed method to be
-*configured*, and a constant in a source file is not a configuration.
+**WHAT it computes on is `DEFAULT_REVENUE_BASIS` — MT5's charged commission + swap.**
 
-### Programmes carry the rates; the ladder carries placement (migration 0084)
+It was `trading_settings.ib_revenue_basis` for a while, on the reasoning that FR-IB-16 asks for
+the agreed method to be *configured*. The control went in 0104 with the rest of the IB block on
+that form: commission is configured on the Commission Programmes page, and a Trading-settings
+field that re-prices every partner is a second place for two answers to disagree. Every
+deployment was already on the default, so removing the choice moved nobody's money.
 
-FR-IB-06 asks for "a named program driving commission/rebate" per partner, which a rung-keyed rate
-cannot express — every level-1 partner was paid identically and there was nowhere at all to put a
-client rebate. So `ib_accounts.program_id` is NOT NULL and `ib_programs` carries:
+The spread-markup arithmetic stays in `brokerRevenueFor`, reachable by changing one line — see
+"The spread markup drives money ONLY when an operator says so" below, which is still the argument
+anyone proposing that change has to answer.
 
-| column       | meaning                                                       |
-| ------------ | ------------------------------------------------------------- |
-| `level1Rate` | what the holder earns from their **own** clients              |
-| `level2Rate` | what they earn from a **sub-partner's** clients               |
-| `rebateRate` | what goes back to the **trading client**                      |
-| `mode`       | `commission_only` / `rebate_only` / `hybrid` — which legs pay |
+### ONE catalogue of terms, and the ladder is inside it (0084, 0086, 0102)
 
-**The rates are keyed on DEPTH, not on the rung.** A level-2 partner who introduced the client
-themselves is paid `level1Rate`; under the old model they took the level-2 rate for business they
-had brought in. `ib_levels` keeps the rung's name and its enabled flag, and its `rateValue` now
-decides nothing — do not read it as what anybody earns.
+FR-IB-06 asks for "an administrable catalogue of named IB programs (a tier ladder)" and says a
+programme replaces "any per-partner bespoke plan". FR-IB-17 says the per-level split is "configured
+per the agreed program ladder". That is **one** catalogue. This schema had two until 0102.
 
-Migration 0084 seeded a **Default** programme from the live ladder and backfilled every partner
-onto it, so no rate moved. A fresh database seeds 0/0, which is what an empty ladder already meant:
-`calculate` skips terms that pay nothing and says so.
+`ib_accounts.program_id` is NOT NULL, and the terms are:
+
+| where              | column          | meaning                                                         |
+| ------------------ | --------------- | --------------------------------------------------------------- |
+| `ib_programs`      | `mode`          | `commission_only` / `rebate_only` / `hybrid` — which legs pay   |
+| `ib_programs`      | `rebateRate`    | what goes back to the **trading client**                        |
+| `ib_programs`      | `sortOrder`     | the lowest ENABLED one is what a new partner is appointed on    |
+| `ib_program_tiers` | `(depth, rate)` | what the holder earns when the trade is `depth` hops below them |
+
+**The rates are keyed on DEPTH, not on a rung.** A sub-partner who introduced the client themselves
+is paid their programme's **tier 1**; under the rung model they took the level-2 rate for business
+they had brought in, so recruiting somebody quietly cut what they earned on their own clients.
+
+**The tier ROW COUNT is how far a programme's earnings reach.** Three tiers pays own clients,
+sub-partners' and sub-sub-partners', and stops. That replaced `level1_rate` / `level2_rate`, a fixed
+pair that wrote a two-level ceiling into the schema — matched by `MAX_CHAIN_DEPTH = 2` in the engine
+and a `depth <= 2` CHECK on the accruals, so a broker asking for three levels needed a migration, an
+engine change and a constant edit, and got a failed INSERT if anyone missed the third.
+
+⚠️ **HOW MANY tiers a programme may have is still capped, and the cap is `trading_settings.ib_max_levels`** — "Maximum commission levels" on the Trading settings tab (0105).
+
+Committed scope is TWO — Feature List Rev 9, IB-17: *"no level beyond L2"* — so that is the default
+and a deployment configuring nothing ships what was agreed. 0102 shipped without the cap on the
+strength of ARCHITECTURE §8.6; that document wins on implementation and **not on scope**, and Rev 9
+governs. The setting is the repair: the number is a commercial decision somebody makes, rather than
+a constant somebody deploys or a ceiling nobody can move.
+
+Three bounds, and they are not the same thing:
+
+| bound | value | what it is |
+| ----- | ----- | ---------- |
+| `trading_settings.ib_max_levels` | 2 | POLICY — the deepest ladder that may be SAVED |
+| `ib_program_tiers_depth_range` | 1..10 | STRUCTURE — what the column holds. Wider so raising the ceiling is a form, not a migration |
+| `MAX_CHAIN_DEPTH` | 10 | CYCLE GUARD — where the walk stops. Decides nobody's pay |
+
+`common/ib-levels.ts` owns the normalising and `tradingTermsFrom` calls it. An unusable stored value
+falls back to the DEFAULT rather than to the maximum — a bad row must not widen what partners are
+paid. It briefly lived in `IB_MAX_LEVELS`, which was the wrong home for the reason every other
+commercial control on that form has one: the people who decide how deep a broker pays do not have
+shell access, and a variable records no actor, no timestamp and no reason. It is audited like the
+numbers beside it.
+
+**Lowering it truncates nothing.** An existing three-level programme keeps its three levels and keeps
+paying them — an operator adjusting a limit must not silently restate money that is owed. The next
+deliberate EDIT of that programme is refused, which is the right moment to be told it no longer
+fits.
+
+**Each earner reads their OWN programme**, so a deep programme still pays through a shallow one
+beneath it. Terms are an agreement between the broker and one partner; letting somebody else's
+contract decide your rate would make a programme unquotable.
+
+#### What `ib_levels` was, and why it went
+
+0086 moved every rate onto programmes and 0084 placed every partner on one. What the ladder held
+afterwards was a rung name, an `enabled` flag, and a `rate_value` that decided nothing — a column
+reading exactly like the number a partner is paid by, one join from the number that actually pays
+them. This file used to carry the sentence "do not read it as what anybody earns", which is the
+documentation you write when a schema is lying.
+
+Its `enabled` flag was doing one real job: it bounded the hierarchy, so `resolveLevel` refused to
+place a partner below the deepest enabled rung. 0102 moved that decision onto the programme, where
+FR-IB-17 puts it — and the refusal went with it, because a verified client can no longer be locked
+out of the partner programme by how their introducer happened to be placed. A partner deeper than
+their ancestors' programmes reach simply earns those ancestors nothing, which `calculate` reports
+per trade with the programme and depth named.
+
+0102 carried each programme's `level1_rate` to its depth-1 tier and `level2_rate` to depth 2, so no
+rate moved. A **zero** rate produced no row: a tier is a claim that the programme reaches that
+depth, and `calculate` already skipped a zero and said so.
+
+`MAX_CHAIN_DEPTH` is **10** now and is a **cycle guard**, not a payout policy — a self-referencing
+FK cannot be stopped from forming a loop. `ib_program_tiers_depth_range` and
+`ib_accruals_depth_range` match it so a configurable depth can never exceed what the database
+stores.
+
+**The share ceiling is a DEFERRED constraint trigger**, not a CHECK: the rates are rows in another
+table now and a CHECK cannot see them. It bounds ONE programme's tiers plus its rebate, which is
+narrower than what it replaced — on a single trade the earners may hold different programmes, so
+the per-trade guarantee is `checkPlausible` alone, which REFUSES an over-payment rather than
+scaling it (the broker cap that used to scale it went in 0103). DEFERRABLE because editing a ladder
+rewrites its rows, and a per-statement check refuses a swap that is valid at both ends.
 
 ### Commission is earned on a CLOSED POSITION, and on nothing else
 
@@ -205,9 +283,16 @@ It refuses a DISABLED programme, and that is the other half of an existing guara
 `IbProgramsService.update` refuses to disable a programme partners stand on, so without this
 refusal an operator could route around it by moving people ONTO a disabled row.
 
-A change applies to the next trade only. Accruals record the rate they were calculated at, so
-nothing already credited is restated — which is why this is an ordinary update rather than an
-operation that has to reason about history.
+A change applies to the next trade only. Accruals record the rate AND the programme they were
+calculated under (`ib_accruals.rate_value`, `ib_accruals.program_id`), so nothing already credited
+is restated — which is why this is an ordinary update rather than an operation that has to reason
+about history. `program_id` replaced `level` on that table in 0102: the rung had explained nothing
+since 0084, while "which terms paid this" was recoverable only from the partner's CURRENT
+programme, the one thing most likely to have changed since.
+
+A reviewer also picks the programme at APPROVAL (`ApproveIbApplicationDto.programId`, defaulting to
+the first enabled one by `sortOrder`). Without that, every partner landed on whatever sorted first
+and the catalogue was decorative at the one moment the decision is naturally made.
 
 ### The client's rebate is an accrual row, not a direct credit
 
@@ -266,6 +351,29 @@ So the implementation is deleted and the entry point throws `CommissionRefusedEr
 the model they actually want. Not `isLiveRevenueFeed`, because a deposit is not a revenue feed at
 all — flipping `LIVE_REVENUE_FEED` to `position` must never make this payable.
 `accrueForSettledDeposit` still swallows it per its no-throw contract, so the deposit itself stands.
+
+### There are NO IB settings on the Trading form (0103, 0104)
+
+Four controls lived there and each changed what partners are paid: `ib_max_revenue_share_pct`
+("Maximum paid to partners"), `ib_commission_hold_hours`, `ib_accrual_start` and
+`ib_revenue_basis`. All four are gone.
+
+| was                        | is now                                                       |
+| -------------------------- | ------------------------------------------------------------ |
+| `ib_max_revenue_share_pct` | nothing — `checkPlausible` REFUSES an over-payment instead    |
+| `ib_commission_hold_hours` | `IB_COMMISSION_HOLD_HOURS`                                    |
+| `ib_accrual_start`         | `IB_ACCRUAL_START`                                            |
+| `ib_revenue_basis`         | `DEFAULT_REVENUE_BASIS`, a constant                           |
+
+**The broker cap's removal changed behaviour and the change is worth knowing.** It summed every
+leg and scaled them all pro rata to fit under a configured share of the revenue. Without it, a
+chain paying out more than the revenue is REFUSED rather than scaled — the deal defers on the 0092
+backoff with the reason on the row and pays in full once the programmes are corrected. The old
+behaviour paid a reduced amount immediately, which is friendlier and less honest: nobody was ever
+told their rates were wrong. Exactly 100% now pays out in full; the per-programme share trigger is
+what keeps that deliberate rather than accidental.
+
+**Nothing else about the backlog guard changed**, which is what made dropping its column safe.
 
 ### The backlog is a DECISION — `IB_ACCRUAL_START`
 
@@ -338,9 +446,12 @@ The quiet case is pinned hardest: a cancellation on a position that never accrue
 
 ### Three refusals worth knowing about
 
-- **`per_lot` levels accrue nothing on a deposit.** The rate is an amount per standard lot and a
-  deposit has no lot count, so there is no honest number. It refuses with a logged reason rather
-  than treating the rate as a percentage — which would pay a plausible wrong figure.
+- **A programme pays nothing past the end of its own ladder**, and says which programme and which
+  depth. An ABSENT tier and a ZERO tier are reported differently on purpose: "your programme does
+  not reach that far" is a ladder to extend, "it pays nothing there" is a rate to correct, and one
+  message for both sends an operator to the wrong screen. (`ib_program_tiers_rate_positive` refuses
+  the zero outright, so the second is reachable only from an in-memory caller — the pure function
+  keeps its own guard for exactly that.)
 - **A suspended partner earns nothing AND breaks the chain.** Their parent does not keep collecting
   through them; suspension is a decision about the whole subtree.
 - **`checkPlausible` refuses a total exceeding the revenue it is a share of.** That is the unit-error
@@ -385,7 +496,10 @@ journal entry by hand.
 - **Idempotency lives in DB constraints**, never check-then-insert.
 - **`ledger_entries` is append-only** — a TRIGGER rejects UPDATE/DELETE. Corrections are
   compensating rows.
-- Resolution stops at **L2**: a single `parent_ib_id`, no closure table, no recursive CTE.
+- Resolution walks the WHOLE chain and each programme decides how far it pays. A single
+  `parent_ib_user_id`, no closure table, and **one recursive CTE** (`loadChain`) rather than a loop
+  of round trips — bounded by `MAX_CHAIN_DEPTH` and by a `path` array that stops a cycle inside
+  Postgres rather than after the rows come back.
 
 Both layers now take the db by constructor injection. `store/*.store.ts` classes use
 `@Inject(DRIZZLE_DB)`; the four money services (`wallet`, `transactions`, `commission`,
@@ -416,30 +530,35 @@ a result against. Migration 0095 recorded the conclusion that follows: wiring th
 base "changes what every partner is paid on every future trade", and **that needs a person, not a
 column**.
 
-So the gap between the specification and the system was never missing arithmetic. It was that the
-arithmetic **had no owner**: one number decided what every partner earns, it lived as a constant in
-a source file, it could only be changed by deploy, and nothing recorded who changed it.
+So the gap between the specification and the system was never missing arithmetic, and it is not
+missing arithmetic now: `brokerRevenueFor` can compute on the markup, and nothing asks it to.
 
-`trading_settings.ib_revenue_basis` is that owner.
+`trading_settings.ib_revenue_basis` was that owner for three migrations (0101 → 0104). It offered:
 
-| value                    | the base a partner's rate applies to                        |
-| ------------------------ | ----------------------------------------------------------- |
+| value                    | the base a partner's rate applies to                               |
+| ------------------------ | ------------------------------------------------------------------ |
 | `commission_swap`        | MT5's charged commission + swap. **The default, and what shipped** |
-| `spread`                 | lots × the product's `spread_markup_per_lot`                |
-| `commission_swap_spread` | both, summed                                                 |
+| `spread`                 | lots × the product's `spread_markup_per_lot`                       |
+| `commission_swap_spread` | both, summed                                                       |
 
-Three rules hold it together, and each closes a different door:
+**It is a constant again — `DEFAULT_REVENUE_BASIS` — and the reason is not that the setting was
+wrong.** It was on the wrong SCREEN. Commission is configured on the Commission Programmes page,
+and a Trading-settings field that re-prices every partner is a second place for two answers to
+disagree, which is the fault 0102 removed from the catalogue itself. Every deployment was on the
+default, so removing the choice moved nobody's money.
 
-- **The default is the status quo.** A new setting whose default changes behaviour is a silent
-  repricing wearing a migration's clothes. `test/deal-commission.spec.ts` pins this directly: an
-  account linked to a product with a 7.50 markup, trading 2 lots, still accrues on the 10.00 of
-  charges alone. If that assertion ever fails, a deployment somewhere has been re-priced by a deploy.
-- **It is AUDITED like the backlog decision.** `SettingsService` records both sides. A partner
-  disputing a statement six months from now is asking a question only that row can answer.
+Two rules survive it, and each still closes a door:
+
+- **The default is the status quo.** `test/deal-commission.spec.ts` pins it directly: an account
+  linked to a product with a 7.50 markup, trading 2 lots, still accrues on the 10.00 of charges
+  alone. If that assertion ever fails, a deployment somewhere has been re-priced.
 - **Every call site must state the basis AND the markup.** `brokerRevenueFor` takes both as required
-  arguments, so the dormant `positions.service.ts` path cannot inherit the old pricing by omission
+  arguments, so the dormant `positions.service.ts` path cannot inherit different pricing by omission
   the day somebody flips `LIVE_REVENUE_FEED`. Two paths paying two different amounts for one trade
   is the exact failure `brokerRevenueOf` was extracted into a function to prevent.
+
+**Wiring the markup back in is a one-line change and must not be made as one.** It changes what
+every partner is paid on every future trade. The ORDER trap below is the reason it needs a person.
 
 ### Where each half lives, and why the split is not arbitrary
 
@@ -448,9 +567,9 @@ need to name a basis and two of them (`common/`, `store/`) are forbidden by lint
 `modules/`. `modules/trading/broker-revenue.ts` holds the ARITHMETIC, beside the sign convention it
 has to honour. Naming a thing is not computing with it.
 
-### ⚠️ The ORDER, which is irreversible
+### ⚠️ The ORDER, which is irreversible — read this before changing that line
 
-Like `ib_accrual_start`, this decides only deals NOT YET DECIDED — a row carrying
+Like `IB_ACCRUAL_START`, the basis decides only deals NOT YET DECIDED — a row carrying
 `commission_processed_at` is never revisited.
 
 The trap: under `'spread'`, a product whose markup is still 0 produces zero revenue, and a

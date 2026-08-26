@@ -11,7 +11,6 @@ import type {
   UpdateTradingSettingsDto,
 } from './dto/settings.dto';
 import { tradingTermsFrom } from '../../common/trading-terms';
-import { revenueBasisOf } from '../../common/revenue-basis';
 
 /**
  * Reads and writes the two singleton settings rows.
@@ -181,10 +180,7 @@ export class SettingsService {
       maxLiveAccounts: terms.maxLiveAccounts,
       maxDemoAccounts: terms.maxDemoAccounts,
       maxDemoDeposit: terms.maxDemoDeposit,
-      ibMaxRevenueSharePct: terms.ibMaxRevenueSharePct,
-      ibCommissionHoldHours: terms.ibCommissionHoldHours,
-      ibAccrualStart: terms.ibAccrualStart,
-      ibRevenueBasis: terms.ibRevenueBasis,
+      ibMaxLevels: terms.ibMaxLevels,
       updatedAt: row?.updatedAt.toISOString() ?? null,
     };
   }
@@ -205,27 +201,24 @@ export class SettingsService {
         maxLiveAccounts: dto.maxLiveAccounts,
         maxDemoAccounts: dto.maxDemoAccounts,
         maxDemoDeposit: dto.maxDemoDeposit,
-        ibMaxRevenueSharePct: dto.ibMaxRevenueSharePct,
-        ibCommissionHoldHours: dto.ibCommissionHoldHours,
         /*
-         * `undefined` means the caller did not send the field, which must not
-         * silently clear a decision somebody already made — a form that predates
-         * this field would otherwise reset the engine to HOLDING on every save.
-         * Explicit `null` is a real value and does clear it.
+         * The ladder ceiling (0105) — a bound on the Commission Programmes
+         * page, not a rule about what anybody is paid. See the column's own
+         * note for why that distinction is what lets it sit here at all.
          */
-        ibAccrualStart:
-          dto.ibAccrualStart === undefined ? previous.ibAccrualStart : dto.ibAccrualStart,
+        ibMaxLevels: dto.ibMaxLevels,
         /*
-         * Same preserve-on-`undefined` contract as the field above, and the
-         * one below it in consequence. This form is a full replace, so a
-         * console that predates the field sends every OTHER value on every
-         * save — and defaulting a missing basis would re-price the entire book
-         * as a side effect of somebody adjusting the demo account cap. There
-         * is no `null` case: unlike the backlog decision this setting has no
-         * undecided state, because the platform is always paying on something.
+         * No other IB fields here (0104). The settlement window, the accrual
+         * start, the revenue basis and the broker cap were all removed from this
+         * form: commission is configured on the Commission Programmes page, and
+         * a Trading-settings control that re-prices every partner is a second
+         * place to look when a payout surprises somebody.
+         *
+         * Which also removes the preserve-on-`undefined` dance those fields
+         * needed — a console that predates a field sends every OTHER value on a
+         * full-replace save, so a missing one used to risk re-pricing the whole
+         * book as a side effect of adjusting the demo account cap.
          */
-        ibRevenueBasis:
-          dto.ibRevenueBasis === undefined ? previous.ibRevenueBasis : dto.ibRevenueBasis,
       },
       actor.id,
     );
@@ -240,10 +233,7 @@ export class SettingsService {
       maxLiveAccounts: row.maxLiveAccounts,
       maxDemoAccounts: row.maxDemoAccounts,
       maxDemoDeposit: row.maxDemoDeposit,
-      ibMaxRevenueSharePct: row.ibMaxRevenueSharePct,
-      ibCommissionHoldHours: row.ibCommissionHoldHours,
-      ibAccrualStart: row.ibAccrualStart,
-      ibRevenueBasis: revenueBasisOf(row.ibRevenueBasis),
+      ibMaxLevels: row.ibMaxLevels,
       updatedAt: row.updatedAt.toISOString(),
     };
 
@@ -252,28 +242,16 @@ export class SettingsService {
       'maxLiveAccounts',
       'maxDemoAccounts',
       'maxDemoDeposit',
-      // The broker's own margin — the single most consequential number here.
-      'ibMaxRevenueSharePct',
-      // The settlement window. Shortening it to 0 makes every pending
-      // accrual payable on the next run, which is a decision with a date on
-      // it rather than a preference.
-      'ibCommissionHoldHours',
       /*
-       * The backlog decision, and the reason this field left the environment.
-       * Setting it to "all" can pay months of commission in one run and cannot
-       * be undone by a redeploy — so "who decided, when, and from what" has to
-       * be answerable, and an environment variable answers none of it.
+       * The ladder ceiling (0105). The orphaned notes that stood here belonged
+       * to the four IB fields 0103/0104 removed — the broker cap, the
+       * settlement window, the backlog decision and the revenue basis.
+       *
+       * This one is audited for the same reason they were: widening it widens
+       * what every future trade pays out, and "who raised this to three levels,
+       * and when" is the question asked the day a payout is disputed.
        */
-      'ibAccrualStart',
-      /*
-       * WHAT a partner is paid on, as against how long it is held or when it
-       * starts. This is the field that decides the SIZE of every future
-       * accrual, and it was a constant in a source file until now — reachable
-       * only by whoever could open a pull request, and recorded nowhere. A
-       * partner disputing their statement six months from now is asking a
-       * question only this audit row can answer.
-       */
-      'ibRevenueBasis',
+      'ibMaxLevels',
     ] as const) {
       if (previous[field] !== after[field]) {
         changed[field] = { before: previous[field], after: after[field] };

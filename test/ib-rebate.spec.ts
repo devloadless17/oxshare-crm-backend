@@ -2,7 +2,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
-import { AppSettingsStore } from '../src/store/app-settings.store';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -44,21 +43,54 @@ async function makeUser(email: string): Promise<string> {
   return rows[0].id;
 }
 
-/** Set the one programme both partners are on. */
+/**
+ * Set the one programme both partners are on, LADDER AND ALL.
+ *
+ * The ladder is rewritten wholesale rather than patched, because its LENGTH is
+ * how far the programme pays: a helper that only updated rates could not
+ * express "this programme now reaches one level", which is the setup half of
+ * every reach assertion.
+ *
+ * The share-ceiling trigger is DEFERRABLE, so the delete-then-insert below is
+ * checked once at COMMIT rather than against a half-written ladder.
+ */
 async function setTerms(terms: {
   mode: 'commission_only' | 'rebate_only' | 'hybrid';
-  level1Rate: string;
+  /** Rates by depth, 1 first. Omit or pass [] for a programme paying no partner. */
+  tiers?: string[];
   rebateRate: string;
 }): Promise<void> {
-  await ctx.db.execute(sql`
-    UPDATE ib_programs
-       SET mode = ${terms.mode}::ib_program_mode,
-           level1_rate = ${terms.level1Rate},
-           level2_rate = 0,
-           rebate_rate = ${terms.rebateRate},
-           enabled = true
-     WHERE id = ${programId}
-  `);
+  /*
+   * ONE TRANSACTION, and that is not tidiness.
+   *
+   * The share ceiling is a DEFERRED constraint trigger: it asks "what does this
+   * programme pay in total" at COMMIT. Run as separate statements, raising the
+   * rebate commits while the PREVIOUS ladder is still in place, so setting a 5%
+   * rebate on a programme already paying 70 + 30 is refused at 105% — for a
+   * state the caller never asked for and is one statement away from leaving.
+   *
+   * Inside a transaction the question is asked once, about the terms as they
+   * end up. This is the same shape `IbProgramsService.update` uses, for the
+   * same reason.
+   */
+  await ctx.db.transaction(async (tx) => {
+    await tx.execute(sql`
+      UPDATE ib_programs
+         SET mode = ${terms.mode}::ib_program_mode,
+             rebate_rate = ${terms.rebateRate},
+             enabled = true
+       WHERE id = ${programId}
+    `);
+    await tx.execute(sql`DELETE FROM ib_program_tiers WHERE program_id = ${programId}`);
+
+    const tiers = (terms.tiers ?? []).filter((rate) => Number.parseFloat(rate) > 0);
+    for (const [index, rate] of tiers.entries()) {
+      await tx.execute(sql`
+        INSERT INTO ib_program_tiers (program_id, depth, rate)
+        VALUES (${programId}, ${index + 1}, ${rate})
+      `);
+    }
+  });
 }
 
 /** One closed trade on which the broker kept 100. */
@@ -97,12 +129,6 @@ async function walletsOf(userId: string) {
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
 
-  await ctx.db.execute(sql`
-    INSERT INTO ib_levels (level, name, rate_value, enabled)
-    VALUES (1, 'Master Partner', 0.0000, true)
-    ON CONFLICT (level) DO UPDATE SET enabled = true
-  `);
-
   const { rows } = await ctx.db.execute<{ id: string }>(
     sql`SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1`,
   );
@@ -112,8 +138,8 @@ beforeAll(async () => {
   clientId = await makeUser('rebate-client@oxshare-e2e.test');
 
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, level, referral_code, active, program_id)
-    VALUES (${partnerId}, 1, 'REBATE01', true, ${programId})
+    INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
+      VALUES (${partnerId}, 'REBATE01', true, ${programId})
   `);
   await ctx.db.execute(
     sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,
@@ -127,7 +153,6 @@ beforeAll(async () => {
       notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
     },
     new ConfigService(),
-    new AppSettingsStore(ctx.db),
   );
 }, 180_000);
 
@@ -153,7 +178,7 @@ beforeEach(async () => {
 
 describe('a hybrid programme produces two legs from one trade', () => {
   it('writes a commission row and a rebate row', async () => {
-    await setTerms({ mode: 'hybrid', level1Rate: '10', rebateRate: '5' });
+    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
 
     const created = await accrue();
 
@@ -172,7 +197,7 @@ describe('a hybrid programme produces two legs from one trade', () => {
    * rebate — which balances, and is wrong about whose money it is.
    */
   it('attributes the rebate to the partner and owes it to the client', async () => {
-    await setTerms({ mode: 'hybrid', level1Rate: '10', rebateRate: '5' });
+    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
     await accrue();
 
     const rebate = (await accrualRows()).find((r) => r.kind === 'rebate');
@@ -187,7 +212,7 @@ describe('a hybrid programme produces two legs from one trade', () => {
    * configured rebate simply never pays.
    */
   it('does not let the two rows collide on re-delivery', async () => {
-    await setTerms({ mode: 'hybrid', level1Rate: '10', rebateRate: '5' });
+    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
 
     await accrue();
     const second = await accrue();
@@ -199,7 +224,7 @@ describe('a hybrid programme produces two legs from one trade', () => {
 
 describe('confirmation pays each leg to the right person', () => {
   it('credits the partner’s commission wallet and the client’s main wallet', async () => {
-    await setTerms({ mode: 'hybrid', level1Rate: '10', rebateRate: '5' });
+    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
     await accrue();
 
     const result = await commissions.confirmPending();
@@ -219,7 +244,7 @@ describe('confirmation pays each leg to the right person', () => {
   });
 
   it('records the client’s leg as a rebate in the ledger', async () => {
-    await setTerms({ mode: 'hybrid', level1Rate: '10', rebateRate: '5' });
+    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
     await accrue();
     await commissions.confirmPending();
 
@@ -234,7 +259,7 @@ describe('confirmation pays each leg to the right person', () => {
   });
 
   it('pays neither leg twice when the loop runs again', async () => {
-    await setTerms({ mode: 'hybrid', level1Rate: '10', rebateRate: '5' });
+    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
     await accrue();
 
     await commissions.confirmPending();
@@ -249,7 +274,7 @@ describe('confirmation pays each leg to the right person', () => {
 
 describe('the mode decides which legs exist at all', () => {
   it('pays only the partner under commission_only', async () => {
-    await setTerms({ mode: 'commission_only', level1Rate: '10', rebateRate: '5' });
+    await setTerms({ mode: 'commission_only', tiers: ['10'], rebateRate: '5' });
 
     expect(await accrue()).toBe(1);
     expect((await accrualRows()).map((r) => r.kind)).toEqual(['commission']);
@@ -260,7 +285,7 @@ describe('the mode decides which legs exist at all', () => {
    * and the partner earning nothing on it is the point, not a misconfiguration.
    */
   it('pays only the client under rebate_only', async () => {
-    await setTerms({ mode: 'rebate_only', level1Rate: '10', rebateRate: '5' });
+    await setTerms({ mode: 'rebate_only', tiers: ['10'], rebateRate: '5' });
 
     expect(await accrue()).toBe(1);
     expect((await accrualRows()).map((r) => r.kind)).toEqual(['rebate']);

@@ -715,6 +715,34 @@
       "when": 1787101216019,
       "tag": "0101_ib_revenue_basis",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1787101216020,
+      "tag": "0102_one_programme_ladder",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1787101216021,
+      "tag": "0103_drop_the_broker_cap",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1787101216022,
+      "tag": "0104_commission_is_configured_in_one_place",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1787101216023,
+      "tag": "0105_the_level_ceiling_is_a_setting",
+      "breakpoints": true
     }
   ]
 }

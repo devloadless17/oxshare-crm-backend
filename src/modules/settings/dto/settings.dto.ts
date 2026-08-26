@@ -9,10 +9,7 @@ import {
   MaxLength,
   Min,
   MinLength,
-  IsIn,
-  ValidateIf,
 } from 'class-validator';
-import { REVENUE_BASES, type RevenueBasis } from '../../../common/revenue-basis';
 
 /* ── SMTP ─────────────────────────────────────────────────────────────────── */
 
@@ -153,43 +150,32 @@ export class TradingSettingsDto {
   })
   maxDemoDeposit: string;
 
+  /*
+   * The IB block is GONE from this response (0104): the settlement window, the
+   * accrual start, the revenue basis and the broker cap.
+   *
+   * Commission is configured on the Commission Programmes page. A control on
+   * the Trading settings screen that also changes what every partner earns is a
+   * second place to look when a payout surprises somebody — the same "two
+   * places" problem 0102 removed from the catalogue itself.
+   *
+   * The window and the accrual start read `IB_COMMISSION_HOLD_HOURS` and
+   * `IB_ACCRUAL_START` from the environment, which is where both began.
+   *
+   * ONE IB number is here (0105), and it is a different kind of thing: it
+   * BOUNDS what the Commission Programmes page will accept rather than deciding
+   * what anybody is paid.
+   */
   @ApiProperty({
-    example: '50.00',
+    example: 2,
+    minimum: 1,
+    maximum: 10,
     description:
-      'The most of its revenue the broker pays partners. IB level rates are each a share of the ' +
-      'FULL revenue and therefore add up; this caps the chain total and scales it pro rata.',
+      'How many levels a commission programme’s ladder may reach. Defaults to 2 — the committed ' +
+      'two-level structure (Feature List Rev 9, IB-17). Bounds what may be SAVED: lowering it ' +
+      'leaves existing programmes paying exactly what they paid before.',
   })
-  ibMaxRevenueSharePct: string;
-
-  @ApiProperty({
-    example: 24,
-    description:
-      'Hours a commission is HELD before it may be confirmed — the rule between earned and ' +
-      'spendable. 0 pays as soon as it is calculated.',
-  })
-  ibCommissionHoldHours: number;
-
-  @ApiPropertyOptional({
-    type: String,
-    nullable: true,
-    example: '2026-08-24T00:00:00.000Z',
-    description:
-      'When commission starts being paid from. NULL means NOBODY HAS DECIDED, and the engine ' +
-      'holds rather than paying a historical backlog by accident. "all" pays the whole history ' +
-      'deliberately; an ISO instant pays from there and marks everything older decided-and-unpaid.',
-  })
-  ibAccrualStart: string | null;
-
-  @ApiProperty({
-    enum: REVENUE_BASES,
-    example: 'commission_swap',
-    description:
-      "Which of the broker's earnings a partner's rate applies to. 'commission_swap' (the " +
-      "default, and what the platform shipped on) is MT5's charged commission + swap; 'spread' " +
-      "is lots x the product's spread markup per lot; 'commission_swap_spread' is both. Changing " +
-      'it re-prices every FUTURE trade and nothing already decided.',
-  })
-  ibRevenueBasis: RevenueBasis;
+  ibMaxLevels: number;
 
   @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
   updatedAt: string | null;
@@ -234,108 +220,25 @@ export class UpdateTradingSettingsDto {
   maxDemoDeposit: string;
 
   /**
-   * 0–100. Zero is legal and means partners earn nothing — a broker winding a
-   * programme down without deleting the ladder underneath it.
-   */
-  @ApiProperty({ example: '50.00', description: 'Percent, 0 to 100.' })
-  @IsString()
-  @Matches(/^(100(\.0{1,2})?|\d{1,2}(\.\d{1,2})?)$/, {
-    message: 'ibMaxRevenueSharePct must be a percentage between 0 and 100',
-  })
-  ibMaxRevenueSharePct: string;
-
-  /**
-   * The settlement window, in hours.
+   * The ladder ceiling — how many levels a commission programme may reach.
    *
-   * ZERO IS LEGAL and means "pay as soon as it is calculated" — a broker
-   * running no reversal desk may genuinely want that, and refusing it here
-   * would make them set it in the environment instead, which is where this
-   * number came from and the reason nobody could see it.
+   * REQUIRED, like every other field on this form: it is a PUT, so the whole
+   * form travels together and an omitted value is a malformed request rather
+   * than an unchanged setting.
    *
-   * The ceiling is a year. It is not a policy limit — no window anybody
-   * chooses is close to it — it is the typo guard: a mistyped 24000 would
-   * hold every partner's commission for three years while every component
-   * reported success, which is indistinguishable from the engine having
-   * stopped. The same bound is a CHECK on the column, so it holds against a
-   * writer that never sees this DTO.
+   * 1 to 10. The upper bound is the DATABASE's — `ib_program_tiers_depth_range`
+   * and `ib_accruals_depth_range` both stop there — so a higher ceiling would
+   * let an operator configure a ladder whose deepest level fails at INSERT, on
+   * the money path, taking every earner on that trade down with it.
+   *
+   * No zero, unlike the account caps beside it. There, 0 means "stop opening
+   * new ones" and is a state somebody may want; here it would make every
+   * commission-paying programme unsaveable, which is not a decision anybody is
+   * trying to express.
    */
-  @ApiProperty({ example: 24, minimum: 0, maximum: 8760 })
+  @ApiProperty({ example: 2, minimum: 1, maximum: 10 })
   @IsInt()
-  @Min(0)
-  @Max(8760)
-  ibCommissionHoldHours: number;
-
-  /**
-   * The backlog decision, and the only IRREVERSIBLE field on this form.
-   *
-   * Three meanings, one of which is a moment: `null` holds, `'all'` pays the
-   * whole history, an ISO instant pays from there. Validated as exactly those
-   * three so a typo cannot become a silent "pay nothing for ever" — the parse in
-   * `accrualWindow` treats anything unreadable as UNSET for the same reason, but
-   * being refused at the form is where an operator can still fix it.
-   *
-   * ## It applies to deals NOT YET DECIDED, and nothing else
-   *
-   * The sharp edge, and the reason it is spelled out on the form rather than
-   * only here. Once a run has looked at a deal it carries
-   * `commission_processed_at` — paid or deliberately not — and no later change
-   * to this field revisits it.
-   *
-   * So this is effectively a ONE-TIME decision that keeps looking like a live
-   * control. Somebody six months from now, moving the date back to recover
-   * history they think was missed, will see nothing happen and no error: those
-   * deals were decided long ago. Recovering genuinely missed commission is a
-   * deliberate re-open of specific rows, not a settings change.
-   */
-  @ApiPropertyOptional({
-    type: String,
-    nullable: true,
-    example: '2026-08-24T00:00:00.000Z',
-    description:
-      'null holds the engine, "all" pays the whole backlog, or an ISO 8601 instant. Applies ONLY ' +
-      'to deals not yet decided — a deal already processed is never revisited, so moving this ' +
-      'date backwards later recovers nothing and reports no error.',
-  })
-  @IsOptional()
-  @ValidateIf((_object: unknown, value: unknown) => value !== null)
-  @Matches(/^(all|\d{4}-\d{2}-\d{2}T[\d:.]+Z?)$/, {
-    message: 'ibAccrualStart must be null, "all", or an ISO 8601 instant',
-  })
-  ibAccrualStart?: string | null;
-
-  /**
-   * WHICH of the broker's earnings a partner is paid a share of — FR-IB-16.
-   *
-   * ## Optional, and it must stay optional
-   *
-   * `undefined` means the caller did not send the field, and preserves what is
-   * stored — the same contract `ibAccrualStart` carries and for a sharper
-   * reason. This form is a full replace, so a console that predates the field
-   * would otherwise send a payload without it on every unrelated save, and a
-   * required field would either 400 that save or reset the basis to the default.
-   * Re-pricing the whole book as a side effect of somebody changing the demo
-   * account cap is precisely the accident this field exists to make impossible.
-   *
-   * ## The order that matters, said where it will be read
-   *
-   * Under `'spread'` a product whose markup is still 0 yields zero revenue, and
-   * a zero-revenue deal is marked decided rather than retried. So the markups go
-   * in FIRST. Nothing can validate that here — a zero markup is also a
-   * legitimate raw-spread product — which is why it is stated rather than
-   * enforced.
-   */
-  @ApiPropertyOptional({
-    enum: REVENUE_BASES,
-    example: 'commission_swap',
-    description:
-      "'commission_swap' (default) pays on MT5's charged commission + swap; 'spread' pays on " +
-      "lots x the product's spread markup; 'commission_swap_spread' pays on both. Applies to " +
-      'FUTURE trades only. Populate product spread markups BEFORE choosing a spread-inclusive ' +
-      'basis: a zero markup yields zero revenue, and a zero-revenue deal is decided permanently.',
-  })
-  @IsOptional()
-  @IsIn(REVENUE_BASES, {
-    message: `ibRevenueBasis must be one of: ${REVENUE_BASES.join(', ')}`,
-  })
-  ibRevenueBasis?: RevenueBasis;
+  @Min(1)
+  @Max(10)
+  ibMaxLevels: number;
 }

@@ -36,10 +36,10 @@ async function makeUser(email: string): Promise<string> {
 async function accrue(clientId: string, sourceId: string) {
   await ctx.db.execute(sql`
     INSERT INTO ib_accruals
-      (ib_user_id, client_user_id, source_type, source_id, depth, level, rate_value,
+      (ib_user_id, client_user_id, source_type, source_id, depth, rate_value,
        base_amount, amount, currency, status)
     VALUES
-      (${partnerId}, ${clientId}, 'transaction', ${sourceId}, 1, 1, '70.0000',
+      (${partnerId}, ${clientId}, 'transaction', ${sourceId}, 1, '70.0000',
        '100.00000000', '70.00000000', 'USD', 'confirmed')
   `);
 }

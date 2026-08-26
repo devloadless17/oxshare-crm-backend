@@ -406,11 +406,10 @@ describe('the Network sections of the client profile', () => {
     referredId = referred.id;
     soloId = solo.id;
 
-    // The partner row, on the migration-seeded ladder and Default programme.
+    // The partner row, on the migration-seeded Default programme.
     const [program] = await ctx.db.db.select().from(ibPrograms).limit(1);
     await ctx.db.db.insert(ibAccounts).values({
       userId: partnerId,
-      level: 1,
       referralCode: 'HTTP-NETWORK-1',
       programId: program.id,
       active: true,

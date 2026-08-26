@@ -25,11 +25,11 @@ import { WalletDto } from '../../wallet/dto/wallet-response.dto';
  *  - `referredClients` — from `users.referred_by_ib_user_id`, which IS written,
  *    at registration, by `AuthService`.
  *  - `subPartners` — from `ib_accounts.parent_ib_user_id`.
- *  - `level` — the partner's rung and its configured rate.
+ *  - `programme` — the partner's named terms AND its tier ladder (FR-IB-06).
  *
  * ## `earningsEngineLive` is the honesty flag
  *
- * False means: the attribution and the ladder are real, and no engine has
+ * False means: the attribution and the programme are real, and no engine has
  * computed a commission yet. A portal reading this must say so beside the
  * total instead of presenting a computed-looking zero. It flips to true when
  * something writes commission entries — at which point the same total becomes
@@ -118,28 +118,57 @@ export class IbReferredClientDto {
 export class IbSubPartnerDto {
   @ApiProperty() userId: string;
   @ApiProperty() name: string;
-  @ApiProperty({ example: 2 }) level: number;
+  @ApiProperty({
+    example: 'Silver',
+    description:
+      'The terms this sub-partner is on. Replaced `level` in 0102 — a rung named a placement ' +
+      'that decided nothing, while a programme is what they are actually paid on.',
+  })
+  programName: string;
   @ApiProperty({ description: 'A suspended sub-partner keeps their tree and stops earning.' })
   active: boolean;
   @ApiProperty({ format: 'date-time' }) since: Date;
 }
 
+/** One rung of the partner's own ladder: what they take at a given depth. */
+export class IbProgramTierSummaryDto {
+  @ApiProperty({
+    example: 1,
+    description:
+      'Hops above the trading client. 1 is a client this partner introduced themselves; 2 is a ' +
+      'client of one of their sub-partners.',
+  })
+  depth: number;
+
+  @ApiProperty({
+    type: 'string',
+    example: '60.0000',
+    description:
+      'Their share of the broker’s revenue on a closed trade at this depth, as a percentage. A ' +
+      'decimal string, never a number (§6.1).',
+  })
+  rate: string;
+}
+
 /**
  * The TERMS this partner is paid on — their named programme (FR-IB-06).
  *
- * ## This is the thing that decides the money; the rung no longer is
+ * ## This is the only thing that decides the money
  *
- * `IbLevelSummaryDto` below still carries a `rateValue`, and since migration
- * 0084 that number decides nothing: the ladder owns placement and the programme
- * owns the rates. Both are on the wire because a partner is told which rung
- * they stand on AND what they earn, and collapsing them would leave one of
- * those unanswerable.
+ * `IbLevelSummaryDto` used to sit beside it, carrying a rung and a `rateValue`
+ * that had decided nothing since 0084 — a number on the partner's own dashboard
+ * that looked exactly like what they earn. Both went in 0102 with the ladder,
+ * and this is now the single answer to "what am I paid".
  *
- * ## The two rates are per DEPTH
+ * ## `tiers` is per DEPTH, and its LENGTH is how far earnings reach
  *
- * `level1Rate` is what this partner earns from their OWN clients; `level2Rate`
- * from a sub-partner's. Rendering either as "the level-N partner rate" tells a
- * sub-partner the wrong number for the clients they introduced themselves.
+ * Depth 1 is what this partner earns from their OWN clients, depth 2 from a
+ * sub-partner's, and so on. Rendering any of them as "the level-N partner rate"
+ * tells a sub-partner the wrong number for the clients they introduced
+ * themselves — the mistake the rung-keyed ladder made structurally.
+ *
+ * It replaces a fixed `level1Rate` / `level2Rate` pair, which could not describe
+ * a programme reaching three levels at all.
  */
 export class IbProgramSummaryDto {
   @ApiProperty({ example: 'Gold' }) name: string;
@@ -153,20 +182,12 @@ export class IbProgramSummaryDto {
   mode: 'commission_only' | 'rebate_only' | 'hybrid';
 
   @ApiProperty({
-    type: 'string',
-    example: '60.0000',
+    type: [IbProgramTierSummaryDto],
     description:
-      'Their share of the broker’s revenue on their OWN client’s closed trade, as a percentage. ' +
-      'A decimal string, never a number (§6.1).',
+      'What this partner takes at each depth, shallowest first. The COUNT is how many levels ' +
+      'below them their earnings reach. Empty on a rebate-only programme, which pays no partner.',
   })
-  level1Rate: string;
-
-  @ApiProperty({
-    type: 'string',
-    example: '40.0000',
-    description: 'Their share when the trade belongs to a sub-partner’s client.',
-  })
-  level2Rate: string;
+  tiers: IbProgramTierSummaryDto[];
 
   @ApiProperty({
     type: 'string',
@@ -176,26 +197,6 @@ export class IbProgramSummaryDto {
       'pays a rebate.',
   })
   rebateRate: string;
-}
-
-/** The rung this partner stands on. Its `rateValue` no longer decides pay. */
-export class IbLevelSummaryDto {
-  @ApiProperty({ example: 1 }) level: number;
-  @ApiProperty({ example: 'Master Partner' }) name: string;
-
-  /*
-   * `payoutModel` and `maxDirectPartners` went with migration 0055. The rate
-   * has ONE unit now, so a client no longer has to read a second field before
-   * it can render the first.
-   */
-  @ApiProperty({
-    type: 'string',
-    example: '70.0000',
-    description:
-      'The percentage of the broker’s revenue on a closed trade that this rung takes. A decimal ' +
-      'string, never a number (§6.1).',
-  })
-  rateValue: string;
 }
 
 /**
@@ -208,14 +209,11 @@ export class IbLevelSummaryDto {
  * panels failing independently.
  */
 export class IbOverviewDto {
-  @ApiProperty({ type: IbLevelSummaryDto, nullable: true })
-  level: IbLevelSummaryDto | null;
-
   /**
    * NULL only if the programme row vanished from under the partner, which the
-   * foreign key prevents. Nullable anyway for the same reason `level` is: a
-   * partner dashboard that 500s because the catalogue was edited is worse than
-   * one that shows everything else and omits the terms.
+   * foreign key prevents. Nullable anyway because a partner dashboard that 500s
+   * because the catalogue was edited is worse than one that shows everything
+   * else and omits the terms.
    */
   @ApiProperty({ type: IbProgramSummaryDto, nullable: true })
   programme: IbProgramSummaryDto | null;

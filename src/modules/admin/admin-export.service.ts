@@ -577,8 +577,9 @@ export class AdminExportService {
     { header: 'Email', value: (r) => r.user.email },
     { header: 'First name', value: (r) => r.user.firstName },
     { header: 'Last name', value: (r) => r.user.lastName },
-    { header: 'Level', value: (r) => r.account.level },
-    { header: 'Level name', value: (r) => r.levelName },
+    /* The TERMS, replacing the two rung columns (0102). A partner export is
+       read to answer "who is on what", and a rung answered neither half. */
+    { header: 'Programme', value: (r) => r.programName },
     { header: 'Referral code', value: (r) => r.account.referralCode },
     { header: 'Parent partner ID', value: (r) => r.account.parentIbUserId },
     { header: 'Active', value: (r) => r.account.active },
@@ -767,14 +768,14 @@ export interface IbApplicationExportRow {
 export interface IbPartnerExportRow {
   account: {
     userId: string;
-    level: number;
+    programId: string;
     parentIbUserId: string | null;
     referralCode: string;
     active: boolean;
     approvedAt: Date;
   };
   user: { id: string; email: string; firstName: string; lastName: string };
-  levelName: string;
+  programName: string;
 }
 
 export interface RoleExportRow {

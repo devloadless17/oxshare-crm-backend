@@ -72,7 +72,8 @@ async function makePartner(email: string, code: string, active = true): Promise<
   `);
   const userId = rows[0].id;
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, level, referral_code, active, program_id) VALUES (${userId}, 1, ${code}, ${active}, (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
+    INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
+      VALUES (${userId}, ${code}, ${active}, (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
   `);
   return userId;
 }
@@ -114,11 +115,6 @@ beforeEach(async () => {
   await ctx.db.execute(sql`UPDATE users SET referred_by_ib_user_id = NULL`);
   await ctx.db.execute(sql`DELETE FROM ib_accounts`);
   await ctx.db.execute(sql`DELETE FROM users`);
-  await ctx.db.execute(sql`DELETE FROM ib_levels`);
-  await ctx.db.execute(sql`
-    INSERT INTO ib_levels (level, name, rate_value, enabled)
-    VALUES (1, 'Master Partner', 70.0000, true)
-  `);
 });
 
 describe('a code that resolves', () => {

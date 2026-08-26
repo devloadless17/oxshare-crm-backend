@@ -1,11 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AppSettingsStore } from '../../store/app-settings.store';
-import { tradingTermsFrom } from '../../common/trading-terms';
 import { and, eq, gt, inArray, lte, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
-import { ibAccounts, ibAccruals, ibPrograms, users } from '../../database/schema';
+import { ibAccounts, ibAccruals, ibProgramTiers, ibPrograms, users } from '../../database/schema';
 import { LEDGER_REFERENCE, type LedgerReferenceType } from '../../database/ledger-reference';
 import { NotFoundError } from '../../common/errors/domain-errors';
 import { money, toDecimal } from '../wallet/money';
@@ -24,6 +22,7 @@ import {
   calculate,
   checkPlausible,
   resolveChain,
+  MAX_CHAIN_DEPTH,
   type ChainNode,
   type ProgramTerms,
   type RevenueEvent,
@@ -85,8 +84,12 @@ export class CommissionService implements CommissionAccrualPort {
     private readonly wallets: WalletService,
     /** The partner's "commission credited" bell row, written with the credit. */
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
+    /*
+     * The hold window's only source. `AppSettingsStore` used to sit beside it,
+     * because the window was a column too — removed in 0104 with the rest of
+     * the IB block on the Trading settings form.
+     */
     private readonly config: ConfigService,
-    private readonly settings: AppSettingsStore,
   ) {}
 
   /**
@@ -109,41 +112,32 @@ export class CommissionService implements CommissionAccrualPort {
    * before this existed. It is a legitimate choice for a broker whose deposits
    * cannot be reversed, and it is not the default.
    */
-  /**
-   * The broker's floor, read fresh on every accrual.
+  /*
+   * `maxSharePct` IS GONE, with the "Maximum paid to partners" setting it read.
    *
-   * Not cached: an operator who lowers this after noticing they are paying out
-   * too much should see the next trade honour it, not wait out a TTL. One
-   * indexed read of a single-row table against a calculation that already
-   * touches four tables is not the cost worth optimising.
+   * It handed `calculate` a percentage that scaled every leg pro rata when a
+   * chain paid out more than that share of the revenue. Removed at the
+   * operator's request; the FSD asks for no broker-side ceiling. What still
+   * refuses an over-payment is `checkPlausible` below, per trade — see the note
+   * where the cap used to sit in `commission.ts`.
    */
-  private async maxSharePct(): Promise<string> {
-    const terms = tradingTermsFrom(await this.settings.getTrading());
-    return terms.ibMaxRevenueSharePct;
-  }
 
   /**
    * How long an accrual is held before it may be confirmed.
    *
-   * ## The SETTING wins, and the environment is the fallback
+   * ## `IB_COMMISSION_HOLD_HOURS` is the ONLY answer (0104)
    *
-   * This was environment-only, which meant the one rule between earned and
-   * spendable took a deploy to change and was invisible to everybody running
-   * the platform. It is a column on `trading_settings` now — beside the account
-   * caps, the demo ceiling and the broker's revenue-share floor, which are all
-   * there for the same reason.
+   * It was a column on `trading_settings` for a while. The column and its form
+   * field were removed at the operator's request, along with the rest of the IB
+   * block on that screen: commission is configured on the Commission Programmes
+   * page, and a second screen deciding what partners are paid is the same
+   * "two places" problem 0102 removed from the catalogue.
    *
-   * `IB_COMMISSION_HOLD_HOURS` still answers when NO row exists, exactly as
-   * `tradingTermsFrom` treats the environment for the settings it replaced: a
-   * deployment configured before this column existed keeps holding for what it
-   * held for yesterday, rather than silently adopting a default nobody chose.
-   * Once an operator saves the form the table is the single answer — a variable
-   * that keeps overriding a saved setting is the bug this move removes.
+   * SYNCHRONOUS again, because there is nothing left to await. It read a
+   * settings row until 0104; keeping the `Promise` would be a signature that
+   * implies I/O this method no longer does — and `require-await` says so.
    */
-  private async holdHours(): Promise<number> {
-    const row = await this.settings.getTrading();
-    if (row) return tradingTermsFrom(row).ibCommissionHoldHours;
-
+  private holdHours(): number {
     const raw = this.config.get<string>('IB_COMMISSION_HOLD_HOURS');
     if (raw === undefined || raw.trim() === '') return DEFAULT_HOLD_HOURS;
 
@@ -419,7 +413,7 @@ export class CommissionService implements CommissionAccrualPort {
       lots: event.lots,
     };
 
-    const result = calculate(revenue, chain, programs, await this.maxSharePct());
+    const result = calculate(revenue, chain, programs);
     if (result.skippedReason) {
       this.logger.warn(
         `Commission partially skipped for ${event.describe}: ${result.skippedReason}`,
@@ -458,8 +452,8 @@ export class CommissionService implements CommissionAccrualPort {
      * straight to the wallet here would be the one payout on this system that
      * skips the window a reversal needs.
      *
-     * `depth: 1` and the introducer's level, because a rebate belongs to the
-     * direct relationship — `ib_accruals_depth_range` refuses anything else.
+     * `depth: 1` always, because a rebate belongs to the DIRECT relationship —
+     * the client's own introducer — whatever the chain above it looks like.
      */
     const introducer = chain.find((entry) => entry.depth === 1);
     const rows = [
@@ -467,7 +461,7 @@ export class CommissionService implements CommissionAccrualPort {
         kind: 'commission' as const,
         ibUserId: accrual.ibUserId,
         depth: accrual.depth,
-        level: accrual.level,
+        programId: accrual.programId,
         rateValue: accrual.rateValue,
         amount: accrual.amount,
       })),
@@ -477,7 +471,7 @@ export class CommissionService implements CommissionAccrualPort {
               kind: 'rebate' as const,
               ibUserId: result.rebate.ibUserId,
               depth: 1,
-              level: introducer.level,
+              programId: result.rebate.programId,
               rateValue: result.rebate.rateValue,
               amount: result.rebate.amount,
             },
@@ -502,7 +496,15 @@ export class CommissionService implements CommissionAccrualPort {
           sourceType: event.sourceType,
           sourceId: event.sourceId,
           depth: accrual.depth,
-          level: accrual.level,
+          /*
+           * The terms that paid it, recorded ON the row — replacing `level`,
+           * which named a rung that stopped deciding rates in 0084 and stopped
+           * existing in 0102. With `programId`, `depth` and `rateValue`
+           * together, a disputed payout is settled from this row alone rather
+           * than from the partner's CURRENT programme, which is the one thing
+           * most likely to have changed since.
+           */
+          programId: accrual.programId,
           rateValue: accrual.rateValue,
           baseAmount: event.brokerRevenue,
           amount: accrual.amount,
@@ -603,7 +605,7 @@ export class CommissionService implements CommissionAccrualPort {
    * no accrual pointing at it — is a state this system cannot reach.
    */
   async confirmPending(limit = 500): Promise<{ confirmed: number; failed: number; held: number }> {
-    const hours = await this.holdHours();
+    const hours = this.holdHours();
     const payableFrom = new Date(Date.now() - hours * 3_600_000);
 
     const pending = await this.db
@@ -906,50 +908,106 @@ export class CommissionService implements CommissionAccrualPort {
   /**
    * The partners at and above `introducerId`, as a lookup for `resolveChain`.
    *
-   * Fetched in ONE query rather than a walk of round-trips: the chain is at most
-   * two deep, so both rows are known from the introducer's own `parent_ib_user_id`
-   * after a single read of them together.
+   * ## One recursive query, not one round-trip per hop
+   *
+   * This used to read the introducer, then read them and their parent together —
+   * correct while the chain was capped at two and wrong the moment it was not.
+   * The obvious repair is a loop of `SELECT`s, which is an N+1 on the money path
+   * and puts a variable number of round-trips inside the accrual of every trade.
+   *
+   * A recursive CTE walks it server-side in one statement instead: start at the
+   * introducer, follow `parent_ib_user_id` upward, stop at `MAX_CHAIN_DEPTH`.
+   *
+   * ## The `path` array is a CYCLE GUARD, and it is not redundant
+   *
+   * `resolveChain` has its own `seen` set and would terminate a cycle in the
+   * result. That is too late: without this predicate the CTE itself would loop
+   * inside Postgres, and a mis-assigned parent would hang the accrual rather
+   * than skip it. The depth bound alone would cap it, but at
+   * `MAX_CHAIN_DEPTH` wasted iterations per trade forever.
+   *
+   * A SUSPENDED partner is fetched rather than filtered out here. `resolveChain`
+   * owns the rule that suspension breaks the chain, and filtering in SQL would
+   * put half of it in the query and half in the pure function — where the
+   * database's version would silently promote a suspended partner's parent from
+   * depth 3 to depth 2 and pay them the wrong tier.
    */
   private async loadChain(db: Executor, introducerId: string): Promise<Map<string, ChainNode>> {
-    const [introducer] = await db
-      .select()
-      .from(ibAccounts)
-      .where(eq(ibAccounts.userId, introducerId))
-      .limit(1);
+    const result = await db.execute(sql`
+      WITH RECURSIVE chain AS (
+        SELECT a.user_id, a.parent_ib_user_id, a.active, a.program_id,
+               1 AS depth, ARRAY[a.user_id] AS path
+          FROM ${ibAccounts} a
+         WHERE a.user_id = ${introducerId}
+        UNION ALL
+        SELECT p.user_id, p.parent_ib_user_id, p.active, p.program_id,
+               c.depth + 1, c.path || p.user_id
+          FROM ${ibAccounts} p
+          JOIN chain c ON p.user_id = c.parent_ib_user_id
+         WHERE c.depth < ${MAX_CHAIN_DEPTH}
+           AND NOT p.user_id = ANY(c.path)
+      )
+      SELECT user_id, parent_ib_user_id, active, program_id FROM chain
+    `);
 
-    if (!introducer) return new Map();
-
-    const wanted = [introducer.userId];
-    if (introducer.parentIbUserId) wanted.push(introducer.parentIbUserId);
-
-    const rows = await db.select().from(ibAccounts).where(inArray(ibAccounts.userId, wanted));
+    /*
+     * Raw SQL bypasses drizzle's column mappers, so these are the DATABASE's
+     * names and types. All four are plain scalars — uuid, uuid|null, bool, uuid
+     * — with no timestamp or numeric among them, so unlike the raw queries in
+     * `transactions.service.ts` there is nothing here that needs parsing on the
+     * way out.
+     */
+    const rows = result.rows as unknown as {
+      user_id: string;
+      parent_ib_user_id: string | null;
+      active: boolean;
+      program_id: string;
+    }[];
 
     return new Map(
       rows.map((row) => [
-        row.userId,
+        row.user_id,
         {
-          userId: row.userId,
-          parentIbUserId: row.parentIbUserId,
+          userId: row.user_id,
+          parentIbUserId: row.parent_ib_user_id,
           active: row.active,
-          level: row.level,
-          programId: row.programId,
+          programId: row.program_id,
         },
       ]),
     );
   }
 
-  /** The terms for exactly the rungs in play, keyed by level. */
   /**
    * The terms every earner in a chain is paid on, keyed by programme id.
    *
    * Read per event rather than cached: an operator editing a programme expects
    * the next trade to pay the new rate, and a cache here would make "when does
    * this take effect" a question with no answer anybody could state.
+   *
+   * Two queries rather than a join, and the reason is the empty case. A
+   * `LEFT JOIN` onto the tiers returns one all-null row for a programme with no
+   * tiers — a `rebate_only` programme, legitimately — and reassembling terms
+   * from that means a null check on every row to avoid materialising a tier at
+   * `depth: null`. Two reads keyed by id have no such row to misread, and both
+   * are indexed lookups over at most `MAX_CHAIN_DEPTH` programmes.
    */
   private async loadPrograms(db: Executor, ids: string[]): Promise<Map<string, ProgramTerms>> {
     if (ids.length === 0) return new Map();
 
-    const rows = await db.select().from(ibPrograms).where(inArray(ibPrograms.id, ids));
+    const [rows, tierRows] = await Promise.all([
+      db.select().from(ibPrograms).where(inArray(ibPrograms.id, ids)),
+      db.select().from(ibProgramTiers).where(inArray(ibProgramTiers.programId, ids)),
+    ]);
+
+    const tiers = new Map<string, Map<number, string>>();
+    for (const tier of tierRows) {
+      let forProgram = tiers.get(tier.programId);
+      if (!forProgram) {
+        forProgram = new Map<number, string>();
+        tiers.set(tier.programId, forProgram);
+      }
+      forProgram.set(tier.depth, tier.rate);
+    }
 
     return new Map(
       rows.map((row) => [
@@ -957,8 +1015,14 @@ export class CommissionService implements CommissionAccrualPort {
         {
           id: row.id,
           mode: row.mode,
-          level1Rate: row.level1Rate,
-          level2Rate: row.level2Rate,
+          /*
+           * An empty map for a programme with no tiers, never `undefined`.
+           * `calculate` reads `tiers.get(depth)` and `tiers.size` unguarded, and
+           * an absent map would turn "this programme pays no commission" — which
+           * is exactly what `rebate_only` means — into a TypeError on the money
+           * path.
+           */
+          tiers: tiers.get(row.id) ?? new Map<number, string>(),
           rebateRate: row.rebateRate,
           enabled: row.enabled,
         },

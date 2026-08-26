@@ -285,8 +285,8 @@ async function reconcile(one, all, ctx) {
 
   // The commission actually accrued, and for the right amount.
   const accruals = await all(
-    `SELECT a.amount, a.base_amount, a.rate_value, a.status, a.depth, l.payout_model
-       FROM ib_accruals a JOIN ib_levels l ON l.level = a.level
+    `SELECT a.amount, a.base_amount, a.rate_value, a.status, a.depth, p.name AS program_name
+       FROM ib_accruals a LEFT JOIN ib_programs p ON p.id = a.program_id
       WHERE a.ib_user_id = '${partner.id}' AND a.client_user_id = '${client.id}'
       ORDER BY a.created_at DESC LIMIT 5`,
   );
@@ -298,18 +298,20 @@ async function reconcile(one, all, ctx) {
     bad('commission accrued', 'no new accrual row');
   } else {
     ok('commission accrued', `${now - accrualsBefore} new row(s)`);
+    /*
+     * Every rate is a percentage of the broker's revenue, so there is one
+     * arithmetic to check. `payout_model` used to branch this — it went with
+     * migration 0055, and the `per_lot` half was never checkable here anyway.
+     */
     for (const row of accruals.slice(0, now - accrualsBefore)) {
-      const expected =
-        row.payout_model === 'revenue_share'
-          ? ((Number(row.base_amount) * Number(row.rate_value)) / 100).toFixed(2)
-          : null;
+      const expected = ((Number(row.base_amount) * Number(row.rate_value)) / 100).toFixed(2);
       const actual = Number(row.amount).toFixed(2);
-      if (expected === null) {
-        console.log(
-          `        depth ${row.depth}: ${actual} (per_lot — not checkable from a deposit)`,
+      const terms = row.program_name ? ` on "${row.program_name}"` : '';
+      if (expected === actual) {
+        ok(
+          `  depth ${row.depth} amount`,
+          `${row.base_amount} × ${row.rate_value}%${terms} = ${actual}`,
         );
-      } else if (expected === actual) {
-        ok(`  depth ${row.depth} amount`, `${row.base_amount} × ${row.rate_value}% = ${actual}`);
       } else {
         bad(`  depth ${row.depth} amount`, `expected ${expected}, stored ${actual}`);
       }

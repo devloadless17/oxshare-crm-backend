@@ -2,7 +2,6 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
-import { AppSettingsStore } from '../src/store/app-settings.store';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
 import { NotificationsStore } from '../src/store/notifications.store';
@@ -55,13 +54,7 @@ function serviceWithHold(hours: string | undefined): CommissionService {
   // A fresh ConfigService per case: the value is read through the real config
   // path, so this exercises what a deployment actually configures rather than
   // a test-only argument.
-  return new CommissionService(
-    ctx.db,
-    wallets,
-    dispatch,
-    new ConfigService(),
-    new AppSettingsStore(ctx.db),
-  );
+  return new CommissionService(ctx.db, wallets, dispatch, new ConfigService());
 }
 
 async function makeClient(email: string): Promise<string> {
@@ -87,9 +80,9 @@ async function accrue(
   hoursAgo: number,
 ): Promise<void> {
   await ctx.db.execute(sql`
-    INSERT INTO ib_accruals (ib_user_id, client_user_id, source_type, source_id, depth, level,
+    INSERT INTO ib_accruals (ib_user_id, client_user_id, source_type, source_id, depth,
                              rate_value, base_amount, amount, currency, created_at)
-    VALUES (${ibUserId}, ${clientUserId}, 'deal', ${sourceId}, 1, 1,
+    VALUES (${ibUserId}, ${clientUserId}, 'deal', ${sourceId}, 1,
             '70.0000', '100.00000000', '7.00000000', 'USD',
             now() - (${hoursAgo} || ' hours')::interval)
   `);
@@ -230,67 +223,17 @@ describe('how the window is configured', () => {
   });
 });
 
-/**
- * The window moved from the environment to `trading_settings`, and these are
- * the two facts that move has to be true for.
+/*
+ * `describe('the saved setting outranks the environment')` IS GONE (0104).
  *
- * It mattered because the one rule between earned and spendable took a deploy
- * to change and was invisible to everybody running the platform — while every
- * other commercial control on that row (the account caps, the demo ceiling, the
- * broker's revenue-share floor) had been operator-visible for months.
+ * Four cases pinned that a saved `trading_settings.ib_commission_hold_hours`
+ * beat `IB_COMMISSION_HOLD_HOURS` in both directions, and that a saved zero was
+ * a choice rather than a malformed value. The column went with the rest of the
+ * IB block on that form — commission is configured on the Commission Programmes
+ * page, and a second screen deciding partner pay is a second place for two
+ * answers to disagree.
+ *
+ * The environment is the only source again, and everything above this line
+ * still covers it: the window is honoured, a malformed value falls back to 24
+ * rather than to zero, and a negative one is refused the same way.
  */
-describe('the saved setting outranks the environment', () => {
-  async function saveWindow(hours: number): Promise<void> {
-    await ctx.db.execute(sql`
-      INSERT INTO trading_settings (id, ib_commission_hold_hours)
-      VALUES (true, ${hours})
-      ON CONFLICT (id) DO UPDATE SET ib_commission_hold_hours = ${hours}
-    `);
-  }
-
-  it('pays on the saved window even when the environment says otherwise', async () => {
-    const partner = await makeClient('hold-setting-partner@test.local');
-    const client = await makeClient('hold-setting-client@test.local');
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e011', 2);
-
-    // The environment would hold this for another 22 hours. The operator set 1.
-    await saveWindow(1);
-    const result = await serviceWithHold('24').confirmPending();
-
-    expect(result.confirmed).toBe(1);
-    expect(result.held).toBe(0);
-  });
-
-  it('holds on the saved window even when the environment would have paid', async () => {
-    const partner = await makeClient('hold-setting-long-partner@test.local');
-    const client = await makeClient('hold-setting-long-client@test.local');
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e012', 30);
-
-    await saveWindow(72);
-    const result = await serviceWithHold('24').confirmPending();
-
-    /*
-     * The direction that matters more: a longer saved window must not be
-     * shortened by a variable somebody set once and forgot, because the failure
-     * is money becoming spendable before the desk has seen it.
-     */
-    expect(result.confirmed).toBe(0);
-    expect(result.held).toBe(1);
-  });
-
-  it('pays immediately on a saved window of zero', async () => {
-    const partner = await makeClient('hold-setting-zero-partner@test.local');
-    const client = await makeClient('hold-setting-zero-client@test.local');
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e013', 0);
-
-    /*
-     * Zero is a CHOICE here, unlike a malformed environment variable, which
-     * still falls back to 24 rather than to zero. The difference is that
-     * somebody typed this one into a form that says what it does.
-     */
-    await saveWindow(0);
-    const result = await serviceWithHold(undefined).confirmPending();
-
-    expect(result.confirmed).toBe(1);
-  });
-});

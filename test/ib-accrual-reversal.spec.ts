@@ -2,7 +2,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
-import { AppSettingsStore } from '../src/store/app-settings.store';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -55,20 +54,51 @@ async function makeUser(email: string): Promise<string> {
   return rows[0].id;
 }
 
+/**
+ * Set the programme, LADDER AND ALL.
+ *
+ * The ladder is rewritten wholesale rather than patched, because its LENGTH is
+ * how far the programme pays. The share-ceiling trigger is DEFERRABLE, so the
+ * delete-then-insert is checked once at COMMIT rather than against a
+ * half-written ladder.
+ */
 async function setTerms(terms: {
   mode: 'commission_only' | 'rebate_only' | 'hybrid';
-  level1Rate: string;
+  /** Rates by depth, 1 first. Omit or pass [] for a programme paying no partner. */
+  tiers?: string[];
   rebateRate: string;
 }): Promise<void> {
-  await ctx.db.execute(sql`
-    UPDATE ib_programs
-       SET mode = ${terms.mode}::ib_program_mode,
-           level1_rate = ${terms.level1Rate},
-           level2_rate = 0,
-           rebate_rate = ${terms.rebateRate},
-           enabled = true
-     WHERE id = ${programId}
-  `);
+  /*
+   * ONE TRANSACTION, and that is not tidiness.
+   *
+   * The share ceiling is a DEFERRED constraint trigger: it asks "what does this
+   * programme pay in total" at COMMIT. Run as separate statements, raising the
+   * rebate commits while the PREVIOUS ladder is still in place, so setting a 5%
+   * rebate on a programme already paying 70 + 30 is refused at 105% — for a
+   * state the caller never asked for and is one statement away from leaving.
+   *
+   * Inside a transaction the question is asked once, about the terms as they
+   * end up. This is the same shape `IbProgramsService.update` uses, for the
+   * same reason.
+   */
+  await ctx.db.transaction(async (tx) => {
+    await tx.execute(sql`
+      UPDATE ib_programs
+         SET mode = ${terms.mode}::ib_program_mode,
+             rebate_rate = ${terms.rebateRate},
+             enabled = true
+       WHERE id = ${programId}
+    `);
+    await tx.execute(sql`DELETE FROM ib_program_tiers WHERE program_id = ${programId}`);
+
+    const tiers = (terms.tiers ?? []).filter((rate) => Number.parseFloat(rate) > 0);
+    for (const [index, rate] of tiers.entries()) {
+      await tx.execute(sql`
+        INSERT INTO ib_program_tiers (program_id, depth, rate)
+        VALUES (${programId}, ${index + 1}, ${rate})
+      `);
+    }
+  });
 }
 
 /** One closed trade on which the broker kept 100. */
@@ -118,12 +148,6 @@ async function ledgerFor(userId: string) {
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
 
-  await ctx.db.execute(sql`
-    INSERT INTO ib_levels (level, name, rate_value, enabled)
-    VALUES (1, 'Master Partner', 0.0000, true)
-    ON CONFLICT (level) DO UPDATE SET enabled = true
-  `);
-
   const { rows } = await ctx.db.execute<{ id: string }>(
     sql`SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1`,
   );
@@ -133,8 +157,8 @@ beforeAll(async () => {
   clientId = await makeUser('reversal-client@oxshare-e2e.test');
 
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, level, referral_code, active, program_id)
-    VALUES (${partnerId}, 1, 'REVERSE1', true, ${programId})
+    INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
+      VALUES (${partnerId}, 'REVERSE1', true, ${programId})
   `);
   await ctx.db.execute(
     sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,
@@ -148,7 +172,6 @@ beforeAll(async () => {
       notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
     },
     new ConfigService(),
-    new AppSettingsStore(ctx.db),
   );
 }, 180_000);
 
@@ -167,7 +190,7 @@ beforeEach(async () => {
 
 describe('reversing a PENDING accrual costs nothing', () => {
   it('changes the status and moves no money', async () => {
-    await setTerms({ mode: 'commission_only', level1Rate: '10', rebateRate: '0' });
+    await setTerms({ mode: 'commission_only', tiers: ['10'], rebateRate: '0' });
     await accrue();
 
     const [accrual] = await accrualRows();
@@ -191,7 +214,7 @@ describe('reversing a PENDING accrual costs nothing', () => {
 
 describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
   it('debits the wallet that was credited and never edits the credit', async () => {
-    await setTerms({ mode: 'commission_only', level1Rate: '10', rebateRate: '0' });
+    await setTerms({ mode: 'commission_only', tiers: ['10'], rebateRate: '0' });
     await accrue();
     await commissions.confirmPending();
 
@@ -228,7 +251,7 @@ describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
   });
 
   it('is idempotent: a second reversal does not debit twice', async () => {
-    await setTerms({ mode: 'commission_only', level1Rate: '10', rebateRate: '0' });
+    await setTerms({ mode: 'commission_only', tiers: ['10'], rebateRate: '0' });
     await accrue();
     await commissions.confirmPending();
 
@@ -249,7 +272,7 @@ describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
 
 describe('a REBATE is taken back from the client, not the partner', () => {
   it('debits the client main wallet the rebate was paid into', async () => {
-    await setTerms({ mode: 'rebate_only', level1Rate: '0', rebateRate: '5' });
+    await setTerms({ mode: 'rebate_only', tiers: [], rebateRate: '5' });
     await accrue();
     await commissions.confirmPending();
 
@@ -272,7 +295,7 @@ describe('a REBATE is taken back from the client, not the partner', () => {
 
 describe('a reversal REFUSES when the money is already gone', () => {
   it('leaves the accrual confirmed rather than telling a lie', async () => {
-    await setTerms({ mode: 'commission_only', level1Rate: '10', rebateRate: '0' });
+    await setTerms({ mode: 'commission_only', tiers: ['10'], rebateRate: '0' });
     await accrue();
     await commissions.confirmPending();
 

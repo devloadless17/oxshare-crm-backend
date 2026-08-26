@@ -1,5 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -7,7 +10,9 @@ import {
   IsString,
   Length,
   Matches,
+  Max,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 /** FR-IB-05's three modes: which legs a programme actually pays. */
@@ -30,13 +35,65 @@ const RATE_MESSAGE =
   'must be a non-negative decimal with at most four places, as a string — e.g. "12.5" or "33.3333"';
 
 /**
+ * The deepest depth a tier may name — the STRUCTURAL bound, not the policy one.
+ *
+ * Mirrors `ib_program_tiers_depth_range` and `ABSOLUTE_IB_MAX_LEVELS`: what the
+ * column can hold. How many levels an operator may actually configure is
+ * `IB_MAX_LEVELS`, which defaults to 2 (Feature List Rev 9, IB-17) and is
+ * enforced by the service — a decorator cannot read a setting.
+ *
+ * Both exist on purpose. This one refuses a depth the engine could never pay;
+ * that one refuses a ladder deeper than the broker agreed to.
+ */
+const MAX_TIER_DEPTH = 10;
+
+/**
+ * One rung of a programme's ladder: what its holder earns at a given DEPTH.
+ *
+ * `depth = 1` is the partner who introduced the trading client, `depth = 2` is
+ * that partner's parent, upward from there. So this is a property of the TERMS
+ * and is true wherever in a chain the holder happens to stand — which is what
+ * the rung-keyed ladder this replaced could not express.
+ */
+export class IbProgramTierDto {
+  @ApiProperty({
+    example: 1,
+    minimum: 1,
+    maximum: MAX_TIER_DEPTH,
+    description:
+      'Hops above the trading client. 1 is the introducer, 2 is their parent. Levels must run ' +
+      '1, 2, 3 … with no gaps.',
+  })
+  @IsInt()
+  @Min(1)
+  @Max(MAX_TIER_DEPTH)
+  depth: number;
+
+  @ApiProperty({
+    type: 'string',
+    example: '60.0000',
+    description:
+      'The holder’s share of the broker’s revenue at this depth, as a percentage. A decimal ' +
+      'string, never a number (§6.1). Must be above zero — a level that pays nothing is removed ' +
+      'rather than zeroed, because the number of levels is what decides how far a programme pays.',
+  })
+  @IsString()
+  @Matches(RATE, { message: `rate ${RATE_MESSAGE}` })
+  rate: string;
+}
+
+/**
  * A named IB programme — the terms a partner is paid on (FR-IB-06).
  *
- * ## The two rates are per DEPTH, not per rung
+ * ## The ladder is a LIST, and its length is load-bearing
  *
- * `level1Rate` is what the holder earns from their OWN clients; `level2Rate`
- * what they earn from a sub-partner's. Read either as "the rate for partners at
- * level N" and a sub-partner introducing their own client is paid the wrong one.
+ * `tiers` replaced a fixed `level1Rate` / `level2Rate` pair, which wrote a
+ * two-level ceiling into the contract itself. The number of tiers is how far
+ * this programme's earnings reach: three tiers pays the holder on their own
+ * clients, their sub-partners' and their sub-sub-partners', and stops.
+ *
+ * FR-IB-17 puts that decision here rather than in the engine — "the exact
+ * per-level split is configured per the agreed program ladder".
  */
 export class IbProgramDto {
   @ApiProperty({ format: 'uuid' }) id: string;
@@ -59,27 +116,20 @@ export class IbProgramDto {
   mode: IbProgramMode;
 
   @ApiProperty({
-    type: 'string',
-    example: '60.0000',
+    type: [IbProgramTierDto],
     description:
-      'The holder’s share of the broker’s revenue on their OWN client’s closed trade, as a ' +
-      'percentage. A decimal string, never a number (§6.1).',
+      'What this programme pays at each depth, shallowest first. The COUNT is how many levels ' +
+      'its holder’s earnings reach. Empty on a `rebate_only` programme, which pays no partner.',
   })
-  level1Rate: string;
-
-  @ApiProperty({
-    type: 'string',
-    example: '40.0000',
-    description: 'Their share when the trade belongs to a SUB-partner’s client.',
-  })
-  level2Rate: string;
+  tiers: IbProgramTierDto[];
 
   @ApiProperty({
     type: 'string',
     example: '0.0000',
     description:
       'What returns to the TRADING CLIENT, as a percentage of the same revenue. Paid only when ' +
-      '`mode` is `rebate_only` or `hybrid`.',
+      '`mode` is `rebate_only` or `hybrid`. On the programme rather than per depth because there ' +
+      'is one trading client per trade, in one relationship — with their introducer.',
   })
   rebateRate: string;
 
@@ -117,17 +167,24 @@ export class CreateIbProgramDto {
   @IsIn(IB_PROGRAM_MODES)
   mode?: IbProgramMode;
 
-  @ApiPropertyOptional({ type: 'string', example: '60' })
+  /**
+   * `@ValidateNested({ each: true })` WITH `@Type`, and both are required.
+   *
+   * Without `@Type` the global `ValidationPipe`'s `transform` leaves these as
+   * plain objects, class-validator finds no metadata to reflect on, and every
+   * nested rule passes by never running — so `depth: "banana"` reaches the
+   * service. This is the one validation failure that looks exactly like success.
+   */
+  @ApiPropertyOptional({
+    type: [IbProgramTierDto],
+    description: 'The ladder, 1..N with no gaps. Omit for a rebate-only programme.',
+  })
   @IsOptional()
-  @IsString()
-  @Matches(RATE, { message: `level1Rate ${RATE_MESSAGE}` })
-  level1Rate?: string;
-
-  @ApiPropertyOptional({ type: 'string', example: '40' })
-  @IsOptional()
-  @IsString()
-  @Matches(RATE, { message: `level2Rate ${RATE_MESSAGE}` })
-  level2Rate?: string;
+  @IsArray()
+  @ArrayMaxSize(MAX_TIER_DEPTH)
+  @ValidateNested({ each: true })
+  @Type(() => IbProgramTierDto)
+  tiers?: IbProgramTierDto[];
 
   @ApiPropertyOptional({ type: 'string', example: '0' })
   @IsOptional()
@@ -135,7 +192,12 @@ export class CreateIbProgramDto {
   @Matches(RATE, { message: `rebateRate ${RATE_MESSAGE}` })
   rebateRate?: string;
 
-  @ApiPropertyOptional({ default: true })
+  /*
+   * No `default:` here — `openapi-typescript` emits any property carrying one as
+   * REQUIRED, which is right for a response and wrong for a request body.
+   * Defaults to true; see the service.
+   */
+  @ApiPropertyOptional({ description: 'Defaults to true.' })
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
@@ -165,17 +227,28 @@ export class UpdateIbProgramDto {
   @IsIn(IB_PROGRAM_MODES)
   mode?: IbProgramMode;
 
-  @ApiPropertyOptional({ type: 'string', example: '60' })
+  /**
+   * ⚠️ REPLACE-ALL, not a merge — the one field on this PATCH that is not
+   * "change just this".
+   *
+   * A ladder is read as a whole because its LENGTH decides how far the
+   * programme pays. Merging would make "the ladder is now just level 1"
+   * inexpressible, which is precisely the edit an operator shortening a
+   * programme is trying to make. Send the ladder you want; omit the field to
+   * leave it untouched.
+   */
+  @ApiPropertyOptional({
+    type: [IbProgramTierDto],
+    description:
+      'REPLACES the whole ladder. Send every level you want to keep; omit the field to leave ' +
+      'the existing ladder alone. An empty array removes every level.',
+  })
   @IsOptional()
-  @IsString()
-  @Matches(RATE, { message: `level1Rate ${RATE_MESSAGE}` })
-  level1Rate?: string;
-
-  @ApiPropertyOptional({ type: 'string', example: '40' })
-  @IsOptional()
-  @IsString()
-  @Matches(RATE, { message: `level2Rate ${RATE_MESSAGE}` })
-  level2Rate?: string;
+  @IsArray()
+  @ArrayMaxSize(MAX_TIER_DEPTH)
+  @ValidateNested({ each: true })
+  @Type(() => IbProgramTierDto)
+  tiers?: IbProgramTierDto[];
 
   @ApiPropertyOptional({ type: 'string', example: '0' })
   @IsOptional()
@@ -187,4 +260,34 @@ export class UpdateIbProgramDto {
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+}
+
+/**
+ * The bounds a screen needs before it can offer the controls — `GET
+ * /admin/ib-programs/limits`.
+ *
+ * ## Why this is an endpoint rather than a number in the frontend
+ *
+ * The ladder ceiling is `IB_MAX_LEVELS`, a deployment setting. A console that
+ * hardcoded it would drift the moment a broker negotiated a third level: the
+ * form would keep refusing at two while the API accepted three, and the
+ * operator would be told "at most 2 levels" by a screen that was simply out of
+ * date. That is precisely the console-versus-engine disagreement the setting
+ * was introduced to end, so it is READ rather than assumed.
+ *
+ * Its own route rather than a field on every programme row: the ceiling is a
+ * property of the platform, and hanging it off each item in a list would state
+ * one fact N times and invite a reader to wonder which one won.
+ */
+export class IbProgramLimitsDto {
+  @ApiProperty({
+    example: 2,
+    minimum: 1,
+    maximum: MAX_TIER_DEPTH,
+    description:
+      'The most levels a programme may define, from `IB_MAX_LEVELS`. Defaults to 2 — the ' +
+      'committed two-level structure (Feature List Rev 9, IB-17). Raising it is a commercial ' +
+      'decision, not a deploy-time accident.',
+  })
+  maxLevels: number;
 }

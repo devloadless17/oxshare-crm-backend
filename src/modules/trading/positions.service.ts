@@ -10,8 +10,7 @@ import {
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { brokerRevenueFor } from './broker-revenue';
 import { basisCountsSpread } from '../../common/revenue-basis';
-import { AppSettingsStore } from '../../store/app-settings.store';
-import { tradingTermsFrom } from '../../common/trading-terms';
+import { DEFAULT_REVENUE_BASIS } from '../../common/revenue-basis';
 
 /**
  * Open positions, and what happens when one closes.
@@ -46,7 +45,6 @@ export class PositionsService {
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     @Inject(COMMISSION_ACCRUAL) private readonly commissions: CommissionAccrualPort,
-    private readonly settings: AppSettingsStore,
   ) {}
 
   /** Every open position on one client's accounts, newest first. */
@@ -149,7 +147,7 @@ export class PositionsService {
      * place. `brokerRevenueFor` takes the basis and the markup as required
      * arguments so that a call site cannot inherit the old pricing by omission.
      */
-    const basis = tradingTermsFrom(await this.settings.getTrading()).ibRevenueBasis;
+    const basis = DEFAULT_REVENUE_BASIS;
 
     /*
      * Looked up ONLY when the basis needs it. A dormant path should not pay for

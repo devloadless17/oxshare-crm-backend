@@ -1015,124 +1015,69 @@ export const tradingSettings = pgTable(
       .notNull()
       .default('1000000'),
     /**
-     * The most of its revenue the broker will pay out to partners, as a
-     * percentage — the floor under its own margin.
+     * How many LEVELS a commission programme's ladder may reach (0105).
      *
-     * `ib_levels` rates are each a share of the FULL revenue and therefore
-     * additive: 70 + 30 across two rungs pays out everything the house earned.
-     * This caps the chain's total and scales it pro rata to fit, so the
-     * guarantee holds however many rungs somebody adds later.
+     * Defaults to 2 — Feature List Rev 9, IB-17: "no level beyond L2" — so an
+     * untouched database carries the committed scope.
+     *
+     * ⚠️ This is NOT a payment rule, and that is why it may sit here when the
+     * four that 0103/0104 removed may not. Those decided what partners are
+     * PAID and competed with the Commission Programmes page for the same job.
+     * This one BOUNDS what that page will accept — it constrains the catalogue
+     * rather than duplicating it.
+     *
+     * It bounds what may be SAVED and nothing else: lowering it stops new
+     * ladders going deeper, and leaves every existing programme paying exactly
+     * what it paid yesterday. An operator adjusting a limit must not silently
+     * restate money that is owed.
+     *
+     * Capped at 10 by CHECK, matching `ib_program_tiers_depth_range` and
+     * `ib_accruals_depth_range`. A ceiling above what the engine can store
+     * would let somebody configure a ladder whose deepest level fails at
+     * INSERT — on the money path, taking every earner on that trade with it.
      */
-    /**
-     * When the commission engine starts paying from — the BACKLOG DECISION.
+    ibMaxLevels: integer('ib_max_levels').notNull().default(2),
+    /*
+     * ── THE IB BLOCK IS GONE FROM THIS TABLE (0104) ───────────────────────
      *
-     * NULL is "nobody has decided", and it is the safe state: an aged backlog of
-     * unprocessed trades stops the engine rather than paying months of history
-     * at once. `all` pays the whole backlog deliberately; an ISO instant pays
-     * from that point and marks everything older decided-and-unpaid.
+     * `ib_accrual_start`, `ib_commission_hold_hours`, `ib_revenue_basis` and
+     * `ib_max_revenue_share_pct` (0103) all sat here. Each was moved onto this
+     * row at some point on the reasoning that a commercial decision belongs
+     * where an operator can see it — which was right about the decision and
+     * wrong about the SCREEN.
      *
-     * ── Why a COLUMN and not an environment variable ──────────────────────
+     * Commission is configured on the Commission Programmes page. Four controls
+     * on the Trading settings form that also change what every partner earns
+     * are a second place to look when a payout surprises somebody, and a second
+     * place for two answers to disagree — the same fault 0102 removed from the
+     * catalogue itself when `ib_levels` sat beside `ib_programs`.
      *
-     * It was `IB_ACCRUAL_START`, and that was the wrong home for the same
-     * reasons `ibCommissionHoldHours` stopped being one: a commercial decision
-     * that took a deploy to make, that the people who actually make it cannot
-     * reach, and that was invisible to everybody running the platform.
+     * What each one is now:
      *
-     * The stronger reason is the audit. This decision is IRREVERSIBLE — money
-     * paid to a partner for a trade nobody meant to pay for comes back by
-     * conversation, not by redeploy — and an environment variable records no
-     * actor, no timestamp and no reason. A settings write records all three.
-     * Friction is not a substitute for accountability.
+     *   ib_accrual_start          → `IB_ACCRUAL_START` (env), where it began.
+     *                               THE AGED-BACKLOG GUARD IS UNCHANGED: unset,
+     *                               a >48h backlog still HOLDS the run rather
+     *                               than paying months of history at once.
+     *   ib_commission_hold_hours  → `IB_COMMISSION_HOLD_HOURS` (env).
+     *   ib_revenue_basis          → a constant: `DEFAULT_REVENUE_BASIS`, the
+     *                               commission + swap the platform has always
+     *                               paid on, so nobody's money moved.
+     *   ib_max_revenue_share_pct  → nothing. See 0103.
      *
-     * ── It decides only deals NOT YET DECIDED ─────────────────────────────
-     *
-     * A deal a run has looked at carries `commission_processed_at` — paid, or
-     * deliberately not — and no later change here revisits it. So this is a
-     * one-time decision wearing the clothes of a live control: moving the date
-     * backwards later recovers nothing and says nothing, because those rows were
-     * settled long ago. That is stated on the settings form too, where the
-     * person likely to try it will be standing.
-     *
-     * It is also why a bulk re-ingestion cannot re-pay history: `mt5_deals` is
-     * unique on the MT5 ticket and ingestion is `onConflictDoNothing`, so
-     * re-delivered deals create no rows at all.
+     * `ib_max_levels` arrived AFTER them (0105) and is a different kind of
+     * thing — a bound on what the Commission Programmes page will accept, not
+     * a rule about what anybody is paid. See the column below.
      */
-    ibAccrualStart: varchar('ib_accrual_start', { length: 40 }),
-    ibMaxRevenueSharePct: numeric('ib_max_revenue_share_pct', { precision: 5, scale: 2 })
-      .notNull()
-      .default('50'),
-    /**
-     * How long an accrual is HELD before it can be confirmed — the rule
-     * between earned and spendable.
-     *
-     * It was an environment variable, which meant changing it took a deploy
-     * and nobody running the platform could see what it was. Every other
-     * commercial control on this row is here for the same reason.
-     *
-     * 0 is legal and means "pay as soon as it is calculated". The CHECK
-     * stops the other end: a mistyped 24000 would hold every partner's
-     * commission for three years with every component reporting success.
-     */
-    ibCommissionHoldHours: integer('ib_commission_hold_hours').notNull().default(24),
-    /**
-     * WHICH of the broker's earnings a partner's rate applies to — FR-IB-16.
-     *
-     * `'commission_swap'` (the default, and what the platform shipped on) is
-     * MT5's charged commission plus swap. `'spread'` is lots × the product's
-     * `spread_markup_per_lot`. `'commission_swap_spread'` is both.
-     *
-     * ── Why this is a column and not a constant ──────────────────────────
-     *
-     * The FSD calls commission "spread-based" and the engine computes on
-     * charges, for a reason that survives scrutiny: MT5 reports no per-deal
-     * spread revenue, so there is nothing to compute from and nothing to check
-     * a result against. Migration 0095 and `broker-revenue.ts` both close that
-     * argument the same way — wiring the markup in "changes what every partner
-     * is paid on every future trade", and that needs a PERSON, not a column.
-     *
-     * This is that person's switch, and it is here rather than in the source
-     * for the reason `ibCommissionHoldHours` and `ibAccrualStart` are here: the
-     * single number deciding what a partner earns should not be reachable only
-     * by whoever can open a pull request. `SettingsService` records both sides
-     * of every change to this table, so "who re-priced the book, and when" has
-     * an answer.
-     *
-     * ── The default is the status quo, deliberately ──────────────────────
-     *
-     * A new setting whose default changes behaviour is a silent repricing. Every
-     * deployment keeps paying what it paid yesterday until somebody chooses.
-     *
-     * ── It re-prices the FUTURE only ─────────────────────────────────────
-     *
-     * Same edge as `ibAccrualStart`: a deal carrying `commission_processed_at`
-     * is never revisited. And the specific trap worth knowing before switching —
-     * under `'spread'` alone a product with a zero markup yields zero revenue,
-     * and a zero-revenue deal is marked DONE rather than retried. Populate the
-     * product markups before selecting a spread-inclusive basis, or the queue
-     * drains paying nothing and cannot be re-opened by changing this back.
-     */
-    ibRevenueBasis: varchar('ib_revenue_basis', { length: 30 })
-      .notNull()
-      .default('commission_swap'),
     updatedBy: uuid('updated_by'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     check('trading_settings_singleton', sql`${t.id}`),
-    check(
-      'trading_settings_hold_hours_ck',
-      sql`${t.ibCommissionHoldHours} >= 0 AND ${t.ibCommissionHoldHours} <= 8760`,
-    ),
     /*
-     * The set is closed at the database as well as at the DTO. `revenueBasisOf`
-     * falls back to the default on an unrecognised value — the safe reading at
-     * runtime, and exactly why an unrecognised value must not be storable: a
-     * fallback that works silently is a fallback nobody notices.
+     * `trading_settings_hold_hours_ck` and `trading_settings_revenue_basis_ck`
+     * went in 0104 with the columns they bounded.
      */
-    check(
-      'trading_settings_revenue_basis_ck',
-      sql`${t.ibRevenueBasis} IN ('commission_swap', 'spread', 'commission_swap_spread')`,
-    ),
+    check('trading_settings_ib_max_levels_ck', sql`${t.ibMaxLevels} BETWEEN 1 AND 10`),
   ],
 );
 
@@ -1572,7 +1517,7 @@ export const productTypeEnum = pgEnum('product_type', ['real', 'demo']);
  *
  * Brokers who let MT5 compute rebates cut a group per partner, with the markup
  * in `MTConGroup.Commissions` — there the partner link MUST be to a group.
- * This system computes commission itself, from `ib_levels.rate_value` into
+ * This system computes commission itself, from `ib_program_tiers.rate` into
  * `ib_accruals`, so the group carries nothing partner-specific and the link is
  * commercial: what this partner may sell. If commission ever moves to MT5-side
  * tables, this decision has to be revisited — two partners selling "Standard"
@@ -2972,98 +2917,48 @@ export const refreshTokens = pgTable(
 // engine was removed — see migration 0028 for what left and why.
 
 /*
- * ── `ib_payout_model` IS GONE, and so is `max_direct_partners` (0055) ────────
+ * ── `ib_levels` IS GONE (0102), AND SO ARE `ib_payout_model` / `max_direct_partners` (0055) ──
  *
- * The enum offered `revenue_share` and `per_lot`, on the reasoning that brokers
- * run both and a schema assuming one would need a migration the first time the
- * business changed its mind.
+ * There were two catalogues of terms in this schema and the FSD describes one.
  *
- * This platform runs one. A partner's commission is cut from what the BROKER
- * EARNED on a closed position — its commission and swap — which is a percentage
- * of revenue by definition. `per_lot` priced a rebate on SIZE instead, so the
- * same `rateValue` meant 70% under one model and $70 per lot under the other:
- * one column with two units, on the number that decides what every partner is
- * paid. No level was ever configured per-lot, and the branch existed only to be
- * got wrong.
+ * FR-IB-06 asks for "an administrable catalogue of named IB programs (a tier
+ * ladder), each defining a name, ordering position, commission and rebate
+ * values, and a mode", and adds that a programme replaces "any per-partner
+ * bespoke plan". FR-IB-17 says the per-level split is "configured per the
+ * agreed program ladder". One catalogue, named, assigned per partner, carrying
+ * the depths.
  *
- * `max_direct_partners` went with it. It capped how many partners a rung could
- * recruit directly, was defaulted to unlimited, and was never set — a rule the
- * ladder does not otherwise express, enforced at one call site, that an operator
- * had to answer on every level they created.
+ * `ib_levels` was a SECOND one, keyed on the rung a partner stood on, and it
+ * had already lost the argument: 0084 moved every rate onto programmes and left
+ * the ladder holding a `rate_value` that decided nothing, a name, and an
+ * `enabled` flag whose only remaining job was to bound the hierarchy.
  *
- * `rateValue` now means exactly one thing: a percentage of the broker's revenue
- * on the trade. CPA stays deliberately absent for the reason it always was — it
- * is a per-client event with its own qualification rules, not a per-level rate.
+ * A rung-keyed rate cannot express what the FSD asks for anyway. Every level-1
+ * partner is paid identically under it, there is nowhere at all to put a client
+ * rebate, and a partner who introduced a client THEMSELVES was paid their rung's
+ * override rather than the introducer rate — so recruiting a sub-partner quietly
+ * cut what you earned on your own business.
+ *
+ * `ib_payout_model` went in 0055: the enum offered `revenue_share` and
+ * `per_lot`, so one `rate_value` meant 70% under one and $70 per lot under the
+ * other. A partner's commission is cut from what the BROKER EARNED on a closed
+ * position, which is a percentage by definition. `max_direct_partners` went with
+ * it — a cap defaulted to unlimited and never once set.
  */
 
 /**
- * The payout ladder: how many levels deep earnings travel, and what each takes.
- * ## What a "level" means here
+ * A named IB programme — the terms a partner is paid on. FR-IB-06.
  *
- * An IB hierarchy is a chain. A LEVEL 1 partner deals with the broker directly;
- * a LEVEL 2 partner was recruited by an L1, and so on. When a client an L2
- * introduced generates revenue, the L2 earns, and the L1 above them earns a
- * smaller override on top. Earnings flow UPWARD.
+ * The header row. What it PAYS lives in `ib_program_tiers`, one row per depth,
+ * because that is the half whose LENGTH varies and a fixed pair of columns
+ * cannot hold a ladder whose height is a commercial decision.
  *
- * So the number of rows in this table is the DEPTH OF THE PAYOUT CHAIN, not a
- * cap on how many partners may exist. Two rows — the default this ships with —
- * means a client's activity pays their direct partner and that partner's
- * parent, and stops there. A third row would extend the chain one hop further,
- * not permit a third partner.
+ * ## Ordering position, and why it is not decoration
  *
- * That distinction is the reason this is a table of levels rather than a column
- * on the partner: "how far do earnings travel" is one platform-wide decision,
- * and putting it on each partner would let two partners in one chain disagree
- * about it.
- *
- * ## `rateValue` is NUMERIC, never a float
- *
- * It multiplies money. §6.1 applies to anything that TOUCHES an amount, not
- * only to amounts themselves: a rate held as a float reintroduces the error the
- * decimal columns exist to prevent, one multiplication later.
- *
- * Under `revenue_share` the enabled levels must not exceed 100 between them —
- * the service enforces that, because a database CHECK cannot see the other
- * rows. Under `per_lot` there is no such ceiling; see the enum above.
- *
- * ## Nothing consumes these rates yet, and that is deliberate
- *
- * The commission engine was removed with the MT5 bridge, so no deal arrives to
- * be paid on. This table is the CONFIGURATION the engine will read, and it is
- * built now because the approval flow already needs the hierarchy half of it —
- * `maxDirectPartners` is enforced the day partners exist. What must NOT happen
- * is a screen reporting earnings computed from these numbers before an engine
- * exists to compute them; that was the "commission plans" screen this replaced.
- *
- * ## `level` is the primary key
- *
- * Not a surrogate uuid. The level number IS the identity — "level 2" means one
- * thing platform-wide — and an ordering that lives in a separate column can
- * disagree with the key. It also makes `ib_accounts.level` a plain integer FK
- * that a person reading a row can interpret without a join.
- */
-/**
- * A named IB programme — the terms a partner is paid on.
- *
- * ## Why this exists beside `ib_levels` rather than inside it
- *
- * The ladder keys a rate on the RUNG a partner occupies, so every level-1
- * partner is paid identically and there is nowhere to put a client rebate. The
- * FSD (FR-IB-06) asks for the other shape: a named programme each partner is
- * assigned to, carrying commission AND rebate values and a mode deciding which
- * legs pay. A broker who wants to give one introducer better terms than another
- * on the same rung cannot say so with a ladder.
- *
- * `ib_levels` keeps everything else it owns — the rung's NAME, and whether new
- * partners may be placed on it. Only the rate moved.
- *
- * ## The rates are per DEPTH, and that is the difference that matters
- *
- * `level1Rate` is what the holder earns from their OWN clients; `level2Rate` is
- * what they earn from a sub-partner's clients. That makes a programme portable:
- * it pays the same way wherever in a chain its holder stands, which a
- * rung-keyed rate cannot express — under the ladder, what you earned depended on
- * which rung you sat on rather than on whose client traded.
+ * FR-IB-06 names it, and one behaviour depends on it: approval places a new
+ * partner on the first ENABLED programme by `sortOrder`. An operator who builds
+ * Bronze / Silver / Gold decides which of them a new partner lands on by
+ * ordering them, and there is no second setting to keep in step.
  */
 export const ibProgramModeEnum = pgEnum('ib_program_mode', [
   /** Only the partner is paid. */
@@ -3078,61 +2973,122 @@ export const ibPrograms = pgTable('ib_programs', {
   id: uuid('id').defaultRandom().primaryKey(),
   /** What an operator picks in a list, and what a partner is told they are on. */
   name: varchar('name', { length: 80 }).notNull().unique(),
+  /** FR-IB-06's "ordering position". Lowest first; the first enabled one is the default. */
   sortOrder: integer('sort_order').notNull().default(0),
   mode: ibProgramModeEnum('mode').notNull().default('commission_only'),
-  /** The holder's share of broker revenue on their OWN client's trade, as a %. */
-  level1Rate: numeric('level1_rate', { precision: 12, scale: 4 }).notNull().default('0'),
-  /** Their share when the trade belongs to a SUB-partner's client, as a %. */
-  level2Rate: numeric('level2_rate', { precision: 12, scale: 4 }).notNull().default('0'),
   /**
-   * What goes back to the TRADING CLIENT, as a % of the same revenue.
+   * What goes back to the TRADING CLIENT, as a % of the same broker revenue.
    *
-   * A percentage, not an amount per lot: FR-IB-05 calls for a dynamic rebate,
-   * and per-lot pricing was removed from this system once already (migration
-   * 0055) because one column carrying two units is the number nobody can read.
+   * A percentage, not an amount per lot: FR-IB-05 calls for a rebate that is
+   * "configurable per program (dynamic, not a fixed per-lot figure)", and
+   * per-lot pricing was removed from this system once already (0055) because
+   * one column carrying two units is the number nobody can read.
+   *
+   * On the HEADER rather than in the tiers, because there is exactly one
+   * trading client per trade and they stand in exactly one relationship — with
+   * their introducer. A rebate per depth would be several different answers to
+   * a question that has one.
    */
   rebateRate: numeric('rebate_rate', { precision: 12, scale: 4 }).notNull().default('0'),
   /**
+   * FR-IB-06's "flagged as selectable" — and it means BOTH halves of that.
+   *
    * A disabled programme cannot be assigned to a new partner AND stops paying.
-   * Same rule as a disabled level: a switch that leaves the money flowing is
-   * decorative, and an operator who turns terms off means it.
+   * A switch that leaves the money flowing is decorative, and an operator who
+   * turns terms off means it.
    */
   enabled: boolean('enabled').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const ibLevels = pgTable('ib_levels', {
-  /** 1 is the partner closest to the broker; higher numbers sit further down. */
-  level: integer('level').primaryKey(),
-  name: varchar('name', { length: 80 }).notNull(),
-  /**
-   * The rung's share, as a PERCENTAGE of what the broker earned on the trade.
-   *
-   * One unit, always. This used to mean a percentage under `revenue_share` and
-   * an amount per lot under `per_lot` — one column with two units, on the number
-   * that decides what every partner is paid. See the note above the table.
-   *
-   * 12,4 rather than 5,2 is now more room than a percentage needs, and it stays:
-   * narrowing a NUMERIC on a live column buys nothing and would rewrite the
-   * table. Four decimals let a 2.5% share and a 33.3333% one both survive
-   * without rounding.
-   *
-   * The enabled levels must total <= 100 between them — `assertShareFits` — and
-   * the broker's own cap (`ibMaxRevenueSharePct`) scales them pro rata on top of
-   * that, so the house cannot be paid out entirely by a full ladder.
-   */
-  rateValue: numeric('rate_value', { precision: 12, scale: 4 }).notNull().default('0'),
-  /**
-   * A disabled level stops NEW partners being placed at it and takes no share.
-   * Existing partners at that level keep their placement — the same reasoning
-   * as a disabled currency, and for the same reason: the alternative is
-   * silently re-levelling people who did nothing wrong.
-   */
-  enabled: boolean('enabled').notNull().default(true),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+/**
+ * What a programme pays at each DEPTH — FR-IB-06's "tier ladder", and FR-IB-17's
+ * "per-level split ... configured per the agreed program ladder".
+ *
+ * ## Depth is measured from the CLIENT, not from the broker
+ *
+ * `depth = 1` is the partner who introduced the trading client; `depth = 2` is
+ * that partner's parent, and so on upward. A row here answers "what does the
+ * holder of this programme earn when the trade belongs to a client N hops below
+ * them" — a property of the TERMS, true wherever in a chain the holder happens
+ * to stand.
+ *
+ * That portability is what the rung-keyed ladder could not say, and the reason
+ * this is keyed on depth rather than on a level number.
+ *
+ * ## The ROW COUNT is how far this programme's earnings reach
+ *
+ * Three rows means the holder is paid on their own clients, their sub-partners'
+ * and their sub-sub-partners', and nothing beyond. One row means their own
+ * clients only. There is no separate depth setting that could disagree with the
+ * rates, and no constant in a source file: FR-IB-16 asks for the agreed method
+ * to be CONFIGURED, and a number a developer edits is not a configuration.
+ *
+ * `MAX_CHAIN_DEPTH` in the engine is a CYCLE GUARD and nothing else — a
+ * self-referencing foreign key cannot be stopped from forming a loop, so the
+ * walk needs a stop even when every programme is well formed.
+ *
+ * ## Each earner reads their OWN programme
+ *
+ * Two partners in one chain may hold different programmes reaching different
+ * depths, and both are honoured: the depth-2 earner is paid by THEIR tier 2,
+ * not by the introducer's. Terms are an agreement between the broker and one
+ * partner, and letting somebody else's contract decide your rate would make a
+ * programme unquotable.
+ */
+export const ibProgramTiers = pgTable(
+  'ib_program_tiers',
+  {
+    programId: uuid('program_id')
+      .notNull()
+      /*
+       * CASCADE, unlike almost every other reference in this schema.
+       *
+       * A tier is not a record of something that happened — it is a line of a
+       * rate card, meaningless without the card. Deleting the card and leaving
+       * its lines behind is the only outcome worse than either.
+       *
+       * The programme itself is NOT cascaded into: `ib_accounts.program_id` is
+       * `restrict`, so a programme partners stand on cannot be deleted at all,
+       * and this cascade is only ever reached for one nobody is on.
+       */
+      .references(() => ibPrograms.id, { onDelete: 'cascade' }),
+    /** 1 is the introducer. Bounded to 10 by a CHECK — see `MAX_CHAIN_DEPTH`. */
+    depth: integer('depth').notNull(),
+    /**
+     * The holder's share of the broker's revenue at this depth, as a %.
+     *
+     * NUMERIC, never a float. §6.1 applies to anything that TOUCHES an amount,
+     * not only to amounts themselves: a rate held as a float reintroduces the
+     * error the decimal columns exist to prevent, one multiplication later.
+     *
+     * 12,4 leaves a 2.5% share and a 33.3333% one both intact.
+     */
+    rate: numeric('rate', { precision: 12, scale: 4 }).notNull().default('0'),
+  },
+  (t) => [
+    /*
+     * (programme, depth) IS the identity. No surrogate id: a programme paying
+     * two different rates at depth 2 is not a row anybody could interpret, and
+     * a unique index sitting beside a uuid key is the same rule stated twice.
+     */
+    primaryKey({ columns: [t.programId, t.depth] }),
+    /*
+     * `rate > 0`. A tier that pays nothing is not a configured zero, it is a
+     * row that should not exist — the ROW COUNT is this programme's reach, so a
+     * zero-rate tier at depth 3 claims a reach the programme does not have and
+     * makes the depth-4 tier below it unreachable for no stated reason.
+     */
+    check('ib_program_tiers_rate_positive', sql`${t.rate} > 0`),
+    /*
+     * Contiguous from 1 is enforced in the SERVICE, not here: a CHECK cannot
+     * see the other rows of its own table, and a trigger would put one rule in
+     * two places. What a CHECK CAN see is this row, so it carries the bound.
+     */
+    check('ib_program_tiers_depth_range', sql`${t.depth} BETWEEN 1 AND 10`),
+  ],
+);
 
 /*
  * ── IB applications and accounts ─────────────────────────────────────────────
@@ -3239,22 +3195,17 @@ export const ibAccounts = pgTable(
       .primaryKey()
       .references(() => users.id, { onDelete: 'restrict' }),
     /*
-     * `onUpdate: 'cascade'`, and that is load-bearing rather than incidental.
+     * `level` IS GONE (0102), and with it the renumber-cascade this column used
+     * to need.
      *
-     * Reordering the ladder RENUMBERS these primary keys — level 2 becomes
-     * level 1 — and this column is checked immediately, not deferred. Without
-     * cascade there is no order that works: the level cannot move while a
-     * partner references it, and the partner cannot move to a level that does
-     * not exist yet. With it, Postgres carries the placements across in the
-     * same statement, so a partner stays on the rung they were put on.
-     *
-     * `onDelete` stays `restrict`. Renumbering a level is a reshuffle; deleting
-     * one out from under somebody standing on it is data loss, and those
-     * deserve opposite answers.
+     * It named the rung a partner stood on in `ib_levels`, and by 0084 that was
+     * the only thing it did — the rate had already moved to their programme.
+     * What remains of "where does this partner sit" is `parentIbUserId`, which
+     * is the real structure: a partner's DEPTH is a fact about the trade being
+     * paid on (how many hops above the client they are), not a number stored
+     * against them. Storing both let the two disagree, and one of them was
+     * always the one the money used.
      */
-    level: integer('level')
-      .notNull()
-      .references(() => ibLevels.level, { onDelete: 'restrict', onUpdate: 'cascade' }),
     /**
      * The agency this partner was appointed under, and so what they may sell.
      *
@@ -3316,10 +3267,13 @@ export const ibAccounts = pgTable(
       foreignColumns: [t.userId],
       name: 'ib_accounts_parent_fk',
     }).onDelete('restrict'),
-    /* The hot read: "how many partners does this parent already hold?", asked
-       on every approval to enforce `ibLevels.maxDirectPartners`. */
+    /* The hot read: "who sits under this partner?" — asked on every approval to
+       place a new partner, on every sub-tree earnings roll-up (FR-IB-17), and
+       once per hop by the commission engine's chain walk. */
     index('ib_accounts_parent_idx').on(t.parentIbUserId),
-    index('ib_accounts_level_idx').on(t.level),
+    /* "Who is on these terms?" — asked before a programme may be disabled or
+       deleted, and to report FR-IB-06's partner count beside each programme. */
+    index('ib_accounts_program_idx').on(t.programId),
     /* "Which partners are on this agency?" — asked before an operator is
        allowed to delete or disable one. */
     index('ib_accounts_agency_idx').on(t.agencyId),
@@ -3393,8 +3347,26 @@ export const ibAccruals = pgTable(
      * must stay explainable against the hierarchy as it was when earned.
      */
     depth: integer('depth').notNull(),
-    /** Their rung at the time. Stored for the same reason as `depth`. */
-    level: integer('level').notNull(),
+    /**
+     * The programme that paid it — FR-IB-06's terms, named on the row.
+     *
+     * Replaces `level` (0102), which recorded the rung a partner stood on back
+     * when a rung decided a rate. It had not decided one since 0084, so the
+     * column preserved an answer to a question nobody could still ask, while
+     * WHICH TERMS PAID THIS was recoverable only by reading the partner's
+     * current programme — the one thing that may have changed since.
+     *
+     * `restrict` on delete, and it is what makes the accrual self-explanatory:
+     * with `programId`, `depth` and `rateValue` on the row, a disputed payout is
+     * settled from the row alone. Without it, `rateValue` is a number with no
+     * stated source.
+     *
+     * NULLABLE only because 0102 backfilled rows accrued before this column
+     * existed, and could recover the programme for a partner who still holds
+     * one. Everything written since is NOT NULL in practice; a NULL here means
+     * "accrued before the column existed", never "paid by no terms".
+     */
+    programId: uuid('program_id').references(() => ibPrograms.id, { onDelete: 'restrict' }),
     /** The rate applied, so the arithmetic is reproducible from the row alone. */
     rateValue: numeric('rate_value', { precision: 12, scale: 4 }).notNull(),
     /** The revenue base this is a share of. */
@@ -3448,7 +3420,19 @@ export const ibAccruals = pgTable(
     /* A commission is a share of revenue and can never be negative — a clawback
        is a REVERSAL of the row, not a negative accrual. */
     check('ib_accruals_amount_positive', sql`${t.amount} > 0`),
-    check('ib_accruals_depth_range', sql`${t.depth} >= 1 AND ${t.depth} <= 2`),
+    /*
+     * 1..10, widened from 1..2 in 0102.
+     *
+     * The old bound was the two-level cap written into the database, and it
+     * would have turned FR-IB-17's multi-level distribution into a failed
+     * INSERT at depth 3 — the worst place to discover a ceiling, because the
+     * statement carries every legitimate earner on the same trade down with it.
+     *
+     * 10 matches `MAX_CHAIN_DEPTH` and `ib_program_tiers_depth_range`, and like
+     * both of those it is a CYCLE GUARD rather than a policy: how far earnings
+     * actually travel is the tier count on the earner's programme.
+     */
+    check('ib_accruals_depth_range', sql`${t.depth} >= 1 AND ${t.depth} <= 10`),
   ],
 );
 

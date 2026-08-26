@@ -95,7 +95,7 @@ function describeSortIndexes(
   label: string,
   table: string,
   tiebreak: string,
-  expressions: Record<string, { sql: string; nullsLast?: boolean; on?: string }>,
+  expressions: Record<string, { sql: string; nullsLast?: boolean; on?: string; join?: string }>,
   allowlist: Record<string, unknown>,
 ) {
   describe(`${label} can be ordered from an index`, () => {
@@ -111,9 +111,15 @@ function describeSortIndexes(
          * through its INNER JOIN. Ordering by a joined column cannot avoid a
          * sort in a join plan the way a single-table order can, so for those
          * the assertion is that an index is USED — not that no sort exists.
+         *
+         * `join` names the ON clause when the joined table is not `users`. The
+         * partner list gained one in 0102: it orders by the PROGRAMME a partner
+         * is paid on, which lives in `ib_programs`, where the rung it replaced
+         * was a plain integer on `ib_accounts`.
          */
         const joined = spec.on !== undefined;
-        const from = joined ? `${table} JOIN users ON users.id = ${table}.user_id` : table;
+        const on = spec.join ?? `users.id = ${table}.user_id`;
+        const from = joined ? `${table} JOIN ${spec.on} ON ${on}` : table;
         const nulls = spec.nullsLast ? ' NULLS LAST' : '';
         const p = await plan(`
           SELECT 1 FROM ${from}
@@ -201,7 +207,16 @@ describeSortIndexes(
   'user_id',
   {
     approvedAt: { sql: 'ib_accounts.approved_at' },
-    level: { sql: 'ib_accounts.level' },
+    /*
+     * The TERMS, replacing the rung (0102). Ordered from `ib_programs_name_unique`
+     * — a programme's identity is its NAME, unlike a rung whose identity was a
+     * number that had to sort numerically to keep "Level 10" before "Level 2".
+     */
+    programName: {
+      sql: 'ib_programs.name',
+      on: 'ib_programs',
+      join: 'ib_programs.id = ib_accounts.program_id',
+    },
     referralCode: { sql: 'ib_accounts.referral_code' },
     userEmail: { sql: 'users.email', on: 'users' },
     userFirstName: { sql: 'users.first_name', on: 'users' },
@@ -329,7 +344,9 @@ describe('the composites are direction-pinned in the shape the queries order by'
     ['audit_log_created_at_id_idx', 'created_at DESC', 'id DESC'],
     ['admins_name_id_idx', 'name DESC', 'id DESC'],
     ['roles_name_id_idx', 'name DESC', 'id DESC'],
-    ['ib_accounts_level_user_idx', 'level DESC', 'user_id DESC'],
+    /* `ib_accounts_level_user_idx` went in 0102 with the column it ordered. The
+       partner list sorts by the JOINED programme name now, which a composite on
+       `ib_accounts` cannot serve. */
     // Migration 0093 — the financial union's transfer arms.
     ['transfers_created_at_id_idx', 'created_at DESC', 'id DESC'],
     ['transfers_amount_id_idx', 'amount DESC', 'id DESC'],

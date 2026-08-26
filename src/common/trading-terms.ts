@@ -1,5 +1,5 @@
 import type { TradingSettingsRow } from '../store/app-settings.store';
-import { DEFAULT_REVENUE_BASIS, revenueBasisOf, type RevenueBasis } from './revenue-basis';
+import { DEFAULT_IB_MAX_LEVELS, normaliseIbMaxLevels } from './ib-levels';
 
 /**
  * The terms self-service account opening runs on, in one place.
@@ -34,53 +34,38 @@ export interface TradingTerms {
   maxDemoAccounts: number;
   /** A decimal string, never a number — §6. */
   maxDemoDeposit: string;
-  /**
-   * The broker's floor: the most of its revenue that may reach partners.
+  /*
+   * ── NO IB TERMS HERE ANY MORE (0103, 0104) ──────────────────────────────
    *
-   * Enforced in `calculate`, not merely displayed. `ib_levels` rates are each a
-   * share of the FULL revenue and therefore add up, so without this a
-   * two-level ladder at 70 + 30 pays out everything the house earned.
+   * Four fields were declared on this interface and each decided what partners
+   * are paid:
+   *
+   *   ibMaxRevenueSharePct   the broker's floor, which scaled every leg pro
+   *                          rata to fit under it. GONE — `checkPlausible`
+   *                          refuses an over-payment instead of scaling it.
+   *   ibCommissionHoldHours  the settlement window → `IB_COMMISSION_HOLD_HOURS`
+   *   ibAccrualStart         the backlog decision → `IB_ACCRUAL_START`
+   *   ibRevenueBasis         what a rate applies to → `DEFAULT_REVENUE_BASIS`
+   *
+   * Each arrived here on the reasoning that a commercial decision belongs where
+   * an operator can see it — right about the decision, wrong about the SCREEN.
+   * Commission is configured on the Commission Programmes page, and four
+   * controls on the Trading settings form that also change partner pay are a
+   * second place for two answers to disagree.
+   *
+   * What remains on this interface is what a CLIENT is offered — plus one IB
+   * number that is not a payment rule, below.
    */
-  ibMaxRevenueSharePct: string;
 
   /**
-   * Hours a commission is held before it becomes spendable.
+   * How many levels a commission programme's ladder may reach.
    *
-   * The one rule between earned and spendable, and it lives here rather than
-   * in the environment so an operator can both SEE it and change it. A
-   * malformed stored value cannot exist — the column is an integer with a
-   * CHECK — which is the point: the failure this number must never have is
-   * silently becoming zero.
+   * The committed two (Feature List Rev 9, IB-17) by default. It BOUNDS the
+   * Commission Programmes page rather than competing with it, which is the
+   * distinction that lets it live here when the four above could not — see
+   * `common/ib-levels.ts` for the three different bounds this is one of.
    */
-  ibCommissionHoldHours: number;
-
-  /**
-   * When commission starts being paid from — the backlog decision.
-   *
-   * `null` means nobody has decided, and the engine HOLDS rather than guessing.
-   * `'all'` pays the whole history deliberately. An ISO instant pays from there.
-   *
-   * A string rather than a Date because it carries three meanings, only one of
-   * which is a moment — and because the parse belongs in `accrualWindow`, which
-   * is pure and already treats an unreadable value as "hold" rather than as
-   * "nothing is in scope".
-   */
-  ibAccrualStart: string | null;
-
-  /**
-   * WHICH of the broker's earnings a partner's rate applies to — FR-IB-16.
-   *
-   * The one number deciding what a partner is paid on used to be a constant in
-   * `broker-revenue.ts`, reachable only by deploy and invisible to everyone
-   * running the platform. It is a setting for the same reason
-   * `ibCommissionHoldHours` is: the people who make a commercial decision should
-   * be able to see it and make it, and the change should record who made it.
-   *
-   * Already narrowed by `revenueBasisOf`, so a value that reaches here is one of
-   * the three the engine implements — never whatever the column happened to
-   * hold.
-   */
-  ibRevenueBasis: RevenueBasis;
+  ibMaxLevels: number;
 }
 
 /**
@@ -97,19 +82,8 @@ export const DEFAULT_TRADING_TERMS: TradingTerms = {
   maxLiveAccounts: 5,
   maxDemoAccounts: 5,
   maxDemoDeposit: '1000000',
-  ibMaxRevenueSharePct: '50',
-  ibCommissionHoldHours: 24,
-  /* Undecided, deliberately. A default here would be a decision nobody made. */
-  ibAccrualStart: null,
-  /*
-   * The status quo, and NOT for the reason `ibAccrualStart` is null.
-   *
-   * That one is undecided because every candidate answer is expensive and
-   * irreversible. This one has a right default: whatever the platform was
-   * already paying. A new setting that re-prices the book the moment it is
-   * deployed is a repricing nobody authorised.
-   */
-  ibRevenueBasis: DEFAULT_REVENUE_BASIS,
+  /* Rev 9's two levels. A database with no row still ships the agreed scope. */
+  ibMaxLevels: DEFAULT_IB_MAX_LEVELS,
 };
 
 /**
@@ -127,16 +101,15 @@ export function tradingTermsFrom(row: TradingSettingsRow | null): TradingTerms {
     maxLiveAccounts: row.maxLiveAccounts,
     maxDemoAccounts: row.maxDemoAccounts,
     maxDemoDeposit: row.maxDemoDeposit,
-    ibMaxRevenueSharePct: row.ibMaxRevenueSharePct,
-    ibCommissionHoldHours: row.ibCommissionHoldHours,
-    ibAccrualStart: row.ibAccrualStart,
     /*
      * Narrowed on the way OUT of the database, not on the way in. The CHECK
-     * stops a bad value being stored; this stops one that predates the CHECK —
-     * or arrives from a restored dump — from reaching the engine as a basis it
-     * does not implement.
+     * stops a bad value being STORED; this stops one that predates the CHECK —
+     * or arrives from a restored dump — from reaching the programmes service as
+     * a ceiling it should not honour. An unusable value reads as the committed
+     * default rather than as the maximum, so a bad row cannot widen what
+     * partners are paid.
      */
-    ibRevenueBasis: revenueBasisOf(row.ibRevenueBasis),
+    ibMaxLevels: normaliseIbMaxLevels(row.ibMaxLevels),
   };
 }
 

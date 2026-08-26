@@ -15,14 +15,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import {
-  ibAccounts,
-  ibAccruals,
-  ibApplications,
-  ibLevels,
-  ibPrograms,
-  users,
-} from '../database/schema';
+import { ibAccounts, ibAccruals, ibApplications, ibPrograms, users } from '../database/schema';
 import {
   clientScopePredicate,
   UNRESTRICTED,
@@ -58,14 +51,15 @@ export const DEFAULT_IB_APPLICATION_SORT: IbApplicationSortKey = 'submittedAt';
 /**
  * The columns the PARTNER list may be ordered by — R-2.5.
  *
- * `level` is the ladder rung, and it sorts as the INTEGER it is. That is worth
- * stating because the obvious alternative — ordering by the joined
- * `ib_levels.name` — would sort "Level 10" before "Level 2" as text, which is
- * exactly the kind of ordering that looks plausible enough to ship.
+ * `level` went in 0102 with the rung it sorted by. `programName` replaces it as
+ * the "what are they on" ordering, and sorts on the JOINED name because a
+ * programme's identity is its name — unlike a rung, whose identity was a number
+ * that had to be sorted as an integer to avoid "Level 10" landing before
+ * "Level 2".
  */
 export const IB_PARTNER_SORT_COLUMNS = {
   approvedAt: ibAccounts.approvedAt,
-  level: ibAccounts.level,
+  programName: ibPrograms.name,
   referralCode: ibAccounts.referralCode,
   userEmail: users.email,
   userFirstName: users.firstName,
@@ -88,7 +82,13 @@ export const IB_ACCRUAL_SORT_COLUMNS = {
   createdAt: ibAccruals.createdAt,
   amount: ibAccruals.amount,
   status: ibAccruals.status,
-  level: ibAccruals.level,
+  /*
+   * `depth` replaces `level` (0102). It sorts as the INTEGER it is, and it is
+   * the more useful ordering anyway: grouping a ledger by "own clients" versus
+   * "sub-partners' clients" is a question about the trade, which is what depth
+   * records, where the rung recorded a placement that decided nothing.
+   */
+  depth: ibAccruals.depth,
 } as const;
 
 export type IbAccrualSortKey = keyof typeof IB_ACCRUAL_SORT_COLUMNS;
@@ -305,7 +305,7 @@ export class IbStore {
   }
 
   async createAccount(
-    values: Pick<IbAccountRow, 'userId' | 'level' | 'referralCode' | 'programId'> &
+    values: Pick<IbAccountRow, 'userId' | 'referralCode' | 'programId'> &
       Partial<Pick<IbAccountRow, 'parentIbUserId' | 'applicationId' | 'agencyId'>>,
     executor?: Executor,
   ): Promise<IbAccountRow> {
@@ -364,23 +364,31 @@ export class IbStore {
    * saying it is scoped.
    */
   async findDirectPartners(parentUserId: string) {
-    return this.db
-      .select({
-        userId: ibAccounts.userId,
-        level: ibAccounts.level,
-        levelName: ibLevels.name,
-        referralCode: ibAccounts.referralCode,
-        active: ibAccounts.active,
-        approvedAt: ibAccounts.approvedAt,
-        email: users.email,
-        firstName: users.firstName,
-        lastName: users.lastName,
-      })
-      .from(ibAccounts)
-      .innerJoin(users, eq(users.id, ibAccounts.userId))
-      .innerJoin(ibLevels, eq(ibLevels.level, ibAccounts.level))
-      .where(eq(ibAccounts.parentIbUserId, parentUserId))
-      .orderBy(asc(ibAccounts.level), desc(ibAccounts.approvedAt));
+    return (
+      this.db
+        .select({
+          userId: ibAccounts.userId,
+          /* The TERMS they are on, replacing the rung they stood on (0102). */
+          programId: ibAccounts.programId,
+          programName: ibPrograms.name,
+          referralCode: ibAccounts.referralCode,
+          active: ibAccounts.active,
+          approvedAt: ibAccounts.approvedAt,
+          email: users.email,
+          firstName: users.firstName,
+          lastName: users.lastName,
+        })
+        .from(ibAccounts)
+        .innerJoin(users, eq(users.id, ibAccounts.userId))
+        /*
+         * `innerJoin`, and it is safe: `ib_accounts.program_id` is NOT NULL with a
+         * `restrict` foreign key, so a partner without a programme is a row the
+         * database cannot hold. A `leftJoin` here would suggest otherwise.
+         */
+        .innerJoin(ibPrograms, eq(ibPrograms.id, ibAccounts.programId))
+        .where(eq(ibAccounts.parentIbUserId, parentUserId))
+        .orderBy(asc(ibPrograms.sortOrder), desc(ibAccounts.approvedAt))
+    );
   }
 
   /**
@@ -435,16 +443,17 @@ export class IbStore {
           firstName: users.firstName,
           lastName: users.lastName,
         },
-        levelName: ibLevels.name,
+        programName: ibPrograms.name,
       })
       .from(ibAccounts)
       .innerJoin(users, eq(users.id, ibAccounts.userId))
-      .innerJoin(ibLevels, eq(ibLevels.level, ibAccounts.level))
+      .innerJoin(ibPrograms, eq(ibPrograms.id, ibAccounts.programId))
       .where(visible)
       // `user_id` is this table's PRIMARY KEY — one partner account per client —
       // so it is the unique tiebreak here, where the applications queue uses
-      // `id`. Load-bearing for the same reason: `level` has a handful of values
-      // and ties across a page boundary are the norm rather than the exception.
+      // `id`. Load-bearing for the same reason: a catalogue has a handful of
+      // programmes, so ties across a page boundary are the norm rather than the
+      // exception when sorting by `programName`.
       .orderBy(...orderTerms(sortColumn, ibAccounts.userId, direction))
       .limit(filter.limit)
       .offset((filter.page - 1) * filter.limit);
@@ -535,6 +544,16 @@ export class IbStore {
     const rawRows = await this.db
       .select({
         accrual: ibAccruals,
+        /*
+         * The TERMS that produced this row, by name.
+         *
+         * `leftJoin`, unlike the partner's programme elsewhere: `program_id` is
+         * NULLABLE on an accrual, because 0102 could not honestly resolve one
+         * for a row written before the column existed. An inner join would drop
+         * those rows out of the ledger entirely — which is the one thing an
+         * append-only financial record must never do.
+         */
+        programName: ibPrograms.name,
         clientInScope: clientInScopeExpr,
         partner: {
           id: partner.id,
@@ -552,8 +571,9 @@ export class IbStore {
       .from(ibAccruals)
       .innerJoin(partner, eq(partner.id, ibAccruals.ibUserId))
       .innerJoin(client, eq(client.id, ibAccruals.clientUserId))
+      .leftJoin(ibPrograms, eq(ibPrograms.id, ibAccruals.programId))
       .where(where)
-      // `id` breaks the tie. `status` and `level` have a handful of values, so
+      // `id` breaks the tie. `status` and `depth` have a handful of values, so
       // ties across a page boundary are the norm — without it, paging such a
       // sort can repeat one row and skip another.
       .orderBy(...orderTerms(sortColumn, ibAccruals.id, direction))
@@ -641,7 +661,7 @@ export class IbStore {
 
   async updateAccount(
     userId: string,
-    patch: Partial<Pick<IbAccountRow, 'level' | 'programId' | 'parentIbUserId' | 'active'>>,
+    patch: Partial<Pick<IbAccountRow, 'programId' | 'parentIbUserId' | 'active'>>,
   ): Promise<IbAccountRow | undefined> {
     const [row] = await this.db
       .update(ibAccounts)

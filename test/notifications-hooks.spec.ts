@@ -3,7 +3,6 @@ import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { CommissionService } from '../src/modules/ib/commission.service';
-import { AppSettingsStore } from '../src/store/app-settings.store';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { MoneyLimits } from '../src/config/money-limits';
@@ -107,13 +106,7 @@ beforeAll(async () => {
    * the column defaults, so the broker cap is the default 50% — which is what
    * a fresh deployment has, and therefore what these tests should run against.
    */
-  commissions = new CommissionService(
-    ctx.db,
-    wallets,
-    dispatch,
-    new ConfigService(),
-    new AppSettingsStore(ctx.db),
-  );
+  commissions = new CommissionService(ctx.db, wallets, dispatch, new ConfigService());
 }, 120_000);
 
 afterAll(async () => {
@@ -284,9 +277,9 @@ describe('commission confirmation', () => {
     const clientId = await makeFundedClient('referred-notify@test.local');
     const sourceId = '00000000-0000-4000-8000-0000000000cc';
     await ctx.db.execute(sql`
-      INSERT INTO ib_accruals (ib_user_id, client_user_id, source_type, source_id, depth, level,
+      INSERT INTO ib_accruals (ib_user_id, client_user_id, source_type, source_id, depth,
                                rate_value, base_amount, amount, currency)
-      VALUES (${partnerId}, ${clientId}, 'transaction', ${sourceId}, 1, 1,
+      VALUES (${partnerId}, ${clientId}, 'transaction', ${sourceId}, 1,
               '70.0000', '250.00000000', '5.00000000', 'USD')
     `);
 

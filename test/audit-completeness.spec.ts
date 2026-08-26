@@ -26,7 +26,7 @@ import { desc, eq } from 'drizzle-orm';
  * ── The gap is CLOSED, and the four `it.fails` are now ordinary tests ───────
  *
  * All seventeen actions now write. The four cases this file pinned as broken —
- * `currency.create`, `payment_method.create`, `ib_level.create` and
+ * `currency.create`, `payment_method.create`, `ib_program.create` and
  * `settings.general.update` — moved into the "recorded" block below, which is
  * the lifecycle their original note described: `it.fails` passes only while the
  * body throws, so fixing the routes turned those tests red and told whoever did
@@ -264,7 +264,7 @@ describe('recorded: the feature modules', () => {
     const before = await countOf('payment_method.create');
 
     /*
-     * A REAL body, for the reason the ib_level case below spells out: the
+     * A REAL body, for the reason the ib_program case below spells out: the
      * `it.fails` version sent `label` (the field is `name`), a `kind` that was
      * not one of the enum's values, and no `currency` at all, so it was refused
      * at validation rather than reaching any audit code. `it.fails` counts any
@@ -284,38 +284,39 @@ describe('recorded: the feature modules', () => {
     expect(await waitForCount('payment_method.create', before + 1)).toBe(before + 1);
   });
 
-  it('ib_level.create — a change to the commission ladder leaves a trace', async () => {
+  it('ib_program.create — a change to the commission terms leaves a trace', async () => {
     /*
-     * The most consequential of the seventeen. An IB level sets what partners
-     * are PAID; editing one silently changes everybody's commission, and
-     * "who lowered level 3 last quarter" is precisely the question the log
+     * The most consequential of the seventeen. An IB programme sets what
+     * partners are PAID; editing one silently changes everybody's commission on
+     * it, and "who lowered Gold last quarter" is precisely the question the log
      * exists to answer.
+     *
+     * This pinned `ib_level.create` until 0102, when the rung ladder was
+     * dropped and the programme catalogue became the only place terms are
+     * configured. Same guarantee, moved to the surface that now carries it.
      */
     const session = await actingAs(ctx, 'admin', MASTER);
-    const before = await countOf('ib_level.create');
+    const before = await countOf('ib_program.create');
 
     /*
-     * A REAL request body, which the `it.fails` version was not.
+     * A REAL request body, which an earlier `it.fails` version was not: it sent
+     * a field name the DTO did not have, so it was rejected at validation and
+     * threw on the status assertion — which `it.fails` accepted as success. It
+     * was green for a reason unrelated to the gap it claimed to describe, which
+     * is the hazard of `it.fails`: any throw counts.
      *
-     * That version sent `commissionRate` (the DTO field is `rateValue`) at
-     * `level: 90+` (capped at 10) — so it was rejected at validation and threw
-     * on the status assertion, which `it.fails` accepted as success. It was
-     * green for a reason unrelated to the gap it claimed to describe, which is
-     * the hazard of `it.fails`: any throw counts. Promoting it meant fixing it.
-     *
-     * `rateValue` is a decimal string of at most four places (NUMERIC(12,4)),
-     * and `enabled: false` keeps this out of the revenue-share ceiling so the
-     * test cannot fail because an unrelated suite left the ladder full.
+     * `enabled: false` keeps this programme out of the revenue-share ceiling, so
+     * the test cannot fail because an unrelated suite left the catalogue full.
      */
-    const res = await session.post('/v1/admin/ib-levels', {
-      name: `Audit Level ${Date.now() % 100000}`,
-      level: 9,
-      rateValue: '1.5000',
+    const res = await session.post('/v1/admin/ib-programs', {
+      name: `Audit Programme ${Date.now() % 100000}`,
+      mode: 'commission_only',
+      tiers: [{ depth: 1, rate: '1.5000' }],
       enabled: false,
     });
     expect([200, 201]).toContain(res.status);
 
-    expect(await waitForCount('ib_level.create', before + 1)).toBe(before + 1);
+    expect(await waitForCount('ib_program.create', before + 1)).toBe(before + 1);
 
     /*
      * §6.1 — the rate is logged as the STRING it arrived as.
@@ -325,10 +326,10 @@ describe('recorded: the feature modules', () => {
      * purpose of recording it. The type is asserted as well as the value,
      * because '1.5000' and 1.5 both read as correct in a diff.
      */
-    const row = await latest('ib_level.create');
-    const details = row?.details as { rateValue?: unknown } | undefined;
-    expect(details?.rateValue).toBe('1.5000');
-    expect(typeof details?.rateValue).toBe('string');
+    const row = await latest('ib_program.create');
+    const details = row?.details as { tiers?: { depth: number; rate: unknown }[] } | undefined;
+    expect(details?.tiers?.[0]?.rate).toBe('1.5000');
+    expect(typeof details?.tiers?.[0]?.rate).toBe('string');
   });
 
   it('settings.trading.update — the terms clients are offered are attributable', async () => {
@@ -357,13 +358,20 @@ describe('recorded: the feature modules', () => {
       maxLiveAccounts: 4,
       maxDemoAccounts: 6,
       maxDemoDeposit: '500000',
-      // Required since the broker's revenue cap arrived. A PUT missing it is a
-      // 400, and the audit row this test is about never gets written.
-      ibMaxRevenueSharePct: '50.00',
-      // Same again for the settlement window (migration 0091). This is a PUT,
-      // so every field on the form travels together — an omitted one is a
-      // malformed request, not an unchanged setting.
-      ibCommissionHoldHours: 24,
+      /*
+       * The ladder ceiling (0105) — required for the reason the note below
+       * gives: this is a PUT, so every field on the form travels together.
+       */
+      ibMaxLevels: 2,
+      /*
+       * The four OTHER IB fields that used to be required here went in 0103/0104.
+       *
+       * They had to be sent because this is a PUT and every field on the form
+       * travels together — an omitted one was a malformed request rather than
+       * an unchanged setting. Sending them NOW is the same kind of error in the
+       * other direction: the DTO does not declare them, so the request is
+       * refused and the audit row this test is about never gets written.
+       */
     });
     expect([200, 201, 204]).toContain(res.status);
 

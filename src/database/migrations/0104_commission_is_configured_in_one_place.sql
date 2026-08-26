@@ -1,0 +1,72 @@
+-- ─────────────────────────────────────────────────────────────────────────────
+-- The IB block leaves `trading_settings`. Commission is configured on the
+-- Commission Programmes page and nowhere else.
+--
+-- Four controls on the Trading settings form decided what partners are paid:
+--
+--   ib_max_revenue_share_pct   "Maximum paid to partners (%)"   (dropped in 0103)
+--   ib_commission_hold_hours   "Settlement window (hours)"
+--   ib_accrual_start           "Commission is paid from" / "Paying from"
+--   ib_revenue_basis           "Partners are paid on"
+--
+-- Each arrived on this row for a good local reason — a commercial decision
+-- belongs where an operator can see it, not in an environment variable only a
+-- deploy can change. That reasoning was right about the DECISION and wrong
+-- about the SCREEN. It put four numbers that change every partner's pay on a
+-- page about account caps and demo balances, one navigation away from the
+-- catalogue that is supposed to own that question.
+--
+-- It is the same fault 0102 removed from the catalogue itself, where `ib_levels`
+-- sat beside `ib_programs`: two places configuring one thing, free to disagree,
+-- with nothing telling an operator which one the money used.
+--
+-- ── Where each answer comes from now ────────────────────────────────────────
+--
+--   ib_commission_hold_hours → `IB_COMMISSION_HOLD_HOURS`, which was always the
+--                              fallback and is now the only source. A malformed
+--                              value still falls back to 24h rather than to
+--                              zero: the failure mode of a typo must not be
+--                              "pay every commission instantly".
+--
+--   ib_accrual_start         → `IB_ACCRUAL_START`, where it began.
+--
+--       ⚠️ THE AGED-BACKLOG GUARD IS UNCHANGED, and it is the reason dropping
+--       this column is safe. With no value set, a backlog older than 48 hours
+--       still STOPS the commission run — nothing paid, nothing discarded — and
+--       alerts on every tick. `mt5_deals` has been filled by ingestion since
+--       long before anything read it, so without that guard the first run would
+--       credit partners for months of historical trades at once, and that money
+--       comes back by conversation rather than by deploying.
+--
+--   ib_revenue_basis         → a constant. `DEFAULT_REVENUE_BASIS` is
+--                              `commission_swap`: MT5's charged commission plus
+--                              swap, which is what this platform has always
+--                              paid on. Every deployment is already on it, so
+--                              removing the choice moved nobody's money. The
+--                              spread-markup arithmetic stays in
+--                              `brokerRevenueFor`, reachable by changing one
+--                              line — which is where a broker who wants it
+--                              should have the conversation rather than
+--                              discovering it on a form.
+--
+-- ── Nothing already accrued is affected ─────────────────────────────────────
+--
+-- `ib_accruals` stores the amount, the rate, the depth and (since 0102) the
+-- programme each row was calculated under. Nothing here recomputes any of them:
+-- the ledger is append-only, and a migration is not the place a partner's paid
+-- balance changes.
+--
+-- `IF EXISTS` on all three, and the CHECKs dropped before their columns: this
+-- has to be re-runnable, per the renumbering trap in backend/CLAUDE.md.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "trading_settings" DROP CONSTRAINT IF EXISTS "trading_settings_hold_hours_ck";
+--> statement-breakpoint
+ALTER TABLE "trading_settings" DROP CONSTRAINT IF EXISTS "trading_settings_revenue_basis_ck";
+--> statement-breakpoint
+
+ALTER TABLE "trading_settings" DROP COLUMN IF EXISTS "ib_commission_hold_hours";
+--> statement-breakpoint
+ALTER TABLE "trading_settings" DROP COLUMN IF EXISTS "ib_accrual_start";
+--> statement-breakpoint
+ALTER TABLE "trading_settings" DROP COLUMN IF EXISTS "ib_revenue_basis";

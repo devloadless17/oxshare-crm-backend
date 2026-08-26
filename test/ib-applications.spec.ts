@@ -1,9 +1,9 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { IbApplicationsService } from '../src/modules/ib/ib-applications.service';
-import { IbLevelsService } from '../src/modules/ib/ib-levels.service';
 import { IbProgramsService } from '../src/modules/ib/ib-programs.service';
+import { AppSettingsStore } from '../src/store/app-settings.store';
 import { IbStore } from '../src/store/ib.store';
 import { ProductsStore } from '../src/store/products.store';
 import { UsersStore } from '../src/store/users.store';
@@ -51,8 +51,7 @@ beforeAll(async () => {
     ctx.db,
     store,
     users,
-    new IbLevelsService(ctx.db, auditStubAs()),
-    new IbProgramsService(ctx.db, auditStubAs()),
+    new IbProgramsService(ctx.db, auditStubAs(), new AppSettingsStore(ctx.db)),
     new ClientVisibilityService(users),
     email,
     auditStubAs(),
@@ -145,12 +144,22 @@ beforeEach(async () => {
   await ctx.db.execute(sql`DELETE FROM ledger_entries`);
   await ctx.db.execute(sql`DELETE FROM wallets`);
   await ctx.db.execute(sql`DELETE FROM users`);
-  await ctx.db.execute(sql`DELETE FROM ib_levels`);
-  await ctx.db.execute(sql`
-    INSERT INTO ib_levels (level, name, rate_value, enabled)
-    VALUES (1, 'Master Partner', 70.0000, true),
-           (2, 'Sub Partner', 30.0000, true)
-  `);
+  /*
+   * No ladder to seed. `ib_levels` and `ib_accounts.level` went in 0102, so a
+   * partner fixture needs only a programme — and the migrations seed one.
+   *
+   * Programmes created BY a case are removed and the seeded one re-enabled.
+   *
+   * Both halves are load-bearing. `refuses approval when no programme is
+   * enabled` disables the catalogue on purpose, and without the re-enable every
+   * later case failed on "no enabled commission programme" — 17 failures whose
+   * message named a fixture rather than the assertion that broke. The delete is
+   * the other direction: a case that creates "Gold" and leaves it behind can
+   * make itself the FIRST enabled programme by sort order, and silently become
+   * the terms a later approval assigns.
+   */
+  await ctx.db.execute(sql`DELETE FROM ib_programs WHERE name <> 'Default'`);
+  await ctx.db.execute(sql`UPDATE ib_programs SET enabled = true WHERE name = 'Default'`);
 
   /*
    * An OPEN agency, because an application without one is refused now.
@@ -176,9 +185,168 @@ beforeEach(async () => {
  */
 async function defaultProgram(store: IbStore): Promise<string> {
   const id = await store.defaultProgramId();
-  if (!id) throw new Error('No enabled commission programme — migration 0084 seeds one.');
+  if (!id) throw new Error('No enabled commission programme — the migrations seed one.');
   return id;
 }
+
+/**
+ * THE COMMITTED TWO-LEVEL STRUCTURE, enforced where an operator meets it.
+ *
+ * Feature List Rev 9 IB-17: "Two-level structure (L1 + L2) — both earn; no
+ * level beyond L2." `trading_settings.ib_max_levels` carries that, defaulting to
+ * 2, and these assert both halves: the default ships the agreed scope, and
+ * raising it is a decision an operator can actually make from the form.
+ *
+ * The DATABASE bound is deliberately wider (1..10), so that widening the
+ * ceiling is a form somebody fills in rather than a migration somebody writes.
+ */
+describe('how deep a ladder may go', () => {
+  const programs = () => new IbProgramsService(ctx.db, auditStubAs(), new AppSettingsStore(ctx.db));
+
+  /** Save a ceiling, the way the Trading settings form does. */
+  async function setCeiling(levels: number): Promise<void> {
+    await ctx.db.execute(sql`
+      INSERT INTO trading_settings (id, ib_max_levels)
+      VALUES (true, ${levels})
+      ON CONFLICT (id) DO UPDATE SET ib_max_levels = ${levels}
+    `);
+  }
+
+  afterEach(async () => {
+    await ctx.db.execute(sql`DELETE FROM trading_settings`);
+  });
+
+  it('accepts the two levels the scope commits to, with no settings row at all', async () => {
+    await ctx.db.execute(sql`DELETE FROM trading_settings`);
+
+    const created = await programs().create(
+      {
+        name: 'Two Deep',
+        tiers: [
+          { depth: 1, rate: '60' },
+          { depth: 2, rate: '25' },
+        ],
+      },
+      REVIEWER,
+    );
+
+    expect(created.tiers).toHaveLength(2);
+  });
+
+  /*
+   * The refusal names the CEILING and its SOURCE. "At most 2 levels" alone
+   * reads as a hard product limit somebody would file a bug about, rather than
+   * a setting they can change.
+   */
+  it('refuses a third level while the default stands', async () => {
+    await ctx.db.execute(sql`DELETE FROM trading_settings`);
+
+    await expect(
+      programs().create(
+        {
+          name: 'Three Deep',
+          tiers: [
+            { depth: 1, rate: '50' },
+            { depth: 2, rate: '20' },
+            { depth: 3, rate: '10' },
+          ],
+        },
+        REVIEWER,
+      ),
+    ).rejects.toThrow(/at most 2 level\(s\).*Trading settings/is);
+  });
+
+  /*
+   * And the setting actually moves it — otherwise the case above would pass
+   * against a hardcoded 2 and prove nothing about the variable.
+   */
+  it('accepts a third level once an operator has raised the ceiling', async () => {
+    await setCeiling(3);
+
+    const created = await programs().create(
+      {
+        name: 'Three Deep Allowed',
+        tiers: [
+          { depth: 1, rate: '50' },
+          { depth: 2, rate: '20' },
+          { depth: 3, rate: '10' },
+        ],
+      },
+      REVIEWER,
+    );
+
+    expect(created.tiers.map((tier) => tier.depth)).toEqual([1, 2, 3]);
+  });
+
+  /*
+   * A value the DATABASE could not store falls back to the committed default
+   * rather than being clamped to 10 — see `ib-levels.spec.ts`. Asserted here as
+   * well because this is the layer an operator's mistake actually reaches.
+   */
+  /*
+   * The DATABASE refuses a ceiling it could not honour, rather than the service
+   * quietly normalising one. `trading_settings_ib_max_levels_ck` is 1..10, so a
+   * value above that never reaches a programme at all — which is why this
+   * asserts the CONSTRAINT rather than a fallback.
+   */
+  it('refuses to store a ceiling the database could not honour', async () => {
+    await expect(setCeiling(99)).rejects.toThrow();
+  });
+
+  it('refuses a ceiling of zero, which would make every programme unsaveable', async () => {
+    await expect(setCeiling(0)).rejects.toThrow();
+  });
+
+  it('holds a lowered ceiling against the next edit of a deeper programme', async () => {
+    await setCeiling(3);
+    const deep = await programs().create(
+      {
+        name: 'Was Three Deep',
+        tiers: [
+          { depth: 1, rate: '50' },
+          { depth: 2, rate: '20' },
+          { depth: 3, rate: '10' },
+        ],
+      },
+      REVIEWER,
+    );
+
+    /*
+     * Lowering the ceiling does NOT truncate what exists — the programme keeps
+     * its three levels and keeps paying them, because an operator adjusting a
+     * limit must not silently restate money that is owed.
+     *
+     * But the next deliberate edit is the right moment to be told it no longer
+     * fits, rather than letting a too-deep ladder be re-saved for ever.
+     */
+    await setCeiling(2);
+
+    const stillThere = await programs().findOneWithTiers(deep.id);
+    expect(stillThere?.tiers).toHaveLength(3);
+
+    await expect(programs().update(deep.id, { name: 'Renamed' }, REVIEWER)).rejects.toThrow(
+      /at most 2 level\(s\)/i,
+    );
+  });
+
+  it('is ignored when it could not have been stored', async () => {
+    await setCeiling(2);
+
+    await expect(
+      programs().create(
+        {
+          name: 'Absurd Ceiling',
+          tiers: [
+            { depth: 1, rate: '10' },
+            { depth: 2, rate: '10' },
+            { depth: 3, rate: '10' },
+          ],
+        },
+        REVIEWER,
+      ),
+    ).rejects.toThrow(/at most 2 level\(s\)/i);
+  });
+});
 
 describe('moving a partner onto different terms', () => {
   /*
@@ -190,13 +358,22 @@ describe('moving a partner onto different terms', () => {
     const userId = await makeClient('program-move@test.local');
     await store.createAccount({
       userId,
-      level: 1,
       programId: await defaultProgram(store),
       referralCode: 'PROGMOVE',
     });
 
-    const target = await new IbProgramsService(ctx.db, auditStubAs()).create(
-      { name: 'Gold', level1Rate: '20', level2Rate: '5' },
+    const target = await new IbProgramsService(
+      ctx.db,
+      auditStubAs(),
+      new AppSettingsStore(ctx.db),
+    ).create(
+      {
+        name: 'Gold',
+        tiers: [
+          { depth: 1, rate: '20' },
+          { depth: 2, rate: '5' },
+        ],
+      },
       REVIEWER,
     );
 
@@ -215,14 +392,13 @@ describe('moving a partner onto different terms', () => {
     const userId = await makeClient('program-disabled@test.local');
     await store.createAccount({
       userId,
-      level: 1,
       programId: await defaultProgram(store),
       referralCode: 'PROGDIS1',
     });
 
-    const programs = new IbProgramsService(ctx.db, auditStubAs());
+    const programs = new IbProgramsService(ctx.db, auditStubAs(), new AppSettingsStore(ctx.db));
     const target = await programs.create(
-      { name: 'Retired', level1Rate: '10', enabled: false },
+      { name: 'Retired', tiers: [{ depth: 1, rate: '10' }], enabled: false },
       REVIEWER,
     );
 
@@ -235,7 +411,6 @@ describe('moving a partner onto different terms', () => {
     const userId = await makeClient('program-ghost@test.local');
     await store.createAccount({
       userId,
-      level: 1,
       programId: await defaultProgram(store),
       referralCode: 'PROGGHST',
     });
@@ -388,14 +563,25 @@ describe('status', () => {
   });
 
   /*
-   * The ladder in these fixtures is two rungs deep, so a client introduced by a
-   * level-2 partner has nowhere to stand. That used to be discovered at APPROVAL
-   * — `resolveLevel` refused it — which meant the client filled the form in and
-   * waited to be told a fact that was knowable when they opened the screen.
+   * ── THE CEILING IS GONE (0102), AND THIS IS WHAT REPLACED TWO TESTS ────────
+   *
+   * There used to be a `chain_full` refusal: the ladder was two rungs deep, so a
+   * client introduced by a level-2 partner had nowhere to stand and was refused
+   * both at the form (`statusFor`) and at the door (`apply`). Two tests pinned
+   * it, and both are gone with the condition — a verified client can no longer
+   * be locked out of the partner programme by how their introducer was placed.
+   *
+   * What replaces them asserts the opposite, because the removal is a behaviour
+   * change and not merely dead code: three deep, and still eligible.
+   *
+   * The commercial half of the old rule survives where it is actually true —
+   * `calculate` pays an ancestor nothing past the end of their own programme's
+   * ladder, with the programme and depth named in the reason. That is a fact
+   * about somebody's terms, not a reason to refuse an application.
    */
-  it('refuses a client whose introducer is already on the deepest level', async () => {
-    const top = await makeClient('chain-top@test.local');
-    const middle = await makeClient('chain-middle@test.local');
+  it('leaves a client eligible however deep their introducer sits', async () => {
+    const top = await makeClient('deep-top@test.local');
+    const middle = await makeClient('deep-middle@test.local');
 
     const topAccount = await service.approve(
       (await service.apply(top, { agencyId: AGENCY.id })).id,
@@ -408,28 +594,28 @@ describe('status', () => {
       UNRESTRICTED,
       { parentIbUserId: topAccount.userId },
     );
-    expect(middleAccount.level).toBe(2);
 
-    const client = await makeClient('chain-bottom@test.local');
+    const client = await makeClient('deep-bottom@test.local');
     await ctx.db.execute(
       sql`UPDATE users SET referred_by_ib_user_id = ${middleAccount.userId} WHERE id = ${client}`,
     );
 
     const status = await service.statusFor(client);
-    expect(status.eligible).toBe(false);
-    expect(status.ineligibleCode).toBe('chain_full');
-    expect(status.ineligibleReason).toMatch(/deepest level/i);
+    expect(status.eligible).toBe(true);
+    expect(status.ineligibleCode).toBeNull();
   });
 
   /*
-   * Hiding the form is not the control. The endpoint is reachable directly and a
-   * stale tab still holds a form that was valid when it loaded — without this,
-   * the application lands in the review queue as work that can only ever end in
-   * a rejection.
+   * And the application itself goes through, not merely the form.
+   *
+   * Asserted separately for the reason the refusal it replaced was: `statusFor`
+   * decides what a screen SHOWS, and `apply` is the control. A form that offers
+   * something the endpoint refuses — or the reverse — is the disagreement worth
+   * pinning in both directions.
    */
-  it('refuses the application itself, not only the form', async () => {
-    const top = await makeClient('enforced-top@test.local');
-    const middle = await makeClient('enforced-middle@test.local');
+  it('accepts an application from a client three levels down', async () => {
+    const top = await makeClient('accepted-top@test.local');
+    const middle = await makeClient('accepted-middle@test.local');
 
     const topAccount = await service.approve(
       (await service.apply(top, { agencyId: AGENCY.id })).id,
@@ -443,12 +629,18 @@ describe('status', () => {
       { parentIbUserId: topAccount.userId },
     );
 
-    const client = await makeClient('enforced-bottom@test.local');
+    const client = await makeClient('accepted-bottom@test.local');
     await ctx.db.execute(
       sql`UPDATE users SET referred_by_ib_user_id = ${middleAccount.userId} WHERE id = ${client}`,
     );
 
-    await expect(service.apply(client, { agencyId: AGENCY.id })).rejects.toThrow(/deepest level/i);
+    const application = await service.apply(client, { agencyId: AGENCY.id });
+    expect(application.status).toBe('pending');
+
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+      parentIbUserId: middleAccount.userId,
+    });
+    expect(account.parentIbUserId).toBe(middleAccount.userId);
   });
 
   /*
@@ -456,15 +648,13 @@ describe('status', () => {
    * entitled to it. A client under a level-1 partner still has rung 2 free, and
    * an unattributed client is the case the ladder always has room for.
    */
-  it('leaves a client under a level-1 partner eligible', async () => {
+  it('leaves a client under a top-level partner eligible', async () => {
     const top = await makeClient('room-top@test.local');
     const topAccount = await service.approve(
       (await service.apply(top, { agencyId: AGENCY.id })).id,
       REVIEWER,
       UNRESTRICTED,
     );
-    expect(topAccount.level).toBe(1);
-
     const client = await makeClient('room-bottom@test.local');
     await ctx.db.execute(
       sql`UPDATE users SET referred_by_ib_user_id = ${topAccount.userId} WHERE id = ${client}`,
@@ -543,6 +733,123 @@ describe('approval', () => {
     ).rejects.toThrow(/cannot be approved without one/i);
   });
 
+  /**
+   * ── A SUB-PARTNER INHERITS THEIR INTRODUCER'S AGENCY ──────────────────────
+   *
+   * The rule the whole agency feature exists for, and it was enforced by code
+   * that nothing asserted. `agencies` carry products, products carry MT5
+   * groups — so the agency decides what a partner's clients may open. A
+   * sub-partner who ended up on a different agency would be selling a catalogue
+   * their introducer has no relationship with, while commission flowed up a
+   * chain whose top never agreed to it.
+   *
+   * Three cases, because the rule has three halves that can each break alone:
+   * the inheritance itself, the fact that a stale form CANNOT override it, and
+   * the products that follow from it.
+   */
+  describe('a sub-partner sells under their introducer', () => {
+    /** A second agency, so "inherited" is distinguishable from "the only one". */
+    async function otherAgency(): Promise<string> {
+      const { rows } = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO agencies (name, enabled) VALUES ('Other Agency', true) RETURNING id
+      `);
+      return rows[0].id;
+    }
+
+    /** A partner on `agencyId`, and a client attributed to them. */
+    async function partnerWithClient(
+      agencyId: string,
+      emails: [string, string],
+    ): Promise<{ partner: string; client: string }> {
+      const partner = await makeClient(emails[0]);
+      const application = await service.apply(partner, { agencyId });
+      await service.approve(application.id, REVIEWER, UNRESTRICTED);
+
+      const client = await makeClient(emails[1]);
+      await ctx.db.execute(
+        sql`UPDATE users SET referred_by_ib_user_id = ${partner} WHERE id = ${client}`,
+      );
+      return { partner, client };
+    }
+
+    it('takes the introducer’s agency, not the one the applicant sent', async () => {
+      const other = await otherAgency();
+      const { client } = await partnerWithClient(AGENCY.id, [
+        'inherit-parent@test.local',
+        'inherit-child@test.local',
+      ]);
+
+      /*
+       * The applicant asks for the OTHER agency. The portal does not draw the
+       * picker for a sub-partner, so this is a stale form or a hand-made
+       * request — ignored rather than refused, and the introducer's answer
+       * wins.
+       */
+      const application = await service.apply(client, { agencyId: other });
+
+      expect(application.agencyId).toBe(AGENCY.id);
+      expect(application.agencyId).not.toBe(other);
+    });
+
+    it('carries that agency onto the approved partner account', async () => {
+      const { client } = await partnerWithClient(AGENCY.id, [
+        'inherit-approve-parent@test.local',
+        'inherit-approve-child@test.local',
+      ]);
+
+      const application = await service.apply(client, {});
+      const account = await service.approve(application.id, REVIEWER, UNRESTRICTED);
+
+      expect(account.agencyId).toBe(AGENCY.id);
+    });
+
+    /*
+     * The end of the chain, and the reason any of this matters: agency →
+     * products → MT5 groups. Two partners on one agency are offered the same
+     * catalogue, so their clients can open the same accounts.
+     */
+    it('offers the sub-partner the same products as their introducer', async () => {
+      const { rows: product } = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO trading_products (name, enabled, type, sort_order)
+        VALUES ('Agency Product', true, 'real', 950)
+        ON CONFLICT (name) DO UPDATE SET enabled = true
+        RETURNING id
+      `);
+      await ctx.db.execute(sql`
+        INSERT INTO agency_products (agency_id, product_id)
+        VALUES (${AGENCY.id}, ${product[0].id})
+        ON CONFLICT DO NOTHING
+      `);
+
+      const { partner, client } = await partnerWithClient(AGENCY.id, [
+        'inherit-products-parent@test.local',
+        'inherit-products-child@test.local',
+      ]);
+      const application = await service.apply(client, {});
+      await service.approve(application.id, REVIEWER, UNRESTRICTED);
+
+      const parentStatus = await service.statusFor(partner);
+      const childStatus = await service.statusFor(client);
+
+      expect(parentStatus.account?.products).toEqual(['Agency Product']);
+      expect(childStatus.account?.products).toEqual(parentStatus.account?.products);
+    });
+
+    /*
+     * A DIRECT applicant — nobody above them — still chooses, because there is
+     * no introducer for the answer to come from. The mirror of the cases above,
+     * so none of them can pass by the service simply always using `AGENCY.id`.
+     */
+    it('still lets an unattributed applicant choose', async () => {
+      const other = await otherAgency();
+      const userId = await makeClient('inherit-direct@test.local');
+
+      const application = await service.apply(userId, { agencyId: other });
+
+      expect(application.agencyId).toBe(other);
+    });
+  });
+
   it('approves against a CLOSED agency, unlike apply', async () => {
     const userId = await makeClient('closed-at-review@test.local');
     const application = await service.apply(userId, { agencyId: AGENCY.id });
@@ -598,18 +905,25 @@ describe('approval', () => {
     expect(Number(main[0].n)).toBeLessThanOrEqual(1);
   });
 
-  it('places a partner with no parent at the shallowest enabled level', async () => {
+  it('appoints a partner with no parent at the top of their own chain', async () => {
     const userId = await makeClient('direct@test.local');
     const application = await service.apply(userId, { agencyId: AGENCY.id });
 
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED);
 
-    expect(account.level).toBe(1);
     expect(account.parentIbUserId).toBeNull();
     expect(account.referralCode).toHaveLength(8);
   });
 
-  it('places a partner with a parent one level below them', async () => {
+  /*
+   * PLACEMENT is the parent and nothing else now.
+   *
+   * This used to assert `child.level === 2` beside the parent link — two
+   * records of one relationship, free to disagree. 0102 dropped the column: how
+   * far above a client a partner stands is computed per accrual by
+   * `resolveChain`, from this link.
+   */
+  it('nests a partner under the parent the reviewer chose', async () => {
     const parentId = await makeClient('the-parent@test.local');
     const parentApp = await service.apply(parentId, { agencyId: AGENCY.id });
     await service.approve(parentApp.id, REVIEWER, UNRESTRICTED);
@@ -620,25 +934,54 @@ describe('approval', () => {
       parentIbUserId: parentId,
     });
 
-    expect(child.level).toBe(2);
     expect(child.parentIbUserId).toBe(parentId);
   });
 
-  it('refuses to place anybody below the deepest enabled level', async () => {
-    // A one-level ladder: a partner beneath an L1 would never be paid, because
-    // no level exists to pay them.
-    await ctx.db.execute(sql`UPDATE ib_levels SET enabled = false WHERE level = 2`);
+  /*
+   * The reviewer's choice of TERMS, which is what `level` should always have
+   * been. Approval used to take whatever programme sorted first, always — so an
+   * operator could build Gold and assign nobody to it at the one moment the
+   * decision is naturally made.
+   */
+  it('appoints a partner on the programme the reviewer chose', async () => {
+    const target = await new IbProgramsService(
+      ctx.db,
+      auditStubAs(),
+      new AppSettingsStore(ctx.db),
+    ).create({ name: 'Approval Gold', tiers: [{ depth: 1, rate: '22' }] }, REVIEWER);
 
-    const parentId = await makeClient('deep-parent@test.local');
-    const parentApp = await service.apply(parentId, { agencyId: AGENCY.id });
-    await service.approve(parentApp.id, REVIEWER, UNRESTRICTED);
+    const userId = await makeClient('chosen-terms@test.local');
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
 
-    const childId = await makeClient('too-deep@test.local');
-    const childApp = await service.apply(childId, { agencyId: AGENCY.id });
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+      programId: target.id,
+    });
+
+    expect(account.programId).toBe(target.id);
+  });
+
+  /*
+   * A disabled programme pays nothing, so appointing somebody onto one creates
+   * a partner whose referral link works and whose earnings are silently zero.
+   * The same refusal `changeProgram` carries — without it here, an operator
+   * could route around that one at approval time.
+   */
+  it('refuses to appoint a partner on a disabled programme', async () => {
+    const retired = await new IbProgramsService(
+      ctx.db,
+      auditStubAs(),
+      new AppSettingsStore(ctx.db),
+    ).create(
+      { name: 'Approval Retired', tiers: [{ depth: 1, rate: '10' }], enabled: false },
+      REVIEWER,
+    );
+
+    const userId = await makeClient('disabled-terms@test.local');
+    const application = await service.apply(userId, { agencyId: AGENCY.id });
 
     await expect(
-      service.approve(childApp.id, REVIEWER, UNRESTRICTED, { parentIbUserId: parentId }),
-    ).rejects.toThrow(/deepest enabled level/i);
+      service.approve(application.id, REVIEWER, UNRESTRICTED, { programId: retired.id }),
+    ).rejects.toThrow(/disabled/i);
   });
 
   /*
@@ -686,13 +1029,20 @@ describe('approval', () => {
     expect(account).toBeUndefined();
   });
 
-  it('refuses approval when no level is enabled', async () => {
-    const userId = await makeClient('no-ladder@test.local');
+  /*
+   * A partner on no terms earns nothing, cannot see why, and the reviewer who
+   * approved them would have been told it worked. Refused rather than defaulted.
+   *
+   * This pinned an empty LADDER until 0102; the catalogue it now reads is the
+   * one that actually decides pay.
+   */
+  it('refuses approval when no programme is enabled', async () => {
+    const userId = await makeClient('no-terms@test.local');
     const application = await service.apply(userId, { agencyId: AGENCY.id });
-    await ctx.db.execute(sql`UPDATE ib_levels SET enabled = false`);
+    await ctx.db.execute(sql`UPDATE ib_programs SET enabled = false`);
 
     await expect(service.approve(application.id, REVIEWER, UNRESTRICTED)).rejects.toThrow(
-      /no partner levels are enabled/i,
+      /no commission programme is enabled/i,
     );
   });
 
@@ -748,20 +1098,17 @@ describe('the cycle guard', () => {
 
     await store.createAccount({
       userId: a,
-      level: 1,
       programId: await defaultProgram(store),
       referralCode: 'CHAINAAA',
     });
     await store.createAccount({
       userId: b,
-      level: 2,
       programId: await defaultProgram(store),
       parentIbUserId: a,
       referralCode: 'CHAINBBB',
     });
     await store.createAccount({
       userId: c,
-      level: 2,
       programId: await defaultProgram(store),
       parentIbUserId: b,
       referralCode: 'CHAINCCC',
@@ -785,7 +1132,6 @@ describe('the cycle guard', () => {
     const outsider = await makeClient('outsider@test.local');
     await store.createAccount({
       userId: outsider,
-      level: 1,
       programId: await defaultProgram(store),
       referralCode: 'OUTSIDER',
     });
@@ -873,13 +1219,11 @@ describe('managing a live partner', () => {
     const child = await makeClient('mgmt-child@test.local');
     await store.createAccount({
       userId: parent,
-      level: 1,
       programId: await defaultProgram(store),
       referralCode: 'MGMTPRNT',
     });
     await store.createAccount({
       userId: child,
-      level: 2,
       programId: await defaultProgram(store),
       parentIbUserId: parent,
       referralCode: 'MGMTCHLD',
@@ -887,22 +1231,16 @@ describe('managing a live partner', () => {
     return [parent, child];
   }
 
-  it('moves a partner to another enabled level', async () => {
-    const [parent] = await makePair();
-    const moved = await service.changeLevel(parent, 2, UNRESTRICTED, REVIEWER);
-    expect(moved.level).toBe(2);
-  });
-
-  it('refuses a DISABLED level', async () => {
-    const [parent] = await makePair();
-    await ctx.db.execute(sql`UPDATE ib_levels SET enabled = false WHERE level = 2`);
-
-    // A disabled level takes no share, so this would stop their earnings
-    // silently rather than demote them visibly.
-    await expect(service.changeLevel(parent, 2, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /not an enabled/i,
-    );
-  });
+  /*
+   * `changeLevel` and its two tests went in 0102 with the rung they moved a
+   * partner between. What they claimed to control — "a disabled level takes no
+   * share, so this would stop their earnings silently" — had not been true since
+   * 0084, when the rate moved to the programme.
+   *
+   * The two questions it conflated are covered where they now live: terms by
+   * `changeProgram` (see 'moving a partner onto different terms' above), and
+   * position in the tree by `changeParent` below.
+   */
 
   it('refuses a parent that would close a loop', async () => {
     const [parent, child] = await makePair();
@@ -926,7 +1264,6 @@ describe('managing a live partner', () => {
     const outsider = await makeClient('mgmt-outsider@test.local');
     await store.createAccount({
       userId: outsider,
-      level: 1,
       programId: await defaultProgram(store),
       referralCode: 'MGMTOUTS',
     });
@@ -955,7 +1292,6 @@ describe('managing a live partner', () => {
     const outsider = await makeClient('mgmt-out-of-scope@test.local');
     await store.createAccount({
       userId: outsider,
-      level: 1,
       programId: await defaultProgram(store),
       referralCode: 'MGMTOOS1',
     });
@@ -996,7 +1332,6 @@ describe('managing a live partner', () => {
     const another = await makeClient('mgmt-another@test.local');
     await store.createAccount({
       userId: another,
-      level: 2,
       programId: await defaultProgram(store),
       referralCode: 'MGMTANOT',
     });
@@ -1031,7 +1366,6 @@ describe('managing a live partner', () => {
     const orphan = await makeClient('mgmt-orphan@test.local');
     await store.createAccount({
       userId: orphan,
-      level: 2,
       programId: await defaultProgram(store),
       referralCode: 'MGMTORPH',
     });
@@ -1041,13 +1375,14 @@ describe('managing a live partner', () => {
     );
   });
 
-  it('lists partners with their person and level name', async () => {
+  it('lists partners with their person and programme name', async () => {
     await makePair();
     const page = await service.listPartners({}, UNRESTRICTED);
 
     expect(page.total).toBe(2);
     // A uuid is not a partner — the list has to carry who they are.
     expect(page.rows[0].user.email).toBeTruthy();
-    expect(page.rows[0].levelName).toBeTruthy();
+    // And what they are PAID on, which is what `levelName` never actually said.
+    expect(page.rows[0].programName).toBeTruthy();
   });
 });

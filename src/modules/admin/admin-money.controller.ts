@@ -618,6 +618,6 @@ export class AdminMoneyController {
    * The four `/admin/commission-plans` routes were HERE and went with the
    * engine that read them. They configured the numbers ARCHITECTURE §12 leaves
    * open — L1/L2 shares, the ladder, the settlement window — and they return
-   * with the MT5 bridge. `/admin/ib-levels` covers the placement half today.
+   * with the MT5 bridge. `/admin/ib-programs` covers the terms half today.
    */
 }

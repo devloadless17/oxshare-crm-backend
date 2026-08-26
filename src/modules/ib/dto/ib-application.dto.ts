@@ -1,14 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsBoolean,
-  IsInt,
-  IsOptional,
-  IsString,
-  IsUUID,
-  Length,
-  Min,
-  ValidateIf,
-} from 'class-validator';
+import { IbProgramTierDto } from './ib-program.dto';
+import { IsBoolean, IsOptional, IsString, IsUUID, Length, ValidateIf } from 'class-validator';
 
 export const IB_APPLICATION_STATUSES = ['pending', 'approved', 'rejected'] as const;
 export type IbApplicationStatusDto = (typeof IB_APPLICATION_STATUSES)[number];
@@ -201,20 +193,41 @@ export class IbStatusDto {
   inheritedAgency: InheritedAgencyDto | null;
 }
 
-/** @see IbStatusDto.ineligibleCode */
-export type IbIneligibleCode = 'unverified' | 'chain_full';
+/**
+ * @see IbStatusDto.ineligibleCode
+ *
+ * `'chain_full'` went in 0102 with the ladder that produced it: with no
+ * platform-wide depth ceiling, there is no longer a state where a verified
+ * client cannot be placed beneath their introducer.
+ *
+ * Kept as a UNION of one rather than collapsed to a boolean — the portal
+ * branches on the code, and the next gate should extend this rather than
+ * reintroduce a second field beside it.
+ */
+export type IbIneligibleCode = 'unverified';
 
 export class ApproveIbApplicationDto {
+  /**
+   * The terms to appoint them on — FR-IB-06's "exactly one named program".
+   *
+   * Replaces `level`, and it is that field promoted to the thing that actually
+   * decides money: a rung was a placement a reviewer picked and the engine then
+   * ignored.
+   *
+   * OMITTED means the first ENABLED programme by `sortOrder`, so the ordinary
+   * approval stays one click. A UUID rather than a name, like
+   * `ChangeIbProgramDto`: the name is editable and an assignment keyed on one
+   * would follow a rename somewhere nobody intended.
+   */
   @ApiPropertyOptional({
-    minimum: 1,
+    format: 'uuid',
     description:
-      'Which rung to place them on. Omitted, the service derives it: the shallowest enabled ' +
-      'level with no parent, one below the parent otherwise.',
+      'The commission programme to appoint them on. Omitted, the first enabled programme is ' +
+      'used. A disabled programme is refused — it would pay them nothing.',
   })
   @IsOptional()
-  @IsInt()
-  @Min(1)
-  level?: number;
+  @IsUUID()
+  programId?: string;
 
   @ApiPropertyOptional({
     type: 'string',
@@ -274,12 +287,11 @@ export class RejectIbApplicationDto {
   note?: string;
 }
 
-export class ChangeIbLevelDto {
-  @ApiProperty({ minimum: 1, description: 'Must be an ENABLED level.' })
-  @IsInt()
-  @Min(1)
-  level: number;
-}
+/*
+ * `ChangeIbLevelDto` IS GONE (0102). `ChangeIbProgramDto` below is what a
+ * partner's terms are changed with; `ChangeIbParentDto` is what moves them in
+ * the tree. The rung conflated the two and decided neither.
+ */
 
 /**
  * The terms a partner is paid on.
@@ -350,10 +362,16 @@ export class IbPartnerPersonDto {
   @ApiProperty({ type: 'string', nullable: true }) lastName: string | null;
 }
 
-/** One partner directly beneath this one, with their rung. */
+/** One partner directly beneath this one, with the terms they are paid on. */
 export class IbSubPartnerRowDto extends IbPartnerPersonDto {
-  @ApiProperty() level: number;
-  @ApiProperty() levelName: string;
+  @ApiProperty({ format: 'uuid' }) programId: string;
+  @ApiProperty({
+    example: 'Silver',
+    description:
+      'Replaced `level` / `levelName` in 0102. A rung named a placement that decided nothing; ' +
+      'a programme is what this sub-partner is actually paid on.',
+  })
+  programName: string;
   @ApiProperty() referralCode: string;
   @ApiProperty() active: boolean;
   @ApiProperty() approvedAt: Date;
@@ -379,14 +397,15 @@ export class IbPartnerEarningsDto {
  */
 export class IbPartnerDetailDto {
   @ApiProperty() userId: string;
-  @ApiProperty() level: number;
-  @ApiProperty({ type: 'string', nullable: true }) levelName: string | null;
-  @ApiProperty({
-    type: 'string',
-    nullable: true,
-    description: 'The rung’s percentage of the broker’s revenue. A decimal string, never a number.',
-  })
-  rateValue: string | null;
+  /*
+   * `level`, `levelName` and `rateValue` went in 0102 with the ladder.
+   *
+   * All three described the rung, which had decided nothing since the
+   * programmes landed — so this response carried three fields that read like
+   * the partner's economics beside the one that actually was. What replaces
+   * them says more than a rung ever did: the programme, its mode, its rebate,
+   * and the LADDER, which is how far this partner's earnings reach.
+   */
   @ApiProperty({ format: 'uuid', description: 'The terms this partner is paid on.' })
   programId: string;
   @ApiProperty({
@@ -395,6 +414,25 @@ export class IbPartnerDetailDto {
     description: 'Null only if the programme row vanished, which the foreign key prevents.',
   })
   programName: string | null;
+  @ApiProperty({
+    enum: ['commission_only', 'rebate_only', 'hybrid'],
+    nullable: true,
+    description: 'Which legs their programme pays.',
+  })
+  programMode: 'commission_only' | 'rebate_only' | 'hybrid' | null;
+  @ApiProperty({
+    type: [IbProgramTierDto],
+    description:
+      'What they take at each depth, shallowest first. The COUNT is how many levels below them ' +
+      'their earnings reach.',
+  })
+  programTiers: IbProgramTierDto[];
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'What their clients get back, as a percentage of the same revenue.',
+  })
+  programRebateRate: string | null;
   @ApiProperty() referralCode: string;
   @ApiProperty({ description: 'A suspended partner keeps their code and tree, and stops earning.' })
   active: boolean;

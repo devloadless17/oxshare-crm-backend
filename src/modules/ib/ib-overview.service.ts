@@ -1,12 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
   ibAccounts,
   ibAccruals,
-  ibLevels,
+  ibProgramTiers,
   ibPrograms,
   ledgerEntries,
   positions,
@@ -138,9 +138,8 @@ export class IbOverviewService {
      * confirm loop — leaving a partner looking at a balance their own earnings
      * figure does not account for.
      */
-    const [level, programme, earnings, commissionWallets, referredClients, subPartners] =
+    const [programme, earnings, commissionWallets, referredClients, subPartners] =
       await Promise.all([
-        this.levelFor(account.level),
         this.programmeFor(account.programId),
         this.earningsFor(userId),
         this.wallets.listCommissionWallets(userId),
@@ -149,7 +148,6 @@ export class IbOverviewService {
       ]);
 
     return {
-      level,
       programme,
       earnings,
       commissionWallets,
@@ -159,49 +157,49 @@ export class IbOverviewService {
     };
   }
 
-  /** The rung this partner stands on, and what it pays. */
-  private async levelFor(level: number): Promise<IbOverviewDto['level']> {
-    const [row] = await this.db
-      .select({
-        level: ibLevels.level,
-        name: ibLevels.name,
-        rateValue: ibLevels.rateValue,
-      })
-      .from(ibLevels)
-      .where(eq(ibLevels.level, level))
-      .limit(1);
-
-    /*
-     * Null rather than a throw. `ib_accounts.level` is a foreign key so the rung
-     * exists, but a level can be DELETED behind a partner in principle, and a
-     * partner dashboard that 500s because the ladder was edited is worse than
-     * one that shows everything else and omits the rate.
-     */
-    return row ?? null;
-  }
+  /*
+   * `levelFor` IS GONE (0102), with the rung it read.
+   *
+   * A partner's dashboard used to open with their rung and its rate — a number
+   * that stopped deciding anything in 0084, printed at the top of the one screen
+   * where a partner looks to understand what they earn. `programme` below is
+   * what actually pays them, and it now carries the ladder too.
+   */
 
   /**
    * The terms this partner is paid on.
    *
    * Read by id from `ib_accounts.program_id` rather than by "the default one":
-   * the whole point of a programme is that two partners on the same rung may be
-   * on different terms, and a lookup that fell back to a default would show one
-   * of them somebody else's rates.
+   * the whole point of a programme is that two partners may be on different
+   * terms, and a lookup that fell back to a default would show one of them
+   * somebody else's rates.
+   *
+   * The LADDER comes with it. `tiers` is how far this partner's earnings reach
+   * and what they take at each depth — the answer to "what do I actually get
+   * paid", which the fixed `level1Rate` / `level2Rate` pair could only give for
+   * the first two levels and could not give at all for a programme reaching
+   * three.
    */
   private async programmeFor(programId: string): Promise<IbOverviewDto['programme']> {
     const [row] = await this.db
       .select({
         name: ibPrograms.name,
         mode: ibPrograms.mode,
-        level1Rate: ibPrograms.level1Rate,
-        level2Rate: ibPrograms.level2Rate,
         rebateRate: ibPrograms.rebateRate,
       })
       .from(ibPrograms)
       .where(eq(ibPrograms.id, programId))
       .limit(1);
 
-    return row ?? null;
+    if (!row) return null;
+
+    const tiers = await this.db
+      .select({ depth: ibProgramTiers.depth, rate: ibProgramTiers.rate })
+      .from(ibProgramTiers)
+      .where(eq(ibProgramTiers.programId, programId))
+      .orderBy(asc(ibProgramTiers.depth));
+
+    return { ...row, tiers };
   }
 
   /**
@@ -336,16 +334,29 @@ export class IbOverviewService {
   /**
    * Partners directly beneath this one.
    *
-   * DIRECT only — one hop, not the whole subtree. That matches how the payout
-   * ladder resolves (`ARCHITECTURE`: resolution stops at L2, a single
-   * `parent_ib_id`, no closure table and no recursive CTE), so showing a deep
-   * tree here would display a structure the payout logic does not honour.
+   * DIRECT only — one hop, not the whole subtree.
+   *
+   * That used to match the payout logic exactly, because resolution stopped at
+   * L2. It no longer does: 0102 made reach a per-programme decision, so a
+   * partner on a three-tier programme is paid through partners this panel does
+   * not show.
+   *
+   * It stays one hop DELIBERATELY, and the reason has changed rather than
+   * lapsed. FR-IB-17 gives a parent "visibility of its sub-tree earnings" —
+   * earnings, not a roster — and the sub-tree of a partner with a wide network
+   * is unbounded, so rendering it whole on a dashboard is a page that gets
+   * slower as somebody succeeds. What the partner is owed from the whole tree is
+   * in `earnings`, which sums accruals at every depth.
+   *
+   * `programName` replaces `level` here for the same reason it did everywhere
+   * else: the rung named a placement that decided nothing, while the programme
+   * is what a sub-partner is actually paid on.
    */
   private async subPartnersFor(userId: string): Promise<IbOverviewDto['subPartners']> {
     const rows = await this.db
       .select({
         userId: ibAccounts.userId,
-        level: ibAccounts.level,
+        programName: ibPrograms.name,
         active: ibAccounts.active,
         since: ibAccounts.approvedAt,
         firstName: users.firstName,
@@ -353,13 +364,14 @@ export class IbOverviewService {
       })
       .from(ibAccounts)
       .innerJoin(users, eq(users.id, ibAccounts.userId))
+      .innerJoin(ibPrograms, eq(ibPrograms.id, ibAccounts.programId))
       .where(eq(ibAccounts.parentIbUserId, userId))
       .orderBy(desc(ibAccounts.approvedAt));
 
     return rows.map((row) => ({
       userId: row.userId,
       name: displayName(row.firstName, row.lastName),
-      level: row.level,
+      programName: row.programName,
       active: row.active,
       since: row.since,
     }));

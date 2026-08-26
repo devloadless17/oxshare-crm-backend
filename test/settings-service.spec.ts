@@ -92,8 +92,8 @@ const baseTrading = {
   maxLiveAccounts: 5,
   maxDemoAccounts: 5,
   maxDemoDeposit: '1000000',
-  ibMaxRevenueSharePct: '50.00',
-  ibCommissionHoldHours: 24,
+  /* The committed two levels — Feature List Rev 9, IB-17. */
+  ibMaxLevels: 2,
 };
 
 const baseSmtp = {
@@ -336,41 +336,16 @@ describe('Trading settings', () => {
   });
 });
 
-describe('the settlement window is a setting, not a deployment variable', () => {
-  /*
-   * It was `IB_COMMISSION_HOLD_HOURS` and nothing else, so the one rule between
-   * earned and spendable took a deploy to change and was invisible to everybody
-   * operating the platform. These pin the two ends an operator can reach.
-   */
-  it('stores the window an operator chooses', async () => {
-    const result = await service.setTrading({ ...baseTrading, ibCommissionHoldHours: 72 }, ACTOR);
-    expect(result.ibCommissionHoldHours).toBe(72);
-    expect((await service.getTrading()).ibCommissionHoldHours).toBe(72);
-  });
-
-  it('accepts zero, which is a decision and not an empty field', async () => {
-    /*
-     * A broker running no reversal desk may genuinely want commission payable
-     * the moment it is calculated. Refusing it here would send them back to the
-     * environment variable this replaced — which is where it was invisible.
-     */
-    const result = await service.setTrading({ ...baseTrading, ibCommissionHoldHours: 0 }, ACTOR);
-    expect(result.ibCommissionHoldHours).toBe(0);
-  });
-
-  it('records both sides when the window moves', async () => {
-    await service.setTrading({ ...baseTrading, ibCommissionHoldHours: 24 }, ACTOR);
-    await service.setTrading({ ...baseTrading, ibCommissionHoldHours: 0 }, ACTOR);
-
-    const changed = detailsOfLastRecord()['changed'] as Record<
-      string,
-      { before: unknown; after: unknown }
-    >;
-    /*
-     * Shortening the window to zero makes every pending accrual payable on the
-     * next run. That is a decision with a date on it, and "who set this and
-     * when" is the question asked the day a payout is disputed.
-     */
-    expect(changed['ibCommissionHoldHours']).toEqual({ before: 24, after: 0 });
-  });
-});
+/*
+ * The settlement-window cases that stood here went in 0104 with the field.
+ *
+ * They pinned that the window was a SETTING rather than a deployment variable —
+ * stored, zero accepted as a decision, and both sides recorded in the audit
+ * when it moved. It is `IB_COMMISSION_HOLD_HOURS` again, along with the rest of
+ * the IB block on this form: commission is configured on the Commission
+ * Programmes page, and a second screen that also decides partner pay is a
+ * second place for two answers to disagree.
+ *
+ * What the window DOES — the gap between earned and spendable — is unchanged and
+ * is covered against a real database in `commission-hold-window.spec.ts`.
+ */
