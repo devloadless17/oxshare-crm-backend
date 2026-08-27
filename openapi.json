@@ -6573,7 +6573,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ClientTagDto"
+                    "$ref": "#/components/schemas/ClientTagAssignmentDto"
                   }
                 }
               }
@@ -6620,7 +6620,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ClientTagDto"
+                    "$ref": "#/components/schemas/ClientTagAssignmentDto"
                   }
                 }
               }
@@ -6665,7 +6665,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ClientTagDto"
+                    "$ref": "#/components/schemas/ClientTagAssignmentDto"
                   }
                 }
               }
@@ -13616,6 +13616,10 @@
             "type": "string",
             "nullable": true,
             "format": "date-time"
+          },
+          "updatedByName": {
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -13725,6 +13729,10 @@
             "type": "string",
             "nullable": true,
             "format": "date-time"
+          },
+          "updatedByName": {
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -15219,6 +15227,50 @@
           }
         }
       },
+      "ClientTagAssignmentDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Stable machine name. Filter with ?tag=<slug>; a rename does not change it."
+          },
+          "label": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "assignedBy": {
+            "type": "string",
+            "nullable": true
+          },
+          "assignedByName": {
+            "type": "string",
+            "nullable": true
+          },
+          "assignedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "label",
+          "createdAt",
+          "assignedAt"
+        ]
+      },
       "KycDocumentDto": {
         "type": "object",
         "properties": {
@@ -16281,6 +16333,10 @@
           },
           "reviewedAt": {
             "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "reviewedByName": {
             "type": "string",
             "nullable": true
           },
