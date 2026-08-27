@@ -189,7 +189,16 @@ function cursorValueOf(value: unknown): string {
  *   cannot be replayed under a different ordering. Defaults to `createdAt`,
  *   which is what every list but the client index uses.
  */
-export function buildCursorPage<T extends { id: string; createdAt: Date }>(
+/*
+ * `createdAt` may be a Date OR the raw timestamptz literal. The raw string is
+ * the more precise choice where the caller has it: a JS Date holds
+ * milliseconds while the column stores microseconds, and a cursor minted from
+ * the truncated value seeks past every row sharing the boundary row's
+ * millisecond — rows silently skipped, the exact failure this module exists
+ * to prevent. `cursorValueOf` passes a string through verbatim, and
+ * `::timestamptz` restores full precision on the way back in.
+ */
+export function buildCursorPage<T extends { id: string; createdAt: Date | string }>(
   rows: T[],
   limit: number,
   total?: number,

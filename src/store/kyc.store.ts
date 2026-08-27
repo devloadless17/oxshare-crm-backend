@@ -50,6 +50,20 @@ export type KycSortKey = keyof typeof KYC_SORT_COLUMNS;
 /** Most recently submitted first — what the queue showed before it was sortable. */
 export const DEFAULT_KYC_SORT: KycSortKey = 'submittedAt';
 
+/**
+ * The QUEUE, as a filter value: everything a reviewer still has to act on.
+ *
+ * Not a column value — `kyc_status` has no such member. It exists because the
+ * dashboard tile and the sidebar badge count `submitted + under_review` and
+ * used to link to `submitted` alone, so the number and the list disagreed by
+ * exactly the submissions somebody had already picked up.
+ */
+export const NEEDS_REVIEW = 'needs_review';
+export const NEEDS_REVIEW_STATUSES = [
+  'submitted',
+  'under_review',
+] as const satisfies readonly KycStatus[];
+
 export interface PersonalInfo {
   firstName: string;
   lastName: string;
@@ -255,6 +269,8 @@ export class KycStore {
    */
   async findPageWithUsers(filter: {
     status?: KycStatus;
+    /** Any-of. Takes precedence over `status` — see the WHERE below. */
+    statuses?: KycStatus[];
     q?: string;
     page: number;
     limit: number;
@@ -271,7 +287,22 @@ export class KycStore {
     const direction = filter.order ?? 'desc';
     const sortColumn: SQLWrapper = KYC_SORT_COLUMNS[sortKey];
 
-    if (filter.status) conditions.push(eq(kycSubmissions.status, filter.status));
+    /*
+     * One status, or the SET that means "a reviewer has to look at this".
+     *
+     * The dashboard tile and the sidebar badge both count `submitted +
+     * under_review` — deliberately, because both mean unfinished work, and the
+     * tile's own comment says counting only `submitted` understates the queue.
+     * The link they carried resolved to `submitted` alone, so clicking a badge
+     * reading 17 opened a list of 12 and the five a reviewer had already
+     * picked up fell off the daily sweep. `needs_review` is that set, so the
+     * number and the destination finally mean the same thing.
+     */
+    if (filter.statuses?.length) {
+      conditions.push(inArray(kycSubmissions.status, filter.statuses));
+    } else if (filter.status) {
+      conditions.push(eq(kycSubmissions.status, filter.status));
+    }
 
     // In the WHERE clause, so an out-of-scope submission never enters the
     // result set — and therefore cannot be missed by a later projection, count

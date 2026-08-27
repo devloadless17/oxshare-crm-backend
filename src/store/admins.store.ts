@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, notExists, sql, type SQLWrapper } from 'drizzle-orm';
+import { and, count, desc, eq, gt, notExists, sql, type SQLWrapper, inArray } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -184,6 +184,27 @@ export class AdminsStore {
       .values({ ...data, email: data.email.toLowerCase() })
       .returning();
     return toAdmin(row);
+  }
+
+  /**
+   * Names for a set of ids, in ONE query.
+   *
+   * Every decision screen records `reviewedBy` and rendered nothing, because
+   * the column holds a uuid and a uuid is not an answer to "who approved
+   * this". Resolving them one at a time across a page of withdrawals is the
+   * 1+N this codebase has removed twice already, so it is a single `inArray`
+   * and a Map.
+   */
+  async namesByIds(ids: readonly string[]): Promise<Map<string, string>> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (unique.length === 0) return new Map();
+
+    const rows = await this.db
+      .select({ id: admins.id, name: admins.name })
+      .from(admins)
+      .where(inArray(admins.id, unique));
+
+    return new Map(rows.map((r) => [r.id, r.name]));
   }
 
   async findById(id: string): Promise<Admin | undefined> {

@@ -1,6 +1,8 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { TransactionsService } from '../src/modules/payments/transactions.service';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
 import {
   actingAs,
   anonymous,
@@ -443,7 +445,13 @@ describe('counts — the two-axis rule, on both axes', () => {
     expect(body.counts['success']).toBe(3);
   });
 
-  it('direction counts ignore the direction/kind filter', async () => {
+  it('direction counts ignore ONLY the direction filter — each facet its own axis', async () => {
+    // Symmetry with the state facet: a facet ignores exactly its own axis and
+    // honours every other filter, so the two facet rows on one screen always
+    // describe the same filtered set. With kind=payment active, the direction
+    // tabs must count PAYMENTS per direction — not quietly re-admit the
+    // transfers the kind filter excluded (a tab claiming 120 whose click
+    // lists 80).
     const session = await actingAs(ctx, 'admin', FULL);
     const res = await session
       .get(`${LIST}?userId=${unionClientId}&direction=deposit&kind=payment`)
@@ -451,9 +459,17 @@ describe('counts — the two-axis rule, on both axes', () => {
     const body = res.body as ListBody;
 
     expect(body.total).toBe(1);
-    expect(body.directionCounts['all']).toBe(4);
-    expect(body.directionCounts['deposit']).toBe(2);
-    expect(body.directionCounts['withdrawal']).toBe(2);
+    expect(body.directionCounts['all']).toBe(2);
+    expect(body.directionCounts['deposit']).toBe(1);
+    expect(body.directionCounts['withdrawal']).toBe(1);
+
+    // Without the kind filter the tabs describe the whole union again.
+    const unfiltered = (
+      await session.get(`${LIST}?userId=${unionClientId}&direction=deposit`).expect(200)
+    ).body as ListBody;
+    expect(unfiltered.directionCounts['all']).toBe(4);
+    expect(unfiltered.directionCounts['deposit']).toBe(2);
+    expect(unfiltered.directionCounts['withdrawal']).toBe(2);
   });
 });
 
@@ -721,5 +737,149 @@ describe('the export is audited', () => {
       found = await hasFilteredRow();
     }
     expect(found).toBe(true);
+  });
+});
+
+describe('cursor hygiene — a bad token is a 400, never a database error', () => {
+  // The seek casts the cursor's value and id (`::numeric`, `::uuid`); an
+  // unvalidated token would reach Postgres and surface as a 22P02 500 — the
+  // exact class R-2.1 exists to prevent, via a token a proxy or a frontend
+  // bug can corrupt in flight.
+  const mint = (position: object) =>
+    Buffer.from(JSON.stringify(position), 'utf8').toString('base64url');
+
+  it('rejects a non-numeric value under sort=amount', async () => {
+    const session = await actingAs(ctx, 'admin', FULL);
+    const cursor = mint({
+      sort: 'amount',
+      value: 'not-a-number',
+      id: '11111111-1111-1111-1111-111111111111',
+    });
+    const res = await session.get(`${LIST}?sort=amount&cursor=${encodeURIComponent(cursor)}`);
+    expect(res.status).toBe(400);
+    expect(res.status).not.toBe(500);
+  });
+
+  it('rejects a non-uuid id whatever the sort', async () => {
+    const session = await actingAs(ctx, 'admin', FULL);
+    const cursor = mint({ sort: 'state', value: 'pending', id: 'not-a-uuid' });
+    const res = await session.get(`${LIST}?sort=state&cursor=${encodeURIComponent(cursor)}`);
+    expect(res.status).toBe(400);
+    expect(res.status).not.toBe(500);
+  });
+});
+
+describe('keyset precision — rows sharing a millisecond are never skipped', () => {
+  it('walks three same-millisecond rows across three pages, losing none', async () => {
+    const { client, main } = await seedClient('fin-micro@oxshare-e2e.test', 'Mia', 'Micro');
+    /*
+     * Raw SQL, because a JS Date cannot express microseconds — and the
+     * microseconds ARE the regression: a cursor minted from a ms-truncated
+     * boundary (.123) seeks past every same-millisecond row with smaller
+     * microseconds (.123200 is neither < .123 nor equal to it), so the row
+     * vanishes from every page with nothing erroring anywhere.
+     */
+    for (const [ref, fraction] of [
+      ['fin-micro-a', '123456'],
+      ['fin-micro-x', '123200'],
+      ['fin-micro-c', '100000'],
+    ] as const) {
+      await ctx.db.db.execute(sql`
+        INSERT INTO transactions
+          (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref, created_at)
+        VALUES
+          (${client.id}::uuid, ${main.id}::uuid, 'deposit', '1.00000000', 'USD', 'success',
+           'manual_test', ${ref}, ${`2026-07-01T09:00:00.${fraction}Z`}::timestamptz)
+      `);
+    }
+
+    const session = await actingAs(ctx, 'admin', FULL);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let hop = 0; hop < 5; hop += 1) {
+      const url = `${LIST}?userId=${client.id}&limit=1${
+        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+      }`;
+      const body = (await session.get(url).expect(200)).body as ListBody;
+      for (const row of body.items) seen.push(row.id);
+      cursor = body.nextCursor;
+      if (!cursor) break;
+    }
+
+    expect(seen).toHaveLength(3);
+    expect(new Set(seen).size).toBe(3);
+  });
+});
+
+describe('the currency filter is validated, never silently empty', () => {
+  it('resolves a lower-case code to the stored currency', async () => {
+    const session = await actingAs(ctx, 'admin', FULL);
+    const body = (await session.get(`${LIST}?userId=${unionClientId}&currency=usd`).expect(200))
+      .body as ListBody;
+    expect(body.total).toBe(4);
+  });
+
+  it('rejects an unknown code with a sentence rather than an empty 200', async () => {
+    // `?currency=ZZZ` answering an empty list with a 200 is the report-shaped
+    // failure: an operator exporting "all ZZZ movements" reads the empty file
+    // as "there were none".
+    const session = await actingAs(ctx, 'admin', FULL);
+    const res = await session.get(`${LIST}?currency=ZZZ`);
+    expect(res.status).toBe(400);
+    expect((res.body as { code?: string }).code).toBe('VALIDATION_FAILED');
+  });
+});
+
+describe('search treats LIKE metacharacters as literals', () => {
+  it('an underscore does not become a one-character wildcard', async () => {
+    // 'fin_union' would match 'fin-union@…' if _ passed through unescaped —
+    // a confidently over-broad result set on a money list.
+    const session = await actingAs(ctx, 'admin', FULL);
+    const body = (await session.get(`${LIST}?q=fin_union`).expect(200)).body as ListBody;
+    expect(body.total).toBe(0);
+  });
+});
+
+describe('the export is frozen at its start and keyset-batched', () => {
+  it('chains batches without duplicating a boundary row, excluding mid-export inserts', async () => {
+    const service = ctx.app.get(TransactionsService);
+    const startedAt = new Date();
+    const base = { scope: UNRESTRICTED, userId: unionClientId, startedAt, limit: 3 };
+
+    const batch1 = await service.listAllForExport(base);
+    expect(batch1).toHaveLength(3);
+
+    // A movement lands between batches — newest, so under OFFSET batching it
+    // would push every already-streamed row down one and emit the boundary
+    // row twice; a reconciliation spreadsheet then double-counts its amount.
+    const [wallet] = await ctx.db.db
+      .select()
+      .from(wallets)
+      .where(eq(wallets.userId, unionClientId));
+    await ctx.db.db.insert(transactions).values({
+      userId: unionClientId,
+      walletId: wallet.id,
+      direction: 'deposit',
+      amount: '2.00000000',
+      currency: 'USD',
+      state: 'success',
+      provider: 'manual_test',
+      providerRef: 'fin-export-mid',
+    });
+    try {
+      const last = batch1[batch1.length - 1];
+      const batch2 = await service.listAllForExport({
+        ...base,
+        after: { createdAt: last.cursorCreatedAt, id: last.id },
+      });
+
+      const ids = [...batch1, ...batch2].map((row) => row.id);
+      expect(new Set(ids).size).toBe(ids.length); // no boundary duplicate
+      expect(ids).toHaveLength(4); // …and nothing skipped
+      // The mid-export insert is excluded by the startedAt snapshot bound.
+      expect(batch2.some((row) => row.providerRef === 'fin-export-mid')).toBe(false);
+    } finally {
+      await ctx.db.db.delete(transactions).where(eq(transactions.providerRef, 'fin-export-mid'));
+    }
   });
 });

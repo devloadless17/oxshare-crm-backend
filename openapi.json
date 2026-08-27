@@ -6373,7 +6373,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ClientTagDto"
+                    "$ref": "#/components/schemas/ClientTagAssignmentDto"
                   }
                 }
               }
@@ -6420,7 +6420,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ClientTagDto"
+                    "$ref": "#/components/schemas/ClientTagAssignmentDto"
                   }
                 }
               }
@@ -6465,7 +6465,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ClientTagDto"
+                    "$ref": "#/components/schemas/ClientTagAssignmentDto"
                   }
                 }
               }
@@ -8840,6 +8840,7 @@
             "name": "kind",
             "required": false,
             "in": "query",
+            "description": "payment = crossed the platform boundary through a provider; transfer = wallet ⇄ trading account; commission_transfer = partner earnings to their main wallet.",
             "schema": {
               "enum": [
                 "payment",
@@ -8868,6 +8869,7 @@
             "name": "userId",
             "required": false,
             "in": "query",
+            "description": "Narrow to one client (UUID).",
             "schema": {
               "type": "string"
             }
@@ -8876,6 +8878,7 @@
             "name": "currency",
             "required": false,
             "in": "query",
+            "description": "A currency code the platform holds. Case-insensitive; unknown codes are 400.",
             "schema": {
               "type": "string"
             }
@@ -8884,6 +8887,7 @@
             "name": "q",
             "required": false,
             "in": "query",
+            "description": "Search the client’s email and name — the same columns every other queue searches.",
             "schema": {
               "type": "string"
             }
@@ -8951,6 +8955,7 @@
             "name": "kind",
             "required": false,
             "in": "query",
+            "description": "payment = crossed the platform boundary through a provider; transfer = wallet ⇄ trading account; commission_transfer = partner earnings to their main wallet.",
             "schema": {
               "enum": [
                 "payment",
@@ -8979,6 +8984,7 @@
             "name": "userId",
             "required": false,
             "in": "query",
+            "description": "Narrow to one client (UUID).",
             "schema": {
               "type": "string"
             }
@@ -8987,6 +8993,7 @@
             "name": "currency",
             "required": false,
             "in": "query",
+            "description": "A currency code the platform holds. Case-insensitive; unknown codes are 400.",
             "schema": {
               "type": "string"
             }
@@ -8995,6 +9002,7 @@
             "name": "q",
             "required": false,
             "in": "query",
+            "description": "Search the client’s email and name — the same columns every other queue searches.",
             "schema": {
               "type": "string"
             }
@@ -9099,6 +9107,7 @@
             "name": "currency",
             "required": false,
             "in": "query",
+            "description": "A currency code the platform holds. Case-insensitive; unknown codes are 400.",
             "schema": {
               "type": "string"
             }
@@ -13332,6 +13341,10 @@
             "type": "string",
             "nullable": true,
             "format": "date-time"
+          },
+          "updatedByName": {
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -13423,6 +13436,10 @@
             "type": "string",
             "nullable": true,
             "format": "date-time"
+          },
+          "updatedByName": {
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -14927,6 +14944,50 @@
           }
         }
       },
+      "ClientTagAssignmentDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string",
+            "description": "Stable machine name. Filter with ?tag=<slug>; a rename does not change it."
+          },
+          "label": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "assignedBy": {
+            "type": "string",
+            "nullable": true
+          },
+          "assignedByName": {
+            "type": "string",
+            "nullable": true
+          },
+          "assignedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "label",
+          "createdAt",
+          "assignedAt"
+        ]
+      },
       "KycDocumentDto": {
         "type": "object",
         "properties": {
@@ -15989,6 +16050,10 @@
           },
           "reviewedAt": {
             "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "reviewedByName": {
             "type": "string",
             "nullable": true
           },

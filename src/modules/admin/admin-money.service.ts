@@ -16,6 +16,7 @@ import {
 import { sortKey, sortOrder } from '../../common/sorting';
 import { applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
 import { WalletService } from '../wallet/wallet.service';
+import { AdminsStore } from '../../store/admins.store';
 import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
@@ -63,6 +64,8 @@ export class AdminMoneyService {
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
     /** The Rival payout leg. Appended LAST — the positional-construction rule. */
     private readonly rivalWithdrawals: RivalWithdrawalsService,
+    /** Reviewer names for the desk. Same append-last rule as above. */
+    private readonly admins: AdminsStore,
   ) {}
 
   /**
@@ -331,9 +334,32 @@ export class AdminMoneyService {
      * search instead would let them binary-search a hidden value out of the
      * result COUNT, which is a worse leak than the one it would close.
      */
+    /*
+     * WHO decided, as a name rather than a uuid.
+     *
+     * `reviewedBy` has been recorded on every approval, rejection and
+     * settlement since the lifecycle existed, and no screen rendered it — the
+     * column holds an id, and an id is not an answer to "who approved this".
+     * On a console where `withdrawals.approve` and `withdrawals.settle` were
+     * deliberately split so two people can be required, the one screen showing
+     * the decision could not name either of them.
+     *
+     * Resolved here in ONE query over the page's distinct ids rather than in
+     * the movements CTE: that query is shared with the client's own
+     * transaction list, where the reviewing admin is nobody's business, and it
+     * carries two NULL-padded branches a join would have to be threaded
+     * through.
+     */
+    const reviewerNames = await this.admins.namesByIds(
+      page.items.map((item) => item.reviewedBy).filter((id): id is string => Boolean(id)),
+    );
+
     return {
       ...page,
-      items: applyMaskAll('withdrawal', page.items, actor.fieldMask),
+      items: applyMaskAll('withdrawal', page.items, actor.fieldMask).map((item) => ({
+        ...item,
+        reviewedByName: item.reviewedBy ? (reviewerNames.get(item.reviewedBy) ?? null) : null,
+      })),
       maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
     };
   }
@@ -756,16 +782,14 @@ export class AdminMoneyService {
   // ─── The Financial page: every money movement, platform-wide ──────────────
 
   async listTransactions(
-    query: {
-      direction?: string;
-      kind?: string;
-      state?: string;
-      userId?: string;
-      currency?: string;
-      /** Free text over the client's email and name — see `listForAdmin`. */
-      q?: string;
-      from?: string;
-      to?: string;
+    /*
+     * The FILTER half is `AdminMovementsFilter` itself (minus the scope this
+     * method supplies from the actor), spread through UNTOUCHED — the same
+     * rule the summary and the export follow. Re-declaring the fields here
+     * and copying them one by one is how a filter added to the shared shape
+     * flows into the file and the tiles but silently vanishes from the list.
+     */
+    query: Omit<AdminMovementsFilter, 'scope'> & {
       page?: string;
       limit?: string;
       cursor?: string;
@@ -794,23 +818,26 @@ export class AdminMoneyService {
       'transactions',
     );
     const order = sortOrder(query.order);
+    const {
+      page: rawPage,
+      limit: rawLimit,
+      cursor: rawCursor,
+      sort: _s,
+      order: _o,
+      ...filters
+    } = query;
+    void _s;
+    void _o;
 
     const page = await this.transactions.listAllForAdmin({
+      ...filters,
       scope: actor.clientScope,
-      direction: query.direction,
-      kind: query.kind,
-      state: query.state,
-      userId: query.userId,
-      currency: query.currency,
-      q: query.q,
-      from: query.from,
-      to: query.to,
-      page: parseInt(query.page ?? '1', 10) || 1,
-      limit: parseInt(query.limit ?? '25', 10) || 25,
+      page: parseInt(rawPage ?? '1', 10) || 1,
+      limit: parseInt(rawLimit ?? '25', 10) || 25,
       // R-2.4 — an archive the whole platform keeps writing to while it is
       // being read, which is the concurrent-insert case offset paging gets
       // wrong.
-      cursor: query.cursor ? decodeCursor(query.cursor, sort) : undefined,
+      cursor: rawCursor ? decodeCursor(rawCursor, sort) : undefined,
       sort,
       order,
     });

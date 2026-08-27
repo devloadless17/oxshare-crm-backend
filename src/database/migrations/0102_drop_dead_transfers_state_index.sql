@@ -1,0 +1,26 @@
+-- Drop `transfers_state_id_idx` — an index the query it was built for can
+-- never use.
+--
+-- 0094 created it so the financial union's `?sort=state` could merge-append
+-- index-ordered branches. But the union's `state` for the transfers arm is
+-- not the column: it is `CASE tr.state WHEN 'settled' THEN 'success' WHEN
+-- 'failed' THEN 'failure' ELSE 'pending' END` — an EXPRESSION a btree on the
+-- raw enum cannot order, and the mapping is not even monotone over the enum
+-- (enum order: pending < settled < failed; mapped text order: 'failure' <
+-- 'pending' < 'success'), so no expression-free index can serve it. The
+-- transactions arm has the same property through its `state::text` cast.
+--
+-- So the state sort was always going to carry a Sort node, which is fine —
+-- the column has three values and the sorted set is already filtered — while
+-- every INSERT and UPDATE on `transfers` paid to maintain a dead index
+-- forever. `transfers_state_idx` (the plain single-column index from the
+-- table's creation) remains for state FILTERS, which do use the raw column.
+--
+-- test/admin-sort-indexes.spec.ts was corrected in the same change: it had
+-- asserted `ORDER BY transfers.state` — a query the endpoint never issues —
+-- and passed without proving anything (the false assurance that made this
+-- index look load-bearing).
+--
+-- IF EXISTS, so this is re-runnable and safe on a database that never
+-- applied 0094 (the index is simply absent there).
+DROP INDEX IF EXISTS "transfers_state_id_idx";

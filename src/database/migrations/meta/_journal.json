@@ -3,245 +3,245 @@
   "dialect": "postgresql",
   "entries": [
     {
-      "idx": 0,
+      "idx": 1,
       "version": "7",
       "when": 1785767241432,
       "tag": "0000_medical_bruce_banner",
       "breakpoints": true
     },
     {
-      "idx": 1,
+      "idx": 2,
       "version": "7",
       "when": 1785768336281,
       "tag": "0001_wooden_sentinels",
       "breakpoints": true
     },
     {
-      "idx": 2,
+      "idx": 3,
       "version": "7",
       "when": 1785770051599,
       "tag": "0002_round_alex_power",
       "breakpoints": true
     },
     {
-      "idx": 3,
+      "idx": 4,
       "version": "7",
       "when": 1785770396824,
       "tag": "0003_motionless_firestar",
       "breakpoints": true
     },
     {
-      "idx": 4,
+      "idx": 5,
       "version": "7",
       "when": 1785771422026,
       "tag": "0004_odd_spot",
       "breakpoints": true
     },
     {
-      "idx": 5,
+      "idx": 6,
       "version": "7",
       "when": 1785771896781,
       "tag": "0005_lying_moon_knight",
       "breakpoints": true
     },
     {
-      "idx": 6,
+      "idx": 7,
       "version": "7",
       "when": 1785844614038,
       "tag": "0006_idempotency_keys",
       "breakpoints": true
     },
     {
-      "idx": 7,
+      "idx": 8,
       "version": "7",
       "when": 1785846030356,
       "tag": "0007_refresh_token_families",
       "breakpoints": true
     },
     {
-      "idx": 8,
+      "idx": 9,
       "version": "7",
       "when": 1785846090356,
       "tag": "0008_audit_log_append_only",
       "breakpoints": true
     },
     {
-      "idx": 9,
+      "idx": 10,
       "version": "7",
       "when": 1785846150356,
       "tag": "0009_permission_keys_to_dots",
       "breakpoints": true
     },
     {
-      "idx": 10,
+      "idx": 11,
       "version": "7",
       "when": 1785846210356,
       "tag": "0010_client_list_indexes",
       "breakpoints": true
     },
     {
-      "idx": 11,
+      "idx": 12,
       "version": "7",
       "when": 1785846270356,
       "tag": "0011_password_reset",
       "breakpoints": true
     },
     {
-      "idx": 12,
+      "idx": 13,
       "version": "7",
       "when": 1785926835819,
       "tag": "0012_admin_ip_allowlist",
       "breakpoints": true
     },
     {
-      "idx": 13,
+      "idx": 14,
       "version": "7",
       "when": 1785932795529,
       "tag": "0013_mixed_rick_jones",
       "breakpoints": true
     },
     {
-      "idx": 14,
+      "idx": 15,
       "version": "7",
       "when": 1785932810365,
       "tag": "0014_dusty_roland_deschain",
       "breakpoints": true
     },
     {
-      "idx": 15,
+      "idx": 16,
       "version": "7",
       "when": 1785934960034,
       "tag": "0015_majestic_black_panther",
       "breakpoints": true
     },
     {
-      "idx": 16,
+      "idx": 17,
       "version": "7",
       "when": 1785940468646,
       "tag": "0016_flat_sumo",
       "breakpoints": true
     },
     {
-      "idx": 17,
+      "idx": 18,
       "version": "7",
       "when": 1785942893192,
       "tag": "0017_sweet_hawkeye",
       "breakpoints": true
     },
     {
-      "idx": 18,
+      "idx": 19,
       "version": "7",
       "when": 1785947163796,
       "tag": "0018_curly_havok",
       "breakpoints": true
     },
     {
-      "idx": 19,
+      "idx": 20,
       "version": "7",
       "when": 1785963876309,
       "tag": "0019_chilly_betty_brant",
       "breakpoints": true
     },
     {
-      "idx": 20,
+      "idx": 21,
       "version": "7",
       "when": 1785965905780,
       "tag": "0020_outstanding_synch",
       "breakpoints": true
     },
     {
-      "idx": 21,
+      "idx": 22,
       "version": "7",
       "when": 1785967886793,
       "tag": "0021_spicy_songbird",
       "breakpoints": true
     },
     {
-      "idx": 22,
+      "idx": 23,
       "version": "7",
       "when": 1785972216507,
       "tag": "0022_faithful_weapon_omega",
       "breakpoints": true
     },
     {
-      "idx": 23,
+      "idx": 24,
       "version": "7",
       "when": 1786008078173,
       "tag": "0023_client_tags_and_scoping",
       "breakpoints": true
     },
     {
-      "idx": 24,
+      "idx": 25,
       "version": "7",
       "when": 1786008078174,
       "tag": "0024_client_sort_indexes",
       "breakpoints": true
     },
     {
-      "idx": 25,
+      "idx": 26,
       "version": "7",
       "when": 1786014161099,
       "tag": "0025_same_malice",
       "breakpoints": true
     },
     {
-      "idx": 26,
+      "idx": 27,
       "version": "7",
       "when": 1786025155600,
       "tag": "0026_settings_general_and_smtp",
       "breakpoints": true
     },
     {
-      "idx": 27,
+      "idx": 28,
       "version": "7",
       "when": 1786111555600,
       "tag": "0027_currencies_and_transfers",
       "breakpoints": true
     },
     {
-      "idx": 28,
+      "idx": 29,
       "version": "7",
       "when": 1786197955600,
       "tag": "0028_remove_commission_and_money",
       "breakpoints": true
     },
     {
-      "idx": 29,
+      "idx": 30,
       "version": "7",
       "when": 1786284355600,
       "tag": "0029_ib_levels",
       "breakpoints": true
     },
     {
-      "idx": 30,
+      "idx": 31,
       "version": "7",
       "when": 1786370755600,
       "tag": "0030_ib_accounts_and_wallets",
       "breakpoints": true
     },
     {
-      "idx": 31,
+      "idx": 32,
       "version": "7",
       "when": 1786457155600,
       "tag": "0031_ib_level_renumber_cascade",
       "breakpoints": true
     },
     {
-      "idx": 32,
+      "idx": 33,
       "version": "7",
       "when": 1786543555600,
       "tag": "0032_referral_attribution",
       "breakpoints": true
     },
     {
-      "idx": 33,
+      "idx": 34,
       "version": "7",
       "when": 1786629955600,
       "tag": "0033_money_rebuild",
       "breakpoints": true
     },
     {
-      "idx": 34,
+      "idx": 35,
       "version": "7",
       "when": 1786716355600,
       "tag": "0034_remove_ip_allowlist",
@@ -720,42 +720,56 @@
       "idx": 103,
       "version": "7",
       "when": 1787101216020,
-      "tag": "0102_one_programme_ladder",
+      "tag": "0102_drop_dead_transfers_state_index",
       "breakpoints": true
     },
     {
       "idx": 104,
       "version": "7",
       "when": 1787101216021,
-      "tag": "0103_drop_the_broker_cap",
+      "tag": "0103_backfill_verified_identity",
       "breakpoints": true
     },
     {
       "idx": 105,
       "version": "7",
       "when": 1787101216022,
-      "tag": "0104_commission_is_configured_in_one_place",
+      "tag": "0104_one_programme_ladder",
       "breakpoints": true
     },
     {
       "idx": 106,
       "version": "7",
       "when": 1787101216023,
-      "tag": "0105_the_level_ceiling_is_a_setting",
+      "tag": "0105_drop_the_broker_cap",
       "breakpoints": true
     },
     {
       "idx": 107,
       "version": "7",
       "when": 1787101216024,
-      "tag": "0106_reset_the_commission_layer",
+      "tag": "0106_commission_is_configured_in_one_place",
       "breakpoints": true
     },
     {
       "idx": 108,
       "version": "7",
       "when": 1787101216025,
-      "tag": "0107_an_agency_carries_default_terms",
+      "tag": "0107_the_level_ceiling_is_a_setting",
+      "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1787101216026,
+      "tag": "0108_reset_the_commission_layer",
+      "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1787101216027,
+      "tag": "0109_an_agency_carries_default_terms",
       "breakpoints": true
     }
   ]

@@ -191,6 +191,12 @@ export interface RequestOptions {
   csrfToken?: string;
   /** Send a different Origin, or none at all with `null`. */
   origin?: string | null;
+  /**
+   * Extra headers. `idempotency-key` is the one that matters: the money
+   * routes declare `@Idempotent()` and refuse 400 without it, so a test that
+   * drives approve/reject/settle has to send one.
+   */
+  headers?: Record<string, string>;
 }
 
 function buildSession(
@@ -210,6 +216,7 @@ function buildSession(
     if (opts.origin !== null) test.set('Origin', opts.origin ?? surface.origin);
     const token = opts.csrfToken ?? csrfToken;
     if (!opts.omitCsrf && token !== undefined) test.set(CSRF_HEADER, token);
+    for (const [name, value] of Object.entries(opts.headers ?? {})) test.set(name, value);
     if (body !== undefined) test.send(body as object);
     return test;
   };

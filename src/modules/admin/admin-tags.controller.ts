@@ -20,7 +20,7 @@ import { exportFormat, streamCsvFromArray } from '../../common/export/export-res
 import { NotAudited } from './guards/audited.decorator';
 import { AdminTagsService } from './admin-tags.service';
 import { CreateClientTagDto, UpdateClientTagDto } from './dto/requests/tags.dto';
-import { ClientTagDto, ClientTagWithCountDto } from './dto/responses.dto';
+import { ClientTagAssignmentDto, ClientTagDto, ClientTagWithCountDto } from './dto/responses.dto';
 import {
   PermissionsGuard,
   RequirePermissions,
@@ -148,7 +148,7 @@ export class AdminTagsController {
   @RequirePermissions('clients.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: "A client's tags" })
-  @ApiOkResponse({ type: [ClientTagDto] })
+  @ApiOkResponse({ type: [ClientTagAssignmentDto] })
   @ScopedToClients(
     'AdminTagsService.assertClientVisible → findForAdmin, so an out-of-scope client 404s.',
   )
@@ -164,7 +164,7 @@ export class AdminTagsController {
   @RequirePermissions('clients.tag')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Attach a tag to a client' })
-  @ApiOkResponse({ type: [ClientTagDto] })
+  @ApiOkResponse({ type: [ClientTagAssignmentDto] })
   @ScopedToClients(
     "AdminTagsService.assertClientVisible, plus the tag must be inside the acting admin's own scope.",
   )
@@ -182,7 +182,7 @@ export class AdminTagsController {
   @RequirePermissions('clients.tag')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Detach a tag from a client' })
-  @ApiOkResponse({ type: [ClientTagDto] })
+  @ApiOkResponse({ type: [ClientTagAssignmentDto] })
   @ScopedToClients(
     'assertClientVisible, plus a scoped admin may not remove the last tag keeping the client visible to them.',
   )

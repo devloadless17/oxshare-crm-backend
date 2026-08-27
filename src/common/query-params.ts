@@ -118,7 +118,14 @@ const DATE_SHAPE = /^\d{4}-\d{2}-\d{2}$/;
 
 function isRealCalendarDate(value: string): boolean {
   const [year, month, day] = value.split('-').map((part) => Number.parseInt(part, 10));
-  const parsed = new Date(Date.UTC(year, month - 1, day));
+  /*
+   * setUTCFullYear rather than Date.UTC(year, …): Date.UTC maps years 0–99
+   * onto 1900–1999, so a genuinely valid `0099-12-31` would fail the
+   * round-trip check below — this helper's contract is to reject only what
+   * Postgres rejects, and Postgres accepts four-digit years from 0001.
+   */
+  const parsed = new Date(0);
+  parsed.setUTCFullYear(year, month - 1, day);
   return (
     parsed.getUTCFullYear() === year &&
     parsed.getUTCMonth() === month - 1 &&

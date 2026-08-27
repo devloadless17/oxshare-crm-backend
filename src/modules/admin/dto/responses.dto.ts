@@ -1,5 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { rejectionContextEnum } from '../../../database/schema';
+import {
+  rejectionContextEnum,
+  transactionDirectionEnum,
+  transactionStateEnum,
+} from '../../../database/schema';
+import { TRANSACTION_KINDS } from '../../payments/transactions.service';
 import type { RejectionContext } from '../../../store/rejection-reasons.store';
 
 // Response DTOs so /api/docs-json carries response schemas (API-CONTRACTS
@@ -257,6 +262,22 @@ export class ClientTagDto {
   @ApiPropertyOptional() color?: string;
   @ApiPropertyOptional() description?: string;
   @ApiProperty() createdAt: Date;
+}
+
+/**
+ * A tag ON a client: the tag, plus the provenance of that assignment.
+ *
+ * `assigned_by` and `assigned_at` have been written on every assignment since
+ * the table existed and were read by nothing, so "who moved this client onto
+ * my desk, and when" was recorded and unanswerable from any screen. Tags are
+ * RBAC-03 territory — they decide which administrator sees whom — so that is a
+ * question about ACCESS, not about labels.
+ */
+export class ClientTagAssignmentDto extends ClientTagDto {
+  @ApiPropertyOptional({ type: String, nullable: true }) assignedBy?: string | null;
+  /** Null when the assignment predates the column, or the admin was deleted. */
+  @ApiPropertyOptional({ type: String, nullable: true }) assignedByName?: string | null;
+  @ApiProperty() assignedAt: Date;
 }
 
 export class ClientTagWithCountDto extends ClientTagDto {
@@ -707,7 +728,7 @@ export class WithdrawalRowDto {
   // A CODE, not a fixed set — currencies are operator data (see WalletDto).
   @ApiProperty({ description: 'A currency code.', example: 'USD' }) currency: string;
   @ApiProperty({
-    enum: ['pending', 'approved', 'success', 'failure', 'rejected'],
+    enum: transactionStateEnum.enumValues,
   })
   state: string;
   @ApiProperty() provider: string;
@@ -730,6 +751,18 @@ export class WithdrawalRowDto {
   @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;
   @ApiProperty() requestedAt: Date;
   @ApiPropertyOptional({ type: Date, nullable: true }) reviewedAt?: Date | null;
+  /**
+   * The reviewer's NAME, resolved from `reviewedBy`.
+   *
+   * The id has been recorded on every decision since this lifecycle existed
+   * and no screen rendered it, because a uuid is not an answer to "who
+   * approved this" — on a console that splits approve from settle so two
+   * people can be required, the one screen showing the decision could name
+   * neither. Null when nobody has reviewed it, or when the administrator who
+   * decided has since been deleted: an absence the screen states rather than
+   * filling with the id.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true }) reviewedByName?: string | null;
   @ApiPropertyOptional({ type: Date, nullable: true }) settledAt?: Date | null;
   /*
    * The Rival payout leg, for the desk's badges. `rivalWithdrawalId` set =
@@ -803,14 +836,14 @@ export class AdminTransactionRowDto {
    * The vocabulary is the union's own (`TransactionsService.movementsCte`),
    * not a table enum.
    */
-  @ApiProperty({ enum: ['payment', 'transfer', 'commission_transfer'] })
+  @ApiProperty({ enum: TRANSACTION_KINDS })
   kind: string;
   /**
    * Stated FROM THE WALLET'S SIDE for every kind — a wallet→account transfer
    * reads as a withdrawal. Screens print the direction ONLY for payments and
    * branch on `kind` for the rest, the rule the client portal already follows.
    */
-  @ApiProperty({ enum: ['deposit', 'withdrawal'] })
+  @ApiProperty({ enum: transactionDirectionEnum.enumValues })
   direction: string;
   /**
    * One vocabulary for both tables: transfer states arrive pre-mapped
@@ -818,7 +851,7 @@ export class AdminTransactionRowDto {
    * on `kind: payment` withdrawal rows — tabs and tiles must not promise them
    * for transfers.
    */
-  @ApiProperty({ enum: ['pending', 'approved', 'success', 'failure', 'rejected'] })
+  @ApiProperty({ enum: transactionStateEnum.enumValues })
   state: string;
   @ApiProperty({
     type: 'string',
@@ -888,9 +921,9 @@ export class AdminTransactionListResponseDto {
 }
 
 export class AdminTransactionSummaryRowDto {
-  @ApiProperty({ enum: ['deposit', 'withdrawal'] }) direction: string;
-  @ApiProperty({ enum: ['payment', 'transfer', 'commission_transfer'] }) kind: string;
-  @ApiProperty({ enum: ['pending', 'approved', 'success', 'failure', 'rejected'] })
+  @ApiProperty({ enum: transactionDirectionEnum.enumValues }) direction: string;
+  @ApiProperty({ enum: TRANSACTION_KINDS }) kind: string;
+  @ApiProperty({ enum: transactionStateEnum.enumValues })
   state: string;
   /**
    * Part of the GROUP KEY, not decoration: a sum across currencies is not a
@@ -914,7 +947,7 @@ export class AdminTransactionSummaryRowDto {
  * from `rows` would mean the page adding decimal strings, which it never does.
  */
 export class AdminTransactionDirectionTotalDto {
-  @ApiProperty({ enum: ['deposit', 'withdrawal'] }) direction: string;
+  @ApiProperty({ enum: transactionDirectionEnum.enumValues }) direction: string;
   /** Part of the group key — a sum across currencies is not a number. */
   @ApiProperty({ example: 'USD' }) currency: string;
   @ApiProperty() count: number;

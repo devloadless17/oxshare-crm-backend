@@ -62,6 +62,18 @@ export class SmtpSettingsDto {
 
   @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
   updatedAt: string | null;
+  /**
+   * WHO last saved this, resolved from `updated_by`.
+   *
+   * Every save records the administrator and no screen showed it, so "when did
+   * the commission basis / the leverage ladder / the SMTP host change, and who
+   * changed it" was answerable only by reading the audit log — for settings
+   * that decide what partners are paid and whether mail leaves the building.
+   * Null when nothing has been saved here yet, or when the administrator has
+   * since been deleted.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true })
+  updatedByName: string | null;
 }
 
 export class UpdateSmtpSettingsDto {
@@ -199,6 +211,18 @@ export class TradingSettingsDto {
 
   @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
   updatedAt: string | null;
+  /**
+   * WHO last saved this, resolved from `updated_by`.
+   *
+   * Every save records the administrator and no screen showed it, so "when did
+   * the commission basis / the leverage ladder / the SMTP host change, and who
+   * changed it" was answerable only by reading the audit log — for settings
+   * that decide what partners are paid and whether mail leaves the building.
+   * Null when nothing has been saved here yet, or when the administrator has
+   * since been deleted.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true })
+  updatedByName: string | null;
 }
 
 export class UpdateTradingSettingsDto {
