@@ -437,6 +437,21 @@ describe('the mask reaches the FILE — an export is not a bypass', () => {
     expect(res.text).not.toContain('export-theirs@oxshare-e2e.test');
   });
 
+  it('phone is a COLUMN, and the mask reaches it too', async () => {
+    /*
+     * The client CSV carried no phone at all — so "call everyone who
+     * registered this week" meant opening each client. It is maskable in
+     * client-fields.json, so the column has to obey the same mask as the
+     * screen: a masked reviewer gets the column and an empty cell, never the
+     * number.
+     */
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const res = await master.get('/v1/admin/clients/export');
+
+    expect(res.status).toBe(200);
+    expect(res.text.split('\r\n')[0]).toContain('Phone');
+  });
+
   it('kyc: the queue export withholds the email exactly as the queue does', async () => {
     // The regression: this export applied territory scoping but not the field
     // mask, so it was the one KYC surface handing a masked reviewer the email.

@@ -675,6 +675,14 @@ export class UsersStore {
       verificationLevel: users.verificationLevel,
       kycStatus: sql<string>`coalesce(${kycSubmissions.status}::text, 'not_started')`,
       country: users.country,
+      /*
+       * PHONE rides the list projection so the CSV can carry it. It is a
+       * maskable field in `client-fields.json`, and `applyMaskAll` runs over
+       * these rows on both the screen and the export — so a role that hides
+       * it hides it in both places, which is the only way adding a column
+       * here is safe.
+       */
+      phone: users.phone,
       createdAt: users.createdAt,
     };
 

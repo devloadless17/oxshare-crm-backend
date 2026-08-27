@@ -96,6 +96,13 @@ export class AdminExportService {
     { header: 'KYC status', value: (r) => r.kycStatus },
     { header: 'Verification level', value: (r) => r.verificationLevel },
     { header: 'Country', value: (r) => r.country },
+    /*
+     * PHONE. It is on the profile response and is maskable in
+     * `client-fields.json`, and the file that operators actually work from did
+     * not carry it — so "call the clients who registered this week" meant
+     * opening each one. It rides the same mask as every other column here.
+     */
+    { header: 'Phone', value: (r) => r.phone },
     { header: 'Tags', value: (r) => r.tags.map((t) => t.label).join(', ') },
     { header: 'Registered at', value: (r) => r.createdAt },
   ];
@@ -550,8 +557,18 @@ export class AdminExportService {
     { header: 'Last name', value: (r) => r.user.lastName },
     { header: 'Verification level', value: (r) => r.user.verificationLevel },
     { header: 'Status', value: (r) => r.application.status },
-    { header: 'Website', value: (r) => r.application.website },
-    { header: 'Motivation', value: (r) => r.application.motivation },
+    /*
+     * The AGENCY, which is what an applicant actually chooses.
+     *
+     * `Website` and `Motivation` used to sit here and were structurally empty:
+     * the apply screen deliberately stopped asking for them (apply-panel.tsx
+     * explains why — three questions a reviewer decides from the account
+     * anyway, and every field one more reason to abandon), so both columns
+     * were headers above nothing on every row. This file already condemned
+     * exactly that shape for `Tier`. The agency is the field that IS asked and
+     * is required, because it decides what the partner may sell.
+     */
+    { header: 'Agency', value: (r) => r.agencyName },
     { header: 'Rejection reason', value: (r) => r.application.rejectionReason },
     { header: 'Submitted at', value: (r) => r.application.submittedAt },
     { header: 'Reviewed at', value: (r) => r.application.reviewedAt },
@@ -661,6 +678,7 @@ export interface ClientExportRow {
   kycStatus: string;
   verificationLevel: number;
   country: string | null;
+  phone: string | null;
   tags: { label: string }[];
   createdAt: Date;
 }
@@ -759,6 +777,8 @@ export interface IbApplicationExportRow {
     submittedAt: Date;
     reviewedAt: Date | null;
   };
+  /** Null on an application predating the agency requirement. */
+  agencyName: string | null;
   user: {
     id: string;
     email: string;

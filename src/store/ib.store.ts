@@ -16,6 +16,7 @@ import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import {
+  agencies,
   ibAccounts,
   ibAccruals,
   ibApplications,
@@ -243,9 +244,24 @@ export class IbStore {
           lastName: users.lastName,
           verificationLevel: users.verificationLevel,
         },
+        /*
+         * The agency's NAME, not just the id on the application row.
+         *
+         * This is the one thing an applicant actually chooses — it decides
+         * what the partner may sell, which is why the apply screen asks for it
+         * and made it required. The row carried `agencyId` and nothing
+         * resolved it, so the export shipped columns for two questions the
+         * form stopped asking (website, motivation — always null) and no
+         * column for the answer it does collect.
+         *
+         * LEFT join: an application predating the agency requirement has none,
+         * and that is a real state rather than a reason to drop the row.
+         */
+        agencyName: agencies.name,
       })
       .from(ibApplications)
       .innerJoin(users, eq(users.id, ibApplications.userId))
+      .leftJoin(agencies, eq(agencies.id, ibApplications.agencyId))
       .where(where)
       // `id` is the total-order tiebreak. Without it, two applications sharing a
       // status — which is most of the queue — sit either side of an OFFSET

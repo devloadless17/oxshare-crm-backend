@@ -328,7 +328,16 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    */
   { action: 'payment_method.create', label: 'Payment method added', group: 'Configuration' },
   { action: 'payment_method.update', label: 'Payment method changed', group: 'Configuration' },
-  { action: 'payment_method.delete', label: 'Payment method removed', group: 'Configuration' },
+  /*
+   * `payment_method.delete` is GONE, for the reason the `ip_allowlist` entries
+   * below were removed: nothing writes it. A payment method is disabled, never
+   * deleted — the only writers are `create` and `update`
+   * (payment-methods.service.ts). Offering the filter meant an operator
+   * searching for "Payment method removed" got "No entries for this action"
+   * and concluded a removal had never happened, rather than that it is
+   * unloggable. A vocabulary that advertises actions the system cannot record
+   * is worse than a shorter one.
+   */
 
   // ── Security controls ─────────────────────────────────────────────────────
   // `ip_allowlist.add|remove` are GONE: the feature was deleted whole
@@ -336,7 +345,12 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   // entries offered filters over rows nothing can ever write again. Historical
   // rows, if any exist, remain readable — the filter is a varchar match, not
   // an enum — but the vocabulary should not advertise dead actions.
-  { action: 'security.control.set', label: 'Security control toggled', group: 'Security' },
+  /*
+   * `security.control.set` is GONE, same rule: `SecuritySettingsStore` has no
+   * consumer at all — its own header says "DEAD UNTIL A SWITCH HAS A READER" —
+   * so no toggle exists to record. Restore this entry in the same commit that
+   * gives a control a reader, not before.
+   */
   /*
    * RBAC-08. Both sides are logged because both change who can reach the
    * console: adding a rule starts enforcement (or narrows it), and removing the
