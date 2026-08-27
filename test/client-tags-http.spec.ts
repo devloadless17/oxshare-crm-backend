@@ -441,3 +441,33 @@ describe('deleting a tag that is somebody’s territory', () => {
  * block proved was removed with the last of that design; the vestigial
  * `is_system` column awaits a schema window to drop.
  */
+
+describe('an assignment says WHO put the client there', () => {
+  /*
+   * `assigned_by` and `assigned_at` have been written on every assignment
+   * since the table existed and were selected by nothing — so "who moved this
+   * client onto my desk, and when" was recorded and unanswerable from any
+   * screen. Tags are RBAC-03 territory: they decide which administrator sees
+   * whom, which makes that a question about access rather than about labels.
+   */
+  it('names the administrator who assigned a tag', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+
+    const created = await session.post(TAGS, { label: `Provenance ${Date.now()}` });
+    expect(created.status).toBe(201);
+    const tagId = (created.body as { id: string }).id;
+
+    const assigned = await session.post(`/v1/admin/clients/${alphaClientId}/tags/${tagId}`);
+    expect(assigned.status).toBe(201);
+
+    const rows = (await session.get(`/v1/admin/clients/${alphaClientId}/tags`)).body as {
+      id: string;
+      assignedByName: string | null;
+      assignedAt: string;
+    }[];
+    const row = rows.find((r) => r.id === tagId);
+
+    expect(row?.assignedByName).toBe('Tags Master');
+    expect(row?.assignedAt).toBeTruthy();
+  });
+});

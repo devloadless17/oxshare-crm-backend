@@ -1,11 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import {
   ClientTagsStore,
+  type ClientTagAssignment,
   type ClientTag,
   type ClientTagWithCount,
 } from '../../store/client-tags.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
 import { UsersStore } from '../../store/users.store';
+import { AdminsStore } from '../../store/admins.store';
 import {
   ClientNotFoundError,
   ConflictError,
@@ -23,6 +25,17 @@ import type { AuthenticatedAdmin } from './guards/admin.guard';
  * Every method here takes an `AuthenticatedAdmin` rather than a bare `Admin`,
  * so a caller that has not resolved the actor's client scope cannot compile.
  */
+/**
+ * An assignment as a SCREEN reads it: the tag, plus who put it there.
+ *
+ * `assignedBy` is the stored id and `assignedByName` is that id resolved. Both
+ * travel — the id is what an audit trail refers to, the name is what an
+ * operator can act on.
+ */
+export interface ClientTagAssignmentView extends ClientTagAssignment {
+  assignedByName: string | null;
+}
+
 @Injectable()
 export class AdminTagsService {
   constructor(
@@ -30,6 +43,8 @@ export class AdminTagsService {
     private readonly scopes: AdminClientScopesStore,
     private readonly users: UsersStore,
     private readonly audit: AdminAuditService,
+    /** Assigner names. Appended LAST — the positional-construction rule. */
+    private readonly admins: AdminsStore,
   ) {}
 
   /**
@@ -152,13 +167,38 @@ export class AdminTagsService {
 
   // ─── assignment ───────────────────────────────────────────────────────────
 
-  async tagsForClient(clientId: string, actor: AuthenticatedAdmin): Promise<ClientTag[]> {
-    assertActorCan(actor, 'clients.view', "view a client's tags");
-    await this.assertClientVisible(clientId, actor);
-    return this.tags.tagsForClient(clientId);
+  /**
+   * Attach the assigner's NAME to each assignment, in one query.
+   *
+   * The store returns the id; a uuid does not answer "who put this client on
+   * my desk". Null stays null — an assignment predating the column, or one by
+   * an administrator since deleted, is an absence the screen states rather
+   * than fills.
+   */
+  private async withAssigners(rows: ClientTagAssignment[]): Promise<ClientTagAssignmentView[]> {
+    const names = await this.admins.namesByIds(
+      rows.map((row) => row.assignedBy).filter((id): id is string => Boolean(id)),
+    );
+    return rows.map((row) => ({
+      ...row,
+      assignedByName: row.assignedBy ? (names.get(row.assignedBy) ?? null) : null,
+    }));
   }
 
-  async assign(clientId: string, tagId: string, actor: AuthenticatedAdmin): Promise<ClientTag[]> {
+  async tagsForClient(
+    clientId: string,
+    actor: AuthenticatedAdmin,
+  ): Promise<ClientTagAssignmentView[]> {
+    assertActorCan(actor, 'clients.view', "view a client's tags");
+    await this.assertClientVisible(clientId, actor);
+    return this.withAssigners(await this.tags.tagsForClient(clientId));
+  }
+
+  async assign(
+    clientId: string,
+    tagId: string,
+    actor: AuthenticatedAdmin,
+  ): Promise<ClientTagAssignmentView[]> {
     assertActorCan(actor, 'clients.tag', 'tag a client');
     await this.assertClientVisible(clientId, actor);
 
@@ -180,10 +220,14 @@ export class AdminTagsService {
      * DERIVED state of carrying no tags, so this assignment has already ended
      * it by existing. No second tag to remove, no second audit row to write.
      */
-    return this.tags.tagsForClient(clientId);
+    return this.withAssigners(await this.tags.tagsForClient(clientId));
   }
 
-  async unassign(clientId: string, tagId: string, actor: AuthenticatedAdmin): Promise<ClientTag[]> {
+  async unassign(
+    clientId: string,
+    tagId: string,
+    actor: AuthenticatedAdmin,
+  ): Promise<ClientTagAssignmentView[]> {
     assertActorCan(actor, 'clients.tag', 'untag a client');
     await this.assertClientVisible(clientId, actor);
 
@@ -222,7 +266,7 @@ export class AdminTagsService {
         slug: tag.slug,
       });
     }
-    return this.tags.tagsForClient(clientId);
+    return this.withAssigners(await this.tags.tagsForClient(clientId));
   }
 
   /**

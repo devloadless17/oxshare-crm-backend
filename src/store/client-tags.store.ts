@@ -13,6 +13,13 @@ export interface ClientTag {
   createdAt: Date;
 }
 
+/** A tag ON a client, plus the provenance of that assignment. */
+export interface ClientTagAssignment extends ClientTag {
+  /** The admin who assigned it. Null on rows written before it was recorded. */
+  assignedBy: string | null;
+  assignedAt: Date;
+}
+
 /** A tag plus how many clients carry it — the /tags screen's row. */
 export interface ClientTagWithCount extends ClientTag {
   clientCount: number;
@@ -140,7 +147,20 @@ export class ClientTagsStore {
   // ─── assignments ──────────────────────────────────────────────────────────
 
   /** The tags one client carries, for the row and the profile. */
-  async tagsForClient(userId: string): Promise<ClientTag[]> {
+  /**
+   * One client's tags, WITH how each one got there.
+   *
+   * `assigned_by` and `assigned_at` have been written on every assignment
+   * since the table existed and were selected by nothing, so "who moved this
+   * client onto my desk, and when" was recorded and unanswerable from any
+   * screen. Tags are RBAC-03 territory — they decide which admin sees whom —
+   * which makes that a question about access, not about labels.
+   *
+   * The assigner's NAME is resolved by the caller (`AdminTagsService`): this
+   * store has no business joining `admins`, and a page of clients needs one
+   * lookup rather than one per row.
+   */
+  async tagsForClient(userId: string): Promise<ClientTagAssignment[]> {
     const rows = await this.db
       .select({
         id: clientTags.id,
@@ -149,12 +169,18 @@ export class ClientTagsStore {
         color: clientTags.color,
         description: clientTags.description,
         createdAt: clientTags.createdAt,
+        assignedBy: clientTagAssignments.assignedBy,
+        assignedAt: clientTagAssignments.assignedAt,
       })
       .from(clientTagAssignments)
       .innerJoin(clientTags, eq(clientTags.id, clientTagAssignments.tagId))
       .where(eq(clientTagAssignments.userId, userId))
       .orderBy(asc(clientTags.label));
-    return rows.map(toTag);
+    return rows.map((row) => ({
+      ...toTag(row),
+      assignedBy: row.assignedBy,
+      assignedAt: row.assignedAt,
+    }));
   }
 
   /**

@@ -264,6 +264,22 @@ export class ClientTagDto {
   @ApiProperty() createdAt: Date;
 }
 
+/**
+ * A tag ON a client: the tag, plus the provenance of that assignment.
+ *
+ * `assigned_by` and `assigned_at` have been written on every assignment since
+ * the table existed and were read by nothing, so "who moved this client onto
+ * my desk, and when" was recorded and unanswerable from any screen. Tags are
+ * RBAC-03 territory — they decide which administrator sees whom — so that is a
+ * question about ACCESS, not about labels.
+ */
+export class ClientTagAssignmentDto extends ClientTagDto {
+  @ApiPropertyOptional({ type: String, nullable: true }) assignedBy?: string | null;
+  /** Null when the assignment predates the column, or the admin was deleted. */
+  @ApiPropertyOptional({ type: String, nullable: true }) assignedByName?: string | null;
+  @ApiProperty() assignedAt: Date;
+}
+
 export class ClientTagWithCountDto extends ClientTagDto {
   @ApiProperty({ description: 'How many clients carry this tag.' })
   clientCount: number;
