@@ -1,7 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';
-import type { Db } from '../database/db';
+import type { Db, Executor } from '../database/db';
+import { placeInOrder } from '../common/ordering';
 import {
   agencies,
   agencyProducts,
@@ -59,6 +60,8 @@ export interface AgencyRow {
   description: string | null;
   enabled: boolean;
   sortOrder: number;
+  /** The programme partners of this agency are appointed on, or null for none (0107). */
+  defaultProgramId: string | null;
   productIds: string[];
 }
 
@@ -69,6 +72,16 @@ export interface OfferedGroup {
   mt5Group: string;
   currency: string;
 }
+
+/**
+ * The id `placeOrder` uses for a row that does not exist yet.
+ *
+ * A CREATE has to know its position before the INSERT that gives it an id, so
+ * the placement is computed against a stand-in. Deliberately not a uuid: it can
+ * never collide with a real row, and if it ever leaked into a column the value
+ * would be obviously wrong rather than plausibly right.
+ */
+const PLACEHOLDER_ID = '__new__';
 
 @Injectable()
 export class ProductsStore {
@@ -122,15 +135,58 @@ export class ProductsStore {
     }));
   }
 
+  /**
+   * Give a row the position asked for, moving whoever is in the way.
+   *
+   * One implementation for both catalogues in this store — `common/ordering.ts`
+   * holds the rule and the reasoning; this applies it. `undefined` appends,
+   * which is the only answer to "no opinion" that does not move somebody else.
+   *
+   * TRANSACTIONAL, because placing one row renumbers the rows it displaces. A
+   * failure between the renumber and the write would leave a hole where the row
+   * was going to sit, and holes are what make the next operator's typed number
+   * land on a row instead of before it.
+   */
+  private async placeOrder(
+    tx: Executor,
+    table: typeof tradingProducts | typeof agencies,
+    id: string,
+    desired: number | undefined,
+  ): Promise<number> {
+    const rows = await tx.select({ id: table.id, sortOrder: table.sortOrder }).from(table);
+
+    const changes = placeInOrder(rows, id, desired);
+    let position = rows.find((row) => row.id === id)?.sortOrder ?? 0;
+
+    for (const change of changes) {
+      if (change.id === id) {
+        position = change.sortOrder;
+        continue;
+      }
+      await tx.update(table).set({ sortOrder: change.sortOrder }).where(eq(table.id, change.id));
+    }
+
+    return position;
+  }
+
   async createProduct(values: {
     name: string;
     description: string | null;
     enabled: boolean;
     type: 'real' | 'demo';
     spreadMarkupPerLot: string;
-    sortOrder: number;
+    sortOrder: number | undefined;
   }): Promise<ProductRow> {
-    const [row] = await this.db.insert(tradingProducts).values(values).returning();
+    const row = await this.db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(tradingProducts)
+        .values({
+          ...values,
+          sortOrder: await this.placeOrder(tx, tradingProducts, PLACEHOLDER_ID, values.sortOrder),
+        })
+        .returning();
+      return created;
+    });
     return { ...row, groups: [] };
   }
 
@@ -148,14 +204,21 @@ export class ProductsStore {
       description: string | null;
       enabled: boolean;
       spreadMarkupPerLot: string;
-      sortOrder: number;
+      sortOrder: number | undefined;
     },
   ): Promise<ProductRow | null> {
-    const [row] = await this.db
-      .update(tradingProducts)
-      .set({ ...values, updatedAt: new Date() })
-      .where(eq(tradingProducts.id, id))
-      .returning();
+    const row = await this.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(tradingProducts)
+        .set({
+          ...values,
+          sortOrder: await this.placeOrder(tx, tradingProducts, id, values.sortOrder),
+          updatedAt: new Date(),
+        })
+        .where(eq(tradingProducts.id, id))
+        .returning();
+      return updated;
+    });
 
     if (!row) return null;
     const groups = await this.groupsOf(id);
@@ -247,6 +310,7 @@ export class ProductsStore {
       description: row.description,
       enabled: row.enabled,
       sortOrder: row.sortOrder,
+      defaultProgramId: row.defaultProgramId,
       productIds: links.filter((link) => link.agencyId === row.id).map((link) => link.productId),
     }));
   }
@@ -255,21 +319,44 @@ export class ProductsStore {
     name: string;
     description: string | null;
     enabled: boolean;
-    sortOrder: number;
+    sortOrder: number | undefined;
+    defaultProgramId?: string | null;
   }): Promise<AgencyRow> {
-    const [row] = await this.db.insert(agencies).values(values).returning();
+    const row = await this.db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(agencies)
+        .values({
+          ...values,
+          sortOrder: await this.placeOrder(tx, agencies, PLACEHOLDER_ID, values.sortOrder),
+        })
+        .returning();
+      return created;
+    });
     return { ...row, productIds: [] };
   }
 
   async updateAgency(
     id: string,
-    values: { name: string; description: string | null; enabled: boolean; sortOrder: number },
+    values: {
+      name: string;
+      description: string | null;
+      enabled: boolean;
+      sortOrder: number | undefined;
+      defaultProgramId?: string | null;
+    },
   ): Promise<AgencyRow | null> {
-    const [row] = await this.db
-      .update(agencies)
-      .set({ ...values, updatedAt: new Date() })
-      .where(eq(agencies.id, id))
-      .returning();
+    const row = await this.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(agencies)
+        .set({
+          ...values,
+          sortOrder: await this.placeOrder(tx, agencies, id, values.sortOrder),
+          updatedAt: new Date(),
+        })
+        .where(eq(agencies.id, id))
+        .returning();
+      return updated;
+    });
 
     if (!row) return null;
     return { ...row, productIds: await this.productIdsOf(id) };

@@ -12,7 +12,11 @@ import {
   type CommissionAccrualPort,
 } from '../../../common/provisioning/commission-accrual.port';
 import { brokerRevenueFor } from '../broker-revenue';
-import { DEFAULT_REVENUE_BASIS, type RevenueBasis } from '../../../common/revenue-basis';
+import {
+  DEFAULT_REVENUE_BASIS,
+  REVENUE_BASES,
+  type RevenueBasis,
+} from '../../../common/revenue-basis';
 import {
   CLOSING_ENTRIES,
   TRADE_ACTIONS,
@@ -646,12 +650,41 @@ export class DealCommissionService {
         continue;
       }
 
+      /*
+       * ── WHAT THE TRADE EARNED UNDER EACH BASIS (FR-IB-16, 0106) ──────────
+       *
+       * The chain's partners may hold programmes that price on different
+       * bases, so one figure is not enough: each earner is paid a percentage
+       * of the revenue THEIR programme names.
+       *
+       * All three are priced here, from the same legs and the same lot count,
+       * because the arithmetic needs MT5 legs and a product markup and
+       * `commission.ts` is a pure seam that lint keeps away from both.
+       *
+       * A basis that cannot be priced — an account linked to no product, under
+       * a basis that needs one — is OMITTED rather than stored as zero. Zero is
+       * a price; a missing entry means "could not price this", and `calculate`
+       * refuses that leg instead of quietly paying nothing on it. The
+       * difference is the whole reason `spreadMarkupPerLot` is nullable.
+       */
+      const revenueByBasis = new Map<RevenueBasis, string>();
+      for (const candidate of REVENUE_BASES) {
+        const priced = brokerRevenueFor({
+          basis: candidate,
+          legs,
+          lots: deal.volume,
+          spreadMarkupPerLot: deal.spreadMarkupPerLot,
+        });
+        if (priced.ok) revenueByBasis.set(candidate, priced.revenue);
+      }
+
       try {
         const rows = await this.commissions.accrueForDeal({
           dealRowId: deal.id,
           ticket: deal.ticket,
           clientUserId: deal.userId,
           brokerRevenue,
+          revenueByBasis,
           lots: deal.volume,
           currency: deal.currency,
         });

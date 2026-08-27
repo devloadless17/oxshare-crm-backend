@@ -159,13 +159,18 @@ strength of ARCHITECTURE §8.6; that document wins on implementation and **not o
 governs. The setting is the repair: the number is a commercial decision somebody makes, rather than
 a constant somebody deploys or a ceiling nobody can move.
 
-Three bounds, and they are not the same thing:
+Four bounds, and they are not the same thing:
 
 | bound | value | what it is |
 | ----- | ----- | ---------- |
 | `trading_settings.ib_max_levels` | 2 | POLICY — the deepest ladder that may be SAVED |
+| `trading_settings.ib_max_total_payout_pct` | 100 | COST — the most ONE TRADE may pay out across every leg (0106) |
 | `ib_program_tiers_depth_range` | 1..10 | STRUCTURE — what the column holds. Wider so raising the ceiling is a form, not a migration |
 | `MAX_CHAIN_DEPTH` | 10 | CYCLE GUARD — where the walk stops. Decides nobody's pay |
+
+The first bounds how DEEP, the second how MUCH, and they fail differently: an over-deep ladder is
+refused at SAVE time on the programmes form, an over-budget chain is refused at ACCRUAL time and the
+deal defers. Neither truncates or scales anything already agreed.
 
 `common/ib-levels.ts` owns the normalising and `tradingTermsFrom` calls it. An unusable stored value
 falls back to the DEFAULT rather than to the maximum — a bad row must not widen what partners are
@@ -352,26 +357,37 @@ the model they actually want. Not `isLiveRevenueFeed`, because a deposit is not 
 all — flipping `LIVE_REVENUE_FEED` to `position` must never make this payable.
 `accrueForSettledDeposit` still swallows it per its no-throw contract, so the deposit itself stands.
 
-### There are NO IB settings on the Trading form (0103, 0104)
+### The Trading form carries BOUNDS, never rates (0103, 0104, 0106)
 
-Four controls lived there and each changed what partners are paid: `ib_max_revenue_share_pct`
+Four controls lived there and each decided what partners are PAID: `ib_max_revenue_share_pct`
 ("Maximum paid to partners"), `ib_commission_hold_hours`, `ib_accrual_start` and
 `ib_revenue_basis`. All four are gone.
 
-| was                        | is now                                                       |
-| -------------------------- | ------------------------------------------------------------ |
-| `ib_max_revenue_share_pct` | nothing — `checkPlausible` REFUSES an over-payment instead    |
-| `ib_commission_hold_hours` | `IB_COMMISSION_HOLD_HOURS`                                    |
-| `ib_accrual_start`         | `IB_ACCRUAL_START`                                            |
-| `ib_revenue_basis`         | `DEFAULT_REVENUE_BASIS`, a constant                           |
+| was                        | is now                                                                    |
+| -------------------------- | ------------------------------------------------------------------------- |
+| `ib_max_revenue_share_pct` | `ib_max_total_payout_pct` (0106) — a REFUSAL, not the pro-rata scaler      |
+| `ib_commission_hold_hours` | `IB_COMMISSION_HOLD_HOURS`                                                 |
+| `ib_accrual_start`         | `IB_ACCRUAL_START`                                                         |
+| `ib_revenue_basis`         | `ib_programs.revenue_basis` (0106) — FR-IB-16 puts it in the CATALOGUE     |
 
-**The broker cap's removal changed behaviour and the change is worth knowing.** It summed every
-leg and scaled them all pro rata to fit under a configured share of the revenue. Without it, a
-chain paying out more than the revenue is REFUSED rather than scaled — the deal defers on the 0092
-backoff with the reason on the row and pays in full once the programmes are corrected. The old
-behaviour paid a reduced amount immediately, which is friendlier and less honest: nobody was ever
-told their rates were wrong. Exactly 100% now pays out in full; the per-programme share trigger is
-what keeps that deliberate rather than accidental.
+What remains on that form is `ib_max_levels` and `ib_max_total_payout_pct`, and both pass the test
+the four failed: they CONSTRAIN the Commission Programmes page rather than restating it. A rate
+belongs to one partner's agreement; a bound belongs to the platform.
+
+**The ceiling is NOT the old broker cap returning.** That one summed every leg and scaled them all
+pro rata to fit, then paid immediately — so a partner quietly received less than their programme
+promised, on every trade, with nothing saying so. The accrual row recorded the scaled amount as if
+the rate had produced it. The new one REFUSES: the deal defers on the 0092 backoff with the reason
+on the row, `COMMISSION_CEILING_BREACH` pages, and it pays in full once the rates are corrected.
+
+**Why a per-programme ceiling could not do this job.** `ib_programs_share_fits` already bounds ONE
+programme's tiers plus rebate to 100%. The earners on a single trade may hold DIFFERENT programmes,
+each inside its own limit and together over the broker's — which is exactly what shipped: the seeded
+`Default` paid 60% at depth 1 and 40% at depth 2, so any two-deep chain paid out the entire revenue
+and the house kept nothing. `checkPlausible` did not refuse it, because it only ever refused a total
+ABOVE the revenue and 100% is not above it. 0106 reseeded the catalogue as a real rate card
+(Standard 25/5, Gold 30/8, Partner 40/10) and added the ceiling that makes the class of mistake
+visible instead of silent.
 
 **Nothing else about the backlog guard changed**, which is what made dropping its column safe.
 
@@ -541,11 +557,29 @@ missing arithmetic now: `brokerRevenueFor` can compute on the markup, and nothin
 | `spread`                 | lots × the product's `spread_markup_per_lot`                       |
 | `commission_swap_spread` | both, summed                                                       |
 
-**It is a constant again — `DEFAULT_REVENUE_BASIS` — and the reason is not that the setting was
-wrong.** It was on the wrong SCREEN. Commission is configured on the Commission Programmes page,
-and a Trading-settings field that re-prices every partner is a second place for two answers to
-disagree, which is the fault 0102 removed from the catalogue itself. Every deployment was on the
-default, so removing the choice moved nobody's money.
+It became a constant in 0104 — not because the setting was wrong, but because it was on the wrong
+SCREEN. Commission is configured on the Commission Programmes page, and a Trading-settings field
+that re-prices every partner is a second place for two answers to disagree.
+
+**It is `ib_programs.revenue_basis` now (0106), which is what FR-IB-16 asked for all along** —
+"configure the exact commission and rebate mathematics ... through the IB program catalogue". Not a
+constant, and not a platform switch: the base is HALF of what a partner agreed to, since "30% of the
+spread markup" and "30% of commission and swap" are different contracts.
+
+So the broker's revenue is computed PER EARNER. `deal-commission.service.ts` prices all three bases
+from the same legs and lot count and hands `calculate` a `revenueByBasis` map; each partner's leg is
+a percentage of the figure their OWN programme names. A chain may legitimately mix them.
+
+**A basis the caller could not price is OMITTED from the map, never stored as zero.** Zero is a
+price; absent means "no answer" — an account linked to no product, under a basis that needs one — and
+`calculate` REFUSES that leg rather than falling back to a different revenue. Substituting one would
+pay the partner on terms nobody agreed to, at a number that looks entirely ordinary on the accrual
+row. That distinction is the whole reason `spreadMarkupPerLot` is `string | null`.
+
+**The map is optional and its absence is the old behaviour.** Without it every leg prices on the
+single `grossAmount`, which is what every caller with one revenue figure still wants and what every
+in-memory test constructs. Every deployment defaults to `commission_swap`, so 0106 moved nobody's
+money.
 
 Two rules survive it, and each still closes a door:
 

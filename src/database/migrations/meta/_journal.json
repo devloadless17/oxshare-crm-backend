@@ -743,6 +743,20 @@
       "when": 1787101216023,
       "tag": "0105_the_level_ceiling_is_a_setting",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1787101216024,
+      "tag": "0106_reset_the_commission_layer",
+      "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1787101216025,
+      "tag": "0107_an_agency_carries_default_terms",
+      "breakpoints": true
     }
   ]
 }

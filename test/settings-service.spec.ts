@@ -94,6 +94,9 @@ const baseTrading = {
   maxDemoDeposit: '1000000',
   /* The committed two levels — Feature List Rev 9, IB-17. */
   ibMaxLevels: 2,
+  /* 100: the shipped default, which refuses only a chain costing more than
+   * the trade earned. Tests that care about the ceiling override it. */
+  ibMaxTotalPayoutPct: '100',
 };
 
 const baseSmtp = {

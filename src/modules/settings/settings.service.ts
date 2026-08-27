@@ -11,6 +11,7 @@ import type {
   UpdateTradingSettingsDto,
 } from './dto/settings.dto';
 import { tradingTermsFrom } from '../../common/trading-terms';
+import { ValidationError } from '../../common/errors/domain-errors';
 
 /**
  * Reads and writes the two singleton settings rows.
@@ -181,6 +182,7 @@ export class SettingsService {
       maxDemoAccounts: terms.maxDemoAccounts,
       maxDemoDeposit: terms.maxDemoDeposit,
       ibMaxLevels: terms.ibMaxLevels,
+      ibMaxTotalPayoutPct: terms.ibMaxTotalPayoutPct,
       updatedAt: row?.updatedAt.toISOString() ?? null,
     };
   }
@@ -196,6 +198,20 @@ export class SettingsService {
      * its own audit actions — a rung can be withdrawn without touching the
      * accounts opened on it, which is what a delimited string could not say.
      */
+    /*
+     * RANGE is checked here and FORMAT in the DTO — see the field's note there.
+     * `Number()` is safe on this one line and nowhere else: the string has
+     * already passed `^\d+(\.\d+)?$`, so there is no exponent, no hex and no
+     * whitespace for it to misread, and the value STORED is the original
+     * string. This is a bounds test, not an arithmetic step.
+     */
+    const ceiling = Number(dto.ibMaxTotalPayoutPct);
+    if (!Number.isFinite(ceiling) || ceiling <= 0 || ceiling > 100) {
+      throw new ValidationError(
+        'The maximum total payout must be greater than 0 and at most 100 percent.',
+      );
+    }
+
     const row = await this.store.setTrading(
       {
         maxLiveAccounts: dto.maxLiveAccounts,
@@ -207,6 +223,12 @@ export class SettingsService {
          * note for why that distinction is what lets it sit here at all.
          */
         ibMaxLevels: dto.ibMaxLevels,
+        /*
+         * The total payout ceiling (0106) — the other bound, and the one the
+         * catalogue cannot state about itself. A programme knows what IT pays;
+         * only this knows what a CHAIN of them costs on one trade.
+         */
+        ibMaxTotalPayoutPct: dto.ibMaxTotalPayoutPct,
         /*
          * No other IB fields here (0104). The settlement window, the accrual
          * start, the revenue basis and the broker cap were all removed from this
@@ -234,6 +256,7 @@ export class SettingsService {
       maxDemoAccounts: row.maxDemoAccounts,
       maxDemoDeposit: row.maxDemoDeposit,
       ibMaxLevels: row.ibMaxLevels,
+      ibMaxTotalPayoutPct: row.ibMaxTotalPayoutPct,
       updatedAt: row.updatedAt.toISOString(),
     };
 
@@ -252,6 +275,13 @@ export class SettingsService {
        * and when" is the question asked the day a payout is disputed.
        */
       'ibMaxLevels',
+      /*
+       * Audited for a sharper version of the same reason (0106): LOWERING this
+       * one stops chains paying. A deal over the ceiling defers rather than
+       * accruing, so a payout that quietly stopped last Tuesday is answered by
+       * "who set it to 30, and when" — and by nothing else on this platform.
+       */
+      'ibMaxTotalPayoutPct',
     ] as const) {
       if (previous[field] !== after[field]) {
         changed[field] = { before: previous[field], after: after[field] };

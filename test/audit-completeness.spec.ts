@@ -339,9 +339,9 @@ describe('recorded: the feature modules', () => {
     /*
      * Took over from `settings.general.update`, which was removed with the
      * General tab and its table. The reason for pinning it is stronger here:
-     * the per-client account caps, the demo funding ceiling and the broker's
-     * revenue cap are all limits somebody can raise, and the effect surfaces in
-     * the broker's own reporting weeks later.
+     * the per-client account caps, the demo funding ceiling, the ladder ceiling
+     * and the total payout ceiling are all limits somebody can move, and the
+     * effect surfaces in the broker's own reporting weeks later.
      *
      * The leverage ladder USED to ride on this payload as a comma-separated
      * string. Migration 0067 gave it its own table and its own `leverages.*`
@@ -363,6 +363,13 @@ describe('recorded: the feature modules', () => {
        * gives: this is a PUT, so every field on the form travels together.
        */
       ibMaxLevels: 2,
+      /*
+       * The total payout ceiling (0106) — required for the same reason, and
+       * audited for a sharper one: LOWERING it stops chains paying, so a
+       * commission that quietly stopped last Tuesday is answered by "who set it
+       * to 30, and when" and by nothing else on this platform.
+       */
+      ibMaxTotalPayoutPct: '100',
       /*
        * The four OTHER IB fields that used to be required here went in 0103/0104.
        *

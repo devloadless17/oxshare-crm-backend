@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  ValidateIf,
   Matches,
   Max,
   MaxLength,
@@ -130,11 +131,21 @@ export class UpsertProductDto {
   @Matches(SPREAD_MARKUP, { message: `spreadMarkupPerLot ${SPREAD_MARKUP_MESSAGE}` })
   spreadMarkupPerLot?: string;
 
-  @ApiProperty({ example: 0, minimum: 0, maximum: 1000 })
+  /**
+   * Where this row sits, or OMITTED for "wherever" — which appends.
+   *
+   * Optional since ordering became an INSERT rather than a stored sort key:
+   * taking a position now pushes the rows below it down, so `0` is a real
+   * instruction ("put this first") and was the one every create silently gave.
+   * A form that could not express "just add it" had no way to say the ordinary
+   * thing. See `common/ordering.ts`.
+   */
+  @ApiPropertyOptional({ example: 0, minimum: 0, maximum: 1000 })
+  @IsOptional()
   @IsInt()
   @Min(0)
   @Max(1000)
-  sortOrder: number;
+  sortOrder?: number;
 }
 
 export class AttachGroupDto {
@@ -212,6 +223,23 @@ export class AgencyDto {
   @ApiProperty({ example: 0 })
   sortOrder: number;
 
+  /*
+   * `@ApiProperty`, not `@ApiPropertyOptional` — the key is ALWAYS present on a
+   * response and its VALUE may be null. Marking it optional generated
+   * `string | null | undefined` on the frontend, which forced every reader to
+   * handle a third state the API never sends.
+   */
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      'The commission programme partners of this agency are appointed on (0107). Null means the ' +
+      'agency expresses no preference, and approval falls through to the lowest-sorted enabled ' +
+      'programme. A reviewer’s explicit choice always wins over this.',
+  })
+  defaultProgramId: string | null;
+
   @ApiProperty({ type: [String], format: 'uuid', description: 'The products this agency sells.' })
   productIds: string[];
 }
@@ -233,11 +261,35 @@ export class UpsertAgencyDto {
   @IsBoolean()
   enabled: boolean;
 
-  @ApiProperty({ example: 0, minimum: 0, maximum: 1000 })
+  /**
+   * Where this row sits, or OMITTED for "wherever" — which appends.
+   *
+   * Optional since ordering became an INSERT rather than a stored sort key:
+   * taking a position now pushes the rows below it down, so `0` is a real
+   * instruction ("put this first") and was the one every create silently gave.
+   * A form that could not express "just add it" had no way to say the ordinary
+   * thing. See `common/ordering.ts`.
+   */
+  @ApiPropertyOptional({ example: 0, minimum: 0, maximum: 1000 })
+  @IsOptional()
   @IsInt()
   @Min(0)
   @Max(1000)
-  sortOrder: number;
+  sortOrder?: number;
+
+  /**
+   * The programme partners of this agency are appointed on, or `null` for none.
+   *
+   * `null` and OMITTED mean different things on this form, which is a PUT:
+   * omitted leaves the stored value alone, and an explicit `null` clears it.
+   * Without the distinction there would be no way to UNSET a default once one
+   * had been chosen.
+   */
+  @ApiPropertyOptional({ type: String, format: 'uuid', nullable: true })
+  @IsOptional()
+  @IsUUID()
+  @ValidateIf((_, value) => value !== null)
+  defaultProgramId?: string | null;
 }
 
 export class SetAgencyProductsDto {

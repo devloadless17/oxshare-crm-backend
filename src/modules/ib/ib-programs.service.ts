@@ -8,6 +8,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../../common/erro
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
 import { AppSettingsStore } from '../../store/app-settings.store';
+import { DEFAULT_REVENUE_BASIS } from '../../common/revenue-basis';
 import { tradingTermsFrom } from '../../common/trading-terms';
 import type {
   CreateIbProgramDto,
@@ -100,6 +101,7 @@ export class IbProgramsService {
         name: ibPrograms.name,
         sortOrder: ibPrograms.sortOrder,
         mode: ibPrograms.mode,
+        revenueBasis: ibPrograms.revenueBasis,
         rebateRate: ibPrograms.rebateRate,
         enabled: ibPrograms.enabled,
         createdAt: ibPrograms.createdAt,
@@ -343,6 +345,14 @@ export class IbProgramsService {
           name: dto.name,
           sortOrder,
           mode,
+          /*
+           * FR-IB-16 (0106). Defaulted to the charges basis rather than to
+           * whatever the platform last used: the other two can only pay LESS on
+           * a deployment whose spread markups are unset, and a new programme
+           * quietly pricing on an unpopulated markup pays nothing on every deal
+           * it touches — permanently, since a zero-revenue deal is marked done.
+           */
+          revenueBasis: dto.revenueBasis ?? DEFAULT_REVENUE_BASIS,
           rebateRate,
           enabled: dto.enabled ?? true,
         })
@@ -362,6 +372,7 @@ export class IbProgramsService {
     this.audit.record(actor.id, 'ib_program.create', 'ib_program', row.id, {
       name: row.name,
       mode: row.mode,
+      revenueBasis: row.revenueBasis,
       tiers,
       rebateRate: row.rebateRate,
       enabled: row.enabled,
@@ -429,6 +440,9 @@ export class IbProgramsService {
           name: dto.name ?? current.name,
           sortOrder: dto.sortOrder ?? current.sortOrder,
           mode,
+          /* Omitted means LEAVE IT — this is a PATCH, and re-pricing a
+           * programme is never something an operator did by not mentioning. */
+          revenueBasis: dto.revenueBasis ?? current.revenueBasis,
           rebateRate,
           enabled: dto.enabled ?? current.enabled,
           updatedAt: new Date(),
@@ -459,6 +473,7 @@ export class IbProgramsService {
       before: {
         name: current.name,
         mode: current.mode,
+        revenueBasis: current.revenueBasis,
         tiers: current.tiers,
         rebateRate: current.rebateRate,
         enabled: current.enabled,
@@ -466,6 +481,7 @@ export class IbProgramsService {
       after: {
         name: row.name,
         mode: row.mode,
+        revenueBasis: row.revenueBasis,
         tiers,
         rebateRate: row.rebateRate,
         enabled: row.enabled,
@@ -532,6 +548,7 @@ export class IbProgramsService {
     this.audit.record(actor.id, 'ib_program.delete', 'ib_program', id, {
       name: current.name,
       mode: current.mode,
+      revenueBasis: current.revenueBasis,
       tiers: current.tiers,
       rebateRate: current.rebateRate,
     });

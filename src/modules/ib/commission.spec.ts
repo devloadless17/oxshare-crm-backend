@@ -665,6 +665,11 @@ describe('checkPlausible', () => {
     depth: 1,
     programId: 'prog-a',
     rateValue: '10.0000',
+    /* The base this leg is a share of (0106). `checkPlausible` bounds the
+     * TOTAL against the event, so the per-leg base is carried but not read
+     * here — it is required by the type because a money row must always be
+     * able to explain its own arithmetic. */
+    baseAmount: '1000.00000000',
     amount,
   });
 
@@ -706,6 +711,7 @@ describe('checkPlausible', () => {
       ibUserId: 'ib-1',
       programId: 'prog-a',
       rateValue: '50.0000',
+      baseAmount: '1000.00000000',
       amount: '600.00000000',
     });
 
@@ -768,5 +774,213 @@ describe('the numbers', () => {
     );
 
     expect(result.accruals[0].amount).toBe('2000.00000000');
+  });
+});
+
+/*
+ * ── THE BROKER'S TOTAL PAYOUT CEILING (0106) ─────────────────────────────────
+ *
+ * `ib_max_total_payout_pct` bounds what ONE TRADE may cost across every leg.
+ *
+ * It exists because the per-programme guard cannot see a chain: two partners
+ * holding different programmes are each within their own limit and together
+ * over the broker's. The seeded catalogue proved it — 60% at depth 1 and 40% at
+ * depth 2 paid out exactly 100% of the revenue, and nothing refused it, because
+ * `checkPlausible` only ever refused a total ABOVE the revenue.
+ */
+describe('checkPlausible — the broker’s ceiling', () => {
+  const leg = (ibUserId: string, amount: string) => ({
+    ibUserId,
+    depth: 1,
+    programId: 'prog-a',
+    rateValue: '10.0000',
+    /* The base this leg is a share of (0106). `checkPlausible` bounds the
+     * TOTAL against the event, so the per-leg base is carried but not read
+     * here — it is required by the type because a money row must always be
+     * able to explain its own arithmetic. */
+    baseAmount: '1000.00000000',
+    amount,
+  });
+
+  it('refuses a chain that costs more than the configured ceiling', () => {
+    // 400 of a 1000 revenue, against a ceiling of 30%.
+    const verdict = checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '400.00000000')], undefined, '30');
+
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.reason).toContain('ceiling');
+      expect(verdict.reason).toContain('30%');
+    }
+  });
+
+  it('accepts a chain exactly ON the ceiling', () => {
+    const verdict = checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '300.00000000')], undefined, '30');
+
+    expect(verdict.ok).toBe(true);
+  });
+
+  /*
+   * The regression this whole control exists for. Before 0106 this passed:
+   * a share of exactly 100% is not GREATER than the revenue, so the only guard
+   * in place let it through and the broker kept nothing.
+   */
+  it('refuses the 60/40 chain that used to pay out the entire revenue', () => {
+    const chain = [leg('sara', '600.00000000'), leg('ahmad', '400.00000000')];
+
+    // The old guard alone still lets it through — this is what was shipping.
+    expect(checkPlausible(DEAL_NO_LOTS, chain).ok).toBe(true);
+
+    // With a ceiling the broker can actually live on, it is refused.
+    const verdict = checkPlausible(DEAL_NO_LOTS, chain, undefined, '70');
+    expect(verdict.ok).toBe(false);
+  });
+
+  /*
+   * The default must not change what a running platform pays, so 100 has to
+   * behave exactly like no ceiling at all.
+   */
+  it('defaults to 100, which refuses only what the old guard refused', () => {
+    expect(checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '1000.00000000')]).ok).toBe(true);
+    expect(checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '1000.00000000')], undefined, '100').ok).toBe(
+      true,
+    );
+    expect(checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '1000.00000001')], undefined, '100').ok).toBe(
+      false,
+    );
+  });
+
+  /*
+   * A unit error and a chain over budget send an operator to two different
+   * screens, so the message that fires has to name the right one. At the
+   * default both thresholds are the same number, and the rate is the likelier
+   * fault — so it wins.
+   */
+  it('reports a unit error as a unit error, not as a ceiling breach', () => {
+    const verdict = checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '70000.00000000')], undefined, '30');
+
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.reason).toContain('exceeds');
+      expect(verdict.reason).not.toContain('ceiling');
+    }
+  });
+
+  it('counts the client’s rebate against the ceiling too', () => {
+    const verdict = checkPlausible(
+      DEAL_NO_LOTS,
+      [leg('ib-1', '200.00000000')],
+      {
+        ibUserId: 'ib-1',
+        programId: 'prog-a',
+        rateValue: '15.0000',
+        baseAmount: '1000.00000000',
+        amount: '150.00000000',
+      },
+      '30',
+    );
+
+    // 200 + 150 = 350, over the 300 the ceiling allows.
+    expect(verdict.ok).toBe(false);
+  });
+});
+
+/*
+ * ── FR-IB-16: WHICH REVENUE A PROGRAMME'S RATES ARE A PERCENTAGE OF ──────────
+ *
+ * "configure the exact commission and rebate mathematics ... through the IB
+ * program catalogue". The base is half of what a partner agreed to, so it
+ * travels with their terms rather than switching platform-wide.
+ */
+describe('calculate — the revenue basis is a term of the programme', () => {
+  const CHAIN = [earner({ ibUserId: 'sara', depth: 1, programId: 'charges' })];
+
+  const byBasis = new Map<'commission_swap' | 'spread' | 'commission_swap_spread', string>([
+    ['commission_swap', '1000.00000000'],
+    ['spread', '400.00000000'],
+  ]);
+
+  it('prices a leg on the basis its own programme names', () => {
+    const onSpread = calculate(
+      DEAL_NO_LOTS,
+      [earner({ ibUserId: 'sara', depth: 1, programId: 'spread-priced' })],
+      programs([
+        program({ id: 'spread-priced', tiers: ladder('10.0000'), revenueBasis: 'spread' }),
+      ]),
+      byBasis,
+    );
+
+    // 10% of the SPREAD figure (400), not of the charges figure (1000).
+    expect(onSpread.accruals[0]?.amount).toBe('40.00000000');
+  });
+
+  it('pays two partners in one chain on the two bases they each agreed to', () => {
+    const result = calculate(
+      DEAL_NO_LOTS,
+      [
+        earner({ ibUserId: 'sara', depth: 1, programId: 'charges' }),
+        earner({ ibUserId: 'ahmad', depth: 2, programId: 'spread-priced' }),
+      ],
+      programs([
+        program({ id: 'charges', tiers: ladder('10.0000', '5.0000') }),
+        program({
+          id: 'spread-priced',
+          tiers: ladder('10.0000', '5.0000'),
+          revenueBasis: 'spread',
+        }),
+      ]),
+      byBasis,
+    );
+
+    // sara: 10% of 1000. ahmad: 5% of 400 — his own contract, at his own depth.
+    expect(result.accruals.map((a) => a.amount)).toEqual(['100.00000000', '20.00000000']);
+  });
+
+  /*
+   * A basis the caller could not price is ABSENT from the map, and absent is
+   * not zero. Zero is a price; absent means "no answer" — most often an account
+   * linked to no product under a basis that needs one. Falling back to the
+   * default revenue would pay this partner on terms nobody agreed to, at a
+   * number that looks perfectly ordinary on the accrual row.
+   */
+  it('refuses a leg whose basis could not be priced, rather than substituting another', () => {
+    const result = calculate(
+      DEAL_NO_LOTS,
+      CHAIN,
+      programs([
+        program({
+          id: 'charges',
+          tiers: ladder('10.0000'),
+          revenueBasis: 'commission_swap_spread',
+        }),
+      ]),
+      byBasis,
+    );
+
+    expect(result.accruals).toEqual([]);
+    /*
+     * `unpriceable`, and NOT `skippedReason` — the distinction is the whole
+     * point. `skippedReason` means the partner is owed nothing and the deal is
+     * finished with, which the queue acts on by marking it DONE. This partner
+     * IS owed something and we cannot say how much, so the caller must refuse
+     * and defer. Asserting the wrong field here would pass while the commission
+     * was being discarded.
+     */
+    expect(result.unpriceable?.join(' ')).toContain('commission_swap_spread');
+    expect(result.skippedReason).toBeUndefined();
+  });
+
+  /*
+   * Backward compatibility, and it is load-bearing: every caller that has one
+   * revenue figure — and every deployment before 0106 — must keep pricing every
+   * leg on it.
+   */
+  it('prices everything on the single gross when no map is given', () => {
+    const result = calculate(
+      DEAL_NO_LOTS,
+      CHAIN,
+      programs([program({ id: 'charges', tiers: ladder('10.0000'), revenueBasis: 'spread' })]),
+    );
+
+    expect(result.accruals[0]?.amount).toBe('100.00000000');
   });
 });

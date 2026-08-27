@@ -1,3 +1,4 @@
+import type { RevenueBasis } from '../revenue-basis';
 /**
  * "This deposit settled — accrue whatever partners are owed for it."
  *
@@ -125,8 +126,21 @@ export interface CommissionAccrualPort {
     /** MT5's ticket, for logging. */
     ticket: string;
     clientUserId: string;
-    /** What the broker earned on this deal — its commission plus swap. */
+    /** What the broker earned on this deal under the DEFAULT basis. */
     brokerRevenue: string;
+    /**
+     * What it earned under EACH basis — FR-IB-16 (0106).
+     *
+     * Optional, so a caller with one figure keeps the pre-0106 behaviour of
+     * pricing every leg on `brokerRevenue`. With it, each partner is paid a
+     * percentage of the revenue their OWN programme names, which is what lets a
+     * chain mix programmes that priced differently.
+     *
+     * A basis the caller could not price is OMITTED, never zero: zero is a
+     * price, absent means "no answer", and the accrual refuses rather than
+     * paying nothing under terms nobody agreed to.
+     */
+    revenueByBasis?: ReadonlyMap<RevenueBasis, string>;
     /** Lots, for `per_lot` levels. */
     lots: string;
     currency: string;

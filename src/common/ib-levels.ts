@@ -82,3 +82,49 @@ export function normaliseIbMaxLevels(stored: number | null | undefined): number 
   if (stored < 1 || stored > ABSOLUTE_IB_MAX_LEVELS) return DEFAULT_IB_MAX_LEVELS;
   return stored;
 }
+
+/**
+ * What one TRADE may cost in total, as a % of the broker's revenue on it —
+ * every commission leg in the chain plus the client's rebate (0106).
+ *
+ * 100 by default, and the reason it is not something prudent like 60 is the
+ * same reason `DEFAULT_IB_MAX_LEVELS` is the committed two: a default is what a
+ * deployment that configured nothing gets, and this one must not quietly change
+ * what a running platform pays. At 100 it refuses only the case with no
+ * legitimate reading — paying out more of a trade than the trade earned.
+ */
+export const DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT = '100';
+
+/**
+ * The stored ceiling, or the default when it is unusable.
+ *
+ * A DECIMAL STRING in and out. §6.1 forbids `Number()` and `parseFloat` on
+ * anything that touches an amount, and this is multiplied by the broker's
+ * revenue one call later — a float here reintroduces the error the NUMERIC
+ * columns exist to prevent.
+ *
+ * So the validation is a REGEX and not a parse. `Number.isFinite(Number(x))`
+ * would accept `'1e2'`, `' 100 '` and `'0x64'`, and `parseInt('1e1', 10)` is 1
+ * — the same trap that made `ibMaxLevels` read 1 for a malformed value.
+ *
+ * An unusable value falls back to the DEFAULT rather than to the minimum: a bad
+ * row must not silently stop paying every partner on the platform.
+ */
+export function normaliseIbMaxTotalPayoutPct(stored: string | null | undefined): string {
+  if (stored === null || stored === undefined) return DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT;
+
+  const trimmed = stored.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT;
+
+  /*
+   * Compared as numbers only to bound it, never to carry it. The value RETURNED
+   * is the original string, so no precision is lost on the way through — the
+   * comparison is a range test, not an arithmetic step.
+   */
+  const asNumber = Number(trimmed);
+  if (!Number.isFinite(asNumber) || asNumber <= 0 || asNumber > 100) {
+    return DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT;
+  }
+
+  return trimmed;
+}

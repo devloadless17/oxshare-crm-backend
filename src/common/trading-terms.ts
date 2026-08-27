@@ -1,5 +1,10 @@
 import type { TradingSettingsRow } from '../store/app-settings.store';
-import { DEFAULT_IB_MAX_LEVELS, normaliseIbMaxLevels } from './ib-levels';
+import {
+  DEFAULT_IB_MAX_LEVELS,
+  DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT,
+  normaliseIbMaxLevels,
+  normaliseIbMaxTotalPayoutPct,
+} from './ib-levels';
 
 /**
  * The terms self-service account opening runs on, in one place.
@@ -66,6 +71,17 @@ export interface TradingTerms {
    * `common/ib-levels.ts` for the three different bounds this is one of.
    */
   ibMaxLevels: number;
+
+  /**
+   * The most one TRADE may pay out in total, as a % of its revenue.
+   *
+   * A decimal STRING, like every other rate here — it is multiplied by the
+   * broker's revenue, and §6.1 keeps anything that touches an amount out of
+   * a float. It belongs beside `ibMaxLevels` for the same reason: it BOUNDS
+   * what the Commission Programmes page may cost rather than restating what
+   * that page decides.
+   */
+  ibMaxTotalPayoutPct: string;
 }
 
 /**
@@ -84,6 +100,8 @@ export const DEFAULT_TRADING_TERMS: TradingTerms = {
   maxDemoDeposit: '1000000',
   /* Rev 9's two levels. A database with no row still ships the agreed scope. */
   ibMaxLevels: DEFAULT_IB_MAX_LEVELS,
+  /* 100: refuses only a chain costing more than the trade earned. */
+  ibMaxTotalPayoutPct: DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT,
 };
 
 /**
@@ -110,6 +128,10 @@ export function tradingTermsFrom(row: TradingSettingsRow | null): TradingTerms {
      * partners are paid.
      */
     ibMaxLevels: normaliseIbMaxLevels(row.ibMaxLevels),
+    /* Narrowed on the way OUT for the same reason, and to the DEFAULT for a
+     * stronger one: a bad row that read as the minimum would refuse every
+     * chain on the platform and stop paying everybody. */
+    ibMaxTotalPayoutPct: normaliseIbMaxTotalPayoutPct(row.ibMaxTotalPayoutPct),
   };
 }
 

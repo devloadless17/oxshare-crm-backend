@@ -1037,6 +1037,43 @@ export const tradingSettings = pgTable(
      * INSERT — on the money path, taking every earner on that trade with it.
      */
     ibMaxLevels: integer('ib_max_levels').notNull().default(2),
+    /**
+     * The most one TRADE may cost in total, as a % of the broker's revenue on
+     * it — every commission leg in the chain plus the client's rebate (0106).
+     *
+     * ## Why a per-programme ceiling cannot do this job
+     *
+     * `ib_programs_share_fits` already refuses a single programme whose tiers
+     * plus rebate exceed 100. That bounds ONE partner's terms, and the earners
+     * on a trade may hold different programmes, so it cannot see the other legs
+     * and cannot bound the total. This one can, which is why it is here and not
+     * on the catalogue: a constraint cannot live inside the thing it bounds.
+     *
+     * That is also what distinguishes it from the four IB settings 0104 removed
+     * from this table. Each of those DUPLICATED an answer the Commission
+     * Programmes page already gave. This CONSTRAINS that page, the same test
+     * `ibMaxLevels` passes.
+     *
+     * ## It REFUSES; it does not scale
+     *
+     * `ib_max_revenue_share_pct` (0103) summed every leg and scaled them all
+     * pro rata to fit. That paid immediately and told nobody their rate card
+     * was wrong — a partner quietly received less than their programme
+     * promised, on every trade, with no line anywhere saying so. Over the
+     * ceiling now defers the deal on the 0092 backoff with the reason on the
+     * row, and it pays in FULL once the programmes are corrected.
+     *
+     * ## Why the default is 100 and not something prudent
+     *
+     * 100 moves nobody's economics on the day it lands while still catching the
+     * case with no legitimate reading — paying out more of a trade than it
+     * earned. Seeding 60 would have silently deferred every chain above it on a
+     * platform that had been paying them, which is a migration changing what
+     * partners are paid. A broker protecting margin sets this deliberately.
+     */
+    ibMaxTotalPayoutPct: numeric('ib_max_total_payout_pct', { precision: 12, scale: 4 })
+      .notNull()
+      .default('100'),
     /*
      * ── THE IB BLOCK IS GONE FROM THIS TABLE (0104) ───────────────────────
      *
@@ -1078,6 +1115,16 @@ export const tradingSettings = pgTable(
      * went in 0104 with the columns they bounded.
      */
     check('trading_settings_ib_max_levels_ck', sql`${t.ibMaxLevels} BETWEEN 1 AND 10`),
+    /*
+     * `> 0` rather than `>= 0`: a ceiling of zero refuses every chain on the
+     * platform, which is a way to stop paying partners entirely by typing a
+     * number into a settings form. Turning the programme off is what the
+     * `enabled` flag is for, and it says so.
+     */
+    check(
+      'trading_settings_ib_max_total_payout_ck',
+      sql`${t.ibMaxTotalPayoutPct} > 0 AND ${t.ibMaxTotalPayoutPct} <= 100`,
+    ),
   ],
 );
 
@@ -1664,6 +1711,32 @@ export const agencies = pgTable('agencies', {
    */
   enabled: boolean('enabled').notNull().default(true),
   sortOrder: integer('sort_order').notNull().default(0),
+  /**
+   * The commission programme partners of this agency are appointed on (0107).
+   *
+   * The agency already decides what a partner may SELL — `agency_products`
+   * bounds their book, and a sub-partner inherits the agency of whoever
+   * recruited them. What they are PAID was the one term of that package
+   * configured somewhere else, so a broker running Gold and Standard agencies
+   * had to remember which terms went with which on every approval.
+   *
+   * ## A DEFAULT, never an assignment
+   *
+   * A reviewer's explicit choice still wins, and NULL falls through to the
+   * lowest-sorted enabled programme — the behaviour before this existed. A
+   * negotiated partner inside an ordinary agency is a real case, and cloning
+   * the agency to express it would grow the catalogue one row per negotiation.
+   *
+   * ## `set null`, unlike `ib_accounts.program_id`
+   *
+   * That one is `restrict` because a partner's EARNINGS reference it. This is a
+   * suggestion for approvals that have not happened yet: losing it costs the
+   * next reviewer a click and costs nobody money, so it must not be able to
+   * block an administrative delete.
+   */
+  defaultProgramId: uuid('default_program_id').references(() => ibPrograms.id, {
+    onDelete: 'set null',
+  }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -2969,6 +3042,23 @@ export const ibProgramModeEnum = pgEnum('ib_program_mode', [
   'hybrid',
 ]);
 
+/**
+ * The bases a programme may price on — the same three `common/revenue-basis.ts`
+ * has always named, now with a database type behind them (0106).
+ *
+ * A pgEnum rather than a `varchar` + CHECK because this value reaches the money
+ * path: `brokerRevenueFor` switches on it, and a typo that a CHECK would let
+ * through as "some other string" has no branch to land in.
+ */
+export const ibRevenueBasisEnum = pgEnum('ib_revenue_basis', [
+  /** MT5's charged commission + swap. The default, and what has always shipped. */
+  'commission_swap',
+  /** lots × the product's `spread_markup_per_lot`. See the column's warning. */
+  'spread',
+  /** Both, summed. */
+  'commission_swap_spread',
+]);
+
 export const ibPrograms = pgTable('ib_programs', {
   id: uuid('id').defaultRandom().primaryKey(),
   /** What an operator picks in a list, and what a partner is told they are on. */
@@ -2990,6 +3080,41 @@ export const ibPrograms = pgTable('ib_programs', {
    * a question that has one.
    */
   rebateRate: numeric('rebate_rate', { precision: 12, scale: 4 }).notNull().default('0'),
+  /**
+   * FR-IB-16 — "configure the exact commission and rebate mathematics ...
+   * through the IB program catalogue, so that the economics applied at runtime
+   * match the agreed, documented method" (0106).
+   *
+   * It was `trading_settings.ib_revenue_basis` (0101), then a constant when
+   * 0104 cleared the IB block off that form. Neither is what the requirement
+   * asks for: it names the CATALOGUE as the place, and a constant in a source
+   * file is not configured at all.
+   *
+   * ## Per programme, and that is not a rounding of the requirement
+   *
+   * The base a rate applies to is half of what a partner agreed to — "30% of
+   * the spread markup" and "30% of commission and swap" are different
+   * contracts. A platform-wide switch re-prices every partner at once, which is
+   * the thing nobody can sign.
+   *
+   * The broker's revenue on one trade is therefore computed PER EARNER, from
+   * their own programme's basis. Two partners in a chain may be paid on
+   * different bases, and each is paid what their own contract says.
+   *
+   * ## ⚠️ Selecting `spread` is IRREVERSIBLE for the deals it touches
+   *
+   * A product whose `spread_markup_per_lot` is still 0 yields zero revenue, and
+   * a zero-revenue deal is MARKED DONE rather than retried — MT5's amounts are
+   * final when reported. Switching a programme to `spread` before the markups
+   * are populated pays nothing on every deal that follows, permanently, and
+   * switching back recovers none of it. Nothing can detect it either: a zero
+   * markup is also a legitimate raw-spread product.
+   *
+   * `commission_swap` is the default for exactly that reason — it is what every
+   * deployment already computes on, so this column changed nobody's money on
+   * the day it landed.
+   */
+  revenueBasis: ibRevenueBasisEnum('revenue_basis').notNull().default('commission_swap'),
   /**
    * FR-IB-06's "flagged as selectable" — and it means BOTH halves of that.
    *

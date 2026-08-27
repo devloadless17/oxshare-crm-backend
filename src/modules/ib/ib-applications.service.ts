@@ -703,14 +703,44 @@ export class IbApplicationsService {
       }
       programId = chosen.id;
     } else {
-      const fallback = await this.ib.defaultProgramId();
-      if (!fallback) {
-        throw new ValidationError(
-          'No commission programme is enabled, so an approved partner would have no terms to be ' +
-            'paid on. Enable a programme first.',
-        );
+      /*
+       * ── THE AGENCY'S OWN DEFAULT (0107) ──────────────────────────────────
+       *
+       * The agency already decides what this partner may SELL — its products
+       * bound their book, and a sub-partner inherits the agency of whoever
+       * recruited them. What they are PAID was the one term of that package
+       * configured somewhere else, so a broker running a Gold agency and a
+       * Standard agency had to remember which terms went with which on every
+       * approval, with nothing on the screen to check it against.
+       *
+       * Only consulted when the reviewer expressed NO preference — a negotiated
+       * partner inside an ordinary agency is a real case, and cloning the
+       * agency to express it would grow the catalogue one row per negotiation.
+       */
+      const agencyDefault = agencies.find((agency) => agency.id === agencyId)?.defaultProgramId;
+      const preferred = agencyDefault ? await this.programs.findOne(agencyDefault) : null;
+
+      /*
+       * A DISABLED agency default falls through rather than refusing.
+       *
+       * The reviewer did not choose it and cannot see it on this screen, so a
+       * refusal would report a problem they have no way to act on — and it
+       * would block every approval into that agency until somebody found the
+       * stale pointer. The catalogue default is a working answer, and
+       * `agencies.default_program_id` clears itself if the programme is deleted.
+       */
+      if (preferred?.enabled) {
+        programId = preferred.id;
+      } else {
+        const fallback = await this.ib.defaultProgramId();
+        if (!fallback) {
+          throw new ValidationError(
+            'No commission programme is enabled, so an approved partner would have no terms to be ' +
+              'paid on. Enable a programme first.',
+          );
+        }
+        programId = fallback;
       }
-      programId = fallback;
     }
 
     const account = await this.db.transaction(async (tx) => {

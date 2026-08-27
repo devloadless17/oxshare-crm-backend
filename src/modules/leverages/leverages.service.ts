@@ -7,6 +7,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../../common/erro
 import { DEFAULT_LEVERAGES } from '../../common/trading-terms';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
+import { placeInOrder } from '../../common/ordering';
 import type { CreateLeverageDto, UpdateLeverageDto } from './dto/leverage.dto';
 
 type Db = ReturnType<typeof getDb>;
@@ -102,15 +103,30 @@ export class LeveragesService {
     const existing = await this.findOne(dto.ratio);
     if (existing) throw new ConflictError(`${dto.ratio}:1 is already on the ladder.`);
 
-    const [created] = await this.db
-      .insert(leverages)
-      .values({
-        ratio: dto.ratio,
-        label: dto.label?.trim() || null,
-        enabled: dto.enabled ?? true,
-        sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
-      })
-      .returning();
+    /*
+     * TRANSACTIONAL, because placing this rung renumbers the ones it displaces.
+     * A failure between the renumber and the insert would leave the ladder with
+     * a hole where this rung was going to sit.
+     */
+    const created = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(leverages)
+        .values({
+          ratio: dto.ratio,
+          label: dto.label?.trim() || null,
+          enabled: dto.enabled ?? true,
+          /*
+           * `nextSortOrder()` used to sit here — max + 10, which appended
+           * correctly but left gaps of ten that no screen explained and no
+           * control could close. Worse, an explicit `dto.sortOrder` was stored
+           * RAW, so typing a number another rung already held produced a tie
+           * and the ladder fell back to ordering by ratio.
+           */
+          sortOrder: await this.placeOrder(tx, dto.ratio, dto.sortOrder),
+        })
+        .returning();
+      return row;
+    });
 
     this.audit.record(actor.id, 'leverage.create', 'leverages', String(created.ratio), {
       ratio: created.ratio,
@@ -143,16 +159,21 @@ export class LeveragesService {
       }
     }
 
-    const [updated] = await this.db
-      .update(leverages)
-      .set({
-        ...(dto.label !== undefined ? { label: dto.label?.trim() || null } : {}),
-        ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
-        ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
-        updatedAt: new Date(),
-      })
-      .where(eq(leverages.ratio, ratio))
-      .returning();
+    const updated = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(leverages)
+        .set({
+          ...(dto.label !== undefined ? { label: dto.label?.trim() || null } : {}),
+          ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
+          ...(dto.sortOrder !== undefined
+            ? { sortOrder: await this.placeOrder(tx, ratio, dto.sortOrder) }
+            : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(leverages.ratio, ratio))
+        .returning();
+      return row;
+    });
 
     /* Only the fields that MOVED, with what they were — the same shape every
        other settings audit row in this codebase takes. */
@@ -203,9 +224,46 @@ export class LeveragesService {
   }
 
   /** Appended to the end of the operator's order, in tens so a later insert fits between. */
-  private async nextSortOrder(): Promise<number> {
-    const rows = await this.db.select({ sortOrder: leverages.sortOrder }).from(leverages);
-    return rows.reduce((highest, row) => Math.max(highest, row.sortOrder), -10) + 10;
+  /**
+   * Give this rung the position asked for, moving whoever is in the way.
+   *
+   * Replaced `nextSortOrder()` — max + 10 — which appended correctly and left
+   * gaps of ten behind. The ladder is `0,1,2 …` now, so the number in the form
+   * is the position on the screen rather than a spacing convention.
+   *
+   * Keyed on the RATIO, which is this table's primary key. `placeInOrder` takes
+   * string ids, so the ratio is stringified on the way in and parsed back out —
+   * a rung is `500:1`, and there is no separate surrogate to use instead.
+   */
+  private async placeOrder(
+    tx: Parameters<Parameters<Db['transaction']>[0]>[0],
+    ratio: number,
+    desired: number | undefined,
+  ): Promise<number> {
+    const rows = await tx
+      .select({ ratio: leverages.ratio, sortOrder: leverages.sortOrder })
+      .from(leverages);
+
+    const changes = placeInOrder(
+      rows.map((row) => ({ id: String(row.ratio), sortOrder: row.sortOrder })),
+      String(ratio),
+      desired,
+    );
+
+    let position = rows.find((row) => row.ratio === ratio)?.sortOrder ?? 0;
+
+    for (const change of changes) {
+      if (change.id === String(ratio)) {
+        position = change.sortOrder;
+        continue;
+      }
+      await tx
+        .update(leverages)
+        .set({ sortOrder: change.sortOrder })
+        .where(eq(leverages.ratio, Number(change.id)));
+    }
+
+    return position;
   }
 
   private assertRatio(ratio: number): void {

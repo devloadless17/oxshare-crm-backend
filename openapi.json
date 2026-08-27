@@ -11544,6 +11544,15 @@
             ],
             "description": "Which legs pay. `commission_only` pays the partner, `rebate_only` pays the trading client and no partner, `hybrid` pays both."
           },
+          "revenueBasis": {
+            "type": "string",
+            "enum": [
+              "commission_swap",
+              "spread",
+              "commission_swap_spread"
+            ],
+            "description": "Which revenue this programme’s rates are a percentage OF (FR-IB-16). `commission_swap` is MT5’s charged commission plus swap and is what every deployment computes on. `spread` prices lots against the product’s spread markup. ⚠️ Selecting `spread` before markups are populated pays nothing on every deal that follows, permanently — a zero-revenue deal is marked done, not retried."
+          },
           "tiers": {
             "description": "What this programme pays at each depth, shallowest first. The COUNT is how many levels its holder’s earnings reach. Empty on a `rebate_only` programme, which pays no partner.",
             "type": "array",
@@ -11579,6 +11588,7 @@
           "name",
           "sortOrder",
           "mode",
+          "revenueBasis",
           "tiers",
           "rebateRate",
           "enabled",
@@ -11623,6 +11633,15 @@
             ],
             "default": "commission_only"
           },
+          "revenueBasis": {
+            "type": "string",
+            "enum": [
+              "commission_swap",
+              "spread",
+              "commission_swap_spread"
+            ],
+            "default": "commission_swap"
+          },
           "tiers": {
             "description": "The ladder, 1..N with no gaps. Omit for a rebate-only programme.",
             "type": "array",
@@ -11661,6 +11680,15 @@
               "rebate_only",
               "hybrid"
             ]
+          },
+          "revenueBasis": {
+            "type": "string",
+            "enum": [
+              "commission_swap",
+              "spread",
+              "commission_swap_spread"
+            ],
+            "default": "commission_swap"
           },
           "tiers": {
             "description": "REPLACES the whole ladder. Send every level you want to keep; omit the field to leave the existing ladder alone. An empty array removes every level.",
@@ -13295,6 +13323,11 @@
             "maximum": 10,
             "description": "How many levels a commission programme’s ladder may reach. Defaults to 2 — the committed two-level structure (Feature List Rev 9, IB-17). Bounds what may be SAVED: lowering it leaves existing programmes paying exactly what they paid before."
           },
+          "ibMaxTotalPayoutPct": {
+            "type": "string",
+            "example": "100.0000",
+            "description": "The most one trade may pay out in total, as a % of the broker’s revenue on it — every commission leg plus the client’s rebate. Defaults to 100, which refuses only a chain costing more than the trade earned. A chain over the ceiling is REFUSED and retried, never silently scaled down."
+          },
           "updatedAt": {
             "type": "string",
             "nullable": true,
@@ -13305,7 +13338,8 @@
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
-          "ibMaxLevels"
+          "ibMaxLevels",
+          "ibMaxTotalPayoutPct"
         ]
       },
       "UpdateTradingSettingsDto": {
@@ -13333,13 +13367,18 @@
             "example": 2,
             "minimum": 1,
             "maximum": 10
+          },
+          "ibMaxTotalPayoutPct": {
+            "type": "string",
+            "example": "100.0000"
           }
         },
         "required": [
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
-          "ibMaxLevels"
+          "ibMaxLevels",
+          "ibMaxTotalPayoutPct"
         ]
       },
       "SmtpSettingsDto": {
@@ -13751,8 +13790,7 @@
         },
         "required": [
           "name",
-          "enabled",
-          "sortOrder"
+          "enabled"
         ]
       },
       "AttachGroupDto": {
@@ -13801,6 +13839,12 @@
             "type": "number",
             "example": 0
           },
+          "defaultProgramId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "The commission programme partners of this agency are appointed on (0107). Null means the agency expresses no preference, and approval falls through to the lowest-sorted enabled programme. A reviewer’s explicit choice always wins over this."
+          },
           "productIds": {
             "description": "The products this agency sells.",
             "type": "array",
@@ -13815,6 +13859,7 @@
           "name",
           "enabled",
           "sortOrder",
+          "defaultProgramId",
           "productIds"
         ]
       },
@@ -13840,12 +13885,16 @@
             "example": 0,
             "minimum": 0,
             "maximum": 1000
+          },
+          "defaultProgramId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
           }
         },
         "required": [
           "name",
-          "enabled",
-          "sortOrder"
+          "enabled"
         ]
       },
       "SetAgencyProductsDto": {

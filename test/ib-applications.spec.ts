@@ -158,8 +158,16 @@ beforeEach(async () => {
    * make itself the FIRST enabled programme by sort order, and silently become
    * the terms a later approval assigns.
    */
-  await ctx.db.execute(sql`DELETE FROM ib_programs WHERE name <> 'Default'`);
-  await ctx.db.execute(sql`UPDATE ib_programs SET enabled = true WHERE name = 'Default'`);
+  /*
+   * 'Standard' is the lowest-sorted seeded programme since 0106, which replaced
+   * the single 'Default' with a three-programme rate card. Reducing to ONE here
+   * is deliberate and not laziness about the other two: several cases below
+   * create a 'Gold' of their own to prove that approval falls back to the
+   * default rather than inheriting a parent's terms, and a seeded Gold would
+   * collide with it on `ib_programs.name`, which is unique.
+   */
+  await ctx.db.execute(sql`DELETE FROM ib_programs WHERE name <> 'Standard'`);
+  await ctx.db.execute(sql`UPDATE ib_programs SET enabled = true WHERE name = 'Standard'`);
 
   /*
    * An OPEN agency, because an application without one is refused now.
@@ -200,6 +208,108 @@ async function defaultProgram(store: IbStore): Promise<string> {
  * The DATABASE bound is deliberately wider (1..10), so that widening the
  * ceiling is a form somebody fills in rather than a migration somebody writes.
  */
+/**
+ * ── A SUB-PARTNER'S TERMS ARE THE BROKER'S DECISION, NOT THEIR PARENT'S ─────
+ *
+ * The AGENCY is inherited — a sub-partner sells what their introducer sells,
+ * because a downline offering a catalogue the master has no relationship with
+ * is incoherent. The PROGRAMME deliberately is not, and the asymmetry is the
+ * point: an agency decides what they may SELL, a programme decides what the
+ * broker PAYS them.
+ *
+ * If the programme were inherited, a master partner on Gold would put everyone
+ * they recruit on Gold — a partner setting what the broker pays their own
+ * downline, out of the broker's money. In practice a sub-partner is usually put
+ * on LESS than their parent, who takes the override on top, so inheriting would
+ * be exactly backwards.
+ *
+ * The engine supports the mixed chain on purpose: each earner reads their own
+ * programme, and `ib-multi-level.spec.ts` proves a deep programme still pays
+ * through a shallow one beneath it.
+ */
+describe('approving a partner who is already under one', () => {
+  const programs = () => new IbProgramsService(ctx.db, auditStubAs(), new AppSettingsStore(ctx.db));
+
+  /** A parent partner on `Gold`, and a client they introduced. */
+  async function parentOnGold(): Promise<{ parent: string; client: string; gold: string }> {
+    const gold = await programs().create(
+      {
+        name: 'Gold',
+        tiers: [
+          { depth: 1, rate: '60' },
+          { depth: 2, rate: '25' },
+        ],
+      },
+      REVIEWER,
+    );
+
+    const parent = await makeClient('sub-parent@test.local');
+    const parentApp = await service.apply(parent, { agencyId: AGENCY.id });
+    await service.approve(parentApp.id, REVIEWER, UNRESTRICTED, { programId: gold.id });
+
+    const client = await makeClient('sub-child@test.local');
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${parent} WHERE id = ${client}`,
+    );
+    return { parent, client, gold: gold.id };
+  }
+
+  it('puts the sub-partner on the programme the reviewer chose, not their parent’s', async () => {
+    const { parent, client, gold } = await parentOnGold();
+    const silver = await programs().create(
+      { name: 'Silver', tiers: [{ depth: 1, rate: '30' }] },
+      REVIEWER,
+    );
+
+    const application = await service.apply(client, {});
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+      parentIbUserId: parent,
+      programId: silver.id,
+    });
+
+    expect(account.programId).toBe(silver.id);
+    expect(account.programId).not.toBe(gold);
+    /* And the parent is untouched — one approval must not restate their terms. */
+    expect((await store.findAccount(parent))?.programId).toBe(gold);
+  });
+
+  /*
+   * With no explicit choice the reviewer gets the DEFAULT — the first enabled
+   * programme — rather than the parent's. Asserted because "it happened to
+   * match the parent" is the coincidence that would hide an inheritance nobody
+   * asked for.
+   */
+  it('falls back to the default programme, not to the parent’s', async () => {
+    const { parent, client, gold } = await parentOnGold();
+
+    const application = await service.apply(client, {});
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+      parentIbUserId: parent,
+    });
+
+    expect(account.programId).toBe(await defaultProgram(store));
+    expect(account.programId).not.toBe(gold);
+  });
+
+  /* The AGENCY still comes from the parent — the half that IS inherited. */
+  it('still inherits the agency while choosing the programme freely', async () => {
+    const { parent, client } = await parentOnGold();
+    const silver = await programs().create(
+      { name: 'Silver', tiers: [{ depth: 1, rate: '30' }] },
+      REVIEWER,
+    );
+
+    const application = await service.apply(client, {});
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+      parentIbUserId: parent,
+      programId: silver.id,
+    });
+
+    expect(account.agencyId).toBe(AGENCY.id);
+    expect(account.programId).toBe(silver.id);
+  });
+});
+
 describe('how deep a ladder may go', () => {
   const programs = () => new IbProgramsService(ctx.db, auditStubAs(), new AppSettingsStore(ctx.db));
 
@@ -1384,5 +1494,122 @@ describe('managing a live partner', () => {
     expect(page.rows[0].user.email).toBeTruthy();
     // And what they are PAID on, which is what `levelName` never actually said.
     expect(page.rows[0].programName).toBeTruthy();
+  });
+});
+
+/*
+ * ── AN AGENCY CARRIES DEFAULT TERMS (0107) ──────────────────────────────────
+ *
+ * The agency already decided what a partner may SELL. What they are PAID was
+ * the one term of that package configured somewhere else, so a broker running a
+ * Gold agency and a Standard agency had to remember which terms went with which
+ * on every approval — with nothing on the screen to check it against.
+ *
+ * Three rules, and the ORDER between them is the whole feature:
+ *
+ *   1. the reviewer's explicit pick   — always wins
+ *   2. the agency's default           — when they expressed none
+ *   3. the lowest-sorted enabled one  — when the agency expresses none either
+ */
+describe('the agency’s default programme', () => {
+  const programs = () => new IbProgramsService(ctx.db, auditStubAs(), new AppSettingsStore(ctx.db));
+
+  /** Point the fixture agency at a programme, or clear it with `null`. */
+  async function setAgencyDefault(programId: string | null): Promise<void> {
+    await ctx.db.execute(
+      sql`UPDATE agencies SET default_program_id = ${programId} WHERE id = ${AGENCY.id}`,
+    );
+  }
+
+  it('appoints a partner on the agency’s programme when the reviewer picks none', async () => {
+    const gold = await programs().create(
+      { name: 'Agency Gold', tiers: [{ depth: 1, rate: '30' }] },
+      REVIEWER,
+    );
+    await setAgencyDefault(gold.id);
+
+    const applicant = await makeClient('agency-default@test.local');
+    const application = await service.apply(applicant, { agencyId: AGENCY.id });
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {});
+
+    expect(account.programId).toBe(gold.id);
+    /* And it is NOT the catalogue default, or this proves nothing. */
+    expect(account.programId).not.toBe(await defaultProgram(store));
+  });
+
+  /*
+   * A negotiated partner inside an ordinary agency is a real case. If the
+   * agency's default could override the reviewer, expressing it would mean
+   * cloning the agency — one row per negotiation.
+   */
+  it('lets the reviewer override the agency’s default', async () => {
+    const gold = await programs().create(
+      { name: 'Agency Gold', tiers: [{ depth: 1, rate: '30' }] },
+      REVIEWER,
+    );
+    const bespoke = await programs().create(
+      { name: 'Negotiated', tiers: [{ depth: 1, rate: '45' }] },
+      REVIEWER,
+    );
+    await setAgencyDefault(gold.id);
+
+    const applicant = await makeClient('agency-override@test.local');
+    const application = await service.apply(applicant, { agencyId: AGENCY.id });
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+      programId: bespoke.id,
+    });
+
+    expect(account.programId).toBe(bespoke.id);
+  });
+
+  it('falls through to the catalogue default when the agency has none', async () => {
+    await setAgencyDefault(null);
+
+    const applicant = await makeClient('agency-none@test.local');
+    const application = await service.apply(applicant, { agencyId: AGENCY.id });
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {});
+
+    expect(account.programId).toBe(await defaultProgram(store));
+  });
+
+  /*
+   * A DISABLED agency default must not block approvals into that agency.
+   *
+   * The reviewer did not choose it and cannot see it on this screen, so a
+   * refusal would report a problem they have no way to act on — and it would
+   * stop every approval into the agency until somebody found the stale pointer.
+   */
+  it('falls through rather than refusing when the agency’s default is disabled', async () => {
+    const retired = await programs().create(
+      { name: 'Retired Terms', tiers: [{ depth: 1, rate: '30' }] },
+      REVIEWER,
+    );
+    await setAgencyDefault(retired.id);
+    await programs().update(retired.id, { enabled: false }, REVIEWER);
+
+    const applicant = await makeClient('agency-disabled@test.local');
+    const application = await service.apply(applicant, { agencyId: AGENCY.id });
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {});
+
+    expect(account.programId).toBe(await defaultProgram(store));
+  });
+
+  /*
+   * `ON DELETE SET NULL`, unlike `ib_accounts.program_id`, which is `restrict`.
+   * A default is a suggestion for approvals that have not happened yet, so it
+   * must never block an administrative delete.
+   */
+  it('clears itself when the programme it points at is deleted', async () => {
+    const doomed = await programs().create(
+      { name: 'Doomed', tiers: [{ depth: 1, rate: '30' }] },
+      REVIEWER,
+    );
+    await setAgencyDefault(doomed.id);
+    await programs().remove(doomed.id, REVIEWER);
+
+    const { rows } = await ctx.db.execute<{ default_program_id: string | null }>(
+      sql`SELECT default_program_id FROM agencies WHERE id = ${AGENCY.id}`,
+    );
+    expect(rows[0].default_program_id).toBeNull();
   });
 });

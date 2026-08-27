@@ -14,6 +14,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { REVENUE_BASES, type RevenueBasis } from '../../../common/revenue-basis';
 
 /** FR-IB-05's three modes: which legs a programme actually pays. */
 export const IB_PROGRAM_MODES = ['commission_only', 'rebate_only', 'hybrid'] as const;
@@ -116,6 +117,17 @@ export class IbProgramDto {
   mode: IbProgramMode;
 
   @ApiProperty({
+    enum: REVENUE_BASES,
+    description:
+      'Which revenue this programme’s rates are a percentage OF (FR-IB-16). ' +
+      '`commission_swap` is MT5’s charged commission plus swap and is what every deployment ' +
+      'computes on. `spread` prices lots against the product’s spread markup. ' +
+      '⚠️ Selecting `spread` before markups are populated pays nothing on every deal that ' +
+      'follows, permanently — a zero-revenue deal is marked done, not retried.',
+  })
+  revenueBasis: RevenueBasis;
+
+  @ApiProperty({
     type: [IbProgramTierDto],
     description:
       'What this programme pays at each depth, shallowest first. The COUNT is how many levels ' +
@@ -166,6 +178,15 @@ export class CreateIbProgramDto {
   @IsOptional()
   @IsIn(IB_PROGRAM_MODES)
   mode?: IbProgramMode;
+  /**
+   * FR-IB-16 (0106). Omitted means `commission_swap` on create and "leave it
+   * alone" on update — the safe reading in both directions, because the other
+   * two bases can only pay LESS on a platform whose markups are unset.
+   */
+  @ApiPropertyOptional({ enum: REVENUE_BASES, default: 'commission_swap' })
+  @IsOptional()
+  @IsIn(REVENUE_BASES)
+  revenueBasis?: RevenueBasis;
 
   /**
    * `@ValidateNested({ each: true })` WITH `@Type`, and both are required.
@@ -226,6 +247,15 @@ export class UpdateIbProgramDto {
   @IsOptional()
   @IsIn(IB_PROGRAM_MODES)
   mode?: IbProgramMode;
+  /**
+   * FR-IB-16 (0106). Omitted means `commission_swap` on create and "leave it
+   * alone" on update — the safe reading in both directions, because the other
+   * two bases can only pay LESS on a platform whose markups are unset.
+   */
+  @ApiPropertyOptional({ enum: REVENUE_BASES, default: 'commission_swap' })
+  @IsOptional()
+  @IsIn(REVENUE_BASES)
+  revenueBasis?: RevenueBasis;
 
   /**
    * ⚠️ REPLACE-ALL, not a merge — the one field on this PATCH that is not

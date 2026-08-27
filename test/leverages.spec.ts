@@ -90,8 +90,18 @@ describe('adding a rung', () => {
 
     expect(created.ratio).toBe(200);
     expect(created.enabled).toBe(true);
-    // Appended, in tens, so a later insert fits between without a renumber.
-    expect(created.sortOrder).toBe(30);
+    /*
+     * Appended CONTIGUOUSLY — position 3 of a four-rung ladder.
+     *
+     * This asserted 30 while `nextSortOrder()` returned max + 10, on the
+     * reasoning that gaps of ten let a later insert "fit between without a
+     * renumber". Nothing could use them: no screen showed the spacing and no
+     * control could place a rung inside a gap, so what an operator actually had
+     * was a form asking for a number whose meaning they could not see. The
+     * ladder is `0,1,2 …` now and the number in the form IS the position on the
+     * screen — the fixture's 0/10/20 are renumbered by this same write.
+     */
+    expect(created.sortOrder).toBe(3);
   });
 
   it('refuses a duplicate rather than quietly updating it', async () => {
@@ -184,5 +194,62 @@ describe('the gate on the account-opening path', () => {
     // The case a foreign key could not catch: the row still exists, and a
     // client holding the form in a tab must not be able to open on it.
     await expect(service.assertUsable(500)).rejects.toThrow(/not currently available/i);
+  });
+});
+
+/*
+ * ── PLACING A RUNG, AGAINST A REAL DATABASE ─────────────────────────────────
+ *
+ * `src/common/ordering.spec.ts` proves the arithmetic. These prove the WRITE:
+ * that the rows the pure function says must move actually move, inside one
+ * transaction, on a ladder whose primary key is the ratio rather than a uuid.
+ */
+describe('where a rung sits', () => {
+  const ladder = async () => {
+    const { rows } = await ctx.db.execute<{ ratio: number; sort_order: number }>(
+      sql`SELECT ratio, sort_order FROM leverages ORDER BY sort_order`,
+    );
+    return rows.map((row) => `${row.ratio}@${row.sort_order}`);
+  };
+
+  it('tidies a ladder that arrived with gaps', async () => {
+    /* The fixture stores 0/10/20 — the spacing the old append left behind. */
+    await service.create({ ratio: 200 }, ACTOR);
+
+    expect(await ladder()).toEqual(['50@0', '100@1', '500@2', '200@3']);
+  });
+
+  /*
+   * THE DEFECT THIS EXISTS FOR. Typing a position another rung already held
+   * stored a DUPLICATE, and the ladder then fell back to ordering by ratio —
+   * so the rung appeared somewhere the operator had not put it, with no error.
+   */
+  it('inserting at a taken position moves that rung down, never ties with it', async () => {
+    await service.create({ ratio: 200, sortOrder: 0 }, ACTOR);
+
+    expect(await ladder()).toEqual(['200@0', '50@1', '100@2', '500@3']);
+  });
+
+  it('moving an existing rung closes the gap behind it', async () => {
+    await service.update(50, { sortOrder: 2 }, ACTOR);
+
+    expect(await ladder()).toEqual(['100@0', '500@1', '50@2']);
+  });
+
+  it('clamps a position past the end rather than refusing it', async () => {
+    await service.create({ ratio: 200, sortOrder: 999 }, ACTOR);
+
+    expect(await ladder()).toEqual(['50@0', '100@1', '500@2', '200@3']);
+  });
+
+  it('leaves the ladder contiguous from zero after every write', async () => {
+    await service.create({ ratio: 200, sortOrder: 1 }, ACTOR);
+    await service.create({ ratio: 400, sortOrder: 0 }, ACTOR);
+    await service.update(500, { sortOrder: 1 }, ACTOR);
+
+    const { rows } = await ctx.db.execute<{ sort_order: number }>(
+      sql`SELECT sort_order FROM leverages ORDER BY sort_order`,
+    );
+    expect(rows.map((row) => row.sort_order)).toEqual([0, 1, 2, 3, 4]);
   });
 });

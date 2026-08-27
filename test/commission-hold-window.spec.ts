@@ -9,6 +9,7 @@ import type { AdminsStore } from '../src/store/admins.store';
 import type { RolesStore } from '../src/store/roles.store';
 import type { AdminClientScopesStore } from '../src/store/admin-client-scopes.store';
 import type { ClientVisibilityService } from '../src/common/security/client-visibility.service';
+import { AppSettingsStore } from '../src/store/app-settings.store';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /*
@@ -54,7 +55,15 @@ function serviceWithHold(hours: string | undefined): CommissionService {
   // A fresh ConfigService per case: the value is read through the real config
   // path, so this exercises what a deployment actually configures rather than
   // a test-only argument.
-  return new CommissionService(ctx.db, wallets, dispatch, new ConfigService());
+  return new CommissionService(
+    ctx.db,
+    wallets,
+    dispatch,
+    new ConfigService(),
+    // The payout ceiling (0106). The real store against the real row, so
+    // these read the shipped default of 100 rather than a stub's opinion.
+    new AppSettingsStore(ctx.db),
+  );
 }
 
 async function makeClient(email: string): Promise<string> {

@@ -64,17 +64,27 @@ export interface TradingSettingsRow {
   maxDemoAccounts: number;
   /** A decimal string, never a number — see §6. */
   maxDemoDeposit: string;
+  /** How deep a programme's ladder may reach. Narrow with `normaliseIbMaxLevels`. */
   ibMaxLevels: number;
-  /** The most of its revenue the broker will pay partners, as a percentage. */
-  /** Hours an accrual is held before it may be confirmed. */
-  /** `null` (undecided), `'all'`, or an ISO instant — see the column comment. */
   /**
-   * Raw from the column — narrow it with `revenueBasisOf` before use.
+   * The most one trade may pay out in total, as a percentage — a decimal
+   * STRING, never a number, because it is multiplied by an amount (§6).
    *
-   * A plain `string` rather than the union on purpose: this interface
-   * describes what the DATABASE holds, and a restored dump predating the
-   * CHECK can hold anything. Typing it as the union here would make every
-   * reader believe a narrowing that had not happened.
+   * Raw from the column: narrow it with `normaliseIbMaxTotalPayoutPct` before
+   * use. This interface describes what the DATABASE holds, and a restored dump
+   * predating the CHECK can hold anything — typing it as something already
+   * validated would make every reader believe a narrowing that had not
+   * happened.
+   */
+  ibMaxTotalPayoutPct: string;
+  /*
+   * Four doc comments sat here describing fields that 0103 and 0104 removed —
+   * the broker cap, the hold window, the accrual start and the revenue basis.
+   * The comments outlived their fields and attached themselves to `updatedBy`,
+   * which is how a reader ends up believing this row still carries the IB
+   * block. It does not: commission is configured on the Commission Programmes
+   * page, and the two IB numbers left here BOUND that page rather than
+   * restating it.
    */
   updatedBy: string | null;
   updatedAt: Date;
@@ -85,9 +95,15 @@ export interface TradingSettingsWrite {
   maxDemoAccounts: number;
   maxDemoDeposit: string;
   ibMaxLevels: number;
-  /** Hours an accrual is held before it may be confirmed. */
-  /** `null` (undecided), `'all'`, or an ISO instant — see the column comment. */
-  /** One of `REVENUE_BASES` — the writer narrows before it reaches here. */
+  /**
+   * A decimal string. The writer has already bounded it — the CHECK behind the
+   * column is the backstop, not the validation.
+   *
+   * Three comments here described the hold window, the accrual start and the
+   * revenue basis, all removed in 0104. They are env values and a per-programme
+   * column now; see `TradingSettingsRow` above.
+   */
+  ibMaxTotalPayoutPct: string;
 }
 
 export interface RivalSettingsRow {

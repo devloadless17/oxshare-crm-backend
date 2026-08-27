@@ -8,6 +8,9 @@ import { LEDGER_REFERENCE, type LedgerReferenceType } from '../../database/ledge
 import { NotFoundError } from '../../common/errors/domain-errors';
 import { money, toDecimal } from '../wallet/money';
 import { LIVE_REVENUE_FEED, isLiveRevenueFeed } from './revenue-feed';
+import { AppSettingsStore } from '../../store/app-settings.store';
+import type { RevenueBasis } from '../../common/revenue-basis';
+import { tradingTermsFrom } from '../../common/trading-terms';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { WalletService } from '../wallet/wallet.service';
 import {
@@ -90,7 +93,30 @@ export class CommissionService implements CommissionAccrualPort {
      * the IB block on the Trading settings form.
      */
     private readonly config: ConfigService,
+    /*
+     * Back for ONE number (0106): `ib_max_total_payout_pct`, the ceiling on
+     * what a single trade may cost across every leg.
+     *
+     * It left in 0104 with the four IB settings that each DUPLICATED the
+     * Commission Programmes page. This one does the opposite — it bounds a
+     * total no programme can see, because the earners on one trade may hold
+     * different programmes. A per-programme ceiling would be blind to exactly
+     * the thing worth bounding.
+     */
+    private readonly settings: AppSettingsStore,
   ) {}
+
+  /**
+   * The configured ceiling, narrowed, as a decimal string.
+   *
+   * Read per trade rather than cached: an operator lowering it expects the next
+   * deal to respect it, and a commission engine holding a stale ceiling for the
+   * life of the process is the kind of thing nobody notices until a payout is
+   * disputed.
+   */
+  private async maxTotalPayoutPct(): Promise<string> {
+    return tradingTermsFrom(await this.settings.getTrading()).ibMaxTotalPayoutPct;
+  }
 
   /**
    * How long an accrual must sit before it becomes spendable.
@@ -316,6 +342,15 @@ export class CommissionService implements CommissionAccrualPort {
     ticket: string;
     clientUserId: string;
     brokerRevenue: string;
+    /**
+     * What the broker earned under EACH basis, for FR-IB-16 (0106).
+     *
+     * Optional: without it every earner is priced on `brokerRevenue`, which is
+     * the behaviour that shipped before programmes carried a basis. The deal
+     * feed passes it, so a chain mixing programmes prices each partner on the
+     * terms they actually agreed to.
+     */
+    revenueByBasis?: ReadonlyMap<RevenueBasis, string>;
     lots: string;
     currency: string;
   }): Promise<number> {
@@ -343,6 +378,7 @@ export class CommissionService implements CommissionAccrualPort {
       describe: `deal ${deal.ticket}`,
       clientUserId: deal.clientUserId,
       brokerRevenue: deal.brokerRevenue,
+      revenueByBasis: deal.revenueByBasis,
       lots: deal.lots,
       currency: deal.currency,
     });
@@ -377,8 +413,17 @@ export class CommissionService implements CommissionAccrualPort {
     /** How to name this event in a log line, e.g. `deal 90210`. */
     describe: string;
     clientUserId: string;
-    /** The broker's own earning on this trade — commission plus swap. */
+    /**
+     * The broker's own earning on this trade under the DEFAULT basis.
+     *
+     * Still the figure every leg is priced on when `revenueByBasis` is absent,
+     * and still what `checkPlausible` bounds the total against — see the note
+     * at that call for why the ceiling has one denominator even when the legs
+     * do not.
+     */
     brokerRevenue: string;
+    /** Per-basis revenue for FR-IB-16 (0106); absent means price everything on `brokerRevenue`. */
+    revenueByBasis?: ReadonlyMap<RevenueBasis, string>;
     /** Lots traded, for per_lot levels. */
     lots: string;
     currency: string;
@@ -413,15 +458,40 @@ export class CommissionService implements CommissionAccrualPort {
       lots: event.lots,
     };
 
-    const result = calculate(revenue, chain, programs);
+    const result = calculate(revenue, chain, programs, event.revenueByBasis);
     if (result.skippedReason) {
       this.logger.warn(
         `Commission partially skipped for ${event.describe}: ${result.skippedReason}`,
       );
     }
+    /*
+     * ── A LEG WE CANNOT PRICE IS A REFUSAL, NOT AN EMPTY RESULT ────────────
+     *
+     * This must come BEFORE the zero check below, and that order is the whole
+     * point. A partner owed money whose basis has no figure produces no
+     * accruals — which is indistinguishable from "nobody was owed anything"
+     * once it reaches the queue, and the queue marks that deal DONE. MT5's
+     * amounts are final when reported, so nothing recomputes it when somebody
+     * links the missing product a minute later: the commission is gone.
+     *
+     * Refusing defers the deal on the 0092 backoff with the reason on the row,
+     * and it pays IN FULL once the configuration is corrected.
+     */
+    if (result.unpriceable) {
+      throw new CommissionRefusedError(
+        `${event.describe} cannot be priced for every earner: ${result.unpriceable.join('; ')}. ` +
+          'Nothing has been accrued and the deal stays queued.',
+      );
+    }
+
     if (result.accruals.length === 0 && !result.rebate) return 0;
 
-    const plausible = checkPlausible(revenue, result.accruals, result.rebate);
+    const plausible = checkPlausible(
+      revenue,
+      result.accruals,
+      result.rebate,
+      await this.maxTotalPayoutPct(),
+    );
     if (!plausible.ok) {
       /*
        * §12.4's ceiling, and the ALERT that has always been declared for it.
@@ -463,6 +533,7 @@ export class CommissionService implements CommissionAccrualPort {
         depth: accrual.depth,
         programId: accrual.programId,
         rateValue: accrual.rateValue,
+        baseAmount: accrual.baseAmount,
         amount: accrual.amount,
       })),
       ...(result.rebate && introducer
@@ -473,6 +544,7 @@ export class CommissionService implements CommissionAccrualPort {
               depth: 1,
               programId: result.rebate.programId,
               rateValue: result.rebate.rateValue,
+              baseAmount: result.rebate.baseAmount,
               amount: result.rebate.amount,
             },
           ]
@@ -506,7 +578,15 @@ export class CommissionService implements CommissionAccrualPort {
            */
           programId: accrual.programId,
           rateValue: accrual.rateValue,
-          baseAmount: event.brokerRevenue,
+          /*
+           * The leg's OWN base (0106), not the trade's default-basis revenue.
+           *
+           * Since FR-IB-16 there is no single "the revenue" to stamp here: two
+           * earners on one trade may price on different bases, so the old
+           * `event.brokerRevenue` would have claimed `amount` is `rateValue`%
+           * of a figure it is not — an accrual that fails its own arithmetic.
+           */
+          baseAmount: accrual.baseAmount,
           amount: accrual.amount,
           currency: event.currency,
         })),
@@ -1024,6 +1104,8 @@ export class CommissionService implements CommissionAccrualPort {
            */
           tiers: tiers.get(row.id) ?? new Map<number, string>(),
           rebateRate: row.rebateRate,
+          /* FR-IB-16 (0106): which revenue this programme's rates are of. */
+          revenueBasis: row.revenueBasis,
           enabled: row.enabled,
         },
       ]),

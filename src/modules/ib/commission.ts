@@ -1,5 +1,6 @@
 import Decimal from 'decimal.js';
 import { money, toDecimal } from '../wallet/money';
+import { DEFAULT_REVENUE_BASIS, type RevenueBasis } from '../../common/revenue-basis';
 
 /**
  * The commission engine's pure core — data in, data out.
@@ -206,6 +207,19 @@ export interface ProgramTerms {
   tiers: Map<number, string>;
   /** What returns to the TRADING CLIENT, as a percentage of the same revenue. */
   rebateRate: string;
+  /**
+   * WHICH revenue this programme's rates are a percentage OF — FR-IB-16 (0106).
+   *
+   * The base is half of what a partner agreed to: "30% of the spread markup"
+   * and "30% of commission and swap" are different contracts, and a single
+   * platform-wide switch re-prices everybody at once. So it travels with the
+   * terms, and `calculate` reads it per earner.
+   *
+   * Optional on this interface so an in-memory caller that does not care may
+   * leave it out; absent means `commission_swap`, which is what every
+   * deployment computes on today.
+   */
+  revenueBasis?: RevenueBasis;
   enabled: boolean;
 }
 
@@ -215,6 +229,17 @@ export interface Accrual {
   /** Which programme paid it, and at what rate — both recorded on the row. */
   programId: string;
   rateValue: string;
+  /**
+   * The revenue this leg is a share OF, under the earner's own basis (0106).
+   *
+   * On the row rather than derived from the trade, because since FR-IB-16 there
+   * is no single "the revenue" to derive it from: two earners on one trade may
+   * price on different bases, so a row stamped with the trade's default figure
+   * would claim `amount` is `rateValue`% of a number it is not. That is an
+   * accrual nobody can check by arithmetic — the one property a money ledger
+   * has to keep.
+   */
+  baseAmount: string;
   /** A fixed-scale decimal string, never a number. */
   amount: string;
 }
@@ -236,6 +261,8 @@ export interface RebateLeg {
   ibUserId: string;
   programId: string;
   rateValue: string;
+  /** The revenue this rebate is a share of — the INTRODUCER's basis. */
+  baseAmount: string;
   amount: string;
 }
 
@@ -252,6 +279,58 @@ export interface CommissionResult {
    * explanation is indistinguishable from "nobody was owed anything".
    */
   skippedReason?: string;
+  /**
+   * Legs that could not be priced AT ALL — FR-IB-16 (0106).
+   *
+   * ## Why this is not just another `skippedReason`
+   *
+   * `skippedReason` says a partner is owed NOTHING and the trade is finished
+   * with: a programme that does not reach depth 3, a disabled programme, a
+   * rebate-only programme. The caller marks the deal done and it is done.
+   *
+   * This says the opposite — the partner IS owed something and the system
+   * cannot work out how much, because their programme prices on a basis this
+   * trade has no figure for (an account linked to no product, under a spread
+   * basis). Marking that deal done discards the commission PERMANENTLY: MT5's
+   * amounts are final once reported, so nothing recomputes it when somebody
+   * links the product ten seconds later.
+   *
+   * Collapsing the two is exactly the bug this field exists to prevent, and it
+   * was live: a refused leg produced an empty accrual set, which the deal queue
+   * read as "nobody was owed anything" and marked processed.
+   *
+   * The caller must REFUSE the deal so it defers on the 0092 backoff.
+   */
+  unpriceable?: string[];
+}
+
+/**
+ * The revenue THIS programme's rates are a percentage of.
+ *
+ * Three answers, and they are deliberately different things:
+ *
+ *  - no map          → `fallback`, the single figure the caller computed. This
+ *                      is the pre-0106 behaviour and every caller that has one
+ *                      revenue still gets exactly it.
+ *  - map, basis in   → that basis's figure.
+ *  - map, basis out  → `undefined`, meaning REFUSE this leg.
+ *
+ * The third case must not fall back to `fallback`, and that is the whole reason
+ * this is a function rather than a lookup with `??`. A basis missing from the
+ * map means the caller could not price it — an account linked to no product,
+ * under a basis that needs one — and substituting a different revenue would pay
+ * the partner on terms nobody agreed to, silently, at a number that looks
+ * perfectly reasonable on the accrual row.
+ */
+function basisFor(
+  program: ProgramTerms,
+  fallback: Decimal,
+  revenueByBasis?: ReadonlyMap<RevenueBasis, string>,
+): Decimal | undefined {
+  if (!revenueByBasis) return fallback;
+
+  const figure = revenueByBasis.get(program.revenueBasis ?? DEFAULT_REVENUE_BASIS);
+  return figure === undefined ? undefined : toDecimal(figure);
 }
 
 /**
@@ -270,6 +349,24 @@ export function calculate(
   chain: ChainEntry[],
   /** Every programme held by anybody in `chain`, keyed by id. */
   programs: Map<string, ProgramTerms>,
+  /**
+   * The broker's revenue on this trade under EACH basis — FR-IB-16 (0106).
+   *
+   * Optional. When absent every earner is priced on `event.grossAmount`, which
+   * is what this function did before programmes carried a basis and what every
+   * caller with a single revenue figure still wants.
+   *
+   * When present, each earner's leg is a percentage of the figure for THEIR
+   * programme's basis. The caller computes the map because the arithmetic needs
+   * MT5 legs and a product markup, and this module is a pure seam that lint
+   * keeps away from `modules/` and `store/`.
+   *
+   * A basis with no entry pays nothing and says so, rather than falling back to
+   * the gross: a missing figure means the caller could not price that basis —
+   * an unlinked product, most likely — and quietly substituting a different
+   * revenue would pay a partner on terms they did not agree to.
+   */
+  revenueByBasis?: ReadonlyMap<RevenueBasis, string>,
 ): CommissionResult {
   if (chain.length === 0) return { accruals: [] };
 
@@ -296,6 +393,7 @@ export function calculate(
 
   const accruals: Accrual[] = [];
   const skipped: string[] = [];
+  const unpriceable: string[] = [];
 
   for (const entry of chain) {
     /*
@@ -407,7 +505,40 @@ export function calculate(
      * pricing a rebate on size rather than on money. Migration 0055 removed the
      * model, so `rateValue` has exactly one meaning and this has one branch.
      */
-    const amount = money(gross.times(rate).dividedBy(100));
+    /*
+     * ── WHICH REVENUE THIS EARNER'S RATE APPLIES TO (FR-IB-16, 0106) ───────
+     *
+     * `basisFor` returns `event.grossAmount` when the caller passed no map,
+     * which is every caller that has one revenue figure and every in-memory
+     * test that constructs terms by hand. With a map, each partner is priced on
+     * the basis their OWN programme names — because that is what they agreed
+     * to, and a chain may legitimately mix them.
+     */
+    const base = basisFor(program, gross, revenueByBasis);
+
+    if (base === undefined) {
+      /*
+       * `unpriceable`, NOT `skipped`. The partner is owed something and we
+       * cannot say how much — see the field's own note for why the difference
+       * decides whether this commission survives.
+       */
+      unpriceable.push(
+        `the partner at depth ${entry.depth} is on programme ${program.id}, which prices on ` +
+          `${program.revenueBasis ?? DEFAULT_REVENUE_BASIS}, and this trade has no figure for ` +
+          'that basis — most likely the account is linked to no product carrying a spread markup',
+      );
+      continue;
+    }
+
+    if (!base.greaterThan(0)) {
+      skipped.push(
+        `programme ${program.id} prices on ${program.revenueBasis ?? DEFAULT_REVENUE_BASIS}, ` +
+          'which earned nothing on this trade',
+      );
+      continue;
+    }
+
+    const amount = money(base.times(rate).dividedBy(100));
 
     if (toDecimal(amount).isZero()) continue;
 
@@ -416,6 +547,7 @@ export function calculate(
       depth: entry.depth,
       programId: program.id,
       rateValue,
+      baseAmount: money(base),
       amount,
     });
   }
@@ -442,8 +574,14 @@ export function calculate(
     event.source !== 'deposit'
   ) {
     const rebateRate = toDecimal(introducerProgram.rebateRate);
-    if (rebateRate.greaterThan(0)) {
-      const amount = money(gross.times(rebateRate).dividedBy(100));
+    /*
+     * The client's leg is priced on the INTRODUCER's basis, for the same reason
+     * the rate itself comes from their programme: it is a term of the one
+     * relationship the client is actually in.
+     */
+    const rebateBase = basisFor(introducerProgram, gross, revenueByBasis);
+    if (rebateRate.greaterThan(0) && rebateBase?.greaterThan(0)) {
+      const amount = money(rebateBase.times(rebateRate).dividedBy(100));
       // Rounded first, then tested — the same order, and the same reason, as
       // the commission legs above.
       if (!toDecimal(amount).isZero()) {
@@ -451,6 +589,7 @@ export function calculate(
           ibUserId: introducer.ibUserId,
           programId: introducerProgram.id,
           rateValue: introducerProgram.rebateRate,
+          baseAmount: money(rebateBase),
           amount,
         };
       }
@@ -458,45 +597,43 @@ export function calculate(
   }
 
   /*
-   * ── THERE IS NO BROKER-SIDE CAP HERE, AND THAT IS DELIBERATE ─────────────
+   * ── THE BROKER'S CEILING IS NOT APPLIED HERE ────────────────────────────
    *
-   * `ibMaxRevenueSharePct` used to sit at this point: it summed every leg,
-   * compared the total against a configured percentage of the revenue, and
-   * scaled all of them PRO RATA when they exceeded it. It was removed at the
-   * operator's request, along with the "Maximum paid to partners" setting that
-   * fed it. The FSD asks for no such ceiling — FR-IB-05 and FR-IB-17 describe
-   * what each leg is owed, and nothing about a floor the house keeps.
+   * `ibMaxRevenueSharePct` used to sit at this point: it summed every leg and
+   * scaled them all PRO RATA to fit under a configured percentage. It was
+   * removed at the operator's request (0103) and the ceiling came back in 0106
+   * — deliberately NOT here, and deliberately not as scaling.
    *
-   * ## What still stops an over-payment, and how it differs
+   * ## Why the ceiling lives in `checkPlausible` instead
    *
-   * Two guards remain, and between them nothing pays out more than the broker
-   * earned:
+   * This function answers "what is each partner owed". Every answer it produces
+   * is correct in isolation: each leg is that partner's own rate, from their own
+   * programme, on their own basis. The ceiling is a fact about the SUM, which
+   * does not exist until every leg is known — so enforcing it inside this loop
+   * would decide whether a partner earns based on where they fell in an
+   * iteration order. That is not a rule anybody could explain to the partner it
+   * cut off.
    *
-   *  - `IbProgramsService.assertShareFits` plus the `ib_program_tiers_share_fits`
-   *    constraint trigger bound ONE programme's tiers and rebate to 100%, at
-   *    configuration time, where an operator can still fix it.
-   *  - `checkPlausible` refuses an accrual set whose total exceeds the revenue
-   *    it is a share of — the runtime backstop, per trade, across whatever mix
-   *    of programmes the chain happens to hold.
+   * ## What bounds what, in one place
    *
-   * ## The behaviour that CHANGED, stated plainly
+   *  - `ib_program_tiers_share_fits` + `IbProgramsService.assertShareFits` bound
+   *    ONE programme's tiers and rebate to 100%, at configuration time, where an
+   *    operator can still fix it. It cannot see the other legs on a trade.
+   *  - `checkPlausible` bounds the TRADE: first against its own revenue (the
+   *    unit-error backstop), then against `ib_max_total_payout_pct`. This is the
+   *    only guard that sees a whole chain at once, which is why the ceiling is
+   *    there and not on the catalogue.
    *
-   * A chain that pays out more than the revenue is now REFUSED rather than
-   * scaled. The deal is not lost: `CommissionRefusedError` defers it on the
-   * 0092 backoff with the reason on the row, so it pays in full once the
-   * programmes are corrected. Previously it paid a reduced amount immediately
-   * and logged that it had scaled — which is the friendlier failure and the
-   * less honest one, because nobody was ever told their rates were wrong.
-   *
-   * Exactly 100% now pays out in full and leaves the house nothing on that
-   * trade. That is a configuration an operator can reach and is no longer
-   * prevented here; the per-programme ceiling is what makes it deliberate
-   * rather than accidental.
+   * A chain over either bound is REFUSED, never scaled. The deal is not lost —
+   * it defers on the 0092 backoff with the reason on the row and pays in full
+   * once the rates are corrected. The old behaviour paid a reduced amount
+   * immediately and told nobody the rate card was wrong.
    */
 
   return {
     accruals,
     rebate,
+    unpriceable: unpriceable.length > 0 ? unpriceable : undefined,
     skippedReason: skipped.length > 0 ? skipped.join('; ') : undefined,
   };
 }
@@ -526,6 +663,24 @@ export function checkPlausible(
    * to the client while refusing one paying 101% to a partner.
    */
   rebate?: RebateLeg,
+  /**
+   * `trading_settings.ib_max_total_payout_pct` — the most this ONE TRADE may
+   * cost in total, as a percentage of its revenue (0106).
+   *
+   * Optional, defaulting to 100, so a caller that has no opinion still gets the
+   * unit-error backstop below and nothing else. `DealCommissionService` passes
+   * the configured value; the pure-seam tests pass whatever they are pinning.
+   *
+   * ## Why the ceiling is checked HERE and not in `calculate`
+   *
+   * `calculate` answers "what is each partner owed", and each answer is correct
+   * in isolation — every leg is that partner's own rate applied to their own
+   * programme's basis. The ceiling is a fact about the SUM, which only exists
+   * once every leg is known. Putting it inside the loop would mean deciding
+   * whether a partner earns based on where they happen to fall in an iteration
+   * order, which is not a rule anybody could explain to them.
+   */
+  maxTotalPayoutPct: string = '100',
 ): { ok: true } | { ok: false; reason: string } {
   const gross = toDecimal(event.grossAmount);
   const total = accruals
@@ -561,6 +716,44 @@ export function checkPlausible(
         `Total payout ${money(total)} exceeds the ${event.source}'s own value ` +
         `${money(gross)}. A share cannot exceed the thing it is a share OF, so this is a rate ` +
         'unit error rather than a large event. Nothing has been accrued.',
+    };
+  }
+
+  /*
+   * ── THE BROKER'S CEILING ─────────────────────────────────────────────────
+   *
+   * Checked SECOND, after the unit-error guard above, and the order matters at
+   * the default: at 100 both thresholds are the same number, and the message
+   * that fires should be the one that names the likely cause. "A share cannot
+   * exceed the thing it is a share of" sends an operator to the rate; "over
+   * your configured ceiling" sends them to the settings form. A rate typed as
+   * 7000 is the first problem, not the second.
+   *
+   * ## This REFUSES; it does not scale
+   *
+   * `ibMaxRevenueSharePct` (0103) scaled every leg pro rata to fit under the
+   * ceiling and paid immediately. That is the friendlier failure and the less
+   * honest one: a partner received less than their programme promised, on every
+   * trade, and nothing anywhere said so — not the accrual row, which recorded
+   * the scaled amount as though it were the rate's own output, and not the
+   * operator, who saw commissions being paid.
+   *
+   * Refusing costs a delay instead. `CommissionRefusedError` defers the deal on
+   * the 0092 backoff with this reason on the row, the queue alarm fires once
+   * the refusals stack up, and the deal pays IN FULL the moment somebody fixes
+   * the rates. Nothing is lost and nobody is quietly short-changed.
+   */
+  const ceiling = toDecimal(maxTotalPayoutPct);
+  const allowed = gross.times(ceiling).dividedBy(100);
+
+  if (total.greaterThan(allowed)) {
+    return {
+      ok: false,
+      reason:
+        `Total payout ${money(total)} is over the broker's ceiling of ${maxTotalPayoutPct}% ` +
+        `(${money(allowed)} of ${money(gross)}). The partners in this chain hold programmes ` +
+        'that together cost more than one trade is allowed to. Nothing has been accrued — ' +
+        'correct the programmes or raise the ceiling and it will pay in full.',
     };
   }
 

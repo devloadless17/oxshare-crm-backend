@@ -14,6 +14,7 @@ import type { RolesStore } from '../src/store/roles.store';
 import type { AdminClientScopesStore } from '../src/store/admin-client-scopes.store';
 import type { ClientVisibilityService } from '../src/common/security/client-visibility.service';
 import type { PaymentGateways } from '../src/modules/payments/payment-gateways.service';
+import { AppSettingsStore } from '../src/store/app-settings.store';
 import { auditStubAs } from './audit-stub';
 import { emailStubAs } from './email-stub';
 import { gatewayStub } from './gateway-stub';
@@ -103,10 +104,22 @@ beforeAll(async () => {
   process.env.IB_COMMISSION_HOLD_HOURS = '0';
   /*
    * A REAL settings store on the test database. With no row written it reports
-   * the column defaults, so the broker cap is the default 50% — which is what
-   * a fresh deployment has, and therefore what these tests should run against.
+   * the column defaults, so the payout ceiling is the shipped 100% — which is
+   * what a fresh deployment has, and therefore what these tests should run
+   * against.
+   *
+   * The comment here used to say "the broker cap is the default 50%". That was
+   * `ib_max_revenue_share_pct`, removed in 0103, and the sentence outlived it by
+   * three migrations — describing a control that no longer existed, on a line
+   * that had stopped passing a settings store at all.
    */
-  commissions = new CommissionService(ctx.db, wallets, dispatch, new ConfigService());
+  commissions = new CommissionService(
+    ctx.db,
+    wallets,
+    dispatch,
+    new ConfigService(),
+    new AppSettingsStore(ctx.db),
+  );
 }, 120_000);
 
 afterAll(async () => {

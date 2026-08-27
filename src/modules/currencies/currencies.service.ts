@@ -6,6 +6,7 @@ import { currencies } from '../../database/schema';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
+import { placeInOrder } from '../../common/ordering';
 import type { CreateCurrencyDto, UpdateCurrencyDto } from './dto/currency.dto';
 
 type Db = ReturnType<typeof getDb>;
@@ -152,6 +153,48 @@ export class CurrenciesService {
     return normalised;
   }
 
+  /**
+   * Give `code` the position the operator asked for, and move whoever is in the
+   * way — see `common/ordering.ts` for why all four catalogues share one rule.
+   *
+   * Returns the position the caller should STORE for `code`; every other row
+   * that has to move is written here, inside the caller's transaction, so a
+   * half-renumbered list cannot survive a failure.
+   *
+   * `undefined` means append. That is the only answer to "no opinion" that does
+   * not move somebody else's row.
+   */
+  private async placeOrder(
+    tx: Executor,
+    code: string,
+    desired: number | undefined,
+  ): Promise<number> {
+    const rows = await tx
+      .select({ code: currencies.code, sortOrder: currencies.sortOrder })
+      .from(currencies);
+
+    const changes = placeInOrder(
+      rows.map((row) => ({ id: row.code, sortOrder: row.sortOrder })),
+      code,
+      desired,
+    );
+
+    let position = rows.find((row) => row.code === code)?.sortOrder ?? 0;
+
+    for (const change of changes) {
+      if (change.id === code) {
+        position = change.sortOrder;
+        continue;
+      }
+      await tx
+        .update(currencies)
+        .set({ sortOrder: change.sortOrder })
+        .where(eq(currencies.code, change.id));
+    }
+
+    return position;
+  }
+
   async create(dto: CreateCurrencyDto, actor: Actor) {
     const code = this.normalise(dto.code);
 
@@ -173,7 +216,14 @@ export class CurrenciesService {
           decimals: dto.decimals ?? 2,
           enabled: dto.enabled ?? true,
           isDefault: dto.isDefault ?? false,
-          sortOrder: dto.sortOrder ?? 0,
+          /*
+           * `?? 0` used to sit here, and it put EVERY new currency at the top
+           * of the list — adding AED to a list led by USD moved USD down, with
+           * nothing saying so and no way to put it back except renumbering by
+           * hand. `placeOrder` appends when no position is asked for and
+           * inserts when one is, pushing the rest down instead of tying.
+           */
+          sortOrder: await this.placeOrder(tx, code, dto.sortOrder),
         })
         .returning();
       return created;
@@ -238,7 +288,9 @@ export class CurrenciesService {
           ...(dto.decimals !== undefined ? { decimals: dto.decimals } : {}),
           ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
           ...(dto.isDefault !== undefined ? { isDefault: dto.isDefault } : {}),
-          ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+          ...(dto.sortOrder !== undefined
+            ? { sortOrder: await this.placeOrder(tx, normalised, dto.sortOrder) }
+            : {}),
           updatedAt: new Date(),
         })
         .where(eq(currencies.code, normalised))
