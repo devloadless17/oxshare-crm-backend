@@ -342,6 +342,31 @@ describe('the step configurator is a different permission from reviewing', () =>
   });
 });
 
+describe('the needs_review queue', () => {
+  /*
+   * The dashboard tile and the sidebar badge both count submitted +
+   * under_review, and both used to link to `submitted` alone — so clicking a
+   * badge reading 17 opened a list of 12, and the five a reviewer had already
+   * picked up fell off the daily sweep. `needs_review` is that set as a filter
+   * value, so the number and the destination mean the same thing.
+   */
+  it('returns BOTH submitted and under_review, and nothing else', async () => {
+    const master = await actingAs(ctx, 'admin', ADMIN);
+    const res = await master.get('/v1/admin/kyc?status=needs_review&limit=100');
+
+    expect(res.status).toBe(200);
+    const states = (res.body as { items: { status: string }[] }).items.map((i) => i.status);
+    expect(states.length).toBeGreaterThan(0);
+    expect(states.every((s) => s === 'submitted' || s === 'under_review')).toBe(true);
+  });
+
+  it('still refuses a value that is neither a status nor the set', async () => {
+    const master = await actingAs(ctx, 'admin', ADMIN);
+    const res = await master.get('/v1/admin/kyc?status=nonsense');
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('the review lifecycle, over HTTP', () => {
   it('claims, then approves, and the client reaches verification level 1', async () => {
     const master = await actingAs(ctx, 'admin', ADMIN);

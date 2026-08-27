@@ -11,6 +11,7 @@ import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { Admin } from '../../store/admins.store';
+import { NEEDS_REVIEW, NEEDS_REVIEW_STATUSES } from '../../store/kyc.store';
 
 /**
  * The admin side of compliance: the KYC review queue, the step configurator,
@@ -49,7 +50,10 @@ export class AdminComplianceService {
      */
     assertActorCanAny(actor, ['kyc.view', 'kyc.review'], 'list KYC submissions');
     const page = await this.kycService.listAll({
-      status: query.status as import('../../store/kyc.store').KycStatus | undefined,
+      // `needs_review` is a SET, not a column value — see kyc.store.ts.
+      ...(query.status === NEEDS_REVIEW
+        ? { statuses: NEEDS_REVIEW_STATUSES }
+        : { status: query.status as import('../../store/kyc.store').KycStatus | undefined }),
       q: query.q,
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '25', 10) || 25,

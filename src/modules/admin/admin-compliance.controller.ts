@@ -55,6 +55,7 @@ import {
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
 import { UuidParam, enumQuery, searchQuery } from '../../common/query-params';
+import { NEEDS_REVIEW } from '../../store/kyc.store';
 import { kycStatusEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
@@ -101,9 +102,15 @@ export class AdminComplianceController {
   ) {
     return this.compliance.listKyc(
       {
-        // `kyc_status` is a Postgres enum, so an unrecognised value errored in the
-        // database rather than at the edge.
-        status: enumQuery(status, kycStatusEnum.enumValues, 'status'),
+        /*
+         * `kyc_status` is a Postgres enum, so an unrecognised value errored in
+         * the database rather than at the edge. `needs_review` is the one
+         * value that is NOT a column value: it means submitted + under_review,
+         * the set the dashboard tile and the sidebar badge already count. They
+         * used to link to `submitted` alone, so a badge reading 17 opened a
+         * list of 12.
+         */
+        status: enumQuery(status, [...kycStatusEnum.enumValues, NEEDS_REVIEW], 'status'),
         q: searchQuery(q),
         page,
         limit,

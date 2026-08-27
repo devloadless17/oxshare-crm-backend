@@ -371,6 +371,8 @@ export class KycService {
   async listAll(
     filter: {
       status?: KycStatus;
+      /** Any-of; the `needs_review` queue. Takes precedence over `status`. */
+      statuses?: readonly KycStatus[];
       q?: string;
       page?: number;
       limit?: number;
@@ -390,6 +392,7 @@ export class KycService {
     // WalletService.post() needs for its FOR UPDATE lock.
     return this.kycStore.findPageWithUsers({
       status: filter.status,
+      statuses: filter.statuses ? [...filter.statuses] : undefined,
       q: filter.q,
       page,
       limit,
