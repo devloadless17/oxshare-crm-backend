@@ -1613,3 +1613,134 @@ describe('the agency’s default programme', () => {
     expect(rows[0].default_program_id).toBeNull();
   });
 });
+
+/*
+ * ── A PARTNER SITS UNDER WHOEVER RECRUITED THEM ─────────────────────────────
+ *
+ * `approve()` read `options.parentIbUserId ?? null`, so a tree position existed
+ * only when a reviewer passed one — and the console never did. Every approved
+ * partner landed at the ROOT, whoever had introduced them.
+ *
+ * That was not cosmetic. FR-IB-17's distribution needs a CHAIN, and through the
+ * ordinary flow no chain was ever built: a partner who recruited another earned
+ * nothing on their downline, because they were not above it. It was also
+ * inconsistent with the AGENCY, which has always been inherited from the same
+ * `referred_by_ib_user_id` relationship.
+ *
+ * Found by walking the real API end to end — `scripts/partner-flow-walkthrough.mjs`.
+ * No suite here could have caught it: every one of them builds its tree with an
+ * INSERT, so they assert the engine pays a chain correctly while never asking
+ * whether a chain is ever created.
+ */
+/**
+ * The CONSTRAINT that refused a statement, not the message that reported it.
+ *
+ * Drizzle wraps driver errors, so `error.message` is "Failed query: UPDATE …"
+ * and the constraint name lives on the cause. Matching the message would pass
+ * for any failure at all — a typo'd column included — which is exactly the kind
+ * of test that reports green while proving nothing. Twin of the helper in
+ * test/ib-schema-constraints.spec.ts.
+ */
+async function constraintViolatedBy(run: Promise<unknown>): Promise<string> {
+  try {
+    await run;
+  } catch (error) {
+    const cause: unknown = (error as { cause?: unknown }).cause ?? error;
+    const name = (cause as { constraint?: string }).constraint;
+    if (name) return name;
+    throw new Error(`Statement failed, but not on a constraint: ${(cause as Error).message}`);
+  }
+  throw new Error('Expected the statement to be refused, but it succeeded.');
+}
+
+describe('who a new partner sits under', () => {
+  /** An approved partner, and a client who registered through their link. */
+  async function recruitedBy(
+    parentEmail: string,
+    childEmail: string,
+  ): Promise<{ parent: string; child: string }> {
+    const parent = await makeClient(parentEmail);
+    const parentApp = await service.apply(parent, { agencyId: AGENCY.id });
+    await service.approve(parentApp.id, REVIEWER, UNRESTRICTED, {});
+
+    const child = await makeClient(childEmail);
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${parent} WHERE id = ${child}`,
+    );
+    return { parent, child };
+  }
+
+  it('inherits the introducer as the parent when the reviewer names none', async () => {
+    const { parent, child } = await recruitedBy('rec-parent@test.local', 'rec-child@test.local');
+
+    const application = await service.apply(child, {});
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {});
+
+    expect(account.parentIbUserId).toBe(parent);
+  });
+
+  it('lets the reviewer override the introducer', async () => {
+    const { child } = await recruitedBy('ovr-parent@test.local', 'ovr-child@test.local');
+    const elsewhere = await makeClient('ovr-elsewhere@test.local');
+    const elsewhereApp = await service.apply(elsewhere, { agencyId: AGENCY.id });
+    await service.approve(elsewhereApp.id, REVIEWER, UNRESTRICTED, {});
+
+    const application = await service.apply(child, {});
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+      parentIbUserId: elsewhere,
+    });
+
+    expect(account.parentIbUserId).toBe(elsewhere);
+  });
+
+  /*
+   * An explicit `null` is a different instruction from omitting the field, and
+   * `??` could not tell them apart — it would have made deliberately rooting a
+   * recruited partner impossible.
+   */
+  it('honours an explicit null as "put them at the root"', async () => {
+    const { child } = await recruitedBy('root-parent@test.local', 'root-child@test.local');
+
+    const application = await service.apply(child, {});
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+      parentIbUserId: null,
+    });
+
+    expect(account.parentIbUserId).toBeNull();
+  });
+
+  it('leaves a partner nobody recruited at the root', async () => {
+    const solo = await makeClient('solo-partner@test.local');
+
+    const application = await service.apply(solo, { agencyId: AGENCY.id });
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {});
+
+    expect(account.parentIbUserId).toBeNull();
+  });
+
+  /*
+   * A NON-PARTNER CANNOT BE AN INTRODUCER — the database says so, not the
+   * service.
+   *
+   * `users_referred_by_ib_accounts_user_id_fk` points at `ib_accounts.user_id`,
+   * not at `users.id`, so attributing a client to somebody who holds no partner
+   * account is refused at the INSERT. `inheritedParentIbUserIdFor` still checks
+   * — a pure function should not assume a constraint it cannot see — but the
+   * branch is unreachable through any real write.
+   *
+   * Worth pinning as the guarantee rather than as a service behaviour: if that
+   * FK is ever pointed at `users.id`, this fails and says exactly what changed.
+   */
+  it('cannot attribute a client to somebody who is not a partner', async () => {
+    const notAPartner = await makeClient('nonpartner-introducer@test.local');
+    const child = await makeClient('nonpartner-child@test.local');
+
+    const refusedBy = await constraintViolatedBy(
+      ctx.db.execute(
+        sql`UPDATE users SET referred_by_ib_user_id = ${notAPartner} WHERE id = ${child}`,
+      ),
+    );
+
+    expect(refusedBy).toBe('users_referred_by_ib_accounts_user_id_fk');
+  });
+});

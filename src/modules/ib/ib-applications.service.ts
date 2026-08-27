@@ -160,6 +160,50 @@ export class IbApplicationsService {
   }
 
   /**
+   * Who this applicant sits UNDER in the partner tree — the partner who
+   * recruited them.
+   *
+   * ## The gap this closes
+   *
+   * `approve()` read `options.parentIbUserId ?? null`, so a tree position was
+   * only ever set when a reviewer passed one — and the console never did. Every
+   * approved partner landed at the ROOT, whoever had recruited them.
+   *
+   * The consequence was not cosmetic: FR-IB-17's whole distribution mechanism
+   * needs a chain, and through the ordinary flow no chain was ever built. A
+   * partner who recruited another partner earned nothing on their downline,
+   * because they were not above it. The only remedy was for somebody to
+   * remember, afterwards, to open that partner's profile and use the separate
+   * "reassign parent" control on a different screen.
+   *
+   * It was also INCONSISTENT with the agency, which has always been inherited
+   * from the introducer by `inheritedAgencyIdFor` above. One relationship,
+   * `users.referred_by_ib_user_id`, answered two ways.
+   *
+   * ## Only a partner can be a parent
+   *
+   * The introducer must hold an `ib_accounts` row. A client referred by another
+   * CLIENT has no chain to join, and `null` puts them at the root — which is
+   * exactly right for somebody nobody recruited.
+   *
+   * ## A SUSPENDED introducer still becomes the parent
+   *
+   * Suspension stops them EARNING — `resolveChain` breaks at a suspended
+   * partner and pays nobody above them — but it is not a statement about who
+   * recruited whom. Re-parenting the people they brought in would rewrite
+   * history to record a fact that is not true, and would silently move a whole
+   * sub-tree the day somebody is switched off and on again.
+   */
+  private async inheritedParentIbUserIdFor(userId: string): Promise<string | null> {
+    const user = await this.users.findById(userId);
+    const introducerId = user?.referredByIbUserId;
+    if (!introducerId) return null;
+
+    const introducer = await this.ib.findAccount(introducerId);
+    return introducer ? introducerId : null;
+  }
+
+  /**
    * Everything the portal needs to decide which screen to render.
    *
    * Deliberately returns BOTH the account and the latest application. "Not a
@@ -586,7 +630,20 @@ export class IbApplicationsService {
       );
     }
 
-    const parentIbUserId = options.parentIbUserId ?? null;
+    /*
+     * The reviewer's choice wins; OMITTING it inherits from whoever recruited
+     * the applicant. See `inheritedParentIbUserIdFor` for why that inheritance
+     * had to exist at all.
+     *
+     * `!== undefined` rather than `??`, so an explicit `null` still means "put
+     * them at the ROOT". Those are different instructions and `??` cannot tell
+     * them apart — it would make deliberately rooting a partner impossible the
+     * moment they had an introducer.
+     */
+    const parentIbUserId =
+      options.parentIbUserId !== undefined
+        ? options.parentIbUserId
+        : await this.inheritedParentIbUserIdFor(application.userId);
 
     if (parentIbUserId) {
       // The chosen parent is scoped too (#5): a scoped admin approving an
