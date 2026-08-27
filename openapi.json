@@ -11696,8 +11696,7 @@
               "commission_swap",
               "spread",
               "commission_swap_spread"
-            ],
-            "default": "commission_swap"
+            ]
           },
           "tiers": {
             "description": "REPLACES the whole ladder. Send every level you want to keep; omit the field to leave the existing ladder alone. An empty array removes every level.",

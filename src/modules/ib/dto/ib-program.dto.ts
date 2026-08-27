@@ -252,7 +252,17 @@ export class UpdateIbProgramDto {
    * alone" on update — the safe reading in both directions, because the other
    * two bases can only pay LESS on a platform whose markups are unset.
    */
-  @ApiPropertyOptional({ enum: REVENUE_BASES, default: 'commission_swap' })
+  /*
+   * NO `default` HERE, unlike the create DTO above, and it is a correctness
+   * fix rather than a codegen workaround: on a PATCH, omitting this LEAVES THE
+   * STORED VALUE. Documenting a default of `commission_swap` would say that
+   * omitting it RESETS a spread-priced programme to charges — the opposite of
+   * what happens, and a re-pricing nobody asked for.
+   *
+   * It also stops `openapi-typescript` emitting the field as required, which a
+   * property carrying a default is treated as.
+   */
+  @ApiPropertyOptional({ enum: REVENUE_BASES })
   @IsOptional()
   @IsIn(REVENUE_BASES)
   revenueBasis?: RevenueBasis;
