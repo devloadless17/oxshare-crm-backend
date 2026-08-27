@@ -16,6 +16,7 @@ import {
 import { sortKey, sortOrder } from '../../common/sorting';
 import { applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
 import { WalletService } from '../wallet/wallet.service';
+import { AdminsStore } from '../../store/admins.store';
 import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
@@ -63,6 +64,8 @@ export class AdminMoneyService {
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
     /** The Rival payout leg. Appended LAST — the positional-construction rule. */
     private readonly rivalWithdrawals: RivalWithdrawalsService,
+    /** Reviewer names for the desk. Same append-last rule as above. */
+    private readonly admins: AdminsStore,
   ) {}
 
   /**
@@ -331,9 +334,32 @@ export class AdminMoneyService {
      * search instead would let them binary-search a hidden value out of the
      * result COUNT, which is a worse leak than the one it would close.
      */
+    /*
+     * WHO decided, as a name rather than a uuid.
+     *
+     * `reviewedBy` has been recorded on every approval, rejection and
+     * settlement since the lifecycle existed, and no screen rendered it — the
+     * column holds an id, and an id is not an answer to "who approved this".
+     * On a console where `withdrawals.approve` and `withdrawals.settle` were
+     * deliberately split so two people can be required, the one screen showing
+     * the decision could not name either of them.
+     *
+     * Resolved here in ONE query over the page's distinct ids rather than in
+     * the movements CTE: that query is shared with the client's own
+     * transaction list, where the reviewing admin is nobody's business, and it
+     * carries two NULL-padded branches a join would have to be threaded
+     * through.
+     */
+    const reviewerNames = await this.admins.namesByIds(
+      page.items.map((item) => item.reviewedBy).filter((id): id is string => Boolean(id)),
+    );
+
     return {
       ...page,
-      items: applyMaskAll('withdrawal', page.items, actor.fieldMask),
+      items: applyMaskAll('withdrawal', page.items, actor.fieldMask).map((item) => ({
+        ...item,
+        reviewedByName: item.reviewedBy ? (reviewerNames.get(item.reviewedBy) ?? null) : null,
+      })),
       maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
     };
   }

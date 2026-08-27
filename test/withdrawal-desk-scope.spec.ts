@@ -176,3 +176,37 @@ describe('the withdrawal desk scopes its counts, not only its rows', () => {
     expect(b.counts['all']).toBe(4);
   });
 });
+
+describe('who decided, on the desk', () => {
+  /*
+   * `reviewedBy` has been recorded on every approve, reject and settle since
+   * the lifecycle existed, and no screen rendered it — the column holds a
+   * uuid, and a uuid is not an answer to "who approved this". On a console
+   * that splits `withdrawals.approve` from `withdrawals.settle` precisely so
+   * two people can be required, the one screen showing the decision could name
+   * neither of them.
+   */
+  it('resolves the reviewer to a NAME once a decision has been made', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+
+    const pending = await session.get('/v1/admin/withdrawals?state=pending&limit=1');
+    expect(pending.status).toBe(200);
+    const target = (pending.body as { items: { id: string }[] }).items[0];
+    expect(target, 'no pending withdrawal in the fixture to decide on').toBeTruthy();
+
+    const rejected = await session.patch(
+      `/v1/admin/withdrawals/${target.id}/reject`,
+      { reason: 'Checking the reviewer name reaches the desk.' },
+      // The money routes are `@Idempotent()` and refuse without a key.
+      { headers: { 'idempotency-key': `desk-reviewer-name-${target.id}` } },
+    );
+    expect(rejected.status).toBe(200);
+
+    const after = await session.get('/v1/admin/withdrawals?state=rejected&limit=50');
+    const row = (
+      after.body as { items: { id: string; reviewedByName: string | null }[] }
+    ).items.find((r) => r.id === target.id);
+
+    expect(row?.reviewedByName).toBe('WD Scope Master');
+  });
+});

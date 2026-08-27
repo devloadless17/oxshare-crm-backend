@@ -925,6 +925,14 @@ export class TransactionsService {
         destination: transactions.destination,
         rejectionReason: transactions.rejectionReason,
         requestedAt: transactions.createdAt,
+        /*
+         * WHO decided. Recorded since the lifecycle existed and projected
+         * nowhere, so the desk showed WHEN a payout was reviewed and never by
+         * whom — on a console that splits `withdrawals.approve` from
+         * `withdrawals.settle` precisely so two people can be required.
+         * `AdminMoneyService` resolves it to a name for the response.
+         */
+        reviewedBy: transactions.reviewedBy,
         reviewedAt: transactions.reviewedAt,
         settledAt: transactions.settledAt,
         rivalWithdrawalId: transactions.rivalWithdrawalId,
@@ -1052,6 +1060,7 @@ export class TransactionsService {
       methodName: r.withdrawalMethodName ?? r.provider,
       rejectionReason: r.rejectionReason,
       requestedAt: r.requestedAt,
+      reviewedBy: r.reviewedBy,
       reviewedAt: r.reviewedAt,
       settledAt: r.settledAt,
       rivalWithdrawalId: r.rivalWithdrawalId,

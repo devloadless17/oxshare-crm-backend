@@ -735,6 +735,18 @@ export class WithdrawalRowDto {
   @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;
   @ApiProperty() requestedAt: Date;
   @ApiPropertyOptional({ type: Date, nullable: true }) reviewedAt?: Date | null;
+  /**
+   * The reviewer's NAME, resolved from `reviewedBy`.
+   *
+   * The id has been recorded on every decision since this lifecycle existed
+   * and no screen rendered it, because a uuid is not an answer to "who
+   * approved this" — on a console that splits approve from settle so two
+   * people can be required, the one screen showing the decision could name
+   * neither. Null when nobody has reviewed it, or when the administrator who
+   * decided has since been deleted: an absence the screen states rather than
+   * filling with the id.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true }) reviewedByName?: string | null;
   @ApiPropertyOptional({ type: Date, nullable: true }) settledAt?: Date | null;
   /*
    * The Rival payout leg, for the desk's badges. `rivalWithdrawalId` set =
