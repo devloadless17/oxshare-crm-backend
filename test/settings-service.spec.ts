@@ -84,7 +84,14 @@ const ACTOR: Actor = {
 beforeEach(() => {
   store = new FakeStore();
   audit = { record: vi.fn(), recordWithin: vi.fn() };
-  service = new SettingsService(store as never, envConfig as never, audit as never);
+  service = new SettingsService(
+    store as never,
+    envConfig as never,
+    audit as never,
+    // AdminsStore — only `namesByIds` is reached, resolving `updated_by` to a
+    // name for the response. An empty map is the no-admin-found case.
+    { namesByIds: vi.fn().mockResolvedValue(new Map()) } as never,
+  );
 });
 
 /** A complete, valid trading form — each test varies one field of it. */

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { sealSecret } from '../../common/security/secret-box';
 import { AppSettingsStore } from '../../store/app-settings.store';
+import { AdminsStore } from '../../store/admins.store';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
 import type {
@@ -37,7 +38,22 @@ export class SettingsService {
     private readonly store: AppSettingsStore,
     private readonly config: ConfigService,
     private readonly audit: AdminAuditService,
+    /** Resolves `updated_by` to a name. Appended LAST — positional construction. */
+    private readonly admins: AdminsStore,
   ) {}
+
+  /**
+   * The administrator who last saved a settings row, by NAME.
+   *
+   * Every save records the id and no screen showed it, so "who changed the
+   * commission basis, and when" was answerable only from the audit log. Null
+   * for an unsaved row or an administrator since deleted — stated, not
+   * guessed.
+   */
+  private async savedBy(id: string | null | undefined): Promise<string | null> {
+    if (!id) return null;
+    return (await this.admins.namesByIds([id])).get(id) ?? null;
+  }
 
   async getSmtp(): Promise<SmtpSettingsDto> {
     const row = await this.store.getSmtp();
@@ -59,6 +75,7 @@ export class SettingsService {
         secure: false,
         source: 'environment',
         updatedAt: null,
+        updatedByName: null,
       };
     }
 
@@ -71,6 +88,7 @@ export class SettingsService {
       secure: row.secure,
       source: 'database',
       updatedAt: row.updatedAt.toISOString(),
+      updatedByName: await this.savedBy(row.updatedBy),
     };
   }
 
@@ -168,6 +186,7 @@ export class SettingsService {
       secure: row.secure,
       source: 'database',
       updatedAt: row.updatedAt.toISOString(),
+      updatedByName: await this.savedBy(row.updatedBy),
     };
   }
 
@@ -186,6 +205,7 @@ export class SettingsService {
       ibAccrualStart: terms.ibAccrualStart,
       ibRevenueBasis: terms.ibRevenueBasis,
       updatedAt: row?.updatedAt.toISOString() ?? null,
+      updatedByName: await this.savedBy(row?.updatedBy),
     };
   }
 
@@ -245,6 +265,7 @@ export class SettingsService {
       ibAccrualStart: row.ibAccrualStart,
       ibRevenueBasis: revenueBasisOf(row.ibRevenueBasis),
       updatedAt: row.updatedAt.toISOString(),
+      updatedByName: await this.savedBy(row.updatedBy),
     };
 
     const changed: Record<string, { before: unknown; after: unknown }> = {};
