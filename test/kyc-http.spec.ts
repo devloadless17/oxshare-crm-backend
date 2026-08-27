@@ -134,7 +134,15 @@ beforeAll(async () => {
       userId: clientId,
       status: 'submitted',
       submittedAt: new Date(),
-      personalInfo: { firstName: 'Kay', lastName: 'Client' },
+      personalInfo: {
+        firstName: 'Kay',
+        lastName: 'Client',
+        // The two fields approval must PROMOTE onto the client row. Spaced
+        // deliberately: the promotion trims, and an untrimmed value in a
+        // `varchar(32)` phone column is how a silent truncation starts.
+        phone: '  +961 70111111  ',
+        country: '  Lebanon  ',
+      },
       document: { docType: 'passport', frontFilePath: '/uploads/kyc/a.png' },
       selfie: { filePath: '/uploads/kyc/b.png' },
       addressProof: { docType: 'utility_bill', filePath: '/uploads/kyc/c.png' },
@@ -347,6 +355,50 @@ describe('the review lifecycle, over HTTP', () => {
 
     const [user] = await ctx.db.db.select().from(users).where(eq(users.id, clientId));
     expect(user.verificationLevel).toBe(1);
+    /*
+     * The VERIFIED identity reaches the client row.
+     *
+     * Until this shipped, approval wrote the level and nothing else: phone and
+     * country stayed locked in the submission's JSONB, an operator opening a
+     * fully verified client saw "—" for both, and the client list's country
+     * filter — which `users_country_idx` exists to serve — matched no real
+     * client at all. Seventeen approved clients were in that state.
+     */
+    expect(user.phone).toBe('+961 70111111');
+    expect(user.country).toBe('Lebanon');
+  });
+
+  it('does not blank a value the submission did not carry', async () => {
+    /*
+     * The other half: a submission with no phone must not erase one taken at
+     * registration. Promotion fills, it never clears — otherwise approving a
+     * client would silently delete contact details the desk relies on.
+     */
+    const [fresh] = await ctx.db.db
+      .insert(users)
+      .values({
+        email: `promote-none-${Date.now()}@oxshare-e2e.test`,
+        passwordHash: 'x',
+        firstName: 'No',
+        lastName: 'Fields',
+        phone: '+96170999999',
+        country: 'Cyprus',
+        emailVerified: true,
+      })
+      .returning();
+    await ctx.db.db.insert(kycSubmissions).values({
+      userId: fresh.id,
+      status: 'submitted',
+      personalInfo: { firstName: 'No', lastName: 'Fields' },
+    });
+
+    const master = await actingAs(ctx, 'admin', ADMIN);
+    await master.patch(`/v1/admin/kyc/${fresh.id}/approve`).expect(200);
+
+    const [after] = await ctx.db.db.select().from(users).where(eq(users.id, fresh.id));
+    expect(after.phone).toBe('+96170999999');
+    expect(after.country).toBe('Cyprus');
+    expect(after.verificationLevel).toBe(1);
   });
 
   it('takes the level back when the same submission is later rejected', async () => {

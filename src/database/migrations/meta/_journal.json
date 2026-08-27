@@ -722,6 +722,13 @@
       "when": 1787101216020,
       "tag": "0102_drop_dead_transfers_state_index",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1787101216021,
+      "tag": "0103_backfill_verified_identity",
+      "breakpoints": true
     }
   ]
 }

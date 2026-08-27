@@ -468,7 +468,33 @@ export class KycService {
       // Snapshot inside the transaction: the evidence and the decision are one
       // fact, so a rolled-back approval must not leave an archived attempt.
       await this.kycStore.archiveAttempt(updated, tx);
-      await this.users.update(userId, { verificationLevel: 1 }, tx);
+      /*
+       * The VERIFIED identity is promoted onto the client record.
+       *
+       * Approval is the moment `personal_info` stops being a claim and becomes
+       * evidence somebody checked against a document. Until this ran, that
+       * evidence stayed locked in the submission's JSONB and the columns the
+       * rest of the system reads stayed empty — so an operator opening a fully
+       * verified client saw "—" for phone and country, and the client list's
+       * country filter (which has two indexes built for it) matched none of
+       * them. Every real client was invisible to a filter that worked
+       * perfectly on the seeded ones.
+       *
+       * Only fields the submission actually carries are written, so an
+       * approval that captured no phone cannot blank a phone taken at
+       * registration. Where both exist the verified value wins: it is the one
+       * backed by a document.
+       *
+       * Name is deliberately NOT promoted here. It is `not null` on the row,
+       * it is what every screen and every audit entry already calls this
+       * person, and a silent rename on approval is a change nobody asked for
+       * — that belongs to the admin's own edit (CORE-18), where it is audited.
+       */
+      const verified = updated.personalInfo;
+      const identity: { phone?: string; country?: string } = {};
+      if (verified?.phone?.trim()) identity.phone = verified.phone.trim();
+      if (verified?.country?.trim()) identity.country = verified.country.trim();
+      await this.users.update(userId, { verificationLevel: 1, ...identity }, tx);
       // The bell row commits WITH the decision — a rolled-back approval must
       // not leave a "you're verified" the client can read.
       await this.notifications.notify(
