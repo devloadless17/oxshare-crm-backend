@@ -1647,6 +1647,179 @@
         ]
       }
     },
+    "/v1/external-links": {
+      "get": {
+        "description": "Hidden links are ABSENT rather than flagged — a client has no use for one they cannot open, and a portal that received them would have to remember to filter. An empty array is an ordinary answer: it means the operator has added no links, and the sidebar simply shows no extra section.",
+        "operationId": "ExternalLinksController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientExternalLinkDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The links on this client’s sidebar, in the operator’s order",
+        "tags": [
+          "external-links"
+        ]
+      }
+    },
+    "/v1/admin/external-links": {
+      "get": {
+        "description": "Includes HIDDEN links, unlike `GET /external-links` — an operator has to see what they took down in order to put it back.",
+        "operationId": "AdminExternalLinksController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExternalLinkDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every link, operator order first",
+        "tags": [
+          "admin/external-links"
+        ]
+      },
+      "post": {
+        "description": "Only http and https are accepted: this URL becomes an `href` in every client’s browser, and `javascript:` there would be stored XSS against all of them. Omitting `sortOrder` appends to the end of the menu.",
+        "operationId": "AdminExternalLinksController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateExternalLinkDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternalLinkDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add a link",
+        "tags": [
+          "admin/external-links"
+        ]
+      }
+    },
+    "/v1/admin/external-links/{id}": {
+      "patch": {
+        "description": "Only the fields sent are changed. `enabled: false` takes the link off the client menu and keeps everything about it, which is the ordinary way to withdraw one. An empty `description` clears it.",
+        "operationId": "AdminExternalLinksController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateExternalLinkDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternalLinkDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Edit, reorder, or hide a link",
+        "tags": [
+          "admin/external-links"
+        ]
+      },
+      "delete": {
+        "description": "Nothing references a link, so this orphans nothing — but the title, description and position go with it. To take one off the client menu and keep it, hide it instead. The remaining links close up the gap in the ordering.",
+        "operationId": "AdminExternalLinksController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Remove a link for good",
+        "tags": [
+          "admin/external-links"
+        ]
+      }
+    },
     "/v1/ib/status": {
       "get": {
         "description": "Returns the partner account if they have one AND their most recent application if they have made one. Both, because \"never applied\" and \"rejected, here is why\" are different states and a client shown a blank form after a refusal has been told nothing.",
@@ -10558,6 +10731,146 @@
           "label": {
             "type": "string",
             "maxLength": 40
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "number"
+          }
+        }
+      },
+      "ClientExternalLinkDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 80,
+            "example": "Economic calendar"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 300
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "example": "https://example.com/calendar"
+          },
+          "sortOrder": {
+            "type": "number",
+            "description": "The operator’s order, which is the order to render."
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "url",
+          "sortOrder"
+        ]
+      },
+      "ExternalLinkDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 80,
+            "example": "Economic calendar"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 300,
+            "description": "One line of context under the title. Null is a real answer, not an omission."
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "example": "https://example.com/calendar"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "A disabled link is off the client menu and still on this screen."
+          },
+          "sortOrder": {
+            "type": "number",
+            "description": "The operator’s order, which is the order the sidebar renders."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "url",
+          "enabled",
+          "sortOrder",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "CreateExternalLinkDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 80,
+            "example": "Economic calendar"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "example": "https://example.com/calendar"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "sortOrder": {
+            "type": "number",
+            "description": "Omitted appends to the end of the menu."
+          }
+        },
+        "required": [
+          "title",
+          "url"
+        ]
+      },
+      "UpdateExternalLinkDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 2048
           },
           "enabled": {
             "type": "boolean"

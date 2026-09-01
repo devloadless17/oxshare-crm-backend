@@ -46,6 +46,7 @@ import { IdentityModule } from './modules/identity/identity.module';
 import { PlatformsModule } from './modules/platforms/platforms.module';
 import { CurrenciesModule } from './modules/currencies/currencies.module';
 import { LeveragesModule } from './modules/leverages/leverages.module';
+import { ExternalLinksModule } from './modules/external-links/external-links.module';
 import { IbModule } from './modules/ib/ib.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { TradingModule } from './modules/trading/trading.module';
@@ -151,6 +152,7 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     PlatformsModule,
     CurrenciesModule,
     LeveragesModule,
+    ExternalLinksModule,
     IbModule,
     WalletModule,
     TradingModule,

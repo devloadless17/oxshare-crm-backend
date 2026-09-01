@@ -252,6 +252,18 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'leverage.update', label: 'Leverage changed', group: 'Configuration' },
   { action: 'leverage.delete', label: 'Leverage removed', group: 'Configuration' },
   /*
+   * The sidebar links every client is shown. Recorded for the reason
+   * `platform_link.set` is, one entry above the same class of risk: an admin
+   * repointing one of these sends every client who clicks it to whatever is now
+   * at the address, and a log line is not a record — it rotates, an operator
+   * cannot query it, and it does not appear on the screen somebody investigating
+   * would open. The update entry keeps the BEFORE, because the current value
+   * answers nothing about a link that was wrong for six hours last Tuesday.
+   */
+  { action: 'external_link.create', label: 'External link added', group: 'Configuration' },
+  { action: 'external_link.update', label: 'External link changed', group: 'Configuration' },
+  { action: 'external_link.delete', label: 'External link removed', group: 'Configuration' },
+  /*
    * The IB payout ladder. Configuration rather than Money for the same reason
    * currencies are: no balance moves. What DOES move is what every partner
    * earns from that point on, and a level's share changing is the kind of thing

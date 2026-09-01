@@ -291,6 +291,28 @@
       }
     ]
   },
+  "externallinks": {
+    "moduleName": "External Links",
+    "description": "The links the client portal shows in its sidebar — an economic calendar, a help centre, a Telegram channel. Its own module rather than a corner of settings, for the reason currencies and leverages are: whatever holds this key can put a destination of its choosing in front of every client on the platform, and that should not arrive attached to a grant somebody made about the support email address. No 'withdraw' key — taking a link off the client menu is an edit (`enabled: false`), which keeps its title, description and position for when it comes back; deleting is how a link goes away for good.",
+    "permissions": [
+      {
+        "key": "externallinks.view",
+        "label": "View External Links"
+      },
+      {
+        "key": "externallinks.create",
+        "label": "Add an External Link"
+      },
+      {
+        "key": "externallinks.edit",
+        "label": "Edit / Hide an External Link"
+      },
+      {
+        "key": "externallinks.delete",
+        "label": "Delete an External Link"
+      }
+    ]
+  },
   "payments": {
     "moduleName": "Payment Methods",
     "description": "How clients can put money in — the methods offered on the deposit screen, their instructions, and the account details money is sent to. No delete key: a method is disabled rather than removed (migration 0043), because a deleted method would orphan the deposits that used it.",

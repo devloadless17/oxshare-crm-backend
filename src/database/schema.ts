@@ -1398,6 +1398,85 @@ export const leverages = pgTable(
 );
 
 /*
+ * ── external_links · what the operator points clients AT ─────────────────────
+ *
+ * One row per link the client portal shows in its sidebar: an economic
+ * calendar, the broker's help centre, a Telegram channel, a market-analysis
+ * blog. A title, an optional line of description, and the destination.
+ *
+ * A TABLE rather than a settings field or an env var, for the reason
+ * `platform_links` is one: these change constantly, they change for marketing
+ * reasons, and the person changing them does not ship releases.
+ *
+ * Unlike `platform_links` the SET is not fixed either. There is no product
+ * decision naming the links the way `PLATFORM_KEYS` names the three terminals,
+ * so this carries a surrogate id and rows come and go, where that table has a
+ * fixed key per platform and only the url is operator data.
+ *
+ * `url` is NOT NULL, which is the opposite call from `platform_links.url`, and
+ * the difference is what the row means. There, a null url is a platform nobody
+ * has configured yet and the portal says exactly that. Here, a link with no
+ * destination is not an unconfigured anything — it is a menu entry that goes
+ * nowhere, which is the thing that table's own comment refuses to render.
+ * Taking one off the menu is `enabled = false`.
+ *
+ * The URL becomes an `href` in every client's browser, so the service refuses
+ * anything that is not http(s) — see `assertSafeExternalUrl`. That check is not
+ * decoration: `javascript:` here would be stored XSS against every client who
+ * opens the portal, written by an admin account or by whatever compromised one.
+ */
+export const externalLinks = pgTable(
+  'external_links',
+  {
+    /*
+     * A SURROGATE key, unlike every other catalogue in this file.
+     *
+     * `currencies` is keyed on the code, `leverages` on the ratio and
+     * `platform_links` on the platform — in each case the natural key is the
+     * value the rest of the system stores and compares. A link has no such
+     * value: two entries may legitimately share a title, and the URL is the
+     * field an operator edits most often, so keying on either would turn a
+     * routine correction into a delete-and-recreate.
+     */
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** What the client reads in the sidebar. Sized for a menu entry, not prose. */
+    title: varchar('title', { length: 80 }).notNull(),
+    /*
+     * NULLABLE, and null is a real answer rather than an unfinished one:
+     * "Economic calendar" needs no gloss. The admin table gives it a column and
+     * the portal hangs it off the menu entry as a tooltip, so an absent one
+     * costs nothing on either side.
+     */
+    description: varchar('description', { length: 300 }),
+    /*
+     * Sized for a real URL rather than 255, for the reason `platform_links.url`
+     * gives: campaign and locale parameters routinely pass 255, and a column
+     * that truncates one produces a link that 404s.
+     */
+    url: varchar('url', { length: 2048 }).notNull(),
+    /*
+     * A disabled link is off the client's menu and still on the operator's
+     * screen. Taking a dead link down is done in a hurry, and if the only way
+     * were DELETE then the title, the description and the position would go
+     * with it — so the fix for a supplier's five-minute outage would be
+     * retyping the row.
+     */
+    enabled: boolean('enabled').notNull().default(true),
+    /** The operator's own order, which is the order the sidebar renders. */
+    sortOrder: integer('sort_order').notNull().default(0),
+    /** The admin who last changed it. Null only for a row a migration seeded. */
+    updatedBy: uuid('updated_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /* The hot read: the portal's sidebar asks "what is on the menu, in order"
+       on every page it draws. */
+    index('external_links_enabled_sort_idx').on(t.enabled, t.sortOrder),
+  ],
+);
+
+/*
  * ── The money surface, rebuilt (migration 0033) ──────────────────────────────
  *
  * `wallets`, `ledger_entries`, `transactions`, `transfers` and
