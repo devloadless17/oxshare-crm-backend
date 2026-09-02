@@ -177,8 +177,26 @@ export class AccountPositionDto {
   action: number;
 
   @ApiProperty({
-    enum: ['buy', 'sell'],
-    description: 'The side, named. Unknown codes pass through raw.',
+    /*
+     * A STRING, not an enum, and the description beside it is why.
+     *
+     * This declared `enum: ['buy', 'sell']` while `positionSideLabel` has always
+     * been able to return `action 7` for a code MT5 added after this build — the
+     * schema and the sentence under it contradicted each other. The cost was not
+     * hypothetical: the portal generates its types from this document, so it
+     * received `'buy' | 'sell'`, and any code narrowing an incoming side against
+     * that union rejects the very rows the fallback exists to keep renderable.
+     *
+     * The two known values stay documented in `examples`. What changes is that
+     * the contract no longer promises a closed set the server does not honour.
+     */
+    type: 'string',
+    examples: ['buy', 'sell', 'action 7'],
+    description:
+      "The side, named from MT5's numeric action. NOT a closed set: an unfamiliar code passes " +
+      'through as `action <n>` rather than being blanked, so a client can quote it to support. ' +
+      'Render an unknown value AS IS — a blank cell beside a real volume and a real profit is ' +
+      'what generates the ticket.',
   })
   side: string;
 

@@ -12997,11 +12997,12 @@
           },
           "side": {
             "type": "string",
-            "enum": [
+            "examples": [
               "buy",
-              "sell"
+              "sell",
+              "action 7"
             ],
-            "description": "The side, named. Unknown codes pass through raw."
+            "description": "The side, named from MT5's numeric action. NOT a closed set: an unfamiliar code passes through as `action <n>` rather than being blanked, so a client can quote it to support. Render an unknown value AS IS — a blank cell beside a real volume and a real profit is what generates the ticket."
           },
           "volume": {
             "type": "string",

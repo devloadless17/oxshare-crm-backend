@@ -109,6 +109,14 @@ export class Mt5LivePositionDto {
   @Matches(DECIMAL, { message: 'commission must be a decimal string' })
   commission?: string | null;
 
+  @ApiPropertyOptional({
+    description: "MT5's own comment on the position. NULL when blank.",
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  comment?: string | null;
+
   @ApiProperty({ example: '2026-09-02T09:15:00.000Z' })
   @IsISO8601()
   openedAt!: string;

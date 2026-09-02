@@ -24,6 +24,7 @@ import {
 import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
 import { Mt5AccountSyncService } from './mt5/mt5-account-sync.service';
 import { dealActionLabel, isRealisedTrade } from './mt5/deal-codes';
+import { positionSideLabel } from './mt5/position-side';
 import type { TradingAccountDto } from './dto/trading-account.dto';
 import type { PositionDto } from './dto/position.dto';
 import type {
@@ -672,7 +673,7 @@ export class TradingService {
       ticket: String(position.ticket),
       symbol: position.symbol,
       action: position.action,
-      side: POSITION_SIDES[position.action] ?? `action ${position.action}`,
+      side: positionSideLabel(position.action),
       volume: position.volume,
       priceOpen: position.priceOpen,
       priceCurrent: position.priceCurrent,
@@ -823,8 +824,6 @@ export class TradingService {
 }
 
 /** MT5's numeric position side, named. An unknown code is reported raw. */
-const POSITION_SIDES: Record<number, string> = { 0: 'buy', 1: 'sell' };
-
 /**
  * The window to read, with defaults and the ceiling applied.
  *

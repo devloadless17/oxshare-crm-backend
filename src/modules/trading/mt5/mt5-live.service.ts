@@ -4,6 +4,7 @@ import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { tradingAccounts } from '../../../database/schema';
 import { Mt5LivePublisher, type Mt5LiveEvent } from './live-snapshot';
+import { positionSideLabel } from './position-side';
 import type { Mt5LiveDto } from './dto/mt5-live.dto';
 
 export interface LiveIngestResult {
@@ -79,6 +80,12 @@ export class Mt5LiveService {
         ticket: position.ticket,
         symbol: position.symbol,
         action: position.action,
+        /*
+         * Named HERE, exactly as `positionsMine` names it, because the table
+         * renders the label rather than the code. Sending the number alone is
+         * what emptied the Side column on every pushed row.
+         */
+        side: positionSideLabel(position.action),
         volume: position.volume,
         priceOpen: position.priceOpen,
         priceCurrent: position.priceCurrent,
@@ -87,6 +94,7 @@ export class Mt5LiveService {
         profit: position.profit,
         swap: position.swap,
         commission: position.commission ?? null,
+        comment: position.comment ?? null,
         openedAt: position.openedAt,
       })),
     };

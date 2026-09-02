@@ -74,10 +74,25 @@ export interface Mt5LiveEvent {
   positions?: Mt5LivePosition[];
 }
 
+/**
+ * One open position on the wire, and it MUST match `AccountPositionDto` field
+ * for field.
+ *
+ * The polled route and this one render into the same table through the same
+ * generated type, so a field present on one and absent on the other is not a
+ * type error anywhere — it is a column that empties itself the moment a reading
+ * arrives over the socket. That shipped once: `side` was omitted here while the
+ * table rendered it, so every pushed row lost its Buy/Sell label.
+ *
+ * `side` is DERIVED here rather than sent by the bridge. The bridge speaks MT5's
+ * numeric `action`; naming it is the CRM's vocabulary, and `positionSideLabel`
+ * is the one definition both paths use.
+ */
 export interface Mt5LivePosition {
   ticket: string;
   symbol: string;
   action: number;
+  side: string;
   volume: string;
   priceOpen: string;
   priceCurrent: string;
@@ -86,6 +101,7 @@ export interface Mt5LivePosition {
   profit: string;
   swap: string;
   commission: string | null;
+  comment: string | null;
   openedAt: string;
 }
 
