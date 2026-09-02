@@ -1,9 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, lte } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { positions, tradingAccounts, tradingProductGroups } from '../../database/schema';
+import { mt5Deals, positions, tradingAccounts, tradingProductGroups } from '../../database/schema';
 /*
  * The product resolution lives in `common/` because the back office asks the
  * same question through `AdminHoldingsService`, and two implementations of
@@ -62,8 +62,15 @@ export class TradingService {
   private readonly logger = new Logger(TradingService.name);
 
   /*
-   * The bridge is injected for ONE method — `snapshotMine` — and that is the
-   * whole reason this service is no longer purely a database reader.
+   * The bridge is injected for the two reads that must be LIVE — `snapshotMine`
+   * and `positionsMine` — and that is the whole reason this service is no longer
+   * purely a database reader.
+   *
+   * `historyMine` is deliberately NOT among them. A closed deal does not move,
+   * so it is served from `mt5_deals`; a balance and an open position move on
+   * every tick, so they are not. That line — does this figure change while the
+   * client is looking at it — is what decides whether a read here crosses to a
+   * server we do not own.
    *
    * The alternative was a second service for the one MT5-crossing read, mirroring
    * the split `Mt5AccountsController` documents on the admin side. It is not
@@ -455,16 +462,40 @@ export class TradingService {
    * ## One read, two views
    *
    * The statistics come from the SAME array that is returned, not from a second
-   * query. Two reads of one window would cost twice the latency against a server
-   * we do not own and — worse — could disagree: a client would see totals over
-   * one set beside a list showing another.
+   * query. Two aggregates over one window could disagree with the list beside
+   * them — a client reading totals computed over one set of rows while looking
+   * at another is the failure this shape exists to make impossible.
    *
-   * ## Live, not from `mt5_deals`
+   * ## From `mt5_deals`, NOT from the trading server
    *
-   * The ingested table is the commission engine's record, filled by a sweep. A
-   * client-facing history served from it shows nothing whenever ingestion is
-   * behind or broken, and this deployment has spent whole days in that state. A
-   * slower answer that is true beats an instant one that is empty.
+   * This read used to cross to MT5 on every view, and the reason recorded here
+   * was that the ingested table "shows nothing whenever ingestion is behind".
+   * That trade was the wrong way round for a client-facing statement screen:
+   *
+   * - **It is the same data.** Every row in `mt5_deals` came from MT5, by the
+   *   ticket, unrounded — the bridge pushes each deal live AND a sweep re-reads
+   *   a rolling 24-hour window every five minutes, so a deal has two chances to
+   *   land before anybody looks at this screen. The lag is minutes, not days.
+   * - **It reaches further back.** MT5 silently truncates a request wider than
+   *   about a month, which is why the window here is capped. The table has no
+   *   such limit — it holds every deal since ingestion began — so this is the
+   *   only source that can ever answer a question about last quarter.
+   * - **It survives the bridge being down.** A client checking what they traded
+   *   yesterday no longer depends on a live session to a server we do not own,
+   *   held behind a single lock that open positions and the balance snapshot are
+   *   already queuing for. Those two must be live because they move on every
+   *   tick. A closed deal does not move; it is history the moment it exists.
+   *
+   * The honest cost, stated because it is the one a client can notice: a deal
+   * closed in the last few minutes may not be here yet, and an account traded
+   * before this CRM ingested anything has no rows at all. The screen names its
+   * window, which is what keeps that readable rather than alarming.
+   *
+   * ## The `positions` panel is where "right now" lives
+   *
+   * Nothing on this page is left without a live answer by the change. Open
+   * positions and the balance snapshot still read through the bridge, and they
+   * are the two things on the screen that are actually still moving.
    */
   async historyMine(
     userId: string,
@@ -478,53 +509,79 @@ export class TradingService {
       return { from, to, stats: emptyStats(), deals: [] };
     }
 
-    this.assertBridge();
-
-    const deals = await this.viaBridge('history', accountId, () =>
-      this.bridge.getAccountDeals(account.login as string, from, to),
-    );
-
-    const items: AccountDealDto[] = deals
-      .map((deal) => ({
-        ticket: String(deal.dealId),
-        symbol: deal.symbol,
-        action: deal.action,
-        actionLabel: dealActionLabel(deal.action),
-        entry: deal.entry,
-        closing: isRealisedTrade(deal),
-        volume: deal.volume,
-        price: deal.price,
-        profit: deal.profit,
-        commission: deal.commission,
-        swap: deal.swap,
-        comment: deal.comment || null,
-        dealtAt: new Date(deal.dealtAt),
-      }))
-      /*
-       * ── TRIMMED BACK TO WHAT THE CLIENT ASKED FOR ────────────────────────
-       *
-       * The bridge widens its query past `to` to absorb the trading server's
-       * clock zone: MT5 compares absolute unix seconds against deal times
-       * recorded in its OWN local zone, so a window ending at "now" lands the
-       * offset in the past and the most recent hours are invisible. Measured
-       * live at +3 on this deployment.
-       *
-       * That margin is why a client asking for today now SEES today — and it
-       * also means the bridge can hand back deals past the requested end. This
-       * is a statement screen, so the range a client chose is the range they
-       * are shown, and the filter belongs HERE rather than in the bridge: it
-       * rests on the deal's own reported time being true UTC, which is an
-       * assumption only a live server can settle, and a wrong assumption costs
-       * a one-line change here instead of a redeploy of the bridge.
-       */
-      .filter(
-        (deal) =>
-          deal.dealtAt.getTime() >= from.getTime() && deal.dealtAt.getTime() <= to.getTime(),
+    /*
+     * By LOGIN, because that is what a deal names — `mt5_deals` deliberately
+     * stores no user or account id, so that a deal arriving before its account
+     * is linked is not orphaned forever. The join to a client happens here, at
+     * read time, and `findMine` above has already proved this login is theirs.
+     *
+     * `mt5_deals_login_dealt_idx` covers exactly this filter and this order.
+     *
+     * The window is a closed interval on both ends. `resolveWindow` has already
+     * pushed `to` to the end of its day for the reason recorded there, so the
+     * inclusive comparison is what the client asked for rather than an off-by-a-
+     * day.
+     */
+    const rows = await this.db
+      .select({
+        ticket: mt5Deals.mt5DealId,
+        symbol: mt5Deals.symbol,
+        action: mt5Deals.action,
+        entry: mt5Deals.entry,
+        volume: mt5Deals.volume,
+        price: mt5Deals.price,
+        profit: mt5Deals.profit,
+        commission: mt5Deals.commission,
+        swap: mt5Deals.swap,
+        comment: mt5Deals.comment,
+        dealtAt: mt5Deals.dealtAt,
+      })
+      .from(mt5Deals)
+      .where(
+        and(
+          eq(mt5Deals.login, account.login),
+          gte(mt5Deals.dealtAt, from),
+          lte(mt5Deals.dealtAt, to),
+        ),
       )
       /*
-       * Newest first, with the TICKET breaking ties. Two deals can share a
+       * Newest first, and the index gives that ordering for free: this filter
+       * and this sort are exactly `mt5_deals_login_dealt_idx`.
+       *
+       * The TIE-BREAK is deliberately not in the ORDER BY. Two deals can share a
        * timestamp at MT5's one-second resolution, and without a total order the
-       * list reshuffles between two renders of identical data.
+       * list reshuffles between two renders of identical data — but the ticket
+       * is a VARCHAR, so breaking the tie in SQL means either a lexical order
+       * that ranks '9' above '100' or a `::numeric` cast. The cast forces a sort
+       * node over the whole window AND turns one unparseable ticket into a 500
+       * on every client's account page. It is settled in Node instead, below.
+       */
+      .orderBy(desc(mt5Deals.dealtAt));
+
+    const items: AccountDealDto[] = rows
+      .map((row) => ({
+        ticket: row.ticket,
+        symbol: row.symbol,
+        action: row.action,
+        actionLabel: dealActionLabel(row.action),
+        entry: row.entry,
+        closing: isRealisedTrade(row),
+        // NUMERIC columns arrive as decimal strings and leave as decimal strings
+        // (§6.1). Nothing on this path parses one into a float.
+        volume: row.volume,
+        price: row.price,
+        profit: row.profit,
+        commission: row.commission,
+        swap: row.swap,
+        comment: row.comment || null,
+        dealtAt: row.dealtAt,
+      }))
+      /*
+       * The tie-break the ORDER BY left to us, and it is NUMERIC: ticket '9'
+       * must not outrank '100'. Applied to the already-ordered array, so this is
+       * a near-sorted pass rather than a real sort, and a ticket MT5 has never
+       * issued in a non-numeric form degrades to "leave the SQL order alone"
+       * instead of failing the request.
        */
       .sort(
         (a, b) => b.dealtAt.getTime() - a.dealtAt.getTime() || Number(b.ticket) - Number(a.ticket),
@@ -542,11 +599,25 @@ const POSITION_SIDES: Record<number, string> = { 0: 'buy', 1: 'sell' };
  *
  * ## Thirty days by default, thirty-one at most
  *
- * The ceiling is not a preference. MT5 silently TRUNCATES a request for a larger
- * range rather than refusing it, so a client asking for a year would be shown a
- * partial history that looks complete. The bridge refuses over 31 days for the
- * same reason; this refuses first, so the message names the window instead of
- * arriving from a service the client has never heard of.
+ * The ceiling OUTLIVED its original reason and is kept on a new one, which is
+ * worth stating rather than leaving as folklore.
+ *
+ * It was here because MT5 silently TRUNCATES a request for a larger range rather
+ * than refusing it, so a client asking for a year would be shown a partial
+ * history that looked complete. Reading from `mt5_deals` retires that: Postgres
+ * returns every row in the range or none.
+ *
+ * What is left is the size of the ANSWER. Every deal in the window is
+ * serialised to the client and summed in Node, and an active account can trade
+ * hundreds a day — so the bound is now on the response and on the statistics
+ * loop, not on a quirk of the trading server. Thirty-one days is what the portal
+ * offers and comfortably more than it asks for.
+ *
+ * Raising it is now a real option in a way it never was before, and the shape it
+ * needs is a PAGED deal list with the statistics aggregated in SQL. It is not a
+ * matter of moving this constant: the whole window currently lands in one array
+ * because that is what makes the totals and the list provably describe the same
+ * rows.
  *
  * ## Inclusive at both ends, by DATE PART
  *
@@ -564,9 +635,9 @@ function resolveWindow(query: AccountHistoryQueryDto): { from: Date; to: Date } 
 
   if (to.getTime() - from.getTime() > MAX_WINDOW_MS) {
     throw new ValidationError(
-      'A history window may cover at most 31 days. Ask for a shorter range — the trading ' +
-        'server truncates anything larger without saying so, which would show a partial history ' +
-        'as though it were complete.',
+      'A history window may cover at most 31 days. Ask for a shorter range — a wider one is ' +
+        'returned whole or not at all, and a whole one is more than a single response can carry ' +
+        'for an actively traded account.',
     );
   }
 
@@ -606,9 +677,14 @@ function todayIso(): string {
  *
  * ## decimal.js for every total (§6.1)
  *
- * The arithmetic moved out of Postgres when the read went live, so it happens
- * here — and `+` on two of these values is exactly the coercion the money rules
- * exist to forbid. The window's ceiling is what keeps the loop bounded.
+ * Summed in Node rather than as a SQL aggregate, even though the rows now come
+ * from our own table and `SUM()` is right there. The point is that the totals
+ * and the returned list are provably the SAME rows: an aggregate is a second
+ * query over a second snapshot, and the two can disagree.
+ *
+ * `+` on two of these values is exactly the coercion the money rules exist to
+ * forbid, so every running total is a `Decimal`. The window's ceiling is what
+ * keeps the loop bounded.
  *
  * ## Only realised round trips count
  *

@@ -451,18 +451,22 @@ export class TradingController {
   @Get('accounts/:id/history')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: "One account's deals and statistics over a window, read live from MT5",
+    summary: "One account's deals and statistics over a window, from the CRM's own record",
     description:
       'The deals AND the statistics computed from exactly those deals, in one response. They ' +
-      'come together because they are two views of one read: splitting them would cost two round ' +
-      'trips to a server we do not own, and would let a total describe a different set from the ' +
-      'list beside it.\n\n' +
-      'Read LIVE rather than from the ingested `mt5_deals` table. That table is the commission ' +
-      "engine's record, filled by a sweep, and a client-facing history served from it shows " +
-      'nothing whenever ingestion is behind.\n\n' +
-      'The window defaults to the last 30 days and is CAPPED at 31, because MT5 truncates a ' +
-      'larger request silently rather than refusing it — a partial history that looks complete ' +
-      'is the one answer this endpoint must never give. Dates are inclusive at both ends.\n\n' +
+      'come together because they are two views of one read, and splitting them would let a ' +
+      'total describe a different set of rows from the list beside it.\n\n' +
+      'Served from the ingested `mt5_deals` table, NOT read live from the trading server. Every ' +
+      'row there came from MT5 by ticket — pushed live by the bridge and re-swept on a rolling ' +
+      '24-hour window — so it is the same data, it reaches further back than MT5 will answer ' +
+      'for in one request, and it keeps working while the bridge is down. The cost, stated ' +
+      'because a client can notice it: a deal that closed in the last few minutes may not be ' +
+      'here yet, and an account traded before this CRM ingested anything has no rows at all.\n\n' +
+      '`/live` and `/positions` are still read through the bridge, because a balance and an ' +
+      'open position move while the client is looking at them. A closed deal does not.\n\n' +
+      'The window defaults to the last 30 days and is CAPPED at 31 — now a bound on the size of ' +
+      'the response and of the statistics loop, since the whole window comes back in one array ' +
+      'rather than paged. Dates are inclusive at both ends.\n\n' +
       'Every figure describes THE WINDOW, not all time; `from` and `to` are echoed back so the ' +
       'screen can say so.',
   })

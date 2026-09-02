@@ -278,12 +278,20 @@ export class Mt5BridgeClient {
   }
 
   /**
-   * Closed deals for ONE login in a window.
+   * Closed deals for ONE login in a window, read live from the trading server.
    *
-   * Read live rather than out of `mt5_deals`. That table is the commission
-   * engine's ingestion record, fed by a sweep; a client-facing history served
-   * from it shows nothing whenever ingestion is behind or broken, which is a
-   * worse answer than a slower one.
+   * ## Nothing in the CRM calls this any more
+   *
+   * The client's account history used to come through here. It is served from
+   * `mt5_deals` now — same deals by ticket, reaching further back than MT5 will
+   * answer for in one request, and available while this bridge is down. See
+   * `TradingService.historyMine` for the full reasoning.
+   *
+   * Kept because it is the only way to ask MT5 directly, which is what you want
+   * when the question is "did ingestion miss something": a window read through
+   * here and the same window read from `mt5_deals` should agree, and where they
+   * do not, this one is the authority. Deleting it would leave that comparison
+   * impossible to make.
    *
    * The bridge REFUSES a window over 31 days rather than truncating, because
    * MT5 silently caps a larger request and would hand back a partial set that

@@ -238,11 +238,15 @@ export class AccountPositionDto {
  *
  * ## Computed in the backend on decimal.js, and the window is what makes that safe
  *
- * This used to be a SQL aggregate over the ingested `mt5_deals` table, which was
- * exact and unbounded but could only report what the sweep had managed to
- * ingest. Reading live moves the arithmetic into Node — where §6.1 forbids
- * floats, so every total goes through decimal.js — and the 31-day ceiling on the
- * window is what keeps that loop bounded.
+ * Not a SQL aggregate, even though the deals now come from our own `mt5_deals`
+ * table and `SUM()` is right there. An aggregate is a SECOND query over a second
+ * snapshot of the table, and these figures must provably describe the very rows
+ * returned beside them — a client reading "12 trades" above a list of eleven has
+ * been told something the response cannot support.
+ *
+ * So the arithmetic happens in Node, where §6.1 forbids floats and every total
+ * goes through decimal.js, and the 31-day ceiling on the window is what keeps
+ * that loop bounded.
  *
  * ## The figures describe the WINDOW, never all time
  *
@@ -333,8 +337,7 @@ export class AccountStatsDto {
  * ## Why both come back together
  *
  * They are two views of the same fetch. Splitting them into two endpoints would
- * mean two reads of the same window from MT5 — twice the latency and twice the
- * load on a server we do not own — and, worse, two windows that can disagree:
+ * mean two reads of the same window — and, worse, two windows that can disagree:
  * a client would see totals computed over one set beside a list showing another.
  *
  * `from` and `to` are echoed back so the screen can state the period it is
@@ -360,11 +363,15 @@ export class AccountHistoryDto {
  *
  * ## A window, not a page
  *
- * The old shape here was offset pagination over an ingested table. Reading live
- * changes what a bound has to do: MT5 answers per time range, and it TRUNCATES a
- * large range silently rather than erroring — so the bound must be on the
- * period, where the server's own limit is, and not on a row count the server
- * knows nothing about.
+ * The shape here was once offset pagination over an ingested table, and the
+ * bound moved to the PERIOD when the read went live against MT5, which answers
+ * per time range and truncates a large one silently.
+ *
+ * The read has since come back to `mt5_deals` and the window has stayed, on a
+ * different justification: the whole window is returned in ONE array so that the
+ * statistics and the deal list provably cover the same rows, which makes the
+ * period the thing that has to be bounded. Paging the deals is the change that
+ * would let the window widen, and it is a change to both at once.
  *
  * Dates are INCLUSIVE at both ends by DATE PART, matching
  * `ListTransactionsQueryDto` — and for the reason recorded there and in the
