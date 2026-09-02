@@ -13,11 +13,30 @@ import { BadRequestException, ValidationError, ValidationPipeOptions } from '@ne
  * caller sending a typo'd key got a 200 and a half-applied change. On a money
  * system, the caller and the contract disagreeing must be an error.
  *
- * A signed webhook needs no exemption: it reads `req.body` directly, because
- * the raw body is required for HMAC verification, so it never passes through this
- * pipe. That matters — the bridge is a system we do not own, and per that
- * controller's own note "a lost deal is an unpaid partner", so it must keep
- * tolerating extra fields.
+ * ## Which webhooks are exempt, and which only LOOKED exempt
+ *
+ * A SIGNED webhook needs no exemption: it reads `req.body` directly, because the
+ * raw body is required for HMAC verification, so it never passes through this
+ * pipe. `rival-webhook` is the one that actually works this way.
+ *
+ * ⚠️ `Mt5WebhooksController` does NOT. This block used to lump it in with the
+ * above — "the bridge is a system we do not own ... so it must keep tolerating
+ * extra fields" — as though that were already the case. It takes `@Body() dto`
+ * like any other route, so `forbidNonWhitelisted` applied to it in full, and the
+ * stated principle was documentation of an intention nobody had implemented.
+ *
+ * The cost was real and it is the reason this paragraph exists. The bridge is a
+ * separate service on its own release train; the day its live payload grew a
+ * field, every push to a CRM that had not been redeployed answered 400. The deal
+ * outbox retried forever against an error only a deploy could fix, and the live
+ * account feed — which never retries, deliberately — stopped dead, with the
+ * portal quietly falling back to polling and nothing on screen saying why.
+ *
+ * That controller now carries its own `@UsePipes` with
+ * `forbidNonWhitelisted: false`, keeping `whitelist` so an unknown field is
+ * discarded rather than stored. **A DTO consumed by an independently deployed
+ * sender needs the same treatment**, and the test to write for it is that an
+ * unrecognised property does not fail the request.
  */
 export const VALIDATION_PIPE_OPTIONS: ValidationPipeOptions = {
   whitelist: true,

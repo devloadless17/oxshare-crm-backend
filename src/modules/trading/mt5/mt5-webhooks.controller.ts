@@ -7,10 +7,13 @@ import {
   Post,
   Query,
   UseGuards,
+  UsePipes,
+  ValidationPipe,
 } from '@nestjs/common';
 import { ApiExcludeController, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { NoOriginCheck } from '../../../common/security/csrf.guard';
+import { VALIDATION_PIPE_OPTIONS } from '../../../common/validation.config';
 import { BridgeSecretGuard } from './bridge-secret.guard';
 import { Mt5DealsService } from './mt5-deals.service';
 import { Mt5AccountSyncService } from './mt5-account-sync.service';
@@ -102,6 +105,38 @@ import { Mt5LiveService } from './mt5-live.service';
  * request per account is the thing that does not scale, and no limit fixes it.
  */
 @Throttle({ default: { limit: 6_000, ttl: 60_000 } })
+/*
+ * ── THE BRIDGE IS DEPLOYED SEPARATELY, SO AN EXTRA FIELD MUST NOT BE FATAL ──
+ *
+ * The global pipe sets `forbidNonWhitelisted: true`, which turns an unexpected
+ * property into a 400. That is exactly right for a browser posting a form — the
+ * caller and the contract disagreeing about a money field must be an error —
+ * and exactly wrong here, because the sender is a different service on a
+ * different release train.
+ *
+ * `validation.config.ts` states this principle and then assumes it is already
+ * satisfied: "the bridge is a system we do not own ... so it must keep
+ * tolerating extra fields", on the reasoning that a signed webhook reads the raw
+ * body and never reaches the pipe. That is true of the Rival webhook. It has
+ * never been true of THIS controller, which takes `@Body() dto` like any other
+ * route — the exemption was documented and not implemented.
+ *
+ * It became load-bearing the moment the live payload grew a field. Ship the
+ * bridge before the CRM and every push 400s: the deal outbox retries forever
+ * against an error only a deploy can fix, and the live feed — which never
+ * retries, by design — simply stops, with the account screen falling back to
+ * polling and nothing on it saying why. That happened.
+ *
+ * `whitelist` STAYS, so an unknown field is still discarded rather than stored.
+ * What changes is that discarding it is silent instead of fatal, which is the
+ * behaviour every field on these DTOs already documents for a value it does not
+ * recognise.
+ *
+ * This does NOT weaken the money path: every field the CRM acts on is still
+ * validated by the same decorators, and a MISSING or malformed one still 400s.
+ * The only thing now tolerated is a field this build has not heard of.
+ */
+@UsePipes(new ValidationPipe({ ...VALIDATION_PIPE_OPTIONS, forbidNonWhitelisted: false }))
 @UseGuards(BridgeSecretGuard)
 export class Mt5WebhooksController {
   constructor(
