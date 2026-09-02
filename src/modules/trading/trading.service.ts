@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, asc, desc, eq, gte, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNotNull, isNull, lt, lte, or } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
@@ -57,6 +57,39 @@ import type {
  * If that assumption ever breaks — an operator issuing accounts in bulk — this
  * needs the same cursor treatment as the ledger, not an offset page.
  */
+
+/**
+ * How old the mirrored balance must be before opening the accounts list asks
+ * MT5 for it.
+ *
+ * Twenty seconds, which is shorter than the portal's own 30s poll on that
+ * screen and far shorter than a sweep cycle. The point is the FIRST paint after
+ * a client closes a trade and opens the site — anything longer and the number
+ * they are most certain about is the one the screen gets wrong. Anything much
+ * shorter and an ordinary reload starts costing an MT5 read for no new answer.
+ */
+const BALANCE_REFRESH_AFTER_MS = 20_000;
+
+/**
+ * The most accounts one list request will read from MT5.
+ *
+ * The MT5 session is a single lock, so these reads are serial: this is how long
+ * one client can hold it. Five covers every real client — the platform caps live
+ * accounts at five by default — while bounding what somebody holding twenty
+ * could do to everybody else.
+ */
+const BALANCE_REFRESH_MAX = 5;
+
+/**
+ * The whole-operation budget for those reads.
+ *
+ * A balance read measured ~150ms on an idle bridge and 40 SECONDS while a deal
+ * sweep round was running. This is what keeps that second number out of the
+ * client's page load: past the budget the mirror answers, which is exactly the
+ * behaviour this screen had before and is never worse than it.
+ */
+const BALANCE_REFRESH_BUDGET_MS = 2_500;
+
 @Injectable()
 export class TradingService {
   private readonly logger = new Logger(TradingService.name);
@@ -106,6 +139,28 @@ export class TradingService {
    * alphabetically — which is the opposite of what the letters would give.
    */
   async listMine(userId: string): Promise<TradingAccountDto[]> {
+    /*
+     * ── ASK MT5 BEFORE ANSWERING, WHEN THE MIRROR IS OLD ──────────────────
+     *
+     * The sweep cannot be fast enough for this moment. A client closes a trade
+     * in the terminal, opens the portal, and the first thing they see is their
+     * balance — and the mirror behind it is written by a background round whose
+     * worst case is minutes. "I closed a deal and the site shows the old
+     * number" is not a latency to tune down; it is the screen being wrong at
+     * the one moment the client is certain what the right answer is.
+     *
+     * So the LIST does what the detail page already does: reads MT5 and writes
+     * through. Bounded three ways, because this is the most-visited screen in
+     * the portal and every read takes the bridge's single MT5 session lock —
+     * see `refreshOwnBalances` for what each bound is protecting.
+     *
+     * Best-effort by construction: it never throws and never blocks past its
+     * deadline, so an unreachable or busy bridge costs a stale figure rather
+     * than a screen the client cannot open. The mirror is still the source of
+     * the response below; this only gives it a chance to be current first.
+     */
+    await this.refreshOwnBalances(userId);
+
     const rows = await this.db
       .select({
         id: tradingAccounts.id,
@@ -357,6 +412,101 @@ export class TradingService {
    * Either way the portal reads it as "the live figures could not be read",
    * which is the true statement.
    */
+  /**
+   * Bring this client's balances up to date from MT5, within a budget.
+   *
+   * ## Three bounds, and each one is protecting something different
+   *
+   * **Staleness.** Only an account whose mirror is older than
+   * `BALANCE_REFRESH_AFTER_MS` is read. A client reloading the page, or the 30s
+   * poll on the accounts screen, therefore costs nothing at all — the sweep or
+   * the previous load has usually just written the figure. This is what stops
+   * the most-visited screen in the portal becoming a per-render MT5 call.
+   *
+   * **Count.** At most `BALANCE_REFRESH_MAX` accounts per request. The reads are
+   * serial by necessity — the MT5 session is a single lock — so an unbounded
+   * loop would let one client with many accounts hold it for as long as they had
+   * accounts, which is the starvation the deal sweep already had to be taught
+   * not to cause.
+   *
+   * **Time.** A whole-operation deadline. A read measured at ~150ms on an idle
+   * bridge was measured at FORTY SECONDS while a sweep round was running, and a
+   * client opening the accounts page must never wait that out. Past the deadline
+   * the loop stops and the mirror answers; an in-flight read is left to land on
+   * its own, which is harmless because it writes through the same staleness
+   * guard as everything else.
+   *
+   * ## It never throws
+   *
+   * Not `viaBridge`, which re-throws so a failed read reaches the client as a
+   * retryable error. That is right for the detail page, where the live figure IS
+   * the answer. Here the answer is the list, the mirror can always supply it,
+   * and an unreachable bridge must cost a stale balance rather than a screen
+   * that will not open.
+   */
+  private async refreshOwnBalances(userId: string): Promise<void> {
+    if (!this.bridge.isConfigured) return;
+
+    const cutoff = new Date(Date.now() - BALANCE_REFRESH_AFTER_MS);
+
+    const stale = await this.db
+      .select({ login: tradingAccounts.login })
+      .from(tradingAccounts)
+      .where(
+        and(
+          eq(tradingAccounts.userId, userId),
+          /* No login means no account on MT5 to ask about. */
+          isNotNull(tradingAccounts.login),
+          /*
+           * Active only. A closed or suspended account's balance is not what
+           * the client is coming to check, and spending the session lock on one
+           * takes the budget from an account they are actually trading.
+           */
+          eq(tradingAccounts.status, 'active'),
+          or(isNull(tradingAccounts.balanceSyncedAt), lt(tradingAccounts.balanceSyncedAt, cutoff)),
+        ),
+      )
+      .limit(BALANCE_REFRESH_MAX);
+
+    if (stale.length === 0) return;
+
+    const deadline = Date.now() + BALANCE_REFRESH_BUDGET_MS;
+
+    for (const row of stale) {
+      if (Date.now() >= deadline) {
+        /*
+         * Debug rather than warn. Running out of budget is the guard working —
+         * the bridge was busy and the client got their page — and a line per
+         * page load on a busy bridge would be noise in the log that matters.
+         */
+        this.logger.debug(
+          `Balance refresh budget spent for client ${userId}; the mirror answers for the rest.`,
+        );
+        return;
+      }
+
+      try {
+        const snapshot = await this.bridge.getAccount(row.login as string);
+        /* `readAt` AFTER the call, for the reason `snapshotMine` records: an
+           understated read time would let this overwrite a fresher sweep. */
+        const readAt = new Date();
+        if (snapshot) {
+          await this.accountSync.recordFromOperation(row.login as string, snapshot.balance, readAt);
+        }
+      } catch (error) {
+        /*
+         * Swallowed on purpose, and logged at debug for the same reason as the
+         * budget line: the bridge being busy is the ordinary case this whole
+         * method is designed around, not an incident.
+         */
+        this.logger.debug(
+          `Could not refresh balance for login ${row.login}: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
   private assertBridge(): void {
     if (!this.bridge.isConfigured) {
       throw new ExternalServiceError('The trading server could not be reached.');
