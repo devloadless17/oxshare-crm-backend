@@ -169,6 +169,8 @@ export interface AdminTransactionExportRow {
   methodName: string;
   provider: string;
   providerRef: string | null;
+  /** The payment platform's own id — see TransactionDto.rivalExternalId. */
+  rivalExternalId: string | null;
   destination: string | null;
   rejectionReason: string | null;
   userId: string;
@@ -236,6 +238,7 @@ function toMovementRow(row: AdminCombinedRow) {
     methodName: row.method_name ?? row.provider,
     provider: row.provider,
     providerRef: row.provider_ref,
+    rivalExternalId: row.rival_external_id,
     destination: row.destination,
     rejectionReason: row.rejection_reason,
     createdAt: instantOf(row.created_at),

@@ -873,6 +873,22 @@ export class AdminTransactionRowDto {
   /** An OPEN set no screen may switch on exhaustively (see TransactionDto). */
   @ApiProperty() provider: string;
   @ApiPropertyOptional({ type: String, nullable: true }) providerRef?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      "The payment platform's OWN id for this movement — what Rival shows as its reference and " +
+      'what its team can look up directly. Null for a manual desk credit, which went through no rail.',
+    type: String,
+    nullable: true,
+  })
+  /*
+   * The other half of the reference pair, and the reason it is here: `providerRef`
+   * is OURS (Rival stores it under a unique index on (company_id,
+   * idempotency_key)), and this is THEIRS. Both were recorded from the first day
+   * of the integration; only ours was ever rendered, so an operator raising a
+   * payment ticket had one identifier and needed an engineer to recover the other.
+   */
+  rivalExternalId?: string | null;
   @ApiPropertyOptional({ type: String, nullable: true }) destination?: string | null;
   /** Also carries a transfer's failure reason — one column for "why not". */
   @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;
