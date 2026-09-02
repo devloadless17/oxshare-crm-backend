@@ -8,7 +8,13 @@
 /.npm
 
 # Environment & Secrets
+# Every .env variant, INCLUDING the timestamped backups tooling leaves behind.
+# `.env` alone did not match `.env.bak-1787906394`, which held the live R2 secret,
+# the JWT signing keys and the at-rest encryption key — one `git add -A` from
+# being published.
 .env
+.env.bak*
+.env.before*
 .env.local
 .env.development
 .env.production
