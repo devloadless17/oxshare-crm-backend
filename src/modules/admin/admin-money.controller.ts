@@ -67,6 +67,7 @@ import { UuidParam, enumQuery } from '../../common/query-params';
 import { transactionStateEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
+import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
 
 /** Withdrawal lifecycle, the ADM-13 ledger view and IB commission plans. */
 @ApiTags('admin')
@@ -248,6 +249,7 @@ export class AdminMoneyController {
    * a restart.
    */
   @Post('wallets/credit')
+  @AnnouncesChange('wallets')
   @Idempotent()
   @ApiHeader({
     name: IDEMPOTENCY_HEADER,
@@ -347,6 +349,7 @@ export class AdminMoneyController {
   }
 
   @Patch('withdrawals/:id/approve')
+  @AnnouncesChange('withdrawals')
   @Idempotent()
   @ApiHeader({
     name: IDEMPOTENCY_HEADER,
@@ -395,6 +398,7 @@ export class AdminMoneyController {
   }
 
   @Patch('withdrawals/:id/reject')
+  @AnnouncesChange('withdrawals')
   @Idempotent()
   @ApiHeader({
     name: IDEMPOTENCY_HEADER,
@@ -422,6 +426,7 @@ export class AdminMoneyController {
   }
 
   @Patch('withdrawals/:id/settle')
+  @AnnouncesChange('withdrawals')
   @Idempotent()
   @ApiHeader({
     name: IDEMPOTENCY_HEADER,
@@ -456,6 +461,7 @@ export class AdminMoneyController {
   }
 
   @Patch('withdrawals/:id/cancel')
+  @AnnouncesChange('withdrawals')
   @Idempotent()
   @ApiHeader({
     name: IDEMPOTENCY_HEADER,

@@ -59,6 +59,7 @@ import { NEEDS_REVIEW } from '../../store/kyc.store';
 import { kycStatusEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
+import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
 
 /** KYC review queue, configurable rejection reasons and the KYC step configurator. */
 @ApiTags('admin')
@@ -224,6 +225,7 @@ export class AdminComplianceController {
   }
 
   @Patch('kyc/:userId/claim')
+  @AnnouncesChange('kyc')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.review')
   @ApiCookieAuth()
@@ -243,6 +245,7 @@ export class AdminComplianceController {
   }
 
   @Patch('kyc/:userId/approve')
+  @AnnouncesChange('kyc')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.review')
   @ApiCookieAuth()
@@ -262,6 +265,7 @@ export class AdminComplianceController {
   }
 
   @Patch('kyc/:userId/reject')
+  @AnnouncesChange('kyc')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.review')
   @ApiCookieAuth()

@@ -38,6 +38,7 @@ import { CsrfEchoMiddleware } from './common/security/csrf-echo.middleware';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { StoreModule } from './store/store.module';
+import { ResourceChangedModule } from './common/realtime/resource-changed.module';
 import { SchedulingModule } from './common/scheduling/scheduling.module';
 import { UploadsModule } from './common/uploads/uploads.module';
 import { EmailModule } from './modules/email/email.module';
@@ -128,6 +129,7 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     // Infrastructure
     DatabaseModule,
     StoreModule,
+    ResourceChangedModule,
     /*
      * @Global(), so the eight `@Cron` jobs spread across five feature modules
      * can take a lease without importing a module into each of them. See its own

@@ -8,6 +8,10 @@ import {
 } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
 import { Client } from 'pg';
+import {
+  RESOURCE_CHANGED_CHANNEL,
+  type ResourceChangedEvent,
+} from '../../common/realtime/resource-changed';
 import { RealtimePrincipalResolver } from './realtime.principal';
 import type { NotificationRecipient } from '../../store/notifications.store';
 
@@ -33,6 +37,26 @@ export const REALTIME_NAMESPACE = '/realtime';
 
 /** The event a client listens for. Future features add NAMES, not connections. */
 export const NOTIFICATION_EVENT = 'notification.created';
+
+/**
+ * The event that says a SHARED QUEUE moved — a second operator decided
+ * something you are looking at. Carries a resource name and nothing else; see
+ * `common/realtime/resource-changed.ts` for why that emptiness is the point.
+ */
+export const RESOURCE_EVENT = 'resource.changed';
+
+/**
+ * Every admin socket, whoever they are.
+ *
+ * `admin:<id>` addresses ONE operator's tabs and is what personal
+ * notifications use. This is the broadcast room, and it exists because a queue
+ * is shared: an approval by anyone changes what everyone else is looking at.
+ * Deliberately NOT split by permission — the event has no data in it, so
+ * scoping delivery would add a second authorization surface to protect
+ * nothing, and an operator with no KYC screen mounted refetches nothing when
+ * told the KYC queue moved.
+ */
+export const ADMIN_BROADCAST_ROOM = 'admins';
 
 /** How long a dropped LISTEN connection waits before reconnecting. */
 const RECONNECT_DELAY_MS = 2_000;
@@ -280,6 +304,9 @@ export class NotificationsRealtimeGateway
 
     const room = roomFor(principal.recipient);
     await socket.join(room);
+    // Admins additionally join the broadcast room, so one operator's decision
+    // can reach every other operator's open queue.
+    if (principal.recipient.kind === 'admin') await socket.join(ADMIN_BROADCAST_ROOM);
     // Stored so a disconnect can log meaningfully; never read for
     // authorization. `socket.data` is `any` in the Socket.IO types, so it is
     // narrowed here rather than trusted.
@@ -342,6 +369,27 @@ export class NotificationsRealtimeGateway
     });
   }
 
+  /**
+   * Tell every OTHER operator that a shared queue moved.
+   *
+   * `.except(roomFor(actor))` skips the operator who did it: their own screen
+   * refreshed from its own mutation the moment the request returned, so the
+   * echo would be a second, redundant refetch of everything they are looking
+   * at — on the console where an approval is most likely to be followed
+   * immediately by another one.
+   *
+   * Nothing is emitted when no server is attached (`REALTIME_ENGINE` unset in
+   * a unit test), which is why the optional chain stays.
+   */
+  publishResourceChange(event: ResourceChangedEvent): void {
+    const audience = event.actorAdminId
+      ? this.server
+          ?.to(ADMIN_BROADCAST_ROOM)
+          .except(roomFor({ kind: 'admin', id: event.actorAdminId }))
+      : this.server?.to(ADMIN_BROADCAST_ROOM);
+    audience?.emit(RESOURCE_EVENT, { resource: event.resource });
+  }
+
   /** How many sockets a principal currently holds. For tests and diagnostics. */
   async socketsIn(recipient: NotificationRecipient): Promise<number> {
     const sockets = await this.server.in(roomFor(recipient)).fetchSockets();
@@ -394,6 +442,10 @@ export class NotificationsRealtimeGateway
     client.on('notification', (message) => {
       if (!message.payload) return;
       try {
+        if (message.channel === RESOURCE_CHANGED_CHANNEL) {
+          this.publishResourceChange(JSON.parse(message.payload) as ResourceChangedEvent);
+          return;
+        }
         this.publish(JSON.parse(message.payload) as NotificationEvent);
       } catch (error) {
         // A malformed payload is a bug in the trigger, not a reason to stop
@@ -408,7 +460,14 @@ export class NotificationsRealtimeGateway
     try {
       await client.connect();
       await client.query('LISTEN notification_created');
-      this.logger.log('Listening for notification events.');
+      /*
+       * A SECOND channel on the SAME connection. A listening client is checked
+       * out for the life of the process, so a channel per connection would
+       * cost a permanent Postgres connection per feature; `message.channel`
+       * separates them for free.
+       */
+      await client.query(`LISTEN ${RESOURCE_CHANGED_CHANNEL}`);
+      this.logger.log('Listening for notification and resource-change events.');
     } catch (error) {
       this.logger.error(
         `Could not start listening for notifications: ` +

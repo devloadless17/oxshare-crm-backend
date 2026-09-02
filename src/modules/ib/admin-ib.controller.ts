@@ -45,6 +45,7 @@ import {
   SetIbActiveDto,
   type IbApplicationStatusDto,
 } from './dto/ib-application.dto';
+import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
 
 /**
  * Reviewing partner applications.
@@ -183,6 +184,7 @@ export class AdminIbController {
   }
 
   @Patch('applications/:id/approve')
+  @AnnouncesChange('ib-applications')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('ib.approve')
   @ApiCookieAuth()
@@ -218,6 +220,7 @@ export class AdminIbController {
   }
 
   @Patch('applications/:id/reject')
+  @AnnouncesChange('ib-applications')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('ib.reject')
   @ApiCookieAuth()

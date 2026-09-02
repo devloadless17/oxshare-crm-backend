@@ -32,6 +32,7 @@ import { kycStatusEnum, userStatusEnum, userTypeEnum } from '../../database/sche
 import { CLIENT_SORT_COLUMNS } from '../../store/users.store';
 import { ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
+import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
 
 /** Client directory and suspend/reinstate (ADM-01 / ADM-14). */
 @ApiTags('admin')
@@ -328,6 +329,7 @@ export class AdminClientsController {
   }
 
   @Patch('clients/:id/status')
+  @AnnouncesChange('clients')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('clients.suspend')
   @ApiCookieAuth()
