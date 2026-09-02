@@ -148,10 +148,30 @@ export class Mt5LivePublisher {
     const full = JSON.stringify(event);
     if (Buffer.byteLength(full, 'utf8') <= MAX_PAYLOAD_BYTES) return full;
 
-    const { positions: _dropped, ...withoutPositions } = event;
-    this.logger.debug(
-      `Live payload for account ${event.accountId} exceeded ${MAX_PAYLOAD_BYTES} bytes; ` +
-        'sent without positions',
+    const { positions: dropped, ...withoutPositions } = event;
+
+    /*
+     * WARN, not debug, because this silently disables a feature for exactly the
+     * client who wants it most.
+     *
+     * A trader with enough open positions to overflow the channel is the one
+     * watching that table hardest, and what they get is live account figures
+     * above a table fed only by its fallback poll. Nothing else reports it: the
+     * event is still valid, the socket still delivers, and the screen looks
+     * merely slow rather than degraded.
+     *
+     * If this line ever appears in production the fix is to compress the payload
+     * rather than to raise the constant — `pg_notify`'s 8000 bytes is Postgres's
+     * limit, not ours. It is deliberately NOT compressed today: the publisher
+     * and the gateway deploy together but not atomically, and a format only the
+     * newer one understands would turn a skew into a total outage of the feed —
+     * which is a failure this feature has already had once, from a different
+     * door.
+     */
+    this.logger.warn(
+      `Live payload for account ${event.accountId} exceeded ${MAX_PAYLOAD_BYTES} bytes with ` +
+        `${dropped?.length ?? 0} positions; sent WITHOUT them, so that client's positions ` +
+        'table is on its fallback poll rather than live.',
     );
 
     return JSON.stringify(withoutPositions);
