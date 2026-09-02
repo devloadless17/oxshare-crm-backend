@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ADMIN_BROADCAST_ROOM,
   NOTIFICATION_EVENT,
   NotificationsRealtimeGateway,
 } from '../src/modules/notifications/realtime.gateway';
@@ -146,11 +147,22 @@ describe('where a socket is allowed to come from', () => {
      * prevent: an admin session admitted on the portal's socket.
      */
     const cases = [
-      { origin: PORTAL_ORIGIN, cookie: `${CLIENT_COOKIE}=good`, room: `client:${CLIENT_ID}` },
-      { origin: ADMIN_ORIGIN, cookie: `${ADMIN_COOKIE}=good`, room: `admin:${ADMIN_ID}` },
+      { origin: PORTAL_ORIGIN, cookie: `${CLIENT_COOKIE}=good`, rooms: [`client:${CLIENT_ID}`] },
+      /*
+       * An admin lands in TWO rooms: their own, and the broadcast room every
+       * operator shares. `admins` is what carries `resource.changed` — one
+       * reviewer's decision moving another reviewer's open queue — and a
+       * client must never be in it, which the portal case above is what
+       * asserts.
+       */
+      {
+        origin: ADMIN_ORIGIN,
+        cookie: `${ADMIN_COOKIE}=good`,
+        rooms: [`admin:${ADMIN_ID}`, ADMIN_BROADCAST_ROOM],
+      },
     ];
 
-    for (const { origin, cookie, room } of cases) {
+    for (const { origin, cookie, rooms } of cases) {
       const { gateway } = buildGateway(
         buildResolver({ admin: { id: ADMIN_ID }, client: { id: CLIENT_ID } }),
       );
@@ -159,7 +171,7 @@ describe('where a socket is allowed to come from', () => {
       await gateway.handleConnection(socket as never);
 
       expect(socket.disconnected, origin).toBe(false);
-      expect(socket.rooms, origin).toEqual([room]);
+      expect(socket.rooms, origin).toEqual(rooms);
     }
   });
 
@@ -289,13 +301,23 @@ describe('who is allowed to hold a socket', () => {
     expect(socket.rooms).toEqual([]);
   });
 
-  it('puts an admin in the ADMIN room for their id', async () => {
+  it('puts an admin in the ADMIN room for their id, AND the broadcast room', async () => {
+    /*
+     * Two memberships, two different jobs. `admin:<id>` addresses one
+     * operator's tabs and is what personal notifications use; `admins` is the
+     * shared room `resource.changed` goes to, because a queue is shared and an
+     * approval by anyone changes what everyone else is looking at.
+     *
+     * Asserted as an exact list rather than with `toContain`, so a future
+     * change that quietly adds a THIRD room has to say so here — a room is
+     * a delivery scope, and one nobody declared is one nobody reviewed.
+     */
     const { gateway } = buildGateway(buildResolver({ admin: { id: ADMIN_ID } }));
     const socket = fakeSocket(`${ADMIN_COOKIE}=good`);
 
     await gateway.handleConnection(socket as never);
 
-    expect(socket.rooms).toEqual([`admin:${ADMIN_ID}`]);
+    expect(socket.rooms).toEqual([`admin:${ADMIN_ID}`, ADMIN_BROADCAST_ROOM]);
     expect(socket.disconnected).toBe(false);
   });
 
