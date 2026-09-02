@@ -407,6 +407,11 @@ describe('R-4.2 every route declares how it is protected', () => {
     'GET /platforms':
       'Download links for the trading terminal — operator content, identical for every caller, ' +
       'and deliberately readable before verification (see the controller).',
+    'GET /external-links':
+      'The operator-configured links on the sidebar — the same list for every caller, and the ' +
+      'sidebar renders while an address is still unconfirmed. A 403 there would blank the menu ' +
+      'or paint an error over a screen that is otherwise working (see the controller). Same ' +
+      'shape and same reason as GET /platforms above.',
     'GET /uploads/kyc/:file':
       'Authenticates INSIDE the handler because it serves two identities. The CLIENT branch ' +
       'checks emailVerified there; a controller guard would test the column on an ADMIN, who ' +

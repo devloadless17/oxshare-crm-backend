@@ -141,9 +141,32 @@ beforeEach(async () => {
    * wallets. Ledger entries reference wallets and are cleared ahead of them for
    * the same reason, even though nothing here posts one yet.
    */
-  await ctx.db.execute(sql`DELETE FROM ledger_entries`);
-  await ctx.db.execute(sql`DELETE FROM wallets`);
-  await ctx.db.execute(sql`DELETE FROM users`);
+  /*
+   * RETRIED, because the insert this races is FIRE-AND-FORGET.
+   *
+   * Ordering alone is not enough. `WalletProvisioningService.openCommissionWallet`
+   * runs AFTER the approval transaction and is deliberately not awaited — the
+   * lazy path in `WalletService.post` is what guarantees the wallet exists, so
+   * the eager call is only there to spare a new partner a placeholder. That
+   * means it can land BETWEEN `DELETE FROM wallets` and `DELETE FROM users`,
+   * and the FK then refuses the second delete.
+   *
+   * It fails as `DELETE FROM users` in a hook, so the report blames a cleanup
+   * rather than any assertion — and it only loses the race on a loaded runner,
+   * so it passed locally and failed in CI. That is the worst shape a flake can
+   * have, which is why this is a retry rather than a longer sleep.
+   */
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await ctx.db.execute(sql`DELETE FROM ledger_entries`);
+      await ctx.db.execute(sql`DELETE FROM wallets`);
+      await ctx.db.execute(sql`DELETE FROM users`);
+      break;
+    } catch (error) {
+      if (attempt >= 3) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
   /*
    * No ladder to seed. `ib_levels` and `ib_accounts.level` went in 0102, so a
    * partner fixture needs only a programme — and the migrations seed one.
