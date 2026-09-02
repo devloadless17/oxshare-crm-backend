@@ -33,6 +33,7 @@ import type {
   AccountPositionDto,
   AccountSnapshotDto,
   AccountStatsDto,
+  AccountWatchDto,
 } from './dto/account-detail.dto';
 
 /**
@@ -504,6 +505,86 @@ export class TradingService {
             `${error instanceof Error ? error.message : String(error)}`,
         );
       }
+    }
+  }
+
+  /**
+   * Tell the bridge this client is LOOKING at one of their accounts.
+   *
+   * ## What this buys, and what it replaces
+   *
+   * The account screen used to poll `/accounts/:id/live` every ten seconds, per
+   * browser. Each of those crossed the bridge and took the single MT5 session
+   * lock, so the cost scaled with viewers × poll rate — which is why that route
+   * is capped at 12/min and why the interval could not simply be lowered to make
+   * the screen livelier. Registering interest instead moves the reading onto the
+   * bridge's own loop, where ten people watching one account cost ONE read
+   * rather than ten, and the answers arrive over the socket the client already
+   * holds for their notifications.
+   *
+   * ## It is a LEASE, so the caller has to keep asking
+   *
+   * Nothing tells the bridge a tab closed. The watch expires unless renewed
+   * inside `ttlSeconds`, which is what stops an abandoned page costing MT5 reads
+   * for ever — see `LiveWatchRegistry` on the bridge. The response carries the
+   * bridge's own lease length rather than a constant repeated here, so the
+   * portal paces its heartbeat off what is actually enforced.
+   *
+   * ## Every failure degrades to polling, and none of them throw
+   *
+   * `watching: false` is an ordinary answer with a reason, never an error, and
+   * the caller's fallback is the same in all three cases: keep reading the live
+   * route. That is what makes this safe to add to a screen that already works —
+   * a bridge that is down, full, or missing entirely costs the client nothing
+   * but the freshness they had before.
+   *
+   * This route deliberately does NOT take the session lock. It registers a name
+   * and returns, so it is cheap enough to be called on a heartbeat by every open
+   * account page — which is exactly what the throttle on it is sized for.
+   */
+  async watchMine(userId: string, accountId: string): Promise<AccountWatchDto> {
+    const account = await this.findMine(userId, accountId);
+
+    /*
+     * A half-provisioned account. There is no login to watch, and this is not a
+     * failure of anything — `snapshotMine` returns null for the same state, and
+     * the screen already renders it as "not opened yet" rather than an error.
+     */
+    if (!account.login) return { watching: false, reason: 'no-login', ttlSeconds: null };
+
+    if (!this.bridge.isConfigured) {
+      return { watching: false, reason: 'unavailable', ttlSeconds: null };
+    }
+
+    try {
+      const result = await this.bridge.watchLive([account.login]);
+      return {
+        /*
+         * `accepted` rather than "not refused": the bridge caps how many
+         * accounts one live round may cover, and past that cap it refuses NEW
+         * logins so the viewers already being served keep being served. A
+         * refused client has lost nothing — their screen keeps polling.
+         */
+        watching: result.accepted.includes(account.login),
+        reason: result.accepted.includes(account.login) ? undefined : 'at-capacity',
+        ttlSeconds: result.ttlSeconds,
+      };
+    } catch (error) {
+      /*
+       * Swallowed, unlike every other bridge call on this service.
+       *
+       * `viaBridge` re-throws so a client asking for a BALANCE is told the
+       * server could not be reached — correct, because they asked for a figure
+       * and there is none. Nobody asked for anything here: this is the screen
+       * volunteering that it is open. Turning a bridge blip into an error toast
+       * on a page whose figures are loading fine would report a failure the
+       * client cannot act on and does not have.
+       */
+      this.logger.debug(
+        `Could not register a live watch for trading account ${accountId}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { watching: false, reason: 'unavailable', ttlSeconds: null };
     }
   }
 

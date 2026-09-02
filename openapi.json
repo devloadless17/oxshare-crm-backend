@@ -3912,6 +3912,43 @@
         ]
       }
     },
+    "/v1/trading/accounts/{id}/watch": {
+      "post": {
+        "description": "Registers a LEASE on the bridge: while it holds, the bridge reads this account on its own loop and pushes each reading to the socket as `account.live`. Nothing tells the bridge a browser tab closed, so the caller MUST re-register inside `ttlSeconds` or the watch expires — which is what stops an abandoned page costing MT5 reads for ever.\n\n`watching: false` is an ordinary answer, never an error, and the fallback is the same for every reason it carries: keep polling `/accounts/:id/live`. A bridge that is down, full, or not configured costs the client nothing but the freshness they already had.\n\nThis route does NOT read MT5 and does not take the session lock, which is why it is throttled far more loosely than the two live reads beside it.",
+        "operationId": "TradingController_myAccountWatch",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountWatchDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Say this client is looking at the account, so live figures are pushed to them",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
     "/v1/trading/accounts/{id}/positions": {
       "get": {
         "description": "Live, and never stored. `profit` is the FLOATING result on each position and moves on every tick, so a persisted copy would be stale the moment it was written — the CRM keeps a `positions` table that nothing writes to, and that must stay true.\n\nAn empty array means the account has nothing open. It is a real answer from the trading server, not an unbuilt feature: an account with no MT5 login returns the same, because there is nothing to ask about.\n\n`stopLoss` and `takeProfit` are NULL when unset — MT5 stores an absent stop as the price 0, and rendering that as 0.00 reads as an order to close at zero.",
@@ -12912,6 +12949,34 @@
           "marginFree",
           "marginLevel",
           "floating"
+        ]
+      },
+      "AccountWatchDto": {
+        "type": "object",
+        "properties": {
+          "watching": {
+            "type": "boolean",
+            "description": "True when the bridge accepted the watch and live figures will be pushed over the socket. False means keep reading `/accounts/:id/live` — the screen works either way."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the watch was not taken. `no-login` is a half-provisioned account with no MT5 login yet; `at-capacity` means the bridge is already watching as many accounts as one live round can cover, and refuses new ones so the viewers it already serves stay live; `unavailable` means the bridge is not configured or could not be reached. None of the three is an error, and a screen should render none of them.",
+            "enum": [
+              "no-login",
+              "at-capacity",
+              "unavailable"
+            ]
+          },
+          "ttlSeconds": {
+            "type": "number",
+            "description": "How long the bridge holds this watch without a heartbeat. The CALLER must re-register comfortably inside it — nothing tells the bridge a browser tab closed, so a watch is a lease that expires rather than a subscription that is cancelled. NULL when nothing was registered, in which case there is nothing to renew.",
+            "nullable": true,
+            "example": 45
+          }
+        },
+        "required": [
+          "watching",
+          "ttlSeconds"
         ]
       },
       "AccountPositionDto": {

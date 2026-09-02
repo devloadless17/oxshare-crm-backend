@@ -396,3 +396,61 @@ export class AccountHistoryQueryDto {
   @Matches(DATE_PATTERN, { message: 'to must be a YYYY-MM-DD date' })
   to?: string;
 }
+
+/**
+ * What happened when a screen said it was watching an account.
+ *
+ * ## Every field here is about DEGRADING WELL
+ *
+ * `watching: true` means live figures will arrive over the socket and the
+ * screen can stop polling. Everything else means keep polling, and the screen's
+ * behaviour is identical in all of them — which is the property that makes this
+ * safe to call from a page that already works without it.
+ *
+ * The reasons are distinguished for the OPERATOR, not the client. A screen must
+ * not render them: "the trading server is full" is not something a client can
+ * act on, and their figures are arriving either way.
+ */
+export class AccountWatchDto {
+  @ApiProperty({
+    description:
+      'True when the bridge accepted the watch and live figures will be pushed over the ' +
+      'socket. False means keep reading `/accounts/:id/live` — the screen works either way.',
+  })
+  watching!: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Why the watch was not taken. `no-login` is a half-provisioned account with no MT5 login ' +
+      'yet; `at-capacity` means the bridge is already watching as many accounts as one live ' +
+      'round can cover, and refuses new ones so the viewers it already serves stay live; ' +
+      '`unavailable` means the bridge is not configured or could not be reached. None of the ' +
+      'three is an error, and a screen should render none of them.',
+    enum: ['no-login', 'at-capacity', 'unavailable'],
+  })
+  reason?: 'no-login' | 'at-capacity' | 'unavailable';
+
+  @ApiProperty({
+    description:
+      'How long the bridge holds this watch without a heartbeat. The CALLER must re-register ' +
+      'comfortably inside it — nothing tells the bridge a browser tab closed, so a watch is a ' +
+      'lease that expires rather than a subscription that is cancelled. NULL when nothing was ' +
+      'registered, in which case there is nothing to renew.',
+    /*
+     * `type` is NOT optional here, and the failure it prevents is silent.
+     *
+     * Swagger infers a property's type from its TypeScript metadata, and a
+     * union with `null` erases to `Object` — so without this the generated
+     * schema says `{}` and the portal's alias comes out as
+     * `Record<string, never> | null`. That type is not an error anywhere: the
+     * portal reads `ttlSeconds` to pace its heartbeat, and arithmetic on it
+     * fails to compile only because the value is never a number. A field with
+     * an `example` of 45 and a schema of "empty object" is exactly the drift
+     * the alias-the-generated-schema rule exists to catch.
+     */
+    type: 'number',
+    nullable: true,
+    example: 45,
+  })
+  ttlSeconds!: number | null;
+}

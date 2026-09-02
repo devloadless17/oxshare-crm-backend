@@ -12,6 +12,7 @@ import {
   RESOURCE_CHANGED_CHANNEL,
   type ResourceChangedEvent,
 } from '../../common/realtime/resource-changed';
+import { MT5_LIVE_CHANNEL, MT5_LIVE_EVENT, type Mt5LiveEvent } from '../trading/mt5/live-snapshot';
 import { RealtimePrincipalResolver } from './realtime.principal';
 import type { NotificationRecipient } from '../../store/notifications.store';
 
@@ -381,6 +382,38 @@ export class NotificationsRealtimeGateway
    * Nothing is emitted when no server is attached (`REALTIME_ENGINE` unset in
    * a unit test), which is why the optional chain stays.
    */
+  /**
+   * Deliver one live MT5 reading to the client whose account it is.
+   *
+   * ## Why this is a new EVENT NAME and not a new connection
+   *
+   * Exactly what the class note above promises: every future live feature is a
+   * name on the one socket. This client already holds a connection for their
+   * notification bell, so the account screen costs no handshake, no second
+   * origin check, and no second authorization surface — it addresses the room
+   * the socket already joined.
+   *
+   * ## The room IS the authorization
+   *
+   * `client:<userId>` was resolved from the account's owner before this was
+   * published, so a reading can only reach the person who owns the account.
+   * Unlike `resource.changed` — which carries no data precisely so that a
+   * mis-routed event cannot leak — this payload IS the data, so the room has to
+   * be right. It is derived from the trading account row, never from anything
+   * the socket or the bridge said.
+   *
+   * ## Dropped when nobody is listening, and that is the normal case
+   *
+   * A watch outlives the socket that prompted it by up to a lease, so readings
+   * keep arriving for a few seconds after a client closes the tab. There is
+   * nothing to do with those: `.to()` on an empty room is a no-op, the bridge's
+   * lease expires, and the reads stop. No cleanup, no error.
+   */
+  publishLiveAccount(event: Mt5LiveEvent): void {
+    const { userId, ...figures } = event;
+    this.server?.to(roomFor({ kind: 'client', id: userId })).emit(MT5_LIVE_EVENT, figures);
+  }
+
   publishResourceChange(event: ResourceChangedEvent): void {
     const audience = event.actorAdminId
       ? this.server
@@ -446,6 +479,10 @@ export class NotificationsRealtimeGateway
           this.publishResourceChange(JSON.parse(message.payload) as ResourceChangedEvent);
           return;
         }
+        if (message.channel === MT5_LIVE_CHANNEL) {
+          this.publishLiveAccount(JSON.parse(message.payload) as Mt5LiveEvent);
+          return;
+        }
         this.publish(JSON.parse(message.payload) as NotificationEvent);
       } catch (error) {
         // A malformed payload is a bug in the trigger, not a reason to stop
@@ -467,7 +504,16 @@ export class NotificationsRealtimeGateway
        * separates them for free.
        */
       await client.query(`LISTEN ${RESOURCE_CHANGED_CHANNEL}`);
-      this.logger.log('Listening for notification and resource-change events.');
+      /*
+       * A THIRD channel, and the first one that is high-rate: the bridge pushes
+       * a reading per watched account per round while anybody has an account
+       * screen open. It shares this connection for the same reason — a channel
+       * per feature would cost a permanent Postgres connection each — and it is
+       * safe to share because nothing on this path writes or waits. A payload
+       * is parsed and emitted into one room.
+       */
+      await client.query(`LISTEN ${MT5_LIVE_CHANNEL}`);
+      this.logger.log('Listening for notification, resource-change and live-account events.');
     } catch (error) {
       this.logger.error(
         `Could not start listening for notifications: ` +

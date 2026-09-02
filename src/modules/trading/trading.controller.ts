@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -26,6 +28,7 @@ import {
   AccountHistoryQueryDto,
   AccountPositionDto,
   AccountSnapshotDto,
+  AccountWatchDto,
 } from './dto/account-detail.dto';
 import { OpenOwnAccountDto } from './dto/open-account.dto';
 import { RenameOwnAccountDto } from './dto/rename-account.dto';
@@ -423,6 +426,44 @@ export class TradingController {
   @ApiOkResponse({ type: AccountSnapshotDto })
   myAccountLive(@Req() req: Request & { user: User }, @Param('id', ParseUUIDPipe) id: string) {
     return this.trading.snapshotMine(req.user.id, id);
+  }
+
+  @Post('accounts/:id/watch')
+  @HttpCode(HttpStatus.OK)
+  /*
+   * ── THE ONE LIVE ROUTE THAT DOES NOT TAKE THE MT5 LOCK ─────────────────
+   *
+   * `:id/live` and `:id/positions` above are capped at 12/min because every
+   * call reaches MT5 through a single session lock. This one registers a name
+   * in a dictionary on the bridge and returns; the reading happens on the
+   * bridge's own loop, where ten viewers of one account cost ONE read instead
+   * of ten. So the reason for the tight cap does not apply, and applying it
+   * anyway would be worse than useless: a heartbeat is four calls a minute per
+   * open screen, and a client with three tabs would be throttled out of the
+   * live path and back into the polling this exists to replace.
+   *
+   * 60/min still bounds it. A screen heartbeating every fifteen seconds needs
+   * four, so this leaves room for several tabs, a reconnect storm and a retry
+   * without ever being reached by ordinary use.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: 60 } })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Say this client is looking at the account, so live figures are pushed to them',
+    description:
+      'Registers a LEASE on the bridge: while it holds, the bridge reads this account on its ' +
+      'own loop and pushes each reading to the socket as `account.live`. Nothing tells the ' +
+      'bridge a browser tab closed, so the caller MUST re-register inside `ttlSeconds` or the ' +
+      'watch expires — which is what stops an abandoned page costing MT5 reads for ever.\n\n' +
+      '`watching: false` is an ordinary answer, never an error, and the fallback is the same ' +
+      'for every reason it carries: keep polling `/accounts/:id/live`. A bridge that is down, ' +
+      'full, or not configured costs the client nothing but the freshness they already had.\n\n' +
+      'This route does NOT read MT5 and does not take the session lock, which is why it is ' +
+      'throttled far more loosely than the two live reads beside it.',
+  })
+  @ApiOkResponse({ type: AccountWatchDto })
+  myAccountWatch(@Req() req: Request & { user: User }, @Param('id', ParseUUIDPipe) id: string) {
+    return this.trading.watchMine(req.user.id, id);
   }
 
   @Get('accounts/:id/positions')

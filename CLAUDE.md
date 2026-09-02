@@ -687,13 +687,48 @@ that quietly included bonus credit would overstate what a withdrawal can pay out
 ### The live endpoints are throttled and write through
 
 `/trading/accounts/:id/live` and `/:id/positions` carry **12/min per client**, not the global 120.
-Every call takes the single MT5 session lock, and these sit behind a refresh button — the control
-users press hardest when a number looks wrong. Per CLIENT rather than per account, because the cost
+Every call takes the single MT5 session lock. Per CLIENT rather than per account, because the cost
 is the lock and the lock does not care which login is read.
 
 `snapshotMine` also writes its result through `recordFromOperation`. That read just paid for the
 most expensive thing the bridge does; rendering it once and discarding it left the mirror beside it
 minutes older, so the next screen showed the stale one.
+
+### The account screen is PUSHED now, and those two routes are the fallback
+
+`POST /trading/accounts/:id/watch` says "this client is looking at this account". It registers a
+LEASE on the bridge, which reads the watched accounts on its own loop and posts each reading to
+`POST /webhooks/mt5/live` → `Mt5LiveService` → `pg_notify('mt5_live')` → `RealtimeGateway` →
+`account.live` in room `client:<userId>`.
+
+**Why the direction had to flip.** Polling scaled with VIEWERS × RATE and every request took the
+one session lock — which is what the 12/min cap is for, and why a livelier screen could not be
+bought by lowering the interval. Watching scales with ACCOUNTS BEING WATCHED: ten people on one
+account is one read, not ten.
+
+Four things that are easy to get wrong here:
+
+- **The watch route does NOT take the session lock**, which is why it is throttled at 60/min rather
+  than 12. It registers a name and returns. Applying the tight cap would throttle a heartbeating
+  screen straight back into the polling this replaces.
+- **`watching: false` is an ordinary answer** — no MT5 login, bridge full, bridge unreachable — and
+  the portal's response to all three is identical: keep polling. `watchMine` therefore SWALLOWS a
+  bridge failure where every other bridge call re-throws. Nobody asked for this; the screen
+  volunteered that it was open.
+- **Nothing on the live path is stored.** `Mt5LiveDto` carries equity, margin and floating, which
+  `Mt5AccountSnapshotDto` deliberately refuses — that refusal is about STORING them, and this is
+  routed and forgotten. It does not touch the balance mirror either: that column is the sweep's,
+  guarded on read times, and writing it several times a second per watched account would be a write
+  storm for a number the sweep already maintains.
+- **`mt5_live` is a third channel on the gateway's ONE listening connection**, and the first
+  high-rate one. `pg_notify` refuses a payload over 8000 bytes, so `Mt5LivePublisher` drops the
+  positions array rather than the whole event when it will not fit — the same optional-field
+  contract `NotificationEvent.params` carries. A consumer must read an absent array as "ask
+  separately", never as "no open positions".
+
+**How live it actually is depends on the broker's read latency**, which this repo has never measured
+in one place — `BridgeOptions` says ~285ms idle, `mt5-bridge.client.ts` says ~2.5s through the CRM.
+`GET /admin/live` on the bridge now reports it continuously. Read that before tuning anything.
 
 ### The sweep STREAMS its deals
 
@@ -847,6 +882,16 @@ kind is part of the name so two audiences cannot collide on a shared uuid) and t
 `LISTEN`. **The bus is the database, not the application**: `pg_notify` fires from an AFTER INSERT
 trigger (migration 0047) and is delivered only on COMMIT, so a rolled-back money transaction
 cannot announce itself. That also removes the need for a Redis adapter — every instance LISTENs.
+
+**Three channels share that one listening connection**, separated by `message.channel`:
+`notification_created` (the bell), `resource_changed` (a shared admin queue moved), and `mt5_live`
+(live MT5 figures for an account somebody has on screen). A channel per feature would cost a
+permanent Postgres connection each. `mt5_live` is the odd one out and worth knowing about: it is
+high-rate, it carries real data rather than a hint, and it is published from a plain `SELECT
+pg_notify` rather than a trigger — it describes an observation the bridge already made, so there is
+no transaction to hold it until. Because it carries data, the ROOM is the authorization: it is
+resolved from the account's owner before publishing, never from anything the socket or the bridge
+said.
 
 `realtime.principal.ts` authenticates the handshake by calling `AdminAuthenticator.authenticate`
 and `JwtStrategy.validate` — the same objects the HTTP guards use. Do not re-implement those

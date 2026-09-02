@@ -18,6 +18,8 @@ import { Mt5GroupSyncService } from './mt5/mt5-group-sync.service';
 import { Mt5GroupSyncScheduler } from './mt5/mt5-group-sync.scheduler';
 import { PositionsService } from './positions.service';
 import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
+import { Mt5LiveService } from './mt5/mt5-live.service';
+import { Mt5LivePublisher } from './mt5/live-snapshot';
 
 /**
  * The client's view of their own trading accounts.
@@ -79,6 +81,17 @@ import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
     DashboardService,
     Mt5DealsService,
     Mt5AccountSyncService,
+    /*
+     * The LIVE path: figures for an account somebody currently has on screen,
+     * routed to their socket and stored nowhere. Deliberately a pair — the
+     * service resolves which client owns the login, the publisher puts the
+     * reading on the Postgres channel `RealtimeGateway` listens to. Splitting
+     * them keeps the ownership lookup (which needs the database) apart from the
+     * fan-out (which must never throw), and the second is what
+     * `realtime.gateway.ts` imports the channel name from.
+     */
+    Mt5LiveService,
+    Mt5LivePublisher,
     /*
      * The deal → commission seam and the job that drains it. Ingestion stores a
      * deal; this is what turns it into money owed. Before it existed the two

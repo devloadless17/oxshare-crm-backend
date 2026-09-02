@@ -18,6 +18,8 @@ import { Mt5AccountSnapshotDto } from './dto/mt5-account-snapshot.dto';
 import { Mt5DealDto } from './dto/mt5-deal.dto';
 import { Mt5DealBatchDto } from './dto/mt5-deal-batch.dto';
 import { Mt5AccountBatchDto } from './dto/mt5-account-batch.dto';
+import { Mt5LiveDto } from './dto/mt5-live.dto';
+import { Mt5LiveService } from './mt5-live.service';
 
 /**
  * Where the MT5 bridge posts closed deals — the push half of ARCHITECTURE
@@ -105,6 +107,7 @@ export class Mt5WebhooksController {
   constructor(
     private readonly deals: Mt5DealsService,
     private readonly accounts: Mt5AccountSyncService,
+    private readonly live: Mt5LiveService,
   ) {}
 
   @Post('deals')
@@ -221,5 +224,46 @@ export class Mt5WebhooksController {
   })
   async ingestAccountBatch(@Body() batch: Mt5AccountBatchDto) {
     return await this.accounts.ingestSnapshotBatch(batch.snapshots);
+  }
+
+  /**
+   * One LIVE reading for an account somebody currently has on screen.
+   *
+   * ## Nothing here is stored, and that is the whole difference
+   *
+   * `POST accounts` above mirrors a balance into a column, durably, because a
+   * balance moves only on a discrete event. This carries equity, margin and
+   * floating P/L, which are recomputed from prices on every tick — so it is
+   * routed to the owner's socket and forgotten. A stored copy would be a stale
+   * number wearing a fresh label, which is the one failure the account screen
+   * exists to prevent.
+   *
+   * ## Rate: this is the loudest endpoint on the service
+   *
+   * The bridge sends one of these per WATCHED account per round while any
+   * client has an account page open, which is orders of magnitude more requests
+   * than the balance sweep makes. It inherits the controller's 6000/min for
+   * that reason — a limit sized for a machine, not a console — and the bridge
+   * caps how many accounts can be watched at once, which is the real bound.
+   *
+   * ## `delivered: false` is ordinary
+   *
+   * `unknown-login` means the login names no account here — the broker's server
+   * carries accounts this CRM never opened, and a page can be open for an
+   * account that has since been closed. It is NOT retried, and must not be: a
+   * live reading is a latest-value observation, so the right response to a
+   * failed one is a fresher one, which the next round sends anyway.
+   */
+  @Post('live')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Fan out live MT5 figures for one watched account' })
+  @ApiOkResponse({
+    description:
+      '`delivered: false` with `reason: "unknown-login"` means the login names no account here. ' +
+      'It is an ordinary outcome and is not retried.',
+  })
+  async ingestLive(@Body() reading: Mt5LiveDto) {
+    const result = await this.live.ingest(reading);
+    return { login: reading.login, ...result };
   }
 }

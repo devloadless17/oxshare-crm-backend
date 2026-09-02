@@ -89,6 +89,23 @@ export interface Mt5Position {
 }
 
 /**
+ * What the bridge did with a request to watch some accounts live.
+ *
+ * `refused` is not an error — see `Mt5BridgeClient.watchLive`. A login lands
+ * there when the bridge's live round is already at capacity, and the correct
+ * response is to leave that screen polling.
+ *
+ * `ttlSeconds` is the bridge's OWN lease length rather than a constant repeated
+ * here, so the heartbeat is paced against what the bridge actually enforces and
+ * the two cannot drift apart across a deploy.
+ */
+export interface Mt5LiveWatch {
+  accepted: string[];
+  refused: string[];
+  ttlSeconds: number;
+}
+
+/**
  * The bridge's delivery queue, as it reports it.
  *
  * `failing` is deliberately distinct from `pending`: a pending row may simply
@@ -275,6 +292,35 @@ export class Mt5BridgeClient {
    */
   async getPositions(login: string): Promise<Mt5Position[]> {
     return await this.request<Mt5Position[]>('GET', `/accounts/${login}/positions`);
+  }
+
+  /**
+   * Tell the bridge somebody is LOOKING at these accounts.
+   *
+   * ## This is a lease, and the caller has to keep renewing it
+   *
+   * Nothing tells the bridge a browser tab closed — a shut laptop and a
+   * backgrounded phone both send exactly nothing — so a watch EXPIRES unless it
+   * is renewed inside `ttlSeconds`. That expiry is the only thing bounding what
+   * the bridge's live loop reads, and a subscription that had to be cancelled
+   * instead would leak a watched account on every abandoned tab.
+   *
+   * ## `refused` is an ordinary answer, not an error
+   *
+   * The bridge caps how many accounts one live round may cover, because every
+   * read in that round takes the single MT5 session lock and a round that
+   * cannot finish inside its own interval starves reconnects. Past the cap a
+   * NEW login is refused so that viewers already being served keep being
+   * served. A refused caller has lost nothing: their screen keeps reading
+   * `/accounts/:id/live` on its own, which is where every screen was before
+   * this existed.
+   *
+   * So a caller must branch on the answer rather than assuming acceptance, and
+   * must treat a bridge that is down the same way — the live path is an
+   * enhancement over polling, never a replacement for it.
+   */
+  async watchLive(logins: string[]): Promise<Mt5LiveWatch> {
+    return await this.request<Mt5LiveWatch>('POST', '/live/watch', { logins });
   }
 
   /**
