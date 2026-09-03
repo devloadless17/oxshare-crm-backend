@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { tradingAccounts } from '../../../database/schema';
@@ -177,16 +177,66 @@ export class Mt5AccountSyncService {
    * Ordered, so the bridge's reconciliation watermark walks a stable sequence
    * rather than whatever order Postgres felt like returning.
    */
-  async knownLogins(): Promise<{ logins: string[] }> {
+  async knownLogins(options: { after?: string; limit?: number } = {}): Promise<{
+    logins: string[];
+    nextAfter: string | null;
+  }> {
+    /*
+     * ── PAGED, and the default is deliberately still unbounded ────────────
+     *
+     * This query had no LIMIT at all: every login the CRM holds, as one JSON
+     * array, re-read by the bridge every ten minutes. At a hundred thousand
+     * clients holding two accounts each that is two hundred thousand rows
+     * materialised in Node and serialised on a timer, for ever — and it grows
+     * silently, because nothing fails, the response just gets bigger.
+     *
+     * A caller that passes `limit` gets a page and a cursor. A caller that
+     * passes nothing gets everything, EXACTLY as before.
+     *
+     * That asymmetry is the point rather than an oversight. The bridge is a
+     * separate service on its own release train, and a default page would mean a
+     * bridge that predates paging silently reconciles only the first page and
+     * treats every login past it as unknown — accounts quietly dropping out of
+     * the balance mirror with nothing reporting it. This session has already had
+     * one outage from exactly that shape of skew.
+     *
+     * So: paging ships first and is opt-in, the bridge moves to it, and the
+     * unbounded branch is deleted once no deployed bridge can ask for it.
+     */
+    const pageSize = options.limit === undefined ? undefined : Math.min(options.limit, 50_000);
+
     const rows = await this.db
       .select({ login: tradingAccounts.login })
       .from(tradingAccounts)
-      .where(isNotNull(tradingAccounts.login))
-      .orderBy(tradingAccounts.login);
+      .where(
+        options.after
+          ? and(isNotNull(tradingAccounts.login), gt(tradingAccounts.login, options.after))
+          : isNotNull(tradingAccounts.login),
+      )
+      /*
+       * Ordered by login and paged with a KEYSET cursor rather than an offset.
+       * An offset re-scans everything it skips, so the last page of a large
+       * estate costs the most — and an account created mid-walk shifts every
+       * subsequent page, which on this endpoint means silently skipping a login
+       * the reconciliation then never visits.
+       */
+      .orderBy(tradingAccounts.login)
+      .$dynamic()
+      .limit(pageSize ?? Number.MAX_SAFE_INTEGER);
 
-    return {
-      logins: rows.map((row) => row.login).filter((login): login is string => login !== null),
-    };
+    const logins = rows.map((row) => row.login).filter((login): login is string => login !== null);
+
+    /*
+     * A cursor only when the page came back FULL. A short page is the end of the
+     * walk, and handing back a cursor there would cost the caller one more round
+     * trip to discover nothing follows.
+     */
+    const nextAfter =
+      pageSize !== undefined && logins.length === pageSize
+        ? (logins[logins.length - 1] ?? null)
+        : null;
+
+    return { logins, nextAfter };
   }
 
   /**

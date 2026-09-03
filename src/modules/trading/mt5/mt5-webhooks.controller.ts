@@ -10,7 +10,13 @@ import {
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
-import { ApiExcludeController, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiExcludeController,
+  ApiOkResponse,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { NoOriginCheck } from '../../../common/security/csrf.guard';
 import { VALIDATION_PIPE_OPTIONS } from '../../../common/validation.config';
@@ -182,8 +188,31 @@ export class Mt5WebhooksController {
       'set instead of every account on the broker server — most of which the CRM has never ' +
       'heard of and discards on arrival.',
   })
-  async listKnownLogins() {
-    return await this.accounts.knownLogins();
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    description:
+      'Page size, capped at 50,000. OMIT IT and every login is returned, which is the ' +
+      'pre-paging behaviour and is kept so a bridge that predates paging cannot silently ' +
+      'reconcile only the first page.',
+  })
+  @ApiQuery({
+    name: 'after',
+    required: false,
+    description:
+      'Keyset cursor — the last login of the previous page. Keyset rather than offset because an ' +
+      'account created mid-walk shifts every offset page after it, which here means skipping a ' +
+      'login the reconciliation then never visits.',
+  })
+  async listKnownLogins(@Query('after') after?: string, @Query('limit') limit?: string) {
+    const parsed = limit === undefined ? undefined : Number.parseInt(limit, 10);
+
+    return await this.accounts.knownLogins({
+      after,
+      // A malformed limit falls through to unbounded rather than to a page of
+      // NaN — the safe direction on an endpoint the balance mirror depends on.
+      limit: parsed !== undefined && Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
+    });
   }
 
   /**
