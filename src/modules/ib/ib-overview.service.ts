@@ -15,6 +15,24 @@ import {
 } from '../../database/schema';
 import { NotFoundError } from '../../common/errors/domain-errors';
 import { CommissionService } from './commission.service';
+
+/**
+ * The most referred clients one overview response carries.
+ *
+ * A BOUND on the response, not a page size a caller chooses — this endpoint
+ * assembles a dashboard rather than serving a list, and the counts beside the
+ * list are what a partner actually reads. Two hundred matches
+ * `GET /ib/commissions`, which has been capped at the same number since it was
+ * written, for the same reason: a successful partner's history is unbounded and
+ * a screen that renders all of it gets slower as they succeed.
+ *
+ * If a partner ever needs to page their whole roster, that is a dedicated
+ * endpoint with a cursor — not a bigger number here.
+ */
+const REFERRED_CLIENT_PAGE = 200;
+
+/** The same bound on the sub-partner roster, for the same reason. */
+const SUB_PARTNER_PAGE = 200;
 import { IbWalletService } from './ib-wallet.service';
 import type { IbClientPositionDto, IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
 
@@ -138,13 +156,14 @@ export class IbOverviewService {
      * confirm loop — leaving a partner looking at a balance their own earnings
      * figure does not account for.
      */
-    const [programme, earnings, commissionWallets, referredClients, subPartners] =
+    const [programme, earnings, commissionWallets, referredClients, subPartners, referredCounts] =
       await Promise.all([
         this.programmeFor(account.programId),
         this.earningsFor(userId),
         this.wallets.listCommissionWallets(userId),
         this.referredClientsFor(userId),
         this.subPartnersFor(userId),
+        this.referredCountsFor(userId),
       ]);
 
     return {
@@ -152,8 +171,15 @@ export class IbOverviewService {
       earnings,
       commissionWallets,
       referredClients,
+      referredClientCount: referredCounts.total,
       subPartners,
-      verifiedReferredCount: referredClients.filter((client) => client.verified).length,
+      /*
+       * From SQL, not from `referredClients.filter(...).length`. That worked
+       * only while the list was complete, and it is capped now — deriving a
+       * count from a truncated list reports a partner's own book as smaller
+       * than it is.
+       */
+      verifiedReferredCount: referredCounts.verified,
     };
   }
 
@@ -321,7 +347,22 @@ export class IbOverviewService {
       })
       .from(users)
       .where(eq(users.referredByIbUserId, userId))
-      .orderBy(desc(users.createdAt));
+      .orderBy(desc(users.createdAt))
+      /*
+       * CAPPED, where it used to return every referred client.
+       *
+       * This runs on `GET /ib/overview`, which the partner screen requests every
+       * time it opens, and the query had no limit at all — so a partner with
+       * fifty thousand referrals transferred fifty thousand rows to render one
+       * dashboard. The page got slower exactly as a partner succeeded, which is
+       * the one failure a partner programme cannot afford.
+       *
+       * The same cap and the same reasoning as `GET /ib/commissions`, which has
+       * been bounded at 200 since it was written. What makes a capped list safe
+       * is that the COUNTS beside it are no longer derived from its length —
+       * see `referredCountsFor`.
+       */
+      .limit(REFERRED_CLIENT_PAGE);
 
     return rows.map((row) => ({
       userId: row.userId,
@@ -329,6 +370,33 @@ export class IbOverviewService {
       verified: (row.verificationLevel ?? 0) >= 1,
       since: row.since,
     }));
+  }
+
+  /**
+   * How many clients this partner has introduced, and how many are verified.
+   *
+   * ## Counted in SQL, never from the array above
+   *
+   * `verifiedReferredCount` used to be `referredClients.filter(...).length`,
+   * which was correct only while that list was complete. The moment it is capped
+   * that arithmetic under-reports — and it under-reports a partner's own book,
+   * silently, in the direction that makes them look less successful than they
+   * are.
+   *
+   * Two counts in one round trip: a partner reads "how many did I introduce" and
+   * "how many can actually fund" side by side, and two queries could straddle a
+   * verification landing between them.
+   */
+  private async referredCountsFor(userId: string): Promise<{ total: number; verified: number }> {
+    const [row] = await this.db
+      .select({
+        total: sql<number>`count(*)::int`,
+        verified: sql<number>`count(*) filter (where coalesce(${users.verificationLevel}, 0) >= 1)::int`,
+      })
+      .from(users)
+      .where(eq(users.referredByIbUserId, userId));
+
+    return { total: row?.total ?? 0, verified: row?.verified ?? 0 };
   }
 
   /**
@@ -366,7 +434,14 @@ export class IbOverviewService {
       .innerJoin(users, eq(users.id, ibAccounts.userId))
       .innerJoin(ibPrograms, eq(ibPrograms.id, ibAccounts.programId))
       .where(eq(ibAccounts.parentIbUserId, userId))
-      .orderBy(desc(ibAccounts.approvedAt));
+      .orderBy(desc(ibAccounts.approvedAt))
+      /*
+       * Capped for the reason the client list above is: this is read on every
+       * partner page load, and a successful partner's sub-tree is unbounded.
+       * FR-IB-17 gives a parent visibility of its sub-tree EARNINGS, which
+       * `earnings` already carries in full — a roster was never the deliverable.
+       */
+      .limit(SUB_PARTNER_PAGE);
 
     return rows.map((row) => ({
       userId: row.userId,
