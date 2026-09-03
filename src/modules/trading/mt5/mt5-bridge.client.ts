@@ -474,12 +474,24 @@ export class Mt5BridgeClient {
      * server could not be reached, and the answer is stale by then anyway.
      *
      * TEN seconds, not five, and the number is measured rather than guessed.
-     * Against this broker's Web API a healthy `GET /accounts/{login}` takes
-     * ~2.5s and `GET /groups` ~4.9s — every MT5 call is a round trip to the
-     * broker, not a local lookup. A 5s budget would sit inside the normal range
-     * of a call that WORKS, which is the worst place to put a timeout: it turns
-     * an ordinary slow response into a reported outage, and the retry adds load
-     * to the server it just gave up on.
+     * Every MT5 call is a round trip to the broker, not a local lookup, and a
+     * budget that sits inside the normal range of a call that WORKS is the worst
+     * place to put a timeout: it turns an ordinary slow response into a reported
+     * outage, and the retry adds load to the server it just gave up on.
+     *
+     * ── The measurements, and a correction ────────────────────────────────
+     *
+     * This said `GET /accounts/{login}` takes ~2.5s and `GET /groups` ~4.9s.
+     * Re-measured against the live bridge on 3 Sep 2026, an account read is
+     * ~90–490ms (median ~180ms) and a positions read ~105–500ms — an order of
+     * magnitude faster than the figure recorded here, which disagreed with the
+     * ~285ms in `BridgeOptions` and sent capacity planning in two directions.
+     *
+     * The ten-second budget STAYS. It is sized for the tail, not the median: the
+     * same reads were recorded at 5.4s under contention with a sweep, and that is
+     * the case a timeout exists for. What changes is that nobody should plan
+     * throughput off the 2.5s figure — `GET /admin/live` on the bridge reports
+     * the real per-read cost continuously.
      */
     const timeout = safe
       ? Number(this.config.get('MT5_BRIDGE_READ_TIMEOUT_MS') ?? 10_000)
