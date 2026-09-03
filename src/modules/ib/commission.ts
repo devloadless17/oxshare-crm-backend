@@ -161,8 +161,20 @@ export interface RevenueEvent {
    */
   source: 'deposit' | 'deal';
   /**
-   * Lots traded, for `per_lot`. Present on a deal and absent on anything else,
-   * which is exactly why `per_lot` could never be honoured before.
+   * The trade's volume in standard lots — what a `per_lot` programme is priced
+   * against (0111).
+   *
+   * This field predates the mode that reads it, carrying the note that per-lot
+   * "could never be honoured before". It can now.
+   *
+   * The CLOSING deal's own volume, never the sum of a position's legs: a round
+   * turn's legs each carry the same lot count, so summing them would pay one
+   * trade's volume twice. `brokerRevenueFor` takes the same figure for exactly
+   * the same reason.
+   *
+   * Absent on anything that is not a deal, and a per-lot programme with no
+   * volume to price against earns nothing AND SAYS SO — reported in `skipped`
+   * rather than treated as a zero that pays silently.
    */
   lots?: string;
 }
@@ -205,8 +217,27 @@ export interface ProgramTerms {
   mode: ProgramMode;
   /** depth → rate, as a percentage string. Absent depth = this far and no further. */
   tiers: Map<number, string>;
+  /**
+   * depth → amount per standard lot, for tiers priced that way — 0111.
+   *
+   * A depth appears in EITHER this map or `tiers`, never both: the database
+   * constraint requires exactly the column its mode reads. A depth in neither
+   * is a programme that does not reach that far, which is what `tiers` alone
+   * has always meant.
+   *
+   * Optional so every existing caller — and every in-memory test — keeps
+   * working unchanged on percentage terms.
+   */
+  tiersPerLot?: Map<number, string>;
   /** What returns to the TRADING CLIENT, as a percentage of the same revenue. */
   rebateRate: string;
+  /**
+   * The client's rebate as a flat amount per standard lot — 0111.
+   *
+   * Present only when the programme's `rebate_mode` is `per_lot`, in which case
+   * it is authoritative and `rebateRate` is not read at all.
+   */
+  rebateAmountPerLot?: string;
   /**
    * WHICH revenue this programme's rates are a percentage OF — FR-IB-16 (0106).
    *
@@ -242,6 +273,19 @@ export interface Accrual {
   baseAmount: string;
   /** A fixed-scale decimal string, never a number. */
   amount: string;
+  /**
+   * True when this leg was priced per LOT rather than as a share of revenue.
+   *
+   * `baseAmount` then holds the VOLUME rather than a revenue figure, and
+   * `rateValue` an amount per lot rather than a percentage — so a reader cannot
+   * interpret either without this flag.
+   *
+   * `checkPlausible` is the other reason it exists, and the more important one:
+   * a per-lot leg is legitimately allowed to exceed the trade's revenue, so it
+   * must be bounded in its own units instead. Marking the leg is what lets that
+   * function partition a mixed chain rather than applying one rule to both.
+   */
+  pricedPerLot?: boolean;
 }
 
 /**
@@ -264,6 +308,19 @@ export interface RebateLeg {
   /** The revenue this rebate is a share of — the INTRODUCER's basis. */
   baseAmount: string;
   amount: string;
+  /**
+   * True when this leg was priced per LOT rather than as a share of revenue.
+   *
+   * `baseAmount` then holds the VOLUME rather than a revenue figure, and
+   * `rateValue` an amount per lot rather than a percentage — so a reader cannot
+   * interpret either without this flag.
+   *
+   * `checkPlausible` is the other reason it exists, and the more important one:
+   * a per-lot leg is legitimately allowed to exceed the trade's revenue, so it
+   * must be bounded in its own units instead. Marking the leg is what lets that
+   * function partition a mixed chain rather than applying one rule to both.
+   */
+  pricedPerLot?: boolean;
 }
 
 export interface CommissionResult {
@@ -372,6 +429,11 @@ export function calculate(
 
   const gross = toDecimal(event.grossAmount);
   /*
+   * Zero when the caller did not supply it, which makes a per-lot leg report
+   * "this trade has no volume" rather than accruing nothing without saying why.
+   */
+  const lots = event.lots === undefined ? toDecimal('0') : toDecimal(event.lots);
+  /*
    * A non-positive base pays nothing. A refunded or zero deposit must not
    * produce a negative accrual — that would be a debit dressed as an earning,
    * and clawbacks are a separate, deliberate operation (a compensating ledger
@@ -457,6 +519,64 @@ export function calculate(
      * broker configured". `tiers` has no such fallthrough: a depth nobody
      * configured is absent, and absent means this programme stops here.
      */
+    /*
+     * ── PER-LOT PAYS FIRST, AND DOES NOT LOOK AT REVENUE AT ALL ──────────
+     *
+     * A per-lot tier is a flat amount for each standard lot traded, so it is
+     * priced from the trade's VOLUME and is deliberately indifferent to what
+     * the broker earned. That is the whole point of the model: over volume it
+     * is profitable, and on any single trade it may legitimately exceed the
+     * revenue. `checkPlausible` bounds it in its own units — see
+     * `maxPayoutPerLot` there — because the percentage ceiling cannot.
+     *
+     * It is checked BEFORE the percentage branch, and before the base is
+     * required to be positive, precisely because that requirement is a
+     * percentage concept: a trade earning nothing still owes a per-lot partner
+     * their amount.
+     */
+    const perLotValue = program.tiersPerLot?.get(entry.depth);
+
+    if (perLotValue !== undefined) {
+      const perLot = toDecimal(perLotValue);
+
+      if (!perLot.greaterThan(0)) {
+        skipped.push(`programme ${program.id} pays nothing per lot at depth ${entry.depth}`);
+        continue;
+      }
+
+      if (!lots.greaterThan(0)) {
+        skipped.push(`programme ${program.id} prices per lot, and this trade reports no volume`);
+        continue;
+      }
+
+      const amount = money(perLot.times(lots));
+      if (toDecimal(amount).isZero()) continue;
+
+      accruals.push({
+        ibUserId: entry.ibUserId,
+        depth: entry.depth,
+        programId: program.id,
+        /*
+         * The AMOUNT PER LOT is recorded where a percentage would be. Both
+         * answer the same question on the accrual row — "what term produced
+         * this?" — and `ib_accruals.program_id` beside it says which catalogue
+         * entry to read the units from.
+         */
+        rateValue: perLotValue,
+        /*
+         * The LOTS, not the revenue. `baseAmount` is what the figure was
+         * computed against, and for a per-lot leg that is the volume — writing
+         * the revenue there would record a base this amount was never derived
+         * from, which is exactly the kind of plausible-but-wrong row an audit
+         * cannot catch later.
+         */
+        baseAmount: money(lots),
+        amount,
+        pricedPerLot: true,
+      });
+      continue;
+    }
+
     const rateValue = program.tiers.get(entry.depth);
 
     if (rateValue === undefined) {
@@ -573,7 +693,44 @@ export function calculate(
     introducerProgram.mode !== 'commission_only' &&
     event.source !== 'deposit'
   ) {
-    const rebateRate = toDecimal(introducerProgram.rebateRate);
+    /*
+     * ── THE CLIENT'S PER-LOT REBATE ──────────────────────────────────────
+     *
+     * Same shape as the commission legs above, and same indifference to
+     * revenue: a flat amount for each lot the client traded. Checked first, so
+     * a per-lot programme never falls through to a percentage the operator did
+     * not configure.
+     */
+    const rebatePerLot = introducerProgram.rebateAmountPerLot;
+    /*
+     * Per-lot terms REPLACE the percentage rather than adding to it, so the
+     * percentage branch below is skipped entirely when this one applies —
+     * including when it produces nothing, which is the case that matters. A
+     * per-lot programme on a trade with no volume owes nothing; falling through
+     * would quietly pay a percentage the operator never configured.
+     */
+    const rebateIsPerLot = rebatePerLot !== undefined;
+
+    if (rebateIsPerLot) {
+      const perLot = toDecimal(rebatePerLot);
+
+      if (perLot.greaterThan(0) && lots.greaterThan(0)) {
+        const amount = money(perLot.times(lots));
+        if (!toDecimal(amount).isZero()) {
+          rebate = {
+            ibUserId: introducer.ibUserId,
+            programId: introducerProgram.id,
+            rateValue: rebatePerLot,
+            // The volume it was priced against — see the commission leg.
+            baseAmount: money(lots),
+            amount,
+            pricedPerLot: true,
+          };
+        }
+      }
+    }
+
+    const rebateRate = rebateIsPerLot ? toDecimal('0') : toDecimal(introducerProgram.rebateRate);
     /*
      * The client's leg is priced on the INTRODUCER's basis, for the same reason
      * the rate itself comes from their programme: it is a term of the one
@@ -681,11 +838,72 @@ export function checkPlausible(
    * order, which is not a rule anybody could explain to them.
    */
   maxTotalPayoutPct: string = '100',
+  /**
+   * `trading_settings.ib_max_payout_per_lot` — the most this ONE TRADE may pay
+   * out per standard lot, across every per-lot leg (0111).
+   *
+   * The percentage ceiling cannot bound those legs, because a per-lot payout is
+   * not a share of revenue: $12 a lot against $8 of spread is the model working,
+   * not a fault. But the ceiling's PURPOSE still applies — it is the unit-error
+   * backstop — so per-lot terms get the same protection expressed in the units
+   * they are quoted in. A "1000" typed where "10.00" was meant is refused.
+   */
+  maxPayoutPerLot: string = '50',
 ): { ok: true } | { ok: false; reason: string } {
   const gross = toDecimal(event.grossAmount);
-  const total = accruals
-    .reduce((sum, accrual) => sum.plus(toDecimal(accrual.amount)), new Decimal(0))
-    .plus(rebate ? toDecimal(rebate.amount) : 0);
+
+  /*
+   * ── THE TWO MODELS ARE BOUNDED SEPARATELY, AND THAT IS THE POINT ────────
+   *
+   * A percentage leg is a share of revenue and must fit inside it. A per-lot leg
+   * is a flat amount times a volume and legitimately may not — over volume the
+   * broker is ahead, and on any single trade it can be a deliberate loss.
+   *
+   * Summing them and applying one rule would either refuse honest per-lot terms
+   * or exempt percentage ones. So the chain is partitioned and each half is
+   * checked against the bound natural to it.
+   *
+   * ⚠️ This is deliberately NOT the `event.lots !== undefined` exemption that
+   * used to sit here. That one waved the whole check through whenever a lot
+   * count was present, which the deal feed always supplies — so the refusal and
+   * its alarm were dead code on 100% of real accruals. The lesson was that the
+   * exemption must be per LEG and by MODE, never per event.
+   */
+  const perLotLegs = [...accruals, ...(rebate ? [rebate] : [])].filter(
+    (leg) => leg.pricedPerLot === true,
+  );
+  const shareLegs = [...accruals, ...(rebate ? [rebate] : [])].filter(
+    (leg) => leg.pricedPerLot !== true,
+  );
+
+  const perLotTotal = perLotLegs.reduce(
+    (sum, leg) => sum.plus(toDecimal(leg.amount)),
+    new Decimal(0),
+  );
+
+  if (perLotLegs.length > 0) {
+    const lots = event.lots === undefined ? new Decimal(0) : toDecimal(event.lots);
+    const allowance = toDecimal(maxPayoutPerLot).times(lots);
+
+    if (perLotTotal.greaterThan(allowance)) {
+      return {
+        ok: false,
+        reason:
+          `Per-lot payout ${money(perLotTotal)} on ${money(lots)} lot(s) exceeds the broker's ` +
+          `ceiling of ${maxPayoutPerLot} per lot (${money(allowance)}). A per-lot amount is not ` +
+          'bounded by the revenue of the trade, so this is the unit-error guard for those ' +
+          'terms — ' +
+          'check the amounts on the programme. Nothing has been accrued.',
+      };
+    }
+  }
+
+  /*
+   * The revenue-based checks below see the SHARE legs only. A per-lot leg
+   * counted here would make an honest chain look like it had exceeded revenue
+   * whenever the broker was buying volume at a loss.
+   */
+  const total = shareLegs.reduce((sum, leg) => sum.plus(toDecimal(leg.amount)), new Decimal(0));
 
   /*
    * ## The lot count does NOT exempt an event from this check

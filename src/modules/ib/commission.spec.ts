@@ -984,3 +984,241 @@ describe('calculate — the revenue basis is a term of the programme', () => {
     expect(result.accruals[0]?.amount).toBe('100.00000000');
   });
 });
+
+/**
+ * PER-LOT terms — migration 0111.
+ *
+ * ## What makes this different from everything above
+ *
+ * Every other payout in this file is a SHARE of what the broker earned, so it is
+ * bounded by that revenue by definition. A per-lot leg is a flat amount for each
+ * standard lot traded and is deliberately indifferent to revenue: over volume
+ * the broker is ahead, and on any single trade it may be a loss they chose.
+ *
+ * That difference is the whole risk surface. `per_lot` existed once before and
+ * was removed in 0055, and it left behind an `event.lots !== undefined`
+ * exemption in `checkPlausible` that waved the ceiling through for EVERY real
+ * accrual — the deal feed always supplies lots — so the refusal and its alarm
+ * were dead code in production while looking covered by tests using a fixture
+ * without lots.
+ *
+ * These exist so the reintroduced mode cannot repeat that. The exemption is per
+ * LEG and by MODE now, never per event, and the two assertions that matter most
+ * are in the ceiling block: a legitimate per-lot payout above revenue is
+ * ALLOWED, and a percentage leg on the same trade is still bounded.
+ *
+ * Per-lot is outside the Phase 1 FSD — FR-IB-05 says the rebate is "dynamic,
+ * not a fixed per-lot figure". It is here on an explicit business decision; see
+ * migration 0111.
+ */
+
+/** A programme paying a flat amount per lot at depth 1. */
+function perLotProgram(over: Partial<ProgramTerms> & { id: string }): ProgramTerms {
+  return {
+    mode: 'commission_only',
+    tiers: new Map<number, string>(),
+    tiersPerLot: new Map([[1, '10.00000000']]),
+    rebateRate: '0.0000',
+    enabled: true,
+    ...over,
+  };
+}
+
+describe('calculate — a partner paid per lot', () => {
+  it('pays the amount for every lot traded', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([perLotProgram({ id: 'prog-a' })]),
+    );
+
+    // $10 a lot on 10 lots. The $1,000 of revenue does not enter it.
+    expect(result.accruals.map((a) => a.amount)).toEqual(['100.00000000']);
+  });
+
+  /*
+   * THE property that separates this model from a revenue share. The broker
+   * earned two dollars and pays out a hundred, which under a percentage would
+   * be a unit error and here is a deliberate purchase of volume.
+   */
+  it('pays the same on a trade that earned the broker almost nothing', () => {
+    const result = calculate(
+      { ...DEAL, grossAmount: '2.00000000' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([perLotProgram({ id: 'prog-a' })]),
+    );
+
+    expect(result.accruals.map((a) => a.amount)).toEqual(['100.00000000']);
+  });
+
+  /*
+   * `baseAmount` records what the figure was computed AGAINST, and for a
+   * per-lot leg that is the volume. Writing the revenue there would produce a
+   * row whose amount is not derivable from its own base — an accrual nobody can
+   * check by arithmetic, which is the one property a money ledger has to keep.
+   */
+  it('records the volume as the base, not the revenue', () => {
+    const [accrual] = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([perLotProgram({ id: 'prog-a' })]),
+    ).accruals;
+
+    expect(accrual?.baseAmount).toBe('10.00000000');
+    expect(accrual?.rateValue).toBe('10.00000000');
+    expect(accrual?.pricedPerLot).toBe(true);
+  });
+
+  /*
+   * A per-lot programme on an event carrying no volume owes nothing, and has to
+   * SAY so. Treating absent lots as zero would pay nothing silently, which is
+   * indistinguishable from a programme that does not reach this depth.
+   */
+  it('earns nothing and reports why when the trade has no volume', () => {
+    const result = calculate(
+      DEAL_NO_LOTS,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([perLotProgram({ id: 'prog-a' })]),
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.skippedReason).toContain('no volume');
+  });
+
+  it('still stops at the end of its own ladder', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 }), earner({ ibUserId: 'ib-2', depth: 2 })],
+      programs([perLotProgram({ id: 'prog-a' })]),
+    );
+
+    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['ib-1']);
+  });
+
+  it('pays the client a per-lot rebate from the introducer programme', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([perLotProgram({ id: 'prog-a', mode: 'hybrid', rebateAmountPerLot: '2.00000000' })]),
+    );
+
+    expect(result.rebate?.amount).toBe('20.00000000');
+    expect(result.rebate?.pricedPerLot).toBe(true);
+  });
+
+  /*
+   * Per-lot terms REPLACE the percentage rather than adding to it. A programme
+   * pricing its rebate per lot must never also pay `rebateRate` — and the case
+   * that catches a fall-through is the one where the per-lot branch produces
+   * nothing.
+   */
+  it('does not fall back to a percentage rebate when the per-lot one pays nothing', () => {
+    const result = calculate(
+      DEAL_NO_LOTS,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      programs([
+        perLotProgram({
+          id: 'prog-a',
+          mode: 'hybrid',
+          rebateRate: '25.0000',
+          rebateAmountPerLot: '2.00000000',
+        }),
+      ]),
+    );
+
+    expect(result.rebate).toBeUndefined();
+  });
+});
+
+describe('checkPlausible — per-lot terms are bounded in their own units', () => {
+  const perLotAccrual = (amount: string) => ({
+    ibUserId: 'ib-1',
+    depth: 1,
+    programId: 'prog-a',
+    rateValue: '10.00000000',
+    baseAmount: '10.00000000',
+    amount,
+    pricedPerLot: true,
+  });
+
+  /*
+   * THE regression this block exists for.
+   *
+   * $100 paid out on a trade that earned $2 is not an error under per-lot terms
+   * — it is the model. The revenue-based guard must not see these legs at all,
+   * or every honest volume purchase would be refused.
+   */
+  it('allows a per-lot payout that exceeds the revenue of the trade', () => {
+    const result = checkPlausible(
+      { ...DEAL, grossAmount: '2.00000000' },
+      [perLotAccrual('100.00000000')],
+      undefined,
+      '100',
+      '50',
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  /*
+   * The unit-error backstop, in the units per-lot terms are quoted in. $1,000 a
+   * lot is a "1000" typed where "10.00" was meant, and the industry runs at a
+   * few dollars to low double digits — so a ceiling of $50 refuses it without
+   * ever refusing a real rate card.
+   */
+  it('refuses an amount per lot that is a unit error', () => {
+    const result = checkPlausible(DEAL, [perLotAccrual('10000.00000000')], undefined, '100', '50');
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('per lot');
+  });
+
+  /*
+   * A chain may legitimately mix the two models — different partners hold
+   * different programmes — and each half has to be judged by its own rule. This
+   * is the assertion that would have caught the 0055-era hole: the percentage
+   * leg is still checked even though a per-lot leg is present on the same trade.
+   */
+  it('still bounds a percentage leg on a trade that also pays per lot', () => {
+    const result = checkPlausible(
+      { ...DEAL, grossAmount: '100.00000000' },
+      [
+        perLotAccrual('100.00000000'),
+        {
+          ibUserId: 'ib-2',
+          depth: 2,
+          programId: 'prog-b',
+          rateValue: '700.0000',
+          baseAmount: '100.00000000',
+          amount: '700.00000000',
+        },
+      ],
+      undefined,
+      '100',
+      '50',
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('exceeds');
+  });
+
+  it('counts the client per-lot rebate against the per-lot ceiling', () => {
+    const result = checkPlausible(
+      DEAL,
+      [perLotAccrual('300.00000000')],
+      {
+        ibUserId: 'ib-1',
+        programId: 'prog-a',
+        rateValue: '30.00000000',
+        baseAmount: '10.00000000',
+        amount: '300.00000000',
+        pricedPerLot: true,
+      },
+      '100',
+      '50',
+    );
+
+    // 600 total on 10 lots is 60 a lot, over the 50 ceiling.
+    expect(result.ok).toBe(false);
+  });
+});

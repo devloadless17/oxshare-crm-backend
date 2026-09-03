@@ -11641,6 +11641,19 @@
             "type": "string",
             "example": "60.0000",
             "description": "The holder’s share of the broker’s revenue at this depth, as a percentage. A decimal string, never a number (§6.1). Must be above zero — a level that pays nothing is removed rather than zeroed, because the number of levels is what decides how far a programme pays."
+          },
+          "payoutMode": {
+            "type": "string",
+            "enum": [
+              "percent",
+              "per_lot"
+            ],
+            "description": "How this level is priced. `percent` reads `rate` as a share of the broker revenue; `per_lot` reads `amountPerLot` as a flat amount for every standard lot traded, independent of what the trade earned. Defaults to `percent`, so an existing rate card is unchanged.\n\nNOTE: `per_lot` is outside the Phase 1 FSD — FR-IB-05 specifies a rebate that is \"dynamic, not a fixed per-lot figure\". It exists on an explicit business decision; see migration 0111."
+          },
+          "amountPerLot": {
+            "type": "string",
+            "example": "10.00000000",
+            "description": "Money for each standard lot traded, when `payoutMode` is `per_lot`. REQUIRED in that mode and refused in the other — a row carrying both would be ambiguous about which number pays."
           }
         },
         "required": [
@@ -11930,6 +11943,20 @@
             "example": "0.0000",
             "description": "What returns to the TRADING CLIENT, as a percentage of the same revenue. Paid only when `mode` is `rebate_only` or `hybrid`. On the programme rather than per depth because there is one trading client per trade, in one relationship — with their introducer."
           },
+          "rebateMode": {
+            "type": "string",
+            "enum": [
+              "percent",
+              "per_lot"
+            ],
+            "description": "How the client rebate is priced. As `IbProgramTierDto.payoutMode`."
+          },
+          "rebateAmountPerLot": {
+            "type": "string",
+            "example": "2.00000000",
+            "nullable": true,
+            "description": "Money returned to the client for each standard lot, when `rebateMode` is `per_lot`."
+          },
           "enabled": {
             "type": "boolean",
             "description": "A disabled programme pays nothing and accepts no new partners."
@@ -12018,6 +12045,19 @@
             "type": "string",
             "example": "0"
           },
+          "rebateMode": {
+            "type": "string",
+            "enum": [
+              "percent",
+              "per_lot"
+            ],
+            "description": "How the client rebate is priced. Defaults to `percent`, leaving an existing programme unchanged."
+          },
+          "rebateAmountPerLot": {
+            "type": "string",
+            "example": "2.00000000",
+            "description": "Money returned to the client per standard lot, when `rebateMode` is `per_lot`. Zero is allowed here, unlike a tier — a programme may legitimately pay the partner per lot and the client nothing."
+          },
           "enabled": {
             "type": "boolean",
             "description": "Defaults to true."
@@ -12064,6 +12104,19 @@
           "rebateRate": {
             "type": "string",
             "example": "0"
+          },
+          "rebateMode": {
+            "type": "string",
+            "enum": [
+              "percent",
+              "per_lot"
+            ],
+            "description": "How the client rebate is priced. Defaults to `percent`, leaving an existing programme unchanged."
+          },
+          "rebateAmountPerLot": {
+            "type": "string",
+            "example": "2.00000000",
+            "description": "Money returned to the client per standard lot, when `rebateMode` is `per_lot`. Zero is allowed here, unlike a tier — a programme may legitimately pay the partner per lot and the client nothing."
           },
           "enabled": {
             "type": "boolean"
@@ -13726,6 +13779,11 @@
             "example": "100.0000",
             "description": "The most one trade may pay out in total, as a % of the broker’s revenue on it — every commission leg plus the client’s rebate. Defaults to 100, which refuses only a chain costing more than the trade earned. A chain over the ceiling is REFUSED and retried, never silently scaled down."
           },
+          "ibMaxPayoutPerLot": {
+            "type": "string",
+            "example": "50.00000000",
+            "description": "The most ONE TRADE may pay out per standard lot, across every per-lot leg including the client rebate. The unit-error backstop for per-lot terms — the percentage ceiling beside it cannot bound them, because a per-lot payout is not a share of revenue. Refuses rather than scales: the deal defers and pays in full once the terms are corrected."
+          },
           "updatedAt": {
             "type": "string",
             "nullable": true,
@@ -13741,7 +13799,8 @@
           "maxDemoAccounts",
           "maxDemoDeposit",
           "ibMaxLevels",
-          "ibMaxTotalPayoutPct"
+          "ibMaxTotalPayoutPct",
+          "ibMaxPayoutPerLot"
         ]
       },
       "UpdateTradingSettingsDto": {
@@ -13773,6 +13832,11 @@
           "ibMaxTotalPayoutPct": {
             "type": "string",
             "example": "100.0000"
+          },
+          "ibMaxPayoutPerLot": {
+            "type": "string",
+            "example": "50.00000000",
+            "description": "The most one trade may pay out per standard lot. A unit-error guard rather than a commercial limit — the industry runs at a few dollars to low double digits a lot, so a sane value sits far above any real rate card and refuses only a mistyped one."
           }
         },
         "required": [
@@ -13780,7 +13844,8 @@
           "maxDemoAccounts",
           "maxDemoDeposit",
           "ibMaxLevels",
-          "ibMaxTotalPayoutPct"
+          "ibMaxTotalPayoutPct",
+          "ibMaxPayoutPerLot"
         ]
       },
       "SmtpSettingsDto": {

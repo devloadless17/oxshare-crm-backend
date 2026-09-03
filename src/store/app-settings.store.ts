@@ -77,6 +77,8 @@ export interface TradingSettingsRow {
    * happened.
    */
   ibMaxTotalPayoutPct: string;
+  /** The per-lot unit-error ceiling — 0111. See `TradingTerms`. */
+  ibMaxPayoutPerLot: string;
   /*
    * Four doc comments sat here describing fields that 0103 and 0104 removed —
    * the broker cap, the hold window, the accrual start and the revenue basis.
@@ -104,6 +106,15 @@ export interface TradingSettingsWrite {
    * column now; see `TradingSettingsRow` above.
    */
   ibMaxTotalPayoutPct: string;
+  /**
+   * The per-lot unit-error ceiling — 0111.
+   *
+   * Belongs on this form for the same reason `ibMaxTotalPayoutPct` does: it
+   * BOUNDS what the Commission Programmes page may cost rather than restating
+   * what that page decides. A decimal string, bounded by the writer with the
+   * CHECK behind the column as the backstop.
+   */
+  ibMaxPayoutPerLot: string;
 }
 
 export interface RivalSettingsRow {

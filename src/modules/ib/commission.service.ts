@@ -114,6 +114,14 @@ export class CommissionService implements CommissionAccrualPort {
    * life of the process is the kind of thing nobody notices until a payout is
    * disputed.
    */
+  /**
+   * The per-lot ceiling — 0111. Read from settings for the same reason the
+   * percentage one is: it is a bound an operator sets, not a constant.
+   */
+  private async maxPayoutPerLot(): Promise<string> {
+    return tradingTermsFrom(await this.settings.getTrading()).ibMaxPayoutPerLot;
+  }
+
   private async maxTotalPayoutPct(): Promise<string> {
     return tradingTermsFrom(await this.settings.getTrading()).ibMaxTotalPayoutPct;
   }
@@ -491,6 +499,7 @@ export class CommissionService implements CommissionAccrualPort {
       result.accruals,
       result.rebate,
       await this.maxTotalPayoutPct(),
+      await this.maxPayoutPerLot(),
     );
     if (!plausible.ok) {
       /*
@@ -1079,14 +1088,36 @@ export class CommissionService implements CommissionAccrualPort {
       db.select().from(ibProgramTiers).where(inArray(ibProgramTiers.programId, ids)),
     ]);
 
+    /*
+     * TWO maps, split by how the tier is PRICED — 0111.
+     *
+     * A depth lands in exactly one of them, because `ib_program_tiers_payout_
+     * shape` requires the column its mode reads and forbids the other. Keeping
+     * them apart here rather than passing a mode per depth is what lets
+     * `calculate` stay a pure lookup: it asks the per-lot map first, and a hit
+     * means per-lot without any further branching on a mode field.
+     */
     const tiers = new Map<string, Map<number, string>>();
+    const tiersPerLot = new Map<string, Map<number, string>>();
+
     for (const tier of tierRows) {
-      let forProgram = tiers.get(tier.programId);
+      const into = tier.payoutMode === 'per_lot' ? tiersPerLot : tiers;
+      let forProgram = into.get(tier.programId);
       if (!forProgram) {
         forProgram = new Map<number, string>();
-        tiers.set(tier.programId, forProgram);
+        into.set(tier.programId, forProgram);
       }
-      forProgram.set(tier.depth, tier.rate);
+      /*
+       * `amountPerLot` is nullable in the type because the column is — the CHECK
+       * guarantees it is present for this mode, but the type cannot know that.
+       * Falling back to '0' rather than asserting keeps a malformed row out of
+       * the money path: `calculate` reports "pays nothing per lot" and skips it,
+       * where a non-null assertion would throw on the accrual job.
+       */
+      forProgram.set(
+        tier.depth,
+        tier.payoutMode === 'per_lot' ? (tier.amountPerLot ?? '0') : tier.rate,
+      );
     }
 
     return new Map(
@@ -1103,7 +1134,22 @@ export class CommissionService implements CommissionAccrualPort {
            * path.
            */
           tiers: tiers.get(row.id) ?? new Map<number, string>(),
+          /*
+           * Left UNDEFINED when the programme has no per-lot tiers, rather than
+           * an empty map. `calculate` treats a hit here as "this depth is priced
+           * per lot", so an empty map is the same as absent — and undefined says
+           * plainly that this is a percentage programme.
+           */
+          tiersPerLot: tiersPerLot.get(row.id),
           rebateRate: row.rebateRate,
+          /*
+           * Only when the programme actually prices its rebate that way. The
+           * presence of this field is what `calculate` branches on, so handing
+           * it a value on a percentage programme would silently re-price the
+           * client's leg.
+           */
+          rebateAmountPerLot:
+            row.rebateMode === 'per_lot' ? (row.rebateAmountPerLot ?? '0') : undefined,
           /* FR-IB-16 (0106): which revenue this programme's rates are of. */
           revenueBasis: row.revenueBasis,
           enabled: row.enabled,

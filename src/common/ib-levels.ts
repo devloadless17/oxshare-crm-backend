@@ -96,6 +96,16 @@ export function normaliseIbMaxLevels(stored: number | null | undefined): number 
 export const DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT = '100';
 
 /**
+ * The most one trade may pay out PER STANDARD LOT, across every per-lot leg.
+ *
+ * Fifty is deliberately far above any real rate card — the industry runs at a
+ * few dollars to low double digits a lot — because this is a unit-error guard
+ * rather than a commercial limit. It has to refuse a "1000" typed where "10.00"
+ * was meant without ever refusing terms somebody actually negotiated.
+ */
+export const DEFAULT_IB_MAX_PAYOUT_PER_LOT = '50';
+
+/**
  * The stored ceiling, or the default when it is unusable.
  *
  * A DECIMAL STRING in and out. §6.1 forbids `Number()` and `parseFloat` on
@@ -110,6 +120,31 @@ export const DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT = '100';
  * An unusable value falls back to the DEFAULT rather than to the minimum: a bad
  * row must not silently stop paying every partner on the platform.
  */
+/**
+ * The per-lot ceiling, or the default when the stored value cannot be trusted.
+ *
+ * Same shape as the percentage normaliser beside it and for the same reason: a
+ * bad row must fall back to the DEFAULT rather than to something permissive. On
+ * this setting "permissive" would mean a mistyped rate card reaching a wallet,
+ * which is the one thing the ceiling exists to prevent.
+ *
+ * No upper bound, unlike the percentage — there is no natural 100 for an amount
+ * of money, and a broker running an unusually rich programme must be able to
+ * configure it. The floor is what matters: zero or negative would refuse every
+ * per-lot accrual on the platform.
+ */
+export function normaliseIbMaxPayoutPerLot(stored: string | null | undefined): string {
+  if (stored === null || stored === undefined) return DEFAULT_IB_MAX_PAYOUT_PER_LOT;
+
+  const trimmed = stored.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return DEFAULT_IB_MAX_PAYOUT_PER_LOT;
+
+  const asNumber = Number(trimmed);
+  if (!Number.isFinite(asNumber) || asNumber <= 0) return DEFAULT_IB_MAX_PAYOUT_PER_LOT;
+
+  return trimmed;
+}
+
 export function normaliseIbMaxTotalPayoutPct(stored: string | null | undefined): string {
   if (stored === null || stored === undefined) return DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT;
 

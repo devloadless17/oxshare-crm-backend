@@ -209,6 +209,17 @@ export class TradingSettingsDto {
   })
   ibMaxTotalPayoutPct: string;
 
+  @ApiProperty({
+    type: 'string',
+    example: '50.00000000',
+    description:
+      'The most ONE TRADE may pay out per standard lot, across every per-lot leg including the ' +
+      'client rebate. The unit-error backstop for per-lot terms — the percentage ceiling beside ' +
+      'it cannot bound them, because a per-lot payout is not a share of revenue. Refuses rather ' +
+      'than scales: the deal defers and pays in full once the terms are corrected.',
+  })
+  ibMaxPayoutPerLot: string;
+
   @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
   updatedAt: string | null;
   /**
@@ -313,4 +324,17 @@ export class UpdateTradingSettingsDto {
     message: 'ibMaxTotalPayoutPct must be a decimal number, for example "70" or "62.5000"',
   })
   ibMaxTotalPayoutPct: string;
+
+  @ApiProperty({
+    type: 'string',
+    example: '50.00000000',
+    description:
+      'The most one trade may pay out per standard lot. A unit-error guard rather than a ' +
+      'commercial limit — the industry runs at a few dollars to low double digits a lot, so a ' +
+      'sane value sits far above any real rate card and refuses only a mistyped one.',
+  })
+  @Matches(/^\d+(\.\d+)?$/, {
+    message: 'ibMaxPayoutPerLot must be a decimal number, for example "50" or "12.50000000"',
+  })
+  ibMaxPayoutPerLot: string;
 }

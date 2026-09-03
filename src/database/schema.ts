@@ -1074,6 +1074,28 @@ export const tradingSettings = pgTable(
     ibMaxTotalPayoutPct: numeric('ib_max_total_payout_pct', { precision: 12, scale: 4 })
       .notNull()
       .default('100'),
+    /**
+     * The most ONE TRADE may pay out per standard lot, across every leg — 0111.
+     *
+     * The percentage ceiling above cannot bound a per-lot payout, because a
+     * per-lot payout is not a share of revenue: paying $12 a lot on a trade
+     * whose spread earned $8 is the model working, not a fault. Priced across
+     * volume it is profitable; priced per trade it is sometimes a deliberate
+     * loss.
+     *
+     * What the ceiling was always FOR still applies, though — it is the
+     * unit-error backstop, the thing that refuses a "1000" typed where "10.00"
+     * was meant rather than paying it. This is that backstop expressed in the
+     * units per-lot terms are quoted in.
+     *
+     * Refuses rather than scales, exactly as its percentage sibling does: the
+     * deal defers on the 0092 backoff with the reason on the row, and pays in
+     * full once the terms are corrected. A partner must never quietly receive
+     * less than their programme promised.
+     */
+    ibMaxPayoutPerLot: numeric('ib_max_payout_per_lot', { precision: 28, scale: 8 })
+      .notNull()
+      .default('50'),
     /*
      * ── THE IB BLOCK IS GONE FROM THIS TABLE (0104) ───────────────────────
      *
@@ -3129,6 +3151,19 @@ export const ibProgramModeEnum = pgEnum('ib_program_mode', [
  * path: `brokerRevenueFor` switches on it, and a typo that a CHECK would let
  * through as "some other string" has no branch to land in.
  */
+/**
+ * How a payout leg is priced — migration 0111.
+ *
+ * `percent` takes a share of the broker's revenue on the trade. `per_lot` pays a
+ * flat amount per standard lot and does not care what that trade earned, which
+ * is how most retail IB terms are actually quoted.
+ *
+ * ⚠️ `per_lot` is OUTSIDE the Phase 1 FSD: FR-IB-05 says the rebate is
+ * "dynamic, not a fixed per-lot figure" and FR-IB-16 calls the method
+ * spread-based. It exists on an explicit business decision — see 0111.
+ */
+export const ibPayoutModeEnum = pgEnum('ib_payout_mode', ['percent', 'per_lot']);
+
 export const ibRevenueBasisEnum = pgEnum('ib_revenue_basis', [
   /** MT5's charged commission + swap. The default, and what has always shipped. */
   'commission_swap',
@@ -3159,6 +3194,22 @@ export const ibPrograms = pgTable('ib_programs', {
    * a question that has one.
    */
   rebateRate: numeric('rebate_rate', { precision: 12, scale: 4 }).notNull().default('0'),
+  /**
+   * Which of `rebateRate` / `rebateAmountPerLot` actually pays — 0111.
+   *
+   * A CHECK keeps the pair unambiguous: `percent` forbids the amount, `per_lot`
+   * requires it. So a reader never has to guess which number is live, and a
+   * programme cannot be saved half-switched.
+   */
+  rebateMode: ibPayoutModeEnum('rebate_mode').notNull().default('percent'),
+  /**
+   * Money per standard lot returned to the trading CLIENT.
+   *
+   * NUMERIC(28,8) like every other amount (§6.1), deliberately not the (12,4)
+   * that holds a percentage — this is money, and a rebate rounded at four
+   * decimals is a rebate that disagrees with the ledger it is paid into.
+   */
+  rebateAmountPerLot: numeric('rebate_amount_per_lot', { precision: 28, scale: 8 }),
   /**
    * FR-IB-16 — "configure the exact commission and rebate mathematics ...
    * through the IB program catalogue, so that the economics applied at runtime
@@ -3270,6 +3321,19 @@ export const ibProgramTiers = pgTable(
      * 12,4 leaves a 2.5% share and a 33.3333% one both intact.
      */
     rate: numeric('rate', { precision: 12, scale: 4 }).notNull().default('0'),
+    /**
+     * Which column pays at this depth — 0111.
+     *
+     * `ib_program_tiers_payout_shape` requires exactly the column the mode reads
+     * and forbids the other, which is what replaced the old unconditional
+     * `rate > 0`: a per-lot tier legitimately carries no rate at all.
+     */
+    payoutMode: ibPayoutModeEnum('payout_mode').notNull().default('percent'),
+    /**
+     * Money per standard lot at this depth, independent of what the trade
+     * earned. NUMERIC(28,8) — money, not a rate.
+     */
+    amountPerLot: numeric('amount_per_lot', { precision: 28, scale: 8 }),
   },
   (t) => [
     /*

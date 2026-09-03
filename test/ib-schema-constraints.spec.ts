@@ -258,7 +258,15 @@ describe('ib_accounts', () => {
    * not exist. The ROW COUNT is a programme's reach, so a zero at depth 3 claims
    * a reach the programme does not have and strands depth 4 beneath it.
    */
-  it('refuses a tier that pays nothing', async () => {
+  /*
+   * The guarantee is unchanged; the constraint that enforces it was renamed in
+   * 0111. `ib_program_tiers_rate_positive` demanded a positive rate on EVERY
+   * row, which a per-lot tier legitimately does not carry — so it became
+   * `ib_program_tiers_payout_shape`, which requires exactly the column the row's
+   * mode reads and forbids the other. A zero-rate percentage tier is still
+   * refused, by the branch of that check covering `percent`.
+   */
+  it('refuses a percentage tier that pays nothing', async () => {
     const { rows } = await ctx.db.execute<{ id: string }>(sql`
       INSERT INTO ib_programs (name, mode) VALUES ('Zero Tier', 'commission_only') RETURNING id
     `);
@@ -269,7 +277,67 @@ describe('ib_accounts', () => {
           sql`INSERT INTO ib_program_tiers (program_id, depth, rate) VALUES (${rows[0].id}, 1, 0)`,
         ),
       ),
-    ).toBe('ib_program_tiers_rate_positive');
+    ).toBe('ib_program_tiers_payout_shape');
+  });
+
+  /*
+   * A row can never be ambiguous about WHICH number pays it.
+   *
+   * Both halves matter. A per-lot tier with no amount would accrue nothing while
+   * looking configured; a percentage tier carrying an amount is two live-looking
+   * figures on one row, and the next reader has no way to tell which the engine
+   * uses. The database refuses both rather than leaving it to the service.
+   */
+  it('refuses a per-lot tier with no amount to pay', async () => {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO ib_programs (name, mode) VALUES ('Amountless', 'commission_only') RETURNING id
+    `);
+
+    expect(
+      await constraintViolatedBy(
+        ctx.db.execute(sql`
+          INSERT INTO ib_program_tiers (program_id, depth, rate, payout_mode)
+          VALUES (${rows[0].id}, 1, 0, 'per_lot')
+        `),
+      ),
+    ).toBe('ib_program_tiers_payout_shape');
+  });
+
+  it('refuses a percentage tier that also carries a per-lot amount', async () => {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO ib_programs (name, mode) VALUES ('Both Numbers', 'commission_only') RETURNING id
+    `);
+
+    expect(
+      await constraintViolatedBy(
+        ctx.db.execute(sql`
+          INSERT INTO ib_program_tiers (program_id, depth, rate, payout_mode, amount_per_lot)
+          VALUES (${rows[0].id}, 1, 30, 'percent', 10)
+        `),
+      ),
+    ).toBe('ib_program_tiers_payout_shape');
+  });
+
+  /*
+   * The positive case, asserted directly rather than through
+   * `constraintViolatedBy` — that helper throws when a statement SUCCEEDS, so it
+   * can only ever express a refusal. Without this the three refusals above would
+   * all pass against a constraint that refused everything.
+   */
+  it('accepts a per-lot tier carrying only its amount', async () => {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO ib_programs (name, mode) VALUES ('Ten A Lot', 'commission_only') RETURNING id
+    `);
+
+    await ctx.db.execute(sql`
+      INSERT INTO ib_program_tiers (program_id, depth, rate, payout_mode, amount_per_lot)
+      VALUES (${rows[0].id}, 1, 0, 'per_lot', 10)
+    `);
+
+    const { rows: stored } = await ctx.db.execute<{ amount_per_lot: string }>(sql`
+      SELECT amount_per_lot FROM ib_program_tiers WHERE program_id = ${rows[0].id}
+    `);
+    expect(stored[0]?.amount_per_lot).toBe('10.00000000');
   });
 
   /*

@@ -32,6 +32,18 @@ export type IbProgramMode = (typeof IB_PROGRAM_MODES)[number];
  * rate an operator typed and a rate the system stored must be the same number.
  */
 const RATE = /^\d{1,8}(\.\d{1,4})?$/;
+
+/**
+ * An amount per lot — money, so eight places rather than the rate's four (§6.1).
+ *
+ * A separate constant rather than a looser shared one: a percentage with eight
+ * decimals is a typo, and an amount rounded to four is a payout that disagrees
+ * with the ledger it lands in. The two are different kinds of number and the
+ * validators say so.
+ */
+const AMOUNT = /^\d{1,8}(\.\d{1,8})?$/;
+const AMOUNT_MESSAGE =
+  'must be a non-negative decimal with at most eight places, as a string — e.g. "10" or "7.50000000"';
 const RATE_MESSAGE =
   'must be a non-negative decimal with at most four places, as a string — e.g. "12.5" or "33.3333"';
 
@@ -81,6 +93,34 @@ export class IbProgramTierDto {
   @IsString()
   @Matches(RATE, { message: `rate ${RATE_MESSAGE}` })
   rate: string;
+
+  @ApiPropertyOptional({
+    enum: ['percent', 'per_lot'],
+    description:
+      'How this level is priced. `percent` reads `rate` as a share of the broker revenue; ' +
+      '`per_lot` reads `amountPerLot` as a flat amount for every standard lot traded, ' +
+      'independent of what the trade earned. Defaults to `percent`, so an existing rate card is ' +
+      'unchanged.\n\n' +
+      'NOTE: `per_lot` is outside the Phase 1 FSD — FR-IB-05 specifies a rebate that is ' +
+      '"dynamic, not a fixed per-lot figure". It exists on an explicit business decision; see ' +
+      'migration 0111.',
+  })
+  @IsOptional()
+  @IsIn(['percent', 'per_lot'])
+  payoutMode?: 'percent' | 'per_lot';
+
+  @ApiPropertyOptional({
+    type: 'string',
+    example: '10.00000000',
+    description:
+      'Money for each standard lot traded, when `payoutMode` is `per_lot`. REQUIRED in that ' +
+      'mode and refused in the other — a row carrying both would be ambiguous about which ' +
+      'number pays.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(AMOUNT, { message: `amountPerLot ${AMOUNT_MESSAGE}` })
+  amountPerLot?: string;
 }
 
 /**
@@ -144,6 +184,21 @@ export class IbProgramDto {
       'is one trading client per trade, in one relationship — with their introducer.',
   })
   rebateRate: string;
+
+  @ApiPropertyOptional({
+    enum: ['percent', 'per_lot'],
+    description: 'How the client rebate is priced. As `IbProgramTierDto.payoutMode`.',
+  })
+  rebateMode?: 'percent' | 'per_lot';
+
+  @ApiPropertyOptional({
+    type: 'string',
+    example: '2.00000000',
+    nullable: true,
+    description:
+      'Money returned to the client for each standard lot, when `rebateMode` is `per_lot`.',
+  })
+  rebateAmountPerLot?: string | null;
 
   @ApiProperty({
     description: 'A disabled programme pays nothing and accepts no new partners.',
@@ -212,6 +267,29 @@ export class CreateIbProgramDto {
   @IsString()
   @Matches(RATE, { message: `rebateRate ${RATE_MESSAGE}` })
   rebateRate?: string;
+
+  @ApiPropertyOptional({
+    enum: ['percent', 'per_lot'],
+    description:
+      'How the client rebate is priced. Defaults to `percent`, leaving an existing programme ' +
+      'unchanged.',
+  })
+  @IsOptional()
+  @IsIn(['percent', 'per_lot'])
+  rebateMode?: 'percent' | 'per_lot';
+
+  @ApiPropertyOptional({
+    type: 'string',
+    example: '2.00000000',
+    description:
+      'Money returned to the client per standard lot, when `rebateMode` is `per_lot`. Zero is ' +
+      'allowed here, unlike a tier — a programme may legitimately pay the partner per lot and ' +
+      'the client nothing.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(AMOUNT, { message: `rebateAmountPerLot ${AMOUNT_MESSAGE}` })
+  rebateAmountPerLot?: string;
 
   /*
    * No `default:` here — `openapi-typescript` emits any property carrying one as
@@ -295,6 +373,29 @@ export class UpdateIbProgramDto {
   @IsString()
   @Matches(RATE, { message: `rebateRate ${RATE_MESSAGE}` })
   rebateRate?: string;
+
+  @ApiPropertyOptional({
+    enum: ['percent', 'per_lot'],
+    description:
+      'How the client rebate is priced. Defaults to `percent`, leaving an existing programme ' +
+      'unchanged.',
+  })
+  @IsOptional()
+  @IsIn(['percent', 'per_lot'])
+  rebateMode?: 'percent' | 'per_lot';
+
+  @ApiPropertyOptional({
+    type: 'string',
+    example: '2.00000000',
+    description:
+      'Money returned to the client per standard lot, when `rebateMode` is `per_lot`. Zero is ' +
+      'allowed here, unlike a tier — a programme may legitimately pay the partner per lot and ' +
+      'the client nothing.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(AMOUNT, { message: `rebateAmountPerLot ${AMOUNT_MESSAGE}` })
+  rebateAmountPerLot?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

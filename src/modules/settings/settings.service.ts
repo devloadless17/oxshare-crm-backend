@@ -202,6 +202,7 @@ export class SettingsService {
       maxDemoDeposit: terms.maxDemoDeposit,
       ibMaxLevels: terms.ibMaxLevels,
       ibMaxTotalPayoutPct: terms.ibMaxTotalPayoutPct,
+      ibMaxPayoutPerLot: terms.ibMaxPayoutPerLot,
       updatedAt: row?.updatedAt.toISOString() ?? null,
       updatedByName: await this.savedBy(row?.updatedBy),
     };
@@ -244,6 +245,15 @@ export class SettingsService {
          */
         ibMaxLevels: dto.ibMaxLevels,
         /*
+         * The per-lot ceiling (0111) — the same kind of bound as the percentage
+         * one, in the units per-lot terms are quoted in. No upper limit is
+         * enforced here: there is no natural 100 for an amount of money, and a
+         * broker running a rich programme must be able to configure it. The
+         * CHECK behind the column refuses zero and negative, which is the bound
+         * that matters — either would refuse every per-lot accrual.
+         */
+        ibMaxPayoutPerLot: dto.ibMaxPayoutPerLot,
+        /*
          * The total payout ceiling (0106) — the other bound, and the one the
          * catalogue cannot state about itself. A programme knows what IT pays;
          * only this knows what a CHAIN of them costs on one trade.
@@ -277,6 +287,7 @@ export class SettingsService {
       maxDemoDeposit: row.maxDemoDeposit,
       ibMaxLevels: row.ibMaxLevels,
       ibMaxTotalPayoutPct: row.ibMaxTotalPayoutPct,
+      ibMaxPayoutPerLot: row.ibMaxPayoutPerLot,
       updatedAt: row.updatedAt.toISOString(),
       updatedByName: await this.savedBy(row.updatedBy),
     };

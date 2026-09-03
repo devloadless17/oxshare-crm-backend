@@ -36,6 +36,71 @@ type Db = ReturnType<typeof getDb>;
  * This is the configuration-time floor: it catches the operator typing 70 at
  * every depth, while they can still fix it.
  */
+/**
+ * A tier's payout columns, from its mode — 0111.
+ *
+ * One place rather than two, because create and update write the same rows and
+ * a mode honoured on only one of them is a programme that changes shape when it
+ * is edited.
+ *
+ * `ib_program_tiers_payout_shape` requires exactly the column the mode reads and
+ * forbids the other, so this NULLS the unused one explicitly rather than leaving
+ * it to a default — an update switching a tier from percent to per-lot has to
+ * clear the rate it is no longer paid on, or the row is refused.
+ */
+function tierPayout(tier: IbProgramTierDto): {
+  payoutMode: 'percent' | 'per_lot';
+  rate: string;
+  amountPerLot: string | null;
+} {
+  if (tier.payoutMode === 'per_lot') {
+    return {
+      payoutMode: 'per_lot',
+      /*
+       * Zero, not the submitted rate. The CHECK permits any rate in this mode,
+       * but storing a live-looking percentage beside an amount that is what
+       * actually pays is how somebody reads the wrong number off the row later.
+       * It also keeps the per-programme share trigger honest: a per-lot tier
+       * contributes nothing to a sum of percentages.
+       */
+      rate: '0',
+      amountPerLot: tier.amountPerLot ?? '0',
+    };
+  }
+
+  return { payoutMode: 'percent', rate: tier.rate, amountPerLot: null };
+}
+
+/**
+ * The programme's rebate columns, from its mode — 0111. Mirrors `tierPayout`.
+ *
+ * `ib_programs_rebate_shape` forbids an amount in percent mode and requires one
+ * in per-lot mode, so the unused column is NULLed explicitly rather than left to
+ * a default — switching a programme back to percentages has to clear the amount
+ * or the row is refused.
+ */
+function rebatePayout(
+  mode: 'percent' | 'per_lot' | undefined,
+  amountPerLot: string | undefined,
+  rebateRate: string,
+): { rebateMode: 'percent' | 'per_lot'; rebateRate: string; rebateAmountPerLot: string | null } {
+  if (mode === 'per_lot') {
+    return {
+      rebateMode: 'per_lot',
+      /*
+       * Zeroed for the reason `tierPayout` zeroes a rate: a live-looking
+       * percentage stored beside the amount that actually pays is how the wrong
+       * number gets read off the row, and it would also inflate the share
+       * trigger's sum with a figure nobody is paid.
+       */
+      rebateRate: '0',
+      rebateAmountPerLot: amountPerLot ?? '0',
+    };
+  }
+
+  return { rebateMode: 'percent', rebateRate, rebateAmountPerLot: null };
+}
+
 const MAX_TOTAL_SHARE = new Decimal(100);
 
 /**
@@ -103,6 +168,8 @@ export class IbProgramsService {
         mode: ibPrograms.mode,
         revenueBasis: ibPrograms.revenueBasis,
         rebateRate: ibPrograms.rebateRate,
+        rebateMode: ibPrograms.rebateMode,
+        rebateAmountPerLot: ibPrograms.rebateAmountPerLot,
         enabled: ibPrograms.enabled,
         createdAt: ibPrograms.createdAt,
         updatedAt: ibPrograms.updatedAt,
@@ -246,11 +313,27 @@ export class IbProgramsService {
    * which numbers were involved and what they add up to.
    */
   private assertShareFits(tiers: IbProgramTierDto[], rebate: string): void {
-    const commission = tiers.reduce((sum, tier) => sum.plus(tier.rate), new Decimal(0));
+    /*
+     * PERCENTAGE tiers only — 0111.
+     *
+     * "These add up to more than 100% of the revenue" is a statement about
+     * shares, and a per-lot tier is not a share of anything: $10 a lot has no
+     * meaningful sum with 30%. Including one here would either refuse an honest
+     * mixed rate card or compare an amount against a percentage, both of which
+     * are worse than not checking it.
+     *
+     * Per-lot legs are bounded instead at ACCRUAL time by
+     * `ib_max_payout_per_lot`, where the lot count is actually known — see
+     * `checkPlausible`. The database trigger `ib_programs_share_fits` makes the
+     * same split for the same reason: a per-lot tier stores `rate = 0` and so
+     * contributes nothing to its sum.
+     */
+    const shareTiers = tiers.filter((tier) => tier.payoutMode !== 'per_lot');
+    const commission = shareTiers.reduce((sum, tier) => sum.plus(tier.rate), new Decimal(0));
     const total = commission.plus(rebate);
 
     if (total.greaterThan(MAX_TOTAL_SHARE)) {
-      const legs = tiers.map((tier) => `${tier.rate}% at level ${tier.depth}`).join(', ');
+      const legs = shareTiers.map((tier) => `${tier.rate}% at level ${tier.depth}`).join(', ');
       throw new ValidationError(
         `These terms pay out ${total.toString()}% of the broker's revenue on a trade — ` +
           `${legs || 'no commission levels'} and ${rebate}% back to the client. Every leg is a ` +
@@ -353,17 +436,19 @@ export class IbProgramsService {
            * it touches — permanently, since a zero-revenue deal is marked done.
            */
           revenueBasis: dto.revenueBasis ?? DEFAULT_REVENUE_BASIS,
-          rebateRate,
+          ...rebatePayout(dto.rebateMode, dto.rebateAmountPerLot, rebateRate),
           enabled: dto.enabled ?? true,
         })
         .returning();
 
       if (tiers.length > 0) {
-        await tx
-          .insert(ibProgramTiers)
-          .values(
-            tiers.map((tier) => ({ programId: created.id, depth: tier.depth, rate: tier.rate })),
-          );
+        await tx.insert(ibProgramTiers).values(
+          tiers.map((tier) => ({
+            programId: created.id,
+            depth: tier.depth,
+            ...tierPayout(tier),
+          })),
+        );
       }
 
       return created;
@@ -375,6 +460,8 @@ export class IbProgramsService {
       revenueBasis: row.revenueBasis,
       tiers,
       rebateRate: row.rebateRate,
+      rebateMode: row.rebateMode,
+      rebateAmountPerLot: row.rebateAmountPerLot,
       enabled: row.enabled,
     });
 
@@ -443,7 +530,16 @@ export class IbProgramsService {
           /* Omitted means LEAVE IT — this is a PATCH, and re-pricing a
            * programme is never something an operator did by not mentioning. */
           revenueBasis: dto.revenueBasis ?? current.revenueBasis,
-          rebateRate,
+          /*
+           * The mode falls back to what is STORED, not to `percent`. A PATCH
+           * that changes only the name must not quietly re-price a per-lot
+           * programme back onto a percentage nobody configured.
+           */
+          ...rebatePayout(
+            dto.rebateMode ?? current.rebateMode,
+            dto.rebateAmountPerLot ?? current.rebateAmountPerLot ?? undefined,
+            rebateRate,
+          ),
           enabled: dto.enabled ?? current.enabled,
           updatedAt: new Date(),
         })
@@ -462,7 +558,9 @@ export class IbProgramsService {
         if (tiers.length > 0) {
           await tx
             .insert(ibProgramTiers)
-            .values(tiers.map((tier) => ({ programId: id, depth: tier.depth, rate: tier.rate })));
+            .values(
+              tiers.map((tier) => ({ programId: id, depth: tier.depth, ...tierPayout(tier) })),
+            );
         }
       }
 
@@ -484,6 +582,8 @@ export class IbProgramsService {
         revenueBasis: row.revenueBasis,
         tiers,
         rebateRate: row.rebateRate,
+        rebateMode: row.rebateMode,
+        rebateAmountPerLot: row.rebateAmountPerLot,
         enabled: row.enabled,
       },
     });

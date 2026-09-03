@@ -4,6 +4,8 @@ import {
   DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT,
   normaliseIbMaxLevels,
   normaliseIbMaxTotalPayoutPct,
+  normaliseIbMaxPayoutPerLot,
+  DEFAULT_IB_MAX_PAYOUT_PER_LOT,
 } from './ib-levels';
 
 /**
@@ -82,6 +84,15 @@ export interface TradingTerms {
    * that page decides.
    */
   ibMaxTotalPayoutPct: string;
+  /**
+   * The most one trade may pay out per standard lot, across every per-lot leg.
+   *
+   * The percentage ceiling above cannot bound per-lot terms — those are not a
+   * share of anything — so this is the same unit-error backstop expressed in the
+   * units they are quoted in. A decimal STRING, like every figure here that is
+   * multiplied by an amount.
+   */
+  ibMaxPayoutPerLot: string;
 }
 
 /**
@@ -102,6 +113,8 @@ export const DEFAULT_TRADING_TERMS: TradingTerms = {
   ibMaxLevels: DEFAULT_IB_MAX_LEVELS,
   /* 100: refuses only a chain costing more than the trade earned. */
   ibMaxTotalPayoutPct: DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT,
+  /* Far above any real rate card: a unit-error guard, not a commercial limit. */
+  ibMaxPayoutPerLot: DEFAULT_IB_MAX_PAYOUT_PER_LOT,
 };
 
 /**
@@ -132,6 +145,7 @@ export function tradingTermsFrom(row: TradingSettingsRow | null): TradingTerms {
      * stronger one: a bad row that read as the minimum would refuse every
      * chain on the platform and stop paying everybody. */
     ibMaxTotalPayoutPct: normaliseIbMaxTotalPayoutPct(row.ibMaxTotalPayoutPct),
+    ibMaxPayoutPerLot: normaliseIbMaxPayoutPerLot(row.ibMaxPayoutPerLot),
   };
 }
 
