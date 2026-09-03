@@ -12,7 +12,12 @@ import {
   RESOURCE_CHANGED_CHANNEL,
   type ResourceChangedEvent,
 } from '../../common/realtime/resource-changed';
-import { MT5_LIVE_CHANNEL, MT5_LIVE_EVENT, type Mt5LiveEvent } from '../trading/mt5/live-snapshot';
+import {
+  MT5_LIVE_CHANNEL,
+  MT5_LIVE_EVENT,
+  decodeLiveEvent,
+  type Mt5LiveEvent,
+} from '../trading/mt5/live-snapshot';
 import { RealtimePrincipalResolver } from './realtime.principal';
 import type { NotificationRecipient } from '../../store/notifications.store';
 
@@ -480,7 +485,12 @@ export class NotificationsRealtimeGateway
           return;
         }
         if (message.channel === MT5_LIVE_CHANNEL) {
-          this.publishLiveAccount(JSON.parse(message.payload) as Mt5LiveEvent);
+          /*
+           * `decodeLiveEvent`, not `JSON.parse`: a large reading arrives gzipped
+           * so that a trader with hundreds of open positions still gets them.
+           * The decoder owns which form is which — see its note.
+           */
+          this.publishLiveAccount(decodeLiveEvent(message.payload));
           return;
         }
         this.publish(JSON.parse(message.payload) as NotificationEvent);

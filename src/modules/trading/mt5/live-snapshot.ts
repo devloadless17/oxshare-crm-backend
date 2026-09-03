@@ -25,6 +25,7 @@
  * so there is nothing to hold it until.
  */
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
@@ -114,6 +115,49 @@ export interface Mt5LivePosition {
  */
 const MAX_PAYLOAD_BYTES = 7_500;
 
+/**
+ * The key that marks a payload as gzipped-then-base64'd.
+ *
+ * Deliberately distinctive: a reader decides which form it holds by looking for
+ * this one field, so it must be a name no live event could ever carry.
+ */
+const COMPRESSED_KEY = '__gz';
+
+/**
+ * Read a payload off the channel, in either form.
+ *
+ * ## Why the wire has two forms rather than one
+ *
+ * Compressing everything would be simpler and is the wrong trade. The common
+ * payload — an account with a handful of positions — fits comfortably, and
+ * sending it as an opaque base64 blob costs CPU on both ends, makes the channel
+ * unreadable to anyone debugging with `LISTEN mt5_live` in psql, and buys
+ * nothing. So the plain form stays the default and compression is the exception,
+ * used only when the alternative is dropping data.
+ *
+ * ## What an OLD reader does with a compressed payload
+ *
+ * The publisher and this decoder ship in the same artifact, but a rolling deploy
+ * can briefly have one instance publishing while another is still reading. An
+ * instance that predates this parses `{"__gz":"..."}` successfully, finds no
+ * `userId`, and emits into a room nobody occupies — so the reading is dropped
+ * silently rather than throwing, and the client falls back to polling within
+ * `SILENCE_MS`.
+ *
+ * That window is bounded and affects only the accounts big enough to need
+ * compression — which, before this existed, had their positions dropped on
+ * EVERY reading anyway. So the worst case during a deploy is briefly worse than
+ * after it, and no worse than the behaviour it replaces.
+ */
+export function decodeLiveEvent(payload: string): Mt5LiveEvent {
+  const parsed = JSON.parse(payload) as Record<string, unknown>;
+
+  const packed = parsed[COMPRESSED_KEY];
+  if (typeof packed !== 'string') return parsed as unknown as Mt5LiveEvent;
+
+  return JSON.parse(gunzipSync(Buffer.from(packed, 'base64')).toString('utf8')) as Mt5LiveEvent;
+}
+
 @Injectable()
 export class Mt5LivePublisher {
   private readonly logger = new Logger(Mt5LivePublisher.name);
@@ -148,6 +192,31 @@ export class Mt5LivePublisher {
     const full = JSON.stringify(event);
     if (Buffer.byteLength(full, 'utf8') <= MAX_PAYLOAD_BYTES) return full;
 
+    /*
+     * ── COMPRESS BEFORE DROPPING ANYTHING ────────────────────────────────
+     *
+     * A position list is extremely repetitive JSON — the same dozen keys per
+     * row — so gzip takes it down by roughly five to ten times, which moves the
+     * ceiling from about twenty-five open positions to several hundred. That is
+     * past any realistic retail book, so the drop below stops being something a
+     * working trader can reach.
+     *
+     * Measured against the plain form each time rather than assumed: a payload
+     * that does not shrink enough still falls through to the drop, and the
+     * common small reading never takes this path at all.
+     */
+    const packed = JSON.stringify({
+      [COMPRESSED_KEY]: gzipSync(Buffer.from(full, 'utf8')).toString('base64'),
+    });
+
+    if (Buffer.byteLength(packed, 'utf8') <= MAX_PAYLOAD_BYTES) {
+      this.logger.debug(
+        `Live payload for account ${event.accountId} compressed from ` +
+          `${Buffer.byteLength(full, 'utf8')} to ${Buffer.byteLength(packed, 'utf8')} bytes`,
+      );
+      return packed;
+    }
+
     const { positions: dropped, ...withoutPositions } = event;
 
     /*
@@ -160,13 +229,12 @@ export class Mt5LivePublisher {
      * event is still valid, the socket still delivers, and the screen looks
      * merely slow rather than degraded.
      *
-     * If this line ever appears in production the fix is to compress the payload
-     * rather than to raise the constant — `pg_notify`'s 8000 bytes is Postgres's
-     * limit, not ours. It is deliberately NOT compressed today: the publisher
-     * and the gateway deploy together but not atomically, and a format only the
-     * newer one understands would turn a skew into a total outage of the feed —
-     * which is a failure this feature has already had once, from a different
-     * door.
+     * This is now the LAST resort rather than the first: the reading is only
+     * dropped after compression has already been tried and still did not fit,
+     * which takes several hundred open positions. If this line appears in
+     * production it is genuinely exceptional, and the answer is a different
+     * transport rather than a bigger constant — `pg_notify`'s 8000 bytes is
+     * Postgres's limit, not ours.
      */
     this.logger.warn(
       `Live payload for account ${event.accountId} exceeded ${MAX_PAYLOAD_BYTES} bytes with ` +
