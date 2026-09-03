@@ -229,6 +229,7 @@
   "POST /v1/payments/withdrawals",
   "POST /v1/trading/accounts",
   "POST /v1/trading/accounts/{id}/password",
+  "POST /v1/trading/accounts/{id}/watch",
   "PUT /v1/admin/agencies/{id}",
   "PUT /v1/admin/agencies/{id}/products",
   "PUT /v1/admin/kyc-config",
