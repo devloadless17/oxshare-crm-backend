@@ -136,7 +136,28 @@ export class AdminComplianceService {
      * out-of-scope read here is the same disclosure by a different URL.
      */
     await this.visibility.assertVisible(userId, actor.clientScope);
-    return this.kycService.getHistory(userId);
+    /*
+     * ⚠️ MASKED, like the live submission beside it.
+     *
+     * This returned raw attempts, and every one of them carries the same
+     * `personalInfo` the detail screen masks — email, phone, date of birth,
+     * nationality, address. So a reviewer whose role hides `client.email` read
+     * it straight off the history panel, one tab from the field that correctly
+     * showed nothing.
+     *
+     * That is the SECOND time this shape has bitten: `getKyc` above records
+     * that `client-fields.json` claimed the alias expansion "closes the KYC
+     * bypass" while nothing applied it, and the exports had the same hole. The
+     * expansion is not the enforcement — a response that never calls
+     * `applyMask` is unmasked however many aliases the catalog declares.
+     *
+     * The response stays an ARRAY rather than gaining a `maskedFields`
+     * envelope: the history panel renders attempts and the live submission's
+     * own `maskedFields` already tells the screen which fields are hidden for
+     * this viewer, so a second copy would be one more thing to keep in step.
+     */
+    const attempts = await this.kycService.getHistory(userId);
+    return applyMaskAll('kyc', attempts, actor.fieldMask);
   }
   /*
    * The three decisions below assert on the ACTOR, not only in the guard —
