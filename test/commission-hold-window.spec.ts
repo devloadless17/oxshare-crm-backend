@@ -1,6 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
@@ -46,22 +45,35 @@ let ctx: MoneyTestContext;
 let wallets: WalletService;
 let dispatch: NotificationsService;
 
-/** Restored after each case — the window is read from config on every run. */
-const originalHold = process.env['IB_COMMISSION_HOLD_HOURS'];
+/**
+ * The window is a SETTING now (0113), not `IB_COMMISSION_HOLD_HOURS`.
+ *
+ * Written to the real `trading_settings` row rather than passed as an argument,
+ * so these cases exercise the path an operator actually takes — the form writes
+ * the column and the service reads it. `undefined` deletes the row entirely,
+ * which is how the "no configuration at all" default is tested.
+ *
+ * Seconds rather than hours, because that is what the column stores; each
+ * caller below converts its own intent.
+ */
+async function serviceWithHold(seconds: number | undefined): Promise<CommissionService> {
+  if (seconds === undefined) {
+    await ctx.db.execute(sql`DELETE FROM trading_settings`);
+  } else {
+    await ctx.db.execute(sql`
+      INSERT INTO trading_settings (id, ib_commission_interval_seconds)
+      VALUES (true, ${seconds})
+      ON CONFLICT (id) DO UPDATE SET ib_commission_interval_seconds = ${seconds}
+    `);
+  }
 
-function serviceWithHold(hours: string | undefined): CommissionService {
-  if (hours === undefined) delete process.env['IB_COMMISSION_HOLD_HOURS'];
-  else process.env['IB_COMMISSION_HOLD_HOURS'] = hours;
-  // A fresh ConfigService per case: the value is read through the real config
-  // path, so this exercises what a deployment actually configures rather than
-  // a test-only argument.
   return new CommissionService(
     ctx.db,
     wallets,
     dispatch,
-    new ConfigService(),
-    // The payout ceiling (0106). The real store against the real row, so
-    // these read the shipped default of 100 rather than a stub's opinion.
+    // The real store against the real row: the interval AND the payout ceiling
+    // both come from here, so these read what a deployment configures rather
+    // than a stub's opinion.
     new AppSettingsStore(ctx.db),
   );
 }
@@ -115,8 +127,6 @@ afterAll(async () => {
 });
 
 afterEach(async () => {
-  if (originalHold === undefined) delete process.env['IB_COMMISSION_HOLD_HOURS'];
-  else process.env['IB_COMMISSION_HOLD_HOURS'] = originalHold;
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
   /*
    * The SETTING outranks the environment, so a row left behind by one case
@@ -132,7 +142,7 @@ describe('the settlement window decides what is payable', () => {
     const client = await makeClient('hold-young-client@test.local');
     await accrue(partner, client, '00000000-0000-4000-8000-00000000e001', 1);
 
-    const result = await serviceWithHold('24').confirmPending();
+    const result = await (await serviceWithHold(24 * 3600)).confirmPending();
 
     expect(result.confirmed).toBe(0);
     /*
@@ -149,7 +159,7 @@ describe('the settlement window decides what is payable', () => {
     const client = await makeClient('hold-old-client@test.local');
     await accrue(partner, client, '00000000-0000-4000-8000-00000000e002', 25);
 
-    const result = await serviceWithHold('24').confirmPending();
+    const result = await (await serviceWithHold(24 * 3600)).confirmPending();
 
     expect(result.confirmed).toBe(1);
     expect(result.held).toBe(0);
@@ -167,7 +177,7 @@ describe('the settlement window decides what is payable', () => {
     // without depending on how long the test itself takes to run.
     await accrue(partner, client, '00000000-0000-4000-8000-00000000e003', 24.02);
 
-    const result = await serviceWithHold('24').confirmPending();
+    const result = await (await serviceWithHold(24 * 3600)).confirmPending();
     expect(result.confirmed).toBe(1);
   });
 
@@ -177,7 +187,7 @@ describe('the settlement window decides what is payable', () => {
     await accrue(partner, client, '00000000-0000-4000-8000-00000000e004', 48);
     await accrue(partner, client, '00000000-0000-4000-8000-00000000e005', 2);
 
-    const result = await serviceWithHold('24').confirmPending();
+    const result = await (await serviceWithHold(24 * 3600)).confirmPending();
 
     expect(result.confirmed).toBe(1);
     expect(result.held).toBe(1);
@@ -185,50 +195,95 @@ describe('the settlement window decides what is payable', () => {
 });
 
 describe('how the window is configured', () => {
-  it('defaults to 24 hours when nothing is set', async () => {
+  it('defaults to one hour when nothing is configured', async () => {
     const partner = await makeClient('hold-default-partner@test.local');
     const client = await makeClient('hold-default-client@test.local');
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e006', 12);
+    /* Half an hour old, under the default one-hour window. */
+    await accrue(partner, client, '00000000-0000-4000-8000-00000000e006', 0.5);
 
-    // 12h old under the default 24h window: still maturing.
-    expect((await serviceWithHold(undefined).confirmPending()).held).toBe(1);
-  });
-
-  it('pays immediately when the window is set to zero', async () => {
-    const partner = await makeClient('hold-zero-partner@test.local');
-    const client = await makeClient('hold-zero-client@test.local');
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e007', 0);
-
-    // A supported configuration, not a test door: a deployment that settles
-    // instantly sets exactly this.
-    expect((await serviceWithHold('0').confirmPending()).confirmed).toBe(1);
+    expect((await (await serviceWithHold(undefined)).confirmPending()).held).toBe(1);
   });
 
   /*
-   * ⚠️ THE FAILURE MODE THAT MATTERS.
-   *
-   * A typo'd window must fall back to the DEFAULT, never to zero. "Pay every
-   * commission the instant it is calculated" is the one outcome nobody would
-   * choose deliberately, and it is what `Number.parseInt('abc') || 0` would
-   * produce — which is exactly the idiom this code avoids.
+   * The point of making this a setting: a broker who wants near-instant payouts
+   * sets a minute, and a partner is paid a minute after the trade rather than a
+   * day. 60s is the floor — see `normaliseIbCommissionInterval` for why it is
+   * about the job's own runtime rather than about commercial policy.
    */
-  it('falls back to the default on a malformed value, never to paying instantly', async () => {
+  it('pays within the minute when the interval is set to its floor', async () => {
+    const partner = await makeClient('hold-fast-partner@test.local');
+    const client = await makeClient('hold-fast-client@test.local');
+    /* Two minutes old, so a 60s window has matured it. */
+    await accrue(partner, client, '00000000-0000-4000-8000-00000000e007', 2 / 60);
+
+    expect((await (await serviceWithHold(60)).confirmPending()).confirmed).toBe(1);
+  });
+
+  /*
+   * ⚠️ THE FAILURE MODE THAT MATTERS, and it survived the move off the
+   * environment unchanged.
+   *
+   * A value the system cannot honour must fall back to the DEFAULT, never to
+   * the minimum. "Pay every commission the instant it is calculated" is the one
+   * outcome nobody would choose deliberately, and falling back to the floor
+   * would produce exactly that on a corrupt row.
+   *
+   * Written straight past the CHECK constraint with a raw UPDATE, because that
+   * is the only way this state arises: a row restored from a dump taken before
+   * the constraint existed. The form cannot save it.
+   */
+  it('falls back to the default on an impossible stored value, never to paying instantly', async () => {
     const partner = await makeClient('hold-junk-partner@test.local');
     const client = await makeClient('hold-junk-client@test.local');
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e008', 3);
+    await accrue(partner, client, '00000000-0000-4000-8000-00000000e008', 0.05);
 
-    const result = await serviceWithHold('not-a-number').confirmPending();
+    /*
+     * The impossible value is injected at the STORE, not into the table.
+     *
+     * An earlier version of this test dropped the CHECK constraint, wrote a
+     * zero and added the constraint back. That is a schema mutation inside a
+     * suite that shares its database: when the assertion between the two
+     * statements failed, the constraint stayed dropped and the NEXT test — the
+     * one asserting the floor is enforced — failed for a reason that had
+     * nothing to do with it. A test that can corrupt its neighbours is worse
+     * than the coverage it buys.
+     *
+     * Stubbing the read reaches the same line of code. `holdSeconds` calls
+     * `tradingTermsFrom(await settings.getTrading())`, so a row carrying an
+     * impossible value exercises exactly the normalising this is about.
+     */
+    const corrupt = {
+      getTrading: () =>
+        Promise.resolve({
+          maxLiveAccounts: 5,
+          maxDemoAccounts: 5,
+          maxDemoDeposit: '1000000',
+          ibMaxLevels: 2,
+          /* Below the floor: only reachable from a dump older than the CHECK. */
+          ibCommissionIntervalSeconds: 0,
+          ibMaxTotalPayoutPct: '100.0000',
+          ibMaxPayoutPerLot: '50.00000000',
+          updatedBy: null,
+          updatedAt: new Date(),
+        }),
+    } as unknown as AppSettingsStore;
 
+    const service = new CommissionService(ctx.db, wallets, dispatch, corrupt);
+    const result = await service.confirmPending();
+
+    /* The default hour, not the floor — so a corrupt row cannot make the
+       platform pay faster than anybody configured. */
     expect(result.confirmed).toBe(0);
     expect(result.held).toBe(1);
   });
 
-  it('refuses a negative window the same way', async () => {
-    const partner = await makeClient('hold-neg-partner@test.local');
-    const client = await makeClient('hold-neg-client@test.local');
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e009', 3);
-
-    expect((await serviceWithHold('-5').confirmPending()).confirmed).toBe(0);
+  /*
+   * The database refuses what the fallback above only compensates for. Both
+   * matter: this stops a bad value being STORED, that one stops a bad value
+   * that predates the constraint from being HONOURED.
+   */
+  it('refuses to store an interval below the floor', async () => {
+    await expect(serviceWithHold(30)).rejects.toThrow();
   });
 });
 

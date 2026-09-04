@@ -7,9 +7,7 @@ import { ibAccounts, ibLevels } from '../../database/schema';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
-import { AppSettingsStore } from '../../store/app-settings.store';
 import { DEFAULT_REVENUE_BASIS } from '../../common/revenue-basis';
-import { tradingTermsFrom } from '../../common/trading-terms';
 import { ABSOLUTE_IB_MAX_LEVELS } from '../../common/ib-levels';
 import type {
   CreateIbLevelDto,
@@ -97,17 +95,12 @@ export class IbLevelsService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly audit: AdminAuditService,
     /*
-     * The ladder ceiling. Read fresh on every save rather than cached: an
-     * operator who has just raised it should see the next rung accept, not wait
-     * out a TTL on the one screen where the refusal is the whole feedback.
+     * `AppSettingsStore` stood here for the ladder ceiling, read fresh on every
+     * save so an operator who had just raised it saw the next rung accept. The
+     * ceiling went in 0113 and nothing on this service reads a setting now —
+     * how deep the ladder goes is decided by the rows in it.
      */
-    private readonly settings: AppSettingsStore,
   ) {}
-
-  /** The configured ceiling, or the committed two. */
-  private async maxLevels(): Promise<number> {
-    return tradingTermsFrom(await this.settings.getTrading()).ibMaxLevels;
-  }
 
   /**
    * The whole ladder, shallowest rung first, with how many partners stand on
@@ -147,8 +140,20 @@ export class IbLevelsService {
    * Read rather than assumed by the console: a hardcoded copy is the drift this
    * setting exists to prevent.
    */
-  async limits(): Promise<{ maxLevels: number; absoluteMaxLevels: number }> {
-    return { maxLevels: await this.maxLevels(), absoluteMaxLevels: ABSOLUTE_IB_MAX_LEVELS };
+  limits(): { maxLevels: number; absoluteMaxLevels: number } {
+    /*
+     * ── THERE IS NO CEILING ANY MORE (0113) ──────────────────────────────
+     *
+     * `ib_max_levels` capped this and defaulted to 2, so adding a third rung
+     * meant first raising a number on the Trading settings tab. This page is
+     * the only thing that decides depth now, which is what was asked for.
+     *
+     * The SHAPE is kept — both numbers still answered, both equal to the
+     * structural bound — so the form keeps one contract for "how deep may I
+     * go" rather than branching on whether a ceiling exists. It is what the
+     * database CHECK and the chain walk actually permit.
+     */
+    return { maxLevels: ABSOLUTE_IB_MAX_LEVELS, absoluteMaxLevels: ABSOLUTE_IB_MAX_LEVELS };
   }
 
   async findOne(level: number): Promise<IbLevelDto | null> {
@@ -157,22 +162,24 @@ export class IbLevelsService {
   }
 
   /**
-   * A rung must fit under the ceiling the broker agreed to.
+   * A rung must be one the engine can actually pay on.
    *
-   * `ib_levels_level_range` is deliberately wider at 10, so raising how deep a
-   * broker pays is a form somebody fills in rather than a migration somebody
-   * writes. This is the number an operator is actually held to.
+   * This used to enforce `ib_max_levels`, a configurable ceiling that defaulted
+   * to 2 — removed in 0113, because it put a second screen between an operator
+   * and a third level for no benefit this page does not already give.
    *
-   * The message names the ceiling AND where to change it, because "at most 2
-   * levels" with no source reads as a hard product limit somebody would file a
-   * bug about rather than a setting they already control.
+   * What is left is the STRUCTURAL bound, and it is not a commercial one: the
+   * chain walk stops at `MAX_CHAIN_DEPTH`, so a rung deeper than that is one no
+   * trade could ever reach. Saving it would be accepting a rate that silently
+   * pays nobody. (A true cycle in the tree is caught separately by
+   * `resolveChain`'s `seen` set, which is independent of any depth number.)
    */
-  private assertLevelFitsCeiling(level: number, maxLevels: number): void {
-    if (level > maxLevels) {
+  private assertLevelIsReachable(level: number): void {
+    if (level > ABSOLUTE_IB_MAX_LEVELS) {
       throw new ValidationError(
-        `The ladder reaches ${maxLevels} level(s) and level ${level} is deeper than that. Raise ` +
-          '"Maximum commission levels" on the Trading settings tab if the broker has agreed to ' +
-          'pay deeper.',
+        `Level ${level} is deeper than the commission engine walks (${ABSOLUTE_IB_MAX_LEVELS}), ` +
+          'so nobody standing on it could ever be paid. Partners deeper than this earn nothing ' +
+          'and the trade pays the rungs above them.',
       );
     }
   }
@@ -209,7 +216,7 @@ export class IbLevelsService {
   }
 
   async create(dto: CreateIbLevelDto, actor: Actor): Promise<IbLevelDto> {
-    this.assertLevelFitsCeiling(dto.level, await this.maxLevels());
+    this.assertLevelIsReachable(dto.level);
 
     const commission = payoutColumns(
       dto.commissionMode ?? 'percent',

@@ -1,5 +1,4 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { and, eq, gt, lte, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
@@ -69,14 +68,16 @@ import {
  * All decision-making lives in the pure functions in `./commission.ts`. This
  * class only fetches, persists and moves money.
  */
-/**
- * A day, and the reasoning is the reversal window rather than the number.
+/*
+ * `DEFAULT_HOLD_HOURS` was 24 here, and the reasoning was the reversal window
+ * rather than the number: long enough that a bad deposit is caught by the
+ * desk's daily rhythm before the money is spendable.
  *
- * Long enough that a bad deposit is caught by the desk's normal daily rhythm
- * before the money becomes spendable; short enough that a partner is not
- * chasing yesterday's commission. Override with IB_COMMISSION_HOLD_HOURS.
+ * That reasoning survives; the constant does not. The window is
+ * `ib_commission_interval_seconds` now (0113), an admin setting rather than a
+ * deploy, and its default of one hour is what the old 24h hold and the hourly
+ * job produced together. See `holdSeconds` for what shortening it costs.
  */
-const DEFAULT_HOLD_HOURS = 24;
 
 @Injectable()
 export class CommissionService implements CommissionAccrualPort {
@@ -88,14 +89,13 @@ export class CommissionService implements CommissionAccrualPort {
     /** The partner's "commission credited" bell row, written with the credit. */
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
     /*
-     * The hold window's only source. `AppSettingsStore` used to sit beside it,
-     * because the window was a column too — removed in 0104 with the rest of
-     * the IB block on the Trading settings form.
-     */
-    private readonly config: ConfigService,
-    /*
-     * Back for ONE number (0106): `ib_max_total_payout_pct`, the ceiling on
-     * what a single trade may cost across every leg.
+     * Back for ONE number in 0106 and THREE now (0113): the total payout
+     * ceiling, the per-lot ceiling, and the commission interval that decides
+     * both how long an accrual matures and how often the payout job runs.
+     *
+     * `ConfigService` stood beside it and is gone: `IB_COMMISSION_HOLD_HOURS`
+     * was the last thing this class read from the environment, and the interval
+     * setting replaced it.
      *
      * It left in 0104 with the four IB settings that each DUPLICATED the
      * Commission Programmes page. This one does the opposite — it bounds a
@@ -157,38 +157,42 @@ export class CommissionService implements CommissionAccrualPort {
    */
 
   /**
-   * How long an accrual is held before it may be confirmed.
+   * How long an accrual is held before it may be confirmed — SECONDS.
    *
-   * ## `IB_COMMISSION_HOLD_HOURS` is the ONLY answer (0104)
+   * ## It is a SETTING again (0113), and it is the same number as the job's
    *
-   * It was a column on `trading_settings` for a while. The column and its form
-   * field were removed at the operator's request, along with the rest of the IB
-   * block on that screen: commission is configured on the Commission Programmes
-   * page, and a second screen deciding what partners are paid is the same
-   * "two places" problem 0102 removed from the catalogue.
+   * This was `IB_COMMISSION_HOLD_HOURS` from 0104: a column, then an
+   * environment variable, on the reasoning that commission is configured on
+   * one page and a second screen deciding partner pay is a "two places"
+   * problem. That reasoning holds for AMOUNTS and does not reach this — how
+   * OFTEN somebody is paid is not how MUCH, and the IB Levels page has no
+   * opinion about it.
    *
-   * SYNCHRONOUS again, because there is nothing left to await. It read a
-   * settings row until 0104; keeping the `Promise` would be a signature that
-   * implies I/O this method no longer does — and `require-await` says so.
+   * What made the env variable untenable is that it was never the whole
+   * answer. The delay a partner actually experiences is this window PLUS the
+   * job's period, and shortening either alone changes almost nothing: a
+   * one-minute run against a 24-hour hold still pays nothing for a day. Both
+   * now read `ib_commission_interval_seconds`, so the configured number IS the
+   * delay.
+   *
+   * ⚠️ SHORTENING THIS REMOVES A REVIEW WINDOW, and that is its whole purpose.
+   * 24 hours existed so a bad deposit is caught by the desk's daily rhythm
+   * BEFORE the commission on it is spendable. At 60s the money is in a
+   * partner's wallet before anybody could look, and a reversal then claws back
+   * a balance they may already have moved.
+   *
+   * ASYNC again, because it reads the settings row. It was made synchronous in
+   * 0104 when there was nothing left to await; there is again.
    */
-  private holdHours(): number {
-    const raw = this.config.get<string>('IB_COMMISSION_HOLD_HOURS');
-    if (raw === undefined || raw.trim() === '') return DEFAULT_HOLD_HOURS;
-
-    const parsed = Number.parseInt(raw.trim(), 10);
+  private async holdSeconds(): Promise<number> {
     /*
-     * A malformed value falls back to the default rather than to zero. The
-     * failure mode of a typo must not be "pay every commission instantly" —
-     * that is the one outcome nobody would choose deliberately.
+     * `tradingTermsFrom` normalises a bad or missing row to the DEFAULT rather
+     * than to the minimum — deliberately, and this is the call site that makes
+     * it matter. The failure mode of a corrupt row must not be "pay every
+     * commission a minute after the trade", which is the one outcome nobody
+     * would choose on purpose.
      */
-    if (!Number.isInteger(parsed) || parsed < 0) {
-      this.logger.warn(
-        `IB_COMMISSION_HOLD_HOURS is "${raw}", which is not a whole number of hours. ` +
-          `Holding for the default ${DEFAULT_HOLD_HOURS}h instead.`,
-      );
-      return DEFAULT_HOLD_HOURS;
-    }
-    return parsed;
+    return tradingTermsFrom(await this.settings.getTrading()).ibCommissionIntervalSeconds;
   }
 
   /**
@@ -700,8 +704,7 @@ export class CommissionService implements CommissionAccrualPort {
    * no accrual pointing at it — is a state this system cannot reach.
    */
   async confirmPending(limit = 500): Promise<{ confirmed: number; failed: number; held: number }> {
-    const hours = this.holdHours();
-    const payableFrom = new Date(Date.now() - hours * 3_600_000);
+    const payableFrom = new Date(Date.now() - (await this.holdSeconds()) * 1_000);
 
     const pending = await this.db
       .select()

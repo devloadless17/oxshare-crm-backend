@@ -1,7 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { DealCommissionService } from '../src/modules/trading/mt5/deal-commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -223,7 +222,7 @@ beforeAll(async () => {
       notify: vi.fn().mockResolvedValue(undefined),
       notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
     },
-    new ConfigService(),
+
     // The payout ceiling (0106) — the real store against the real row, so
     // this reads the shipped default of 100 rather than a stub's opinion.
     new AppSettingsStore(ctx.db),

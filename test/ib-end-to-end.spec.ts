@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
@@ -187,7 +186,7 @@ beforeAll(async () => {
       notify: vi.fn().mockResolvedValue(undefined),
       notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
     },
-    new ConfigService(),
+
     new AppSettingsStore(ctx.db),
   );
 }, 180_000);

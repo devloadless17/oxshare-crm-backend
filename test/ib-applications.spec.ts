@@ -3,7 +3,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { sql } from 'drizzle-orm';
 import { IbApplicationsService } from '../src/modules/ib/ib-applications.service';
 import { IbLevelsService } from '../src/modules/ib/ib-levels.service';
-import { AppSettingsStore } from '../src/store/app-settings.store';
 import { IbStore } from '../src/store/ib.store';
 import { ProductsStore } from '../src/store/products.store';
 import { UsersStore } from '../src/store/users.store';
@@ -51,7 +50,7 @@ beforeAll(async () => {
     ctx.db,
     store,
     users,
-    new IbLevelsService(ctx.db, auditStubAs(), new AppSettingsStore(ctx.db)),
+    new IbLevelsService(ctx.db, auditStubAs()),
     new ClientVisibilityService(users),
     email,
     auditStubAs(),
@@ -311,58 +310,33 @@ describe('approving a partner who is already under one', () => {
 });
 
 describe('how deep the ladder may go', () => {
-  const levels = () => new IbLevelsService(ctx.db, auditStubAs(), new AppSettingsStore(ctx.db));
+  const levels = () => new IbLevelsService(ctx.db, auditStubAs());
 
-  /** Save a ceiling, the way the Trading settings form does. */
-  async function setCeiling(depth: number): Promise<void> {
-    await ctx.db.execute(sql`
-      INSERT INTO trading_settings (id, ib_max_levels)
-      VALUES (true, ${depth})
-      ON CONFLICT (id) DO UPDATE SET ib_max_levels = ${depth}
-    `);
-  }
-
-  /** Drop every rung the seed did not ship, so a case starts from a known ladder. */
-  async function resetLadder(): Promise<void> {
-    await ctx.db.execute(sql`DELETE FROM ib_levels WHERE level > 2`);
-  }
-
+  /*
+   * ── THERE IS NO CONFIGURABLE CEILING ANY MORE (0113) ─────────────────────
+   *
+   * Five cases stood here, all about `ib_max_levels`: that a third rung was
+   * refused under the default of 2, that raising the setting allowed it, that
+   * the database refused an absurd ceiling, and that lowering one truncated
+   * nothing.
+   *
+   * The setting is gone. Adding a third rung meant first raising a number on a
+   * different screen, which is a second place standing between an operator and
+   * a decision the IB Levels page already expresses — remove the rung and it
+   * stops paying.
+   *
+   * What replaces those cases is the bound that is REAL: the commission engine
+   * walks a fixed number of rungs, so a level deeper than that could never be
+   * reached by any trade. Saving one would be accepting a rate that silently
+   * pays nobody, which is the failure the old ceiling was groping at.
+   */
   afterEach(async () => {
-    await ctx.db.execute(sql`DELETE FROM trading_settings`);
-    await resetLadder();
+    await ctx.db.execute(sql`DELETE FROM ib_levels WHERE level > 2`);
   });
 
-  it('accepts the two levels the scope commits to, with no settings row at all', async () => {
-    await ctx.db.execute(sql`DELETE FROM trading_settings`);
-
-    /* Both rungs are seeded by 0112, so this asserts they SAVE under the default. */
-    await expect(levels().update(2, { commissionRate: '25' }, REVIEWER)).resolves.toMatchObject({
-      level: 2,
-    });
-  });
-
-  /*
-   * The refusal names the CEILING and its SOURCE. "At most 2 levels" alone
-   * reads as a hard product limit somebody would file a bug about, rather than
-   * a setting they can change.
-   */
-  it('refuses a third level while the default stands', async () => {
-    await ctx.db.execute(sql`DELETE FROM trading_settings`);
-
-    await expect(
-      levels().create({ level: 3, name: 'Three Deep', commissionRate: '10' }, REVIEWER),
-    ).rejects.toThrow(/reaches 2 level\(s\).*Trading settings/is);
-  });
-
-  /*
-   * And the setting actually moves it — otherwise the case above would pass
-   * against a hardcoded 2 and prove nothing about the variable.
-   */
-  it('accepts a third level once an operator has raised the ceiling', async () => {
-    await setCeiling(3);
-
+  it('accepts a third level with no ceiling to raise first', async () => {
     const created = await levels().create(
-      { level: 3, name: 'Three Deep Allowed', commissionRate: '10' },
+      { level: 3, name: 'Three Deep', commissionRate: '10' },
       REVIEWER,
     );
 
@@ -370,41 +344,26 @@ describe('how deep the ladder may go', () => {
   });
 
   /*
-   * The DATABASE refuses a ceiling it could not honour, rather than the service
-   * quietly normalising one. `trading_settings_ib_max_levels_ck` is 1..10, so a
-   * value above that never reaches a level at all — which is why this asserts
-   * the CONSTRAINT rather than a fallback.
+   * The one refusal left, and it is structural rather than commercial: past
+   * `MAX_CHAIN_DEPTH` the walk stops, so nobody standing there is ever paid.
    */
-  it('refuses to store a ceiling the database could not honour', async () => {
-    await expect(setCeiling(99)).rejects.toThrow();
-  });
-
-  it('refuses a ceiling of zero, which would make every level unsaveable', async () => {
-    await expect(setCeiling(0)).rejects.toThrow();
+  it('refuses a level deeper than the commission engine walks', async () => {
+    await expect(
+      levels().create({ level: 11, name: 'Unreachable', commissionRate: '10' }, REVIEWER),
+    ).rejects.toThrow(/deeper than the commission engine walks/i);
   });
 
   /*
-   * Lowering the ceiling does NOT truncate what exists — the rung keeps paying,
-   * because an operator adjusting a limit must not silently restate money that
-   * is owed. Only the next CREATE past the new ceiling is refused.
-   *
-   * This is a real difference from the programme catalogue this replaced, where
-   * the next deliberate EDIT of a too-deep ladder was refused as well. A
-   * programme's ladder was re-validated as a whole on every save; a rung is one
-   * row, and re-refusing an edit to level 3 would leave an operator who had
-   * lowered the ceiling unable to correct the rate that is still paying.
+   * A rung nobody can reach is refused; a rung nobody is STANDING on is fine.
+   * Configuring depth ahead of recruiting into it is the ordinary case.
    */
-  it('keeps paying a level deeper than a ceiling lowered under it', async () => {
-    await setCeiling(3);
-    await levels().create({ level: 3, name: 'Was Allowed', commissionRate: '10' }, REVIEWER);
+  it('accepts a level no partner stands on yet', async () => {
+    const created = await levels().create(
+      { level: 4, name: 'Room To Grow', commissionRate: '5' },
+      REVIEWER,
+    );
 
-    await setCeiling(2);
-
-    const stillThere = await levels().findOne(3);
-    expect(stillThere?.commissionRate).toBe('10.0000');
-    await expect(levels().update(3, { commissionRate: '12' }, REVIEWER)).resolves.toMatchObject({
-      level: 3,
-    });
+    expect(created.partnerCount).toBe(0);
   });
 });
 

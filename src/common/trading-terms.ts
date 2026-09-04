@@ -6,6 +6,8 @@ import {
   normaliseIbMaxTotalPayoutPct,
   normaliseIbMaxPayoutPerLot,
   DEFAULT_IB_MAX_PAYOUT_PER_LOT,
+  DEFAULT_IB_COMMISSION_INTERVAL_SECONDS,
+  normaliseIbCommissionInterval,
 } from './ib-levels';
 
 /**
@@ -75,6 +77,20 @@ export interface TradingTerms {
   ibMaxLevels: number;
 
   /**
+   * How often commission is paid, in SECONDS — the maturation delay and the
+   * payout period at once (0113).
+   *
+   * One number for both because either alone leaves the other as the real
+   * delay: a one-minute job against a 24-hour hold still pays nothing for a
+   * day. Set it to 60 and a partner is credited about a minute after the trade
+   * closes.
+   *
+   * ⚠️ A short interval REMOVES the review grace the 24h default existed for.
+   * See the column's own note in `database/schema.ts`.
+   */
+  ibCommissionIntervalSeconds: number;
+
+  /**
    * The most one TRADE may pay out in total, as a % of its revenue.
    *
    * A decimal STRING, like every other rate here — it is multiplied by the
@@ -109,8 +125,12 @@ export const DEFAULT_TRADING_TERMS: TradingTerms = {
   maxLiveAccounts: 5,
   maxDemoAccounts: 5,
   maxDemoDeposit: '1000000',
-  /* Rev 9's two levels. A database with no row still ships the agreed scope. */
+  /* HISTORICAL since 0113 — nothing reads it. Kept so the shape of a stored
+     row and the shape of the defaults stay the same object. */
   ibMaxLevels: DEFAULT_IB_MAX_LEVELS,
+  /* Hourly: exactly what IB_COMMISSION_HOLD_HOURS=1 and the hourly cron did
+     together, so a database with no row behaves as the platform always has. */
+  ibCommissionIntervalSeconds: DEFAULT_IB_COMMISSION_INTERVAL_SECONDS,
   /* 100: refuses only a chain costing more than the trade earned. */
   ibMaxTotalPayoutPct: DEFAULT_IB_MAX_TOTAL_PAYOUT_PCT,
   /* Far above any real rate card: a unit-error guard, not a commercial limit. */
@@ -141,6 +161,12 @@ export function tradingTermsFrom(row: TradingSettingsRow | null): TradingTerms {
      * partners are paid.
      */
     ibMaxLevels: normaliseIbMaxLevels(row.ibMaxLevels),
+    /*
+     * Narrowed on the way OUT, like the rest. A value below the floor here
+     * would schedule a job that cannot finish before its next tick, and one
+     * from a restored dump predates the CHECK that would have refused it.
+     */
+    ibCommissionIntervalSeconds: normaliseIbCommissionInterval(row.ibCommissionIntervalSeconds),
     /* Narrowed on the way OUT for the same reason, and to the DEFAULT for a
      * stronger one: a bad row that read as the minimum would refuse every
      * chain on the platform and stop paying everybody. */

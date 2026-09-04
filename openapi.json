@@ -13685,12 +13685,11 @@
             "example": "1000000.00000000",
             "description": "Largest opening balance a demo account may be given. A decimal string."
           },
-          "ibMaxLevels": {
+          "ibCommissionIntervalSeconds": {
             "type": "number",
-            "example": 2,
-            "minimum": 1,
-            "maximum": 10,
-            "description": "How many levels a commission programme’s ladder may reach. Defaults to 2 — the committed two-level structure (Feature List Rev 9, IB-17). Bounds what may be SAVED: lowering it leaves existing programmes paying exactly what they paid before."
+            "example": 3600,
+            "minimum": 60,
+            "description": "Seconds between commission payouts, and how long an accrual matures first. 60 credits a partner about a minute after the trade closes."
           },
           "updatedAt": {
             "type": "string",
@@ -13706,7 +13705,7 @@
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
-          "ibMaxLevels"
+          "ibCommissionIntervalSeconds"
         ]
       },
       "UpdateTradingSettingsDto": {
@@ -13729,18 +13728,18 @@
             "example": "1000000.00",
             "description": "Positive decimal string."
           },
-          "ibMaxLevels": {
+          "ibCommissionIntervalSeconds": {
             "type": "number",
-            "example": 2,
-            "minimum": 1,
-            "maximum": 10
+            "example": 3600,
+            "minimum": 60,
+            "description": "Seconds between commission payouts, and how long an accrual matures before it is payable. One number for both: either alone leaves the other as the real delay. 60 = a partner is credited about a minute after the trade closes."
           }
         },
         "required": [
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
-          "ibMaxLevels"
+          "ibCommissionIntervalSeconds"
         ]
       },
       "SmtpSettingsDto": {

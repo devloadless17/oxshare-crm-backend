@@ -1,7 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { DealCommissionService } from '../src/modules/trading/mt5/deal-commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -135,7 +134,6 @@ beforeAll(async () => {
       notify: vi.fn().mockResolvedValue(undefined),
       notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
     },
-    new ConfigService(),
     // The payout ceiling (0106) — the real store against the real row, so
     // this reads the shipped default of 100 rather than a stub's opinion.
     new AppSettingsStore(ctx.db),
@@ -215,7 +213,22 @@ describe('a cancellation against a trade that already paid', () => {
     await tradeThenCancellation();
     // The settlement window elapsed and the partner was paid, which is the
     // difference between a free reversal and one that debits a wallet.
-    process.env['IB_COMMISSION_HOLD_HOURS'] = '0';
+    /*
+     * The maturation window cannot be switched OFF any more (0113): it is a
+     * setting with a 60-second floor, not `IB_COMMISSION_HOLD_HOURS=0`.
+     *
+     * So these cases BACKDATE their accruals past the window instead of removing
+     * it. That is the better fixture anyway — it exercises the real predicate
+     * (`created_at <= now() - interval`) rather than collapsing it to a
+     * comparison against zero, and the window's own behaviour stays pinned in
+     * `commission-hold-window.spec.ts`.
+     */
+    await ctx.db.execute(sql`
+        INSERT INTO trading_settings (id, ib_commission_interval_seconds) VALUES (true, 60)
+        ON CONFLICT (id) DO UPDATE SET ib_commission_interval_seconds = 60
+      `);
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     await commissions.confirmPending();
 
     await deals.accruePending();

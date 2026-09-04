@@ -95,7 +95,11 @@ describe('the confirm job drains the payable queue', () => {
       .mockResolvedValueOnce({ confirmed: 500, failed: 0, held: 0 })
       .mockResolvedValue({ confirmed: 12, failed: 0, held: 0 });
 
-    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads());
+    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads(), {
+      /* The interval drives the drain BUDGET now (0113), so the stub answers
+         the hourly default this spec's timings were written against. */
+      getTrading: () => Promise.resolve(null),
+    } as never);
     await scheduler.confirm();
 
     /*
@@ -108,7 +112,11 @@ describe('the confirm job drains the payable queue', () => {
   it('stops on the first SHORT batch, so a quiet hour costs one query', async () => {
     const confirmPending = vi.fn().mockResolvedValue({ confirmed: 0, failed: 0, held: 0 });
 
-    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads());
+    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads(), {
+      /* The interval drives the drain BUDGET now (0113), so the stub answers
+         the hourly default this spec's timings were written against. */
+      getTrading: () => Promise.resolve(null),
+    } as never);
     await scheduler.confirm();
 
     // A short batch means nothing is due. Asking again cannot find more, and a
@@ -128,7 +136,11 @@ describe('the confirm job drains the payable queue', () => {
       .mockResolvedValueOnce({ confirmed: 0, failed: 500, held: 0 })
       .mockResolvedValue({ confirmed: 1, failed: 0, held: 0 });
 
-    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads());
+    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads(), {
+      /* The interval drives the drain BUDGET now (0113), so the stub answers
+         the hourly default this spec's timings were written against. */
+      getTrading: () => Promise.resolve(null),
+    } as never);
     await scheduler.confirm();
 
     expect(confirmPending).toHaveBeenCalledTimes(2);
@@ -147,7 +159,11 @@ describe('the confirm job drains the payable queue', () => {
       return Promise.resolve({ confirmed: 500, failed: 0, held: 0 });
     });
 
-    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads());
+    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads(), {
+      /* The interval drives the drain BUDGET now (0113), so the stub answers
+         the hourly default this spec's timings were written against. */
+      getTrading: () => Promise.resolve(null),
+    } as never);
     await scheduler.confirm();
     vi.useRealTimers();
 

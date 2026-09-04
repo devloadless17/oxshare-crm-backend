@@ -163,31 +163,23 @@ export class TradingSettingsDto {
   maxDemoDeposit: string;
 
   /*
-   * The IB block is GONE from this response (0104): the settlement window, the
-   * accrual start, the revenue basis and the broker cap.
-   *
-   * Commission is configured on the Commission Programmes page. A control on
-   * the Trading settings screen that also changes what every partner earns is a
-   * second place to look when a payout surprises somebody — the same "two
-   * places" problem 0102 removed from the catalogue itself.
-   *
-   * The window and the accrual start read `IB_COMMISSION_HOLD_HOURS` and
-   * `IB_ACCRUAL_START` from the environment, which is where both began.
-   *
-   * ONE IB number is here (0105), and it is a different kind of thing: it
-   * BOUNDS what the Commission Programmes page will accept rather than deciding
-   * what anybody is paid.
+   * `ibMaxLevels` is GONE from this response (0113) — see the write DTO below.
+   * The column survives as the record of what a deployment had configured, and
+   * a number a screen can read but not change is one somebody eventually asks
+   * why they cannot edit.
+   */
+
+  /**
+   * How often commission is paid, in seconds — maturation and payout period.
    */
   @ApiProperty({
-    example: 2,
-    minimum: 1,
-    maximum: 10,
+    example: 3600,
+    minimum: 60,
     description:
-      'How many levels a commission programme’s ladder may reach. Defaults to 2 — the committed ' +
-      'two-level structure (Feature List Rev 9, IB-17). Bounds what may be SAVED: lowering it ' +
-      'leaves existing programmes paying exactly what they paid before.',
+      'Seconds between commission payouts, and how long an accrual matures first. 60 credits a ' +
+      'partner about a minute after the trade closes.',
   })
-  ibMaxLevels: number;
+  ibCommissionIntervalSeconds: number;
 
   /*
    * ── THE TWO PAYOUT CEILINGS ARE NOT REPORTED HERE (0112) ─────────────────
@@ -256,28 +248,44 @@ export class UpdateTradingSettingsDto {
   })
   maxDemoDeposit: string;
 
-  /**
-   * The ladder ceiling — how many levels a commission programme may reach.
+  /*
+   * ── `ibMaxLevels` IS NOT ON THIS FORM ANY MORE (0113) ────────────────────
    *
-   * REQUIRED, like every other field on this form: it is a PUT, so the whole
-   * form travels together and an omitted value is a malformed request rather
-   * than an unchanged setting.
+   * It capped how deep the ladder could go, so adding a third rung meant first
+   * raising a number on a different screen. The IB Levels page is the only
+   * thing that decides depth now — add a rung and it pays.
    *
-   * 1 to 10. The upper bound is the DATABASE's — `ib_program_tiers_depth_range`
-   * and `ib_accruals_depth_range` both stop there — so a higher ceiling would
-   * let an operator configure a ladder whose deepest level fails at INSERT, on
-   * the money path, taking every earner on that trade down with it.
-   *
-   * No zero, unlike the account caps beside it. There, 0 means "stop opening
-   * new ones" and is a state somebody may want; here it would make every
-   * commission-paying programme unsaveable, which is not a decision anybody is
-   * trying to express.
+   * The column is kept as the record of what was configured and nothing writes
+   * it, which is why it is absent here rather than sent as a constant: a PUT
+   * that never mentions a column leaves it alone.
    */
-  @ApiProperty({ example: 2, minimum: 1, maximum: 10 })
+
+  /**
+   * How often commission is paid, in SECONDS — the maturation delay and the
+   * payout period at once.
+   *
+   * ⚠️ A SHORT INTERVAL REMOVES A SAFETY MARGIN. The 24-hour hold this
+   * replaces existed so a bad deposit is caught by the desk's daily rhythm
+   * BEFORE the commission on it is spendable. At 60s a partner is credited
+   * before anybody could review the trade behind it, and a reversal then has to
+   * claw back a balance they may already have moved.
+   *
+   * Floored at 60 rather than 1 for a mechanical reason, not a commercial one:
+   * below a minute the payout run has not finished draining before its next
+   * tick, and stacked runs contend for the same rows. No upper bound — a broker
+   * paying monthly is a decision, not a fault.
+   */
+  @ApiProperty({
+    example: 3600,
+    minimum: 60,
+    description:
+      'Seconds between commission payouts, and how long an accrual matures before it is payable. ' +
+      'One number for both: either alone leaves the other as the real delay. 60 = a partner is ' +
+      'credited about a minute after the trade closes.',
+  })
   @IsInt()
-  @Min(1)
-  @Max(10)
-  ibMaxLevels: number;
+  @Min(60)
+  ibCommissionIntervalSeconds: number;
 
   /*
    * ── THE TWO PAYOUT CEILINGS ARE NOT ON THIS FORM (0112) ──────────────────

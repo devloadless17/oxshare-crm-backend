@@ -199,7 +199,7 @@ export class SettingsService {
       maxLiveAccounts: terms.maxLiveAccounts,
       maxDemoAccounts: terms.maxDemoAccounts,
       maxDemoDeposit: terms.maxDemoDeposit,
-      ibMaxLevels: terms.ibMaxLevels,
+      ibCommissionIntervalSeconds: terms.ibCommissionIntervalSeconds,
       updatedAt: row?.updatedAt.toISOString() ?? null,
       updatedByName: await this.savedBy(row?.updatedBy),
     };
@@ -223,11 +223,12 @@ export class SettingsService {
         maxDemoAccounts: dto.maxDemoAccounts,
         maxDemoDeposit: dto.maxDemoDeposit,
         /*
-         * The ladder ceiling (0105) — a bound on the Commission Programmes
-         * page, not a rule about what anybody is paid. See the column's own
-         * note for why that distinction is what lets it sit here at all.
+         * The commission CADENCE (0113), which replaced the ladder ceiling on
+         * this form. It passes the same test that ceiling did and the four
+         * fields 0103/0104 removed did not: it decides WHEN partners are paid,
+         * never HOW MUCH — the amounts belong to the IB Levels page alone.
          */
-        ibMaxLevels: dto.ibMaxLevels,
+        ibCommissionIntervalSeconds: dto.ibCommissionIntervalSeconds,
         /*
          * ── THE TWO PAYOUT CEILINGS ARE NOT ON THIS FORM (0112) ────────────
          *
@@ -270,7 +271,7 @@ export class SettingsService {
       maxLiveAccounts: row.maxLiveAccounts,
       maxDemoAccounts: row.maxDemoAccounts,
       maxDemoDeposit: row.maxDemoDeposit,
-      ibMaxLevels: row.ibMaxLevels,
+      ibCommissionIntervalSeconds: row.ibCommissionIntervalSeconds,
       updatedAt: row.updatedAt.toISOString(),
       updatedByName: await this.savedBy(row.updatedBy),
     };
@@ -281,15 +282,14 @@ export class SettingsService {
       'maxDemoAccounts',
       'maxDemoDeposit',
       /*
-       * The ladder ceiling (0105). The orphaned notes that stood here belonged
-       * to the four IB fields 0103/0104 removed — the broker cap, the
-       * settlement window, the backlog decision and the revenue basis.
-       *
-       * This one is audited for the same reason they were: widening it widens
-       * what every future trade pays out, and "who raised this to three levels,
-       * and when" is the question asked the day a payout is disputed.
+       * The cadence is audited for a sharper reason than the ceiling it
+       * replaced. Shortening it does not change what anybody is paid — it
+       * removes the window in which a bad trade can be caught BEFORE the
+       * commission on it becomes spendable. "Who set this to sixty seconds,
+       * and when" is the first question asked after a payout that should have
+       * been reviewed.
        */
-      'ibMaxLevels',
+      'ibCommissionIntervalSeconds',
     ] as const) {
       if (previous[field] !== after[field]) {
         changed[field] = { before: previous[field], after: after[field] };

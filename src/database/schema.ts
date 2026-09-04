@@ -1015,28 +1015,42 @@ export const tradingSettings = pgTable(
       .notNull()
       .default('1000000'),
     /**
-     * How many LEVELS a commission programme's ladder may reach (0105).
+     * ── HISTORICAL SINCE 0113. NOTHING READS THIS. ─────────────────────────
      *
-     * Defaults to 2 — Feature List Rev 9, IB-17: "no level beyond L2" — so an
-     * untouched database carries the committed scope.
+     * It capped how deep the commission ladder could go, defaulting to 2
+     * (Feature List Rev 9, IB-17). The IB Levels page is the only thing that
+     * decides that now: add a rung and it pays, remove it and it stops — which
+     * is what the operator asked for, and removes a second screen standing
+     * between them and a third level.
      *
-     * ⚠️ This is NOT a payment rule, and that is why it may sit here when the
-     * four that 0103/0104 removed may not. Those decided what partners are
-     * PAID and competed with the Commission Programmes page for the same job.
-     * This one BOUNDS what that page will accept — it constrains the catalogue
-     * rather than duplicating it.
-     *
-     * It bounds what may be SAVED and nothing else: lowering it stops new
-     * ladders going deeper, and leaves every existing programme paying exactly
-     * what it paid yesterday. An operator adjusting a limit must not silently
-     * restate money that is owed.
-     *
-     * Capped at 10 by CHECK, matching `ib_program_tiers_depth_range` and
-     * `ib_accruals_depth_range`. A ceiling above what the engine can store
-     * would let somebody configure a ladder whose deepest level fails at
-     * INSERT — on the money path, taking every earner on that trade with it.
+     * KEPT rather than dropped so a deployment's previous ceiling stays
+     * legible. This is the third time this particular number has moved (0105
+     * added it, 0107 reshaped it, 0113 retired it), and the column is the only
+     * record of what a broker had configured before.
      */
     ibMaxLevels: integer('ib_max_levels').notNull().default(2),
+    /**
+     * How often commission is PAID — the maturation delay and the payout
+     * period, as ONE number (0113).
+     *
+     * Two clocks used to sit between a closed trade and money in a partner's
+     * wallet, both environment variables and neither on any screen: the hold
+     * window (`IB_COMMISSION_HOLD_HOURS`, 24h) and the job's cron (hourly).
+     * Either alone leaves the other as the real delay — a one-minute run
+     * against a 24h hold still pays nothing for a day — so this drives both.
+     *
+     * ⚠️ THE HOLD WINDOW IS A SAFETY FEATURE AND A SHORT INTERVAL REMOVES IT.
+     * 24h existed so a bad deposit is caught by the desk's daily rhythm BEFORE
+     * the commission on it is spendable. At 60s a partner is paid before anyone
+     * could review the trade, and a reversal then claws back a balance they may
+     * already have moved. Right for testing; a real decision in production,
+     * which is why the admin form says so beside the control.
+     *
+     * Floored at 60 by CHECK: below that a run has not finished draining before
+     * its next tick, and stacked runs contend for the same rows to reach the
+     * outcome one of them would have reached alone.
+     */
+    ibCommissionIntervalSeconds: integer('ib_commission_interval_seconds').notNull().default(3600),
     /**
      * The most one TRADE may cost in total, as a % of the broker's revenue on
      * it — every commission leg in the chain plus the client's rebate (0106).

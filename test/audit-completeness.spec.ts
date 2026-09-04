@@ -307,19 +307,11 @@ describe('recorded: the feature modules', () => {
      * was green for a reason unrelated to the gap it claimed to describe, which
      * is the hazard of `it.fails`: any throw counts.
      *
-     * Levels 1 and 2 are SEEDED, and 2 is as deep as the committed ceiling
-     * allows — so a create has to go one rung further and raise the ceiling
-     * first, exactly as an operator would. Created DISABLED so no other suite's
+     * Levels 1 and 2 are SEEDED, so this creates rung 3. It needed a settings
+     * change first until 0113 removed the ceiling; now the IB Levels page is
+     * the only thing that decides depth. Created DISABLED so no other suite's
      * chain starts paying on a rung this test invented.
      */
-    const raised = await session.put('/v1/admin/settings/trading', {
-      maxLiveAccounts: 5,
-      maxDemoAccounts: 5,
-      maxDemoDeposit: '1000000',
-      ibMaxLevels: 3,
-    });
-    expect([200, 201, 204]).toContain(raised.status);
-
     const res = await session.post('/v1/admin/ib-levels', {
       level: 3,
       name: `Audit Level ${Date.now() % 100000}`,
@@ -378,7 +370,7 @@ describe('recorded: the feature modules', () => {
        * The ladder ceiling (0105) — required for the reason the note below
        * gives: this is a PUT, so every field on the form travels together.
        */
-      ibMaxLevels: 2,
+      ibCommissionIntervalSeconds: 3600,
       /*
        * The two payout CEILINGS are not on this form any more (0112) — they
        * are still stored and still enforced, but nothing here sets them, so

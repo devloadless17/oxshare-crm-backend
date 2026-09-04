@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
@@ -165,7 +164,6 @@ beforeAll(async () => {
       notify: vi.fn().mockResolvedValue(undefined),
       notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
     },
-    new ConfigService(),
     // The payout ceiling (0106) — the real store against the real row, so
     // this reads the shipped default of 100 rather than a stub's opinion.
     new AppSettingsStore(ctx.db),
@@ -189,7 +187,20 @@ beforeEach(async () => {
   /* The window is what stands between "earned" and "spendable"; these cases are
      about WHO is paid, so it is set to zero and confirmation runs immediately.
      The window itself is pinned in `ib-settlement.spec.ts`. */
-  process.env['IB_COMMISSION_HOLD_HOURS'] = '0';
+  /*
+   * The maturation window cannot be switched OFF any more (0113): it is a
+   * setting with a 60-second floor, not `IB_COMMISSION_HOLD_HOURS=0`.
+   *
+   * So these cases BACKDATE their accruals past the window instead of removing
+   * it. That is the better fixture anyway — it exercises the real predicate
+   * (`created_at <= now() - interval`) rather than collapsing it to a
+   * comparison against zero, and the window's own behaviour stays pinned in
+   * `commission-hold-window.spec.ts`.
+   */
+  await ctx.db.execute(sql`
+      INSERT INTO trading_settings (id, ib_commission_interval_seconds) VALUES (true, 60)
+      ON CONFLICT (id) DO UPDATE SET ib_commission_interval_seconds = 60
+    `);
 });
 
 describe('a hybrid programme produces two legs from one trade', () => {
@@ -243,6 +254,8 @@ describe('confirmation pays each leg to the right person', () => {
     await setTerms({ tiers: ['10'], rebateRate: '5' });
     await accrue();
 
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     const result = await commissions.confirmPending();
     expect(result.confirmed).toBe(2);
 
@@ -262,6 +275,8 @@ describe('confirmation pays each leg to the right person', () => {
   it('records the client’s leg as a rebate in the ledger', async () => {
     await setTerms({ tiers: ['10'], rebateRate: '5' });
     await accrue();
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     await commissions.confirmPending();
 
     const { rows } = await ctx.db.execute<{ entry_type: string; amount: string }>(sql`
@@ -278,7 +293,11 @@ describe('confirmation pays each leg to the right person', () => {
     await setTerms({ tiers: ['10'], rebateRate: '5' });
     await accrue();
 
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     await commissions.confirmPending();
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     const second = await commissions.confirmPending();
 
     expect(second.confirmed).toBe(0);
@@ -312,6 +331,8 @@ describe('the mode decides which legs exist at all', () => {
     expect(await accrue()).toBe(1);
     expect((await accrualRows()).map((r) => r.kind)).toEqual(['rebate']);
 
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     await commissions.confirmPending();
     expect(await walletsOf(partnerId)).toEqual([]);
     expect(await walletsOf(clientId)).toEqual([
