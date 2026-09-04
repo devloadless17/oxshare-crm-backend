@@ -134,13 +134,34 @@ export class EmailService {
     return this.configService.get<string>('PORTAL_URL', 'http://localhost:3000');
   }
 
+  /**
+   * Print an actionable link to the log — LOCAL TESTING ONLY.
+   *
+   * `send` above logs the recipient and never the URL (R-6.3), which is the
+   * right default and stays the default: these links ARE credentials. But SMTP
+   * is admin-configured, so a developer with no relay gets nothing at all, and
+   * fixture addresses like `@oxtest.local` could not receive it if there were
+   * one. The alternative people reach for is reading the token out of the
+   * database, and that is a habit worth not forming.
+   *
+   * Gated on `LOG_EMAIL_LINKS`, which `env.validation.ts` REFUSES TO START with
+   * in production. Called beside the real send rather than instead of it, so
+   * enabling this changes what is logged and nothing about what is delivered.
+   */
+  private logLink(what: string, to: string, url: string): void {
+    if (!this.configService.get<boolean>('LOG_EMAIL_LINKS')) return;
+    this.logger.warn(`[LOG_EMAIL_LINKS] ${what} for ${to}: ${url}`);
+  }
+
   async sendVerificationEmail(email: string, token: string): Promise<void> {
     const url = `${this.portalUrl()}/auth/verify-email?token=${token}`;
+    this.logLink('verification link', email, url);
     await this.send(email, 'verification email', verifyEmail(url));
   }
 
   async sendPasswordResetEmail(email: string, token: string): Promise<void> {
     const url = `${this.portalUrl()}/auth/reset-password?token=${token}`;
+    this.logLink('password reset link', email, url);
     await this.send(email, 'password reset email', passwordReset(url));
   }
 
@@ -389,6 +410,7 @@ export class EmailService {
    */
 
   async sendAdminInviteEmail(email: string, name: string, inviteUrl: string): Promise<void> {
+    this.logLink('admin invite link', email, inviteUrl);
     await this.send(email, 'admin invite email', adminInvite(name, inviteUrl));
   }
 
@@ -399,6 +421,7 @@ export class EmailService {
     initiatedBy: string,
     expiresInMinutes: number,
   ): Promise<void> {
+    this.logLink('admin password reset link', email, resetUrl);
     await this.send(
       email,
       'admin password reset email',
