@@ -6,6 +6,7 @@ import type { Db } from '../../database/db';
 import { transfers } from '../../database/schema';
 import { TransferExecutor } from './transfer-executor.service';
 import { JobLeaseService } from '../../common/scheduling/job-lease.service';
+import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 
 /**
  * Finishes transfers that were left pending, so a client never has to ask.
@@ -142,17 +143,33 @@ export class TransferResumeScheduler {
       if (settled > 0) this.logger.log(`Settled ${settled} previously pending transfer(s)`);
 
       /*
-       * Anything old enough to have outlived a normal outage is called out by
-       * name. It is NOT failed — see the class note — but a transfer pending for
-       * hours means MT5 is refusing it for a reason the executor cannot see, and
-       * an operator needs to look at that row rather than wait for a job that
-       * will keep trying for ever.
+       * ── A STUCK TRANSFER RAISES AN ALARM, IT DOES NOT JUST LOG ───────────
+       *
+       * This wrote a warning after SIX HOURS and that was the entire response.
+       * Nothing paged, nothing notified, and the client — who is watching
+       * "Processing" on their own money the whole time — was told nothing at
+       * all. A log line nobody is tailing is not a response to somebody's
+       * $1,000 being in an unknown state.
+       *
+       * It is still NOT failed, and that part was always right: the executor
+       * cannot tell "MT5 refused" from "MT5 never answered", and failing a
+       * transfer MT5 actually applied would hand back money that has already
+       * moved. The row waits for a person; what changes is that a person is
+       * now told to come.
        */
       const stale = stuck.filter((row) => Date.now() - row.createdAt.getTime() > STALE_MS);
       if (stale.length > 0) {
-        this.logger.warn(
-          `${stale.length} transfer(s) have been pending for over ${STALE_MS / 3_600_000}h and ` +
-            `need a human: ${stale.map((row) => row.id).join(', ')}`,
+        raiseAlert(
+          this.logger,
+          ALERT_KINDS.TRANSFER_STUCK,
+          'page',
+          `${stale.length} transfer(s) have been pending for over ${STALE_MS / 60_000} minutes ` +
+            'and are not clearing on their own. No money has moved — the wallet is debited only ' +
+            'once MT5 confirms — but a client is watching a spinner. The usual cause is the MT5 ' +
+            `bridge having lost its session; check GET /admin/live on it. Transfers: ${stale
+              .map((row) => row.id)
+              .join(', ')}`,
+          { count: stale.length, oldestId: stale[0]?.id },
         );
       }
     } catch (error) {
@@ -181,5 +198,15 @@ const GRACE_MS = 30_000;
  */
 const BATCH = 10;
 
-/** Past this, a pending transfer is a person's problem rather than a retry's. */
-const STALE_MS = 6 * 60 * 60 * 1000;
+/**
+ * Past this, a pending transfer is a person's problem rather than a retry's.
+ *
+ * FIFTEEN MINUTES, down from six hours. Six was chosen against "how long might
+ * a normal outage last" and answered the wrong question: the resume job retries
+ * every minute, so anything still pending after fifteen is not waiting out a
+ * blip — it is hitting something that will not clear by itself, and the next
+ * five and three-quarter hours add nothing but a client watching a spinner.
+ *
+ * Long enough that an ordinary bridge restart passes without paging anybody.
+ */
+const STALE_MS = 15 * 60 * 1000;
