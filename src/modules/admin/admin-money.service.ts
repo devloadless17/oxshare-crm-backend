@@ -13,6 +13,7 @@ import {
   WITHDRAWAL_SORT_COLUMNS,
   type AdminMovementsFilter,
 } from '../payments/transactions.service';
+import { TransfersService } from '../payments/transfers.service';
 import { sortKey, sortOrder } from '../../common/sorting';
 import { applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
 import { WalletService } from '../wallet/wallet.service';
@@ -48,6 +49,12 @@ export class AdminMoneyService {
 
   constructor(
     private readonly transactions: TransactionsService,
+    /*
+     * For `abandonTransfer` alone — the one admin action that touches a
+     * wallet-to-account movement. Everything else about transfers belongs to
+     * the client's own path or to the resume job.
+     */
+    private readonly transfers: TransfersService,
     private readonly wallets: WalletService,
     private readonly rejectionReasons: RejectionReasonsStore,
     private readonly users: UsersStore,
@@ -876,4 +883,109 @@ export class AdminMoneyService {
    * changed the L1 share" must be answerable. They return with the MT5 bridge;
    * `ib_levels` is the configuration that replaced them for the placement half.
    */
+
+  /**
+   * How many transfers are stuck, and the oldest one's id.
+   *
+   * ## Why a count at all
+   *
+   * `TransferResumeScheduler` already detects this and raises
+   * `money.transfer_stuck` at `page` severity. That alert goes to a LOG LINE and
+   * nowhere else — §12.3 deliberately stops short of choosing a paging provider —
+   * so on this deployment it reaches a terminal nobody is watching, and the
+   * operator who could act on it has no way to know.
+   *
+   * The Financial table has listed these transfers all along and now carries the
+   * release action, but nothing gives an operator a REASON to go and look: a
+   * stuck transfer renders as one more pending row among settled history. This
+   * is what makes the banner above that table possible.
+   *
+   * Delegated to `TransfersService`, which owns the table and the staleness
+   * threshold. This class holds no `db` of its own by design.
+   */
+  async stuckTransfers(actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'transactions.view', 'see stuck transfers');
+    return await this.transfers.countStuck(actor.clientScope);
+  }
+
+  /**
+   * ABANDON a transfer the bridge left in flight, releasing its hold.
+   *
+   * ## Why this needs a person, and cannot be a retry
+   *
+   * `TransferExecutor` fails a transfer when MT5 REFUSES it, and leaves it
+   * pending when MT5 never answered — an unreachable bridge, a session dropped
+   * mid-call. That distinction is the whole reason the resume job only ever
+   * retries: it cannot tell "the movement did not happen" from "the movement
+   * happened and the acknowledgement was lost", and failing the second would
+   * release money that has already moved and let the client spend it twice.
+   *
+   * Only a human reading MT5's own record can answer that. This is the button
+   * they press once they have.
+   *
+   * ## Until somebody presses it, the money is held INDEFINITELY
+   *
+   * A `wallet_to_account` transfer places a hold at request time and debits on
+   * settle, so a stuck one leaves the balance intact and the spendable amount
+   * at zero. Nothing expires it — the client sees "Processing" and cannot use
+   * their own money, for as long as nobody looks. That was the state this
+   * repairs, and the only previous route to it was hand-written SQL against a
+   * money table.
+   *
+   * ## The reason is REQUIRED and reaches the client
+   *
+   * It lands in `failure_reason`, which the portal renders beside the failed
+   * row. A client whose transfer is reversed hours later is owed the sentence
+   * explaining why, and an operator who had to check with the broker is the
+   * only one who can write it.
+   *
+   * `TransfersService.fail` does the work — the same path the executor takes on
+   * a refusal — so the hold release and the state change stay in one
+   * transaction and cannot disagree.
+   */
+  async abandonTransfer(id: string, actor: AuthenticatedAdmin, reason: string) {
+    assertActorCan(actor, 'transfers.abandon', 'abandon a stuck transfer');
+
+    const transfer = await this.transfers.findById(id);
+    if (!transfer) throw new NotFoundError('That transfer does not exist.');
+
+    /*
+     * SCOPE, checked against the transfer's owner. A scoped desk may only act
+     * on their own clients, and an out-of-scope transfer must 404 exactly like
+     * a missing one rather than confirming it exists.
+     */
+    await this.visibility.assertVisible(transfer.userId, actor.clientScope);
+
+    /*
+     * Refused unless it is genuinely stuck. `fail` already refuses a
+     * non-pending transfer, but the message it gives is about state machines;
+     * this one is about the decision, and it is the message an operator sees
+     * when they try to abandon something that settled while they were checking.
+     */
+    if (transfer.state !== 'pending') {
+      throw new ValidationError(
+        `That transfer is already ${transfer.state}, so there is nothing to release. ` +
+          'It resolved while you were looking at it.',
+      );
+    }
+
+    const failed = await this.transfers.fail(id, reason.trim());
+
+    /*
+     * Audited with BOTH sides and the reason, because this is the one operation
+     * on the platform that decides a movement did not happen on evidence the
+     * system cannot see. "Who released this, when, and what did the broker
+     * say" is the entire record of that decision.
+     */
+    this.audit.record(actor.id, 'transfer.abandon', 'transfer', id, {
+      userId: transfer.userId,
+      amount: transfer.amount,
+      currency: transfer.currency,
+      direction: transfer.direction,
+      pendingSince: transfer.createdAt,
+      reason: reason.trim(),
+    });
+
+    return failed;
+  }
 }

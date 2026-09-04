@@ -4,6 +4,12 @@ import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
 import { tradingAccounts, transfers, users } from '../../database/schema';
 import {
+  UNRESTRICTED,
+  clientScopePredicate,
+  type ClientScope,
+} from '../../common/security/client-scope';
+import { TRANSFER_STALE_MS } from './transfer-staleness';
+import {
   AuthorizationError,
   NotFoundError,
   ValidationError,
@@ -608,6 +614,60 @@ export class TransfersService {
    * check here on purpose: the only caller is server-side and acts on a row it
    * was handed, and adding one would imply this is reachable from a request.
    */
+  /**
+   * How many transfers have been PENDING long enough to need a person.
+   *
+   * ## The gap this fills
+   *
+   * `TransferResumeScheduler` detects exactly this condition and raises
+   * `money.transfer_stuck` at `page` severity — into a LOG LINE and nowhere
+   * else, because §12.3 deliberately stops short of choosing a paging provider.
+   * On a deployment with no log drain that is a terminal nobody is watching, so
+   * the one person who could act on it never finds out.
+   *
+   * The Financial table has listed these rows all along and now carries the
+   * release action. What was missing is a REASON to go and look: a stuck
+   * transfer renders as one more pending row among settled history.
+   *
+   * ## The threshold is the SCHEDULER's, imported rather than restated
+   *
+   * `TRANSFER_STALE_MS`. Two copies that drift would either show a banner for
+   * transfers nothing is alerting on, or — the failure that matters — stay
+   * silent through a page.
+   *
+   * ## Scoped
+   *
+   * A desk sees only their own clients' stuck transfers, so the banner cannot
+   * report a number they have no way to act on.
+   */
+  async countStuck(scope?: ClientScope) {
+    const cutoff = new Date(Date.now() - TRANSFER_STALE_MS);
+
+    const [row] = await this.db
+      .select({
+        count: sql<number>`count(*)::int`,
+        oldestAt: sql<Date | null>`min(${transfers.createdAt})`,
+      })
+      .from(transfers)
+      .where(
+        and(
+          eq(transfers.state, 'pending'),
+          lt(transfers.createdAt, cutoff),
+          clientScopePredicate(scope ?? UNRESTRICTED, transfers.userId),
+        ),
+      );
+
+    return {
+      count: row?.count ?? 0,
+      oldestAt: row?.oldestAt ?? null,
+      /*
+       * Sent so the copy can say "over 15 minutes" without the frontend keeping
+       * its own copy of a number this side owns.
+       */
+      thresholdMinutes: TRANSFER_STALE_MS / 60_000,
+    };
+  }
+
   async findById(id: string) {
     return await this.findOne(id);
   }

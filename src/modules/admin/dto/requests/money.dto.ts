@@ -36,6 +36,32 @@ export class WithdrawalRejectDto {
   reasonId?: string;
 }
 
+/**
+ * Why a stuck transfer is being released.
+ *
+ * REQUIRED, and not for tidiness. This operation states that a movement did NOT
+ * happen, on evidence the system cannot see — somebody read MT5's own record.
+ * The reason is the only place that evidence is written down, it reaches the
+ * CLIENT on the failed row, and it is what a later dispute is settled from.
+ *
+ * Long enough for a real sentence: "checked deal history on 6480824, the 1,000
+ * never arrived" is the useful form, and a 500-character bound is generous for
+ * it while stopping a paste of a stack trace.
+ */
+export class AbandonTransferDto {
+  @ApiProperty({
+    minLength: 10,
+    maxLength: 500,
+    example: 'Checked MT5 deal history for 6480824 — the 1,000 never reached the account.',
+    description:
+      'What the broker’s record showed. Reaches the client on the failed transfer, and is the ' +
+      'audit trail for a decision nothing in this system could make on its own.',
+  })
+  @IsString()
+  @Length(10, 500)
+  reason: string;
+}
+
 export class SettleWithdrawalDto {
   /**
    * The payment provider's own reference. Backs `UNIQUE(provider, provider_ref)`,

@@ -50,6 +50,22 @@ export const ALERT_KINDS = {
    * out — `POST /admin/ib/accruals/:id/reverse` is how they act.
    */
   COMMISSION_CLAWBACK_REQUIRED: 'money.commission_clawback_required',
+  /**
+   * A client's transfer has been PENDING long enough that something is wrong.
+   *
+   * The money has not moved — the wallet is debited only once MT5 confirms — so
+   * nothing is lost. What is happening is worse in one specific way: the client
+   * is looking at "Processing" and has been for a while, with no way to tell
+   * whether their money is coming back or going through, and nothing in the
+   * system was telling anybody either. It logged a warning after SIX HOURS and
+   * that was the whole response.
+   *
+   * The usual cause is the MT5 bridge having lost its session: every attempt
+   * throws MT_RET_ERR_CONNECTION and the resume job retries into a wall. That
+   * is exactly the state an operator needs to be told about, because the fix is
+   * on the MT5 side and nothing here can reach it.
+   */
+  TRANSFER_STUCK: 'money.transfer_stuck',
   /** A rotated refresh token was presented again: a credential has leaked. */
   REFRESH_TOKEN_REUSE: 'auth.refresh_reuse',
   /** A signed webhook failed verification — someone is probing an integration endpoint. */
@@ -152,6 +168,10 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.COMMISSION_QUEUE_STALLED]: {
     severity: 'notify',
     rule: 'Raised while deals sit un-accruable: more than 10 the engine REFUSED, or more than a batch (200) belonging to unlinked MT5 logins. Repeats hourly while it holds, and its DISAPPEARANCE is the resolution. Notify rather than page because both fixes are working-hours actions by a human — correct a rate, or link an account — and neither is faster at 3am. Escalate if it survives a working day: every hour it stands is commission earned and unpaid.',
+  },
+  [ALERT_KINDS.TRANSFER_STUCK]: {
+    severity: 'page',
+    rule: 'Any transfer pending for more than 15 minutes. PAGE rather than notify, unlike the other money alerts here: a client is watching a spinner on their own money right now, and every other alert in this file is about something a person can look at tomorrow. Nothing is lost — the wallet is debited only after MT5 confirms — but "your $1,000 is somewhere" is not a state to leave somebody in overnight. The usual cause is the MT5 bridge having lost its session, so check GET /admin/live on the bridge first; the resume job retries every minute on its own and clears these the moment MT5 answers.',
   },
   [ALERT_KINDS.REFRESH_TOKEN_REUSE]: {
     severity: 'page',

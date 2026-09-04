@@ -35,6 +35,7 @@ import {
 } from '@nestjs/swagger';
 import { WITHDRAWAL_SORT_COLUMNS } from '../payments/transactions.service';
 import { TransactionDto } from '../payments/dto/withdrawal.dto';
+import { TransferDto } from '../payments/dto/transfer.dto';
 import {
   IDEMPOTENCY_HEADER,
   IdempotencyInterceptor,
@@ -49,11 +50,13 @@ import {
   CreditWalletDto,
   OpenWalletDto,
   SettleWithdrawalDto,
+  AbandonTransferDto,
   WithdrawalRejectDto,
 } from './dto/requests/money.dto';
 import {
   LedgerListResponseDto,
   ReconciliationReportDto,
+  StuckTransfersDto,
   WithdrawalListResponseDto,
   WithdrawalRowDto,
 } from './dto/responses.dto';
@@ -626,4 +629,105 @@ export class AdminMoneyController {
    * open — L1/L2 shares, the ladder, the settlement window — and they return
    * with the MT5 bridge. `/admin/ib-levels` covers the terms half today.
    */
+
+  /**
+   * How many transfers are stuck, for the banner on the Financial screen.
+   *
+   * The condition is already detected — `TransferResumeScheduler` raises
+   * `money.transfer_stuck` at `page` severity — but that alert is a log line and
+   * §12.3 deliberately stops short of choosing a paging provider, so on this
+   * deployment nobody sees it. This is how the console does.
+   *
+   * A COUNT rather than a list: the rows themselves are already on the Financial
+   * table, and a second place to render them is a second place to keep honest.
+   * What was missing was a reason to go and look.
+   *
+   * `transactions.view` — whoever can see the movement list can be told that
+   * part of it needs attention. Acting on one still requires `transfers.abandon`.
+   */
+  @Get('transfers/stuck')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('transactions.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'How many transfers have been pending long enough to need a person',
+    description:
+      'Counts transfers still pending past the resume scheduler’s own staleness threshold — the ' +
+      'same condition that raises the `money.transfer_stuck` alert. No money has moved on any of ' +
+      'them: a wallet is debited only once MT5 confirms.',
+  })
+  @ApiOkResponse({ type: StuckTransfersDto })
+  @ScopedToClients('Counts only the caller’s own clients’ transfers.')
+  stuckTransfers(@Req() req: Request & { admin: AuthenticatedAdmin }) {
+    return this.money.stuckTransfers(req.admin);
+  }
+
+  /**
+   * Release a transfer the MT5 bridge left in flight.
+   *
+   * ## The state this repairs
+   *
+   * A `wallet_to_account` transfer HOLDS the money at request time and debits
+   * it on settle. When the bridge loses its session mid-call the transfer stays
+   * pending — correctly, because the executor cannot tell "MT5 refused" from
+   * "MT5 never answered" — and nothing ever expires that hold. The client sees
+   * "Processing" and cannot spend their own money, indefinitely, and the resume
+   * job retries into the same wall every minute.
+   *
+   * Until this route existed the only repair was hand-written SQL against a
+   * money table.
+   *
+   * ## Why it is a person's call and not a timeout
+   *
+   * Releasing a transfer MT5 ACTUALLY APPLIED would let the client spend the
+   * same money twice. Only somebody reading the broker's own deal history can
+   * rule that out, which is why the reason is required and why this is a
+   * deliberate action rather than something the scheduler does after an hour.
+   */
+  @Post('transfers/:id/abandon')
+  /*
+   * `wallets`, because that is what a viewer sees change: the hold is released
+   * and the spendable balance goes up. The transfer's own state change rides
+   * along on the same refresh.
+   */
+  @AnnouncesChange('wallets')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended action, reused only when retrying that same one. The state ' +
+      'guard makes a REPLAYED CAUSE a no-op — a second abandon finds the transfer already ' +
+      'failed — and this makes a replayed REQUEST one too (PLATFORM-CONVENTIONS R-5.2).',
+  })
+  @UseGuards(PermissionsGuard)
+  /*
+   * `withdrawals.settle`'s sibling, granted to the same people by 0115. That
+   * permission means "decide money did or did not move, on evidence outside
+   * this system", which is exactly this judgement. Deliberately NOT
+   * `withdrawals.approve`: approving decides whether money SHOULD move, and
+   * this states whether it DID.
+   */
+  @RequirePermissions('transfers.abandon')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Release a stuck transfer — frees the hold and tells the client why',
+    description:
+      'For a transfer the MT5 bridge left pending: the movement never reached the trading ' +
+      'server, so the hold is released and the money becomes spendable again. Refuses anything ' +
+      'that is not still pending.\n\n' +
+      '⚠️ Only after checking the broker’s own record. If MT5 DID apply the movement, releasing ' +
+      'the hold lets the client spend money that has already left — which is the one thing the ' +
+      'executor refuses to guess at, and the reason this is a person’s decision.',
+  })
+  @ApiOkResponse({ type: TransferDto })
+  @ScopedToClients('Checks the transfer’s owner; out-of-scope 404s like a missing one.')
+  @Audited('transfer.abandon')
+  abandonTransfer(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: AbandonTransferDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.money.abandonTransfer(id, req.admin, dto.reason);
+  }
 }

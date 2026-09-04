@@ -144,29 +144,25 @@ const envSchema = z
     REDIS_URL: z.string().url().optional(),
 
     /*
-     * ── Partner commission payout ───────────────────────────────────────────
+     * ── Partner commission payout: NOT CONFIGURED HERE ──────────────────────
      *
-     * Both optional, and the defaults are the safe ones: hold for a day, run
-     * hourly. Declared here so `npm start` fails on a malformed cron rather
-     * than booting a scheduler that never fires — a payout job silently not
-     * running is the failure nobody notices until a partner asks.
+     * `IB_COMMISSION_HOLD_HOURS` and `IB_COMMISSION_CONFIRM_CRON` were declared
+     * and validated here long after anything read them. 0113 moved the whole
+     * cadence onto `trading_settings.ib_commission_interval_seconds` — the "Pay
+     * commission every" control on the Trading settings tab — and
+     * `CommissionService` reads that; `IB_DEAL_ACCRUAL_CRON` followed in 0114
+     * so that both halves of the pipeline are configured in one place instead
+     * of half a form and half a deploy.
      *
-     * HOLD_HOURS stays a STRING on purpose. The service parses it and falls
-     * back to the default with a warning on anything it cannot read, because
-     * the failure mode of a typo must not be "pay every commission instantly";
-     * coercing here would turn that judgement into a boot crash instead.
+     * Removing them is not tidying. A variable that boots, validates, and is
+     * read by nothing is worse than absent: it is set in a real `.env`,
+     * somebody changes it to alter a payout schedule, the app accepts it
+     * without complaint, and the schedule does not move. The next person
+     * debugging why has a validated setting that says it is in force.
+     *
+     * ⚠️ Deliberately NOT re-added as a fallback for the setting. Two sources
+     * for one cadence is the disagreement 0113 existed to end.
      */
-    IB_COMMISSION_HOLD_HOURS: z
-      .string()
-      .regex(/^\d+$/, 'IB_COMMISSION_HOLD_HOURS must be a whole number of hours, e.g. 24')
-      .optional(),
-    IB_COMMISSION_CONFIRM_CRON: z
-      .string()
-      .regex(
-        /^(\S+\s+){4,5}\S+$/,
-        'IB_COMMISSION_CONFIRM_CRON must be a cron expression, e.g. "0 0 */4 * * *"',
-      )
-      .optional(),
     /*
      * How often ingested MT5 deals are turned into accruals. Every minute by
      * default, and validated here for the reason stated above: a typo that
