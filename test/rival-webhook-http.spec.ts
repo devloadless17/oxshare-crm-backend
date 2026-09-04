@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { ConfigService } from '@nestjs/config';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
 import { startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
@@ -64,6 +65,24 @@ function depositEvent(externalId: string, kind: string): string {
   });
 }
 
+/*
+ * ⚠️ THE "not configured" CASE HAS TO BE MADE TRUE, not assumed.
+ *
+ * `RivalConfigService.resolve()` falls back to the ENVIRONMENT when no
+ * settings row exists — deliberately, as the development floor. So on a
+ * machine whose `.env` carries real RIVAL_BASE_URL/RIVAL_API_KEY, Rival IS
+ * configured, the first case's request reached signature verification, and it
+ * answered 401 where the test expects 503.
+ *
+ * That made this file fail for every developer holding live credentials and
+ * pass in CI, which has none — the shape that teaches people to ignore a red
+ * suite. The variables are removed before the app boots (ConfigService reads
+ * them at that moment) and restored afterwards. Every later case configures
+ * Rival through the settings ROW, which takes precedence over the environment
+ * anyway, so nothing else in this file changes.
+ */
+const RIVAL_ENV_KEYS = ['RIVAL_BASE_URL', 'RIVAL_API_KEY', 'RIVAL_WEBHOOK_KEY'];
+
 beforeAll(async () => {
   fakeRival = createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
@@ -126,6 +145,37 @@ async function configureRival(overrides: { webhookKey?: string | null } = {}): P
 }
 
 describe('before any configuration exists', () => {
+  /*
+   * The ENVIRONMENT is silenced for this case, and only this case.
+   *
+   * `resolve()` falls back to RIVAL_BASE_URL/RIVAL_API_KEY when no settings
+   * row exists — the deliberate development floor. So on a machine whose
+   * `.env` holds real credentials Rival IS configured, the request reached
+   * signature verification, and this answered 401 where it expects 503. It
+   * failed for every developer with live credentials and passed in CI, which
+   * has none: the shape that teaches people to ignore a red suite.
+   *
+   * Deleting the variables before boot does not work — ConfigModule re-reads
+   * the `.env` FILE — so the lookup itself is stubbed. That stubs the
+   * ENVIRONMENT, not the code under test: `resolve()`, the guard and the
+   * handler all run for real, and the assertion is still that an unconfigured
+   * deployment answers a RETRYABLE status rather than a permanent 4xx that
+   * would make Rival drop a payout event delivered mid-setup.
+   */
+  beforeAll(() => {
+    const config = ctx.app.get(ConfigService);
+    const real = config.get.bind(config);
+    vi.spyOn(config, 'get').mockImplementation((key: string) =>
+      RIVAL_ENV_KEYS.includes(key) ? undefined : real(key),
+    );
+    ctx.app.get(RivalConfigService).invalidate();
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
+    ctx.app.get(RivalConfigService).invalidate();
+  });
+
   it('answers 503 — retryable, so an event delivered mid-setup survives', async () => {
     const res = await signedPost(depositEvent('111', 'completed'));
     expect(res.status).toBe(503);
