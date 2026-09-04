@@ -298,7 +298,55 @@ export interface LevelTerms {
 }
 
 /** How one leg is priced — 0111. */
-export type PayoutMode = 'percent' | 'per_lot';
+export type PayoutMode = 'percent' | 'per_lot' | 'share_of_parent';
+
+/**
+ * How deep a chain of `share_of_parent` rungs may resolve — 0114.
+ *
+ * A share reads the rung ABOVE, which may itself be a share. The recursion is
+ * bounded by the ladder's own height and a ladder cannot contain a cycle (rungs
+ * are integers and each reads a strictly smaller one), so this cannot loop.
+ * It exists to make that reasoning explicit rather than implicit, and to stop a
+ * pathological ladder costing a deep walk on the money path.
+ */
+const MAX_SHARE_CHAIN = 10;
+
+/**
+ * What one lot earns the holder of a rung, following `share_of_parent` upward.
+ *
+ * A share is a percentage of the rate on the level DIRECTLY ABOVE — level N
+ * reads level N-1 — and NOT of the next earner in the chain. Those differ
+ * whenever a rung is unconfigured or a partner is suspended, and reading the
+ * chain would make one partner's rate depend on which of their ancestors was
+ * active that day. A rate card has to be quotable without knowing the tree.
+ *
+ * Returns `undefined` when the share resolves to nothing payable: level 1 has
+ * no rung above it, an ancestor rung is missing, or the rung it lands on is a
+ * `percent` one — a percentage of broker revenue is not a per-lot figure, so
+ * there is no honest number to take a share OF.
+ */
+function perLotRateFor(
+  level: LevelTerms,
+  levels: Map<number, LevelTerms>,
+  depth = 0,
+): Decimal | undefined {
+  if (depth >= MAX_SHARE_CHAIN) return undefined;
+
+  if (level.commissionMode === 'per_lot') {
+    return toDecimal(level.commissionAmountPerLot ?? '0');
+  }
+
+  if (level.commissionMode !== 'share_of_parent') return undefined;
+
+  const parent = levels.get(level.level - 1);
+  if (!parent) return undefined;
+
+  const parentRate = perLotRateFor(parent, levels, depth + 1);
+  if (parentRate === undefined) return undefined;
+
+  /* A percentage OF the parent's per-lot rate: 30% of $10 is $3. */
+  return parentRate.times(toDecimal(level.commissionRate)).dividedBy(100);
+}
 
 export interface ProgramTerms {
   id: string;
@@ -634,8 +682,22 @@ export function calculate(
      * be positive, because that requirement is a percentage concept: a trade
      * earning the broker nothing still owes a per-lot partner their amount.
      */
-    if (level.commissionMode === 'per_lot') {
-      const perLot = toDecimal(level.commissionAmountPerLot ?? '0');
+    /*
+     * `share_of_parent` resolves to a PER-LOT rate and is paid on the same
+     * path — 30% of the rung above's $10 is $3 a lot, which is a per-lot
+     * figure in every way that matters to the ledger. Sharing the branch keeps
+     * one arithmetic for one kind of number.
+     */
+    if (level.commissionMode === 'per_lot' || level.commissionMode === 'share_of_parent') {
+      const perLot = perLotRateFor(level, levels);
+
+      if (perLot === undefined) {
+        skipped.push(
+          `level ${level.level} is a share of the level above, which is not configured as a ` +
+            'per-lot rate',
+        );
+        continue;
+      }
 
       if (!perLot.greaterThan(0)) {
         skipped.push(`level ${level.level} pays nothing per lot`);
@@ -655,7 +717,13 @@ export function calculate(
         depth: entry.depth,
         levelId: level.id,
         programId: entry.programId,
-        rateValue: level.commissionAmountPerLot ?? '0',
+        /*
+         * The RESOLVED rate, not the configured percentage. A `share_of_parent`
+         * row storing "30" would be unreadable later — 30 of what? — while the
+         * $3 it resolved to is the number that produced the amount and the one
+         * a disputed payout is settled from.
+         */
+        rateValue: money(perLot),
         /*
          * The VOLUME, not the revenue. `baseAmount` records what the figure was
          * computed against, and writing a revenue this amount was never derived

@@ -11830,6 +11830,11 @@
             "type": "string",
             "example": "Main Partner"
           },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "What this tier is for, in the desk’s own words. Nothing computes with it."
+          },
           "enabled": {
             "type": "boolean",
             "description": "A disabled rung pays nobody standing on it. Disabling is refused while partners are there — see the service."
@@ -11838,7 +11843,8 @@
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ],
             "description": "How the PARTNER’s leg is priced."
           },
@@ -11857,7 +11863,8 @@
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ],
             "description": "How the CLIENT’s rebate is priced."
           },
@@ -11897,6 +11904,7 @@
           "id",
           "level",
           "name",
+          "description",
           "enabled",
           "commissionMode",
           "commissionRate",
@@ -11944,11 +11952,17 @@
             "minLength": 1,
             "maxLength": 80
           },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000
+          },
           "commissionMode": {
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ],
             "default": "percent"
           },
@@ -11964,7 +11978,8 @@
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ],
             "default": "percent"
           },
@@ -12002,11 +12017,17 @@
             "minLength": 1,
             "maxLength": 80
           },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000
+          },
           "commissionMode": {
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ]
           },
           "commissionRate": {
@@ -12019,7 +12040,8 @@
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ]
           },
           "rebateRate": {

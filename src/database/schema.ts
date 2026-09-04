@@ -3162,7 +3162,22 @@ export const ibProgramModeEnum = pgEnum('ib_program_mode', [
  * "dynamic, not a fixed per-lot figure" and FR-IB-16 calls the method
  * spread-based. It exists on an explicit business decision — see 0111.
  */
-export const ibPayoutModeEnum = pgEnum('ib_payout_mode', ['percent', 'per_lot']);
+/**
+ * How a commission or rebate leg is priced.
+ *
+ *   `percent`          a share of BROKER REVENUE — see `revenueBasis`.
+ *   `per_lot`          money for each standard lot, indifferent to what the
+ *                      trade earned.
+ *   `share_of_parent`  a percentage of the rate on the level DIRECTLY ABOVE —
+ *                      0114, and what "the sub-partner takes 30% of the main
+ *                      partner's $10" actually means.
+ *
+ * The third is a mode rather than a fourth `revenueBasis` because it is not a
+ * share of anything the broker earned: it is derived from another level's
+ * configuration and exists whether or not the trade made money. `per_lot` set
+ * the precedent by being priced from volume rather than revenue.
+ */
+export const ibPayoutModeEnum = pgEnum('ib_payout_mode', ['percent', 'per_lot', 'share_of_parent']);
 
 export const ibRevenueBasisEnum = pgEnum('ib_revenue_basis', [
   /** MT5's charged commission + swap. The default, and what has always shipped. */
@@ -3209,6 +3224,8 @@ export const ibLevels = pgTable(
      */
     level: integer('level').notNull().unique(),
     name: varchar('name', { length: 80 }).notNull(),
+    /** What this tier is FOR, in the desk's words. Nothing computes with it. */
+    description: text('description'),
     /**
      * Disabling stops a level paying without deleting the terms that explain
      * accruals already written against it.

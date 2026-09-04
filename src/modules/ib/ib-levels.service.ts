@@ -116,6 +116,7 @@ export class IbLevelsService {
         id: ibLevels.id,
         level: ibLevels.level,
         name: ibLevels.name,
+        description: ibLevels.description,
         enabled: ibLevels.enabled,
         commissionMode: ibLevels.commissionMode,
         commissionRate: ibLevels.commissionRate,
@@ -242,6 +243,7 @@ export class IbLevelsService {
       .values({
         level: dto.level,
         name: dto.name,
+        description: dto.description ?? null,
         commissionMode: commission.mode,
         commissionRate: commission.rate,
         commissionAmountPerLot: commission.amountPerLot,
@@ -314,6 +316,8 @@ export class IbLevelsService {
       .update(ibLevels)
       .set({
         name: dto.name ?? current.name,
+        /* `undefined` leaves it; an explicit null clears it. */
+        description: dto.description === undefined ? current.description : dto.description,
         commissionMode: commission.mode,
         commissionRate: commission.rate,
         commissionAmountPerLot: commission.amountPerLot,

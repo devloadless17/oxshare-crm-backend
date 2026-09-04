@@ -1283,3 +1283,151 @@ describe('checkPlausible — per-lot terms are bounded in their own units', () =
     expect(result.ok).toBe(false);
   });
 });
+
+/*
+ * ── THE SHAPE THE BUSINESS ASKED FOR, IN THEIR OWN NUMBERS (0114) ──────────
+ *
+ * "A main partner should get ten dollars per lot and two dollar rebate. And the
+ * sub-partner should take thirty percent of the ten dollars the main partner
+ * gets, and he gets three dollars."
+ *
+ * Every case here is one sentence of that, and each has a wrong version that
+ * looks entirely plausible: 30% of the REVENUE instead of 30% of the parent's
+ * rate is also "30%", also produces a number, and is not $3.
+ */
+describe('calculate — a level paid a share of the rung above', () => {
+  /** The two rungs as described: $10/lot at level 1, 30% of it at level 2. */
+  function sharedLadder(): Map<number, LevelTerms> {
+    return ladderOf(
+      level({ level: 1, commissionMode: 'per_lot', commissionAmountPerLot: '10.00000000' }),
+      level({ level: 2, commissionMode: 'share_of_parent', commissionRate: '30.0000' }),
+    );
+  }
+
+  it('pays 30% of the parent’s per-lot rate, not 30% of the revenue', () => {
+    /* One lot, so the amounts read as the rates themselves. */
+    const result = calculate(
+      { ...DEAL, lots: '1.00000000' },
+      [earner({ ibUserId: 'sub', depth: 1, level: 2 })],
+      sharedLadder(),
+    );
+
+    /*
+     * $3 — 30% of $10. The trade earned the broker $1,000, so a percentage of
+     * REVENUE would have paid $300. Both are "30%"; only one is what was asked
+     * for, and the size of the gap is why this is asserted on the number rather
+     * than on the mode.
+     */
+    expect(result.accruals.map((a) => a.amount)).toEqual(['3.00000000']);
+  });
+
+  /*
+   * The whole tree, on one trade by the SUB-partner's own client — the case the
+   * business described end to end.
+   */
+  it('pays the sub-partner their share AND the main partner their full rate', () => {
+    const result = calculate(
+      { ...DEAL, lots: '1.00000000' },
+      [
+        earner({ ibUserId: 'sub', depth: 1, level: 2 }),
+        earner({ ibUserId: 'main', depth: 2, level: 1 }),
+      ],
+      sharedLadder(),
+    );
+
+    /*
+     * ⚠️ THE MAIN PARTNER IS NOT DILUTED. The sub's $3 is ADDED to the main's
+     * $10 rather than carved out of it, so one lot costs $13 rather than $10.
+     * That was chosen deliberately — recruiting must not reduce what the
+     * recruiter earns — and it is what makes `ib_max_payout_per_lot` the only
+     * thing bounding a long chain.
+     */
+    expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([
+      ['sub', '3.00000000'],
+      ['main', '10.00000000'],
+    ]);
+  });
+
+  /*
+   * The row has to explain itself. Storing the configured "30" would leave a
+   * ledger entry reading `rate 30` against an amount of $3 — thirty of what? —
+   * while the RESOLVED $3 is the figure that produced the amount and the one a
+   * disputed payout is settled from.
+   */
+  it('records the resolved per-lot rate, not the configured percentage', () => {
+    const result = calculate(
+      { ...DEAL, lots: '1.00000000' },
+      [earner({ ibUserId: 'sub', depth: 1, level: 2 })],
+      sharedLadder(),
+    );
+
+    expect(result.accruals[0].rateValue).toBe('3.00000000');
+    expect(result.accruals[0].pricedPerLot).toBe(true);
+  });
+
+  it('scales with volume like any other per-lot term', () => {
+    /* DEAL is 10 lots: 30% of $10 is $3 a lot, so $30. */
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'sub', depth: 1, level: 2 })],
+      sharedLadder(),
+    );
+
+    expect(result.accruals.map((a) => a.amount)).toEqual(['30.00000000']);
+  });
+
+  /*
+   * A share of a rung that pays a PERCENTAGE has nothing to take a share of: a
+   * slice of broker revenue is not a per-lot figure. Skipped with a reason
+   * rather than paid as zero — an accrual of nothing is indistinguishable from
+   * a partner nobody configured.
+   */
+  it('refuses when the rung above is not a per-lot rate', () => {
+    const result = calculate(
+      { ...DEAL, lots: '1.00000000' },
+      [earner({ ibUserId: 'sub', depth: 1, level: 2 })],
+      ladderOf(
+        level({ level: 1, commissionMode: 'percent', commissionRate: '25.0000' }),
+        level({ level: 2, commissionMode: 'share_of_parent', commissionRate: '30.0000' }),
+      ),
+    );
+
+    expect(result.accruals).toHaveLength(0);
+    expect(result.skippedReason).toMatch(/share of the level above/i);
+  });
+
+  /*
+   * Level 1 has no rung above it, so the mode is meaningless there. Reachable
+   * by an operator setting it on the top rung, and it must say so rather than
+   * silently paying nothing.
+   */
+  it('refuses a share on level 1, which has nothing above it', () => {
+    const result = calculate(
+      { ...DEAL, lots: '1.00000000' },
+      [earner({ ibUserId: 'top', depth: 1, level: 1 })],
+      ladderOf(level({ level: 1, commissionMode: 'share_of_parent', commissionRate: '30.0000' })),
+    );
+
+    expect(result.accruals).toHaveLength(0);
+  });
+
+  /*
+   * A share OF a share resolves upward until it reaches a real per-lot rate:
+   * 50% of 30% of $10 is $1.50. Worth pinning because the recursion is the one
+   * part of this that could loop, and the ladder's integer keys are what stop
+   * it — each rung reads a strictly smaller one.
+   */
+  it('resolves a share of a share up to the per-lot rung', () => {
+    const result = calculate(
+      { ...DEAL, lots: '1.00000000' },
+      [earner({ ibUserId: 'deep', depth: 1, level: 3 })],
+      ladderOf(
+        level({ level: 1, commissionMode: 'per_lot', commissionAmountPerLot: '10.00000000' }),
+        level({ level: 2, commissionMode: 'share_of_parent', commissionRate: '30.0000' }),
+        level({ level: 3, commissionMode: 'share_of_parent', commissionRate: '50.0000' }),
+      ),
+    );
+
+    expect(result.accruals.map((a) => a.amount)).toEqual(['1.50000000']);
+  });
+});

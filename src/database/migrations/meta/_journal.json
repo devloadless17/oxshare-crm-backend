@@ -799,6 +799,13 @@
       "when": 1787101217030,
       "tag": "0113_commission_cadence_is_a_setting",
       "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1787101218030,
+      "tag": "0114_a_level_may_share_the_rung_above",
+      "breakpoints": true
     }
   ]
 }
