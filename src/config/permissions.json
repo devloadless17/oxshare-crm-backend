@@ -144,6 +144,10 @@
       {
         "key": "withdrawals.settle",
         "label": "Mark Withdrawals Paid"
+      },
+      {
+        "key": "transfers.abandon",
+        "label": "Release a stuck transfer"
       }
     ]
   },

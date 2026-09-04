@@ -8987,6 +8987,62 @@
         ]
       }
     },
+    "/v1/admin/transfers/{id}/abandon": {
+      "post": {
+        "description": "For a transfer the MT5 bridge left pending: the movement never reached the trading server, so the hold is released and the money becomes spendable again. Refuses anything that is not still pending.\n\n⚠️ Only after checking the broker’s own record. If MT5 DID apply the movement, releasing the hold lets the client spend money that has already left — which is the one thing the executor refuses to guess at, and the reason this is a person’s decision.",
+        "operationId": "AdminMoneyController_abandonTransfer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action, reused only when retrying that same one. The state guard makes a REPLAYED CAUSE a no-op — a second abandon finds the transfer already failed — and this makes a replayed REQUEST one too (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbandonTransferDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Release a stuck transfer — frees the hold and tells the client why",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/transactions/export": {
       "get": {
         "description": "The same filters as GET /admin/transactions, over every matching row rather than one page. Amounts are the exact decimal strings the ledger holds — never rounded, never locale-formatted (§6.1).",
@@ -16577,6 +16633,21 @@
           "discrepancyCount",
           "totalDifference",
           "balanced"
+        ]
+      },
+      "AbandonTransferDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 500,
+            "example": "Checked MT5 deal history for 6480824 — the 1,000 never reached the account.",
+            "description": "What the broker’s record showed. Reaches the client on the failed transfer, and is the audit trail for a decision nothing in this system could make on its own."
+          }
+        },
+        "required": [
+          "reason"
         ]
       },
       "AdminTransactionSummaryRowDto": {

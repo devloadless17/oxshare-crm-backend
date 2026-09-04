@@ -83,6 +83,12 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   /* Settlement is the step that actually releases the money — a separate
      permission from approval (R-5.4), and a separate line here. */
   { action: 'withdrawal.settle', label: 'Withdrawal marked paid', group: 'Compliance' },
+  /* A transfer the MT5 bridge left in flight, released by hand. It states that
+     a movement did NOT happen on evidence outside this system — somebody read
+     the broker's deal history — so the payload's reason is the only record of
+     why, and the entry an auditor looks for if a client is ever credited
+     twice. */
+  { action: 'transfer.abandon', label: 'Stuck transfer released', group: 'Compliance' },
   /* Money placed into a wallet BY HAND — the only way funds arrive without a
      payment provider, and so the entry an auditor looks for first. The payload
      carries the reason the operator was required to give. */
