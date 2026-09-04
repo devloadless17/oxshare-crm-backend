@@ -153,6 +153,27 @@ export class EmailService {
     this.logger.warn(`[LOG_EMAIL_LINKS] ${what} for ${to}: ${url}`);
   }
 
+  /**
+   * Print MT5 trading-account credentials to the log — LOCAL TESTING ONLY.
+   *
+   * Separate from `logLink` because the risk is worse, not merely equal. A reset
+   * link expires and can be reissued; these passwords are delivered EXACTLY
+   * ONCE. MT5 has already been told them by the time this runs, nothing on this
+   * platform stores them, and the only remedy for a lost pair is a reset that
+   * invalidates the working account. So on a mailbox that cannot receive — every
+   * `@…local` fixture — the credentials are simply gone, and the account is
+   * untestable.
+   *
+   * Same gate as the links, and the same production refusal at boot.
+   */
+  private logCredentials(what: string, to: string, detail: Record<string, string | number>): void {
+    if (!this.configService.get<boolean>('LOG_EMAIL_LINKS')) return;
+    const printed = Object.entries(detail)
+      .map(([k, v]) => `${k}=${String(v)}`)
+      .join('  ');
+    this.logger.warn(`[LOG_EMAIL_LINKS] ${what} for ${to}: ${printed}`);
+  }
+
   async sendVerificationEmail(email: string, token: string): Promise<void> {
     const url = `${this.portalUrl()}/auth/verify-email?token=${token}`;
     this.logLink('verification link', email, url);
@@ -332,7 +353,9 @@ export class EmailService {
    * for the attempt, and the log line names the login so an operator can reset
    * it deliberately.
    *
-   * The passwords are never logged (R-6.3).
+   * The passwords are never logged (R-6.3) — EXCEPT under `LOG_EMAIL_LINKS`,
+
+   * a local-testing flag production refuses to boot with. See `logCredentials`.
    */
   async sendTradingAccountOpenedEmail(
     email: string,
@@ -346,6 +369,14 @@ export class EmailService {
     accountName?: string,
     balance?: string,
   ): Promise<void> {
+    this.logCredentials(`trading account ${login} credentials`, email, {
+      login,
+      environment,
+      currency,
+      leverage,
+      masterPassword,
+      investorPassword,
+    });
     await this.send(
       email,
       `trading account ${login} credentials`,
@@ -388,6 +419,12 @@ export class EmailService {
     masterPassword: string,
     investorPassword: string,
   ): Promise<void> {
+    this.logCredentials(`trading account ${login} new passwords`, email, {
+      login,
+      environment,
+      masterPassword,
+      investorPassword,
+    });
     await this.send(
       email,
       `trading account ${login} password reset`,
