@@ -126,7 +126,15 @@ beforeAll(async () => {
    * three migrations — describing a control that no longer existed, on a line
    * that had stopped passing a settings store at all.
    */
-  commissions = new CommissionService(ctx.db, wallets, dispatch, new AppSettingsStore(ctx.db));
+  commissions = new CommissionService(
+    ctx.db,
+    wallets,
+    dispatch,
+    new AppSettingsStore(ctx.db),
+    /* The per-run payout summary email (0114). Stubbed: this suite is about
+       the money, and the send is fire-and-forget by contract. */
+    emailStubAs(),
+  );
 }, 120_000);
 
 afterAll(async () => {

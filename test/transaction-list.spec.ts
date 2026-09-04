@@ -406,6 +406,13 @@ describe('a rebate credited straight to the ledger', () => {
     expect(rebate?.direction).toBe('deposit');
     /* A ledger row existing IS the money having moved — there is no pending. */
     expect(rebate?.state).toBe('success');
+    /*
+     * NAMED, because the method column is what a client reads to tell one
+     * movement from another — and a rebate sits in a list of deposits with
+     * nothing else distinguishing it. A blank there is the question this arm
+     * exists to answer, asked again.
+     */
+    expect(rebate?.methodName).toBe('Rebate');
   });
 
   /*

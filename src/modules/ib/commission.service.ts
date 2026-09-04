@@ -5,9 +5,11 @@ import type { Db, Executor } from '../../database/db';
 import { ibAccounts, ibAccruals, ibLevels, users } from '../../database/schema';
 import { LEDGER_REFERENCE, type LedgerReferenceType } from '../../database/ledger-reference';
 import { NotFoundError } from '../../common/errors/domain-errors';
+import Decimal from 'decimal.js';
 import { money, toDecimal } from '../wallet/money';
 import { LIVE_REVENUE_FEED, isLiveRevenueFeed } from './revenue-feed';
 import { AppSettingsStore } from '../../store/app-settings.store';
+import { EmailService } from '../email/email.service';
 import type { RevenueBasis } from '../../common/revenue-basis';
 import { tradingTermsFrom } from '../../common/trading-terms';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
@@ -104,6 +106,15 @@ export class CommissionService implements CommissionAccrualPort {
      * the thing worth bounding.
      */
     private readonly settings: AppSettingsStore,
+    /*
+     * For the per-run payout SUMMARY only — never per accrual.
+     *
+     * The per-accrual notification this replaced refused to mail at all, and it
+     * was right to: "an hourly batch would mail a busy partner once per accrual
+     * per hour". One message about one run has no such problem, which is what
+     * made the email possible rather than what made it desirable.
+     */
+    private readonly emails: EmailService,
   ) {}
 
   /**
@@ -727,6 +738,49 @@ export class CommissionService implements CommissionAccrualPort {
     let confirmed = 0;
     let failed = 0;
 
+    /*
+     * What each person was paid across this whole run, keyed by recipient AND
+     * kind — a partner who is also somebody's client can earn commission and
+     * receive a rebate in the same run, and those are two different sentences
+     * pointing at two different screens.
+     *
+     * Totals are summed with decimal.js rather than by adding numbers: these
+     * are money (§6.1), and a run of a thousand accruals is a thousand chances
+     * for float error to make the notification disagree with the wallet.
+     */
+    const payouts = new Map<
+      string,
+      {
+        recipientId: string;
+        kind: 'commission' | 'rebate';
+        total: Decimal;
+        count: number;
+        currency: string;
+      }
+    >();
+
+    const recordPayout = (
+      recipientId: string,
+      kind: 'commission' | 'rebate',
+      amount: string,
+      currency: string,
+    ): void => {
+      const key = `${recipientId}:${kind}:${currency}`;
+      const existing = payouts.get(key);
+      if (existing) {
+        existing.total = existing.total.plus(amount);
+        existing.count += 1;
+        return;
+      }
+      payouts.set(key, {
+        recipientId,
+        kind,
+        total: new Decimal(amount),
+        count: 1,
+        currency,
+      });
+    };
+
     for (const accrual of pending) {
       try {
         /* Read once: it decides the beneficiary, the wallet, the ledger type
@@ -812,30 +866,30 @@ export class CommissionService implements CommissionAccrualPort {
             .where(and(eq(ibAccruals.id, accrual.id), eq(ibAccruals.status, 'pending')));
 
           /*
-           * The partner's bell row, in the SAME transaction as the credit and
-           * DEDUPED on the accrual id — this loop is at-least-once by design
-           * (hourly, safe on every instance), and two runs racing past the
-           * `pending` filter must converge on one row, exactly as the ledger
-           * credit converges via `ledger_entries_wallet_reference_uq`. No
-           * email, deliberately: an hourly batch would mail a busy partner
-           * once per accrual per hour; the bell and the earnings screen carry
-           * it.
+           * ── NO BELL ROW HERE ANY MORE, AND THAT IS THE WHOLE POINT ───────
+           *
+           * This wrote ONE notification per accrual, deduped on the accrual id.
+           * At the scale this platform is built for that is unusable: a client
+           * closing a thousand positions in a session generates a thousand
+           * accruals, so a partner earning on all of them got a thousand bell
+           * rows for what is, to them, one afternoon's earnings.
+           *
+           * A bell that has to be scrolled is a bell nobody reads, and the one
+           * notification that matters — a KYC decision, a withdrawal — is
+           * buried under commission noise.
+           *
+           * The credit still commits alone. What is accumulated is who was paid
+           * and how much, and ONE summary per recipient is sent after the run
+           * (see `notifySummaries`).
            */
-          await this.notifications.notify(
-            {
-              recipient: { kind: 'client', id: rebate ? accrual.clientUserId : accrual.ibUserId },
-              kind: rebate ? 'rebate.credited' : 'commission.confirmed',
-              params: {
-                accrualId: accrual.id,
-                amount: accrual.amount,
-                currency: accrual.currency,
-              },
-              dedupeKey: `${rebate ? 'rebate.credited' : 'commission.confirmed'}:${accrual.id}`,
-            },
-            tx,
-          );
         });
         confirmed += 1;
+        recordPayout(
+          rebate ? accrual.clientUserId : accrual.ibUserId,
+          rebate ? 'rebate' : 'commission',
+          accrual.amount,
+          accrual.currency,
+        );
       } catch (error) {
         /*
          * Counted and logged, never rethrown. One partner's wallet failing to
@@ -854,7 +908,124 @@ export class CommissionService implements CommissionAccrualPort {
     if (confirmed > 0 || failed > 0) {
       this.logger.log(`Commission confirm run: ${confirmed} credited, ${failed} left pending.`);
     }
+    await this.notifySummaries(payouts);
+
     return { confirmed, failed, held };
+  }
+
+  /**
+   * ONE notification per person per run, not one per accrual.
+   *
+   * ## Why this is not inside the loop
+   *
+   * It cannot be. A summary is a statement about the whole run — "you earned
+   * $148.08 across 188 trades" — and that sentence does not exist until the
+   * last accrual has been credited.
+   *
+   * The cost is that these rows are NOT in the credit's transaction. That is
+   * the right trade: a bell row is a convenience, the credit is the money, and
+   * the ledger is the record either way. A crash between the two loses a
+   * notification about money that is already in the wallet and visible on the
+   * earnings screen — where the old shape would have lost nothing but flooded
+   * the bell on every ordinary run.
+   *
+   * ## The dedupe key is the RUN, not the accrual
+   *
+   * Two schedulers racing the same queue would otherwise both summarise their
+   * own share and send two rows. Keying on the recipient, the kind and the
+   * minute collapses that to one — the same at-least-once assumption the ledger
+   * credit makes, expressed in the units a person reads.
+   *
+   * ## An EMAIL goes with it, which the per-accrual version could never do
+   *
+   * That version explicitly refused to mail: "an hourly batch would mail a busy
+   * partner once per accrual per hour". A summary has no such problem — it is
+   * one message about one run — so the thing a partner actually wants to know,
+   * that they have been paid, now reaches them somewhere other than a bell they
+   * have to be looking at.
+   *
+   * Failures are swallowed per recipient. Nobody's notification failing may
+   * stop anybody else's, and none of it may undo a credit that has committed.
+   */
+  private async notifySummaries(
+    payouts: Map<
+      string,
+      {
+        recipientId: string;
+        kind: 'commission' | 'rebate';
+        total: Decimal;
+        count: number;
+        currency: string;
+      }
+    >,
+  ): Promise<void> {
+    /* Whole minutes, so a run straddling a second boundary still collapses. */
+    const window = new Date().toISOString().slice(0, 16);
+
+    for (const payout of payouts.values()) {
+      const amount = payout.total.toFixed(8);
+      try {
+        await this.notifications.notify({
+          recipient: { kind: 'client', id: payout.recipientId },
+          kind: payout.kind === 'rebate' ? 'rebate.credited' : 'commission.confirmed',
+          params: {
+            amount,
+            currency: payout.currency,
+            /*
+             * How many trades it covers, so the reader can tell one payment
+             * from a day's worth. The screen renders it; a consumer that does
+             * not know the field ignores it, which is the open-params contract
+             * `NotificationEvent` already carries.
+             */
+            count: String(payout.count),
+          },
+          dedupeKey: `${payout.kind}.summary:${payout.recipientId}:${payout.currency}:${window}`,
+        });
+      } catch (error) {
+        this.logger.warn(
+          `Could not write the ${payout.kind} summary for ${payout.recipientId}; the money is ` +
+            `credited and visible regardless: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+        );
+      }
+
+      /*
+       * The EMAIL, reusing the wallet-credit template rather than inventing a
+       * second one: it already says "money reached your wallet, here is how
+       * much and why", which is exactly this message. The `reason` line is
+       * where the summary reads as a summary.
+       *
+       * `EmailService.send` swallows its own failures by contract, so reaching
+       * the catch means the user LOOKUP failed. Either way the money stands and
+       * is visible on the screen the notification links to.
+       */
+      try {
+        const [recipient] = await this.db
+          .select({ email: users.email, firstName: users.firstName })
+          .from(users)
+          .where(eq(users.id, payout.recipientId))
+          .limit(1);
+
+        if (recipient) {
+          await this.emails.sendWalletCreditEmail(
+            recipient.email,
+            recipient.firstName,
+            amount,
+            payout.currency,
+            payout.kind === 'rebate'
+              ? `Trading rebate on ${payout.count} closed trade(s)`
+              : `Partner commission on ${payout.count} closed trade(s)`,
+          );
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Could not email the ${payout.kind} summary for ${payout.recipientId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 
   /**

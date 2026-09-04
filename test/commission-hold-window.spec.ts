@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { emailStubAs } from './email-stub';
 import { sql } from 'drizzle-orm';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -75,6 +76,9 @@ async function serviceWithHold(seconds: number | undefined): Promise<CommissionS
     // both come from here, so these read what a deployment configures rather
     // than a stub's opinion.
     new AppSettingsStore(ctx.db),
+    /* The per-run payout summary email (0114). Stubbed: this suite is
+       about the money, and the send is fire-and-forget by contract. */
+    emailStubAs(),
   );
 }
 
@@ -268,7 +272,7 @@ describe('how the window is configured', () => {
         }),
     } as unknown as AppSettingsStore;
 
-    const service = new CommissionService(ctx.db, wallets, dispatch, corrupt);
+    const service = new CommissionService(ctx.db, wallets, dispatch, corrupt, emailStubAs());
     const result = await service.confirmPending();
 
     /* The default hour, not the floor — so a corrupt row cannot make the

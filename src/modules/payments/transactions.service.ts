@@ -1431,7 +1431,18 @@ export class TransactionsService {
           FALSE,                                  -- rival_needs_attention
           NULL::text,                             -- rival_attention_reason
           le.created_at,
-          NULL::varchar                           AS method_name,
+          /*
+           * NAMED rather than null, unlike the transfer and commission arms.
+           *
+           * The method column is what a client reads to tell one movement from
+           * another, and those two arms already say what they are in the row
+           * beside it — a transfer names its account, a commission move is the
+           * only thing on the commission screen. A rebate sits in a list of
+           * deposits and withdrawals with nothing distinguishing it, so a blank
+           * method left the client asking where the money came from, which is
+           * the question this whole arm exists to answer.
+           */
+          'Rebate'::varchar                       AS method_name,
           'rebate'::text                          AS kind,
           NULL::uuid                              AS trading_account_id
         /*
