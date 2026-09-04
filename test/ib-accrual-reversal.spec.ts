@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { emailStubAs } from './email-stub';
 import { sql } from 'drizzle-orm';
-import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
@@ -171,10 +171,12 @@ beforeAll(async () => {
       notify: vi.fn().mockResolvedValue(undefined),
       notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
     },
-    new ConfigService(),
     // The payout ceiling (0106) — the real store against the real row, so
     // this reads the shipped default of 100 rather than a stub's opinion.
     new AppSettingsStore(ctx.db),
+    /* The per-run payout summary email (0114). Stubbed: this suite is
+       about the money, and the send is fire-and-forget by contract. */
+    emailStubAs(),
   );
 }, 180_000);
 
@@ -188,7 +190,20 @@ beforeEach(async () => {
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
   await ctx.db.execute(sql`DELETE FROM ledger_entries`);
   await ctx.db.execute(sql`DELETE FROM wallets`);
-  process.env['IB_COMMISSION_HOLD_HOURS'] = '0';
+  /*
+   * The maturation window cannot be switched OFF any more (0113): it is a
+   * setting with a 60-second floor, not `IB_COMMISSION_HOLD_HOURS=0`.
+   *
+   * So these cases BACKDATE their accruals past the window instead of removing
+   * it. That is the better fixture anyway — it exercises the real predicate
+   * (`created_at <= now() - interval`) rather than collapsing it to a
+   * comparison against zero, and the window's own behaviour stays pinned in
+   * `commission-hold-window.spec.ts`.
+   */
+  await ctx.db.execute(sql`
+      INSERT INTO trading_settings (id, ib_commission_interval_seconds) VALUES (true, 60)
+      ON CONFLICT (id) DO UPDATE SET ib_commission_interval_seconds = 60
+    `);
 });
 
 describe('reversing a PENDING accrual costs nothing', () => {
@@ -219,6 +234,8 @@ describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
   it('debits the wallet that was credited and never edits the credit', async () => {
     await setTerms({ tiers: ['10'], rebateRate: '0' });
     await accrue();
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     await commissions.confirmPending();
 
     expect(await walletOf(partnerId, 'commission')).toBe('10.00000000');
@@ -256,6 +273,8 @@ describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
   it('is idempotent: a second reversal does not debit twice', async () => {
     await setTerms({ tiers: ['10'], rebateRate: '0' });
     await accrue();
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     await commissions.confirmPending();
 
     const [accrual] = await accrualRows();
@@ -277,6 +296,8 @@ describe('a REBATE is taken back from the client, not the partner', () => {
   it('debits the client main wallet the rebate was paid into', async () => {
     await setTerms({ tiers: [], rebateRate: '5' });
     await accrue();
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     await commissions.confirmPending();
 
     expect(await walletOf(clientId, 'main')).toBe('5.00000000');
@@ -300,6 +321,8 @@ describe('a reversal REFUSES when the money is already gone', () => {
   it('leaves the accrual confirmed rather than telling a lie', async () => {
     await setTerms({ tiers: ['10'], rebateRate: '0' });
     await accrue();
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     await commissions.confirmPending();
 
     // The partner moved their earnings out — the ordinary thing to do with them.

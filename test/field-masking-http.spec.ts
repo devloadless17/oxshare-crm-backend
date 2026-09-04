@@ -7,6 +7,7 @@ import {
   ibAccounts,
   ibProgramTiers,
   ibPrograms,
+  kycSubmissionAttempts,
   kycSubmissions,
   roles,
   transactions,
@@ -323,6 +324,25 @@ describe('the KYC screen is not a bypass', () => {
         country: 'Lebanon',
       },
     });
+    /*
+     * A previously DECIDED attempt, carrying the same identity data. The
+     * history endpoint reads this table, not the live submission — which is
+     * exactly how it came to be the one KYC surface with no mask on it.
+     */
+    await ctx.db.db.insert(kycSubmissionAttempts).values({
+      userId: clientId,
+      attemptNo: 1,
+      status: 'rejected',
+      submittedAt: new Date(),
+      reviewedAt: new Date(),
+      personalInfo: {
+        firstName: 'Masked',
+        lastName: 'Target',
+        email: 'mask-target@oxshare-e2e.test',
+        phone: '+961 1 000 000',
+        country: 'Lebanon',
+      },
+    });
   });
 
   it('hides the same values on the KYC detail, under every name they travel by', async () => {
@@ -348,10 +368,40 @@ describe('the KYC screen is not a bypass', () => {
     expect(text).not.toContain('mask-target@oxshare-e2e.test');
   });
 
+  it('hides them in the HISTORY of previously decided attempts', async () => {
+    /*
+     * Found in the running console: a reviewer whose role hides `client.email`
+     * read it straight off the history panel, one tab from the field that
+     * correctly showed nothing.
+     *
+     * Every archived attempt carries the same `personalInfo` the detail masks
+     * — email, phone, date of birth, nationality — and this endpoint never
+     * called `applyMask`. That is the THIRD surface to have this exact hole
+     * (the detail and the exports were the others), and the lesson each time
+     * is the same: the alias expansion in `client-fields.json` is not the
+     * enforcement. A response that does not call the mask is unmasked however
+     * many aliases the catalogue declares.
+     */
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get(`/v1/admin/kyc/${clientId}/history`).expect(200);
+
+    const text = JSON.stringify(res.body);
+    expect(text).not.toContain('mask-target@oxshare-e2e.test');
+    expect(text).not.toContain('+961 1 000 000');
+    // A mask, not a 403: the attempt itself still arrives, with the parts this
+    // reviewer may read.
+    expect(text).toContain('Masked');
+    expect(Array.isArray(res.body)).toBe(true);
+  });
+
   it('still shows the master everything on the same screens', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.get(`/v1/admin/kyc/${clientId}`).expect(200);
     expect(JSON.stringify(res.body)).toContain('mask-target@oxshare-e2e.test');
+    // Including the history — the fix above is a mask per VIEWER, not a field
+    // removed from the endpoint for everybody.
+    const history = await session.get(`/v1/admin/kyc/${clientId}/history`).expect(200);
+    expect(JSON.stringify(history.body)).toContain('mask-target@oxshare-e2e.test');
   });
 });
 

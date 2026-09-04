@@ -31,6 +31,27 @@ const envSchema = z
     ADMIN_URL: z.string().url().default('http://localhost:3002'),
 
     /*
+     * Print emailed LINKS to the log instead of relying on a mailbox — local
+     * testing only.
+     *
+     * SMTP is admin-configured (there are no SMTP_* variables, see below), so a
+     * developer with no relay configured gets no verification link and no
+     * password-reset link at all — and test fixtures use addresses like
+     * `@oxtest.local` that could never receive one anyway. The alternative is
+     * reading tokens out of the database by hand, which is how somebody ends up
+     * writing a query that also works in production.
+     *
+     * ⚠️ THIS PRINTS SECRETS. A verification or reset link IS the credential —
+     * anyone who can read the log can take over the account. That is why
+     * `EmailService` normally logs the recipient and nothing else (R-6.3), and
+     * why this is REFUSED in production below rather than merely discouraged.
+     */
+    LOG_EMAIL_LINKS: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+
+    /*
      * Realtime (WebSocket) transport. See common/realtime/realtime-io.adapter.ts.
      *
      * `uws` runs Socket.IO on uWebSockets.js and needs its OWN port, because
@@ -184,13 +205,13 @@ const envSchema = z
         'IB_ACCRUAL_START must be "all" or an ISO 8601 instant, e.g. "2026-08-24T00:00:00Z"',
       )
       .optional(),
-    IB_DEAL_ACCRUAL_CRON: z
-      .string()
-      .regex(
-        /^(\S+\s+){4,5}\S+$/,
-        'IB_DEAL_ACCRUAL_CRON must be a cron expression, e.g. "0 */5 * * * *"',
-      )
-      .optional(),
+    /*
+     * `IB_DEAL_ACCRUAL_CRON` IS GONE (0114). Both halves of the commission
+     * pipeline now read `ib_commission_interval_seconds` from the settings
+     * form: leaving accrual on an environment variable meant an operator who
+     * set "pay every minute" still waited however long a deploy-time value
+     * said before a closed trade even became an accrual.
+     */
     /*
      * How often the MT5 group catalogue is re-read. Hourly by default — the
      * thing it watches is a broker changing configuration during a working day,
@@ -565,6 +586,20 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
   }
 
   if (env.NODE_ENV === 'production') {
+    /*
+     * A reset link in a log file is a takeover waiting to happen, and log
+     * aggregation copies it somewhere with a different audience. Refusing to
+     * START is the right severity: the alternative is a flag somebody sets to
+     * debug a staging issue and never unsets.
+     */
+    if (env.LOG_EMAIL_LINKS) {
+      throw new Error(
+        'Refusing to start in production with LOG_EMAIL_LINKS enabled. It prints verification ' +
+          'and password-reset links — each of which IS a credential — into the log. It exists ' +
+          'for local testing against mailboxes that do not receive mail.',
+      );
+    }
+
     const missing = PROD_REQUIRED.filter((k) => !env[k]);
     if (missing.length > 0) {
       throw new Error(

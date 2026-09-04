@@ -8,7 +8,7 @@ import { IbApplicationsService } from './ib-applications.service';
 import { IbOverviewService } from './ib-overview.service';
 import { IbWalletService } from './ib-wallet.service';
 import { CreateIbApplicationDto, IbApplicationDto, IbStatusDto } from './dto/ib-application.dto';
-import { IbClientPositionDto, IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
+import { IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
 import { IbWalletTransferDto, IbWalletTransferResultDto } from './dto/ib-wallet.dto';
 import { PublicAgencyDto } from '../products/dto/catalogue.dto';
 import { ProductsStore } from '../../store/products.store';
@@ -114,21 +114,23 @@ export class IbController {
     return this.overview.commissionsFor(req.user.id);
   }
 
-  @Get('positions')
-  @ApiCookieAuth()
-  @ApiOperation({
-    summary: "Open trades belonging to this partner's direct clients",
-    description:
-      'DIRECT clients only. A sub-partner’s clients are somebody else’s book — this partner ' +
-      'earns on them through the chain, but listing them here would hand one partner a view of ' +
-      'another’s client list.\n\n' +
-      'Open positions only: a closed trade already appears in the commission list as the thing ' +
-      'it produced.',
-  })
-  @ApiOkResponse({ type: [IbClientPositionDto] })
-  positions(@Req() req: Request & { user: User }) {
-    return this.overview.clientPositionsFor(req.user.id);
-  }
+  /*
+   * ── `GET /ib/positions` IS GONE ──────────────────────────────────────────
+   *
+   * It queried the `positions` TABLE, which is created empty on purpose and
+   * written by nothing — a stored profit is stale the moment it is saved. So
+   * the endpoint answered `[]` on a platform with live trades, and the partner
+   * screen read as "your clients are not trading".
+   *
+   * Reading it LIVE is what the account screen does, and it does not scale
+   * here: one bridge call per client ACCOUNT, serialised behind the single MT5
+   * session lock. A partner with fifty clients holding two accounts each is a
+   * hundred round trips per page load, blocking every other client meanwhile.
+   *
+   * Removed rather than repaired. FR-IB-17 owes a partner visibility of their
+   * sub-tree EARNINGS, and `GET /ib/commissions` carries every closed trade
+   * that paid them.
+   */
 
   @Get('agencies')
   @ApiCookieAuth()

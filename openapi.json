@@ -1907,37 +1907,6 @@
         ]
       }
     },
-    "/v1/ib/positions": {
-      "get": {
-        "description": "DIRECT clients only. A sub-partner’s clients are somebody else’s book — this partner earns on them through the chain, but listing them here would hand one partner a view of another’s client list.\n\nOpen positions only: a closed trade already appears in the commission list as the thing it produced.",
-        "operationId": "IbController_positions",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/IbClientPositionDto"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Open trades belonging to this partner's direct clients",
-        "tags": [
-          "ib"
-        ]
-      }
-    },
     "/v1/ib/agencies": {
       "get": {
         "description": "What an applicant chooses between, with the products each one carries spelled out by name. Disabled agencies are ABSENT rather than greyed out: nobody here can answer \"when does it reopen\", and offering a choice that will be refused is a poor way to learn it is closed.\n\nAn empty list means no programme is configured yet. The portal should let the client apply anyway — an agency is optional on the application, so a deployment that has not set them up still takes partners.",
@@ -11350,53 +11319,6 @@
           "createdAt"
         ]
       },
-      "IbClientPositionDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "clientName": {
-            "type": "string"
-          },
-          "symbol": {
-            "type": "string"
-          },
-          "side": {
-            "type": "string",
-            "enum": [
-              "buy",
-              "sell"
-            ]
-          },
-          "volume": {
-            "type": "string",
-            "description": "Lots."
-          },
-          "openPrice": {
-            "type": "string"
-          },
-          "profit": {
-            "type": "string",
-            "nullable": true,
-            "description": "Floating, and it moves. Shown because a partner asks \"is my book alive\", not so they can act on it — they have no control over a client’s trade."
-          },
-          "openedAt": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "clientName",
-          "symbol",
-          "side",
-          "volume",
-          "openPrice",
-          "openedAt"
-        ]
-      },
       "PublicAgencyDto": {
         "type": "object",
         "properties": {
@@ -11830,6 +11752,11 @@
             "type": "string",
             "example": "Main Partner"
           },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "What this tier is for, in the desk’s own words. Nothing computes with it."
+          },
           "enabled": {
             "type": "boolean",
             "description": "A disabled rung pays nobody standing on it. Disabling is refused while partners are there — see the service."
@@ -11838,7 +11765,8 @@
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ],
             "description": "How the PARTNER’s leg is priced."
           },
@@ -11857,7 +11785,8 @@
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ],
             "description": "How the CLIENT’s rebate is priced."
           },
@@ -11897,6 +11826,7 @@
           "id",
           "level",
           "name",
+          "description",
           "enabled",
           "commissionMode",
           "commissionRate",
@@ -11944,11 +11874,17 @@
             "minLength": 1,
             "maxLength": 80
           },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000
+          },
           "commissionMode": {
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ],
             "default": "percent"
           },
@@ -11964,7 +11900,8 @@
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ],
             "default": "percent"
           },
@@ -12002,11 +11939,17 @@
             "minLength": 1,
             "maxLength": 80
           },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000
+          },
           "commissionMode": {
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ]
           },
           "commissionRate": {
@@ -12019,7 +11962,8 @@
             "type": "string",
             "enum": [
               "percent",
-              "per_lot"
+              "per_lot",
+              "share_of_parent"
             ]
           },
           "rebateRate": {
@@ -13685,12 +13629,11 @@
             "example": "1000000.00000000",
             "description": "Largest opening balance a demo account may be given. A decimal string."
           },
-          "ibMaxLevels": {
+          "ibCommissionIntervalSeconds": {
             "type": "number",
-            "example": 2,
-            "minimum": 1,
-            "maximum": 10,
-            "description": "How many levels a commission programme’s ladder may reach. Defaults to 2 — the committed two-level structure (Feature List Rev 9, IB-17). Bounds what may be SAVED: lowering it leaves existing programmes paying exactly what they paid before."
+            "example": 3600,
+            "minimum": 60,
+            "description": "Seconds between commission payouts, and how long an accrual matures first. 60 credits a partner about a minute after the trade closes."
           },
           "updatedAt": {
             "type": "string",
@@ -13706,7 +13649,7 @@
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
-          "ibMaxLevels"
+          "ibCommissionIntervalSeconds"
         ]
       },
       "UpdateTradingSettingsDto": {
@@ -13729,18 +13672,18 @@
             "example": "1000000.00",
             "description": "Positive decimal string."
           },
-          "ibMaxLevels": {
+          "ibCommissionIntervalSeconds": {
             "type": "number",
-            "example": 2,
-            "minimum": 1,
-            "maximum": 10
+            "example": 3600,
+            "minimum": 60,
+            "description": "Seconds between commission payouts, and how long an accrual matures before it is payable. One number for both: either alone leaves the other as the real delay. 60 = a partner is credited about a minute after the trade closes."
           }
         },
         "required": [
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
-          "ibMaxLevels"
+          "ibCommissionIntervalSeconds"
         ]
       },
       "SmtpSettingsDto": {

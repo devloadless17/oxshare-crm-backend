@@ -1,5 +1,4 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import Decimal from 'decimal.js';
 import { and, asc, eq, inArray, isNotNull, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
@@ -631,24 +630,37 @@ export class DealCommissionService {
       const brokerRevenue = revenue.revenue;
 
       /*
-       * The broker kept nothing on this deal, so there is no share to take.
-       * Marked done rather than retried: the amounts are final the moment MT5
-       * reports them, so re-reading this row can only ever reach the same
-       * answer.
+       * ── ZERO REVENUE DOES NOT MEAN NOBODY IS OWED ANYTHING ───────────────
        *
-       * ⚠️ That finality is what makes a spread-inclusive basis order-sensitive.
-       * Under `'spread'` a product whose markup is still 0 produces zero revenue
-       * here, and this branch decides the deal for good — so switching the basis
-       * BEFORE populating the markups drains the queue paying nothing, and
-       * switching back recovers none of it. The settings form says so; migration
-       * 0101 says why. Nothing here can detect the mistake, because a zero
-       * markup is also a legitimate raw-spread product.
+       * This used to short-circuit here: the broker kept nothing, so there was
+       * no share to take, and the deal was marked done.
+       *
+       * That was true while every payout was a PERCENTAGE of revenue. It stopped
+       * being true when levels could be priced PER LOT (0111/0114): $10 a lot is
+       * owed on volume and is deliberately indifferent to what the broker
+       * earned — that is the whole point of the model, and `calculate` says so
+       * where it pays a per-lot leg before the base is even required to be
+       * positive.
+       *
+       * ⚠️ THIS WAS A LIVE BUG AND IT LOST MONEY SILENTLY. A broker whose group
+       * charges no commission and no swap — which is an ordinary raw-spread
+       * setup, and what this deployment actually has — produced zero revenue on
+       * every deal, so every deal was marked DONE having paid nobody. Nothing
+       * reported it: `nothingOwed` is a legitimate outcome, the row looked
+       * processed, and the partners simply never got paid.
+       *
+       * `calculate` is the right place to decide this, because it is the only
+       * thing that knows which rungs are per-lot. So the run now continues and
+       * lets it answer — a chain of purely percentage rungs still accrues
+       * nothing on a zero-revenue trade, reaching the same outcome by asking
+       * rather than by assuming.
+       *
+       * The FINALITY is unchanged and still matters: whatever `calculate`
+       * decides, the amounts are final the moment MT5 reports them. That is why
+       * a spread-inclusive basis stays order-sensitive — a product whose markup
+       * is still 0 pays its percentage rungs nothing, permanently. The settings
+       * form says so; migration 0101 says why.
        */
-      if (new Decimal(brokerRevenue).isZero()) {
-        await this.markProcessed(legs.map((leg) => leg.id));
-        run.nothingOwed += 1;
-        continue;
-      }
 
       /*
        * ── WHAT THE TRADE EARNED UNDER EACH BASIS (FR-IB-16, 0106) ──────────

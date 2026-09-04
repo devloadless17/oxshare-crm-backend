@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { CommissionService } from './commission.service';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { JobLeaseService } from '../../common/scheduling/job-lease.service';
+import { AppSettingsStore } from '../../store/app-settings.store';
+import { tradingTermsFrom } from '../../common/trading-terms';
 
 /**
  * One bite of the queue. Small on purpose — see `drain`.
@@ -20,7 +21,18 @@ const CONFIRM_BATCH = 500;
  * the interval because a run that outlives its own cron stacks up, and stacked
  * runs contend for the same rows — correctly, and slower than running once.
  */
-const CONFIRM_TIME_BUDGET_MS = 5 * 60_000;
+/**
+ * How long one run may spend draining — a FRACTION of the interval, not a fixed
+ * five minutes (0113).
+ *
+ * It was five minutes, chosen to sit well under the hourly default. That number
+ * cannot survive a configurable period: at a 60-second interval a five-minute
+ * budget guarantees every run outlives its own tick, and stacked runs contend
+ * for the same rows to reach the outcome one of them would have reached alone.
+ *
+ * Half, so a run has finished and released its lease before the next is due.
+ */
+const BUDGET_FRACTION = 0.5;
 
 /**
  * Pays out matured commission accruals, on a schedule.
@@ -53,31 +65,106 @@ const CONFIRM_TIME_BUDGET_MS = 5 * 60_000;
  * rather than raising an alert.
  */
 @Injectable()
-export class CommissionScheduler {
+export class CommissionScheduler implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(CommissionScheduler.name);
+
+  /** The pending tick, so shutdown can cancel it rather than leaking a timer. */
+  private timer: NodeJS.Timeout | null = null;
+  /** Set on destroy, so a run finishing after shutdown does not reschedule. */
+  private stopped = false;
 
   constructor(
     private readonly commissions: CommissionService,
     private readonly leases: JobLeaseService,
+    private readonly settings: AppSettingsStore,
   ) {}
 
-  /*
-   * HOURLY by default, and settable — a broker running a four-hourly desk sets
-   * IB_COMMISSION_CONFIRM_CRON and gets a four-hourly payout run.
+  onApplicationBootstrap(): void {
+    this.scheduleNext();
+  }
+
+  onModuleDestroy(): void {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+  }
+
+  /**
+   * The configured period, re-read on EVERY tick.
    *
-   * Read from `process.env` rather than injected, because a decorator argument
-   * is evaluated when the class is DEFINED, before any container exists. That
-   * is the one place in this codebase where reaching for process.env directly
-   * is not a shortcut — ConfigService cannot be asked this early.
-   *
-   * The frequency is not a correctness control. Running it every four hours
-   * rather than every hour delays a payout; it cannot pay the wrong amount,
-   * because what is payable is decided by the hold window in the service and
-   * by the per-accrual idempotency guard, not by how often this fires.
+   * A bad row falls back to the default rather than the minimum — see
+   * `normaliseIbCommissionInterval`. The failure mode of a corrupt settings row
+   * must not be "run every minute forever".
    */
-  @Cron(process.env.IB_COMMISSION_CONFIRM_CRON ?? CronExpression.EVERY_HOUR, {
-    name: 'ib.confirmAccruals',
-  })
+  private async intervalMs(): Promise<number> {
+    try {
+      return tradingTermsFrom(await this.settings.getTrading()).ibCommissionIntervalSeconds * 1_000;
+    } catch (error) {
+      /*
+       * The database being unreachable must not stop the loop permanently. Fall
+       * back to an hour and try again on the next tick — a scheduler that
+       * unschedules itself on one failed read is a job that silently never runs
+       * again, which is the failure this whole file is shaped to avoid.
+       */
+      this.logger.warn(
+        `Could not read the commission interval; using 1h for this tick: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return 3_600_000;
+    }
+  }
+
+  /**
+   * A self-rescheduling timer, NOT `@Cron`.
+   *
+   * ⚠️ THIS IS DELIBERATE AND `app.module.ts` EXPLAINS WHY IN DETAIL. A
+   * decorator argument is evaluated when the class is DEFINED — before any
+   * container exists, before `ConfigModule` has read anything, and long before
+   * a settings row can be queried. `@Cron(someSetting)` cannot work: it would
+   * silently register the hardcoded default while the screen showed something
+   * else, which is exactly the bug that file records as having shipped twice.
+   *
+   * `setTimeout` rather than `setInterval` for the other half: the next tick is
+   * scheduled only once the previous run has FINISHED, so a slow drain delays
+   * the next run instead of stacking on top of it.
+   *
+   * The interval is re-read each tick, so a change on the settings form takes
+   * effect on the next run rather than at the next deploy.
+   */
+  private scheduleNext(): void {
+    if (this.stopped) return;
+
+    void this.intervalMs().then((ms) => {
+      if (this.stopped) return;
+      this.timer = setTimeout(() => {
+        void this.tick();
+      }, ms);
+      /* Do not hold the process open for a payout that can wait. */
+      this.timer.unref?.();
+    });
+  }
+
+  private async tick(): Promise<void> {
+    try {
+      await this.confirm();
+    } finally {
+      /* ALWAYS reschedule, even after a throw. A loop that stops on error is a
+         platform that quietly stops paying partners. */
+      this.scheduleNext();
+    }
+  }
+
+  /**
+   * One payout run.
+   *
+   * The frequency is not a correctness control. Running every four hours rather
+   * than every minute delays a payout; it cannot pay the wrong amount, because
+   * what is payable is decided by the maturation window in the service and by
+   * the per-accrual idempotency guard, not by how often this fires.
+   *
+   * Public because it is the whole job, and calling it directly is how a test
+   * exercises one run without waiting on a timer.
+   */
   async confirm(): Promise<void> {
     /*
      * ONE INSTANCE, not all of them. `@Cron` fires everywhere, and this job now
@@ -89,12 +176,13 @@ export class CommissionScheduler {
      * it were shorter than the work a second instance would start while the
      * first was still paying partners — the duplicate run this removes.
      */
-    await this.leases.run('ib.confirmAccruals', 2 * CONFIRM_TIME_BUDGET_MS, () => this.runOnce());
+    const budgetMs = (await this.intervalMs()) * BUDGET_FRACTION;
+    await this.leases.run('ib.confirmAccruals', 2 * budgetMs, () => this.runOnce(budgetMs));
   }
 
-  private async runOnce(): Promise<void> {
+  private async runOnce(budgetMs: number): Promise<void> {
     try {
-      const { confirmed, failed, held } = await this.drain();
+      const { confirmed, failed, held } = await this.drain(budgetMs);
       if (failed > 0) {
         this.logger.warn(
           `${failed} commission accrual(s) could not be credited and remain pending; they will be ` +
@@ -161,7 +249,9 @@ export class CommissionScheduler {
    * it got through, and a restart resumes from the queue rather than from the
    * start.
    */
-  private async drain(): Promise<{ confirmed: number; failed: number; held: number }> {
+  private async drain(
+    budgetMs: number,
+  ): Promise<{ confirmed: number; failed: number; held: number }> {
     const startedAt = Date.now();
     let confirmed = 0;
     let failed = 0;
@@ -184,7 +274,7 @@ export class CommissionScheduler {
        */
       if (run.confirmed + run.failed < CONFIRM_BATCH) break;
 
-      if (Date.now() - startedAt >= CONFIRM_TIME_BUDGET_MS) {
+      if (Date.now() - startedAt >= budgetMs) {
         /*
          * ── THE QUEUE IS WINNING, AND THIS IS THE ONLY PLACE THAT KNOWS ─────
          *
@@ -202,10 +292,11 @@ export class CommissionScheduler {
           this.logger,
           ALERT_KINDS.COMMISSION_QUEUE_STALLED,
           'notify',
-          `The commission confirm run hit its ${CONFIRM_TIME_BUDGET_MS / 1000}s budget with the ` +
+          `The commission confirm run hit its ${Math.round(budgetMs / 1000)}s budget with the ` +
             `queue still full: ${confirmed} credited across ${batches} batches and more were due. ` +
             'Accruals are being earned faster than they are being credited, so the unpaid backlog ' +
-            'is growing. Shorten IB_COMMISSION_CONFIRM_CRON or raise the budget.',
+            'is growing. Shorten the commission interval on the Trading settings tab, or give ' +
+            'the platform more capacity.',
           { confirmed, failed, batches },
         );
         break;

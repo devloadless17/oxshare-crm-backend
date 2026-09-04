@@ -358,3 +358,87 @@ describe('paging', () => {
     expect(new Set(seen).size).toBe(MANY);
   });
 });
+
+/*
+ * ── A REBATE IS THE CLIENT'S MONEY AND MUST APPEAR IN THEIR HISTORY ────────
+ *
+ * This was a real hole. A rebate is credited by the accrual pipeline through
+ * `WalletService.post`, so it produces a LEDGER ENTRY and no `transactions`
+ * row — and this list read only the three movement tables. On the live
+ * database that was 67 real credits sitting in clients' balances with nothing
+ * on any screen explaining where they came from, which is the one thing a
+ * wallet history must never do.
+ *
+ * COMMISSION is deliberately excluded and that is pinned below: it has its own
+ * history on the partner page, and a partner reading both would see one payment
+ * twice with no way to tell.
+ */
+describe('a rebate credited straight to the ledger', () => {
+  /** Credit the client's wallet the way the accrual pipeline does. */
+  async function creditLedger(
+    owner: string,
+    entryType: 'rebate' | 'commission',
+    amount: string,
+  ): Promise<void> {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO wallets (user_id, currency, kind, balance)
+      VALUES (${owner}, 'USD', 'main', 0)
+      RETURNING id
+    `);
+    await ctx.db.execute(sql`
+      INSERT INTO ledger_entries
+        (wallet_id, amount, balance_after, entry_type, reference_type, reference_id)
+      VALUES (${rows[0].id}, ${amount}, ${amount}, ${entryType}, 'accrual',
+              ${entryType + '-' + rows[0].id})
+    `);
+  }
+
+  it('appears in the client’s own transaction list', async () => {
+    const rebateClient = await makeClient('rebate-visible@oxshare-e2e.test');
+    await creditLedger(rebateClient, 'rebate', '2.50000000');
+
+    const page = await transactions.listForUser(rebateClient, { limit: 50 });
+
+    const rebate = page.items.find((row) => row.provider === 'rebate');
+    expect(rebate).toBeDefined();
+    expect(rebate?.amount).toBe('2.50000000');
+    /* A credit, like every other thing that adds to the wallet. */
+    expect(rebate?.direction).toBe('deposit');
+    /* A ledger row existing IS the money having moved — there is no pending. */
+    expect(rebate?.state).toBe('success');
+    /*
+     * NAMED, because the method column is what a client reads to tell one
+     * movement from another — and a rebate sits in a list of deposits with
+     * nothing else distinguishing it. A blank there is the question this arm
+     * exists to answer, asked again.
+     */
+    expect(rebate?.methodName).toBe('Rebate');
+  });
+
+  /*
+   * The exclusion is deliberate, so it is asserted rather than left to be
+   * inferred from its absence. Without this, adding commission to the same arm
+   * — one extra predicate — would pass every other case in this file.
+   */
+  it('does NOT surface commission, which has its own history', async () => {
+    const commissionClient = await makeClient('commission-hidden@oxshare-e2e.test');
+    await creditLedger(commissionClient, 'commission', '9.00000000');
+
+    const page = await transactions.listForUser(commissionClient, { limit: 50 });
+
+    expect(page.items).toHaveLength(0);
+  });
+
+  /*
+   * One client's rebate must not reach another's list. The arm joins through
+   * `wallets` to find the owner rather than reading a user id off the ledger
+   * row — which has none — so the scoping is worth pinning explicitly.
+   */
+  it('belongs to its own owner and nobody else', async () => {
+    const stranger = await makeClient('rebate-stranger@oxshare-e2e.test');
+
+    const page = await transactions.listForUser(stranger, { limit: 50 });
+
+    expect(page.items.some((row) => row.provider === 'rebate')).toBe(false);
+  });
+});

@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { DealCommissionService, type DealAccrualRun } from './deal-commission.service';
+import { AppSettingsStore } from '../../../store/app-settings.store';
+import { tradingTermsFrom } from '../../../common/trading-terms';
 import { pendingMigrationHint } from '../../../common/logging/pending-migration';
 import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
 import { JobLeaseService } from '../../../common/scheduling/job-lease.service';
@@ -36,14 +37,19 @@ const ALERT_REPEAT_MS = 3_600_000;
 const ACCRUE_BATCH = 200;
 
 /**
- * How long one accrual run may spend draining, against a one-minute cron.
+ * How long one accrual run may spend draining, as a FRACTION of the interval.
+ *
+ * It was a fixed 45s against a one-minute cron. That number cannot survive a
+ * configurable period — at a daily interval it would drain for 45 seconds and
+ * stop with the queue full, and at any interval below a minute it guarantees
+ * overlap.
  *
  * Under the interval deliberately: overlapping runs are CORRECT here — the
  * accrual is idempotent through `ib_accruals_source_earner_uq` — but two runs
  * competing for the same rows finish slower than one, so the margin is there to
  * make overlap rare rather than to make it safe.
  */
-const ACCRUE_TIME_BUDGET_MS = 45_000;
+const BUDGET_FRACTION = 0.75;
 
 /**
  * Drains the deal → commission queue, on a schedule.
@@ -59,7 +65,8 @@ const ACCRUE_TIME_BUDGET_MS = 45_000;
  *
  * The query behind it is an indexed read of a partial index over the
  * unprocessed set, which is empty most minutes. Settable via
- * `IB_DEAL_ACCRUAL_CRON` for a deployment that wants it quieter.
+ * The interval is `ib_commission_interval_seconds` on the Trading settings
+ * tab — the same number the payout job and the maturation window read.
  *
  * ## The frequency is not a correctness control
  *
@@ -70,7 +77,7 @@ const ACCRUE_TIME_BUDGET_MS = 45_000;
  * onto BullMQ later without touching the logic.
  */
 @Injectable()
-export class DealCommissionScheduler {
+export class DealCommissionScheduler implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(DealCommissionScheduler.name);
 
   /**
@@ -96,19 +103,100 @@ export class DealCommissionScheduler {
    */
   private lastStallAlert = 0;
 
+  /** The pending tick, so shutdown cancels it rather than leaking a timer. */
+  private timer: NodeJS.Timeout | null = null;
+  /** Set on destroy, so a run finishing after shutdown does not reschedule. */
+  private stopped = false;
+
   constructor(
     private readonly deals: DealCommissionService,
     private readonly leases: JobLeaseService,
+    private readonly settings: AppSettingsStore,
   ) {}
 
-  /*
-   * `process.env` rather than ConfigService, for the reason `CommissionScheduler`
-   * records: a decorator argument is evaluated when the class is DEFINED, before
-   * any container exists to ask.
+  onApplicationBootstrap(): void {
+    this.scheduleNext();
+  }
+
+  onModuleDestroy(): void {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+  }
+
+  /**
+   * The configured period, re-read on EVERY tick.
+   *
+   * ⚠️ THE SAME NUMBER AS THE PAYOUT JOB, and deliberately so.
+   * `ib_commission_interval_seconds` was introduced for the payout run and the
+   * maturation window, and leaving THIS half on `IB_DEAL_ACCRUAL_CRON` meant
+   * half the pipeline was a form and half was a deploy — an operator setting
+   * "pay every minute" would still wait however long the environment variable
+   * said before a closed trade even became an accrual.
+   *
+   * One number for the whole path: a trade closes, and within roughly that
+   * interval it is accrued, matured and credited.
    */
-  @Cron(process.env.IB_DEAL_ACCRUAL_CRON ?? CronExpression.EVERY_MINUTE, {
-    name: 'ib.accrueDeals',
-  })
+  private async intervalMs(): Promise<number> {
+    try {
+      return tradingTermsFrom(await this.settings.getTrading()).ibCommissionIntervalSeconds * 1_000;
+    } catch (error) {
+      /*
+       * A database blip must not stop the loop permanently. Fall back to a
+       * minute and try again — a scheduler that unschedules itself on one
+       * failed read is a job that silently never runs again, which is the
+       * failure this whole file is shaped to avoid.
+       */
+      this.logger.warn(
+        `Could not read the accrual interval; using 60s for this tick: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return 60_000;
+    }
+  }
+
+  /**
+   * A self-rescheduling timer, NOT `@Cron`.
+   *
+   * ⚠️ `app.module.ts` explains this at length and it has already shipped as a
+   * bug twice: a decorator argument is evaluated when the class is DEFINED,
+   * before any container exists and long before a settings row can be queried.
+   * `@Cron(someSetting)` silently registers the hardcoded default while the
+   * screen shows something else.
+   *
+   * `setTimeout` rather than `setInterval` for the other half: the next tick is
+   * scheduled only once the previous run has FINISHED, so a slow drain delays
+   * the next run instead of stacking on top of it.
+   */
+  private scheduleNext(): void {
+    if (this.stopped) return;
+
+    void this.intervalMs().then((ms) => {
+      if (this.stopped) return;
+      this.timer = setTimeout(() => {
+        void this.tick();
+      }, ms);
+      /* Do not hold the process open for an accrual that can wait. */
+      this.timer.unref?.();
+    });
+  }
+
+  private async tick(): Promise<void> {
+    try {
+      await this.accrue();
+    } finally {
+      /* ALWAYS reschedule, even after a throw. A loop that stops on error is a
+         platform that quietly stops paying partners. */
+      this.scheduleNext();
+    }
+  }
+
+  /**
+   * One accrual run.
+   *
+   * Public because it is the whole job, and calling it directly is how a test
+   * exercises one run without waiting on a timer.
+   */
   async accrue(): Promise<void> {
     /*
      * ONE INSTANCE. The accrual is idempotent — two runs racing the same deal
@@ -120,12 +208,13 @@ export class DealCommissionScheduler {
      * shorter than the work would hand the job to a second instance while the
      * first was still draining.
      */
-    await this.leases.run('ib.accrueDeals', 2 * ACCRUE_TIME_BUDGET_MS, () => this.runOnce());
+    const budgetMs = (await this.intervalMs()) * BUDGET_FRACTION;
+    await this.leases.run('ib.accrueDeals', 2 * budgetMs, () => this.runOnce(budgetMs));
   }
 
-  private async runOnce(): Promise<void> {
+  private async runOnce(budgetMs: number): Promise<void> {
     try {
-      const run = await this.drain();
+      const run = await this.drain(budgetMs);
 
       /*
        * ── THE RUN THAT DID NOTHING, ON PURPOSE ──────────────────────────────
@@ -355,7 +444,7 @@ export class DealCommissionScheduler {
    * batch — so summing them would multiply one stuck backlog by the number of
    * batches and alarm on a number that does not exist. The last reading wins.
    */
-  private async drain(): Promise<DealAccrualRun> {
+  private async drain(budgetMs: number): Promise<DealAccrualRun> {
     const startedAt = Date.now();
     const total: DealAccrualRun = {
       examined: 0,
@@ -399,7 +488,7 @@ export class DealCommissionScheduler {
          out of it on purpose, and no number of extra calls reaches it. */
       if (run.examined < ACCRUE_BATCH) break;
 
-      if (Date.now() - startedAt >= ACCRUE_TIME_BUDGET_MS) break;
+      if (Date.now() - startedAt >= budgetMs) break;
     }
 
     return total;

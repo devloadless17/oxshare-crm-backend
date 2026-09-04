@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { emailStubAs } from './email-stub';
 import { sql } from 'drizzle-orm';
-import { ConfigService } from '@nestjs/config';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
@@ -187,8 +187,11 @@ beforeAll(async () => {
       notify: vi.fn().mockResolvedValue(undefined),
       notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
     },
-    new ConfigService(),
+
     new AppSettingsStore(ctx.db),
+    /* The per-run payout summary email (0114). Stubbed: this suite is
+       about the money, and the send is fire-and-forget by contract. */
+    emailStubAs(),
   );
 }, 180_000);
 

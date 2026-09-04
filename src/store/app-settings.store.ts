@@ -65,7 +65,13 @@ export interface TradingSettingsRow {
   /** A decimal string, never a number — see §6. */
   maxDemoDeposit: string;
   /** How deep a programme's ladder may reach. Narrow with `normaliseIbMaxLevels`. */
+  /** HISTORICAL since 0113 — nothing reads it. See the column in schema.ts. */
   ibMaxLevels: number;
+  /**
+   * How often commission is paid, in seconds — the maturation delay AND the
+   * payout period, as one number (0113).
+   */
+  ibCommissionIntervalSeconds: number;
   /**
    * The most one trade may pay out in total, as a percentage — a decimal
    * STRING, never a number, because it is multiplied by an amount (§6).
@@ -96,7 +102,17 @@ export interface TradingSettingsWrite {
   maxLiveAccounts: number;
   maxDemoAccounts: number;
   maxDemoDeposit: string;
-  ibMaxLevels: number;
+  /**
+   * ── NOT WRITTEN ANY MORE (0113) ─────────────────────────────────────────
+   *
+   * `ibMaxLevels` capped how deep the ladder could go; the IB Levels page is
+   * the only thing that decides that now. It stays on the READ type as the
+   * record of what a deployment had configured, and leaves this one — which is
+   * the mechanism by which the column keeps its value, because `setTrading`
+   * spreads exactly the keys it is given.
+   */
+  /** How often commission is paid, in seconds — maturation AND payout period. */
+  ibCommissionIntervalSeconds: number;
   /**
    * ── THE TWO PAYOUT CEILINGS ARE NO LONGER WRITTEN HERE (0112) ────────────
    *

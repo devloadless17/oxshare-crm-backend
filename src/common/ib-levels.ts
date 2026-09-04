@@ -163,3 +163,39 @@ export function normaliseIbMaxTotalPayoutPct(stored: string | null | undefined):
 
   return trimmed;
 }
+
+/**
+ * Hourly — exactly what the two clocks this replaced did together.
+ *
+ * `IB_COMMISSION_HOLD_HOURS` defaulted to 24 and the payout cron to hourly, so
+ * "hourly" is the honest carry-forward for the RUN. The 24-hour maturation is
+ * deliberately NOT carried: keeping it would mean a deployment that never opens
+ * the form still waits a day, and the whole point of one number is that the
+ * number is the answer.
+ */
+export const DEFAULT_IB_COMMISSION_INTERVAL_SECONDS = 3600;
+
+/**
+ * The floor, and it is about the JOB rather than about commercial policy.
+ *
+ * Under a minute the payout run has not finished draining before its next tick
+ * fires, and stacked runs contend for the same rows to reach the outcome one of
+ * them would have reached alone. Mirrors
+ * `trading_settings_ib_commission_interval_ck`.
+ */
+export const MIN_IB_COMMISSION_INTERVAL_SECONDS = 60;
+
+/**
+ * A usable interval, or the default.
+ *
+ * Falls back to the DEFAULT rather than to the minimum, matching every
+ * normaliser above: a bad row must not silently make the platform pay faster
+ * than anybody configured, because a short interval is what removes the review
+ * grace before commission becomes spendable.
+ */
+export function normaliseIbCommissionInterval(stored: number | null | undefined): number {
+  if (stored === null || stored === undefined) return DEFAULT_IB_COMMISSION_INTERVAL_SECONDS;
+  if (!Number.isInteger(stored)) return DEFAULT_IB_COMMISSION_INTERVAL_SECONDS;
+  if (stored < MIN_IB_COMMISSION_INTERVAL_SECONDS) return DEFAULT_IB_COMMISSION_INTERVAL_SECONDS;
+  return stored;
+}

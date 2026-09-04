@@ -12,8 +12,19 @@ import {
 } from 'class-validator';
 import { REVENUE_BASES, type RevenueBasis } from '../../../common/revenue-basis';
 
-/** How a leg is priced — a percentage of revenue, or money per standard lot. */
-export const IB_PAYOUT_MODES = ['percent', 'per_lot'] as const;
+/**
+ * How a leg is priced.
+ *
+ *   `percent`          a share of BROKER REVENUE — see `revenueBasis`.
+ *   `per_lot`          money for each standard lot traded.
+ *   `share_of_parent`  a percentage of the rate on the level DIRECTLY ABOVE
+ *                      (0114) — "the sub-partner takes 30% of the main
+ *                      partner's $10, and he gets three dollars".
+ *
+ * The third reads `rate` like `percent` does; what differs is what the
+ * percentage applies TO, which no storage rule can express.
+ */
+export const IB_PAYOUT_MODES = ['percent', 'per_lot', 'share_of_parent'] as const;
 export type IbPayoutMode = (typeof IB_PAYOUT_MODES)[number];
 
 /**
@@ -94,6 +105,13 @@ export class IbLevelDto {
 
   @ApiProperty({ example: 'Main Partner' })
   name: string;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'What this tier is for, in the desk’s own words. Nothing computes with it.',
+  })
+  description: string | null;
 
   @ApiProperty({
     description:
@@ -183,6 +201,12 @@ export class CreateIbLevelDto {
   @Length(1, 80)
   name: string;
 
+  @ApiPropertyOptional({ type: String, nullable: true, maxLength: 2000 })
+  @IsOptional()
+  @IsString()
+  @Length(0, 2000)
+  description?: string | null;
+
   @ApiPropertyOptional({ enum: IB_PAYOUT_MODES, default: 'percent' })
   @IsOptional()
   @IsIn(IB_PAYOUT_MODES)
@@ -241,6 +265,12 @@ export class UpdateIbLevelDto {
   @IsString()
   @Length(1, 80)
   name?: string;
+
+  @ApiPropertyOptional({ type: String, nullable: true, maxLength: 2000 })
+  @IsOptional()
+  @IsString()
+  @Length(0, 2000)
+  description?: string | null;
 
   @ApiPropertyOptional({ enum: IB_PAYOUT_MODES })
   @IsOptional()

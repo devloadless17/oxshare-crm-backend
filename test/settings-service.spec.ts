@@ -44,6 +44,7 @@ class FakeStore {
   setTrading(values: TradingSettingsWrite, updatedBy: string): Promise<TradingSettingsRow> {
     this.trading = {
       ibMaxTotalPayoutPct: this.trading?.ibMaxTotalPayoutPct ?? '100.0000',
+      ibMaxLevels: this.trading?.ibMaxLevels ?? 2,
       ibMaxPayoutPerLot: this.trading?.ibMaxPayoutPerLot ?? '50.00000000',
       ...values,
       updatedBy,
@@ -113,12 +114,16 @@ const baseTrading = {
   maxLiveAccounts: 5,
   maxDemoAccounts: 5,
   maxDemoDeposit: '1000000',
-  /* The committed two levels — Feature List Rev 9, IB-17. */
-  ibMaxLevels: 2,
-  /* 100: the shipped default, which refuses only a chain costing more than
-   * the trade earned. Tests that care about the ceiling override it. */
-  ibMaxTotalPayoutPct: '100',
-  ibMaxPayoutPerLot: '50',
+  /*
+   * The commission cadence (0113), which replaced `ibMaxLevels` on this form.
+   * 3600 is the shipped default — hourly, exactly what the 24h hold and the
+   * hourly job produced together before the two became one number.
+   *
+   * The two payout CEILINGS and the level ceiling are all absent, and that is
+   * the contract being exercised: this DTO is a full replace, so a field it no
+   * longer declares must leave its column alone rather than blanking it.
+   */
+  ibCommissionIntervalSeconds: 3600,
 };
 
 const baseSmtp = {

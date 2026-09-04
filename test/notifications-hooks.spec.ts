@@ -101,7 +101,20 @@ beforeAll(async () => {
    * the window — the rule deciding when a partner's money becomes spendable was
    * asserted nowhere at all.)
    */
-  process.env.IB_COMMISSION_HOLD_HOURS = '0';
+  /*
+   * The maturation window cannot be switched OFF any more (0113): it is a
+   * setting with a 60-second floor, not `IB_COMMISSION_HOLD_HOURS=0`.
+   *
+   * So these cases BACKDATE their accruals past the window instead of removing
+   * it. That is the better fixture anyway — it exercises the real predicate
+   * (`created_at <= now() - interval`) rather than collapsing it to a
+   * comparison against zero, and the window's own behaviour stays pinned in
+   * `commission-hold-window.spec.ts`.
+   */
+  await ctx.db.execute(sql`
+      INSERT INTO trading_settings (id, ib_commission_interval_seconds) VALUES (true, 60)
+      ON CONFLICT (id) DO UPDATE SET ib_commission_interval_seconds = 60
+    `);
   /*
    * A REAL settings store on the test database. With no row written it reports
    * the column defaults, so the payout ceiling is the shipped 100% — which is
@@ -117,8 +130,10 @@ beforeAll(async () => {
     ctx.db,
     wallets,
     dispatch,
-    new ConfigService(),
     new AppSettingsStore(ctx.db),
+    /* The per-run payout summary email (0114). Stubbed: this suite is about
+       the money, and the send is fire-and-forget by contract. */
+    emailStubAs(),
   );
 }, 120_000);
 
@@ -296,9 +311,13 @@ describe('commission confirmation', () => {
               '70.0000', '250.00000000', '5.00000000', 'USD')
     `);
 
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     const first = await commissions.confirmPending();
     expect(first.confirmed).toBe(1);
     // The re-run: nothing pending, nothing double-notified.
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     const second = await commissions.confirmPending();
     expect(second.confirmed).toBe(0);
 

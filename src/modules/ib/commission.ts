@@ -298,7 +298,55 @@ export interface LevelTerms {
 }
 
 /** How one leg is priced — 0111. */
-export type PayoutMode = 'percent' | 'per_lot';
+export type PayoutMode = 'percent' | 'per_lot' | 'share_of_parent';
+
+/**
+ * How deep a chain of `share_of_parent` rungs may resolve — 0114.
+ *
+ * A share reads the rung ABOVE, which may itself be a share. The recursion is
+ * bounded by the ladder's own height and a ladder cannot contain a cycle (rungs
+ * are integers and each reads a strictly smaller one), so this cannot loop.
+ * It exists to make that reasoning explicit rather than implicit, and to stop a
+ * pathological ladder costing a deep walk on the money path.
+ */
+const MAX_SHARE_CHAIN = 10;
+
+/**
+ * What one lot earns the holder of a rung, following `share_of_parent` upward.
+ *
+ * A share is a percentage of the rate on the level DIRECTLY ABOVE — level N
+ * reads level N-1 — and NOT of the next earner in the chain. Those differ
+ * whenever a rung is unconfigured or a partner is suspended, and reading the
+ * chain would make one partner's rate depend on which of their ancestors was
+ * active that day. A rate card has to be quotable without knowing the tree.
+ *
+ * Returns `undefined` when the share resolves to nothing payable: level 1 has
+ * no rung above it, an ancestor rung is missing, or the rung it lands on is a
+ * `percent` one — a percentage of broker revenue is not a per-lot figure, so
+ * there is no honest number to take a share OF.
+ */
+function perLotRateFor(
+  level: LevelTerms,
+  levels: Map<number, LevelTerms>,
+  depth = 0,
+): Decimal | undefined {
+  if (depth >= MAX_SHARE_CHAIN) return undefined;
+
+  if (level.commissionMode === 'per_lot') {
+    return toDecimal(level.commissionAmountPerLot ?? '0');
+  }
+
+  if (level.commissionMode !== 'share_of_parent') return undefined;
+
+  const parent = levels.get(level.level - 1);
+  if (!parent) return undefined;
+
+  const parentRate = perLotRateFor(parent, levels, depth + 1);
+  if (parentRate === undefined) return undefined;
+
+  /* A percentage OF the parent's per-lot rate: 30% of $10 is $3. */
+  return parentRate.times(toDecimal(level.commissionRate)).dividedBy(100);
+}
 
 export interface ProgramTerms {
   id: string;
@@ -553,22 +601,39 @@ export function calculate(
    */
   const lots = event.lots === undefined ? toDecimal('0') : toDecimal(event.lots);
   /*
-   * A non-positive base pays nothing. A refunded or zero deposit must not
-   * produce a negative accrual — that would be a debit dressed as an earning,
-   * and clawbacks are a separate, deliberate operation (a compensating ledger
-   * entry), not a side effect of this function.
-   */
-  /*
-   * `greaterThan(0)`, NOT `!isPositive()`.
+   * A non-positive base pays nothing — TO A PERCENTAGE LEG.
    *
-   * decimal.js gives ZERO a sign of 1, so `new Decimal(0).isPositive()` is TRUE
-   * and this guard never fired on a zero base — the same quirk `transferToMain`
-   * documents, and it read correctly here while doing nothing. A zero-revenue
-   * deal fell through to the loop, produced legs that rounded to nothing, and
-   * returned an empty result with NO explanation, which is indistinguishable
-   * from "nobody was owed anything" to the operator reading the log.
+   * A refunded or zero deposit must not produce a negative accrual: that would
+   * be a debit dressed as an earning, and clawbacks are a separate, deliberate
+   * operation (a compensating ledger entry), not a side effect of this
+   * function.
+   *
+   * ⚠️ NARROWED IN 0114, AND IT WAS A LIVE BUG. This returned early for every
+   * ladder, which was right while every payout was a share of revenue and
+   * became wrong the moment a rung could be priced PER LOT: $10 a lot is owed
+   * on volume and is deliberately indifferent to what the broker earned, which
+   * is the whole point of the model.
+   *
+   * On a raw-spread group — no commission, no swap, an ordinary setup — that
+   * made EVERY trade pay nobody, and the caller marked each one done. Nothing
+   * reported it: an empty result is also what "nobody was owed anything"
+   * looks like.
+   *
+   * So the early return now applies only when NO rung in this chain is priced
+   * per lot. When one is, the loop runs and each leg decides for itself: the
+   * per-lot branch pays, and the percentage branch below still refuses a
+   * non-positive base with its own reason.
+   *
+   * `greaterThan(0)`, NOT `!isPositive()`. decimal.js gives ZERO a sign of 1,
+   * so `new Decimal(0).isPositive()` is TRUE and this guard never fired on a
+   * zero base — the same quirk `transferToMain` documents.
    */
-  if (!gross.greaterThan(0)) {
+  const anyPerLotLeg = chain.some((entry) => {
+    const level = levels.get(entry.level);
+    return level?.commissionMode === 'per_lot' || level?.commissionMode === 'share_of_parent';
+  });
+
+  if (!gross.greaterThan(0) && !anyPerLotLeg) {
     return { accruals: [], skippedReason: 'non-positive revenue base' };
   }
 
@@ -634,8 +699,22 @@ export function calculate(
      * be positive, because that requirement is a percentage concept: a trade
      * earning the broker nothing still owes a per-lot partner their amount.
      */
-    if (level.commissionMode === 'per_lot') {
-      const perLot = toDecimal(level.commissionAmountPerLot ?? '0');
+    /*
+     * `share_of_parent` resolves to a PER-LOT rate and is paid on the same
+     * path — 30% of the rung above's $10 is $3 a lot, which is a per-lot
+     * figure in every way that matters to the ledger. Sharing the branch keeps
+     * one arithmetic for one kind of number.
+     */
+    if (level.commissionMode === 'per_lot' || level.commissionMode === 'share_of_parent') {
+      const perLot = perLotRateFor(level, levels);
+
+      if (perLot === undefined) {
+        skipped.push(
+          `level ${level.level} is a share of the level above, which is not configured as a ` +
+            'per-lot rate',
+        );
+        continue;
+      }
 
       if (!perLot.greaterThan(0)) {
         skipped.push(`level ${level.level} pays nothing per lot`);
@@ -655,7 +734,13 @@ export function calculate(
         depth: entry.depth,
         levelId: level.id,
         programId: entry.programId,
-        rateValue: level.commissionAmountPerLot ?? '0',
+        /*
+         * The RESOLVED rate, not the configured percentage. A `share_of_parent`
+         * row storing "30" would be unreadable later — 30 of what? — while the
+         * $3 it resolved to is the number that produced the amount and the one
+         * a disputed payout is settled from.
+         */
+        rateValue: money(perLot),
         /*
          * The VOLUME, not the revenue. `baseAmount` records what the figure was
          * computed against, and writing a revenue this amount was never derived

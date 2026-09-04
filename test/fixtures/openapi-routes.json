@@ -104,7 +104,6 @@
   "GET /v1/ib/agencies",
   "GET /v1/ib/commissions",
   "GET /v1/ib/overview",
-  "GET /v1/ib/positions",
   "GET /v1/ib/status",
   "GET /v1/ib/wallet/transfers",
   "GET /v1/identity/me",
