@@ -1812,32 +1812,18 @@ export const agencies = pgTable('agencies', {
    */
   enabled: boolean('enabled').notNull().default(true),
   sortOrder: integer('sort_order').notNull().default(0),
-  /**
-   * The commission programme partners of this agency are appointed on (0107).
+  /*
+   * ── `defaultProgramId` IS GONE (0112) ────────────────────────────────────
    *
-   * The agency already decides what a partner may SELL — `agency_products`
-   * bounds their book, and a sub-partner inherits the agency of whoever
-   * recruited them. What they are PAID was the one term of that package
-   * configured somewhere else, so a broker running Gold and Standard agencies
-   * had to remember which terms went with which on every approval.
+   * It named the commission programme partners of this agency were appointed
+   * on, so a broker running Gold and Standard agencies did not have to remember
+   * which terms went with which on every approval.
    *
-   * ## A DEFAULT, never an assignment
-   *
-   * A reviewer's explicit choice still wins, and NULL falls through to the
-   * lowest-sorted enabled programme — the behaviour before this existed. A
-   * negotiated partner inside an ordinary agency is a real case, and cloning
-   * the agency to express it would grow the catalogue one row per negotiation.
-   *
-   * ## `set null`, unlike `ib_accounts.program_id`
-   *
-   * That one is `restrict` because a partner's EARNINGS reference it. This is a
-   * suggestion for approvals that have not happened yet: losing it costs the
-   * next reviewer a click and costs nobody money, so it must not be able to
-   * block an administrative delete.
+   * Terms come from a partner's LEVEL in the tree now, and a level is derived
+   * from where they sit rather than chosen — so there is nothing for an agency
+   * to default. An agency still bounds what a partner may SELL through
+   * `agency_products`; it no longer has an opinion about what they are paid.
    */
-  defaultProgramId: uuid('default_program_id').references(() => ibPrograms.id, {
-    onDelete: 'set null',
-  }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -3173,6 +3159,112 @@ export const ibRevenueBasisEnum = pgEnum('ib_revenue_basis', [
   'commission_swap_spread',
 ]);
 
+/**
+ * The commission ladder — 0112.
+ *
+ * A partner's terms come from their LEVEL in the partner tree: level 1
+ * introduces clients directly, level 2 was recruited by a level 1, and so on.
+ * Each level carries one commission term and one rebate term, either of which
+ * may be a percentage of broker revenue or a flat amount per standard lot.
+ *
+ * ## What this replaced, and what changed about who earns what
+ *
+ * It replaces `ibPrograms` on the live path. The chain walk is UNCHANGED, so
+ * both rules the business stated still hold by construction: a sub-partner
+ * earns nothing from their parent's own clients (they never appear in that
+ * chain), and a parent does earn from clients introduced beneath them.
+ *
+ * What changed is WHICH number each earner is paid. Programmes chose the rate by
+ * DEPTH — how many hops the trade sat below that earner. Levels choose it by the
+ * earner's own position in the tree, so a level 1 partner earns their level 1
+ * term on everything that reaches them, however deep. That is what "static per
+ * lot for the main partner, percent for the partner under him" describes.
+ *
+ * ⚠️ This reverses 0102 and deviates from FR-IB-06, which commits to a named
+ * programme catalogue. Done on an explicit instruction; see the migration.
+ */
+export const ibLevels = pgTable(
+  'ib_levels',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /**
+     * The rung, and the whole identity of the row.
+     *
+     * UNIQUE because a level IS its number — two rows claiming level 2 is a rate
+     * card with no defined answer.
+     */
+    level: integer('level').notNull().unique(),
+    name: varchar('name', { length: 80 }).notNull(),
+    /**
+     * Disabling stops a level paying without deleting the terms that explain
+     * accruals already written against it.
+     */
+    enabled: boolean('enabled').notNull().default(true),
+
+    /** How the PARTNER's leg is priced at this level. */
+    commissionMode: ibPayoutModeEnum('commission_mode').notNull().default('percent'),
+    /** A percentage of broker revenue. Read only in `percent` mode. */
+    commissionRate: numeric('commission_rate', { precision: 12, scale: 4 }).notNull().default('0'),
+    /** Money per standard lot — NUMERIC(28,8) because it is money (§6.1). */
+    commissionAmountPerLot: numeric('commission_amount_per_lot', { precision: 28, scale: 8 }),
+
+    /** How the CLIENT's rebate is priced at this level. */
+    rebateMode: ibPayoutModeEnum('rebate_mode').notNull().default('percent'),
+    rebateRate: numeric('rebate_rate', { precision: 12, scale: 4 }).notNull().default('0'),
+    rebateAmountPerLot: numeric('rebate_amount_per_lot', { precision: 28, scale: 8 }),
+
+    /**
+     * WHICH revenue a percentage at this level is a share of — FR-IB-16.
+     *
+     * Per level rather than a platform constant, because the base is half of
+     * what a partner agreed to: "30% of the spread markup" and "30% of
+     * commission and swap" are different contracts. A per-lot term ignores it
+     * entirely — that is priced from volume and never from revenue.
+     */
+    revenueBasis: ibRevenueBasisEnum('revenue_basis').notNull().default('commission_swap'),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /*
+     * Each mode requires exactly the column it reads and forbids the other, so a
+     * row can never be ambiguous about which number pays.
+     *
+     * `IS NOT NULL` beside `>= 0` is NOT redundant: a CHECK evaluating to NULL
+     * passes in Postgres, so the comparison alone would accept a per-lot term
+     * carrying no amount. 0111 hit exactly that and the constraint suite caught
+     * it rather than review.
+     */
+    check(
+      'ib_levels_commission_shape',
+      sql`(${t.commissionMode} = 'percent' AND ${t.commissionAmountPerLot} IS NULL)
+          OR (${t.commissionMode} = 'per_lot' AND ${t.commissionAmountPerLot} IS NOT NULL AND ${t.commissionAmountPerLot} >= 0)`,
+    ),
+    check(
+      'ib_levels_rebate_shape',
+      sql`(${t.rebateMode} = 'percent' AND ${t.rebateAmountPerLot} IS NULL)
+          OR (${t.rebateMode} = 'per_lot' AND ${t.rebateAmountPerLot} IS NOT NULL AND ${t.rebateAmountPerLot} >= 0)`,
+    ),
+    /*
+     * The STRUCTURAL bound, wider than the policy one. `ib_max_levels` decides
+     * how deep a broker actually pays and is a settings change; this only bounds
+     * what the column can hold, so raising the policy never needs a migration.
+     */
+    check('ib_levels_level_range', sql`${t.level} BETWEEN 1 AND 10`),
+    /*
+     * Percentages are shares of ONE revenue figure, so a level cannot hand out
+     * more than there is. Per-lot terms contribute nothing here and are bounded
+     * at accrual time by `ib_max_payout_per_lot`, where the lot count is known.
+     */
+    check(
+      'ib_levels_share_fits',
+      sql`(CASE WHEN ${t.commissionMode} = 'percent' THEN ${t.commissionRate} ELSE 0 END)
+          + (CASE WHEN ${t.rebateMode} = 'percent' THEN ${t.rebateRate} ELSE 0 END) <= 100`,
+    ),
+  ],
+);
+
 export const ibPrograms = pgTable('ib_programs', {
   id: uuid('id').defaultRandom().primaryKey(),
   /** What an operator picks in a list, and what a partner is told they are on. */
@@ -3488,17 +3580,27 @@ export const ibAccounts = pgTable(
      */
     agencyId: uuid('agency_id').references(() => agencies.id, { onDelete: 'restrict' }),
     /**
-     * The terms this partner is paid on — FR-IB-06's "exactly one named
-     * program".
+     * HISTORICAL since 0112 — the programme this partner used to be paid on.
      *
-     * NOT NULL: migration 0084 placed every existing partner on the Default
-     * programme, which was seeded from the ladder they were already being paid
-     * by, so no rate moved. Leaving it nullable would make "no terms" a state
-     * the commission engine has to hold an opinion about on every single trade.
+     * Terms come from their LEVEL in the tree now, derived from where they sit
+     * rather than assigned, so nothing writes this any more. It is kept and
+     * made nullable rather than dropped: it is the only thing that explains how
+     * accruals written before the change were priced.
      */
-    programId: uuid('program_id')
-      .notNull()
-      .references(() => ibPrograms.id, { onDelete: 'restrict' }),
+    programId: uuid('program_id').references(() => ibPrograms.id, { onDelete: 'restrict' }),
+    /**
+     * The partner's rung in the tree, and therefore which `ibLevels` row pays
+     * them — 0112.
+     *
+     * STORED rather than derived. It could be computed by walking
+     * `parentIbUserId` to the root, but that is a recursive query per earner per
+     * deal on the money path, and the answer only changes when somebody is
+     * appointed — which is exactly when it is cheap to write.
+     *
+     * This column existed before 0102 and went with the old ladder. It is back
+     * because terms are chosen by it again.
+     */
+    level: integer('level').notNull().default(1),
     /** NULL means they deal with the broker directly — the top of a chain. */
     parentIbUserId: uuid('parent_ib_user_id'),
     /**
@@ -3539,8 +3641,15 @@ export const ibAccounts = pgTable(
        place a new partner, on every sub-tree earnings roll-up (FR-IB-17), and
        once per hop by the commission engine's chain walk. */
     index('ib_accounts_parent_idx').on(t.parentIbUserId),
-    /* "Who is on these terms?" — asked before a programme may be disabled or
-       deleted, and to report FR-IB-06's partner count beside each programme. */
+    /* "Who stands on this rung?" — asked before a level may be disabled or
+       deleted, to report its partner count beside it, and to ORDER the partner
+       list by level (R-2.5). Replaces the programme index below in every one of
+       those roles; that one is kept only while `program_id` still explains
+       historical accruals. */
+    index('ib_accounts_level_user_idx').on(t.level.desc(), t.userId.desc()),
+    /* HISTORICAL (0112). Nothing decides pay from this any more — see the
+       column comment — but a lookup by it is how a pre-0112 accrual is
+       explained. */
     index('ib_accounts_program_idx').on(t.programId),
     /* "Which partners are on this agency?" — asked before an operator is
        allowed to delete or disable one. */
@@ -3635,6 +3744,14 @@ export const ibAccruals = pgTable(
      * "accrued before the column existed", never "paid by no terms".
      */
     programId: uuid('program_id').references(() => ibPrograms.id, { onDelete: 'restrict' }),
+    /**
+     * Which LEVEL's terms produced this accrual — 0112.
+     *
+     * A row carries exactly one of this and `programId`: whichever priced it.
+     * Together they keep the guarantee this table has always made — that the
+     * arithmetic behind a credited amount is reproducible from the row alone.
+     */
+    levelId: uuid('level_id').references(() => ibLevels.id, { onDelete: 'restrict' }),
     /** The rate applied, so the arithmetic is reproducible from the row alone. */
     rateValue: numeric('rate_value', { precision: 12, scale: 4 }).notNull(),
     /** The revenue base this is a share of. */

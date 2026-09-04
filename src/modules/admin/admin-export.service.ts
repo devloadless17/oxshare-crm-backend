@@ -598,9 +598,13 @@ export class AdminExportService {
     { header: 'Email', value: (r) => r.user.email },
     { header: 'First name', value: (r) => r.user.firstName },
     { header: 'Last name', value: (r) => r.user.lastName },
-    /* The TERMS, replacing the two rung columns (0102). A partner export is
-       read to answer "who is on what", and a rung answered neither half. */
-    { header: 'Programme', value: (r) => r.programName },
+    /*
+     * The RUNG, which is what decides their terms again (0112). The programme
+     * column it replaces answered "who is on what" while programmes existed;
+     * a level answers the same question now, and is the only half that is still
+     * true of a partner.
+     */
+    { header: 'Level', value: (r) => r.account.level },
     { header: 'Referral code', value: (r) => r.account.referralCode },
     { header: 'Parent partner ID', value: (r) => r.account.parentIbUserId },
     { header: 'Active', value: (r) => r.account.active },
@@ -792,14 +796,13 @@ export interface IbApplicationExportRow {
 export interface IbPartnerExportRow {
   account: {
     userId: string;
-    programId: string;
+    level: number;
     parentIbUserId: string | null;
     referralCode: string;
     active: boolean;
     approvedAt: Date;
   };
   user: { id: string; email: string; firstName: string; lastName: string };
-  programName: string;
 }
 
 export interface RoleExportRow {

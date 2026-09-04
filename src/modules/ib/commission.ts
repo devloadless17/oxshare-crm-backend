@@ -64,8 +64,16 @@ export interface ChainNode {
   parentIbUserId: string | null;
   /** A suspended partner keeps their tree and stops earning. */
   active: boolean;
-  /** The programme that decides their rate — FR-IB-06, exactly one per partner. */
-  programId: string;
+  /**
+   * The partner's RUNG, and what decides their terms — 0112.
+   *
+   * A property of the partner rather than of any trade: it is written when they
+   * are appointed, from their parent's level, and only changes if somebody
+   * re-parents them.
+   */
+  level: number;
+  /** HISTORICAL — the programme they used to be paid on. Decides nothing now. */
+  programId?: string;
 }
 
 /** A resolved earner: who, and at what depth above the client. */
@@ -80,7 +88,29 @@ export interface ChainEntry {
    * tier of their own programme in each case.
    */
   depth: number;
-  programId: string;
+  /**
+   * HISTORICAL — the programme this partner used to be paid on (pre-0112).
+   *
+   * Kept on the entry so the accrual row can still record what priced it for
+   * partners who have not been re-levelled. Nothing reads it to decide money.
+   */
+  programId?: string;
+  /**
+   * The earner's own RUNG in the partner tree — 0112, and what now decides their
+   * terms.
+   *
+   * Distinct from `depth`, and the distinction is the whole change. `depth` is a
+   * property of THIS TRADE — how far below this partner it happened. `level` is
+   * a property of the PARTNER — how far below the broker they sit. A level 1
+   * partner is paid their level 1 terms on their own client's trade and on a
+   * sub-partner's alike, because their rung did not move.
+   *
+   * Programmes chose the rate by depth, so the same partner could earn
+   * differently on their own clients than on a sub-partner's. Levels do not, and
+   * that is what "static per lot for the main partner, percent for the partner
+   * under him" describes.
+   */
+  level: number;
 }
 
 /**
@@ -127,7 +157,12 @@ export function resolveChain(
     const node: ChainNode | undefined = lookup(currentId);
     if (!node || !node.active) break;
 
-    chain.push({ ibUserId: node.userId, depth, programId: node.programId });
+    chain.push({
+      ibUserId: node.userId,
+      depth,
+      level: node.level,
+      programId: node.programId,
+    });
     currentId = node.parentIbUserId;
   }
 
@@ -212,6 +247,59 @@ export type ProgramMode = 'commission_only' | 'rebate_only' | 'hybrid';
  * 70% or $70-per-lot, and migration 0055 removed it because a cut of what the
  * broker earned is a percentage by definition.
  */
+/**
+ * One rung of the commission ladder — 0112, and what decides money now.
+ *
+ * ## Why this replaced a programme
+ *
+ * A programme was assigned to a partner and priced by DEPTH — how far below that
+ * partner the trade happened — so one partner could earn differently on their
+ * own clients than on a sub-partner's. A level is a property of the PARTNER:
+ * their rung in the tree. A level 1 partner earns their level 1 terms on
+ * everything that reaches them, however deep.
+ *
+ * The chain walk is unchanged either way, so both rules the business stated
+ * still hold by construction: a sub-partner never appears in their parent's own
+ * client's chain, and a parent does appear in a sub-partner's.
+ *
+ * ## One commission term and one rebate term, each either shape
+ *
+ * A level pays a percentage of broker revenue OR a flat amount per standard lot,
+ * chosen per leg. The two are not interchangeable: a percentage is bounded by
+ * the revenue it is a share of, and a per-lot amount is deliberately not — see
+ * `checkPlausible`, which judges each by the bound natural to it.
+ */
+export interface LevelTerms {
+  /** The `ib_levels` row id, recorded on every accrual it prices. */
+  id: string;
+  /** The rung this card pays. */
+  level: number;
+  /**
+   * A disabled level takes no share.
+   *
+   * Same rule a disabled programme followed: an operator who switches terms off
+   * has stopped them paying, and honouring them anyway makes the switch
+   * decorative.
+   */
+  enabled: boolean;
+
+  commissionMode: PayoutMode;
+  /** A percentage of the broker's revenue. Read only in `percent` mode. */
+  commissionRate: string;
+  /** Money per standard lot. Read only in `per_lot` mode. */
+  commissionAmountPerLot?: string;
+
+  rebateMode: PayoutMode;
+  rebateRate: string;
+  rebateAmountPerLot?: string;
+
+  /** WHICH revenue a percentage here is a share of — FR-IB-16. */
+  revenueBasis?: RevenueBasis;
+}
+
+/** How one leg is priced — 0111. */
+export type PayoutMode = 'percent' | 'per_lot';
+
 export interface ProgramTerms {
   id: string;
   mode: ProgramMode;
@@ -257,8 +345,22 @@ export interface ProgramTerms {
 export interface Accrual {
   ibUserId: string;
   depth: number;
-  /** Which programme paid it, and at what rate — both recorded on the row. */
-  programId: string;
+  /**
+   * Which LEVEL's terms paid this — 0112, and what the row records now.
+   *
+   * Optional only so the historical programme path and in-memory tests that
+   * predate levels still construct. Every accrual the live engine writes carries
+   * it.
+   */
+  levelId?: string;
+  /**
+   * HISTORICAL — the programme that priced rows written before 0112.
+   *
+   * A row carries exactly one of this and `levelId`: whichever produced it.
+   * Together they keep the guarantee this type has always made, that the
+   * arithmetic behind a credited amount is reproducible from the row alone.
+   */
+  programId?: string;
   rateValue: string;
   /**
    * The revenue this leg is a share OF, under the earner's own basis (0106).
@@ -303,7 +405,10 @@ export interface Accrual {
  */
 export interface RebateLeg {
   ibUserId: string;
-  programId: string;
+  /** Which LEVEL's terms produced it — 0112. See `Accrual.levelId`. */
+  levelId?: string;
+  /** HISTORICAL, for rows priced before levels. See `Accrual.programId`. */
+  programId?: string;
   rateValue: string;
   /** The revenue this rebate is a share of — the INTRODUCER's basis. */
   baseAmount: string;
@@ -325,7 +430,7 @@ export interface RebateLeg {
 
 export interface CommissionResult {
   accruals: Accrual[];
-  /** Absent unless the introducer's programme pays a rebate and it rounds above zero. */
+  /** Absent unless the introducer's RUNG pays a rebate and it rounds above zero. */
   rebate?: RebateLeg;
   /**
    * Why nothing was accrued, when the chain was non-empty but the result is.
@@ -379,14 +484,22 @@ export interface CommissionResult {
  * the partner on terms nobody agreed to, silently, at a number that looks
  * perfectly reasonable on the accrual row.
  */
-function basisFor(
-  program: ProgramTerms,
+/**
+ * WHICH revenue a percentage at this level is a share of — FR-IB-16.
+ *
+ * `undefined` means UNPRICEABLE and must never fall back to the gross — a basis
+ * absent from the map is one the caller could not price, and substituting a
+ * different revenue pays the partner on terms nobody agreed to, at a number that
+ * reads perfectly reasonably on the accrual row.
+ */
+function basisForLevel(
+  level: LevelTerms,
   fallback: Decimal,
   revenueByBasis?: ReadonlyMap<RevenueBasis, string>,
 ): Decimal | undefined {
   if (!revenueByBasis) return fallback;
 
-  const figure = revenueByBasis.get(program.revenueBasis ?? DEFAULT_REVENUE_BASIS);
+  const figure = revenueByBasis.get(level.revenueBasis ?? DEFAULT_REVENUE_BASIS);
   return figure === undefined ? undefined : toDecimal(figure);
 }
 
@@ -404,8 +517,14 @@ function basisFor(
 export function calculate(
   event: RevenueEvent,
   chain: ChainEntry[],
-  /** Every programme held by anybody in `chain`, keyed by id. */
-  programs: Map<string, ProgramTerms>,
+  /**
+   * The ladder, keyed by rung — 0112.
+   *
+   * Every level anybody in `chain` stands on. A rung with no row pays nothing
+   * and says so, which is what "the broker has not configured that level yet"
+   * looks like from here.
+   */
+  levels: Map<number, LevelTerms>,
   /**
    * The broker's revenue on this trade under EACH basis — FR-IB-16 (0106).
    *
@@ -414,7 +533,7 @@ export function calculate(
    * caller with a single revenue figure still wants.
    *
    * When present, each earner's leg is a percentage of the figure for THEIR
-   * programme's basis. The caller computes the map because the arithmetic needs
+   * RUNG's basis. The caller computes the map because the arithmetic needs
    * MT5 legs and a product markup, and this module is a pure seam that lint
    * keeps away from `modules/` and `store/`.
    *
@@ -484,68 +603,47 @@ export function calculate(
       continue;
     }
 
-    const program = programs.get(entry.programId);
+    const level = levels.get(entry.level);
 
-    if (!program) {
-      skipped.push(`partner at depth ${entry.depth} has no configured programme`);
+    if (!level) {
+      skipped.push(
+        `partner at level ${entry.level} has no configured terms — that rung is not on the ladder`,
+      );
       continue;
     }
     /*
-     * A DISABLED programme takes no share. Same rule the placement logic
-     * enforces on a rung: an operator who switches terms off has stopped them
-     * paying, and honouring them anyway would make the switch decorative.
+     * A DISABLED level takes no share. An operator who switches a rung off has
+     * stopped it paying, and honouring it anyway would make the switch
+     * decorative.
      */
-    if (!program.enabled) {
-      skipped.push(`programme ${program.id} is disabled`);
-      continue;
-    }
-    /*
-     * `rebate_only` pays the CLIENT and nobody else. It is a real model — the
-     * broker buys volume by handing the spread back — and the partner earning
-     * nothing on it is the point, not an omission.
-     */
-    if (program.mode === 'rebate_only') {
-      skipped.push(`programme ${program.id} is rebate-only, so no commission accrues`);
+    if (!level.enabled) {
+      skipped.push(`level ${level.level} is disabled`);
       continue;
     }
 
-    /*
-     * DEPTH decides the rate, and the EARNER'S OWN programme decides whether
-     * this depth is one it pays at all.
-     *
-     * This replaced `entry.depth === 1 ? level1Rate : level2Rate`, a ternary
-     * that had no third branch and so paid `level2Rate` to a depth-3 ancestor —
-     * silently treating "as deep as the type can express" as "as deep as the
-     * broker configured". `tiers` has no such fallthrough: a depth nobody
-     * configured is absent, and absent means this programme stops here.
-     */
     /*
      * ── PER-LOT PAYS FIRST, AND DOES NOT LOOK AT REVENUE AT ALL ──────────
      *
-     * A per-lot tier is a flat amount for each standard lot traded, so it is
-     * priced from the trade's VOLUME and is deliberately indifferent to what
-     * the broker earned. That is the whole point of the model: over volume it
-     * is profitable, and on any single trade it may legitimately exceed the
-     * revenue. `checkPlausible` bounds it in its own units — see
-     * `maxPayoutPerLot` there — because the percentage ceiling cannot.
+     * A per-lot term is a flat amount for each standard lot traded, priced from
+     * the trade's VOLUME and deliberately indifferent to what the broker
+     * earned. Over volume it is profitable; on any single trade it may
+     * legitimately exceed the revenue. `checkPlausible` bounds it in its own
+     * units, because the percentage ceiling cannot.
      *
-     * It is checked BEFORE the percentage branch, and before the base is
-     * required to be positive, precisely because that requirement is a
-     * percentage concept: a trade earning nothing still owes a per-lot partner
-     * their amount.
+     * Checked BEFORE the percentage branch, and before the base is required to
+     * be positive, because that requirement is a percentage concept: a trade
+     * earning the broker nothing still owes a per-lot partner their amount.
      */
-    const perLotValue = program.tiersPerLot?.get(entry.depth);
-
-    if (perLotValue !== undefined) {
-      const perLot = toDecimal(perLotValue);
+    if (level.commissionMode === 'per_lot') {
+      const perLot = toDecimal(level.commissionAmountPerLot ?? '0');
 
       if (!perLot.greaterThan(0)) {
-        skipped.push(`programme ${program.id} pays nothing per lot at depth ${entry.depth}`);
+        skipped.push(`level ${level.level} pays nothing per lot`);
         continue;
       }
 
       if (!lots.greaterThan(0)) {
-        skipped.push(`programme ${program.id} prices per lot, and this trade reports no volume`);
+        skipped.push(`level ${level.level} prices per lot, and this trade reports no volume`);
         continue;
       }
 
@@ -555,20 +653,14 @@ export function calculate(
       accruals.push({
         ibUserId: entry.ibUserId,
         depth: entry.depth,
-        programId: program.id,
+        levelId: level.id,
+        programId: entry.programId,
+        rateValue: level.commissionAmountPerLot ?? '0',
         /*
-         * The AMOUNT PER LOT is recorded where a percentage would be. Both
-         * answer the same question on the accrual row — "what term produced
-         * this?" — and `ib_accruals.program_id` beside it says which catalogue
-         * entry to read the units from.
-         */
-        rateValue: perLotValue,
-        /*
-         * The LOTS, not the revenue. `baseAmount` is what the figure was
-         * computed against, and for a per-lot leg that is the volume — writing
-         * the revenue there would record a base this amount was never derived
-         * from, which is exactly the kind of plausible-but-wrong row an audit
-         * cannot catch later.
+         * The VOLUME, not the revenue. `baseAmount` records what the figure was
+         * computed against, and writing a revenue this amount was never derived
+         * from produces a row nobody can check by arithmetic — the one property
+         * a money ledger has to keep.
          */
         baseAmount: money(lots),
         amount,
@@ -577,95 +669,50 @@ export function calculate(
       continue;
     }
 
-    const rateValue = program.tiers.get(entry.depth);
-
-    if (rateValue === undefined) {
-      skipped.push(
-        `programme ${program.id} reaches ${program.tiers.size} level(s), so the partner at ` +
-          `depth ${entry.depth} earns nothing from it`,
-      );
-      continue;
-    }
-
+    const rateValue = level.commissionRate;
     const rate = toDecimal(rateValue);
+
     /*
-     * `greaterThan(0)` for the reason the base check above records: a rate of
-     * exactly zero is `isPositive()` in decimal.js, so a zero would silently
-     * produce an unexplained empty result instead of saying so.
-     *
-     * Belt and braces rather than dead code — `ib_program_tiers_rate_positive`
-     * refuses a zero-rate row, so this is unreachable through the database. It
-     * stays because this function is a pure seam every test constructs terms for
-     * by hand, and a guard that only the CHECK enforces is one an in-memory
-     * caller can walk straight past.
+     * `greaterThan(0)`, NOT `!isPositive()` — decimal.js gives ZERO a sign of 1,
+     * so `isPositive()` is true for zero and the guard would never fire.
      */
     if (!rate.greaterThan(0)) {
-      skipped.push(`programme ${program.id} pays nothing at depth ${entry.depth}`);
+      skipped.push(`level ${level.level} pays no commission`);
       continue;
     }
 
-    /*
-     * ROUNDED FIRST, then tested for zero — and that order is the whole point.
-     *
-     * `money()` fixes the value at the 8 decimal places the column stores. A
-     * leg worth 0.000000001 is non-zero as a `Decimal` but is `'0.00000000'`
-     * once stored, so testing `amount.isZero()` before rounding lets it through
-     * as an accrual of nothing.
-     *
-     * That is not merely untidy: `ib_accruals_amount_positive` REFUSES a
-     * non-positive amount, so the row would fail its insert at runtime — one
-     * dust-sized leg taking down the accrual of every legitimate earner in the
-     * same statement. Skipping here is what keeps the two consistent.
-     */
-    /*
-     * ONE base, and it is what the BROKER earned on the trade — its commission
-     * and swap, never the client's volume, profit or balance.
-     *
-     * There used to be a second: `per_lot` multiplied the rate by lots traded,
-     * pricing a rebate on size rather than on money. Migration 0055 removed the
-     * model, so `rateValue` has exactly one meaning and this has one branch.
-     */
-    /*
-     * ── WHICH REVENUE THIS EARNER'S RATE APPLIES TO (FR-IB-16, 0106) ───────
-     *
-     * `basisFor` returns `event.grossAmount` when the caller passed no map,
-     * which is every caller that has one revenue figure and every in-memory
-     * test that constructs terms by hand. With a map, each partner is priced on
-     * the basis their OWN programme names — because that is what they agreed
-     * to, and a chain may legitimately mix them.
-     */
-    const base = basisFor(program, gross, revenueByBasis);
+    const base = basisForLevel(level, gross, revenueByBasis);
 
     if (base === undefined) {
       /*
-       * `unpriceable`, NOT `skipped`. The partner is owed something and we
-       * cannot say how much — see the field's own note for why the difference
-       * decides whether this commission survives.
+       * A SENTENCE, not a record. The only consumer joins these into a log line
+       * an operator reads, and the two facts that matter — who could not be
+       * priced and on which basis — belong in it rather than in a shape the
+       * caller has to format.
        */
       unpriceable.push(
-        `the partner at depth ${entry.depth} is on programme ${program.id}, which prices on ` +
-          `${program.revenueBasis ?? DEFAULT_REVENUE_BASIS}, and this trade has no figure for ` +
-          'that basis — most likely the account is linked to no product carrying a spread markup',
+        `${entry.ibUserId} prices on ${level.revenueBasis ?? DEFAULT_REVENUE_BASIS}, ` +
+          'which this trade carries no figure for',
       );
       continue;
     }
 
     if (!base.greaterThan(0)) {
       skipped.push(
-        `programme ${program.id} prices on ${program.revenueBasis ?? DEFAULT_REVENUE_BASIS}, ` +
+        `level ${level.level} prices on ${level.revenueBasis ?? DEFAULT_REVENUE_BASIS}, ` +
           'which earned nothing on this trade',
       );
       continue;
     }
 
     const amount = money(base.times(rate).dividedBy(100));
-
     if (toDecimal(amount).isZero()) continue;
 
     accruals.push({
       ibUserId: entry.ibUserId,
       depth: entry.depth,
-      programId: program.id,
+      levelId: level.id,
+      programId: entry.programId,
       rateValue,
       baseAmount: money(base),
       amount,
@@ -685,42 +732,29 @@ export function calculate(
    */
   let rebate: RebateLeg | undefined;
   const introducer = chain.find((entry) => entry.depth === 1);
-  const introducerProgram = introducer ? programs.get(introducer.programId) : undefined;
+  const introducerLevel = introducer ? levels.get(introducer.level) : undefined;
 
-  if (
-    introducer &&
-    introducerProgram?.enabled &&
-    introducerProgram.mode !== 'commission_only' &&
-    event.source !== 'deposit'
-  ) {
+  if (introducer && introducerLevel?.enabled && event.source !== 'deposit') {
     /*
-     * ── THE CLIENT'S PER-LOT REBATE ──────────────────────────────────────
+     * ── PER-LOT FIRST, as on the commission legs ─────────────────────────
      *
-     * Same shape as the commission legs above, and same indifference to
-     * revenue: a flat amount for each lot the client traded. Checked first, so
-     * a per-lot programme never falls through to a percentage the operator did
-     * not configure.
-     */
-    const rebatePerLot = introducerProgram.rebateAmountPerLot;
-    /*
      * Per-lot terms REPLACE the percentage rather than adding to it, so the
-     * percentage branch below is skipped entirely when this one applies —
-     * including when it produces nothing, which is the case that matters. A
-     * per-lot programme on a trade with no volume owes nothing; falling through
-     * would quietly pay a percentage the operator never configured.
+     * percentage branch is skipped entirely when this mode applies — including
+     * when it produces nothing. A per-lot rebate on a trade with no volume owes
+     * nothing; falling through would quietly pay a percentage nobody
+     * configured.
      */
-    const rebateIsPerLot = rebatePerLot !== undefined;
-
-    if (rebateIsPerLot) {
-      const perLot = toDecimal(rebatePerLot);
+    if (introducerLevel.rebateMode === 'per_lot') {
+      const perLot = toDecimal(introducerLevel.rebateAmountPerLot ?? '0');
 
       if (perLot.greaterThan(0) && lots.greaterThan(0)) {
         const amount = money(perLot.times(lots));
         if (!toDecimal(amount).isZero()) {
           rebate = {
             ibUserId: introducer.ibUserId,
-            programId: introducerProgram.id,
-            rateValue: rebatePerLot,
+            levelId: introducerLevel.id,
+            programId: introducer.programId,
+            rateValue: introducerLevel.rebateAmountPerLot ?? '0',
             // The volume it was priced against — see the commission leg.
             baseAmount: money(lots),
             amount,
@@ -728,27 +762,29 @@ export function calculate(
           };
         }
       }
-    }
+    } else {
+      const rebateRate = toDecimal(introducerLevel.rebateRate);
+      /*
+       * The client's leg is priced on the INTRODUCER's basis, for the same
+       * reason the rate comes from their level: it is a term of the one
+       * relationship the client is actually in.
+       */
+      const rebateBase = basisForLevel(introducerLevel, gross, revenueByBasis);
 
-    const rebateRate = rebateIsPerLot ? toDecimal('0') : toDecimal(introducerProgram.rebateRate);
-    /*
-     * The client's leg is priced on the INTRODUCER's basis, for the same reason
-     * the rate itself comes from their programme: it is a term of the one
-     * relationship the client is actually in.
-     */
-    const rebateBase = basisFor(introducerProgram, gross, revenueByBasis);
-    if (rebateRate.greaterThan(0) && rebateBase?.greaterThan(0)) {
-      const amount = money(rebateBase.times(rebateRate).dividedBy(100));
-      // Rounded first, then tested — the same order, and the same reason, as
-      // the commission legs above.
-      if (!toDecimal(amount).isZero()) {
-        rebate = {
-          ibUserId: introducer.ibUserId,
-          programId: introducerProgram.id,
-          rateValue: introducerProgram.rebateRate,
-          baseAmount: money(rebateBase),
-          amount,
-        };
+      if (rebateRate.greaterThan(0) && rebateBase?.greaterThan(0)) {
+        const amount = money(rebateBase.times(rebateRate).dividedBy(100));
+        // Rounded first, then tested — the same order, and the same reason, as
+        // the commission legs above.
+        if (!toDecimal(amount).isZero()) {
+          rebate = {
+            ibUserId: introducer.ibUserId,
+            levelId: introducerLevel.id,
+            programId: introducer.programId,
+            rateValue: introducerLevel.rebateRate,
+            baseAmount: money(rebateBase),
+            amount,
+          };
+        }
       }
     }
   }
@@ -773,13 +809,13 @@ export function calculate(
    *
    * ## What bounds what, in one place
    *
-   *  - `ib_program_tiers_share_fits` + `IbProgramsService.assertShareFits` bound
-   *    ONE programme's tiers and rebate to 100%, at configuration time, where an
+   *  - `ib_levels_share_fits` + `IbLevelsService.assertShareFits` bound ONE
+   *    RUNG's commission and rebate to 100%, at configuration time, where an
    *    operator can still fix it. It cannot see the other legs on a trade.
    *  - `checkPlausible` bounds the TRADE: first against its own revenue (the
    *    unit-error backstop), then against `ib_max_total_payout_pct`. This is the
    *    only guard that sees a whole chain at once, which is why the ceiling is
-   *    there and not on the catalogue.
+   *    there and not on the ladder.
    *
    * A chain over either bound is REFUSED, never scaled. The deal is not lost —
    * it defers on the 0092 backoff with the reason on the row and pays in full

@@ -33,8 +33,22 @@ class FakeStore {
     return Promise.resolve(this.trading);
   }
 
+  /*
+   * The two payout ceilings are NOT on the write type any more (0112), and
+   * this stub has to model what the real store then does with them: the upsert
+   * spreads exactly the keys it is given, so a column the caller never
+   * mentions keeps whatever it held. Seeding them here rather than dropping
+   * them is what makes this stub's row a `TradingSettingsRow` at all — the
+   * READ type still carries both, because the engine still reads both.
+   */
   setTrading(values: TradingSettingsWrite, updatedBy: string): Promise<TradingSettingsRow> {
-    this.trading = { ...values, updatedBy, updatedAt: new Date('2026-01-01T00:00:00Z') };
+    this.trading = {
+      ibMaxTotalPayoutPct: this.trading?.ibMaxTotalPayoutPct ?? '100.0000',
+      ibMaxPayoutPerLot: this.trading?.ibMaxPayoutPerLot ?? '50.00000000',
+      ...values,
+      updatedBy,
+      updatedAt: new Date('2026-01-01T00:00:00Z'),
+    };
     return Promise.resolve(this.trading);
   }
 

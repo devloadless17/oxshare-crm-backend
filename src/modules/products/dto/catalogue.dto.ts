@@ -7,7 +7,6 @@ import {
   IsOptional,
   IsString,
   IsUUID,
-  ValidateIf,
   Matches,
   Max,
   MaxLength,
@@ -229,16 +228,14 @@ export class AgencyDto {
    * `string | null | undefined` on the frontend, which forced every reader to
    * handle a third state the API never sends.
    */
-  @ApiProperty({
-    type: String,
-    format: 'uuid',
-    nullable: true,
-    description:
-      'The commission programme partners of this agency are appointed on (0107). Null means the ' +
-      'agency expresses no preference, and approval falls through to the lowest-sorted enabled ' +
-      'programme. A reviewer’s explicit choice always wins over this.',
-  })
-  defaultProgramId: string | null;
+  /*
+   * ── `defaultProgramId` IS GONE (0112) ────────────────────────────────────
+   *
+   * An agency named the commission programme its partners were appointed on.
+   * Terms come from a partner's RUNG now, derived from who recruited them, so
+   * an agency has no opinion about what anybody is paid. It still bounds what
+   * they may SELL, through its products.
+   */
 
   @ApiProperty({ type: [String], format: 'uuid', description: 'The products this agency sells.' })
   productIds: string[];
@@ -276,20 +273,6 @@ export class UpsertAgencyDto {
   @Min(0)
   @Max(1000)
   sortOrder?: number;
-
-  /**
-   * The programme partners of this agency are appointed on, or `null` for none.
-   *
-   * `null` and OMITTED mean different things on this form, which is a PUT:
-   * omitted leaves the stored value alone, and an explicit `null` clears it.
-   * Without the distinction there would be no way to UNSET a default once one
-   * had been chosen.
-   */
-  @ApiPropertyOptional({ type: String, format: 'uuid', nullable: true })
-  @IsOptional()
-  @IsUUID()
-  @ValidateIf((_, value) => value !== null)
-  defaultProgramId?: string | null;
 }
 
 export class SetAgencyProductsDto {

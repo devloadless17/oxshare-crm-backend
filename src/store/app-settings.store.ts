@@ -98,23 +98,19 @@ export interface TradingSettingsWrite {
   maxDemoDeposit: string;
   ibMaxLevels: number;
   /**
-   * A decimal string. The writer has already bounded it — the CHECK behind the
-   * column is the backstop, not the validation.
+   * ── THE TWO PAYOUT CEILINGS ARE NO LONGER WRITTEN HERE (0112) ────────────
    *
-   * Three comments here described the hold window, the accrual start and the
-   * revenue basis, all removed in 0104. They are env values and a per-programme
-   * column now; see `TradingSettingsRow` above.
-   */
-  ibMaxTotalPayoutPct: string;
-  /**
-   * The per-lot unit-error ceiling — 0111.
+   * `ibMaxTotalPayoutPct` and `ibMaxPayoutPerLot` are still COLUMNS and still
+   * bound every accrual — they are what `checkPlausible` reads. They left this
+   * WRITE type with the form controls that set them.
    *
-   * Belongs on this form for the same reason `ibMaxTotalPayoutPct` does: it
-   * BOUNDS what the Commission Programmes page may cost rather than restating
-   * what that page decides. A decimal string, bounded by the writer with the
-   * CHECK behind the column as the backstop.
+   * That is the whole mechanism by which they keep their values: `setTrading`
+   * spreads exactly the keys it is given into the upsert, so a column absent
+   * from this interface is one the statement never mentions and the database
+   * never touches. Adding either back as an optional field would be worse than
+   * useless — Drizzle would write `undefined` as NULL and a NOT NULL column
+   * would refuse the whole save.
    */
-  ibMaxPayoutPerLot: string;
 }
 
 export interface RivalSettingsRow {

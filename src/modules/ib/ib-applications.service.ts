@@ -20,7 +20,7 @@ import {
 } from '../../store/ib.store';
 import { sortKey, sortOrder } from '../../common/sorting';
 import { UsersStore } from '../../store/users.store';
-import { IbProgramsService } from './ib-programs.service';
+import { IbLevelsService } from './ib-levels.service';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import { EmailService } from '../email/email.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
@@ -40,6 +40,17 @@ import type { IbIneligibleCode } from './dto/ib-application.dto';
  * account means a reviewer weighing a name nobody has checked.
  */
 const REQUIRED_VERIFICATION_LEVEL = 1;
+
+/**
+ * The deepest rung `ib_accounts.level` can hold — matches
+ * `ib_accounts_level_range` and `ib_levels_level_range`.
+ *
+ * The STRUCTURAL bound, deliberately not the policy one. `ib_max_levels` says
+ * how deep the broker PAYS and is a settings change; a partner tree may run
+ * deeper than that, and clamping a partner to the paid depth would record a rung
+ * they do not occupy.
+ */
+const MAX_STORED_LEVEL = 10;
 
 /**
  * Referral codes are drawn from an unambiguous alphabet.
@@ -88,7 +99,7 @@ export class IbApplicationsService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly ib: IbStore,
     private readonly users: UsersStore,
-    private readonly programs: IbProgramsService,
+    private readonly levels: IbLevelsService,
     private readonly visibility: ClientVisibilityService,
     private readonly email: EmailService,
     private readonly audit: AdminAuditService,
@@ -597,18 +608,14 @@ export class IbApplicationsService {
     actor: Actor,
     scope: ClientScope,
     options: {
-      /**
-       * The terms to appoint them on — FR-IB-06's "exactly one named program".
+      /*
+       * ── `programId` IS GONE (0112) ────────────────────────────────────────
        *
-       * Replaces `level`, and it is the same field promoted to the thing that
-       * actually decides money. A rung was a placement a reviewer picked and the
-       * engine then ignored; a programme is what the engine reads.
-       *
-       * Optional, defaulting to the first ENABLED programme by `sortOrder`, so
-       * the ordinary approval stays one click. A reviewer who has built Bronze /
-       * Silver / Gold names one here.
+       * A reviewer used to appoint a partner onto a named programme. Terms come
+       * from the partner's RUNG now, and a rung is not a choice — it follows
+       * from who recruited them. So there is nothing to pass here and nothing on
+       * the approval screen to get wrong.
        */
-      programId?: string;
       parentIbUserId?: string | null;
       agencyId?: string | null;
     } = {},
@@ -728,77 +735,32 @@ export class IbApplicationsService {
     const referralCode = await this.generateReferralCode();
 
     /*
-     * The terms the new partner is placed on — FR-IB-06's "exactly one named
-     * program", resolved BEFORE the transaction opens so a misconfiguration
-     * refuses the approval instead of rolling one back.
+     * ── THE PARTNER'S LEVEL, DERIVED FROM WHO RECRUITED THEM (0112) ──────
      *
-     * The REVIEWER's choice wins, and this is what makes the catalogue real at
-     * the moment it matters most. Approval used to take whatever sorted first,
-     * always, so an operator could build Gold, Silver and Platinum and have
-     * every new partner land on Bronze — the change endpoint being the only way
-     * to correct a decision that should have been made here.
+     * A reviewer used to pick a commission programme here, falling back to the
+     * agency's default and then to the catalogue's. None of that exists now:
+     * terms come from the partner's RUNG, and a rung is not a choice — it is
+     * where they sit.
      *
-     * A DISABLED programme is refused, matching `changeProgram`. A disabled
-     * programme pays nothing, so appointing somebody onto one creates a partner
-     * whose referral link works and whose earnings are silently zero.
+     * A partner with no parent deals with the broker directly and is level 1.
+     * One recruited by another partner is one rung deeper than their recruiter.
+     * So there is nothing to choose, nothing to default, and nothing on the
+     * approval screen to get wrong.
      *
-     * Falling back to the default is refused rather than defaulted when every
-     * programme is disabled: a partner on no terms earns nothing, cannot see
-     * why, and the reviewer would have been told it worked.
+     * CAPPED at the structural ceiling the column itself carries, not at the
+     * platform's configured ladder depth. Those are different bounds and the
+     * wider one belongs here: `ib_max_levels` says how deep the broker PAYS,
+     * and a tree may legitimately run deeper than that. Clamping to it would
+     * write a rung the partner does not occupy.
+     *
+     * A partner past the paid depth sits on a rung with no configured terms and
+     * earns nothing — which `calculate` reports by name rather than swallowing,
+     * so the operator can extend the ladder if the tree really is that deep.
      */
-    let programId: string;
-    if (options.programId) {
-      const chosen = await this.programs.findOne(options.programId);
-      if (!chosen) {
-        throw new ValidationError('That commission programme does not exist.');
-      }
-      if (!chosen.enabled) {
-        throw new ValidationError(
-          `"${chosen.name}" is disabled, and a disabled programme pays nothing. Enable it, or ` +
-            'appoint this partner on another programme.',
-        );
-      }
-      programId = chosen.id;
-    } else {
-      /*
-       * ── THE AGENCY'S OWN DEFAULT (0107) ──────────────────────────────────
-       *
-       * The agency already decides what this partner may SELL — its products
-       * bound their book, and a sub-partner inherits the agency of whoever
-       * recruited them. What they are PAID was the one term of that package
-       * configured somewhere else, so a broker running a Gold agency and a
-       * Standard agency had to remember which terms went with which on every
-       * approval, with nothing on the screen to check it against.
-       *
-       * Only consulted when the reviewer expressed NO preference — a negotiated
-       * partner inside an ordinary agency is a real case, and cloning the
-       * agency to express it would grow the catalogue one row per negotiation.
-       */
-      const agencyDefault = agencies.find((agency) => agency.id === agencyId)?.defaultProgramId;
-      const preferred = agencyDefault ? await this.programs.findOne(agencyDefault) : null;
-
-      /*
-       * A DISABLED agency default falls through rather than refusing.
-       *
-       * The reviewer did not choose it and cannot see it on this screen, so a
-       * refusal would report a problem they have no way to act on — and it
-       * would block every approval into that agency until somebody found the
-       * stale pointer. The catalogue default is a working answer, and
-       * `agencies.default_program_id` clears itself if the programme is deleted.
-       */
-      if (preferred?.enabled) {
-        programId = preferred.id;
-      } else {
-        const fallback = await this.ib.defaultProgramId();
-        if (!fallback) {
-          throw new ValidationError(
-            'No commission programme is enabled, so an approved partner would have no terms to be ' +
-              'paid on. Enable a programme first.',
-          );
-        }
-        programId = fallback;
-      }
-    }
+    const parentLevel = parentIbUserId
+      ? ((await this.ib.findAccount(parentIbUserId))?.level ?? 1)
+      : 0;
+    const level = Math.min(parentLevel + 1, MAX_STORED_LEVEL);
 
     const account = await this.db.transaction(async (tx) => {
       const updated = await this.ib.transition(
@@ -820,7 +782,7 @@ export class IbApplicationsService {
       const created = await this.ib.createAccount(
         {
           userId: application.userId,
-          programId,
+          level,
           parentIbUserId,
           referralCode,
           applicationId,
@@ -840,7 +802,7 @@ export class IbApplicationsService {
        */
       await this.audit.recordWithin(tx, actor.id, 'ib.approve', 'ib_account', application.userId, {
         applicationId,
-        programId,
+        level,
         parentIbUserId,
         /*
          * Both what was asked for and what was granted. They are usually the
@@ -1091,30 +1053,41 @@ export class IbApplicationsService {
       : null;
 
     /*
-     * The TERMS, with the LADDER — the whole of what this partner is paid on.
+     * The RUNG, and the terms it carries — the whole of what this partner is
+     * paid on (0112).
      *
-     * `level` / `levelName` / `rateValue` used to sit here too, describing the
-     * rung. They went in 0102 with the ladder itself: the rung decided nothing
-     * after 0084, so the response carried three fields that read like the
-     * partner's economics beside the one that actually was.
+     * `level` / `levelName` / `rateValue` sat here before 0102 and went with the
+     * old ladder, because the rung had decided nothing since 0084: the response
+     * carried three fields reading like the partner's economics beside the one
+     * that actually was. They are back because the rung decides the terms
+     * again — and this time it CARRIES them rather than pointing at a
+     * catalogue.
      *
-     * `tiers` is what replaces them, and it says more than a rung ever did: how
-     * far this partner's earnings reach, and what they take at each depth.
+     * NULL when the partner stands deeper than the ladder is configured for.
+     * That is a real state rather than an impossible one: a tree may run
+     * deeper than the broker pays, and such a partner earns nothing until the
+     * ladder is extended. Reporting the terms as null is how the screen can say
+     * so, instead of showing zeroes that look configured.
      */
-    const program = await this.programs.findOneWithTiers(account.programId);
+    const levelTerms = await this.levels.findOne(account.level);
 
     return {
       userId,
       /*
-       * The id is what the change control posts back; the name is the only part
-       * a person can act on; the ladder is what an operator is usually looking
-       * for when they open this screen.
+       * The rung, and nothing about a catalogue. It is EDITABLE (see
+       * `changeLevel`) but not chosen at approval — it follows from who
+       * recruited this partner — so the screen reports it with a correction
+       * available, rather than presenting it as a decision somebody made.
        */
-      programId: account.programId,
-      programName: program?.name ?? null,
-      programMode: program?.mode ?? null,
-      programTiers: program?.tiers ?? [],
-      programRebateRate: program?.rebateRate ?? null,
+      level: account.level,
+      levelName: levelTerms?.name ?? null,
+      levelEnabled: levelTerms?.enabled ?? false,
+      levelCommissionMode: levelTerms?.commissionMode ?? null,
+      levelCommissionRate: levelTerms?.commissionRate ?? null,
+      levelCommissionAmountPerLot: levelTerms?.commissionAmountPerLot ?? null,
+      levelRebateMode: levelTerms?.rebateMode ?? null,
+      levelRebateRate: levelTerms?.rebateRate ?? null,
+      levelRebateAmountPerLot: levelTerms?.rebateAmountPerLot ?? null,
       referralCode: account.referralCode,
       active: account.active,
       approvedAt: account.approvedAt,
@@ -1174,54 +1147,46 @@ export class IbApplicationsService {
     });
   }
 
-  /*
-   * `changeLevel` IS GONE (0102), and `changeProgram` below is what replaced it.
-   *
-   * It moved a partner to a different RUNG, refusing a disabled one on the
-   * reasoning that "a disabled level takes no share, so placing somebody on one
-   * is a silent stop to their earnings". That reasoning stopped being true in
-   * 0084, when the rate moved to the programme — after which the endpoint
-   * changed a number that decided nothing, while presenting itself to an
-   * operator as the control over what a partner earns.
-   *
-   * The two questions it conflated now have one owner each: what a partner is
-   * PAID on is `changeProgram`, and where they sit in the tree is
-   * `changeParent`.
-   */
-
   /**
-   * Move a partner onto different terms.
+   * Move a partner to a different LEVEL — what decides their terms (0112).
    *
-   * ## Why this had to exist for the catalogue to mean anything
+   * ## Why a partner's level is editable at all
    *
-   * A partner's programme was written once, at approval, always to whichever
-   * one sorted first — and never again. So an operator could create Gold,
-   * Silver and Platinum and assign nobody to any of them, while every partner
-   * on the platform sat on the same row. Two of this service's own refusals
-   * ("move them to another programme first") named an operation the system did
-   * not have.
+   * It is written at approval from their parent's level, which is right in the
+   * ordinary case and cannot be right in every one: a partner recruited by
+   * somebody who is later cut loose to deal direct, or one the broker has
+   * agreed to treat as a main partner despite sitting under another, both need
+   * moving. Without this the number was decided once by the shape of the tree
+   * on one particular afternoon.
    *
-   * ## The target must be ENABLED
+   * ## The target level must EXIST and be ENABLED
    *
-   * Same rule, and the same reason, as `changeLevel`: a disabled programme pays
-   * nothing, so moving somebody onto one stops their earnings silently instead
-   * of changing their terms visibly. `IbProgramsService.update` refuses to
-   * disable a programme partners are standing on, and this is the other half of
-   * that guarantee — without it, an operator could route around the refusal by
-   * moving people onto an already-disabled programme.
+   * A partner standing on a level that is not configured earns nothing —
+   * `calculate` reports it per trade and pays no rows — and a DISABLED level
+   * pays nothing by definition. Either way the failure is silent from the
+   * partner's side, with their referral links still working. So both are
+   * refused here, and `IbLevelsService.update` refuses to disable a level
+   * partners are standing on: without this half an operator could route around
+   * that refusal by moving people onto an already-disabled rung.
    *
    * ## It applies to the NEXT trade, never to what has been earned
    *
-   * Accruals record the rate they were calculated at, so nothing already
-   * credited is restated. That is what makes this an ordinary update rather
-   * than an operation that has to reason about history — and it is why the
-   * audit row keeps the programme id on both sides: "who moved this partner,
-   * and what were they on before" is the question asked when a payout is
-   * disputed, and the current row answers half of it.
+   * Accruals record the rate AND the level they were calculated under, so
+   * nothing already credited is restated. That is what makes this an ordinary
+   * update rather than an operation that has to reason about history — and it
+   * is why the audit row keeps the level on both sides: "who moved this
+   * partner, and what were they on before" is the question asked when a payout
+   * is disputed, and the current row answers half of it.
+   *
+   * ⚠️ This does NOT move anybody BENEATH them. A level is one partner's
+   * position, and their sub-partners keep the levels they were approved on —
+   * deliberately, because cascading would re-price an unbounded number of
+   * people from one operator's edit of somebody else's row. Moving a subtree is
+   * a series of decisions, each audited.
    */
-  async changeProgram(
+  async changeLevel(
     userId: string,
-    programId: string,
+    level: number,
     scope: ClientScope,
     actor: Actor,
   ): Promise<IbAccountRow> {
@@ -1230,22 +1195,27 @@ export class IbApplicationsService {
     const account = await this.ib.findAccount(userId);
     if (!account) throw new NotFoundError('That partner does not exist.');
 
-    const program = await this.programs.findOne(programId);
-    if (!program) throw new NotFoundError('That commission programme does not exist.');
-    if (!program.enabled) {
+    const target = await this.levels.findOne(level);
+    if (!target) {
+      throw new NotFoundError(
+        `Level ${level} is not configured, and a partner on an unconfigured level earns nothing. ` +
+          'Add it on the Commission Levels page first.',
+      );
+    }
+    if (!target.enabled) {
       throw new ValidationError(
-        `"${program.name}" is disabled, and a disabled programme pays nothing. Enable it first, ` +
-          'or choose another.',
+        `Level ${level} ("${target.name}") is disabled, and a disabled level pays nothing. ` +
+          'Enable it first, or choose another.',
       );
     }
 
-    const updated = await this.ib.updateAccount(userId, { programId });
+    const updated = await this.ib.updateAccount(userId, { level });
     if (!updated) throw new NotFoundError('That partner does not exist.');
 
-    this.audit.record(actor.id, 'ib.program_change', 'ib_account', userId, {
-      before: account.programId,
-      after: updated.programId,
-      programName: program.name,
+    this.audit.record(actor.id, 'ib.level_change', 'ib_account', userId, {
+      before: account.level,
+      after: updated.level,
+      levelName: target.name,
     });
     return updated;
   }

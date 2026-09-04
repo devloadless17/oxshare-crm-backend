@@ -26,7 +26,7 @@ import { desc, eq } from 'drizzle-orm';
  * ── The gap is CLOSED, and the four `it.fails` are now ordinary tests ───────
  *
  * All seventeen actions now write. The four cases this file pinned as broken —
- * `currency.create`, `payment_method.create`, `ib_program.create` and
+ * `currency.create`, `payment_method.create`, `ib_level.create` and
  * `settings.general.update` — moved into the "recorded" block below, which is
  * the lifecycle their original note described: `it.fails` passes only while the
  * body throws, so fixing the routes turned those tests red and told whoever did
@@ -284,19 +284,21 @@ describe('recorded: the feature modules', () => {
     expect(await waitForCount('payment_method.create', before + 1)).toBe(before + 1);
   });
 
-  it('ib_program.create — a change to the commission terms leaves a trace', async () => {
+  it('ib_level.create — a change to the commission terms leaves a trace', async () => {
     /*
-     * The most consequential of the seventeen. An IB programme sets what
-     * partners are PAID; editing one silently changes everybody's commission on
-     * it, and "who lowered Gold last quarter" is precisely the question the log
-     * exists to answer.
+     * The most consequential of the seventeen. A commission LEVEL sets what
+     * every partner standing on it is PAID; editing one silently changes their
+     * commission, and "who lowered level 2 last quarter" is precisely the
+     * question the log exists to answer.
      *
-     * This pinned `ib_level.create` until 0102, when the rung ladder was
-     * dropped and the programme catalogue became the only place terms are
-     * configured. Same guarantee, moved to the surface that now carries it.
+     * This pinned `ib_level.create` before 0102, then `ib_program.create` while
+     * the catalogue existed, and is back on the levels it started on. The same
+     * guarantee each time, moved to whichever surface actually carries the
+     * terms — which is the point: the assertion is about the RECORD, not about
+     * the shape of the week's data model.
      */
     const session = await actingAs(ctx, 'admin', MASTER);
-    const before = await countOf('ib_program.create');
+    const before = await countOf('ib_level.create');
 
     /*
      * A REAL request body, which an earlier `it.fails` version was not: it sent
@@ -305,18 +307,29 @@ describe('recorded: the feature modules', () => {
      * was green for a reason unrelated to the gap it claimed to describe, which
      * is the hazard of `it.fails`: any throw counts.
      *
-     * `enabled: false` keeps this programme out of the revenue-share ceiling, so
-     * the test cannot fail because an unrelated suite left the catalogue full.
+     * Levels 1 and 2 are SEEDED, and 2 is as deep as the committed ceiling
+     * allows — so a create has to go one rung further and raise the ceiling
+     * first, exactly as an operator would. Created DISABLED so no other suite's
+     * chain starts paying on a rung this test invented.
      */
-    const res = await session.post('/v1/admin/ib-programs', {
-      name: `Audit Programme ${Date.now() % 100000}`,
-      mode: 'commission_only',
-      tiers: [{ depth: 1, rate: '1.5000' }],
+    const raised = await session.put('/v1/admin/settings/trading', {
+      maxLiveAccounts: 5,
+      maxDemoAccounts: 5,
+      maxDemoDeposit: '1000000',
+      ibMaxLevels: 3,
+    });
+    expect([200, 201, 204]).toContain(raised.status);
+
+    const res = await session.post('/v1/admin/ib-levels', {
+      level: 3,
+      name: `Audit Level ${Date.now() % 100000}`,
+      commissionMode: 'percent',
+      commissionRate: '1.5000',
       enabled: false,
     });
     expect([200, 201]).toContain(res.status);
 
-    expect(await waitForCount('ib_program.create', before + 1)).toBe(before + 1);
+    expect(await waitForCount('ib_level.create', before + 1)).toBe(before + 1);
 
     /*
      * §6.1 — the rate is logged as the STRING it arrived as.
@@ -326,10 +339,13 @@ describe('recorded: the feature modules', () => {
      * purpose of recording it. The type is asserted as well as the value,
      * because '1.5000' and 1.5 both read as correct in a diff.
      */
-    const row = await latest('ib_program.create');
-    const details = row?.details as { tiers?: { depth: number; rate: unknown }[] } | undefined;
-    expect(details?.tiers?.[0]?.rate).toBe('1.5000');
-    expect(typeof details?.tiers?.[0]?.rate).toBe('string');
+    const row = await latest('ib_level.create');
+    const details = row?.details as { commissionRate?: unknown } | undefined;
+    expect(details?.commissionRate).toBe('1.5000');
+    expect(typeof details?.commissionRate).toBe('string');
+
+    /* Put the ladder back, so an ordering-sensitive neighbour is unaffected. */
+    await session.del('/v1/admin/ib-levels/3');
   });
 
   it('settings.trading.update — the terms clients are offered are attributable', async () => {
@@ -364,12 +380,12 @@ describe('recorded: the feature modules', () => {
        */
       ibMaxLevels: 2,
       /*
-       * The total payout ceiling (0106) — required for the same reason, and
-       * audited for a sharper one: LOWERING it stops chains paying, so a
-       * commission that quietly stopped last Tuesday is answered by "who set it
-       * to 30, and when" and by nothing else on this platform.
+       * The two payout CEILINGS are not on this form any more (0112) — they
+       * are still stored and still enforced, but nothing here sets them, so
+       * sending either is the same kind of error the note below describes:
+       * the DTO does not declare it, the request is refused, and the audit row
+       * this test is about never gets written.
        */
-      ibMaxTotalPayoutPct: '100',
       /*
        * The four OTHER IB fields that used to be required here went in 0103/0104.
        *

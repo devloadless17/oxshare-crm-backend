@@ -1,9 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { and, eq, gt, inArray, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, lte, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
-import { ibAccounts, ibAccruals, ibProgramTiers, ibPrograms, users } from '../../database/schema';
+import { ibAccounts, ibAccruals, ibLevels, users } from '../../database/schema';
 import { LEDGER_REFERENCE, type LedgerReferenceType } from '../../database/ledger-reference';
 import { NotFoundError } from '../../common/errors/domain-errors';
 import { money, toDecimal } from '../wallet/money';
@@ -27,7 +27,7 @@ import {
   resolveChain,
   MAX_CHAIN_DEPTH,
   type ChainNode,
-  type ProgramTerms,
+  type LevelTerms,
   type RevenueEvent,
 } from './commission';
 
@@ -454,10 +454,13 @@ export class CommissionService implements CommissionAccrualPort {
     const chain = resolveChain(client.referredBy, (id) => chainNodes.get(id));
     if (chain.length === 0) return 0;
 
-    const programs = await this.loadPrograms(
-      this.db,
-      chain.map((entry) => entry.programId),
-    );
+    /*
+     * The whole ladder, not a lookup per earner. It is two or three rows —
+     * `ib_max_levels` bounds it — so one unfiltered read is cheaper than an IN
+     * list, and it means a rung nobody in this chain occupies still appears if
+     * a later step needs it.
+     */
+    const levels = await this.loadLevels(this.db);
 
     const revenue: RevenueEvent = {
       grossAmount: event.brokerRevenue,
@@ -466,7 +469,7 @@ export class CommissionService implements CommissionAccrualPort {
       lots: event.lots,
     };
 
-    const result = calculate(revenue, chain, programs, event.revenueByBasis);
+    const result = calculate(revenue, chain, levels, event.revenueByBasis);
     if (result.skippedReason) {
       this.logger.warn(
         `Commission partially skipped for ${event.describe}: ${result.skippedReason}`,
@@ -540,7 +543,8 @@ export class CommissionService implements CommissionAccrualPort {
         kind: 'commission' as const,
         ibUserId: accrual.ibUserId,
         depth: accrual.depth,
-        programId: accrual.programId,
+        programId: accrual.programId ?? null,
+        levelId: accrual.levelId ?? null,
         rateValue: accrual.rateValue,
         baseAmount: accrual.baseAmount,
         amount: accrual.amount,
@@ -551,7 +555,8 @@ export class CommissionService implements CommissionAccrualPort {
               kind: 'rebate' as const,
               ibUserId: result.rebate.ibUserId,
               depth: 1,
-              programId: result.rebate.programId,
+              programId: result.rebate.programId ?? null,
+              levelId: result.rebate.levelId ?? null,
               rateValue: result.rebate.rateValue,
               baseAmount: result.rebate.baseAmount,
               amount: result.rebate.amount,
@@ -585,7 +590,8 @@ export class CommissionService implements CommissionAccrualPort {
            * than from the partner's CURRENT programme, which is the one thing
            * most likely to have changed since.
            */
-          programId: accrual.programId,
+          programId: accrual.programId ?? null,
+          levelId: accrual.levelId ?? null,
           rateValue: accrual.rateValue,
           /*
            * The leg's OWN base (0106), not the trade's default-basis revenue.
@@ -1024,19 +1030,19 @@ export class CommissionService implements CommissionAccrualPort {
   private async loadChain(db: Executor, introducerId: string): Promise<Map<string, ChainNode>> {
     const result = await db.execute(sql`
       WITH RECURSIVE chain AS (
-        SELECT a.user_id, a.parent_ib_user_id, a.active, a.program_id,
+        SELECT a.user_id, a.parent_ib_user_id, a.active, a.level,
                1 AS depth, ARRAY[a.user_id] AS path
           FROM ${ibAccounts} a
          WHERE a.user_id = ${introducerId}
         UNION ALL
-        SELECT p.user_id, p.parent_ib_user_id, p.active, p.program_id,
+        SELECT p.user_id, p.parent_ib_user_id, p.active, p.level,
                c.depth + 1, c.path || p.user_id
           FROM ${ibAccounts} p
           JOIN chain c ON p.user_id = c.parent_ib_user_id
          WHERE c.depth < ${MAX_CHAIN_DEPTH}
            AND NOT p.user_id = ANY(c.path)
       )
-      SELECT user_id, parent_ib_user_id, active, program_id FROM chain
+      SELECT user_id, parent_ib_user_id, active, level FROM chain
     `);
 
     /*
@@ -1050,7 +1056,7 @@ export class CommissionService implements CommissionAccrualPort {
       user_id: string;
       parent_ib_user_id: string | null;
       active: boolean;
-      program_id: string;
+      level: number;
     }[];
 
     return new Map(
@@ -1060,7 +1066,7 @@ export class CommissionService implements CommissionAccrualPort {
           userId: row.user_id,
           parentIbUserId: row.parent_ib_user_id,
           active: row.active,
-          programId: row.program_id,
+          level: row.level,
         },
       ]),
     );
@@ -1080,79 +1086,42 @@ export class CommissionService implements CommissionAccrualPort {
    * `depth: null`. Two reads keyed by id have no such row to misread, and both
    * are indexed lookups over at most `MAX_CHAIN_DEPTH` programmes.
    */
-  private async loadPrograms(db: Executor, ids: string[]): Promise<Map<string, ProgramTerms>> {
-    if (ids.length === 0) return new Map();
-
-    const [rows, tierRows] = await Promise.all([
-      db.select().from(ibPrograms).where(inArray(ibPrograms.id, ids)),
-      db.select().from(ibProgramTiers).where(inArray(ibProgramTiers.programId, ids)),
-    ]);
-
-    /*
-     * TWO maps, split by how the tier is PRICED — 0111.
-     *
-     * A depth lands in exactly one of them, because `ib_program_tiers_payout_
-     * shape` requires the column its mode reads and forbids the other. Keeping
-     * them apart here rather than passing a mode per depth is what lets
-     * `calculate` stay a pure lookup: it asks the per-lot map first, and a hit
-     * means per-lot without any further branching on a mode field.
-     */
-    const tiers = new Map<string, Map<number, string>>();
-    const tiersPerLot = new Map<string, Map<number, string>>();
-
-    for (const tier of tierRows) {
-      const into = tier.payoutMode === 'per_lot' ? tiersPerLot : tiers;
-      let forProgram = into.get(tier.programId);
-      if (!forProgram) {
-        forProgram = new Map<number, string>();
-        into.set(tier.programId, forProgram);
-      }
-      /*
-       * `amountPerLot` is nullable in the type because the column is — the CHECK
-       * guarantees it is present for this mode, but the type cannot know that.
-       * Falling back to '0' rather than asserting keeps a malformed row out of
-       * the money path: `calculate` reports "pays nothing per lot" and skips it,
-       * where a non-null assertion would throw on the accrual job.
-       */
-      forProgram.set(
-        tier.depth,
-        tier.payoutMode === 'per_lot' ? (tier.amountPerLot ?? '0') : tier.rate,
-      );
-    }
+  /**
+   * The commission ladder, keyed by rung — 0112.
+   *
+   * Replaced `loadPrograms`, which fetched one programme per earner plus their
+   * tiers. A level carries its own single commission term and rebate term, so
+   * there is no second table to join and no depth map to build: the row IS the
+   * card.
+   *
+   * Read whole rather than filtered to the rungs in hand. `ib_max_levels` bounds
+   * this to a couple of rows, so an IN list would cost more to construct than
+   * the rows it saves.
+   */
+  private async loadLevels(db: Executor): Promise<Map<number, LevelTerms>> {
+    const rows = await db.select().from(ibLevels);
 
     return new Map(
       rows.map((row) => [
-        row.id,
+        row.level,
         {
           id: row.id,
-          mode: row.mode,
-          /*
-           * An empty map for a programme with no tiers, never `undefined`.
-           * `calculate` reads `tiers.get(depth)` and `tiers.size` unguarded, and
-           * an absent map would turn "this programme pays no commission" — which
-           * is exactly what `rebate_only` means — into a TypeError on the money
-           * path.
-           */
-          tiers: tiers.get(row.id) ?? new Map<number, string>(),
-          /*
-           * Left UNDEFINED when the programme has no per-lot tiers, rather than
-           * an empty map. `calculate` treats a hit here as "this depth is priced
-           * per lot", so an empty map is the same as absent — and undefined says
-           * plainly that this is a percentage programme.
-           */
-          tiersPerLot: tiersPerLot.get(row.id),
-          rebateRate: row.rebateRate,
-          /*
-           * Only when the programme actually prices its rebate that way. The
-           * presence of this field is what `calculate` branches on, so handing
-           * it a value on a percentage programme would silently re-price the
-           * client's leg.
-           */
-          rebateAmountPerLot:
-            row.rebateMode === 'per_lot' ? (row.rebateAmountPerLot ?? '0') : undefined,
-          /* FR-IB-16 (0106): which revenue this programme's rates are of. */
-          revenueBasis: row.revenueBasis,
+          level: row.level,
           enabled: row.enabled,
+          commissionMode: row.commissionMode,
+          commissionRate: row.commissionRate,
+          /*
+           * Passed only in the mode that reads it. Handing `calculate` an amount
+           * on a percentage level would re-price the leg, because the presence
+           * of the field is not what it branches on — the MODE is — but leaving
+           * a stale figure visible on the terms object invites the next reader
+           * to use it.
+           */
+          commissionAmountPerLot: row.commissionAmountPerLot ?? undefined,
+          rebateMode: row.rebateMode,
+          rebateRate: row.rebateRate,
+          rebateAmountPerLot: row.rebateAmountPerLot ?? undefined,
+          revenueBasis: row.revenueBasis,
         },
       ]),
     );

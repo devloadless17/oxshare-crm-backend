@@ -25,12 +25,11 @@ import { WalletDto } from '../../wallet/dto/wallet-response.dto';
  *  - `referredClients` — from `users.referred_by_ib_user_id`, which IS written,
  *    at registration, by `AuthService`.
  *  - `subPartners` — from `ib_accounts.parent_ib_user_id`.
- *  - `programme` — the partner's named terms AND its tier ladder (FR-IB-06).
  *
  * ## `earningsEngineLive` is the honesty flag
  *
- * False means: the attribution and the programme are real, and no engine has
- * computed a commission yet. A portal reading this must say so beside the
+ * False means: the attribution is real, and no engine has computed a
+ * commission yet. A portal reading this must say so beside the
  * total instead of presenting a computed-looking zero. It flips to true when
  * something writes commission entries — at which point the same total becomes
  * a figure worth acting on, with no shape change here.
@@ -118,86 +117,32 @@ export class IbReferredClientDto {
 export class IbSubPartnerDto {
   @ApiProperty() userId: string;
   @ApiProperty() name: string;
-  @ApiProperty({
-    example: 'Silver',
-    description:
-      'The terms this sub-partner is on. Replaced `level` in 0102 — a rung named a placement ' +
-      'that decided nothing, while a programme is what they are actually paid on.',
-  })
-  programName: string;
+  /*
+   * NO TERMS on this row — 0112. A sub-partner's rate card is between them and
+   * the broker, and a parent has no business reading it off their own
+   * dashboard. FR-IB-17 gives a parent visibility of sub-tree EARNINGS, not of
+   * what each person beneath them is paid.
+   */
   @ApiProperty({ description: 'A suspended sub-partner keeps their tree and stops earning.' })
   active: boolean;
   @ApiProperty({ format: 'date-time' }) since: Date;
 }
 
-/** One rung of the partner's own ladder: what they take at a given depth. */
-export class IbProgramTierSummaryDto {
-  @ApiProperty({
-    example: 1,
-    description:
-      'Hops above the trading client. 1 is a client this partner introduced themselves; 2 is a ' +
-      'client of one of their sub-partners.',
-  })
-  depth: number;
-
-  @ApiProperty({
-    type: 'string',
-    example: '60.0000',
-    description:
-      'Their share of the broker’s revenue on a closed trade at this depth, as a percentage. A ' +
-      'decimal string, never a number (§6.1).',
-  })
-  rate: string;
-}
-
-/**
- * The TERMS this partner is paid on — their named programme (FR-IB-06).
+/*
+ * `IbProgramTierSummaryDto` and `IbProgramSummaryDto` ARE GONE (0112), and
+ * nothing replaces them.
  *
- * ## This is the only thing that decides the money
+ * They described the partner's own rate card on their own dashboard — a named
+ * programme, its mode, its per-depth ladder and its rebate. `IbLevelSummaryDto`
+ * had been removed before them (0102) for carrying a rung whose `rateValue`
+ * decided nothing.
  *
- * `IbLevelSummaryDto` used to sit beside it, carrying a rung and a `rateValue`
- * that had decided nothing since 0084 — a number on the partner's own dashboard
- * that looked exactly like what they earn. Both went in 0102 with the ladder,
- * and this is now the single answer to "what am I paid".
- *
- * ## `tiers` is per DEPTH, and its LENGTH is how far earnings reach
- *
- * Depth 1 is what this partner earns from their OWN clients, depth 2 from a
- * sub-partner's, and so on. Rendering any of them as "the level-N partner rate"
- * tells a sub-partner the wrong number for the clients they introduced
- * themselves — the mistake the rung-keyed ladder made structurally.
- *
- * It replaces a fixed `level1Rate` / `level2Rate` pair, which could not describe
- * a programme reaching three levels at all.
+ * This response now carries NO terms at all. The rate card is a commercial
+ * arrangement between the broker and one partner, and the broker publishes it;
+ * a CRM screen restating it is a second copy that disagrees the day the desk
+ * renegotiates. What a partner cannot look up elsewhere — what they have
+ * EARNED, who they introduced, who sits beneath them — is what is left.
  */
-export class IbProgramSummaryDto {
-  @ApiProperty({ example: 'Gold' }) name: string;
-
-  @ApiProperty({
-    enum: ['commission_only', 'rebate_only', 'hybrid'],
-    description:
-      'Which legs pay. `rebate_only` means this partner earns nothing and their clients are ' +
-      'paid instead — a real arrangement, and one the screen must not present as an error.',
-  })
-  mode: 'commission_only' | 'rebate_only' | 'hybrid';
-
-  @ApiProperty({
-    type: [IbProgramTierSummaryDto],
-    description:
-      'What this partner takes at each depth, shallowest first. The COUNT is how many levels ' +
-      'below them their earnings reach. Empty on a rebate-only programme, which pays no partner.',
-  })
-  tiers: IbProgramTierSummaryDto[];
-
-  @ApiProperty({
-    type: 'string',
-    example: '0.0000',
-    description:
-      'What their clients get back, as a percentage of the same revenue. Zero unless the mode ' +
-      'pays a rebate.',
-  })
-  rebateRate: string;
-}
 
 /**
  * Everything the partner area renders, in ONE request.
@@ -209,14 +154,17 @@ export class IbProgramSummaryDto {
  * panels failing independently.
  */
 export class IbOverviewDto {
-  /**
-   * NULL only if the programme row vanished from under the partner, which the
-   * foreign key prevents. Nullable anyway because a partner dashboard that 500s
-   * because the catalogue was edited is worse than one that shows everything
-   * else and omits the terms.
+  /*
+   * ── `programme` IS GONE (0112) ──────────────────────────────────────────
+   *
+   * It carried the partner's named terms and their tier ladder, and the portal
+   * rendered both. Terms come from the partner's RUNG now, and a rung is not
+   * something the partner chose or can act on — so the screen shows what they
+   * have EARNED rather than a rate card they cannot change.
+   *
+   * `earnings` below is unaffected and still sums every accrual at every depth,
+   * which is what FR-IB-17 actually promises a partner visibility of.
    */
-  @ApiProperty({ type: IbProgramSummaryDto, nullable: true })
-  programme: IbProgramSummaryDto | null;
 
   @ApiProperty({ type: IbEarningsDto })
   earnings: IbEarningsDto;

@@ -46,7 +46,6 @@ let commissions: CommissionService;
 /** Everybody, by the name this file calls them. */
 const who: Record<string, string> = {};
 /** Programme ids, by name. */
-const prog: Record<string, string> = {};
 /** Agency ids, by name. */
 const agency: Record<string, string> = {};
 
@@ -67,33 +66,41 @@ async function makeUser(handle: string): Promise<string> {
  * inserting the tiers as separate statements would ask it against a
  * half-written ladder.
  */
-async function makeProgram(
-  name: string,
-  opts: { mode?: string; rebate?: string; tiers?: string[]; sortOrder?: number } = {},
-): Promise<string> {
-  const id = await ctx.db.transaction(async (tx) => {
-    const { rows } = await tx.execute<{ id: string }>(sql`
-      INSERT INTO ib_programs (name, mode, rebate_rate, sort_order)
-      VALUES (${name}, ${opts.mode ?? 'commission_only'}, ${opts.rebate ?? '0'},
-              ${opts.sortOrder ?? 90})
-      RETURNING id
+/**
+ * Set the ladder — one rate per rung, level 1 first, with an optional rebate on
+ * the introducer's rung.
+ *
+ * There is ONE ladder now rather than a programme per partner, so this replaces
+ * `makeProgram`. Every rung is reset before the requested rates are applied: a
+ * rate left behind by a previous case would pay a partner terms the current one
+ * never configured, and these suites share a database.
+ */
+async function setLadder(rates: string[], rebate = '0'): Promise<void> {
+  await ctx.db.execute(sql`
+    UPDATE ib_levels
+       SET commission_mode = 'percent', commission_amount_per_lot = NULL, commission_rate = 0,
+           rebate_mode = 'percent', rebate_amount_per_lot = NULL, rebate_rate = 0,
+           enabled = true
+  `);
+
+  for (const [index, rate] of rates.entries()) {
+    await ctx.db.execute(sql`
+      INSERT INTO ib_levels (level, name, commission_mode, commission_rate)
+      VALUES (${index + 1}, ${'Level ' + String(index + 1)}, 'percent', ${rate})
+      ON CONFLICT (level) DO UPDATE
+        SET commission_mode = 'percent', commission_amount_per_lot = NULL,
+            commission_rate = ${rate}, enabled = true
     `);
-    for (const [index, rate] of (opts.tiers ?? []).entries()) {
-      await tx.execute(sql`
-        INSERT INTO ib_program_tiers (program_id, depth, rate)
-        VALUES (${rows[0].id}, ${index + 1}, ${rate})
-      `);
-    }
-    return rows[0].id;
-  });
-  prog[name] = id;
-  return id;
+  }
+
+  /* The rebate is a term of the INTRODUCER's rung — the client's own partner. */
+  await ctx.db.execute(sql`UPDATE ib_levels SET rebate_rate = ${rebate} WHERE level = 1`);
 }
 
-async function makeAgency(name: string, defaultProgramId: string | null): Promise<string> {
+async function makeAgency(name: string): Promise<string> {
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
-    INSERT INTO agencies (name, enabled, sort_order, default_program_id)
-    VALUES (${name}, true, 0, ${defaultProgramId})
+    INSERT INTO agencies (name, enabled, sort_order)
+    VALUES (${name}, true, 0)
     RETURNING id
   `);
   agency[name] = rows[0].id;
@@ -101,17 +108,26 @@ async function makeAgency(name: string, defaultProgramId: string | null): Promis
 }
 
 /** A partner, optionally beneath another. Built top-down: `parent` is a self-FK. */
+/**
+ * A partner on a RUNG — 0112.
+ *
+ * `level` replaced the programme argument, and the difference is the whole
+ * change: a partner's terms follow where they sit rather than a card assigned
+ * to them. Level 1 deals with the broker directly; each recruited partner is one
+ * deeper, which the caller states because these fixtures build the trees they
+ * are testing.
+ */
 async function makePartner(
   handle: string,
-  programId: string,
+  level: number,
   parent?: string,
   agencyId?: string,
 ): Promise<string> {
   const id = await makeUser(handle);
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, parent_ib_user_id, referral_code, active, program_id, agency_id)
+    INSERT INTO ib_accounts (user_id, parent_ib_user_id, referral_code, active, level, agency_id)
     VALUES (${id}, ${parent ?? null}, ${handle.toUpperCase().padEnd(8, 'X').slice(0, 8)}, true,
-            ${programId}, ${agencyId ?? null})
+            ${level}, ${agencyId ?? null})
   `);
   return id;
 }
@@ -210,9 +226,6 @@ beforeEach(async () => {
   await ctx.db.execute(sql`DELETE FROM ib_applications`);
   await ctx.db.execute(sql`DELETE FROM agency_products`);
   await ctx.db.execute(sql`DELETE FROM agencies`);
-  await ctx.db.execute(sql`DELETE FROM ib_program_tiers WHERE program_id IN
-    (SELECT id FROM ib_programs WHERE sort_order >= 50)`);
-  await ctx.db.execute(sql`DELETE FROM ib_programs WHERE sort_order >= 50`);
   await ctx.db.execute(sql`DELETE FROM users WHERE email LIKE '%@e2e.test'`);
   /*
    * THE CEILING IS RESET, and leaving it out cost a confusing failure.
@@ -229,56 +242,113 @@ beforeEach(async () => {
   `);
   for (const key of Object.keys(who)) delete who[key];
 
-  /* Every mode the FSD names, and nothing else — see the audit test below. */
-  await makeProgram('E2E Gold', { tiers: ['30', '8'], sortOrder: 50 });
-  await makeProgram('E2E Standard', { tiers: ['25', '5'], sortOrder: 51 });
-  await makeProgram('E2E Hybrid', {
-    mode: 'hybrid',
-    tiers: ['20', '5'],
-    rebate: '3',
-    sortOrder: 52,
-  });
-  await makeProgram('E2E RebateOnly', { mode: 'rebate_only', rebate: '10', sortOrder: 53 });
+  /*
+   * The two rungs the business asked for: a main partner and a partner under
+   * them. Rebate on rung 1, because that is the partner the client is in a
+   * relationship with.
+   */
+  await setLadder(['30', '8'], '3');
 
-  await makeAgency('E2E Gold Agency', prog['E2E Gold']);
-  await makeAgency('E2E Levant', prog['E2E Hybrid']);
-  await makeAgency('E2E Gulf', null);
+  await makeAgency('E2E Gold Agency');
+  await makeAgency('E2E Levant');
+  await makeAgency('E2E Gulf');
 });
 
-/* ── The programme catalogue matches the specification exactly ────────────── */
+/* ── THE TWO RULES THE BUSINESS STATED, PINNED DIRECTLY ───────────────────── */
 
-describe('the programme types are the ones the FSD names', () => {
+/*
+ * A describe asserting the three programme MODES stood here — FR-IB-05's
+ * `commission_only` / `rebate_only` / `hybrid`, checked against the enum so a
+ * fourth could not be added in the database alone. The modes went with the
+ * catalogue in 0112: they were a label describing which of two numbers were
+ * set, and the numbers say that themselves.
+ *
+ * What replaces it is more valuable, because it is what the business actually
+ * asked for and nothing else in this suite states it as one property:
+ *
+ *   "the second partner should not get any money for the clients of the main
+ *    partner, but the main partner can get money from the users under the
+ *    second partner"
+ *
+ * Both halves hold by CONSTRUCTION rather than by a rate — `resolveChain`
+ * climbs `parent_ib_user_id` upward from the client's introducer, so a
+ * sub-partner is simply never in the chain for their parent's own clients. That
+ * is exactly why it is worth a test: a property that holds because of the
+ * direction of a walk is one a later refactor can lose without any rate
+ * changing, and the failure would be money paid to somebody who never
+ * introduced the client.
+ */
+describe('who earns from whom, in a two-level tree', () => {
   /*
-   * FR-IB-05: "each program shall declare a mode — commission-only,
-   * rebate-only, or hybrid". Three, and this asserts there is no fourth.
-   *
-   * Pinned against the ENUM rather than against a list in TypeScript, because
-   * the enum is what the database will accept — a mode added there and nowhere
-   * else is storable, and would reach `calculate` as a value with no branch.
+   * ONE tree, TWO trades, built once so both assertions describe the same
+   * people. `hana` deals with the broker directly (rung 1); `omar` is the
+   * partner she recruited (rung 2). Each introduces a client of their own.
    */
-  it('offers exactly commission_only, rebate_only and hybrid', async () => {
-    const { rows } = await ctx.db.execute<{ mode: string }>(
-      sql`SELECT unnest(enum_range(NULL::ib_program_mode))::text AS mode`,
-    );
+  async function tree() {
+    await setLadder(['30', '8']);
+    const hana = await makePartner('hana', 1, undefined, agency['E2E Gold Agency']);
+    const omar = await makePartner('omar', 2, hana, agency['E2E Gold Agency']);
+    return {
+      hana,
+      omar,
+      hanaClient: await makeClient('hana-own-client', hana),
+      omarClient: await makeClient('omar-own-client', omar),
+    };
+  }
 
-    expect(rows.map((row) => row.mode).sort()).toEqual([
-      'commission_only',
-      'hybrid',
-      'rebate_only',
-    ]);
+  it('pays the sub-partner NOTHING on a client the main partner introduced', async () => {
+    const { hanaClient } = await tree();
+
+    await trade(hanaClient, uuid(20));
+
+    /*
+     * One row, and `omar` is not in it. Not "omar earns 0" — he is not an
+     * earner on this trade at all, which is the difference between a rate set
+     * to zero and a relationship that does not exist.
+     */
+    expect(await paidFor(uuid(20))).toEqual(['hana@1=30.00000000']);
+  });
+
+  it('pays the main partner on a client the sub-partner introduced', async () => {
+    const { omarClient } = await tree();
+
+    await trade(omarClient, uuid(21));
+
+    /*
+     * BOTH earn, and each at THEIR OWN RUNG — which is the whole of 0112.
+     *
+     * `omar` stands on rung 2 and takes rung 2's 8%, even though this is HIS
+     * OWN client. `hana` stands on rung 1 and takes rung 1's 30%, even though
+     * she introduced nobody here. The rate follows the PARTNER, not the trade.
+     *
+     * ⚠️ Read the `@n` as DEPTH, not as a rung — it is `ib_accruals.depth`, how
+     * far below each earner the trade happened. So `omar@1=8` is "the
+     * introducer, paid his rung 2 rate" and `hana@2=30` is "one hop up, paid
+     * her rung 1 rate". The two numbers deliberately do not match, and reading
+     * the depth as the rung is exactly the confusion this comment exists to
+     * stop: an earlier version of this assertion did that and expected
+     * `omar@1=30`, which is the programme catalogue's depth-keyed behaviour
+     * that 0112 replaced.
+     *
+     * This is what "static per lot for the main partner, percent for the
+     * partner under him" describes: the main partner's terms are hers wherever
+     * the business comes from.
+     */
+    expect(await paidFor(uuid(21))).toEqual(['omar@1=8.00000000', 'hana@2=30.00000000']);
   });
 });
 
 /* ── One trade, one partner ───────────────────────────────────────────────── */
 
 describe('a partner earns on their own client', () => {
-  it('pays the introducer their programme’s depth-1 rate and nobody else', async () => {
-    const tariq = await makePartner('tariq', prog['E2E Standard'], undefined, agency['E2E Gulf']);
+  it('pays the introducer their own rung and nobody else', async () => {
+    await setLadder(['25', '8']);
+    const tariq = await makePartner('tariq', 1, undefined, agency['E2E Gulf']);
     const client = await makeClient('gulf-client', tariq);
 
     await trade(client, uuid(1));
 
-    /* 25% of 100 — E2E Standard's depth 1, and no second row. */
+    /* 25% of 100 — rung 1, and no second row: nobody sits above him. */
     expect(await paidFor(uuid(1))).toEqual(['tariq@1=25.00000000']);
   });
 });
@@ -294,15 +364,32 @@ describe('a mixed chain pays each partner from their own terms', () => {
    *          → omar  (Standard, d2 →  5%)
    *          → hana  (Gold,     d3 → beyond a two-tier ladder, earns nothing)
    */
-  it('reads each earner’s own programme at their own depth', async () => {
-    const hana = await makePartner('hana', prog['E2E Gold'], undefined, agency['E2E Gold Agency']);
-    const omar = await makePartner('omar', prog['E2E Standard'], hana, agency['E2E Gold Agency']);
-    const zaid = await makePartner('zaid', prog['E2E Gold'], omar, agency['E2E Gold Agency']);
+  /*
+   * Three partners, three rungs, one trade.
+   *
+   * `hana` deals with the broker and is rung 1; `omar` was recruited by her at
+   * rung 2; `zaid` by him at rung 3. The client belongs to `zaid`, so the trade
+   * reaches him at DEPTH 1 — and he is paid the THIRD rate, because the rung
+   * follows the partner and the depth follows the trade.
+   *
+   * The partner nearest the broker takes the most, however deep the trade was.
+   * That inversion is what levels changed, and it is what "static per lot for
+   * the main partner, a percentage for the partner under him" describes.
+   */
+  it('pays each earner by their own rung, deepest partner earning least', async () => {
+    await setLadder(['30', '8', '5']);
+    const hana = await makePartner('hana', 1, undefined, agency['E2E Gold Agency']);
+    const omar = await makePartner('omar', 2, hana, agency['E2E Gold Agency']);
+    const zaid = await makePartner('zaid', 3, omar, agency['E2E Gold Agency']);
     const client = await makeClient('gold-client', zaid);
 
     await trade(client, uuid(2));
 
-    expect(await paidFor(uuid(2))).toEqual(['zaid@1=30.00000000', 'omar@2=5.00000000']);
+    expect(await paidFor(uuid(2))).toEqual([
+      'zaid@1=5.00000000',
+      'omar@2=8.00000000',
+      'hana@3=30.00000000',
+    ]);
   });
 
   /*
@@ -311,9 +398,10 @@ describe('a mixed chain pays each partner from their own terms', () => {
    * to that trade.
    */
   it('pays the same partner in full on a client they introduced themselves', async () => {
-    const hana = await makePartner('hana', prog['E2E Gold'], undefined, agency['E2E Gold Agency']);
-    const omar = await makePartner('omar', prog['E2E Standard'], hana, agency['E2E Gold Agency']);
-    await makePartner('zaid', prog['E2E Gold'], omar, agency['E2E Gold Agency']);
+    await setLadder(['30', '8']);
+    const hana = await makePartner('hana', 1, undefined, agency['E2E Gold Agency']);
+    const omar = await makePartner('omar', 2, hana, agency['E2E Gold Agency']);
+    await makePartner('zaid', 3, omar, agency['E2E Gold Agency']);
     const direct = await makeClient('hana-client', hana);
 
     await trade(direct, uuid(3));
@@ -324,9 +412,16 @@ describe('a mixed chain pays each partner from their own terms', () => {
 
 /* ── Every mode, on one platform ──────────────────────────────────────────── */
 
-describe('the three modes behave differently on the same trade', () => {
-  it('hybrid pays the partner AND rebates the client', async () => {
-    const rami = await makePartner('rami', prog['E2E Hybrid'], undefined, agency['E2E Levant']);
+/*
+ * The three programme MODES are gone with the catalogue (0112). What replaced
+ * them is three SHAPES of one rung — both terms set, only the rebate set, only
+ * the commission set — and the behaviours they produced still matter, so the
+ * tests keep their substance and lose the vocabulary.
+ */
+describe('a rung pays whichever of its two terms is set', () => {
+  it('pays the partner AND rebates the client when both terms are set', async () => {
+    await setLadder(['20', '5'], '3');
+    const rami = await makePartner('rami', 1, undefined, agency['E2E Levant']);
     const client = await makeClient('levant-client', rami);
 
     await trade(client, uuid(4));
@@ -338,8 +433,9 @@ describe('the three modes behave differently on the same trade', () => {
     ]);
   });
 
-  it('rebate-only pays the client and the partner earns nothing', async () => {
-    const sami = await makePartner('sami', prog['E2E RebateOnly'], undefined, agency['E2E Levant']);
+  it('pays the client and nobody else when the rung rates commission at zero', async () => {
+    await setLadder([], '10');
+    const sami = await makePartner('sami', 1, undefined, agency['E2E Levant']);
     const client = await makeClient('sami-client', sami);
 
     await trade(client, uuid(5));
@@ -347,8 +443,9 @@ describe('the three modes behave differently on the same trade', () => {
     expect(await paidFor(uuid(5))).toEqual(['rebate→sami-client=10.00000000']);
   });
 
-  it('commission-only pays the partner and rebates nobody', async () => {
-    const tariq = await makePartner('tariq', prog['E2E Gold'], undefined, agency['E2E Gulf']);
+  it('pays the partner and rebates nobody when the rung returns nothing', async () => {
+    await setLadder(['30', '8'], '0');
+    const tariq = await makePartner('tariq', 1, undefined, agency['E2E Gulf']);
     const client = await makeClient('tariq-client', tariq);
 
     await trade(client, uuid(6));
@@ -357,21 +454,22 @@ describe('the three modes behave differently on the same trade', () => {
   });
 
   /*
-   * A REBATE-ONLY partner sitting MID-CHAIN.
+   * A rung paying NO COMMISSION, sitting mid-chain.
    *
-   * The rebate comes from the INTRODUCER's programme, so a rebate-only partner
-   * at depth 2 pays no rebate — and earns no commission either, because that is
-   * what the mode means. The partner above them still earns normally: one
-   * partner's terms must never silently reprice another's.
+   * The rebate is a term of the INTRODUCER's rung, so a partner above the
+   * introducer never pays one however their own rung is set — and here rung 2
+   * also earns no commission, so `sami` takes nothing. The partner BELOW them
+   * still earns normally: one rung's terms must never silently reprice another's.
    */
-  it('a rebate-only partner mid-chain earns nothing and blocks nobody', async () => {
-    const sami = await makePartner('sami', prog['E2E RebateOnly'], undefined, agency['E2E Levant']);
-    const nadia = await makePartner('nadia', prog['E2E Gold'], sami, agency['E2E Levant']);
+  it('a rung paying nothing mid-chain earns nothing and blocks nobody', async () => {
+    await setLadder(['30'], '0');
+    const sami = await makePartner('sami', 2, undefined, agency['E2E Levant']);
+    const nadia = await makePartner('nadia', 1, sami, agency['E2E Levant']);
     const client = await makeClient('mid-chain-client', nadia);
 
     await trade(client, uuid(7));
 
-    /* nadia earns her Gold depth-1; sami earns nothing at depth 2. */
+    /* nadia earns rung 1; sami's rung 2 is unconfigured, so he earns nothing. */
     expect(await paidFor(uuid(7))).toEqual(['nadia@1=30.00000000']);
   });
 });
@@ -388,13 +486,14 @@ describe('the total payout ceiling', () => {
 
   it('accrues a chain that fits under the ceiling', async () => {
     await setCeiling('40');
-    const omar = await makePartner('omar', prog['E2E Standard'], undefined, agency['E2E Gulf']);
-    const zaid = await makePartner('zaid', prog['E2E Gold'], omar, agency['E2E Gulf']);
+    await setLadder(['30', '5']);
+    const omar = await makePartner('omar', 1, undefined, agency['E2E Gulf']);
+    const zaid = await makePartner('zaid', 2, omar, agency['E2E Gulf']);
     const client = await makeClient('under-client', zaid);
 
-    /* 30 + 5 = 35, under 40. */
+    /* 5 at rung 2 plus 30 at rung 1 = 35, under 40. */
     await trade(client, uuid(8));
-    expect(await paidFor(uuid(8))).toEqual(['zaid@1=30.00000000', 'omar@2=5.00000000']);
+    expect(await paidFor(uuid(8))).toEqual(['zaid@1=5.00000000', 'omar@2=30.00000000']);
   });
 
   /*
@@ -404,8 +503,8 @@ describe('the total payout ceiling', () => {
    */
   it('refuses the whole chain rather than paying a reduced amount', async () => {
     await setCeiling('30');
-    const omar = await makePartner('omar', prog['E2E Standard'], undefined, agency['E2E Gulf']);
-    const zaid = await makePartner('zaid', prog['E2E Gold'], omar, agency['E2E Gulf']);
+    const omar = await makePartner('omar', 1, undefined, agency['E2E Gulf']);
+    const zaid = await makePartner('zaid', 1, omar, agency['E2E Gulf']);
     const client = await makeClient('over-client', zaid);
 
     await expect(trade(client, uuid(9))).rejects.toThrow(/ceiling/i);
@@ -414,7 +513,7 @@ describe('the total payout ceiling', () => {
 
   it('counts the client’s rebate against the ceiling too', async () => {
     await setCeiling('22');
-    const rami = await makePartner('rami', prog['E2E Hybrid'], undefined, agency['E2E Levant']);
+    const rami = await makePartner('rami', 1, undefined, agency['E2E Levant']);
     const client = await makeClient('rebate-ceiling-client', rami);
 
     /* 20 commission + 3 rebate = 23, over 22. */
@@ -427,8 +526,8 @@ describe('the total payout ceiling', () => {
 
 describe('a suspended partner', () => {
   it('earns nothing and breaks the chain above them', async () => {
-    const hana = await makePartner('hana', prog['E2E Gold'], undefined, agency['E2E Gold Agency']);
-    const omar = await makePartner('omar', prog['E2E Gold'], hana, agency['E2E Gold Agency']);
+    const hana = await makePartner('hana', 1, undefined, agency['E2E Gold Agency']);
+    const omar = await makePartner('omar', 1, hana, agency['E2E Gold Agency']);
     const client = await makeClient('suspended-client', omar);
 
     await ctx.db.execute(sql`UPDATE ib_accounts SET active = false WHERE user_id = ${omar}`);
@@ -445,14 +544,17 @@ describe('a suspended partner', () => {
 
 describe('replaying a trade', () => {
   it('pays each partner exactly once however many times it is delivered', async () => {
-    const omar = await makePartner('omar', prog['E2E Standard'], undefined, agency['E2E Gulf']);
-    const zaid = await makePartner('zaid', prog['E2E Gold'], omar, agency['E2E Gulf']);
+    await setLadder(['30', '5']);
+    const omar = await makePartner('omar', 1, undefined, agency['E2E Gulf']);
+    const zaid = await makePartner('zaid', 2, omar, agency['E2E Gulf']);
     const client = await makeClient('replay-client', zaid);
 
     await trade(client, uuid(12));
     await trade(client, uuid(12));
     await trade(client, uuid(12));
 
-    expect(await paidFor(uuid(12))).toEqual(['zaid@1=30.00000000', 'omar@2=5.00000000']);
+    // Two rows after three deliveries — `ib_accruals_source_earner_uq` absorbs
+    // the replays rather than the code checking first and inserting after.
+    expect(await paidFor(uuid(12))).toEqual(['zaid@1=5.00000000', 'omar@2=30.00000000']);
   });
 });

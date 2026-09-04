@@ -208,15 +208,11 @@ describeSortIndexes(
   {
     approvedAt: { sql: 'ib_accounts.approved_at' },
     /*
-     * The TERMS, replacing the rung (0102). Ordered from `ib_programs_name_unique`
-     * — a programme's identity is its NAME, unlike a rung whose identity was a
-     * number that had to sort numerically to keep "Level 10" before "Level 2".
+     * The RUNG (0112), ordered as the INTEGER it is. That is the whole reason
+     * it is this column rather than the level's joined NAME: a rung's identity
+     * is its number, and ordering by text puts "Level 10" before "Level 2".
      */
-    programName: {
-      sql: 'ib_programs.name',
-      on: 'ib_programs',
-      join: 'ib_programs.id = ib_accounts.program_id',
-    },
+    level: { sql: 'ib_accounts.level' },
     referralCode: { sql: 'ib_accounts.referral_code' },
     userEmail: { sql: 'users.email', on: 'users' },
     userFirstName: { sql: 'users.first_name', on: 'users' },
