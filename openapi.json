@@ -3740,6 +3740,46 @@
         ]
       }
     },
+    "/v1/trading/accounts/{id}/fund": {
+      "post": {
+        "description": "Demo accounts only — a live account is funded by transferring from a wallet, which posts both sides of the movement. The amount is capped at the operator ceiling reported as `maxDemoDeposit`; a larger request is clamped rather than refused, so a mistyped extra zero still leaves a working account.",
+        "operationId": "TradingController_fundDemoAccount",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FundDemoAccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Top up a demo trading account with practice money",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
     "/v1/trading/accounts/self-service": {
       "get": {
         "description": "Per-client, not per-deployment. A client introduced by a partner is offered that partner’s agency’s products; a client who came in directly is offered every enabled product. Currencies are read live from MT5, so the portal shows what an account will actually be denominated in. An environment with no types is switched off and the portal hides it.",
@@ -12675,6 +12715,19 @@
         },
         "required": [
           "name"
+        ]
+      },
+      "FundDemoAccountDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "10000.00",
+            "description": "How much practice money to add. Positive decimal string, capped by the operator ceiling reported as `maxDemoDeposit` on /trading/accounts/self-service."
+          }
+        },
+        "required": [
+          "amount"
         ]
       },
       "TradingAccountDto": {

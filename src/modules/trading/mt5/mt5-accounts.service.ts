@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import Decimal from 'decimal.js';
 import { and, eq, ne, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
@@ -861,6 +862,127 @@ export class Mt5AccountsService {
     this.logger.log(`Client ${input.userId} renamed their MT5 account ${account.login}`);
 
     return { id: account.id, login: account.login, name };
+  }
+
+  /**
+   * Top a DEMO account up with more practice money, on the client's own ask.
+   *
+   * ## Why this exists as its own path
+   *
+   * A demo balance is consumed by practising, which is the entire point of it.
+   * Until now the only funding a demo account ever received was
+   * `startingBalance` at CREATION, so a client who traded theirs down had one
+   * remedy: open another account. That is a worse outcome for everybody — it
+   * clutters their list, it costs an MT5 login per mistake, and it loses the
+   * history they were practising against.
+   *
+   * ## It is NOT the admin balance operation
+   *
+   * `adjustBalance` is a DEALER correction: any direction, any amount, any
+   * account, gated on `trading.deposit` / `trading.withdraw` and audited as a
+   * back-office act. This is a client funding their own practice account, so it
+   * is deliberately much narrower — credit only, demo only, their own account
+   * only, capped by the same operator ceiling that bounds the starting balance.
+   *
+   * Sharing one method would have meant one set of guards trying to be both, and
+   * the failure mode of getting that wrong is a client debiting a live account.
+   *
+   * ## ⚠️ DEMO ONLY, checked here and not merely in the UI
+   *
+   * A live balance is real money that arrives through a deposit or a transfer,
+   * both of which post a wallet leg and a ledger entry. Crediting one here would
+   * mint money on the trading server with no counterpart anywhere in the CRM —
+   * so the refusal is on the environment, in the service, where no caller can
+   * route around it.
+   *
+   * ## The cap is applied, not enforced by refusal
+   *
+   * `capDemoFunding` clamps rather than throws, which is the rule the opening
+   * path already follows: a fat-fingered extra zero should still leave a working
+   * account rather than an error message. The portal is told the ceiling by
+   * `self-service` so it can say so before the client types.
+   */
+  async fundOwnDemoAccount(input: { userId: string; accountId: string; amount: string }) {
+    this.assertBridge();
+
+    const account = await this.ownAccount(input.userId, input.accountId);
+
+    if (account.environment !== 'demo') {
+      throw new ValidationError(
+        'Only demo accounts can be topped up this way. To add money to a live account, ' +
+          'transfer it from your wallet.',
+      );
+    }
+
+    /*
+     * Positive and finite, checked as a DECIMAL rather than a number (§6.1).
+     * The DTO bounds it too; this is the guard that holds if anything else ever
+     * calls the method.
+     */
+    let requested: Decimal;
+    try {
+      requested = new Decimal(input.amount);
+    } catch {
+      throw new ValidationError('Enter a valid amount.');
+    }
+    if (!requested.isFinite() || requested.lessThanOrEqualTo(0)) {
+      throw new ValidationError('Enter an amount greater than zero.');
+    }
+
+    const terms = await this.terms();
+    const capped = capDemoFunding(requested.toString(), terms.maxDemoDeposit);
+
+    /*
+     * NOT idempotent, and deliberately so.
+     *
+     * Every other balance call here carries a key naming an operation that
+     * happens once — `demo-funding-<login>` is the account's one starting
+     * balance. A top-up is a thing a client may legitimately do again ten
+     * minutes later for the same amount, and a stable key would silently drop
+     * the second one as a replay.
+     *
+     * A unique key per call is therefore the honest shape. The protection
+     * against a double-click is the throttle on the route plus the portal
+     * disabling its button while the request is in flight — the same protection
+     * the password reset relies on, and for the same reason.
+     */
+    const result = await this.bridge.balance({
+      login: account.login,
+      amount: capped,
+      type: 'balance',
+      comment: 'Demo top-up',
+      idempotencyKey: `demo-topup-${account.login}-${randomUUID()}`,
+    });
+
+    /*
+     * Read back from MT5 rather than computed, and written through
+     * `Mt5AccountSyncService` so `balance_synced_at` is stamped with it — see
+     * `adjustBalance`, which records at length why setting `balance` alone
+     * leaves the freshest figure in the system looking unconfirmed to the
+     * sweep's staleness guard.
+     *
+     * `readAt` AFTER the call, for the reason given there: stamped before, it
+     * understates the read by the whole round trip, and understating is the
+     * direction that lets an older sweep read overwrite this one.
+     *
+     * A failed read is not a failed top-up. The money is on the trading server
+     * either way, and the sweep corrects the column shortly.
+     */
+    const snapshot = await this.bridge.getAccount(account.login).catch(() => null);
+    const readAt = new Date();
+    if (snapshot) {
+      await this.accountSync.recordFromOperation(account.login, snapshot.balance, readAt);
+    }
+
+    this.logger.log(`Client ${input.userId} topped up demo account ${account.login} by ${capped}`);
+
+    return {
+      id: account.id,
+      login: account.login,
+      amount: capped,
+      dealId: String(result.dealId),
+      balance: snapshot?.balance ?? null,
+    };
   }
 
   /**

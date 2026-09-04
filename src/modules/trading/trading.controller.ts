@@ -32,6 +32,7 @@ import {
 } from './dto/account-detail.dto';
 import { OpenOwnAccountDto } from './dto/open-account.dto';
 import { RenameOwnAccountDto } from './dto/rename-account.dto';
+import { FundDemoAccountDto } from './dto/fund-demo-account.dto';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
 import { SelfServiceGroups } from './mt5/self-service-groups';
 import { UsersStore } from '../../store/users.store';
@@ -208,6 +209,50 @@ export class TradingController {
       userId: req.user.id,
       accountId: id,
       name: dto.name,
+    });
+  }
+
+  /**
+   * Add practice money to one of the caller's own DEMO accounts.
+   *
+   * A demo balance is consumed by practising, which is the point of it. Until
+   * this existed the only funding a demo account ever got was its starting
+   * balance, so a client who traded theirs down had one remedy — open another
+   * account — which costs an MT5 login per mistake and loses the history they
+   * were practising against.
+   *
+   * ⚠️ DEMO ONLY, refused in the service on the account's own `environment`
+   * rather than trusted from the caller. A live balance is real money that
+   * arrives through a deposit or a transfer, both of which post a wallet leg and
+   * a ledger entry; crediting one here would mint money on the trading server
+   * with no counterpart anywhere in the CRM.
+   *
+   * Throttled like a write that reaches the broker, and more tightly than the
+   * rename beside it: this one moves a balance. It is deliberately NOT
+   * idempotent — a client may legitimately top up the same amount twice — so the
+   * throttle and the portal's in-flight disable are what stand between a
+   * double-click and two credits.
+   */
+  @Post('accounts/:id/fund')
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Top up a demo trading account with practice money',
+    description:
+      'Demo accounts only — a live account is funded by transferring from a wallet, which posts ' +
+      'both sides of the movement. The amount is capped at the operator ceiling reported as ' +
+      '`maxDemoDeposit`; a larger request is clamped rather than refused, so a mistyped extra ' +
+      'zero still leaves a working account.',
+  })
+  async fundDemoAccount(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FundDemoAccountDto,
+    @Req() req: Request & { user: User },
+  ) {
+    return await this.mt5Accounts.fundOwnDemoAccount({
+      userId: req.user.id,
+      accountId: id,
+      amount: dto.amount,
     });
   }
 
