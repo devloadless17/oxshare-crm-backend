@@ -1257,3 +1257,131 @@ describe('a programme priced on the spread', () => {
     expect(await isProcessed(closing)).toBe(false);
   });
 });
+
+/*
+ * ── A ZERO-REVENUE TRADE STILL OWES A PER-LOT PARTNER ──────────────────────
+ *
+ * This was a LIVE BUG and it lost money silently.
+ *
+ * `accruePending` short-circuited when the broker's revenue was zero: no
+ * revenue, no share to take, mark the deal done. That reasoning held while
+ * every payout was a PERCENTAGE of what the broker earned.
+ *
+ * Per-lot terms broke it. $10 a lot is owed on VOLUME and is deliberately
+ * indifferent to what the broker made — `calculate` pays a per-lot leg before
+ * the base is even required to be positive, because a trade earning the house
+ * nothing still owes the partner their amount.
+ *
+ * So on a raw-spread group — no commission, no swap, which is an ordinary setup
+ * and what this deployment actually runs — EVERY deal was marked processed
+ * having paid nobody. Nothing reported it: "nothing owed" is a legitimate
+ * outcome, the row looked handled, and the partners simply never got paid.
+ *
+ * Both directions are pinned, because the fix is a deletion and a deletion is
+ * easy to over-apply: a per-lot rung must now be PAID on a zero-revenue trade,
+ * and a percentage rung must still accrue NOTHING on one.
+ */
+describe('a trade the broker earned nothing on', () => {
+  const ZERO_LOGIN = '5000006';
+  let zeroPartnerId: string;
+
+  beforeAll(async () => {
+    zeroPartnerId = await makeUser('deal-zero-partner@oxshare-e2e.test');
+    const zeroClientId = await makeUser('deal-zero-client@oxshare-e2e.test');
+
+    await ctx.db.execute(sql`
+      INSERT INTO ib_accounts (user_id, referral_code, active, level)
+      VALUES (${zeroPartnerId}, 'DEALZERO', true, 1)
+    `);
+    await ctx.db.execute(sql`
+      UPDATE users SET referred_by_ib_user_id = ${zeroPartnerId} WHERE id = ${zeroClientId}
+    `);
+    await ctx.db.execute(sql`
+      INSERT INTO trading_accounts (user_id, login, currency)
+      VALUES (${zeroClientId}, ${ZERO_LOGIN}, 'USD')
+    `);
+  });
+
+  /** Level 1 pays a flat amount per lot, indifferent to revenue. */
+  async function perLotLadder(): Promise<void> {
+    await ctx.db.execute(sql`
+      UPDATE ib_levels
+         SET commission_mode = 'per_lot', commission_amount_per_lot = 10.00000000,
+             commission_rate = 0, rebate_mode = 'per_lot', rebate_amount_per_lot = 0,
+             rebate_rate = 0, enabled = true
+       WHERE level = 1
+    `);
+  }
+
+  /** Back to the percentage rung the rest of this file assumes. */
+  async function percentLadder(): Promise<void> {
+    await ctx.db.execute(sql`
+      UPDATE ib_levels
+         SET commission_mode = 'percent', commission_amount_per_lot = NULL,
+             commission_rate = 30.0000, rebate_mode = 'percent',
+             rebate_amount_per_lot = NULL, rebate_rate = 0, enabled = true
+       WHERE level = 1
+    `);
+  }
+
+  afterEach(async () => {
+    await percentLadder();
+  });
+
+  it('pays a per-lot partner on a trade with no commission and no swap', async () => {
+    await perLotLadder();
+
+    /* A raw-spread round turn: MT5 charged nothing at all. */
+    const opening = await ingest({
+      ticket: '90400',
+      login: ZERO_LOGIN,
+      commission: '0.00000000',
+      swap: '0.00000000',
+      entry: 0,
+      volume: '2.00000000',
+      positionId: 'P-ZERO',
+    });
+    const closing = await ingest({
+      ticket: '90401',
+      login: ZERO_LOGIN,
+      commission: '0.00000000',
+      swap: '0.00000000',
+      entry: 1,
+      volume: '2.00000000',
+      positionId: 'P-ZERO',
+    });
+
+    await deals.accruePending();
+
+    /* $10 a lot on 2 lots. The broker's $0 does not enter it. */
+    const [accrual] = await accrualsFor(closing);
+    expect(accrual?.amount).toBe('20.00000000');
+    expect(accrual?.ib_user_id).toBe(zeroPartnerId);
+    expect(await isProcessed(opening)).toBe(true);
+  });
+
+  /*
+   * The other direction, and it is why the fix is "ask `calculate`" rather than
+   * "always accrue": a percentage of nothing is nothing, and the deal is still
+   * marked done rather than retried forever. MT5's amounts are final the moment
+   * they are reported, so re-reading the row can only reach the same answer.
+   */
+  it('accrues nothing for a percentage partner, and still marks the deal done', async () => {
+    await percentLadder();
+
+    const closing = await ingest({
+      ticket: '90403',
+      login: ZERO_LOGIN,
+      commission: '0.00000000',
+      swap: '0.00000000',
+      entry: 1,
+      volume: '2.00000000',
+      positionId: 'P-ZERO-PCT',
+    });
+
+    await deals.accruePending();
+
+    expect(await accrualsFor(closing)).toHaveLength(0);
+    expect(await isProcessed(closing)).toBe(true);
+  });
+});

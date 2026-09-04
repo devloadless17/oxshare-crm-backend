@@ -189,6 +189,12 @@ describe('the accrual job drains the deal queue', () => {
         orphanBacklog: vi.fn().mockResolvedValue(0),
       } as never,
       alwaysLeads(),
+      /*
+       * The interval drives the drain BUDGET now (0114), so the stub answers
+       * `null` — `tradingTermsFrom` reads that as the hourly default, which is
+       * what these timings were written against.
+       */
+      { getTrading: () => Promise.resolve(null) } as never,
     );
     await scheduler.accrue();
 
@@ -211,6 +217,12 @@ describe('the accrual job drains the deal queue', () => {
         orphanBacklog: vi.fn().mockResolvedValue(0),
       } as never,
       alwaysLeads(),
+      /*
+       * The interval drives the drain BUDGET now (0114), so the stub answers
+       * `null` — `tradingTermsFrom` reads that as the hourly default, which is
+       * what these timings were written against.
+       */
+      { getTrading: () => Promise.resolve(null) } as never,
     );
     await scheduler.accrue();
 
@@ -236,6 +248,12 @@ describe('the accrual job drains the deal queue', () => {
         orphanBacklog: vi.fn().mockResolvedValue(0),
       } as never,
       alwaysLeads(),
+      /*
+       * The interval drives the drain BUDGET now (0114), so the stub answers
+       * `null` — `tradingTermsFrom` reads that as the hourly default, which is
+       * what these timings were written against.
+       */
+      { getTrading: () => Promise.resolve(null) } as never,
     );
     await scheduler.accrue();
 

@@ -3,14 +3,7 @@ import Decimal from 'decimal.js';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import {
-  ibAccounts,
-  ibAccruals,
-  ledgerEntries,
-  positions,
-  users,
-  wallets,
-} from '../../database/schema';
+import { ibAccounts, ibAccruals, ledgerEntries, users, wallets } from '../../database/schema';
 import { NotFoundError } from '../../common/errors/domain-errors';
 import { CommissionService } from './commission.service';
 
@@ -32,7 +25,7 @@ const REFERRED_CLIENT_PAGE = 200;
 /** The same bound on the sub-partner roster, for the same reason. */
 const SUB_PARTNER_PAGE = 200;
 import { IbWalletService } from './ib-wallet.service';
-import type { IbClientPositionDto, IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
+import type { IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
 
 /**
  * The ledger entry types that represent PARTNER income.
@@ -461,56 +454,13 @@ export class IbOverviewService {
     }));
   }
 
-  /**
-   * The open trades of the clients this partner introduced.
+  /*
+   * `clientPositionsFor` IS GONE, with `GET /ib/positions`.
    *
-   * DIRECT clients only. A sub-partner's clients are somebody else's book —
-   * this partner earns on them through the chain, but "which of MY clients is
-   * trading" is the question here, and widening it would hand one partner a
-   * view of another's client list.
-   *
-   * Open positions only: a closed trade is history, and it already appears in
-   * the commission table as the thing it produced.
+   * It read the `positions` TABLE — created empty on purpose, written by
+   * nothing — so it always answered `[]`. See the controller for why reading it
+   * live does not scale, and why a partner's EARNINGS are what they are owed.
    */
-  async clientPositionsFor(userId: string, limit = 200): Promise<IbClientPositionDto[]> {
-    const clients = await this.db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.referredByIbUserId, userId));
-
-    if (clients.length === 0) return [];
-
-    const rows = await this.db
-      .select({
-        id: positions.id,
-        firstName: users.firstName,
-        lastName: users.lastName,
-        symbol: positions.symbol,
-        side: positions.side,
-        volume: positions.volume,
-        openPrice: positions.openPrice,
-        profit: positions.profit,
-        openedAt: positions.openedAt,
-      })
-      .from(positions)
-      .innerJoin(users, eq(users.id, positions.userId))
-      .where(
-        and(
-          inArray(
-            positions.userId,
-            clients.map((client) => client.id),
-          ),
-          eq(positions.status, 'open'),
-        ),
-      )
-      .orderBy(desc(positions.openedAt))
-      .limit(limit);
-
-    return rows.map(({ firstName, lastName, ...row }) => ({
-      ...row,
-      clientName: displayName(firstName, lastName),
-    }));
-  }
 }
 
 /**

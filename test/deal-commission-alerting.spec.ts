@@ -59,6 +59,12 @@ function schedulerReturning(...runs: DealAccrualRun[]): DealCommissionScheduler 
      * never running the job at all — the worst kind of green.
      */
     { run: (_n: string, _t: number, work: () => Promise<void>) => work() } as never,
+    /*
+     * The interval drives the drain BUDGET now (0114), so the stub answers
+     * `null` — `tradingTermsFrom` reads that as the hourly default, which is
+     * what these timings were written against.
+     */
+    { getTrading: () => Promise.resolve(null) } as never,
   );
 }
 

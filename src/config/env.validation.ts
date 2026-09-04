@@ -205,13 +205,13 @@ const envSchema = z
         'IB_ACCRUAL_START must be "all" or an ISO 8601 instant, e.g. "2026-08-24T00:00:00Z"',
       )
       .optional(),
-    IB_DEAL_ACCRUAL_CRON: z
-      .string()
-      .regex(
-        /^(\S+\s+){4,5}\S+$/,
-        'IB_DEAL_ACCRUAL_CRON must be a cron expression, e.g. "0 */5 * * * *"',
-      )
-      .optional(),
+    /*
+     * `IB_DEAL_ACCRUAL_CRON` IS GONE (0114). Both halves of the commission
+     * pipeline now read `ib_commission_interval_seconds` from the settings
+     * form: leaving accrual on an environment variable meant an operator who
+     * set "pay every minute" still waited however long a deploy-time value
+     * said before a closed trade even became an accrual.
+     */
     /*
      * How often the MT5 group catalogue is re-read. Hourly by default — the
      * thing it watches is a broker changing configuration during a working day,

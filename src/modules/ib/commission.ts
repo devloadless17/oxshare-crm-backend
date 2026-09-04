@@ -601,22 +601,39 @@ export function calculate(
    */
   const lots = event.lots === undefined ? toDecimal('0') : toDecimal(event.lots);
   /*
-   * A non-positive base pays nothing. A refunded or zero deposit must not
-   * produce a negative accrual — that would be a debit dressed as an earning,
-   * and clawbacks are a separate, deliberate operation (a compensating ledger
-   * entry), not a side effect of this function.
-   */
-  /*
-   * `greaterThan(0)`, NOT `!isPositive()`.
+   * A non-positive base pays nothing — TO A PERCENTAGE LEG.
    *
-   * decimal.js gives ZERO a sign of 1, so `new Decimal(0).isPositive()` is TRUE
-   * and this guard never fired on a zero base — the same quirk `transferToMain`
-   * documents, and it read correctly here while doing nothing. A zero-revenue
-   * deal fell through to the loop, produced legs that rounded to nothing, and
-   * returned an empty result with NO explanation, which is indistinguishable
-   * from "nobody was owed anything" to the operator reading the log.
+   * A refunded or zero deposit must not produce a negative accrual: that would
+   * be a debit dressed as an earning, and clawbacks are a separate, deliberate
+   * operation (a compensating ledger entry), not a side effect of this
+   * function.
+   *
+   * ⚠️ NARROWED IN 0114, AND IT WAS A LIVE BUG. This returned early for every
+   * ladder, which was right while every payout was a share of revenue and
+   * became wrong the moment a rung could be priced PER LOT: $10 a lot is owed
+   * on volume and is deliberately indifferent to what the broker earned, which
+   * is the whole point of the model.
+   *
+   * On a raw-spread group — no commission, no swap, an ordinary setup — that
+   * made EVERY trade pay nobody, and the caller marked each one done. Nothing
+   * reported it: an empty result is also what "nobody was owed anything"
+   * looks like.
+   *
+   * So the early return now applies only when NO rung in this chain is priced
+   * per lot. When one is, the loop runs and each leg decides for itself: the
+   * per-lot branch pays, and the percentage branch below still refuses a
+   * non-positive base with its own reason.
+   *
+   * `greaterThan(0)`, NOT `!isPositive()`. decimal.js gives ZERO a sign of 1,
+   * so `new Decimal(0).isPositive()` is TRUE and this guard never fired on a
+   * zero base — the same quirk `transferToMain` documents.
    */
-  if (!gross.greaterThan(0)) {
+  const anyPerLotLeg = chain.some((entry) => {
+    const level = levels.get(entry.level);
+    return level?.commissionMode === 'per_lot' || level?.commissionMode === 'share_of_parent';
+  });
+
+  if (!gross.greaterThan(0) && !anyPerLotLeg) {
     return { accruals: [], skippedReason: 'non-positive revenue base' };
   }
 
