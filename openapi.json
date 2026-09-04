@@ -2332,6 +2332,19 @@
             }
           },
           {
+            "name": "kind",
+            "required": false,
+            "in": "query",
+            "description": "commission (paid to the partner) or rebate (paid back to the trading client). Absent returns both, which is what makes this one screen rather than two.",
+            "schema": {
+              "enum": [
+                "commission",
+                "rebate"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "sort",
             "required": false,
             "in": "query",
