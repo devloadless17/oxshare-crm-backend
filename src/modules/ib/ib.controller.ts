@@ -153,10 +153,13 @@ export class IbController {
   @Get('wallet/transfers')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'The last few commission transfers, newest first',
+    summary: 'Commission moved out of the commission wallet, newest first',
     description:
-      'A short list to sit beside the balance it explains. The FULL history is in ' +
-      '`GET /payments/transactions`, which carries these rows alongside every other movement — a ' +
+      'Every transfer, newest first, with the wallet numbers at both ends. It was capped at TEN ' +
+      'while it rendered as a short panel beside the balance it explains; it is now a paged tab ' +
+      'of its own, and a cap that silently hid a partner’s older transfers was the reason it ' +
+      'could not answer “where did my money go”. ' +
+      'These rows also appear in `GET /payments/transactions` alongside every other movement — a ' +
       "partner's own money should not be split across two histories that have to be reconciled " +
       'against each other.',
   })

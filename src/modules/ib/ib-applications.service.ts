@@ -1130,6 +1130,7 @@ export class IbApplicationsService {
       ibUserId?: string;
       clientUserId?: string;
       status?: string;
+      kind?: string;
     },
     scope: ClientScope,
   ) {
@@ -1142,6 +1143,7 @@ export class IbApplicationsService {
       ibUserId: filter.ibUserId,
       clientUserId: filter.clientUserId,
       status: filter.status,
+      kind: filter.kind,
       sort: sortKey(filter.sort, IB_ACCRUAL_SORT_COLUMNS, DEFAULT_IB_ACCRUAL_SORT, 'accruals'),
       order: sortOrder(filter.order),
     });

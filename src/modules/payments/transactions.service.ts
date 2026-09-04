@@ -1202,7 +1202,173 @@ export class TransactionsService {
    * on the admin list the clause is the actor's client-scope predicate, an
    * EXISTS that would otherwise run over every row the union produced.
    */
-  private movementsCte(armWhere: (userIdColumn: SQL) => SQL): SQL {
+  /**
+   * @param includeRebates whether the client's REBATE credits form a fourth arm.
+   *
+   * TRUE for a client reading their own history, FALSE for the admin Financial
+   * list, and the asymmetry is deliberate rather than an oversight.
+   *
+   * A rebate is a ledger entry with no `transactions` row, so without this arm
+   * it appears on NO screen a client can open — money in their own balance they
+   * cannot account for, which is the one thing a wallet history must never do.
+   * That is why the arm exists at all.
+   *
+   * The admin has other places to read the same fact: `/commissions` lists
+   * every accrual with the partner, the client, the rate and the rung, which is
+   * strictly more than a movement row can carry. On the Financial list the
+   * rebates were noise against the deposits, withdrawals and transfers the
+   * screen exists for — and they are about to get noisier, since one payout run
+   * now credits per wallet rather than per trade (0116).
+   */
+  private movementsCte(armWhere: (userIdColumn: SQL) => SQL, includeRebates: boolean): SQL {
+    /*
+     * THE REBATE ARM, conditional (0116).
+     *
+     * A fragment rather than an `if` around two whole queries: the CTE is one
+     * template literal and duplicating four hundred lines of union to vary one
+     * arm is how two copies of a money query drift apart.
+     *
+     * Empty for the admin Financial list. See the parameter's own note for why
+     * the two callers legitimately differ.
+     */
+    const rebateArm = includeRebates
+      ? sql`
+        UNION ALL
+
+        /*
+         * THE CLIENT'S REBATE — money paid back to them for their own trading.
+         *
+         * ## Why it was invisible, and why that mattered
+         *
+         * A rebate is a LEDGER ENTRY with no transactions row: the accrual
+         * pipeline credits the wallet directly through WalletService.post, so
+         * nothing in the three tables above ever knew about it. This list is a
+         * client's whole money history, so 67 real credits simply did not exist
+         * on any screen a client can open — money in their balance they could
+         * not account for, which is the one thing a wallet history must never
+         * do.
+         *
+         * ## COMMISSION is deliberately NOT here
+         *
+         * The same table holds commission credits, and adding them would be one
+         * extra predicate. It is left out on purpose: commission has its own
+         * history on the partner page, and a partner reading both screens would
+         * see the same earning twice with no way to tell it was one payment.
+         * A rebate has no such home — this is its only one.
+         *
+         * ## Filtered on entry_type, not on the wallet kind
+         *
+         * A rebate credits the MAIN wallet, which is also where deposits land,
+         * so the wallet cannot distinguish it. entry_type is what the accrual
+         * writes and what confirmPending branches on, so it is the same fact
+         * the money path used rather than a second one that could disagree.
+         *
+         * NO BACKTICKS in this comment, for the reason the arm above states: the
+         * whole query is a template literal.
+         */
+        SELECT
+          le.id,
+          w.user_id,
+          le.wallet_id,
+          /*
+           * Always deposit. A rebate only ever credits, and a reversal is a
+           * separate compensating adjustment entry rather than a negative
+           * rebate — see reverseAccrual, which posts an adjustment precisely so
+           * a clawback does not net against what was earned.
+           */
+          'deposit'::text,
+          le.amount,
+          w.currency,
+          /*
+           * success, because a ledger row existing IS the money having moved.
+           * The append-only trigger means there is no pending state it could
+           * be written in and later corrected out of.
+           */
+          'success'::text,
+          NULL::varchar,                          -- method_key
+          NULL::varchar,                          -- withdrawal_method_key
+          /*
+           * NAMED, like the two arms above and for the same reason:
+           * transactions.provider is NOT NULL and this did arrive through
+           * something. The DTO documents provider as an OPEN set that no screen
+           * may switch on exhaustively.
+           */
+          'rebate'::varchar,                      -- provider
+          NULL::varchar,                          -- provider_ref
+          NULL::text,                             -- destination
+          NULL::uuid,                             -- destination_trading_account_id
+          NULL::text,                             -- rejection_reason: it cannot fail
+          NULL::uuid,                             -- reviewed_by
+          NULL::timestamptz,                      -- reviewed_at
+          le.created_at                           AS settled_at,
+          NULL::varchar,                          -- rival_external_id
+          NULL::varchar,                          -- rival_withdrawal_id
+          NULL::timestamptz,                      -- rival_submitted_at
+          FALSE,                                  -- rival_needs_attention
+          NULL::text,                             -- rival_attention_reason
+          le.created_at,
+          /*
+           * NAMED rather than null, unlike the transfer and commission arms.
+           *
+           * The method column is what a client reads to tell one movement from
+           * another, and those two arms already say what they are in the row
+           * beside it — a transfer names its account, a commission move is the
+           * only thing on the commission screen. A rebate sits in a list of
+           * deposits and withdrawals with nothing distinguishing it, so a blank
+           * method left the client asking where the money came from, which is
+           * the question this whole arm exists to answer.
+           */
+          /*
+           * "Rebate", or "Rebate · 40 trades" once a run covered more than one.
+           *
+           * A payout run credits the wallet ONCE now (0116), so a single line
+           * can stand for forty closed trades. Without the count a client sees
+           * one unexplained figure where they used to see forty small ones —
+           * which trades a rebate paid on is the first thing they ask.
+           *
+           * The count comes from the BATCH, joined below; NULL for every rebate
+           * credited before 0116, when each really was one trade. COALESCE
+           * keeps those reading exactly as they always did.
+           */
+          CASE
+            WHEN b.accrual_count > 1
+              THEN 'Rebate · ' || b.accrual_count || ' trades'
+            ELSE 'Rebate'
+          END::varchar                            AS method_name,
+          'rebate'::text                          AS kind,
+          NULL::uuid                              AS trading_account_id
+        /*
+         * The rebate predicate rides on the JOIN, not on a WHERE.
+         *
+         * armWhere returns an EMPTY fragment when its caller has no owner to
+         * pin — the admin list does exactly that — so appending a trailing AND
+         * after it leaves a dangling AND with no WHERE, and the whole query
+         * fails to parse. Putting the condition in the join keeps this arm
+         * correct whether or not the caller filters.
+         */
+        FROM ledger_entries le
+        JOIN wallets w ON w.id = le.wallet_id AND le.entry_type = 'rebate'
+        /*
+         * LEFT, because a rebate credited before 0116 has no batch — it keyed
+         * off its own accrual. An INNER join would silently drop every one of
+         * those from a client's history, which is the same disappearing-money
+         * failure this arm was added to fix.
+         */
+        LEFT JOIN ib_accrual_batches b
+          /*
+           * b.id::text, not le.reference_id::uuid. reference_id is a varchar
+           * holding ids from several tables, so casting IT would throw on any
+           * row whose reference is not a uuid — the cast is evaluated before
+           * the reference_type filter can exclude it.
+           *
+           * NO BACKTICKS: the whole query is a template literal, as the arms
+           * above warn. This comment had them and broke the parse.
+           */
+          ON b.id::text = le.reference_id AND le.reference_type = 'accrual_batch'
+        ${armWhere(sql`w.user_id`)}
+      `
+      : sql``;
+
     return sql`
       WITH combined AS (
         SELECT
@@ -1357,106 +1523,7 @@ export class TransactionsService {
         FROM ib_wallet_transfers iwt
         ${armWhere(sql`iwt.user_id`)}
 
-        UNION ALL
-
-        /*
-         * THE CLIENT'S REBATE — money paid back to them for their own trading.
-         *
-         * ## Why it was invisible, and why that mattered
-         *
-         * A rebate is a LEDGER ENTRY with no transactions row: the accrual
-         * pipeline credits the wallet directly through WalletService.post, so
-         * nothing in the three tables above ever knew about it. This list is a
-         * client's whole money history, so 67 real credits simply did not exist
-         * on any screen a client can open — money in their balance they could
-         * not account for, which is the one thing a wallet history must never
-         * do.
-         *
-         * ## COMMISSION is deliberately NOT here
-         *
-         * The same table holds commission credits, and adding them would be one
-         * extra predicate. It is left out on purpose: commission has its own
-         * history on the partner page, and a partner reading both screens would
-         * see the same earning twice with no way to tell it was one payment.
-         * A rebate has no such home — this is its only one.
-         *
-         * ## Filtered on entry_type, not on the wallet kind
-         *
-         * A rebate credits the MAIN wallet, which is also where deposits land,
-         * so the wallet cannot distinguish it. entry_type is what the accrual
-         * writes and what confirmPending branches on, so it is the same fact
-         * the money path used rather than a second one that could disagree.
-         *
-         * NO BACKTICKS in this comment, for the reason the arm above states: the
-         * whole query is a template literal.
-         */
-        SELECT
-          le.id,
-          w.user_id,
-          le.wallet_id,
-          /*
-           * Always deposit. A rebate only ever credits, and a reversal is a
-           * separate compensating adjustment entry rather than a negative
-           * rebate — see reverseAccrual, which posts an adjustment precisely so
-           * a clawback does not net against what was earned.
-           */
-          'deposit'::text,
-          le.amount,
-          w.currency,
-          /*
-           * success, because a ledger row existing IS the money having moved.
-           * The append-only trigger means there is no pending state it could
-           * be written in and later corrected out of.
-           */
-          'success'::text,
-          NULL::varchar,                          -- method_key
-          NULL::varchar,                          -- withdrawal_method_key
-          /*
-           * NAMED, like the two arms above and for the same reason:
-           * transactions.provider is NOT NULL and this did arrive through
-           * something. The DTO documents provider as an OPEN set that no screen
-           * may switch on exhaustively.
-           */
-          'rebate'::varchar,                      -- provider
-          NULL::varchar,                          -- provider_ref
-          NULL::text,                             -- destination
-          NULL::uuid,                             -- destination_trading_account_id
-          NULL::text,                             -- rejection_reason: it cannot fail
-          NULL::uuid,                             -- reviewed_by
-          NULL::timestamptz,                      -- reviewed_at
-          le.created_at                           AS settled_at,
-          NULL::varchar,                          -- rival_external_id
-          NULL::varchar,                          -- rival_withdrawal_id
-          NULL::timestamptz,                      -- rival_submitted_at
-          FALSE,                                  -- rival_needs_attention
-          NULL::text,                             -- rival_attention_reason
-          le.created_at,
-          /*
-           * NAMED rather than null, unlike the transfer and commission arms.
-           *
-           * The method column is what a client reads to tell one movement from
-           * another, and those two arms already say what they are in the row
-           * beside it — a transfer names its account, a commission move is the
-           * only thing on the commission screen. A rebate sits in a list of
-           * deposits and withdrawals with nothing distinguishing it, so a blank
-           * method left the client asking where the money came from, which is
-           * the question this whole arm exists to answer.
-           */
-          'Rebate'::varchar                       AS method_name,
-          'rebate'::text                          AS kind,
-          NULL::uuid                              AS trading_account_id
-        /*
-         * The rebate predicate rides on the JOIN, not on a WHERE.
-         *
-         * armWhere returns an EMPTY fragment when its caller has no owner to
-         * pin — the admin list does exactly that — so appending a trailing AND
-         * after it leaves a dangling AND with no WHERE, and the whole query
-         * fails to parse. Putting the condition in the join keeps this arm
-         * correct whether or not the caller filters.
-         */
-        FROM ledger_entries le
-        JOIN wallets w ON w.id = le.wallet_id AND le.entry_type = 'rebate'
-        ${armWhere(sql`w.user_id`)}
+        ${rebateArm}
       )
     `;
   }
@@ -1502,7 +1569,8 @@ export class TransactionsService {
      * `WHERE <arm>.user_id = the session's user`, so the owner comes from the
      * session and never from a parameter (R-4.4).
      */
-    const selection = sql`${this.movementsCte((owner) => sql` WHERE ${owner} = ${userId}`)}
+    /* TRUE: this is the ONLY screen a client has for their rebates. */
+    const selection = sql`${this.movementsCte((owner) => sql` WHERE ${owner} = ${userId}`, true)}
       SELECT * FROM combined
     `;
 
@@ -1648,7 +1716,20 @@ export class TransactionsService {
       // column is the 500 common/query-params.ts documents.
       if (filter.userId) conditions.push(sql`${owner} = ${filter.userId}::uuid`);
       return whereOf(conditions);
-    });
+      /*
+       * FALSE — no rebate arm on the admin Financial list.
+       *
+       * This screen is deposits, withdrawals and transfers: the movements an
+       * operator acts on or reconciles against a provider. A rebate is neither
+       * — it is an internal credit the commission engine produced — and at one
+       * payout per minute it buried the rows the page exists for.
+       *
+       * Not a loss of visibility: /commissions lists every accrual with the
+       * partner, the client, the rate and the rung, which is strictly more than
+       * a movement row can carry. The CLIENT's own history keeps the arm — see
+       * the parameter's note, and `listForUser` above.
+       */
+    }, false);
 
     /*
      * The client columns, joined once for display, search and the export —

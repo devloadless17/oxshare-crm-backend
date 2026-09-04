@@ -110,6 +110,37 @@ export const LEDGER_REFERENCE = {
    * would turn a clawback into theft.
    */
   accrualReversal: 'accrual_reversal',
+  /**
+   * ONE RUN'S WORTH of accruals, credited to one wallet as a single entry.
+   *
+   * ## The problem this solves
+   *
+   * Commission is confirmed every minute now. Keyed per accrual, that wrote one
+   * ledger row per closed trade per earner — 252 rows across four wallets in a
+   * day of testing, and a client's wallet history became an unreadable column of
+   * two-dollar credits. At any real volume it is thousands a day, and the one
+   * screen a client uses to account for their own balance is the screen it
+   * ruins.
+   *
+   * A payout run now posts ONE entry per (wallet, kind), summing what that run
+   * matured.
+   *
+   * ## The id is the BATCH's, not any accrual's
+   *
+   * `ib_accrual_batches.id`. It cannot be an accrual id — the entry no longer
+   * belongs to one accrual — and it must not be a synthesised key like
+   * "wallet+minute", because `ledger_entries_wallet_reference_uq` is what makes
+   * the credit idempotent and a key that is merely PROBABLY unique is a key that
+   * one day drops a real payout in silence.
+   *
+   * ## ⚠️ `accrual` DOES NOT GO AWAY
+   *
+   * Every entry already written carries it, on rows that credited real wallets,
+   * and `ledger_entries` is append-only — those cannot be rewritten and must
+   * stay resolvable. A reversal of a pre-batch accrual still keys off
+   * `accrualReversal` + the accrual id, exactly as before.
+   */
+  accrualBatch: 'accrual_batch',
 } as const;
 
 export type LedgerReferenceType = (typeof LEDGER_REFERENCE)[keyof typeof LEDGER_REFERENCE];

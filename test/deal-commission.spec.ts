@@ -189,6 +189,13 @@ beforeAll(async () => {
    *
    * 0102 removed the ladder, so that class of drift has nowhere left to live.
    */
+  /* Legacy `percent` rows — see the note in ib-end-to-end.spec.ts. The form
+     cannot create these since 0117; the engine must still price them. */
+  await ctx.db.execute(
+    sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
+  );
+  await ctx.db.execute(sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_rebate_shape`);
+
   await ctx.db.execute(sql`
     UPDATE ib_levels
        SET commission_mode = 'percent', commission_amount_per_lot = NULL,
@@ -240,6 +247,12 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
+  /* Legacy `percent` rows — see the note in ib-end-to-end.spec.ts. The form
+     cannot create these since 0117; the engine must still price them. */
+  await ctx.db.execute(
+    sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
+  );
+  await ctx.db.execute(sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_rebate_shape`);
   await ctx.db.execute(sql`DELETE FROM mt5_deals`);
 });
 

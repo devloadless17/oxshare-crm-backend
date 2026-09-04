@@ -167,6 +167,8 @@ async function rowsFor(userId: string, kind: string) {
 beforeEach(async () => {
   await ctx.db.execute(sql`DELETE FROM notifications`);
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
+  /* Batches sit between the accruals and the wallets in FK order (0116). */
+  await ctx.db.execute(sql`DELETE FROM ib_accrual_batches`);
   await ctx.db.execute(sql`DELETE FROM transfers`);
   await ctx.db.execute(sql`DELETE FROM transactions`);
   await ctx.db.execute(sql`DELETE FROM ledger_entries`);

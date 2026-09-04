@@ -3728,6 +3728,58 @@ export const ibAccrualStatusEnum = pgEnum('ib_accrual_status', [
   'reversed',
 ]);
 
+/**
+ * ONE PAYOUT RUN's worth of accruals, credited to one wallet as one entry.
+ *
+ * ## Why this table exists (0116)
+ *
+ * Commission confirms every minute since 0113. Keyed per accrual, that wrote
+ * one ledger row per closed trade per earner — 252 rows across four wallets in
+ * a day of testing — and a client's wallet history became an unreadable column
+ * of two-dollar credits. At real volume it is thousands a day, on the one
+ * screen a client uses to account for their own balance.
+ *
+ * ## ⚠️ `ib_accruals` STILL HOLDS ONE ROW PER TRADE
+ *
+ * This changes how money is WRITTEN, not what is KNOWN. The per-trade rows are
+ * the audit trail — which trade paid what, at which rate, on which rung — and
+ * they are what makes an individual dealer-cancelled trade reversible. Merging
+ * those too would buy a tidier ledger by destroying the record that explains it.
+ *
+ * A reversal is unaffected: `reverseAccrual` posts a compensating `adjustment`
+ * rather than editing the credit, because `ledger_entries` is append-only. A
+ * small negative row beside a large positive one is exactly how a ledger
+ * records a partial correction.
+ */
+export const ibAccrualBatches = pgTable(
+  'ib_accrual_batches',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /*
+     * The WALLET, not the user, is the grouping key. A partner who is also a
+     * client earns commission into their commission wallet and rebates into
+     * their main one, and those must never merge into one credit.
+     */
+    walletId: uuid('wallet_id')
+      .notNull()
+      .references(() => wallets.id, { onDelete: 'restrict' }),
+    kind: ibAccrualKindEnum('kind').notNull(),
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
+    /** The sum credited. A decimal string end to end (§6.1) — never a float. */
+    amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
+    /*
+     * How many accruals this covers. STORED rather than counted on read: it is
+     * what the client's transaction line says ("Commission · 40 trades"), and a
+     * COUNT over a growing table to render a label is a query nobody should pay.
+     */
+    accrualCount: integer('accrual_count').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('ib_accrual_batches_wallet_idx').on(t.walletId, t.createdAt)],
+);
+
 export const ibAccruals = pgTable(
   'ib_accruals',
   {
@@ -3805,6 +3857,13 @@ export const ibAccruals = pgTable(
       onDelete: 'restrict',
     }),
     confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    /*
+     * The payout run this was paid in (0116). NULL for a PENDING accrual, and
+     * NULL for every accrual confirmed BEFORE 0116 — those were each paid on
+     * their own and belong to no batch. Both shapes stay readable for ever;
+     * settled ledger rows are never rewritten to make a report tidier.
+     */
+    batchId: uuid('batch_id').references(() => ibAccrualBatches.id, { onDelete: 'restrict' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -3833,6 +3892,9 @@ export const ibAccruals = pgTable(
     index('ib_accruals_ib_user_idx').on(t.ibUserId, t.createdAt),
     /* The confirm job: everything still pending, oldest first. */
     index('ib_accruals_status_idx').on(t.status, t.createdAt),
+    /* The drill-down from one wallet line to the trades behind it — the
+       whole reason the per-trade rows are kept (0116). */
+    index('ib_accruals_batch_idx').on(t.batchId),
     /* A commission is a share of revenue and can never be negative — a clawback
        is a REVERSAL of the row, not a negative accrual. */
     check('ib_accruals_amount_positive', sql`${t.amount} > 0`),

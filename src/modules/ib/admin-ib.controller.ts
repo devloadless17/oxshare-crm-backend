@@ -27,7 +27,7 @@ import {
   IB_APPLICATION_SORT_COLUMNS,
   IB_PARTNER_SORT_COLUMNS,
 } from '../../store/ib.store';
-import { ibAccrualStatusEnum } from '../../database/schema';
+import { ibAccrualKindEnum, ibAccrualStatusEnum } from '../../database/schema';
 import { enumQuery } from '../../common/query-params';
 import { AdminExportService } from '../admin/admin-export.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
@@ -275,6 +275,14 @@ export class AdminIbController {
   @ApiQuery({ name: 'ibUserId', required: false, description: 'Restrict to one partner.' })
   @ApiQuery({ name: 'clientUserId', required: false, description: 'Restrict to one client.' })
   @ApiQuery({ name: 'status', required: false, enum: ibAccrualStatusEnum.enumValues })
+  @ApiQuery({
+    name: 'kind',
+    required: false,
+    enum: ibAccrualKindEnum.enumValues,
+    description:
+      'commission (paid to the partner) or rebate (paid back to the trading client). Absent ' +
+      'returns both, which is what makes this one screen rather than two.',
+  })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_ACCRUAL_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients('IbStore.findAccrualsPage applies the predicate to ib_accruals.ib_user_id.')
@@ -285,6 +293,7 @@ export class AdminIbController {
     @Query('ibUserId') ibUserId?: string,
     @Query('clientUserId') clientUserId?: string,
     @Query('status') status?: string,
+    @Query('kind') kind?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
@@ -297,6 +306,12 @@ export class AdminIbController {
         // Validated against the column's own enum, so an unrecognised value is
         // a 400 rather than a filter that silently matches nothing.
         status: enumQuery(status, ibAccrualStatusEnum.enumValues, 'status'),
+        /*
+         * Commission and rebate are the SAME table differing by one column, so
+         * they are one screen with a filter rather than two screens with two
+         * sets of columns, sorting and permissions to keep in step.
+         */
+        kind: enumQuery(kind, ibAccrualKindEnum.enumValues, 'kind'),
         sort,
         order,
       },

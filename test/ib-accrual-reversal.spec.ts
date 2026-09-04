@@ -188,6 +188,14 @@ beforeEach(async () => {
   // Accruals first — `ib_accruals.ledger_entry_id` references the entry that
   // paid it, so clearing the ledger first violates that key.
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
+  /* Legacy `percent` rows — see the note in ib-end-to-end.spec.ts. The form
+     cannot create these since 0117; the engine must still price them. */
+  await ctx.db.execute(
+    sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
+  );
+  await ctx.db.execute(sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_rebate_shape`);
+  /* Batches sit between the accruals and the wallets in FK order (0116). */
+  await ctx.db.execute(sql`DELETE FROM ib_accrual_batches`);
   await ctx.db.execute(sql`DELETE FROM ledger_entries`);
   await ctx.db.execute(sql`DELETE FROM wallets`);
   /*

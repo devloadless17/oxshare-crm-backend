@@ -15,17 +15,49 @@ import { REVENUE_BASES, type RevenueBasis } from '../../../common/revenue-basis'
 /**
  * How a leg is priced.
  *
- *   `percent`          a share of BROKER REVENUE — see `revenueBasis`.
- *   `per_lot`          money for each standard lot traded.
- *   `share_of_parent`  a percentage of the rate on the level DIRECTLY ABOVE
- *                      (0114) — "the sub-partner takes 30% of the main
- *                      partner's $10, and he gets three dollars".
+ *   `per_lot`  money for each standard lot traded. THE ONLY MODE (0117).
  *
- * The third reads `rate` like `percent` does; what differs is what the
- * percentage applies TO, which no storage rule can express.
+ * ## Why the other two are gone
+ *
+ * `percent` was a share of BROKER REVENUE — MT5's charged commission plus swap
+ * — which is ZERO on a raw-spread group. A rate card reading "30%" therefore
+ * paid nothing at all on a whole class of accounts, silently, because 30% of
+ * nothing is a legitimate-looking zero. That is the live bug this deployment
+ * already hit, where every closed trade was marked processed having paid
+ * nobody.
+ *
+ * `share_of_parent` (0114) was sound arithmetic — 30% of the rung above's $10
+ * resolved to $3 a lot, and it kept a ladder proportional when the top rate was
+ * renegotiated. It is removed on an explicit instruction, and the reason is a
+ * good one: with several sub-partner rungs, a rate you cannot read off the card
+ * without resolving a chain upward is a rate somebody will eventually get
+ * wrong. "$3.00 per lot" is checkable by looking at it.
+ *
+ * The trade, stated plainly: raising level 1 from $10 to $12 no longer moves
+ * level 2. Each rung is edited on its own, deliberately.
+ *
+ * ⚠️ THE ENUM VALUES STILL EXIST in the database (`ib_payout_mode`), because
+ * Postgres cannot drop an enum label and rewriting the type would rewrite a
+ * column on a table whose rows priced real payouts. They are values the
+ * database now REFUSES to store — see 0117 — rather than values it never had.
+ * The engine still reads them so that historical rows remain explicable.
  */
-export const IB_PAYOUT_MODES = ['percent', 'per_lot', 'share_of_parent'] as const;
+export const IB_PAYOUT_MODES = ['per_lot'] as const;
 export type IbPayoutMode = (typeof IB_PAYOUT_MODES)[number];
+
+/**
+ * What a STORED row may say — wider than what a new one may be WRITTEN as.
+ *
+ * The two retired labels still exist in `ib_payout_mode` and on rows that
+ * priced real payouts (Postgres cannot drop an enum label, and rewriting the
+ * type would rewrite a money table). A read must therefore be able to describe
+ * them; only a WRITE is restricted to `per_lot`.
+ *
+ * Keeping one type for both would have forced a choice between lying about
+ * history and re-opening the form to a mode that pays nobody.
+ */
+export const IB_STORED_PAYOUT_MODES = ['per_lot', 'percent', 'share_of_parent'] as const;
+export type IbStoredPayoutMode = (typeof IB_STORED_PAYOUT_MODES)[number];
 
 /**
  * A rate, as a decimal STRING (§6.1).
@@ -120,8 +152,13 @@ export class IbLevelDto {
   })
   enabled: boolean;
 
-  @ApiProperty({ enum: IB_PAYOUT_MODES, description: 'How the PARTNER’s leg is priced.' })
-  commissionMode: IbPayoutMode;
+  @ApiProperty({
+    enum: IB_STORED_PAYOUT_MODES,
+    description:
+      'How the PARTNER’s leg is priced. Always `per_lot` on anything saved since 0117; the other ' +
+      'two appear only on rungs configured before it.',
+  })
+  commissionMode: IbStoredPayoutMode;
 
   @ApiProperty({
     type: 'string',
@@ -138,8 +175,12 @@ export class IbLevelDto {
   })
   commissionAmountPerLot: string | null;
 
-  @ApiProperty({ enum: IB_PAYOUT_MODES, description: 'How the CLIENT’s rebate is priced.' })
-  rebateMode: IbPayoutMode;
+  @ApiProperty({
+    enum: IB_STORED_PAYOUT_MODES,
+    description:
+      'How the CLIENT’s rebate is priced. Always `per_lot` on anything saved since 0117.',
+  })
+  rebateMode: IbStoredPayoutMode;
 
   @ApiProperty({ type: 'string', example: '0.0000' })
   rebateRate: string;
@@ -207,7 +248,7 @@ export class CreateIbLevelDto {
   @Length(0, 2000)
   description?: string | null;
 
-  @ApiPropertyOptional({ enum: IB_PAYOUT_MODES, default: 'percent' })
+  @ApiPropertyOptional({ enum: IB_PAYOUT_MODES, default: 'per_lot' })
   @IsOptional()
   @IsIn(IB_PAYOUT_MODES)
   commissionMode?: IbPayoutMode;
@@ -224,7 +265,7 @@ export class CreateIbLevelDto {
   @Matches(AMOUNT, { message: `commissionAmountPerLot ${AMOUNT_MESSAGE}` })
   commissionAmountPerLot?: string;
 
-  @ApiPropertyOptional({ enum: IB_PAYOUT_MODES, default: 'percent' })
+  @ApiPropertyOptional({ enum: IB_PAYOUT_MODES, default: 'per_lot' })
   @IsOptional()
   @IsIn(IB_PAYOUT_MODES)
   rebateMode?: IbPayoutMode;

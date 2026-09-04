@@ -132,6 +132,10 @@ afterAll(async () => {
 
 afterEach(async () => {
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
+  /* Batches sit between the accruals and the wallets in FK order (0116). */
+  await ctx.db.execute(sql`DELETE FROM ib_accrual_batches`);
+  await ctx.db.execute(sql`DELETE FROM ledger_entries`);
+  await ctx.db.execute(sql`DELETE FROM wallets`);
   /*
    * The SETTING outranks the environment, so a row left behind by one case
    * would silently decide the next one — and the cases above are about what a
@@ -195,6 +199,96 @@ describe('the settlement window decides what is payable', () => {
 
     expect(result.confirmed).toBe(1);
     expect(result.held).toBe(1);
+  });
+});
+
+/*
+ * ── ONE CREDIT PER RUN, NOT ONE PER TRADE (0116) ──────────────────────────
+ *
+ * Commission confirms every minute, so the old per-accrual credit wrote one
+ * ledger row per closed trade per earner and turned a client's wallet history
+ * into a column of two-dollar credits.
+ *
+ * These cases pin BOTH halves of the fix, because either alone would be a bug:
+ * the ledger must collapse, and `ib_accruals` must NOT — the per-trade rows are
+ * the audit trail and the only thing that makes one cancelled trade reversible.
+ */
+describe('a payout run credits a wallet once', () => {
+  it('writes ONE ledger entry for many accruals, and keeps every accrual row', async () => {
+    const partner = await makeClient('batch-partner@test.local');
+    const client = await makeClient('batch-client@test.local');
+    for (let i = 0; i < 5; i += 1) {
+      await accrue(partner, client, `00000000-0000-4000-8000-0000000000${20 + i}`, 48);
+    }
+
+    const result = await (await serviceWithHold(24 * 3600)).confirmPending();
+    expect(result.confirmed).toBe(5);
+
+    /* ONE credit, summing all five at 7.00 each. */
+    const credits = await ctx.db.execute<{ n: number; total: string }>(sql`
+      SELECT count(*)::int AS n, coalesce(sum(amount), 0)::text AS total
+        FROM ledger_entries WHERE entry_type = 'commission'
+    `);
+    expect(credits.rows[0].n).toBe(1);
+    expect(credits.rows[0].total).toBe('35.00000000');
+
+    /* The per-trade record survives — five accruals, all pointing at the batch. */
+    const accruals = await ctx.db.execute<{ n: number; batches: number }>(sql`
+      SELECT count(*)::int AS n, count(DISTINCT batch_id)::int AS batches
+        FROM ib_accruals WHERE status = 'confirmed'
+    `);
+    expect(accruals.rows[0].n).toBe(5);
+    expect(accruals.rows[0].batches).toBe(1);
+  });
+
+  it('does NOT merge a partner’s commission with their own rebate', async () => {
+    /*
+     * A partner who is also somebody's client earns into their COMMISSION
+     * wallet and is rebated into their MAIN one. Merging those would put a
+     * client's own money back into an earnings balance — two different
+     * sentences pointing at two different screens.
+     */
+    const partner = await makeClient('batch-both-partner@test.local');
+    const client = await makeClient('batch-both-client@test.local');
+    await accrue(partner, client, '00000000-0000-4000-8000-000000000030', 48);
+    await ctx.db.execute(sql`
+      INSERT INTO ib_accruals (ib_user_id, client_user_id, source_type, source_id, depth,
+                               rate_value, base_amount, amount, currency, kind, created_at)
+      VALUES (${partner}, ${partner}, 'deal', '00000000-0000-4000-8000-000000000031', 1,
+              '20.0000', '100.00000000', '2.00000000', 'USD', 'rebate',
+              now() - interval '48 hours')
+    `);
+
+    await (await serviceWithHold(24 * 3600)).confirmPending();
+
+    const rows = await ctx.db.execute<{ entry_type: string; n: number }>(sql`
+      SELECT entry_type, count(*)::int AS n
+        FROM ledger_entries WHERE entry_type IN ('commission', 'rebate')
+       GROUP BY entry_type ORDER BY entry_type
+    `);
+    expect(rows.rows).toEqual([
+      { entry_type: 'commission', n: 1 },
+      { entry_type: 'rebate', n: 1 },
+    ]);
+  });
+
+  it('is idempotent — a second run credits nothing further', async () => {
+    const partner = await makeClient('batch-replay-partner@test.local');
+    const client = await makeClient('batch-replay-client@test.local');
+    await accrue(partner, client, '00000000-0000-4000-8000-000000000040', 48);
+    await accrue(partner, client, '00000000-0000-4000-8000-000000000041', 48);
+
+    const service = await serviceWithHold(24 * 3600);
+    await service.confirmPending();
+    const second = await service.confirmPending();
+
+    expect(second.confirmed).toBe(0);
+    const credits = await ctx.db.execute<{ n: number; total: string }>(sql`
+      SELECT count(*)::int AS n, coalesce(sum(amount), 0)::text AS total
+        FROM ledger_entries WHERE entry_type = 'commission'
+    `);
+    expect(credits.rows[0].n).toBe(1);
+    expect(credits.rows[0].total).toBe('14.00000000');
   });
 });
 

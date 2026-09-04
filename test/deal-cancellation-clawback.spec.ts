@@ -112,6 +112,12 @@ beforeAll(async () => {
        WHERE id = ${programId}
     `);
 
+    /* Legacy `percent` row — see the note in ib-end-to-end.spec.ts. The form
+       cannot create these since 0117; the engine must still price them. In the
+       SAME transaction as the write, or the constraint is back before it runs. */
+    await tx.execute(
+      sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
+    );
     await tx.execute(
       sql`UPDATE ib_levels SET commission_mode = 'percent', commission_amount_per_lot = NULL, commission_rate = 10 WHERE level = 1`,
     );
@@ -151,6 +157,14 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
+  /* Legacy `percent` rows — see the note in ib-end-to-end.spec.ts. The form
+     cannot create these since 0117; the engine must still price them. */
+  await ctx.db.execute(
+    sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
+  );
+  await ctx.db.execute(sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_rebate_shape`);
+  /* Batches sit between the accruals and the wallets in FK order (0116). */
+  await ctx.db.execute(sql`DELETE FROM ib_accrual_batches`);
   await ctx.db.execute(sql`DELETE FROM ledger_entries`);
   await ctx.db.execute(sql`DELETE FROM wallets`);
   await ctx.db.execute(sql`DELETE FROM mt5_deals`);

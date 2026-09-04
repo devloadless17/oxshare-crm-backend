@@ -55,40 +55,49 @@ async function makeUser(email: string): Promise<string> {
 }
 
 /**
- * Set the whole ladder — one rate per rung, level 1 first.
+ * Set the whole ladder — one PER-LOT amount per rung, level 1 first.
  *
- * There is ONE ladder now, not a programme per partner. `ib_levels_share_fits`
- * bounds each rung's own commission plus rebate, and a level's two terms live on
- * one row, so unlike the programme trigger this replaced there is no
- * half-written state for it to see and no transaction needed to hide one.
+ * ## Per lot, not percentages (0117)
+ *
+ * Every rung is priced per lot now; `percent` and `share_of_parent` are refused
+ * by `ib_levels_commission_shape`. The figures below are unchanged because the
+ * trade in this suite is exactly ONE LOT — so "$50 a lot" and "50% of a $100
+ * base" produce the same $50, and every assertion downstream still reads as it
+ * did.
+ *
+ * That equivalence is a property of this fixture, not of the model: with two
+ * lots the per-lot rate would pay double where the percentage would not. It is
+ * spelled out here so nobody changes `lots` and wonders why the amounts moved.
  *
  * Every rung is reset first: a rate left on level 3 by a previous case would pay
  * a partner the current one never configured, and these suites share a database.
  */
-async function setLadder(rates: string[]): Promise<void> {
+async function setLadder(amountsPerLot: string[]): Promise<void> {
   await ctx.db.execute(sql`
     UPDATE ib_levels
-       SET commission_mode = 'percent',
-           commission_amount_per_lot = NULL,
+       SET commission_mode = 'per_lot',
+           commission_amount_per_lot = 0,
            commission_rate = 0,
-           rebate_mode = 'percent',
-           rebate_amount_per_lot = NULL,
+           rebate_mode = 'per_lot',
+           rebate_amount_per_lot = 0,
            rebate_rate = 0,
            enabled = true
   `);
 
-  for (const [index, rate] of rates.entries()) {
+  for (const [index, amount] of amountsPerLot.entries()) {
     /*
      * The seed ships two rungs; a deeper ladder needs the row to exist first.
      * `ON CONFLICT` makes this the same statement either way.
      */
     await ctx.db.execute(sql`
-      INSERT INTO ib_levels (level, name, commission_mode, commission_rate)
-      VALUES (${index + 1}, ${'Level ' + String(index + 1)}, 'percent', ${rate})
+      INSERT INTO ib_levels (level, name, commission_mode, commission_amount_per_lot,
+                             rebate_mode, rebate_amount_per_lot)
+      VALUES (${index + 1}, ${'Level ' + String(index + 1)}, 'per_lot', ${amount},
+              'per_lot', 0)
       ON CONFLICT (level) DO UPDATE
-        SET commission_mode = 'percent',
-            commission_amount_per_lot = NULL,
-            commission_rate = ${rate},
+        SET commission_mode = 'per_lot',
+            commission_amount_per_lot = ${amount},
+            commission_rate = 0,
             enabled = true
     `);
   }
@@ -155,10 +164,20 @@ beforeAll(async () => {
   );
 
   /*
-   * 50 / 20 / 10 — three DIFFERENT rates, deliberately. Equal rates would let a
-   * transposition (paying depth 3 the depth-2 tier) pass every assertion here.
+   * $25 / $10 / $5 a lot — three DIFFERENT rates, deliberately. Equal rates
+   * would let a transposition (paying depth 3 the depth-2 tier) pass every
+   * assertion here.
+   *
+   * ⚠️ They must also SUM to under `ib_max_payout_per_lot` ($50, the shipped
+   * default). Under percentages the three rungs were 50/20/10 and summed to 80%
+   * of a $100 base — fine, because that ceiling is a PERCENTAGE one. As per-lot
+   * amounts the same figures are $80 a lot, which `checkPlausible` refuses
+   * outright: a per-lot payout is not bounded by the revenue of the trade, so
+   * the unit-error guard is all that stands between a mistyped amount and
+   * eighty dollars a lot. Halving them keeps the three rungs distinct and the
+   * total ($40) inside the ceiling.
    */
-  await setLadder(['50.0000', '20.0000', '10.0000']);
+  await setLadder(['25.0000', '10.0000', '5.0000']);
   /* One level: pays its holder on their own clients and nothing beyond. */
 
   commissions = new CommissionService(
@@ -233,10 +252,10 @@ describe('a trade three levels deep', () => {
     const rows = await accrualRows();
     expect(rows.map((r) => [r.ib_user_id, r.depth, r.amount])).toEqual([
       // ib1 is nearest the trade and furthest from the broker: rung 3.
-      [ib1, 1, '10.00000000'],
-      [ib2, 2, '20.00000000'],
+      [ib1, 1, '5.00000000'],
+      [ib2, 2, '10.00000000'],
       // ib3 is the main partner, and takes the most however deep the trade was.
-      [ib3, 3, '50.00000000'],
+      [ib3, 3, '25.00000000'],
     ]);
   });
 
@@ -258,10 +277,11 @@ describe('a trade three levels deep', () => {
     for (const row of await accrualRows()) {
       expect(row.level_id).toBeTruthy();
     }
+    /* The PER-LOT amount that priced each row, not a percentage (0117). */
     expect((await accrualRows()).map((r) => r.rate_value)).toEqual([
+      '5.0000',
       '10.0000',
-      '20.0000',
-      '50.0000',
+      '25.0000',
     ]);
   });
 
@@ -288,8 +308,8 @@ describe('a trade three levels deep', () => {
 
     expect(await accrue()).toBe(2);
     expect((await accrualRows()).map((r) => [r.depth, r.amount])).toEqual([
-      [2, '20.00000000'],
-      [3, '50.00000000'],
+      [2, '10.00000000'],
+      [3, '25.00000000'],
     ]);
   });
 

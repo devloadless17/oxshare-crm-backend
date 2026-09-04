@@ -514,6 +514,8 @@ export class IbStore {
     ibUserId?: string;
     clientUserId?: string;
     status?: string;
+    /** `commission` or `rebate`. Absent returns BOTH — see the route. */
+    kind?: string;
     sort?: IbAccrualSortKey;
     order?: SortOrder;
   }) {
@@ -539,6 +541,9 @@ export class IbStore {
       ...(filter.ibUserId ? [eq(ibAccruals.ibUserId, filter.ibUserId)] : []),
       ...(filter.clientUserId ? [eq(ibAccruals.clientUserId, filter.clientUserId)] : []),
       ...(filter.status ? [eq(ibAccruals.status, filter.status as 'pending')] : []),
+      /* Validated against the column's own enum at the edge, so an
+         unrecognised value is a 400 rather than a filter matching nothing. */
+      ...(filter.kind ? [eq(ibAccruals.kind, filter.kind as 'commission')] : []),
     );
 
     const sortKey: IbAccrualSortKey = filter.sort ?? DEFAULT_IB_ACCRUAL_SORT;

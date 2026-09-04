@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { and, desc, eq } from 'drizzle-orm';
+import { aliasedTable, and, desc, eq } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { ibAccounts, ibWalletTransfers, wallets } from '../../database/schema';
@@ -284,10 +284,36 @@ export class IbWalletService {
    * `/transactions`, which carries these rows alongside every other movement
    * rather than in a partner-only silo.
    */
-  async listTransfers(userId: string, limit = 10): Promise<IbWalletTransferResultDto[]> {
+  async listTransfers(userId: string, limit = 200): Promise<IbWalletTransferResultDto[]> {
+    /*
+     * ── WHICH WALLETS the money moved between ────────────────────────────────
+     *
+     * By NUMBER, not by uuid. `wallets.wallet_number` (0090) is the short
+     * identifier a partner sees on their own wallet screen and quotes to
+     * support; a uuid is neither readable nor quotable, and putting one in a
+     * table column asks the reader to match 36 characters by eye.
+     *
+     * Both ends are named rather than just the destination, because "moved to
+     * your wallet" is only half the sentence — a partner holding commission
+     * wallets in two currencies needs to know which one it came OUT of.
+     *
+     * LEFT joins: a wallet is `ON DELETE RESTRICT` so it cannot vanish under a
+     * transfer, but an inner join here would make a future schema change able to
+     * drop rows out of a money history, which is the one thing this list must
+     * never do quietly.
+     */
+    const fromWallet = aliasedTable(wallets, 'from_wallet');
+    const toWallet = aliasedTable(wallets, 'to_wallet');
+
     const rows = await this.db
-      .select()
+      .select({
+        transfer: ibWalletTransfers,
+        fromWalletNumber: fromWallet.walletNumber,
+        toWalletNumber: toWallet.walletNumber,
+      })
       .from(ibWalletTransfers)
+      .leftJoin(fromWallet, eq(fromWallet.id, ibWalletTransfers.fromWalletId))
+      .leftJoin(toWallet, eq(toWallet.id, ibWalletTransfers.toWalletId))
       .where(eq(ibWalletTransfers.userId, userId))
       .orderBy(desc(ibWalletTransfers.createdAt), desc(ibWalletTransfers.id))
       .limit(limit);
@@ -303,10 +329,12 @@ export class IbWalletService {
      * the date, which is what a history is.
      */
     return rows.map((row) => ({
-      id: row.id,
-      amount: new Decimal(row.amount).toFixed(8),
-      currency: row.currency,
-      createdAt: row.createdAt,
+      id: row.transfer.id,
+      amount: new Decimal(row.transfer.amount).toFixed(8),
+      currency: row.transfer.currency,
+      fromWalletNumber: row.fromWalletNumber ?? null,
+      toWalletNumber: row.toWalletNumber ?? null,
+      createdAt: row.transfer.createdAt,
     }));
   }
 }

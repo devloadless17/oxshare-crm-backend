@@ -1,8 +1,8 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq, gt, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, lte, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
-import { ibAccounts, ibAccruals, ibLevels, users } from '../../database/schema';
+import { ibAccounts, ibAccrualBatches, ibAccruals, ibLevels, users } from '../../database/schema';
 import { LEDGER_REFERENCE, type LedgerReferenceType } from '../../database/ledger-reference';
 import { NotFoundError } from '../../common/errors/domain-errors';
 import Decimal from 'decimal.js';
@@ -759,148 +759,213 @@ export class CommissionService implements CommissionAccrualPort {
       }
     >();
 
+    /*
+     * @param accrualCount how many TRADES this amount covers.
+     *
+     * ⚠️ Passed in rather than incremented by one per call, and that is not
+     * cosmetic. Before 0116 each call carried one accrual, so `count += 1` was
+     * right by accident. Now one call carries a whole batch — so incrementing by
+     * one told a partner paid across forty trades that they had earned on "1
+     * trade", while the amount beside it was the sum of all forty.
+     *
+     * A notification whose two numbers disagree is worse than one with no count
+     * at all: it reads as a rate nobody can reproduce.
+     */
     const recordPayout = (
       recipientId: string,
       kind: 'commission' | 'rebate',
       amount: string,
       currency: string,
+      accrualCount: number,
     ): void => {
       const key = `${recipientId}:${kind}:${currency}`;
       const existing = payouts.get(key);
       if (existing) {
         existing.total = existing.total.plus(amount);
-        existing.count += 1;
+        existing.count += accrualCount;
         return;
       }
       payouts.set(key, {
         recipientId,
         kind,
         total: new Decimal(amount),
-        count: 1,
+        count: accrualCount,
         currency,
       });
     };
 
-    for (const accrual of pending) {
-      try {
-        /* Read once: it decides the beneficiary, the wallet, the ledger type
-           and who gets told. */
-        const rebate = accrual.kind === 'rebate';
+    /*
+     * ── GROUPED BEFORE ANYTHING IS POSTED (0116) ─────────────────────────────
+     *
+     * One credit per (beneficiary, wallet kind, currency), not one per accrual.
+     *
+     * Confirming every minute made the old shape unusable: one ledger row per
+     * closed trade per earner, 252 rows across four wallets in a day of
+     * testing, and a client's wallet history reduced to a column of two-dollar
+     * credits. The money was right and the screen was useless.
+     *
+     * The GROUPING KEY is the beneficiary plus the wallet kind plus the
+     * currency, and every part earns its place: a partner who is also somebody's
+     * client receives commission into their commission wallet and a rebate into
+     * their main one, and those must never merge into a single line.
+     */
+    const groups = new Map<
+      string,
+      {
+        userId: string;
+        walletKind: 'main' | 'commission';
+        kind: 'commission' | 'rebate';
+        currency: string;
+        total: Decimal;
+        accruals: typeof pending;
+      }
+    >();
 
+    for (const accrual of pending) {
+      /* Decides the beneficiary, the wallet, the ledger type and who is told. */
+      const rebate = accrual.kind === 'rebate';
+      /*
+       * `ibUserId` on a rebate row is the partner whose RUNG produced it —
+       * attribution, not entitlement. Reading it as the beneficiary would pay
+       * the introducer their own client's rebate, and it would balance
+       * perfectly while doing it.
+       */
+      const userId = rebate ? accrual.clientUserId : accrual.ibUserId;
+      if (!userId) {
+        failed += 1;
+        this.logger.error(`Accrual ${accrual.id} has no beneficiary; leaving it pending.`);
+        continue;
+      }
+
+      const walletKind = rebate ? ('main' as const) : ('commission' as const);
+      const key = `${userId}:${walletKind}:${accrual.currency}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.total = existing.total.plus(accrual.amount);
+        existing.accruals.push(accrual);
+        continue;
+      }
+      groups.set(key, {
+        userId,
+        walletKind,
+        kind: rebate ? 'rebate' : 'commission',
+        currency: accrual.currency,
+        total: toDecimal(accrual.amount),
+        accruals: [accrual],
+      });
+    }
+
+    for (const group of groups.values()) {
+      try {
         await this.db.transaction(async (tx) => {
+          /*
+           * The wallet is resolved FIRST, because the batch row references it
+           * and the credit has to land in the same one. `ensure` opens a
+           * commission wallet lazily — a partner who has never been paid has
+           * none, which is the honest state the portal renders as "nothing
+           * credited yet".
+           */
+          const wallet = await this.wallets.getOrCreateWallet(
+            group.userId,
+            group.currency,
+            group.walletKind,
+            tx,
+          );
+
+          /*
+           * The BATCH row, written before the credit so the ledger entry has a
+           * stable reference id to key on.
+           *
+           * That id is what makes this idempotent:
+           * `ledger_entries_wallet_reference_uq` absorbs a replay. It could not
+           * be an accrual id — the entry no longer belongs to one — and it must
+           * not be a synthesised key like "wallet+minute", because a key that is
+           * merely PROBABLY unique is one that eventually drops a real payout in
+           * silence.
+           */
+          const [batch] = await tx
+            .insert(ibAccrualBatches)
+            .values({
+              walletId: wallet.id,
+              kind: group.kind,
+              currency: group.currency,
+              amount: money(group.total),
+              accrualCount: group.accruals.length,
+            })
+            .returning();
+
           const posted = await this.wallets.post(
             {
+              userId: group.userId,
+              currency: group.currency,
               /*
-               * ── WHO IS PAID depends on the accrual's KIND ────────────────
-               *
-               * A `commission` row pays the PARTNER into their commission
-               * wallet. A `rebate` row pays the trading CLIENT into their main
-               * wallet — it is their own money coming back, not an earning, and
-               * putting it in a commission wallet would both mislabel it and
-               * strand it behind a transfer the client has no reason to make.
-               *
-               * `ibUserId` on a rebate row is the partner whose programme
-               * produced it, which is attribution rather than entitlement —
-               * reading it as the beneficiary would pay the introducer their
-               * client's rebate.
+               * The COMMISSION wallet for earnings, the MAIN wallet for a
+               * rebate. A rebate is the client's own money coming back rather
+               * than an earning, and putting it in a commission wallet would
+               * both mislabel it and strand it behind a transfer the client has
+               * no reason to make.
                */
-              userId: rebate ? accrual.clientUserId : accrual.ibUserId,
-              currency: accrual.currency,
-              /*
-               * The COMMISSION wallet, not the partner's spending wallet.
-               *
-               * This credited `main` — the same wallet a deposit lands in — so
-               * the ledger knew which movements were earnings but the BALANCE
-               * did not. A partner looking at $700 could not tell what they had
-               * deposited from what they had earned, and reconciling their
-               * commission against their own records meant subtracting their
-               * own deposits by hand.
-               *
-               * Opened lazily, here, by `post` itself: a partner who has never
-               * been paid has no commission wallet, and that is the honest
-               * state — the portal renders it as "nothing credited yet" rather
-               * than as a zero balance, which is the same rule the wallet
-               * screen follows for a currency nobody has opened.
-               *
-               * Existing balances are NOT migrated. Commission already credited
-               * to a main wallet is settled money the partner may have spent;
-               * moving it now would rewrite history to make a report tidier.
-               */
-              kind: rebate ? 'main' : 'commission',
-              amount: accrual.amount,
-              entryType: rebate ? 'rebate' : 'commission',
-              /*
-               * Keyed on the ACCRUAL, not the source transaction. One deposit
-               * can pay two partners, so keying on the transaction would make
-               * the second credit look like a replay of the first and silently
-               * drop it — the L2 partner would never be paid.
-               */
-              referenceType: LEDGER_REFERENCE.accrual,
-              referenceId: accrual.id,
+              kind: group.walletKind,
+              amount: money(group.total),
+              entryType: group.kind === 'rebate' ? 'rebate' : 'commission',
+              referenceType: LEDGER_REFERENCE.accrualBatch,
+              referenceId: batch.id,
             },
             tx,
           );
 
           /*
-           * The status write is CONDITIONAL on the row still being pending, so
-           * the check and the write are one statement. Two workers racing over
-           * the same accrual cannot both pass — the second updates nothing and
-           * `post` has already returned the original entry rather than a second
-           * credit.
+           * Every accrual in the group marked in ONE statement, still guarded on
+           * `status = 'pending'` so two workers racing the same queue cannot
+           * both pass — the second updates nothing, and `post` has already
+           * returned the original entry rather than writing a second credit.
+           *
+           * `ledgerEntryId` now points at the BATCH's entry, so several accruals
+           * share one. It was never unique and nothing assumed it was: it is the
+           * link from "what was earned" to "how it was paid", and that link is
+           * still correct when one payment covered several earnings.
            */
           await tx
             .update(ibAccruals)
             .set({
               status: 'confirmed',
-              /*
-               * `posted.entry` is the ledger row either way — on a replay
-               * `post` returns the ORIGINAL entry with `replayed: true` rather
-               * than writing a second one. So this converges on the same id
-               * whether or not the credit had already landed, which is what
-               * makes a retried run leave the accrual correctly linked instead
-               * of pointing at nothing.
-               */
               ledgerEntryId: posted.entry.id,
+              batchId: batch.id,
               confirmedAt: new Date(),
             })
-            .where(and(eq(ibAccruals.id, accrual.id), eq(ibAccruals.status, 'pending')));
-
-          /*
-           * ── NO BELL ROW HERE ANY MORE, AND THAT IS THE WHOLE POINT ───────
-           *
-           * This wrote ONE notification per accrual, deduped on the accrual id.
-           * At the scale this platform is built for that is unusable: a client
-           * closing a thousand positions in a session generates a thousand
-           * accruals, so a partner earning on all of them got a thousand bell
-           * rows for what is, to them, one afternoon's earnings.
-           *
-           * A bell that has to be scrolled is a bell nobody reads, and the one
-           * notification that matters — a KYC decision, a withdrawal — is
-           * buried under commission noise.
-           *
-           * The credit still commits alone. What is accumulated is who was paid
-           * and how much, and ONE summary per recipient is sent after the run
-           * (see `notifySummaries`).
-           */
+            .where(
+              and(
+                inArray(
+                  ibAccruals.id,
+                  group.accruals.map((a) => a.id),
+                ),
+                eq(ibAccruals.status, 'pending'),
+              ),
+            );
         });
-        confirmed += 1;
+
+        confirmed += group.accruals.length;
         recordPayout(
-          rebate ? accrual.clientUserId : accrual.ibUserId,
-          rebate ? 'rebate' : 'commission',
-          accrual.amount,
-          accrual.currency,
+          group.userId,
+          group.kind,
+          money(group.total),
+          group.currency,
+          group.accruals.length,
         );
       } catch (error) {
         /*
-         * Counted and logged, never rethrown. One partner's wallet failing to
-         * accept a credit must not stop every other partner being paid in the
-         * same run; the row stays `pending` and the next run retries it.
+         * Counted and logged, never rethrown. One wallet refusing a credit must
+         * not stop every other partner being paid in the same run; the rows stay
+         * `pending` and the next run retries them.
+         *
+         * The blast radius is wider than it was — a whole group rather than one
+         * accrual — but it is the same rows either way: they were going to be
+         * credited together and they stay pending together.
          */
-        failed += 1;
+        failed += group.accruals.length;
         this.logger.error(
-          `Could not confirm accrual ${accrual.id} for partner ${accrual.ibUserId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `Could not credit ${group.accruals.length} ${group.kind} accrual(s) to ` +
+            `${group.userId}: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
