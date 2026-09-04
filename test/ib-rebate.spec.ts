@@ -31,7 +31,6 @@ let commissions: CommissionService;
 
 let partnerId: string;
 let clientId: string;
-let programId: string;
 
 const POSITION_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -56,41 +55,59 @@ async function makeUser(email: string): Promise<string> {
  * checked once at COMMIT rather than against a half-written ladder.
  */
 async function setTerms(terms: {
-  mode: 'commission_only' | 'rebate_only' | 'hybrid';
-  /** Rates by depth, 1 first. Omit or pass [] for a programme paying no partner. */
+  /**
+   * Rates by RUNG, level 1 first. Omit or pass [] for a ladder paying no
+   * partner — which is what "rebate only" is now that a level carries one
+   * commission term rather than a declared mode.
+   */
   tiers?: string[];
   rebateRate: string;
 }): Promise<void> {
   /*
    * ONE TRANSACTION, and that is not tidiness.
    *
-   * The share ceiling is a DEFERRED constraint trigger: it asks "what does this
-   * programme pay in total" at COMMIT. Run as separate statements, raising the
-   * rebate commits while the PREVIOUS ladder is still in place, so setting a 5%
-   * rebate on a programme already paying 70 + 30 is refused at 105% — for a
-   * state the caller never asked for and is one statement away from leaving.
+   * `ib_levels_share_fits` bounds one rung's commission plus its rebate to
+   * 100%. Run as separate statements, raising the rebate commits while the old
+   * commission rate is still in place — so setting a 5% rebate on a rung paying
+   * 96% is refused for a state the caller never asked for and is one statement
+   * away from leaving.
    *
-   * Inside a transaction the question is asked once, about the terms as they
-   * end up. This is the same shape `IbProgramsService.update` uses, for the
-   * same reason.
+   * Unlike the programme trigger this replaced, the check is per ROW rather
+   * than deferred across a ladder: a level's two terms live on one row, so
+   * there is no half-written ladder for it to see.
    */
   await ctx.db.transaction(async (tx) => {
-    await tx.execute(sql`
-      UPDATE ib_programs
-         SET mode = ${terms.mode}::ib_program_mode,
-             rebate_rate = ${terms.rebateRate},
-             enabled = true
-       WHERE id = ${programId}
-    `);
-    await tx.execute(sql`DELETE FROM ib_program_tiers WHERE program_id = ${programId}`);
+    const rates = terms.tiers ?? [];
 
-    const tiers = (terms.tiers ?? []).filter((rate) => Number.parseFloat(rate) > 0);
-    for (const [index, rate] of tiers.entries()) {
+    /*
+     * Every rung is reset, not only the ones being set. A rate left behind on
+     * level 2 from a previous test would pay a partner the current one never
+     * configured — and these suites share a database across cases.
+     */
+    await tx.execute(sql`
+      UPDATE ib_levels
+         SET commission_mode = 'percent',
+             commission_amount_per_lot = NULL,
+             commission_rate = 0,
+             rebate_mode = 'percent',
+             rebate_amount_per_lot = NULL,
+             rebate_rate = 0,
+             enabled = true
+    `);
+
+    for (const [index, rate] of rates.entries()) {
       await tx.execute(sql`
-        INSERT INTO ib_program_tiers (program_id, depth, rate)
-        VALUES (${programId}, ${index + 1}, ${rate})
+        UPDATE ib_levels SET commission_rate = ${rate} WHERE level = ${index + 1}
       `);
     }
+
+    /*
+     * The rebate is a term of the INTRODUCER's rung, so it goes on level 1 —
+     * that is the partner the client is actually in a relationship with.
+     */
+    await tx.execute(sql`
+      UPDATE ib_levels SET rebate_rate = ${terms.rebateRate} WHERE level = 1
+    `);
   });
 }
 
@@ -130,17 +147,12 @@ async function walletsOf(userId: string) {
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
 
-  const { rows } = await ctx.db.execute<{ id: string }>(
-    sql`SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1`,
-  );
-  programId = rows[0].id;
-
   partnerId = await makeUser('rebate-partner@oxshare-e2e.test');
   clientId = await makeUser('rebate-client@oxshare-e2e.test');
 
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
-      VALUES (${partnerId}, 'REBATE01', true, ${programId})
+    INSERT INTO ib_accounts (user_id, referral_code, active, level)
+      VALUES (${partnerId}, 'REBATE01', true, 1)
   `);
   await ctx.db.execute(
     sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,
@@ -182,7 +194,7 @@ beforeEach(async () => {
 
 describe('a hybrid programme produces two legs from one trade', () => {
   it('writes a commission row and a rebate row', async () => {
-    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['10'], rebateRate: '5' });
 
     const created = await accrue();
 
@@ -201,7 +213,7 @@ describe('a hybrid programme produces two legs from one trade', () => {
    * rebate — which balances, and is wrong about whose money it is.
    */
   it('attributes the rebate to the partner and owes it to the client', async () => {
-    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['10'], rebateRate: '5' });
     await accrue();
 
     const rebate = (await accrualRows()).find((r) => r.kind === 'rebate');
@@ -216,7 +228,7 @@ describe('a hybrid programme produces two legs from one trade', () => {
    * configured rebate simply never pays.
    */
   it('does not let the two rows collide on re-delivery', async () => {
-    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['10'], rebateRate: '5' });
 
     await accrue();
     const second = await accrue();
@@ -228,7 +240,7 @@ describe('a hybrid programme produces two legs from one trade', () => {
 
 describe('confirmation pays each leg to the right person', () => {
   it('credits the partner’s commission wallet and the client’s main wallet', async () => {
-    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['10'], rebateRate: '5' });
     await accrue();
 
     const result = await commissions.confirmPending();
@@ -248,7 +260,7 @@ describe('confirmation pays each leg to the right person', () => {
   });
 
   it('records the client’s leg as a rebate in the ledger', async () => {
-    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['10'], rebateRate: '5' });
     await accrue();
     await commissions.confirmPending();
 
@@ -263,7 +275,7 @@ describe('confirmation pays each leg to the right person', () => {
   });
 
   it('pays neither leg twice when the loop runs again', async () => {
-    await setTerms({ mode: 'hybrid', tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['10'], rebateRate: '5' });
     await accrue();
 
     await commissions.confirmPending();
@@ -277,8 +289,14 @@ describe('confirmation pays each leg to the right person', () => {
 });
 
 describe('the mode decides which legs exist at all', () => {
-  it('pays only the partner under commission_only', async () => {
-    await setTerms({ mode: 'commission_only', tiers: ['10'], rebateRate: '5' });
+  /*
+   * "Commission only" is a SHAPE now, not a declared mode: a rung paying the
+   * partner and returning nothing to the client. `mode` went with the programme
+   * catalogue, and with it the way a programme could claim to be commission-only
+   * while carrying a rebate rate nobody could see on the screen.
+   */
+  it('pays only the partner when the rung returns nothing to the client', async () => {
+    await setTerms({ tiers: ['10'], rebateRate: '0' });
 
     expect(await accrue()).toBe(1);
     expect((await accrualRows()).map((r) => r.kind)).toEqual(['commission']);
@@ -288,8 +306,8 @@ describe('the mode decides which legs exist at all', () => {
    * A real arrangement — the broker buys volume by handing the spread back —
    * and the partner earning nothing on it is the point, not a misconfiguration.
    */
-  it('pays only the client under rebate_only', async () => {
-    await setTerms({ mode: 'rebate_only', tiers: ['10'], rebateRate: '5' });
+  it('pays only the client when the rung rates commission at zero', async () => {
+    await setTerms({ tiers: [], rebateRate: '5' });
 
     expect(await accrue()).toBe(1);
     expect((await accrualRows()).map((r) => r.kind)).toEqual(['rebate']);

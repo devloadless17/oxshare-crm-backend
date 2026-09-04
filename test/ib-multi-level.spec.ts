@@ -42,8 +42,6 @@ let ib1: string;
 let ib2: string;
 let ib3: string;
 let clientId: string;
-let deepProgram: string;
-let shallowProgram: string;
 
 const POSITION_ID = '22222222-2222-4222-8222-222222222222';
 
@@ -57,34 +55,48 @@ async function makeUser(email: string): Promise<string> {
 }
 
 /**
- * A programme and its ladder, in ONE transaction.
+ * Set the whole ladder — one rate per rung, level 1 first.
  *
- * The share ceiling is a DEFERRED constraint trigger, so it is asked once at
- * COMMIT. Inserting the tiers as separate statements would ask it against a
- * half-written ladder.
+ * There is ONE ladder now, not a programme per partner. `ib_levels_share_fits`
+ * bounds each rung's own commission plus rebate, and a level's two terms live on
+ * one row, so unlike the programme trigger this replaced there is no
+ * half-written state for it to see and no transaction needed to hide one.
+ *
+ * Every rung is reset first: a rate left on level 3 by a previous case would pay
+ * a partner the current one never configured, and these suites share a database.
  */
-async function makeProgram(name: string, rates: string[]): Promise<string> {
-  return ctx.db.transaction(async (tx) => {
-    const { rows } = await tx.execute<{ id: string }>(sql`
-      INSERT INTO ib_programs (name, mode, sort_order)
-      VALUES (${name}, 'commission_only', 50) RETURNING id
+async function setLadder(rates: string[]): Promise<void> {
+  await ctx.db.execute(sql`
+    UPDATE ib_levels
+       SET commission_mode = 'percent',
+           commission_amount_per_lot = NULL,
+           commission_rate = 0,
+           rebate_mode = 'percent',
+           rebate_amount_per_lot = NULL,
+           rebate_rate = 0,
+           enabled = true
+  `);
+
+  for (const [index, rate] of rates.entries()) {
+    /*
+     * The seed ships two rungs; a deeper ladder needs the row to exist first.
+     * `ON CONFLICT` makes this the same statement either way.
+     */
+    await ctx.db.execute(sql`
+      INSERT INTO ib_levels (level, name, commission_mode, commission_rate)
+      VALUES (${index + 1}, ${'Level ' + String(index + 1)}, 'percent', ${rate})
+      ON CONFLICT (level) DO UPDATE
+        SET commission_mode = 'percent',
+            commission_amount_per_lot = NULL,
+            commission_rate = ${rate},
+            enabled = true
     `);
-    const id = rows[0].id;
-    for (const [index, rate] of rates.entries()) {
-      await tx.execute(sql`
-        INSERT INTO ib_program_tiers (program_id, depth, rate)
-        VALUES (${id}, ${index + 1}, ${rate})
-      `);
-    }
-    return id;
-  });
+  }
 }
 
-/** Put a partner on a set of terms. */
-async function place(userId: string, programId: string): Promise<void> {
-  await ctx.db.execute(
-    sql`UPDATE ib_accounts SET program_id = ${programId} WHERE user_id = ${userId}`,
-  );
+/** Move a partner to a rung — what decides their terms. */
+async function place(userId: string, level: number): Promise<void> {
+  await ctx.db.execute(sql`UPDATE ib_accounts SET level = ${level} WHERE user_id = ${userId}`);
 }
 
 /** One closed trade on which the broker kept 100. */
@@ -104,11 +116,11 @@ async function accrualRows() {
   const { rows } = await ctx.db.execute<{
     ib_user_id: string;
     depth: number;
-    program_id: string | null;
+    level_id: string | null;
     rate_value: string;
     amount: string;
   }>(sql`
-    SELECT ib_user_id, depth, program_id, rate_value, amount
+    SELECT ib_user_id, depth, level_id, rate_value, amount
       FROM ib_accruals ORDER BY depth
   `);
   return rows;
@@ -122,26 +134,21 @@ beforeAll(async () => {
   ib3 = await makeUser('depth3@oxshare-e2e.test');
   clientId = await makeUser('deep-client@oxshare-e2e.test');
 
-  const { rows } = await ctx.db.execute<{ id: string }>(
-    sql`SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1`,
-  );
-  const seeded = rows[0].id;
-
   /*
    * The chain, built from the TOP down: `parent_ib_user_id` is a self-FK, so a
    * partner cannot reference a parent row that does not exist yet.
    */
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
-    VALUES (${ib3}, 'DEEPIB03', true, ${seeded})
+    INSERT INTO ib_accounts (user_id, referral_code, active, level)
+    VALUES (${ib3}, 'DEEPIB03', true, 1)
   `);
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, parent_ib_user_id, referral_code, active, program_id)
-    VALUES (${ib2}, ${ib3}, 'DEEPIB02', true, ${seeded})
+    INSERT INTO ib_accounts (user_id, parent_ib_user_id, referral_code, active, level)
+    VALUES (${ib2}, ${ib3}, 'DEEPIB02', true, 2)
   `);
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, parent_ib_user_id, referral_code, active, program_id)
-    VALUES (${ib1}, ${ib2}, 'DEEPIB01', true, ${seeded})
+    INSERT INTO ib_accounts (user_id, parent_ib_user_id, referral_code, active, level)
+    VALUES (${ib1}, ${ib2}, 'DEEPIB01', true, 3)
   `);
   await ctx.db.execute(
     sql`UPDATE users SET referred_by_ib_user_id = ${ib1} WHERE id = ${clientId}`,
@@ -151,9 +158,8 @@ beforeAll(async () => {
    * 50 / 20 / 10 — three DIFFERENT rates, deliberately. Equal rates would let a
    * transposition (paying depth 3 the depth-2 tier) pass every assertion here.
    */
-  deepProgram = await makeProgram('Deep', ['50.0000', '20.0000', '10.0000']);
+  await setLadder(['50.0000', '20.0000', '10.0000']);
   /* One level: pays its holder on their own clients and nothing beyond. */
-  shallowProgram = await makeProgram('Shallow', ['30.0000']);
 
   commissions = new CommissionService(
     ctx.db,
@@ -175,6 +181,18 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
+
+  /*
+   * The RUNGS are restored too, not only the accruals.
+   *
+   * Several cases move a partner onto an unconfigured rung to prove what
+   * happens; without this, that move leaks into the next test and the failure
+   * shows up somewhere unrelated. The tree itself never changes — only which
+   * rung each partner stands on — so resetting the three is enough.
+   */
+  await ctx.db.execute(sql`UPDATE ib_accounts SET level = 1, active = true WHERE user_id = ${ib3}`);
+  await ctx.db.execute(sql`UPDATE ib_accounts SET level = 2, active = true WHERE user_id = ${ib2}`);
+  await ctx.db.execute(sql`UPDATE ib_accounts SET level = 3, active = true WHERE user_id = ${ib1}`);
   /*
    * No cap to raise. The broker's floor was a setting that scaled every leg pro
    * rata to fit under a configured share; it went in 0103, so the 80% this
@@ -184,9 +202,6 @@ beforeEach(async () => {
    * which is why these amounts are the ones asserted below rather than scaled
    * ones.
    */
-  await place(ib1, deepProgram);
-  await place(ib2, deepProgram);
-  await place(ib3, deepProgram);
 });
 
 describe('a trade three levels deep', () => {
@@ -195,15 +210,30 @@ describe('a trade three levels deep', () => {
    * nothing on every trade for ever — with the console reporting a three-level
    * payout depth because it counted rungs.
    */
-  it('pays every partner in the chain, at their own depth', async () => {
+  /*
+   * ── EACH PARTNER IS PAID BY THEIR OWN RUNG (0112) ────────────────────────
+   *
+   * The chain is built top-down: `ib3` deals with the broker directly and is
+   * level 1, `ib2` was recruited by them at level 2, `ib1` by `ib2` at level 3.
+   * A client of `ib1` therefore reaches them at DEPTH 1 — but `ib1` stands on
+   * the THIRD rung, so they take the third rate.
+   *
+   * That inversion is the change. Under programmes the rate followed the depth,
+   * so the partner nearest the trade took the largest share whoever they were.
+   * Under levels the partner nearest the BROKER does, which is what "static per
+   * lot for the main partner, a percentage for the partner under him" means.
+   */
+  it('pays every partner in the chain by the rung they stand on', async () => {
     const written = await accrue();
     expect(written).toBe(3);
 
     const rows = await accrualRows();
     expect(rows.map((r) => [r.ib_user_id, r.depth, r.amount])).toEqual([
-      [ib1, 1, '50.00000000'],
+      // ib1 is nearest the trade and furthest from the broker: rung 3.
+      [ib1, 1, '10.00000000'],
       [ib2, 2, '20.00000000'],
-      [ib3, 3, '10.00000000'],
+      // ib3 is the main partner, and takes the most however deep the trade was.
+      [ib3, 3, '50.00000000'],
     ]);
   });
 
@@ -213,16 +243,22 @@ describe('a trade three levels deep', () => {
    * rate is a number with no stated source, recoverable only from the partner's
    * CURRENT terms, which are the thing most likely to have changed since.
    */
-  it('records the programme and the rate that produced each amount', async () => {
+  /*
+   * The row has to explain itself. `level_id` says which rung's terms priced it
+   * and `rate_value` what that rung paid — together they make the arithmetic
+   * reproducible from the row alone, which is the one property this ledger has
+   * to keep when somebody asks months later why an amount was what it was.
+   */
+  it('records the rung and the rate that produced each amount', async () => {
     await accrue();
 
     for (const row of await accrualRows()) {
-      expect(row.program_id).toBe(deepProgram);
+      expect(row.level_id).toBeTruthy();
     }
     expect((await accrualRows()).map((r) => r.rate_value)).toEqual([
-      '50.0000',
-      '20.0000',
       '10.0000',
+      '20.0000',
+      '50.0000',
     ]);
   });
 
@@ -233,14 +269,24 @@ describe('a trade three levels deep', () => {
    * The wrong version reads reach from the introducer, or from a platform-wide
    * setting, and silently cancels terms two other partners negotiated.
    */
-  it('pays a deep programme through a shallow one beneath it', async () => {
-    await place(ib1, shallowProgram);
+  /*
+   * A partner on an unconfigured rung earns nothing, and the partners ABOVE
+   * them are untouched.
+   *
+   * This replaces "pays a deep programme through a shallow one beneath it",
+   * which was about one partner's contract not truncating another's. There is
+   * one ladder now, so that particular collision cannot arise — but the
+   * property it protected still matters: a gap at one rung must not sever the
+   * chain above it, or recruiting somebody onto terms nobody has configured
+   * would quietly stop the whole upline earning.
+   */
+  it('pays the partners above a rung that is not configured', async () => {
+    await place(ib1, 9);
 
-    expect(await accrue()).toBe(3);
+    expect(await accrue()).toBe(2);
     expect((await accrualRows()).map((r) => [r.depth, r.amount])).toEqual([
-      [1, '30.00000000'],
       [2, '20.00000000'],
-      [3, '10.00000000'],
+      [3, '50.00000000'],
     ]);
   });
 
@@ -248,8 +294,8 @@ describe('a trade three levels deep', () => {
    * The mirror: a partner whose OWN programme stops short earns nothing at that
    * depth, while everyone whose programme reaches keeps being paid.
    */
-  it('stops paying a partner past the end of their own ladder', async () => {
-    await place(ib3, shallowProgram);
+  it('stops paying a partner standing past the end of the ladder', async () => {
+    await place(ib3, 9);
 
     expect(await accrue()).toBe(2);
     expect((await accrualRows()).map((r) => [r.ib_user_id, r.depth])).toEqual([

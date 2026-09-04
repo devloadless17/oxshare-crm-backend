@@ -190,19 +190,11 @@ beforeAll(async () => {
    * 0102 removed the ladder, so that class of drift has nowhere left to live.
    */
   await ctx.db.execute(sql`
-    UPDATE ib_programs
-       SET mode = 'commission_only',
-           rebate_rate = 0.0000,
-           enabled = true
-     WHERE id = (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1)
-  `);
-  await ctx.db.execute(sql`
-    DELETE FROM ib_program_tiers
-     WHERE program_id = (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1)
-  `);
-  await ctx.db.execute(sql`
-    INSERT INTO ib_program_tiers (program_id, depth, rate)
-    VALUES ((SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1), 1, 30.0000)
+    UPDATE ib_levels
+       SET commission_mode = 'percent', commission_amount_per_lot = NULL,
+           rebate_amount_per_lot = NULL, commission_rate = 30.0000,
+           rebate_mode = 'percent', rebate_rate = 0.0000, enabled = true
+     WHERE level = 1
   `);
 
   partnerId = await makeUser('deal-partner@oxshare-e2e.test');
@@ -210,8 +202,8 @@ beforeAll(async () => {
   unreferredId = await makeUser('deal-unreferred@oxshare-e2e.test');
 
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
-      VALUES (${partnerId}, 'DEALPART', true, (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
+    INSERT INTO ib_accounts (user_id, referral_code, active, level)
+      VALUES (${partnerId}, 'DEALPART', true, 1)
   `);
   await ctx.db.execute(
     sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,
@@ -1150,15 +1142,23 @@ describe('a programme priced on the spread', () => {
      * used" and "which programme was read" the same question, and a wrong
      * answer to either would look like a right answer to the other.
      */
+    /*
+     * RUNG 2 carries these terms, not rung 1, and that is forced rather than
+     * chosen (0112).
+     *
+     * Terms belong to a rung now, so two partners standing on the SAME rung
+     * cannot be priced differently — which this suite needs, because the other
+     * fixture's partner is on rung 1 at 30% of charges and this one has to be
+     * on the spread at 20%. Putting this partner a rung deeper is the only way
+     * to express two contracts on one platform, and it is worth knowing that
+     * the programme catalogue could express it without moving anybody.
+     */
     await ctx.db.execute(sql`
-      INSERT INTO ib_programs (name, sort_order, mode, revenue_basis)
-      VALUES ('E2E Spread Priced', 950, 'commission_only', 'spread')
-      ON CONFLICT (name) DO UPDATE SET revenue_basis = 'spread'
-    `);
-    await ctx.db.execute(sql`
-      INSERT INTO ib_program_tiers (program_id, depth, rate)
-      VALUES ((SELECT id FROM ib_programs WHERE name = 'E2E Spread Priced'), 1, 20.0000)
-      ON CONFLICT (program_id, depth) DO UPDATE SET rate = 20.0000
+      INSERT INTO ib_levels (level, name, commission_mode, commission_rate, revenue_basis)
+      VALUES (2, 'Spread Priced', 'percent', 20.0000, 'spread')
+      ON CONFLICT (level) DO UPDATE
+        SET commission_mode = 'percent', commission_amount_per_lot = NULL,
+            commission_rate = 20.0000, revenue_basis = 'spread', enabled = true
     `);
 
     spreadPartnerId = await makeUser('deal-spread-partner@oxshare-e2e.test');
@@ -1166,9 +1166,8 @@ describe('a programme priced on the spread', () => {
     const noProductClientId = await makeUser('deal-spread-noproduct@oxshare-e2e.test');
 
     await ctx.db.execute(sql`
-      INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
-      VALUES (${spreadPartnerId}, 'DEALSPREAD', true,
-              (SELECT id FROM ib_programs WHERE name = 'E2E Spread Priced'))
+      INSERT INTO ib_accounts (user_id, referral_code, active, level)
+      VALUES (${spreadPartnerId}, 'DEALSPREAD', true, 2)
     `);
     await ctx.db.execute(sql`
       UPDATE users SET referred_by_ib_user_id = ${spreadPartnerId}

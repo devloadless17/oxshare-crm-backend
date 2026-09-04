@@ -111,9 +111,9 @@ beforeAll(async () => {
          SET mode = 'commission_only'::ib_program_mode, rebate_rate = 0, enabled = true
        WHERE id = ${programId}
     `);
-    await tx.execute(sql`DELETE FROM ib_program_tiers WHERE program_id = ${programId}`);
+
     await tx.execute(
-      sql`INSERT INTO ib_program_tiers (program_id, depth, rate) VALUES (${programId}, 1, 10)`,
+      sql`UPDATE ib_levels SET commission_mode = 'percent', commission_amount_per_lot = NULL, commission_rate = 10 WHERE level = 1`,
     );
   });
 
@@ -121,8 +121,8 @@ beforeAll(async () => {
   clientId = await makeUser('clawback-client@oxshare-e2e.test');
 
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
-      VALUES (${partnerId}, 'CLAWBCK1', true, ${programId})
+    INSERT INTO ib_accounts (user_id, referral_code, active, level)
+      VALUES (${partnerId}, 'CLAWBCK1', true, 1)
   `);
   await ctx.db.execute(
     sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,

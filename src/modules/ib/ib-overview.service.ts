@@ -1,13 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
   ibAccounts,
   ibAccruals,
-  ibProgramTiers,
-  ibPrograms,
   ledgerEntries,
   positions,
   users,
@@ -156,9 +154,8 @@ export class IbOverviewService {
      * confirm loop — leaving a partner looking at a balance their own earnings
      * figure does not account for.
      */
-    const [programme, earnings, commissionWallets, referredClients, subPartners, referredCounts] =
+    const [earnings, commissionWallets, referredClients, subPartners, referredCounts] =
       await Promise.all([
-        this.programmeFor(account.programId),
         this.earningsFor(userId),
         this.wallets.listCommissionWallets(userId),
         this.referredClientsFor(userId),
@@ -167,7 +164,6 @@ export class IbOverviewService {
       ]);
 
     return {
-      programme,
       earnings,
       commissionWallets,
       referredClients,
@@ -184,49 +180,21 @@ export class IbOverviewService {
   }
 
   /*
-   * `levelFor` IS GONE (0102), with the rung it read.
+   * NOTHING HERE DESCRIBES THE PARTNER'S OWN TERMS, and that is deliberate
+   * (0112).
    *
-   * A partner's dashboard used to open with their rung and its rate — a number
-   * that stopped deciding anything in 0084, printed at the top of the one screen
-   * where a partner looks to understand what they earn. `programme` below is
-   * what actually pays them, and it now carries the ladder too.
+   * `levelFor` went in 0102 and `programme` in 0112 — a rung with its rate,
+   * then a named programme with its ladder, each printed at the top of the one
+   * screen where a partner looks to understand what they earn. Both were
+   * removed on the same instruction: the rate card is a commercial arrangement
+   * between the broker and the partner, and the broker publishes it. A CRM
+   * screen restating it is a second copy that disagrees the day the desk
+   * renegotiates.
+   *
+   * What this dashboard answers instead is what a partner cannot look up
+   * elsewhere: what they have EARNED, who they introduced, and who sits
+   * beneath them.
    */
-
-  /**
-   * The terms this partner is paid on.
-   *
-   * Read by id from `ib_accounts.program_id` rather than by "the default one":
-   * the whole point of a programme is that two partners may be on different
-   * terms, and a lookup that fell back to a default would show one of them
-   * somebody else's rates.
-   *
-   * The LADDER comes with it. `tiers` is how far this partner's earnings reach
-   * and what they take at each depth — the answer to "what do I actually get
-   * paid", which the fixed `level1Rate` / `level2Rate` pair could only give for
-   * the first two levels and could not give at all for a programme reaching
-   * three.
-   */
-  private async programmeFor(programId: string): Promise<IbOverviewDto['programme']> {
-    const [row] = await this.db
-      .select({
-        name: ibPrograms.name,
-        mode: ibPrograms.mode,
-        rebateRate: ibPrograms.rebateRate,
-      })
-      .from(ibPrograms)
-      .where(eq(ibPrograms.id, programId))
-      .limit(1);
-
-    if (!row) return null;
-
-    const tiers = await this.db
-      .select({ depth: ibProgramTiers.depth, rate: ibProgramTiers.rate })
-      .from(ibProgramTiers)
-      .where(eq(ibProgramTiers.programId, programId))
-      .orderBy(asc(ibProgramTiers.depth));
-
-    return { ...row, tiers };
-  }
 
   /**
    * Lifetime and recent earnings, summed from the ledger.
@@ -416,15 +384,15 @@ export class IbOverviewService {
    * slower as somebody succeeds. What the partner is owed from the whole tree is
    * in `earnings`, which sums accruals at every depth.
    *
-   * `programName` replaces `level` here for the same reason it did everywhere
-   * else: the rung named a placement that decided nothing, while the programme
-   * is what a sub-partner is actually paid on.
+   * NO TERMS on these rows, for the reason nothing on this dashboard carries
+   * them (0112): a sub-partner's rate card is between them and the broker, and
+   * a parent has no business reading it off their own screen. FR-IB-17 gives a
+   * parent visibility of sub-tree EARNINGS, which is what `earnings` carries.
    */
   private async subPartnersFor(userId: string): Promise<IbOverviewDto['subPartners']> {
     const rows = await this.db
       .select({
         userId: ibAccounts.userId,
-        programName: ibPrograms.name,
         active: ibAccounts.active,
         since: ibAccounts.approvedAt,
         firstName: users.firstName,
@@ -432,7 +400,6 @@ export class IbOverviewService {
       })
       .from(ibAccounts)
       .innerJoin(users, eq(users.id, ibAccounts.userId))
-      .innerJoin(ibPrograms, eq(ibPrograms.id, ibAccounts.programId))
       .where(eq(ibAccounts.parentIbUserId, userId))
       .orderBy(desc(ibAccounts.approvedAt))
       /*
@@ -446,7 +413,6 @@ export class IbOverviewService {
     return rows.map((row) => ({
       userId: row.userId,
       name: displayName(row.firstName, row.lastName),
-      programName: row.programName,
       active: row.active,
       since: row.since,
     }));

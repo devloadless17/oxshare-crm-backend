@@ -20,6 +20,7 @@ import {
   ibAccounts,
   ibAccruals,
   ibApplications,
+  ibLevels,
   ibPrograms,
   users,
 } from '../database/schema';
@@ -58,15 +59,13 @@ export const DEFAULT_IB_APPLICATION_SORT: IbApplicationSortKey = 'submittedAt';
 /**
  * The columns the PARTNER list may be ordered by — R-2.5.
  *
- * `level` went in 0102 with the rung it sorted by. `programName` replaces it as
- * the "what are they on" ordering, and sorts on the JOINED name because a
- * programme's identity is its name — unlike a rung, whose identity was a number
- * that had to be sorted as an integer to avoid "Level 10" landing before
- * "Level 2".
+ * `level` is back (0112) and sorts on the INTEGER, which is the whole reason it
+ * is the column rather than the joined name: a rung's identity is its number,
+ * and ordering by text puts "Level 10" before "Level 2".
  */
 export const IB_PARTNER_SORT_COLUMNS = {
   approvedAt: ibAccounts.approvedAt,
-  programName: ibPrograms.name,
+  level: ibAccounts.level,
   referralCode: ibAccounts.referralCode,
   userEmail: users.email,
   userFirstName: users.firstName,
@@ -327,35 +326,17 @@ export class IbStore {
   }
 
   async createAccount(
-    values: Pick<IbAccountRow, 'userId' | 'referralCode' | 'programId'> &
+    /*
+     * `level` replaced `programId` as the required term — 0112. A partner must
+     * be created ON a rung, because that is what decides their pay; the
+     * programme is historical and nothing writes it any more.
+     */
+    values: Pick<IbAccountRow, 'userId' | 'referralCode' | 'level'> &
       Partial<Pick<IbAccountRow, 'parentIbUserId' | 'applicationId' | 'agencyId'>>,
     executor?: Executor,
   ): Promise<IbAccountRow> {
     const [row] = await (executor ?? this.db).insert(ibAccounts).values(values).returning();
     return row;
-  }
-
-  /**
-   * The programme a newly approved partner is placed on.
-   *
-   * The lowest `sortOrder` among the ENABLED programmes — the top of the ladder
-   * an operator has arranged, which is where a partner with no negotiated terms
-   * belongs. Migration 0084 seeded one ("Default") carrying the rates the level
-   * ladder was already paying, so this is never empty on a system that has ever
-   * paid anybody.
-   *
-   * Returns undefined only when every programme has been disabled, which
-   * approval must refuse rather than paper over: a partner placed on no terms
-   * earns nothing and has no way to find out why.
-   */
-  async defaultProgramId(executor?: Executor): Promise<string | undefined> {
-    const [row] = await (executor ?? this.db)
-      .select({ id: ibPrograms.id })
-      .from(ibPrograms)
-      .where(eq(ibPrograms.enabled, true))
-      .orderBy(asc(ibPrograms.sortOrder), asc(ibPrograms.name))
-      .limit(1);
-    return row?.id;
   }
 
   /** How many partners sit directly beneath this one — the `maxDirectPartners` check. */
@@ -390,9 +371,9 @@ export class IbStore {
       this.db
         .select({
           userId: ibAccounts.userId,
-          /* The TERMS they are on, replacing the rung they stood on (0102). */
-          programId: ibAccounts.programId,
-          programName: ibPrograms.name,
+          /* The RUNG they stand on, which is what decides their terms (0112). */
+          level: ibAccounts.level,
+          levelName: ibLevels.name,
           referralCode: ibAccounts.referralCode,
           active: ibAccounts.active,
           approvedAt: ibAccounts.approvedAt,
@@ -403,13 +384,16 @@ export class IbStore {
         .from(ibAccounts)
         .innerJoin(users, eq(users.id, ibAccounts.userId))
         /*
-         * `innerJoin`, and it is safe: `ib_accounts.program_id` is NOT NULL with a
-         * `restrict` foreign key, so a partner without a programme is a row the
-         * database cannot hold. A `leftJoin` here would suggest otherwise.
+         * `leftJoin`, and the nullability is real: `ib_accounts.level` is NOT
+         * NULL but carries no foreign key to `ib_levels`, deliberately — a tree
+         * may legitimately run deeper than the ladder the broker pays on, and a
+         * FK would make appointing that partner impossible rather than making
+         * them earn nothing. So a partner on an unconfigured rung is a row this
+         * table can hold, and `levelName` is null for them.
          */
-        .innerJoin(ibPrograms, eq(ibPrograms.id, ibAccounts.programId))
+        .leftJoin(ibLevels, eq(ibLevels.level, ibAccounts.level))
         .where(eq(ibAccounts.parentIbUserId, parentUserId))
-        .orderBy(asc(ibPrograms.sortOrder), desc(ibAccounts.approvedAt))
+        .orderBy(asc(ibAccounts.level), desc(ibAccounts.approvedAt))
     );
   }
 
@@ -465,11 +449,21 @@ export class IbStore {
           firstName: users.firstName,
           lastName: users.lastName,
         },
-        programName: ibPrograms.name,
       })
       .from(ibAccounts)
       .innerJoin(users, eq(users.id, ibAccounts.userId))
-      .innerJoin(ibPrograms, eq(ibPrograms.id, ibAccounts.programId))
+      /*
+       * The programme join is GONE (0112), and removing it was not optional.
+       *
+       * It was an INNER join on `ib_accounts.program_id`, which is nullable now
+       * and null on every partner appointed since. That silently returned an
+       * EMPTY page while the count beside it still said two — a partner list
+       * that reports a total it cannot show, which is the worst shape a list
+       * can have because it looks like a filter rather than a bug.
+       *
+       * `account.level` carries what the programme name used to: which terms
+       * this partner is on.
+       */
       .where(visible)
       // `user_id` is this table's PRIMARY KEY — one partner account per client —
       // so it is the unique tiebreak here, where the applications queue uses
@@ -567,15 +561,17 @@ export class IbStore {
       .select({
         accrual: ibAccruals,
         /*
-         * The TERMS that produced this row, by name.
+         * The TERMS that produced this row, by name — from whichever column
+         * carries them.
          *
-         * `leftJoin`, unlike the partner's programme elsewhere: `program_id` is
-         * NULLABLE on an accrual, because 0102 could not honestly resolve one
-         * for a row written before the column existed. An inner join would drop
-         * those rows out of the ledger entirely — which is the one thing an
-         * append-only financial record must never do.
+         * A row records EXACTLY ONE: `level_id` since 0112, `program_id` before
+         * it, and both are nullable so neither can be joined inner. An inner
+         * join on either would drop half the ledger out of the list — which is
+         * the one thing an append-only financial record must never do. The
+         * COALESCE is what makes one column on the screen able to explain a
+         * payout from either era.
          */
-        programName: ibPrograms.name,
+        termsName: sql<string | null>`COALESCE(${ibLevels.name}, ${ibPrograms.name})`,
         clientInScope: clientInScopeExpr,
         partner: {
           id: partner.id,
@@ -593,6 +589,7 @@ export class IbStore {
       .from(ibAccruals)
       .innerJoin(partner, eq(partner.id, ibAccruals.ibUserId))
       .innerJoin(client, eq(client.id, ibAccruals.clientUserId))
+      .leftJoin(ibLevels, eq(ibLevels.id, ibAccruals.levelId))
       .leftJoin(ibPrograms, eq(ibPrograms.id, ibAccruals.programId))
       .where(where)
       // `id` breaks the tie. `status` and `depth` have a handful of values, so
@@ -683,7 +680,12 @@ export class IbStore {
 
   async updateAccount(
     userId: string,
-    patch: Partial<Pick<IbAccountRow, 'programId' | 'parentIbUserId' | 'active'>>,
+    /*
+     * `level` replaced `programId` as the term that decides pay — 0112. The
+     * programme stays assignable only so a historical value can be corrected;
+     * nothing on the live path writes it.
+     */
+    patch: Partial<Pick<IbAccountRow, 'level' | 'programId' | 'parentIbUserId' | 'active'>>,
   ): Promise<IbAccountRow | undefined> {
     const [row] = await this.db
       .update(ibAccounts)

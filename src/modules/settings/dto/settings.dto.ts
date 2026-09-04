@@ -189,36 +189,18 @@ export class TradingSettingsDto {
   })
   ibMaxLevels: number;
 
-  /**
-   * The second bound (0106), and the one the catalogue cannot state about
-   * itself: a programme knows what IT pays, only this knows what a CHAIN of
-   * them costs on a single trade.
+  /*
+   * ── THE TWO PAYOUT CEILINGS ARE NOT REPORTED HERE (0112) ─────────────────
    *
-   * A STRING, like every rate this system carries. It multiplies the broker's
-   * revenue, and §6 keeps anything that touches an amount out of a float —
-   * `@ApiProperty({ type: 'string' })` so the generated frontend type agrees.
+   * `ib_max_total_payout_pct` and `ib_max_payout_per_lot` are still stored and
+   * still enforced on every accrual — they are the unit-error backstop that
+   * stops a rate meaning 70x rather than 70% accruing seventy times the
+   * revenue. What went is the CONTROL, on an explicit instruction.
+   *
+   * They are dropped from the RESPONSE as well as the request, because a
+   * number a screen can read and not change is a number somebody eventually
+   * asks why they cannot edit.
    */
-  @ApiProperty({
-    type: 'string',
-    example: '100.0000',
-    description:
-      'The most one trade may pay out in total, as a % of the broker’s revenue on it — every ' +
-      'commission leg plus the client’s rebate. Defaults to 100, which refuses only a chain ' +
-      'costing more than the trade earned. A chain over the ceiling is REFUSED and retried, ' +
-      'never silently scaled down.',
-  })
-  ibMaxTotalPayoutPct: string;
-
-  @ApiProperty({
-    type: 'string',
-    example: '50.00000000',
-    description:
-      'The most ONE TRADE may pay out per standard lot, across every per-lot leg including the ' +
-      'client rebate. The unit-error backstop for per-lot terms — the percentage ceiling beside ' +
-      'it cannot bound them, because a per-lot payout is not a share of revenue. Refuses rather ' +
-      'than scales: the deal defers and pays in full once the terms are corrected.',
-  })
-  ibMaxPayoutPerLot: string;
 
   @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
   updatedAt: string | null;
@@ -297,44 +279,19 @@ export class UpdateTradingSettingsDto {
   @Max(10)
   ibMaxLevels: number;
 
-  /**
-   * The total payout ceiling, as a decimal percentage string (0106).
+  /*
+   * ── THE TWO PAYOUT CEILINGS ARE NOT ON THIS FORM (0112) ──────────────────
    *
-   * A STRING and validated by REGEX, not `@IsNumber()`. It reaches the money
-   * path and is multiplied by the broker's revenue, so §6.1 keeps it out of a
-   * float — and a numeric validator would accept `1e2` and `0x64` on the way
-   * in, which `parseInt` then reads as 1.
+   * `ibMaxTotalPayoutPct` and `ibMaxPayoutPerLot` were fields here until they
+   * were removed from the settings screen on an explicit instruction. Both are
+   * still STORED and still ENFORCED: they are the ceiling `checkPlausible`
+   * reads on every accrual, and without them a rate meaning 70x rather than
+   * 70% would accrue seventy times the revenue before anything objected.
    *
-   * `> 0`, not `>= 0`: a ceiling of zero refuses every chain on the platform,
-   * which is a way to stop paying every partner by typing a number into a form.
-   * Turning terms off is what a programme's `enabled` flag is for, and it says
-   * so on the screen.
-   *
-   * REQUIRED, like every other field here — this is a PUT, so the whole form
-   * travels together and an omitted value is a malformed request rather than an
-   * unchanged setting.
-   *
-   * The decorator checks FORMAT only. The RANGE is checked in
-   * `SettingsService.setTrading`, which is where this codebase puts a rule that
-   * needs a `DomainError` with a code — and `@Min`/`@Max` cannot read a string
-   * anyway without coercing it, which §6.1 forbids on the money path.
+   * Their absence from a PUT therefore leaves the stored values alone — which
+   * is the behaviour a removed field must have on a full-replace endpoint, and
+   * why the service omits the columns rather than writing a constant into
+   * them. The defaults are 100% and $50 a lot, both far above any real rate
+   * card, so a deployment that never set them is bounded anyway.
    */
-  @ApiProperty({ type: 'string', example: '100.0000' })
-  @Matches(/^\d+(\.\d+)?$/, {
-    message: 'ibMaxTotalPayoutPct must be a decimal number, for example "70" or "62.5000"',
-  })
-  ibMaxTotalPayoutPct: string;
-
-  @ApiProperty({
-    type: 'string',
-    example: '50.00000000',
-    description:
-      'The most one trade may pay out per standard lot. A unit-error guard rather than a ' +
-      'commercial limit — the industry runs at a few dollars to low double digits a lot, so a ' +
-      'sane value sits far above any real rate card and refuses only a mistyped one.',
-  })
-  @Matches(/^\d+(\.\d+)?$/, {
-    message: 'ibMaxPayoutPerLot must be a decimal number, for example "50" or "12.50000000"',
-  })
-  ibMaxPayoutPerLot: string;
 }

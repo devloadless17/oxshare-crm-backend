@@ -181,11 +181,11 @@
   },
   "ib": {
     "moduleName": "Partners & IB",
-    "description": "Two objects share this module and the keys go one level deeper because of it: editing a PROGRAMME changes what every partner on it earns, while moving one partner between programmes changes what one partner earns.\n\n`ib.levels.*` were removed in migration 0102 with the rung ladder they governed. Whoever held them was granted the `ib.programs.*` equivalent — the programme catalogue is the surface that replaced that one, and silently narrowing somebody’s access during a refactor is a privilege change nobody asked for.",
+    "description": "Two objects share this module and the keys go one level deeper because of it: editing a LEVEL changes what every partner standing on it earns, while moving one partner between levels changes what one partner earns.\n\n`ib.programs.*` were removed in migration 0112 with the commission catalogue they governed, and `ib.levels.*` are back in their place — the ladder is the surface that replaced the catalogue, which is the swap 0104 made in the other direction. Whoever held the programme keys was granted the level equivalent, because silently narrowing somebody’s access during a refactor is a privilege change nobody asked for.",
     "permissions": [
       {
         "key": "ib.view",
-        "label": "View Partners, Applications & Commission Programmes"
+        "label": "View Partners, Applications & Commission Levels"
       },
       {
         "key": "ib.approve",
@@ -197,7 +197,7 @@
       },
       {
         "key": "ib.partners.edit",
-        "label": "Change a Partner's Programme or Parent"
+        "label": "Change a Partner's Level or Parent"
       },
       {
         "key": "ib.partners.suspend",
@@ -212,16 +212,16 @@
         "label": "Reverse an accrual (claw back commission)"
       },
       {
-        "key": "ib.programs.create",
-        "label": "Create commission programmes"
+        "key": "ib.levels.create",
+        "label": "Create commission levels"
       },
       {
-        "key": "ib.programs.edit",
-        "label": "Edit commission programmes"
+        "key": "ib.levels.edit",
+        "label": "Edit commission levels"
       },
       {
-        "key": "ib.programs.delete",
-        "label": "Delete commission programmes"
+        "key": "ib.levels.delete",
+        "label": "Delete commission levels"
       }
     ]
   },

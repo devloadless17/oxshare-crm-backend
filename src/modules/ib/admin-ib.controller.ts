@@ -34,7 +34,7 @@ import { AdminAuditService } from '../admin/admin-audit.service';
 import { exportFormat, streamCsv } from '../../common/export/export-response';
 import {
   ApproveIbApplicationDto,
-  ChangeIbProgramDto,
+  ChangeIbLevelDto,
   ReverseAccrualDto,
   IbAccountDto,
   IbApplicationDto,
@@ -207,7 +207,6 @@ export class AdminIbController {
     @Body() dto: ApproveIbApplicationDto,
   ) {
     return this.applications.approve(id, req.admin, req.admin.clientScope, {
-      programId: dto.programId,
       parentIbUserId: dto.parentIbUserId ?? null,
       /*
        * `undefined` deliberately, not `?? null`. Undefined means "the reviewer
@@ -465,37 +464,39 @@ export class AdminIbController {
   }
 
   /*
-   * `PATCH partners/:userId/level` IS GONE (0102), and `/program` below is what
+   * `PATCH partners/:userId/program` IS GONE (0112), and `/level` below is what
    * replaced it.
    *
-   * It moved a partner to a different RUNG and described itself as the control
-   * over their earnings — "a disabled one takes no share, so placing somebody on
-   * it stops their earnings silently". That stopped being true in 0084, when the
-   * rate moved to the programme, leaving an endpoint that changed a number
-   * deciding nothing while reading as the one that mattered.
+   * It moved a partner onto a named commission programme. Terms come from the
+   * partner's RUNG now, so the programme it assigned decides nothing — and an
+   * endpoint that reads as the control over somebody's earnings while changing
+   * a number nobody is paid by is the exact fault 0102 removed the level route
+   * for. The route came back with the reason.
    */
 
-  @Patch('partners/:userId/program')
+  @Patch('partners/:userId/level')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('ib.partners.edit')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Move a partner onto a different commission programme',
+    summary: 'Move a partner to a different commission level',
     description:
-      'The terms a partner is paid on. Applies to the NEXT trade — accruals record the rate they ' +
-      'were calculated at, so nothing already credited is restated. The target must be ENABLED: a ' +
-      'disabled programme pays nothing, so moving somebody onto one would stop their earnings ' +
-      'silently instead of changing their terms visibly.',
+      'The terms a partner is paid on. Applies to the NEXT trade — accruals record the rate AND ' +
+      'the level they were calculated under, so nothing already credited is restated. The target ' +
+      'must EXIST and be ENABLED: an unconfigured or disabled level pays nothing, so moving ' +
+      'somebody onto one would stop their earnings silently instead of changing their terms ' +
+      'visibly. Partners BENEATH them are not moved — a level is one partner’s position, and ' +
+      'cascading would re-price an unbounded number of people from one edit.',
   })
   @ApiOkResponse({ type: IbAccountDto })
   @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
-  @Audited('ib.program_change')
-  changeProgram(
+  @Audited('ib.level_change')
+  changeLevel(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('userId', ParseUUIDPipe) userId: string,
-    @Body() dto: ChangeIbProgramDto,
+    @Body() dto: ChangeIbLevelDto,
   ) {
-    return this.applications.changeProgram(userId, dto.programId, req.admin.clientScope, req.admin);
+    return this.applications.changeLevel(userId, dto.level, req.admin.clientScope, req.admin);
   }
 
   @Patch('partners/:userId/parent')

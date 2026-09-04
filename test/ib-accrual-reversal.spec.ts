@@ -42,7 +42,6 @@ let commissions: CommissionService;
 
 let partnerId: string;
 let clientId: string;
-let programId: string;
 
 const DEAL_ROW_ID = '22222222-2222-4222-8222-222222222222';
 
@@ -64,7 +63,6 @@ async function makeUser(email: string): Promise<string> {
  * half-written ladder.
  */
 async function setTerms(terms: {
-  mode: 'commission_only' | 'rebate_only' | 'hybrid';
   /** Rates by depth, 1 first. Omit or pass [] for a programme paying no partner. */
   tiers?: string[];
   rebateRate: string;
@@ -83,20 +81,26 @@ async function setTerms(terms: {
    * same reason.
    */
   await ctx.db.transaction(async (tx) => {
+    /*
+     * Every rung is reset first, then the requested rates applied. A rate left
+     * behind by a previous case would pay a partner these terms never
+     * configured, and these suites share a database.
+     */
     await tx.execute(sql`
-      UPDATE ib_programs
-         SET mode = ${terms.mode}::ib_program_mode,
-             rebate_rate = ${terms.rebateRate},
+      UPDATE ib_levels
+         SET commission_mode = 'percent', commission_amount_per_lot = NULL, commission_rate = 0,
+             rebate_mode = 'percent', rebate_amount_per_lot = NULL, rebate_rate = 0,
              enabled = true
-       WHERE id = ${programId}
     `);
-    await tx.execute(sql`DELETE FROM ib_program_tiers WHERE program_id = ${programId}`);
+    /* The rebate is a term of the INTRODUCER's rung — level 1. */
+    await tx.execute(sql`
+      UPDATE ib_levels SET rebate_rate = ${terms.rebateRate} WHERE level = 1
+    `);
 
     const tiers = (terms.tiers ?? []).filter((rate) => Number.parseFloat(rate) > 0);
     for (const [index, rate] of tiers.entries()) {
       await tx.execute(sql`
-        INSERT INTO ib_program_tiers (program_id, depth, rate)
-        VALUES (${programId}, ${index + 1}, ${rate})
+        UPDATE ib_levels SET commission_mode = 'percent', commission_amount_per_lot = NULL, commission_rate = ${rate} WHERE level = ${index + 1}
       `);
     }
   });
@@ -149,17 +153,12 @@ async function ledgerFor(userId: string) {
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
 
-  const { rows } = await ctx.db.execute<{ id: string }>(
-    sql`SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1`,
-  );
-  programId = rows[0].id;
-
   partnerId = await makeUser('reversal-partner@oxshare-e2e.test');
   clientId = await makeUser('reversal-client@oxshare-e2e.test');
 
   await ctx.db.execute(sql`
-    INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
-      VALUES (${partnerId}, 'REVERSE1', true, ${programId})
+    INSERT INTO ib_accounts (user_id, referral_code, active, level)
+      VALUES (${partnerId}, 'REVERSE1', true, 1)
   `);
   await ctx.db.execute(
     sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,
@@ -194,7 +193,7 @@ beforeEach(async () => {
 
 describe('reversing a PENDING accrual costs nothing', () => {
   it('changes the status and moves no money', async () => {
-    await setTerms({ mode: 'commission_only', tiers: ['10'], rebateRate: '0' });
+    await setTerms({ tiers: ['10'], rebateRate: '0' });
     await accrue();
 
     const [accrual] = await accrualRows();
@@ -218,7 +217,7 @@ describe('reversing a PENDING accrual costs nothing', () => {
 
 describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
   it('debits the wallet that was credited and never edits the credit', async () => {
-    await setTerms({ mode: 'commission_only', tiers: ['10'], rebateRate: '0' });
+    await setTerms({ tiers: ['10'], rebateRate: '0' });
     await accrue();
     await commissions.confirmPending();
 
@@ -255,7 +254,7 @@ describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
   });
 
   it('is idempotent: a second reversal does not debit twice', async () => {
-    await setTerms({ mode: 'commission_only', tiers: ['10'], rebateRate: '0' });
+    await setTerms({ tiers: ['10'], rebateRate: '0' });
     await accrue();
     await commissions.confirmPending();
 
@@ -276,7 +275,7 @@ describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
 
 describe('a REBATE is taken back from the client, not the partner', () => {
   it('debits the client main wallet the rebate was paid into', async () => {
-    await setTerms({ mode: 'rebate_only', tiers: [], rebateRate: '5' });
+    await setTerms({ tiers: [], rebateRate: '5' });
     await accrue();
     await commissions.confirmPending();
 
@@ -299,7 +298,7 @@ describe('a REBATE is taken back from the client, not the partner', () => {
 
 describe('a reversal REFUSES when the money is already gone', () => {
   it('leaves the accrual confirmed rather than telling a lie', async () => {
-    await setTerms({ mode: 'commission_only', tiers: ['10'], rebateRate: '0' });
+    await setTerms({ tiers: ['10'], rebateRate: '0' });
     await accrue();
     await commissions.confirmPending();
 

@@ -61,7 +61,6 @@ export interface AgencyRow {
   enabled: boolean;
   sortOrder: number;
   /** The programme partners of this agency are appointed on, or null for none (0107). */
-  defaultProgramId: string | null;
   productIds: string[];
 }
 
@@ -310,7 +309,6 @@ export class ProductsStore {
       description: row.description,
       enabled: row.enabled,
       sortOrder: row.sortOrder,
-      defaultProgramId: row.defaultProgramId,
       productIds: links.filter((link) => link.agencyId === row.id).map((link) => link.productId),
     }));
   }
@@ -320,7 +318,6 @@ export class ProductsStore {
     description: string | null;
     enabled: boolean;
     sortOrder: number | undefined;
-    defaultProgramId?: string | null;
   }): Promise<AgencyRow> {
     const row = await this.db.transaction(async (tx) => {
       const [created] = await tx
@@ -342,7 +339,6 @@ export class ProductsStore {
       description: string | null;
       enabled: boolean;
       sortOrder: number | undefined;
-      defaultProgramId?: string | null;
     },
   ): Promise<AgencyRow | null> {
     const row = await this.db.transaction(async (tx) => {

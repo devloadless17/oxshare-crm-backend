@@ -2473,7 +2473,7 @@
             "schema": {
               "enum": [
                 "approvedAt",
-                "programName",
+                "level",
                 "referralCode",
                 "userEmail",
                 "userFirstName"
@@ -2588,10 +2588,10 @@
         ]
       }
     },
-    "/v1/admin/ib/partners/{userId}/program": {
+    "/v1/admin/ib/partners/{userId}/level": {
       "patch": {
-        "description": "The terms a partner is paid on. Applies to the NEXT trade — accruals record the rate they were calculated at, so nothing already credited is restated. The target must be ENABLED: a disabled programme pays nothing, so moving somebody onto one would stop their earnings silently instead of changing their terms visibly.",
-        "operationId": "AdminIbController_changeProgram",
+        "description": "The terms a partner is paid on. Applies to the NEXT trade — accruals record the rate AND the level they were calculated under, so nothing already credited is restated. The target must EXIST and be ENABLED: an unconfigured or disabled level pays nothing, so moving somebody onto one would stop their earnings silently instead of changing their terms visibly. Partners BENEATH them are not moved — a level is one partner’s position, and cascading would re-price an unbounded number of people from one edit.",
+        "operationId": "AdminIbController_changeLevel",
         "parameters": [
           {
             "name": "userId",
@@ -2607,7 +2607,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ChangeIbProgramDto"
+                "$ref": "#/components/schemas/ChangeIbLevelDto"
               }
             }
           }
@@ -2629,7 +2629,7 @@
             "cookie": []
           }
         ],
-        "summary": "Move a partner onto a different commission programme",
+        "summary": "Move a partner to a different commission level",
         "tags": [
           "admin"
         ]
@@ -2729,10 +2729,10 @@
         ]
       }
     },
-    "/v1/admin/ib-programs": {
+    "/v1/admin/ib-levels": {
       "get": {
-        "description": "Includes disabled ones — managing them is the point of the screen. Each row carries how many partners are on it, so a delete can be refused before the database refuses it and a rate change can say how many people it affects.",
-        "operationId": "AdminIbProgramsController_list",
+        "description": "Includes disabled levels — managing them is the point of the screen. Each row carries how many partners stand on it, so a delete can be refused before the database refuses it and a rate change can say how many people it affects.",
+        "operationId": "AdminIbLevelsController_list",
         "parameters": [],
         "responses": {
           "200": {
@@ -2742,7 +2742,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/IbProgramDto"
+                    "$ref": "#/components/schemas/IbLevelDto"
                   }
                 }
               }
@@ -2754,21 +2754,21 @@
             "cookie": []
           }
         ],
-        "summary": "The commission programmes, in ladder order",
+        "summary": "The commission ladder, shallowest level first",
         "tags": [
           "admin"
         ]
       },
       "post": {
-        "description": "The ladder runs 1, 2, 3 … with no gaps, and its LENGTH is how many levels this programme’s earnings reach. Every leg is a share of the same revenue, so the levels plus the rebate must total at most 100% — the refusal names each number and the total. Terms that pay nobody are refused too: from the partner’s side they are indistinguishable from a broken engine.",
-        "operationId": "AdminIbProgramsController_create",
+        "description": "The level number is chosen, not auto-assigned, and must fit under \"Maximum commission levels\". Each level carries one commission term for the partner and one rebate term for the client, and either may be a percentage of broker revenue or a flat amount per standard lot. Two percentages on one level must total at most 100% — they are shares of the same revenue, so they add.",
+        "operationId": "AdminIbLevelsController_create",
         "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateIbProgramDto"
+                "$ref": "#/components/schemas/CreateIbLevelDto"
               }
             }
           }
@@ -2779,7 +2779,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IbProgramDto"
+                  "$ref": "#/components/schemas/IbLevelDto"
                 }
               }
             }
@@ -2790,16 +2790,16 @@
             "cookie": []
           }
         ],
-        "summary": "Add a programme",
+        "summary": "Add a level to the ladder",
         "tags": [
           "admin"
         ]
       }
     },
-    "/v1/admin/ib-programs/limits": {
+    "/v1/admin/ib-levels/limits": {
       "get": {
-        "description": "How many levels a ladder may reach, from `IB_MAX_LEVELS`. Read by the form so it stops offering \"add a level\" at the right point — a hardcoded copy would drift the day a broker negotiates a deeper structure.",
-        "operationId": "AdminIbProgramsController_limits",
+        "description": "How deep the ladder may run, from `IB_MAX_LEVELS`. Read by the form so it stops offering \"add a level\" at the right point — a hardcoded copy would drift the day a broker negotiates a deeper structure.",
+        "operationId": "AdminIbLevelsController_limits",
         "parameters": [],
         "responses": {
           "200": {
@@ -2807,7 +2807,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IbProgramLimitsDto"
+                  "$ref": "#/components/schemas/IbLevelLimitsDto"
                 }
               }
             }
@@ -2818,23 +2818,23 @@
             "cookie": []
           }
         ],
-        "summary": "The bounds a programme must fit inside",
+        "summary": "The bounds a level must fit inside",
         "tags": [
           "admin"
         ]
       }
     },
-    "/v1/admin/ib-programs/{id}": {
+    "/v1/admin/ib-levels/{level}": {
       "patch": {
-        "description": "Applies to the NEXT trade. Accruals record the rate AND the programme they were calculated under, so nothing already earned is restated. `tiers` REPLACES the whole ladder — send every level you want to keep, or omit the field to leave it alone. Disabling one that partners are on is refused: a disabled programme stops paying, and their referral links would keep working while they earned nothing.",
-        "operationId": "AdminIbProgramsController_update",
+        "description": "Applies to the NEXT trade. Accruals record the rate AND the level they were calculated under, so nothing already earned is restated. The level NUMBER cannot be changed — a level is its number, and renumbering one would silently re-price every partner standing on it. Disabling one that partners stand on is refused: a disabled level stops paying, and their referral links would keep working while they earned nothing.",
+        "operationId": "AdminIbLevelsController_update",
         "parameters": [
           {
-            "name": "id",
+            "name": "level",
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -2843,7 +2843,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateIbProgramDto"
+                "$ref": "#/components/schemas/UpdateIbLevelDto"
               }
             }
           }
@@ -2854,7 +2854,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IbProgramDto"
+                  "$ref": "#/components/schemas/IbLevelDto"
                 }
               }
             }
@@ -2865,21 +2865,21 @@
             "cookie": []
           }
         ],
-        "summary": "Update a programme",
+        "summary": "Update a level",
         "tags": [
           "admin"
         ]
       },
       "delete": {
-        "description": "Refuses one that partners are on, and refuses the last enabled one: approval places a new partner on the first enabled programme, so an empty catalogue turns every future approval into a refusal.",
-        "operationId": "AdminIbProgramsController_remove",
+        "description": "Refuses one that partners stand on, refuses level 1 — every chain starts there, so deleting it stops the ladder paying rather than shortening it — and refuses one with deeper levels below it, because the ladder runs 1, 2, 3 … with no gaps.",
+        "operationId": "AdminIbLevelsController_remove",
         "parameters": [
           {
-            "name": "id",
+            "name": "level",
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -2893,7 +2893,7 @@
             "cookie": []
           }
         ],
-        "summary": "Remove a programme",
+        "summary": "Remove the deepest level",
         "tags": [
           "admin"
         ]
@@ -11095,61 +11095,6 @@
           "inheritedAgency"
         ]
       },
-      "IbProgramTierSummaryDto": {
-        "type": "object",
-        "properties": {
-          "depth": {
-            "type": "number",
-            "example": 1,
-            "description": "Hops above the trading client. 1 is a client this partner introduced themselves; 2 is a client of one of their sub-partners."
-          },
-          "rate": {
-            "type": "string",
-            "example": "60.0000",
-            "description": "Their share of the broker’s revenue on a closed trade at this depth, as a percentage. A decimal string, never a number (§6.1)."
-          }
-        },
-        "required": [
-          "depth",
-          "rate"
-        ]
-      },
-      "IbProgramSummaryDto": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "example": "Gold"
-          },
-          "mode": {
-            "type": "string",
-            "enum": [
-              "commission_only",
-              "rebate_only",
-              "hybrid"
-            ],
-            "description": "Which legs pay. `rebate_only` means this partner earns nothing and their clients are paid instead — a real arrangement, and one the screen must not present as an error."
-          },
-          "tiers": {
-            "description": "What this partner takes at each depth, shallowest first. The COUNT is how many levels below them their earnings reach. Empty on a rebate-only programme, which pays no partner.",
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/IbProgramTierSummaryDto"
-            }
-          },
-          "rebateRate": {
-            "type": "string",
-            "example": "0.0000",
-            "description": "What their clients get back, as a percentage of the same revenue. Zero unless the mode pays a rebate."
-          }
-        },
-        "required": [
-          "name",
-          "mode",
-          "tiers",
-          "rebateRate"
-        ]
-      },
       "IbEarningsDto": {
         "type": "object",
         "properties": {
@@ -11275,11 +11220,6 @@
           "name": {
             "type": "string"
           },
-          "programName": {
-            "type": "string",
-            "example": "Silver",
-            "description": "The terms this sub-partner is on. Replaced `level` in 0102 — a rung named a placement that decided nothing, while a programme is what they are actually paid on."
-          },
           "active": {
             "type": "boolean",
             "description": "A suspended sub-partner keeps their tree and stops earning."
@@ -11292,7 +11232,6 @@
         "required": [
           "userId",
           "name",
-          "programName",
           "active",
           "since"
         ]
@@ -11300,15 +11239,6 @@
       "IbOverviewDto": {
         "type": "object",
         "properties": {
-          "programme": {
-            "nullable": true,
-            "type": "object",
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/IbProgramSummaryDto"
-              }
-            ]
-          },
           "earnings": {
             "$ref": "#/components/schemas/IbEarningsDto"
           },
@@ -11343,7 +11273,6 @@
           }
         },
         "required": [
-          "programme",
           "earnings",
           "commissionWallets",
           "referredClients",
@@ -11582,11 +11511,6 @@
       "ApproveIbApplicationDto": {
         "type": "object",
         "properties": {
-          "programId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "The commission programme to appoint them on. Omitted, the first enabled programme is used. A disabled programme is refused — it would pay them nothing."
-          },
           "parentIbUserId": {
             "type": "string",
             "nullable": true,
@@ -11625,40 +11549,6 @@
         },
         "required": [
           "reason"
-        ]
-      },
-      "IbProgramTierDto": {
-        "type": "object",
-        "properties": {
-          "depth": {
-            "type": "number",
-            "example": 1,
-            "minimum": 1,
-            "maximum": 10,
-            "description": "Hops above the trading client. 1 is the introducer, 2 is their parent. Levels must run 1, 2, 3 … with no gaps."
-          },
-          "rate": {
-            "type": "string",
-            "example": "60.0000",
-            "description": "The holder’s share of the broker’s revenue at this depth, as a percentage. A decimal string, never a number (§6.1). Must be above zero — a level that pays nothing is removed rather than zeroed, because the number of levels is what decides how far a programme pays."
-          },
-          "payoutMode": {
-            "type": "string",
-            "enum": [
-              "percent",
-              "per_lot"
-            ],
-            "description": "How this level is priced. `percent` reads `rate` as a share of the broker revenue; `per_lot` reads `amountPerLot` as a flat amount for every standard lot traded, independent of what the trade earned. Defaults to `percent`, so an existing rate card is unchanged.\n\nNOTE: `per_lot` is outside the Phase 1 FSD — FR-IB-05 specifies a rebate that is \"dynamic, not a fixed per-lot figure\". It exists on an explicit business decision; see migration 0111."
-          },
-          "amountPerLot": {
-            "type": "string",
-            "example": "10.00000000",
-            "description": "Money for each standard lot traded, when `payoutMode` is `per_lot`. REQUIRED in that mode and refused in the other — a row carrying both would be ambiguous about which number pays."
-          }
-        },
-        "required": [
-          "depth",
-          "rate"
         ]
       },
       "IbPartnerPersonDto": {
@@ -11703,14 +11593,16 @@
             "type": "string",
             "nullable": true
           },
-          "programId": {
-            "type": "string",
-            "format": "uuid"
+          "level": {
+            "type": "number",
+            "example": 2,
+            "description": "The rung this sub-partner stands on, which is what decides their terms (0112)."
           },
-          "programName": {
+          "levelName": {
             "type": "string",
-            "example": "Silver",
-            "description": "Replaced `level` / `levelName` in 0102. A rung named a placement that decided nothing; a programme is what this sub-partner is actually paid on."
+            "nullable": true,
+            "example": "Sub Partner",
+            "description": "Null when no level is configured at this depth — a partner sitting deeper than the ladder pays earns nothing until it is extended, and a client rendering the null as a name would hide that."
           },
           "referralCode": {
             "type": "string"
@@ -11728,8 +11620,8 @@
           "email",
           "firstName",
           "lastName",
-          "programId",
-          "programName",
+          "level",
+          "levelName",
           "referralCode",
           "active",
           "approvedAt"
@@ -11758,37 +11650,55 @@
           "userId": {
             "type": "string"
           },
-          "programId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "The terms this partner is paid on."
+          "level": {
+            "type": "number",
+            "example": 1,
+            "description": "The rung, and what decides their terms. 1 is a partner dealing with the broker directly."
           },
-          "programName": {
+          "levelName": {
             "type": "string",
             "nullable": true,
-            "description": "Null only if the programme row vanished, which the foreign key prevents."
+            "description": "Null when no level is configured at this depth."
           },
-          "programMode": {
+          "levelEnabled": {
+            "type": "boolean",
+            "description": "False when the level is disabled OR not configured at all. A disabled level pays nothing."
+          },
+          "levelCommissionMode": {
             "type": "string",
             "enum": [
-              "commission_only",
-              "rebate_only",
-              "hybrid"
+              "percent",
+              "per_lot"
             ],
             "nullable": true,
-            "description": "Which legs their programme pays."
+            "description": "How their own commission is priced."
           },
-          "programTiers": {
-            "description": "What they take at each depth, shallowest first. The COUNT is how many levels below them their earnings reach.",
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/IbProgramTierDto"
-            }
+          "levelCommissionRate": {
+            "type": "string",
+            "nullable": true,
+            "description": "Their share of broker revenue, as a percentage. Read in `percent` mode."
           },
-          "programRebateRate": {
+          "levelCommissionAmountPerLot": {
+            "type": "string",
+            "nullable": true,
+            "description": "Money per standard lot. Read in `per_lot` mode."
+          },
+          "levelRebateMode": {
+            "type": "string",
+            "enum": [
+              "percent",
+              "per_lot"
+            ],
+            "nullable": true
+          },
+          "levelRebateRate": {
             "type": "string",
             "nullable": true,
             "description": "What their clients get back, as a percentage of the same revenue."
+          },
+          "levelRebateAmountPerLot": {
+            "type": "string",
+            "nullable": true
           },
           "referralCode": {
             "type": "string"
@@ -11841,11 +11751,15 @@
         },
         "required": [
           "userId",
-          "programId",
-          "programName",
-          "programMode",
-          "programTiers",
-          "programRebateRate",
+          "level",
+          "levelName",
+          "levelEnabled",
+          "levelCommissionMode",
+          "levelCommissionRate",
+          "levelCommissionAmountPerLot",
+          "levelRebateMode",
+          "levelRebateRate",
+          "levelRebateAmountPerLot",
           "referralCode",
           "active",
           "approvedAt",
@@ -11858,17 +11772,19 @@
           "earnings"
         ]
       },
-      "ChangeIbProgramDto": {
+      "ChangeIbLevelDto": {
         "type": "object",
         "properties": {
-          "programId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "Must be an ENABLED programme."
+          "level": {
+            "type": "number",
+            "example": 2,
+            "minimum": 1,
+            "maximum": 10,
+            "description": "Must be a CONFIGURED and ENABLED level. 1 is a partner dealing with the broker directly."
           }
         },
         "required": [
-          "programId"
+          "level"
         ]
       },
       "ReassignIbParentDto": {
@@ -11896,31 +11812,63 @@
           "active"
         ]
       },
-      "IbProgramDto": {
+      "IbLevelDto": {
         "type": "object",
         "properties": {
           "id": {
             "type": "string",
             "format": "uuid"
           },
+          "level": {
+            "type": "number",
+            "example": 1,
+            "minimum": 1,
+            "maximum": 10,
+            "description": "The rung. 1 is a partner dealing with the broker directly; a partner they recruit is 2. Unique — a level IS its number."
+          },
           "name": {
             "type": "string",
-            "example": "Gold",
-            "description": "What an operator picks, and what a partner is on."
+            "example": "Main Partner"
           },
-          "sortOrder": {
-            "type": "number",
-            "example": 0,
-            "description": "Lowest first. The first ENABLED one is the default."
+          "enabled": {
+            "type": "boolean",
+            "description": "A disabled rung pays nobody standing on it. Disabling is refused while partners are there — see the service."
           },
-          "mode": {
+          "commissionMode": {
             "type": "string",
             "enum": [
-              "commission_only",
-              "rebate_only",
-              "hybrid"
+              "percent",
+              "per_lot"
             ],
-            "description": "Which legs pay. `commission_only` pays the partner, `rebate_only` pays the trading client and no partner, `hybrid` pays both."
+            "description": "How the PARTNER’s leg is priced."
+          },
+          "commissionRate": {
+            "type": "string",
+            "example": "30.0000",
+            "description": "The partner’s share of broker revenue, as a percentage. Read in `percent` mode."
+          },
+          "commissionAmountPerLot": {
+            "type": "string",
+            "nullable": true,
+            "example": "10.00000000",
+            "description": "Money per standard lot. Set in `per_lot` mode, NULL in the other."
+          },
+          "rebateMode": {
+            "type": "string",
+            "enum": [
+              "percent",
+              "per_lot"
+            ],
+            "description": "How the CLIENT’s rebate is priced."
+          },
+          "rebateRate": {
+            "type": "string",
+            "example": "0.0000"
+          },
+          "rebateAmountPerLot": {
+            "type": "string",
+            "nullable": true,
+            "example": "2.00000000"
           },
           "revenueBasis": {
             "type": "string",
@@ -11929,42 +11877,12 @@
               "spread",
               "commission_swap_spread"
             ],
-            "description": "Which revenue this programme’s rates are a percentage OF (FR-IB-16). `commission_swap` is MT5’s charged commission plus swap and is what every deployment computes on. `spread` prices lots against the product’s spread markup. ⚠️ Selecting `spread` before markups are populated pays nothing on every deal that follows, permanently — a zero-revenue deal is marked done, not retried."
-          },
-          "tiers": {
-            "description": "What this programme pays at each depth, shallowest first. The COUNT is how many levels its holder’s earnings reach. Empty on a `rebate_only` programme, which pays no partner.",
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/IbProgramTierDto"
-            }
-          },
-          "rebateRate": {
-            "type": "string",
-            "example": "0.0000",
-            "description": "What returns to the TRADING CLIENT, as a percentage of the same revenue. Paid only when `mode` is `rebate_only` or `hybrid`. On the programme rather than per depth because there is one trading client per trade, in one relationship — with their introducer."
-          },
-          "rebateMode": {
-            "type": "string",
-            "enum": [
-              "percent",
-              "per_lot"
-            ],
-            "description": "How the client rebate is priced. As `IbProgramTierDto.payoutMode`."
-          },
-          "rebateAmountPerLot": {
-            "type": "string",
-            "example": "2.00000000",
-            "nullable": true,
-            "description": "Money returned to the client for each standard lot, when `rebateMode` is `per_lot`."
-          },
-          "enabled": {
-            "type": "boolean",
-            "description": "A disabled programme pays nothing and accepts no new partners."
+            "description": "WHICH revenue a percentage at this rung is a share of — FR-IB-16. Ignored entirely by a per-lot term, which is priced from volume and never from revenue."
           },
           "partnerCount": {
             "type": "number",
-            "example": 3,
-            "description": "How many partners are currently on it. Present so a screen can refuse a delete before the database does, and say how many people it would have affected."
+            "example": 4,
+            "description": "How many partners stand on this rung. Part of the row rather than a second call: it is what makes a delete refusable in the UI before the database refuses it, and what tells an operator how many people a rate change is about to affect."
           },
           "createdAt": {
             "format": "date-time",
@@ -11977,73 +11895,70 @@
         },
         "required": [
           "id",
+          "level",
           "name",
-          "sortOrder",
-          "mode",
-          "revenueBasis",
-          "tiers",
-          "rebateRate",
           "enabled",
+          "commissionMode",
+          "commissionRate",
+          "commissionAmountPerLot",
+          "rebateMode",
+          "rebateRate",
+          "rebateAmountPerLot",
+          "revenueBasis",
           "partnerCount",
           "createdAt",
           "updatedAt"
         ]
       },
-      "IbProgramLimitsDto": {
+      "IbLevelLimitsDto": {
         "type": "object",
         "properties": {
           "maxLevels": {
             "type": "number",
             "example": 2,
-            "minimum": 1,
-            "maximum": 10,
-            "description": "The most levels a programme may define, from `IB_MAX_LEVELS`. Defaults to 2 — the committed two-level structure (Feature List Rev 9, IB-17). Raising it is a commercial decision, not a deploy-time accident."
+            "description": "How deep the ladder may run, from `IB_MAX_LEVELS`. Read by the form so it stops offering \"add a level\" at the right point — a hardcoded copy would drift the day a broker negotiates a deeper structure."
+          },
+          "absoluteMaxLevels": {
+            "type": "number",
+            "example": 10,
+            "description": "The structural ceiling the column itself can hold, whatever the setting says."
           }
         },
         "required": [
-          "maxLevels"
+          "maxLevels",
+          "absoluteMaxLevels"
         ]
       },
-      "CreateIbProgramDto": {
+      "CreateIbLevelDto": {
         "type": "object",
         "properties": {
+          "level": {
+            "type": "number",
+            "example": 2,
+            "minimum": 1,
+            "maximum": 10
+          },
           "name": {
             "type": "string",
-            "example": "Gold"
+            "example": "Sub Partner",
+            "minLength": 1,
+            "maxLength": 80
           },
-          "sortOrder": {
-            "type": "number",
-            "example": 10,
-            "description": "Appended to the end when omitted."
-          },
-          "mode": {
+          "commissionMode": {
             "type": "string",
             "enum": [
-              "commission_only",
-              "rebate_only",
-              "hybrid"
+              "percent",
+              "per_lot"
             ],
-            "default": "commission_only"
+            "default": "percent"
           },
-          "revenueBasis": {
+          "commissionRate": {
             "type": "string",
-            "enum": [
-              "commission_swap",
-              "spread",
-              "commission_swap_spread"
-            ],
-            "default": "commission_swap"
+            "example": "30.0000"
           },
-          "tiers": {
-            "description": "The ladder, 1..N with no gaps. Omit for a rebate-only programme.",
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/IbProgramTierDto"
-            }
-          },
-          "rebateRate": {
+          "commissionAmountPerLot": {
             "type": "string",
-            "example": "0"
+            "example": "10.00000000"
           },
           "rebateMode": {
             "type": "string",
@@ -12051,40 +11966,67 @@
               "percent",
               "per_lot"
             ],
-            "description": "How the client rebate is priced. Defaults to `percent`, leaving an existing programme unchanged."
+            "default": "percent"
+          },
+          "rebateRate": {
+            "type": "string",
+            "example": "0.0000"
           },
           "rebateAmountPerLot": {
             "type": "string",
-            "example": "2.00000000",
-            "description": "Money returned to the client per standard lot, when `rebateMode` is `per_lot`. Zero is allowed here, unlike a tier — a programme may legitimately pay the partner per lot and the client nothing."
+            "example": "2.00000000"
+          },
+          "revenueBasis": {
+            "type": "string",
+            "enum": [
+              "commission_swap",
+              "spread",
+              "commission_swap_spread"
+            ]
           },
           "enabled": {
             "type": "boolean",
-            "description": "Defaults to true."
+            "default": true
           }
         },
         "required": [
+          "level",
           "name"
         ]
       },
-      "UpdateIbProgramDto": {
+      "UpdateIbLevelDto": {
         "type": "object",
         "properties": {
           "name": {
             "type": "string",
-            "example": "Gold"
+            "minLength": 1,
+            "maxLength": 80
           },
-          "sortOrder": {
-            "type": "number",
-            "example": 10
-          },
-          "mode": {
+          "commissionMode": {
             "type": "string",
             "enum": [
-              "commission_only",
-              "rebate_only",
-              "hybrid"
+              "percent",
+              "per_lot"
             ]
+          },
+          "commissionRate": {
+            "type": "string"
+          },
+          "commissionAmountPerLot": {
+            "type": "string"
+          },
+          "rebateMode": {
+            "type": "string",
+            "enum": [
+              "percent",
+              "per_lot"
+            ]
+          },
+          "rebateRate": {
+            "type": "string"
+          },
+          "rebateAmountPerLot": {
+            "type": "string"
           },
           "revenueBasis": {
             "type": "string",
@@ -12093,30 +12035,6 @@
               "spread",
               "commission_swap_spread"
             ]
-          },
-          "tiers": {
-            "description": "REPLACES the whole ladder. Send every level you want to keep; omit the field to leave the existing ladder alone. An empty array removes every level.",
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/IbProgramTierDto"
-            }
-          },
-          "rebateRate": {
-            "type": "string",
-            "example": "0"
-          },
-          "rebateMode": {
-            "type": "string",
-            "enum": [
-              "percent",
-              "per_lot"
-            ],
-            "description": "How the client rebate is priced. Defaults to `percent`, leaving an existing programme unchanged."
-          },
-          "rebateAmountPerLot": {
-            "type": "string",
-            "example": "2.00000000",
-            "description": "Money returned to the client per standard lot, when `rebateMode` is `per_lot`. Zero is allowed here, unlike a tier — a programme may legitimately pay the partner per lot and the client nothing."
           },
           "enabled": {
             "type": "boolean"
@@ -13774,16 +13692,6 @@
             "maximum": 10,
             "description": "How many levels a commission programme’s ladder may reach. Defaults to 2 — the committed two-level structure (Feature List Rev 9, IB-17). Bounds what may be SAVED: lowering it leaves existing programmes paying exactly what they paid before."
           },
-          "ibMaxTotalPayoutPct": {
-            "type": "string",
-            "example": "100.0000",
-            "description": "The most one trade may pay out in total, as a % of the broker’s revenue on it — every commission leg plus the client’s rebate. Defaults to 100, which refuses only a chain costing more than the trade earned. A chain over the ceiling is REFUSED and retried, never silently scaled down."
-          },
-          "ibMaxPayoutPerLot": {
-            "type": "string",
-            "example": "50.00000000",
-            "description": "The most ONE TRADE may pay out per standard lot, across every per-lot leg including the client rebate. The unit-error backstop for per-lot terms — the percentage ceiling beside it cannot bound them, because a per-lot payout is not a share of revenue. Refuses rather than scales: the deal defers and pays in full once the terms are corrected."
-          },
           "updatedAt": {
             "type": "string",
             "nullable": true,
@@ -13798,9 +13706,7 @@
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
-          "ibMaxLevels",
-          "ibMaxTotalPayoutPct",
-          "ibMaxPayoutPerLot"
+          "ibMaxLevels"
         ]
       },
       "UpdateTradingSettingsDto": {
@@ -13828,24 +13734,13 @@
             "example": 2,
             "minimum": 1,
             "maximum": 10
-          },
-          "ibMaxTotalPayoutPct": {
-            "type": "string",
-            "example": "100.0000"
-          },
-          "ibMaxPayoutPerLot": {
-            "type": "string",
-            "example": "50.00000000",
-            "description": "The most one trade may pay out per standard lot. A unit-error guard rather than a commercial limit — the industry runs at a few dollars to low double digits a lot, so a sane value sits far above any real rate card and refuses only a mistyped one."
           }
         },
         "required": [
           "maxLiveAccounts",
           "maxDemoAccounts",
           "maxDemoDeposit",
-          "ibMaxLevels",
-          "ibMaxTotalPayoutPct",
-          "ibMaxPayoutPerLot"
+          "ibMaxLevels"
         ]
       },
       "SmtpSettingsDto": {
@@ -14310,12 +14205,6 @@
             "type": "number",
             "example": 0
           },
-          "defaultProgramId": {
-            "type": "string",
-            "format": "uuid",
-            "nullable": true,
-            "description": "The commission programme partners of this agency are appointed on (0107). Null means the agency expresses no preference, and approval falls through to the lowest-sorted enabled programme. A reviewer’s explicit choice always wins over this."
-          },
           "productIds": {
             "description": "The products this agency sells.",
             "type": "array",
@@ -14330,7 +14219,6 @@
           "name",
           "enabled",
           "sortOrder",
-          "defaultProgramId",
           "productIds"
         ]
       },
@@ -14356,11 +14244,6 @@
             "example": 0,
             "minimum": 0,
             "maximum": 1000
-          },
-          "defaultProgramId": {
-            "type": "string",
-            "format": "uuid",
-            "nullable": true
           }
         },
         "required": [

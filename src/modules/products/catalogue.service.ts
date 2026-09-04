@@ -145,8 +145,13 @@ export class CatalogueService {
      * for "when did Standard stop being sold" should not have to read a diff to
      * find it.
      */
-    /* `defaultProgramId` is audited like every other commercial term here: it
-       decides what the NEXT partner approved into this agency is paid. */
+    /*
+     * `defaultProgramId` IS GONE (0112) and is not audited because it no longer
+     * exists. An agency named the commission programme its partners were
+     * appointed on; terms come from a partner's RUNG now, derived from who
+     * recruited them, so an agency has no opinion about what anybody is paid.
+     * It still bounds what they may SELL, through `agency_products`.
+     */
     const changed: Record<string, { before: unknown; after: unknown }> = {};
     for (const field of [
       'name',
@@ -388,7 +393,6 @@ export class CatalogueService {
       description?: string | null;
       enabled: boolean;
       sortOrder?: number;
-      defaultProgramId?: string | null;
     },
     actor: Actor,
   ): Promise<AgencyDto> {
@@ -397,7 +401,6 @@ export class CatalogueService {
       description: emptyToNull(input.description),
       enabled: input.enabled,
       sortOrder: input.sortOrder,
-      defaultProgramId: input.defaultProgramId ?? null,
     });
 
     this.audit.record(actor.id, 'agency.create', 'agencies', row.id, {
@@ -414,7 +417,6 @@ export class CatalogueService {
       description?: string | null;
       enabled: boolean;
       sortOrder?: number;
-      defaultProgramId?: string | null;
     },
     actor: Actor,
   ): Promise<AgencyDto> {
@@ -433,19 +435,11 @@ export class CatalogueService {
        * has been chosen — every subsequent save would re-assert it, and the
        * only route back would be SQL.
        */
-      defaultProgramId:
-        input.defaultProgramId === undefined ? before.defaultProgramId : input.defaultProgramId,
     });
     if (!row) throw new NotFoundError('Agency not found.');
 
     const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const field of [
-      'name',
-      'description',
-      'enabled',
-      'sortOrder',
-      'defaultProgramId',
-    ] as const) {
+    for (const field of ['name', 'description', 'enabled', 'sortOrder'] as const) {
       if (before[field] !== row[field])
         changed[field] = { before: before[field], after: row[field] };
     }
@@ -563,7 +557,6 @@ function toAgencyDto(row: AgencyRow): AgencyDto {
     description: row.description,
     enabled: row.enabled,
     sortOrder: row.sortOrder,
-    defaultProgramId: row.defaultProgramId,
     productIds: row.productIds,
   };
 }
