@@ -186,6 +186,13 @@ beforeEach(async () => {
    * confirming one fail in its setup rather than its assertion.
    */
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
+  /*
+   * BATCHES between the accruals and the wallets (0116). A batch is
+   * referenced BY an accrual and references a wallet, so it sits exactly
+   * here in the FK order — clearing wallets first fails on
+   * `ib_accrual_batches_wallet_id_fkey`.
+   */
+  await ctx.db.execute(sql`DELETE FROM ib_accrual_batches`);
   await ctx.db.execute(sql`DELETE FROM ledger_entries`);
   await ctx.db.execute(sql`DELETE FROM wallets`);
   /* The window is what stands between "earned" and "spendable"; these cases are

@@ -151,6 +151,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
+  /* Batches sit between the accruals and the wallets in FK order (0116). */
+  await ctx.db.execute(sql`DELETE FROM ib_accrual_batches`);
   await ctx.db.execute(sql`DELETE FROM ledger_entries`);
   await ctx.db.execute(sql`DELETE FROM wallets`);
   await ctx.db.execute(sql`DELETE FROM mt5_deals`);
