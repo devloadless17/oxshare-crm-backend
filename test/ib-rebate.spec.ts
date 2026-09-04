@@ -186,6 +186,12 @@ beforeEach(async () => {
    * confirming one fail in its setup rather than its assertion.
    */
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
+  /* Legacy `percent` rows — see the note in ib-end-to-end.spec.ts. The form
+     cannot create these since 0117; the engine must still price them. */
+  await ctx.db.execute(
+    sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
+  );
+  await ctx.db.execute(sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_rebate_shape`);
   /*
    * BATCHES between the accruals and the wallets (0116). A batch is
    * referenced BY an accrual and references a wallet, so it sits exactly

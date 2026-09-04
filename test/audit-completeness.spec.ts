@@ -315,8 +315,9 @@ describe('recorded: the feature modules', () => {
     const res = await session.post('/v1/admin/ib-levels', {
       level: 3,
       name: `Audit Level ${Date.now() % 100000}`,
-      commissionMode: 'percent',
-      commissionRate: '1.5000',
+      /* Per lot — the only mode the form accepts since 0117. */
+      commissionMode: 'per_lot',
+      commissionAmountPerLot: '1.5000',
       enabled: false,
     });
     expect([200, 201]).toContain(res.status);
@@ -332,9 +333,17 @@ describe('recorded: the feature modules', () => {
      * because '1.5000' and 1.5 both read as correct in a diff.
      */
     const row = await latest('ib_level.create');
-    const details = row?.details as { commissionRate?: unknown } | undefined;
-    expect(details?.commissionRate).toBe('1.5000');
-    expect(typeof details?.commissionRate).toBe('string');
+    /*
+     * The PER-LOT AMOUNT, not the rate. Since 0117 every rung is priced per lot
+     * and `commissionRate` is written as a hard zero, so asserting on it would
+     * pin a constant and stop proving that the audit trail records the figure
+     * that actually decides what a partner is paid.
+     */
+    const details = row?.details as { commissionAmountPerLot?: unknown } | undefined;
+    /* Eight decimal places: the per-lot column is NUMERIC(28,8), where the rate
+       it replaced was NUMERIC(9,4). Same money, wider column. */
+    expect(details?.commissionAmountPerLot).toBe('1.50000000');
+    expect(typeof details?.commissionAmountPerLot).toBe('string');
 
     /* Put the ladder back, so an ordering-sensitive neighbour is unaffected. */
     await session.del('/v1/admin/ib-levels/3');

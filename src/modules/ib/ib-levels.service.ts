@@ -1,5 +1,4 @@
 import { Inject, Injectable } from '@nestjs/common';
-import Decimal from 'decimal.js';
 import { asc, count, eq, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
@@ -17,20 +16,19 @@ import type {
 } from './dto/ib-level.dto';
 
 type Db = ReturnType<typeof getDb>;
-
-/**
- * The most of one trade's revenue a single RUNG may hand out.
+/*
+ * `MAX_TOTAL_SHARE` is GONE (0117).
  *
- * Its commission and its rebate are shares of the same number, so they add.
+ * It was the configuration-time floor under `checkPlausible`, catching an
+ * operator who typed 70 at every rung while they could still fix it. Both
+ * retired modes were percentages of ONE revenue figure, so their sum meant
+ * something; per-lot amounts are not shares of anything and cannot be summed
+ * against a percentage ceiling.
  *
- * ⚠️ This bounds ONE RUNG, which is narrower than it looks. On a single trade
- * the earners stand on DIFFERENT rungs — the introducer's, their parent's — so
- * no per-rung rule can bound what one trade pays out in total. That guarantee is
- * `checkPlausible` in the engine, which REFUSES an accrual set exceeding the
- * revenue. This is the configuration-time floor: it catches the operator typing
- * 70 at every rung, while they can still fix it.
+ * The ceiling that still applies is `ib_max_payout_per_lot`, enforced by
+ * `checkPlausible` at ACCRUAL time — where the trade's volume is known, which
+ * is what a per-lot bound has to compare against.
  */
-const MAX_TOTAL_SHARE = new Decimal(100);
 
 /**
  * The columns a term actually reads, from its mode — mirrors
@@ -46,15 +44,20 @@ const MAX_TOTAL_SHARE = new Decimal(100);
  * actually pays is how somebody reads the wrong number off the row later, and it
  * would also inflate `ib_levels_share_fits` with a figure nobody is paid.
  */
-function payoutColumns(
-  mode: IbPayoutMode,
-  rate: string,
-  amountPerLot: string | null | undefined,
-): { mode: IbPayoutMode; rate: string; amountPerLot: string | null } {
-  if (mode === 'per_lot') {
-    return { mode: 'per_lot', rate: '0', amountPerLot: amountPerLot ?? '0' };
-  }
-  return { mode: 'percent', rate, amountPerLot: null };
+function payoutColumns(amountPerLot: string | null | undefined): {
+  mode: IbPayoutMode;
+  rate: string;
+  amountPerLot: string;
+} {
+  /*
+   * ONE SHAPE since 0117: every rung is a flat amount per standard lot.
+   *
+   * The `rate` column is still written, as ZERO. It holds the percentage the
+   * two retired modes were paid on, and a live-looking percentage sitting
+   * beside the amount that actually pays is how somebody reads the wrong number
+   * off the row later.
+   */
+  return { mode: 'per_lot', rate: '0', amountPerLot: amountPerLot ?? '0' };
 }
 
 /**
@@ -197,39 +200,27 @@ export class IbLevelsService {
    * lot has no meaningful sum with 30%. Per-lot legs are bounded instead at
    * ACCRUAL time by `ib_max_payout_per_lot`, where the lot count is known.
    */
-  private assertShareFits(
-    commission: { mode: IbPayoutMode; rate: string },
-    rebate: { mode: IbPayoutMode; rate: string },
-  ): void {
-    const commissionShare =
-      commission.mode === 'percent' ? new Decimal(commission.rate) : new Decimal(0);
-    const rebateShare = rebate.mode === 'percent' ? new Decimal(rebate.rate) : new Decimal(0);
-    const total = commissionShare.plus(rebateShare);
-
-    if (total.greaterThan(MAX_TOTAL_SHARE)) {
-      throw new ValidationError(
-        `These terms pay out ${total.toString()}% of the broker's revenue on a trade — ` +
-          `${commissionShare.toString()}% to the partner and ${rebateShare.toString()}% back to ` +
-          'the client. Both are a share of the same revenue, so they add up; the total cannot ' +
-          'exceed 100%.',
-      );
-    }
-  }
+  /*
+   * ── `assertShareFits` IS GONE (0117) ──────────────────────────────────────
+   *
+   * It bounded commission + rebate to 100% while both were shares of the SAME
+   * broker revenue, so they added up. Neither can be a percentage any more, so
+   * the check could never fail — and a guard that cannot fail reads to the next
+   * person as a protection that is in force.
+   *
+   * The real ceiling on a per-lot rung is `ib_max_payout_per_lot`, enforced by
+   * `checkPlausible` at ACCRUAL time. That is where a per-lot bound belongs: it
+   * compares against the trade's VOLUME, which nothing on this form can see.
+   *
+   * Migration 0117 dropped the matching database constraint for the same
+   * reason.
+   */
 
   async create(dto: CreateIbLevelDto, actor: Actor): Promise<IbLevelDto> {
     this.assertLevelIsReachable(dto.level);
 
-    const commission = payoutColumns(
-      dto.commissionMode ?? 'percent',
-      dto.commissionRate ?? '0',
-      dto.commissionAmountPerLot,
-    );
-    const rebate = payoutColumns(
-      dto.rebateMode ?? 'percent',
-      dto.rebateRate ?? '0',
-      dto.rebateAmountPerLot,
-    );
-    this.assertShareFits(commission, rebate);
+    const commission = payoutColumns(dto.commissionAmountPerLot);
+    const rebate = payoutColumns(dto.rebateAmountPerLot);
 
     if (await this.findOne(dto.level)) {
       throw new ConflictError(
@@ -282,21 +273,31 @@ export class IbLevelsService {
     if (!current) throw new NotFoundError(`Level ${level} does not exist.`);
 
     /*
-     * The mode falls back to what is STORED, not to `percent`. A PATCH that
-     * changes only the name must not quietly re-price a per-lot rung back onto a
-     * percentage nobody configured.
+     * The amount falls back to what is STORED, so a PATCH that changes only the
+     * name leaves the rate alone.
+     *
+     * ⚠️ A rung still on a RETIRED mode has no stored per-lot amount — its
+     * money lived in the rate column — so `?? '0'` inside `payoutColumns` would
+     * silently zero it. 0117 converted every such rung, so none exist; this
+     * refusal is what makes that a fact the code checks rather than assumes.
      */
+    if (current.commissionMode !== 'per_lot' && dto.commissionAmountPerLot === undefined) {
+      throw new ValidationError(
+        `Level ${level} was priced on a model that has been retired. Set a commission amount ` +
+          'per lot to bring it up to date.',
+      );
+    }
+    if (current.rebateMode !== 'per_lot' && dto.rebateAmountPerLot === undefined) {
+      throw new ValidationError(
+        `Level ${level} was priced on a model that has been retired. Set a rebate amount per ` +
+          'lot to bring it up to date.',
+      );
+    }
+
     const commission = payoutColumns(
-      dto.commissionMode ?? current.commissionMode,
-      dto.commissionRate ?? current.commissionRate,
       dto.commissionAmountPerLot ?? current.commissionAmountPerLot ?? undefined,
     );
-    const rebate = payoutColumns(
-      dto.rebateMode ?? current.rebateMode,
-      dto.rebateRate ?? current.rebateRate,
-      dto.rebateAmountPerLot ?? current.rebateAmountPerLot ?? undefined,
-    );
-    this.assertShareFits(commission, rebate);
+    const rebate = payoutColumns(dto.rebateAmountPerLot ?? current.rebateAmountPerLot ?? undefined);
 
     /*
      * DISABLING a rung partners stand on is refused.

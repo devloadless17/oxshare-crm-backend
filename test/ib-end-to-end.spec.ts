@@ -75,7 +75,25 @@ async function makeUser(handle: string): Promise<string> {
  * rate left behind by a previous case would pay a partner terms the current one
  * never configured, and these suites share a database.
  */
+/*
+ * ⚠️ WRITTEN WITH THE 0117 CHECK LIFTED, deliberately.
+ *
+ * `ib_levels_commission_shape` refuses `percent` since 0117: every rung an
+ * operator can SAVE is priced per lot. These cases are about the percentage
+ * ARITHMETIC — the ceiling, the chain total, the rebate against one revenue —
+ * which the engine still performs for rungs configured before that migration
+ * and which nothing else covers.
+ *
+ * Dropping the constraint for the insert reproduces exactly that: a row the
+ * form can no longer create and the engine must still price correctly. Writing
+ * these as per-lot instead would leave the percentage paths untested while
+ * live rows still use them.
+ */
 async function setLadder(rates: string[], rebate = '0'): Promise<void> {
+  await ctx.db.execute(
+    sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
+  );
+  await ctx.db.execute(sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_rebate_shape`);
   await ctx.db.execute(sql`
     UPDATE ib_levels
        SET commission_mode = 'percent', commission_amount_per_lot = NULL, commission_rate = 0,
