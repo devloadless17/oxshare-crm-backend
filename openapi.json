@@ -1940,7 +1940,7 @@
     },
     "/v1/ib/wallet/transfers": {
       "get": {
-        "description": "A short list to sit beside the balance it explains. The FULL history is in `GET /payments/transactions`, which carries these rows alongside every other movement — a partner's own money should not be split across two histories that have to be reconciled against each other.",
+        "description": "Every transfer, newest first, with the wallet numbers at both ends. It was capped at TEN while it rendered as a short panel beside the balance it explains; it is now a paged tab of its own, and a cap that silently hid a partner’s older transfers was the reason it could not answer “where did my money go”. These rows also appear in `GET /payments/transactions` alongside every other movement — a partner's own money should not be split across two histories that have to be reconciled against each other.",
         "operationId": "IbController_myWalletTransfers",
         "parameters": [],
         "responses": {
@@ -1963,7 +1963,7 @@
             "cookie": []
           }
         ],
-        "summary": "The last few commission transfers, newest first",
+        "summary": "Commission moved out of the commission wallet, newest first",
         "tags": [
           "ib"
         ]
@@ -11514,6 +11514,18 @@
             "type": "string",
             "example": "950.00000000",
             "description": "The main wallet AFTER this transfer. Absent on history rows — see the DTO."
+          },
+          "fromWalletNumber": {
+            "type": "string",
+            "nullable": true,
+            "example": "W-4820199",
+            "description": "The COMMISSION wallet the money left, by its wallet number."
+          },
+          "toWalletNumber": {
+            "type": "string",
+            "nullable": true,
+            "example": "W-4820188",
+            "description": "The MAIN wallet the money arrived in, by its wallet number."
           },
           "createdAt": {
             "format": "date-time",

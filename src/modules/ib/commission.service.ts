@@ -759,24 +759,37 @@ export class CommissionService implements CommissionAccrualPort {
       }
     >();
 
+    /*
+     * @param accrualCount how many TRADES this amount covers.
+     *
+     * ⚠️ Passed in rather than incremented by one per call, and that is not
+     * cosmetic. Before 0116 each call carried one accrual, so `count += 1` was
+     * right by accident. Now one call carries a whole batch — so incrementing by
+     * one told a partner paid across forty trades that they had earned on "1
+     * trade", while the amount beside it was the sum of all forty.
+     *
+     * A notification whose two numbers disagree is worse than one with no count
+     * at all: it reads as a rate nobody can reproduce.
+     */
     const recordPayout = (
       recipientId: string,
       kind: 'commission' | 'rebate',
       amount: string,
       currency: string,
+      accrualCount: number,
     ): void => {
       const key = `${recipientId}:${kind}:${currency}`;
       const existing = payouts.get(key);
       if (existing) {
         existing.total = existing.total.plus(amount);
-        existing.count += 1;
+        existing.count += accrualCount;
         return;
       }
       payouts.set(key, {
         recipientId,
         kind,
         total: new Decimal(amount),
-        count: 1,
+        count: accrualCount,
         currency,
       });
     };
@@ -932,7 +945,13 @@ export class CommissionService implements CommissionAccrualPort {
         });
 
         confirmed += group.accruals.length;
-        recordPayout(group.userId, group.kind, money(group.total), group.currency);
+        recordPayout(
+          group.userId,
+          group.kind,
+          money(group.total),
+          group.currency,
+          group.accruals.length,
+        );
       } catch (error) {
         /*
          * Counted and logged, never rethrown. One wallet refusing a credit must

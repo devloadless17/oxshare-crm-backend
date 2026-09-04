@@ -84,6 +84,38 @@ export class IbWalletTransferResultDto {
   })
   mainBalance?: string;
 
+  /**
+   * WHICH wallets the money moved between, by NUMBER rather than by uuid.
+   *
+   * `wallets.wallet_number` (0090) is the short identifier a partner sees on
+   * their own wallet screen and quotes to support. A uuid is neither readable
+   * nor quotable, and a table column holding one asks the reader to match 36
+   * characters by eye.
+   *
+   * BOTH ends, because "moved to your wallet" is only half the sentence: a
+   * partner holding commission wallets in two currencies needs to know which one
+   * it came out of.
+   *
+   * Nullable on the type rather than absent: these come from a LEFT join, and a
+   * null here means the wallet row could not be read — which must render as
+   * unknown rather than as a blank that reads like a missing value.
+   */
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    example: 'W-4820199',
+    description: 'The COMMISSION wallet the money left, by its wallet number.',
+  })
+  fromWalletNumber?: string | null;
+
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    example: 'W-4820188',
+    description: 'The MAIN wallet the money arrived in, by its wallet number.',
+  })
+  toWalletNumber?: string | null;
+
   @ApiProperty({ format: 'date-time' })
   createdAt: Date;
 }
