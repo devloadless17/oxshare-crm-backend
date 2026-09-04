@@ -9027,6 +9027,34 @@
         ]
       }
     },
+    "/v1/admin/transfers/stuck": {
+      "get": {
+        "description": "Counts transfers still pending past the resume scheduler’s own staleness threshold — the same condition that raises the `money.transfer_stuck` alert. No money has moved on any of them: a wallet is debited only once MT5 confirms.",
+        "operationId": "AdminMoneyController_stuckTransfers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StuckTransfersDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "How many transfers have been pending long enough to need a person",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/transfers/{id}/abandon": {
       "post": {
         "description": "For a transfer the MT5 bridge left pending: the movement never reached the trading server, so the hold is released and the money becomes spendable again. Refuses anything that is not still pending.\n\n⚠️ Only after checking the broker’s own record. If MT5 DID apply the movement, releasing the hold lets the client spend money that has already left — which is the one thing the executor refuses to guess at, and the reason this is a person’s decision.",
@@ -16686,6 +16714,32 @@
           "discrepancyCount",
           "totalDifference",
           "balanced"
+        ]
+      },
+      "StuckTransfersDto": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number",
+            "example": 1,
+            "description": "Transfers still pending past the staleness threshold. No money has moved on any of them."
+          },
+          "oldestAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the OLDEST of them was requested, or null when there are none."
+          },
+          "thresholdMinutes": {
+            "type": "number",
+            "example": 15,
+            "description": "The threshold itself, in minutes. Sent so the copy can name it without the frontend keeping its own copy of a number this side owns and can change."
+          }
+        },
+        "required": [
+          "count",
+          "oldestAt",
+          "thresholdMinutes"
         ]
       },
       "AbandonTransferDto": {

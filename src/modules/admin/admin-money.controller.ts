@@ -56,6 +56,7 @@ import {
 import {
   LedgerListResponseDto,
   ReconciliationReportDto,
+  StuckTransfersDto,
   WithdrawalListResponseDto,
   WithdrawalRowDto,
 } from './dto/responses.dto';
@@ -628,6 +629,38 @@ export class AdminMoneyController {
    * open — L1/L2 shares, the ladder, the settlement window — and they return
    * with the MT5 bridge. `/admin/ib-levels` covers the terms half today.
    */
+
+  /**
+   * How many transfers are stuck, for the banner on the Financial screen.
+   *
+   * The condition is already detected — `TransferResumeScheduler` raises
+   * `money.transfer_stuck` at `page` severity — but that alert is a log line and
+   * §12.3 deliberately stops short of choosing a paging provider, so on this
+   * deployment nobody sees it. This is how the console does.
+   *
+   * A COUNT rather than a list: the rows themselves are already on the Financial
+   * table, and a second place to render them is a second place to keep honest.
+   * What was missing was a reason to go and look.
+   *
+   * `transactions.view` — whoever can see the movement list can be told that
+   * part of it needs attention. Acting on one still requires `transfers.abandon`.
+   */
+  @Get('transfers/stuck')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('transactions.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'How many transfers have been pending long enough to need a person',
+    description:
+      'Counts transfers still pending past the resume scheduler’s own staleness threshold — the ' +
+      'same condition that raises the `money.transfer_stuck` alert. No money has moved on any of ' +
+      'them: a wallet is debited only once MT5 confirms.',
+  })
+  @ApiOkResponse({ type: StuckTransfersDto })
+  @ScopedToClients('Counts only the caller’s own clients’ transfers.')
+  stuckTransfers(@Req() req: Request & { admin: AuthenticatedAdmin }) {
+    return this.money.stuckTransfers(req.admin);
+  }
 
   /**
    * Release a transfer the MT5 bridge left in flight.

@@ -91,6 +91,7 @@
   "GET /v1/admin/transactions",
   "GET /v1/admin/transactions/export",
   "GET /v1/admin/transactions/summary",
+  "GET /v1/admin/transfers/stuck",
   "GET /v1/admin/users",
   "GET /v1/admin/wallets",
   "GET /v1/admin/wallets/export",

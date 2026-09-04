@@ -1513,3 +1513,41 @@ export class IpAllowlistStatusDto {
   @ApiProperty({ type: [IpAllowlistRuleDto] })
   rules: IpAllowlistRuleDto[];
 }
+
+/**
+ * How many transfers are stuck, for the Financial screen's banner.
+ *
+ * A COUNT, not a list. The transfers themselves are already rows on that table
+ * and now carry the release action; what was missing was a reason to go and
+ * look at them, because a stuck transfer renders as one more pending row among
+ * settled history.
+ *
+ * The condition is the same one `TransferResumeScheduler` raises
+ * `money.transfer_stuck` on. That alert is a log line and §12.3 deliberately
+ * stops short of choosing a paging provider, so on a deployment with no log
+ * drain it reaches nobody. This is the console's answer to that.
+ */
+export class StuckTransfersDto {
+  @ApiProperty({
+    example: 1,
+    description:
+      'Transfers still pending past the staleness threshold. No money has moved on any of them.',
+  })
+  count: number;
+
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description: 'When the OLDEST of them was requested, or null when there are none.',
+  })
+  oldestAt: Date | null;
+
+  @ApiProperty({
+    example: 15,
+    description:
+      'The threshold itself, in minutes. Sent so the copy can name it without the frontend ' +
+      'keeping its own copy of a number this side owns and can change.',
+  })
+  thresholdMinutes: number;
+}

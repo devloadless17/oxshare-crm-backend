@@ -885,6 +885,30 @@ export class AdminMoneyService {
    */
 
   /**
+   * How many transfers are stuck, and the oldest one's id.
+   *
+   * ## Why a count at all
+   *
+   * `TransferResumeScheduler` already detects this and raises
+   * `money.transfer_stuck` at `page` severity. That alert goes to a LOG LINE and
+   * nowhere else — §12.3 deliberately stops short of choosing a paging provider —
+   * so on this deployment it reaches a terminal nobody is watching, and the
+   * operator who could act on it has no way to know.
+   *
+   * The Financial table has listed these transfers all along and now carries the
+   * release action, but nothing gives an operator a REASON to go and look: a
+   * stuck transfer renders as one more pending row among settled history. This
+   * is what makes the banner above that table possible.
+   *
+   * Delegated to `TransfersService`, which owns the table and the staleness
+   * threshold. This class holds no `db` of its own by design.
+   */
+  async stuckTransfers(actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'transactions.view', 'see stuck transfers');
+    return await this.transfers.countStuck(actor.clientScope);
+  }
+
+  /**
    * ABANDON a transfer the bridge left in flight, releasing its hold.
    *
    * ## Why this needs a person, and cannot be a retry

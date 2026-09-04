@@ -7,6 +7,7 @@ import { transfers } from '../../database/schema';
 import { TransferExecutor } from './transfer-executor.service';
 import { JobLeaseService } from '../../common/scheduling/job-lease.service';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
+import { TRANSFER_STALE_MS } from './transfer-staleness';
 
 /**
  * Finishes transfers that were left pending, so a client never has to ask.
@@ -198,15 +199,5 @@ const GRACE_MS = 30_000;
  */
 const BATCH = 10;
 
-/**
- * Past this, a pending transfer is a person's problem rather than a retry's.
- *
- * FIFTEEN MINUTES, down from six hours. Six was chosen against "how long might
- * a normal outage last" and answered the wrong question: the resume job retries
- * every minute, so anything still pending after fifteen is not waiting out a
- * blip — it is hitting something that will not clear by itself, and the next
- * five and three-quarter hours add nothing but a client watching a spinner.
- *
- * Long enough that an ordinary bridge restart passes without paging anybody.
- */
-const STALE_MS = 15 * 60 * 1000;
+/** See `transfer-staleness.ts` for the threshold and why it lives there. */
+const STALE_MS = TRANSFER_STALE_MS;
