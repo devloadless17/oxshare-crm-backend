@@ -54,6 +54,20 @@ import { RivalConfigService } from './rival-config.service';
  * key, so a blind retry is a double payout.
  */
 
+/**
+ * The scale Rival settles at, and the ONLY place that number lives.
+ *
+ * It was an anonymous `2` inside two quantise helpers. That mattered more than
+ * a magic number usually does: the CRM stores NUMERIC(28,8) and an operator can
+ * set a currency to as many as 8 display decimals, so the difference between
+ * what the CRM can hold and what this rail can send is a real, configurable
+ * gap — and nothing named it, so nothing could check it.
+ *
+ * Exported so `PaymentGateways.payoutScale` can answer for this rail and the
+ * withdrawal door can refuse an amount it could never pay exactly.
+ */
+export const RIVAL_MONEY_SCALE = 2;
+
 /** Rival's whish payment object, as `integrations/whish/payments` returns it. */
 export interface RivalPayment {
   id: string;
@@ -357,12 +371,42 @@ export class RivalClient {
 
 /** Money IN: quantise to Rival's 2dp scale, rounding to nearest (its own rule). */
 function quantiseIn(amount: string): string {
-  return new Decimal(amount).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
+  return new Decimal(amount)
+    .toDecimalPlaces(RIVAL_MONEY_SCALE, Decimal.ROUND_HALF_UP)
+    .toFixed(RIVAL_MONEY_SCALE);
 }
 
-/** Money OUT: round DOWN — never ask Rival to pay more than the CRM debited. */
+/**
+ * Money OUT: REFUSE anything Rival cannot send exactly.
+ *
+ * This used to round DOWN, on the reasoning that we must never ask Rival to pay
+ * more than the CRM debited. That half was right and still holds — but rounding
+ * down silently KEPT the difference: the client was debited 50.12345679 and
+ * paid 50.12, with no refund and no record. Under a cent each time, and it
+ * scales.
+ *
+ * `requestWithdrawal` now refuses an over-precise amount at the door, so in
+ * normal operation nothing reaches here that needs quantising. That is exactly
+ * why this must throw rather than round: a value arriving here with more places
+ * than Rival can send means the door check was BYPASSED or is WRONG — a new
+ * rail, a currency reconfigured to more decimals than Rival supports, a row
+ * created before the rule existed — and every one of those is a configuration
+ * problem a person should see, not a sub-cent rounding a person never will.
+ *
+ * `submitApproved` turns this into a definite refusal: the claim is cleared,
+ * the row is flagged with the reason, and the approvers are told. Loud and
+ * recoverable, which is what silent flooring was not.
+ */
 function quantiseOut(amount: string): string {
-  return new Decimal(amount).toDecimalPlaces(2, Decimal.ROUND_DOWN).toFixed(2);
+  const value = new Decimal(amount);
+  if (value.decimalPlaces() > RIVAL_MONEY_SCALE) {
+    throw new ValidationError(
+      `The payment platform settles to ${RIVAL_MONEY_SCALE} decimal places and cannot send ` +
+        `${amount} exactly. Paying the rounded amount would keep the difference from the ` +
+        'client, so this payout is refused until the amount is corrected.',
+    );
+  }
+  return value.toFixed(RIVAL_MONEY_SCALE);
 }
 
 /** Rival's `details` is written for integrators; safe to carry, never required. */

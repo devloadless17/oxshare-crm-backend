@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PaymentIndeterminateError, ValidationError } from '../../common/errors/domain-errors';
-import { RivalClient } from './rival/rival.client';
+import { RivalClient, RIVAL_MONEY_SCALE } from './rival/rival.client';
 import { RivalConfigService } from './rival/rival-config.service';
 
 /**
@@ -76,6 +76,26 @@ export class PaymentGateways {
    */
   isImplemented(key: string): boolean {
     return key === 'whish';
+  }
+
+  /**
+   * The number of decimal places this rail can settle EXACTLY, or null when the
+   * key is not a rail this build pays through.
+   *
+   * A payout is bounded by two scales, and only one of them was ever checked.
+   * `currencies.decimals` says what the OPERATOR declares the currency holds and
+   * is editable from 0 to 8; this says what the PROVIDER can actually send. When
+   * the currency allows more places than the rail, the difference is money the
+   * client is debited and never paid — which is exactly the bug D-77 closed for
+   * USD and would have left open the moment somebody configured a currency to
+   * more than two places.
+   *
+   * So the withdrawal door validates against the SMALLER of the two. Null means
+   * "no rail involved, no extra constraint" — a desk-paid withdrawal is settled
+   * by a human who can send whatever the currency expresses.
+   */
+  payoutScale(key: string): number | null {
+    return key === 'whish' ? RIVAL_MONEY_SCALE : null;
   }
 
   /**

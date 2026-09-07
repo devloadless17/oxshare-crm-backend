@@ -409,6 +409,36 @@ describe('limits', () => {
     await expect(request(userId, '50.001')).rejects.toThrow(/2 decimal places/i);
   });
 
+  it('a currency configured to 8 places is STILL bounded by what the rail can send', async () => {
+    /*
+     * THE hole the first version of this rule left open, and the reason the
+     * bound is the smaller of two numbers rather than one.
+     *
+     * `currencies.decimals` is operator data — the admin screen accepts 0 to 8 —
+     * while Rival settles at 2 (RIVAL_MONEY_SCALE). Validating against the
+     * currency alone closed this for USD, which declares 2, and did nothing at
+     * all for a currency somebody configured to more: the CRM would accept
+     * 100.12345678, debit every place of it, and ask Rival for 100.12, keeping
+     * the difference exactly as before. The fix would have LOOKED applied while
+     * doing nothing, which is worse than not having it.
+     *
+     * So: declare 8, and the whish rail must still refuse anything past 2.
+     */
+    await ctx.db.execute(sql`UPDATE currencies SET decimals = 8 WHERE code = 'USD'`);
+    try {
+      const userId = await makeFundedClient('rail-bound@test.local');
+
+      await expect(request(userId, '50.12345678')).rejects.toThrow(/2 decimal places/i);
+      // And the message names the RAIL, because that is what the client has to
+      // act on — the currency would have allowed it.
+      await expect(request(userId, '50.12345678')).rejects.toThrow(/50\.12/);
+      // Two places still go through: the bound is the rail's, not zero.
+      await expect(request(userId, '50.12')).resolves.toBeDefined();
+    } finally {
+      await ctx.db.execute(sql`UPDATE currencies SET decimals = 2 WHERE code = 'USD'`);
+    }
+  });
+
   it('the refusal NAMES the largest amount that would work, rounded down', async () => {
     /*
      * A client's balance can legitimately carry sub-cent value — commission and

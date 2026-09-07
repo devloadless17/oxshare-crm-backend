@@ -619,46 +619,6 @@ export class TransactionsService {
     if (!amount.isPositive()) throw new ValidationError('Withdrawal amount must be positive.');
 
     /*
-     * The amount must be expressible IN THIS CURRENCY — D-77.
-     *
-     * Storage is NUMERIC(28,8) and the payout rail sends 2, so an amount with
-     * more places than the currency declares was accepted, DEBITED in full, and
-     * then paid rounded DOWN: a request for 50.123456789 debited 50.12345679 and
-     * sent 50.12. The rounding direction is right — never ask a platform to pay
-     * more than was debited — but nothing gave the remainder back or recorded
-     * that it had been kept. Under a cent each time, silent, and it scales.
-     *
-     * Refused at the door rather than repaired downstream, because the other two
-     * options both make the system carry a rounding concept in order to keep
-     * accepting input that has no meaning on any rail it supports: quantising
-     * the debit silently changes the number the client asked for, and booking
-     * the dust back puts a sub-cent ledger row against something nobody
-     * requested. The amount a client asks for should be the amount they get.
-     *
-     * The bound is the OPERATOR'S, from `currencies.decimals`, not a hardcoded
-     * 2 — see `assertUsableDetail` for why that distinction is load-bearing.
-     */
-    if (amount.decimalPlaces() > decimals) {
-      /*
-       * The message names the largest amount that WOULD be accepted, rounded
-       * DOWN so it is never more than the client has.
-       *
-       * This matters more than it looks. A client's balance can legitimately
-       * carry sub-cent value — commission and rebates are percentages, stored
-       * at the full NUMERIC(28,8) scale — so "withdraw everything" can produce
-       * an amount this rule refuses. Without the figure the refusal is a dead
-       * end on the one action the client most wants; with it, it is an
-       * instruction they can act on immediately.
-       */
-      throw new ValidationError(
-        `${currency} amounts are held to ${decimals} decimal ` +
-          `${decimals === 1 ? 'place' : 'places'}. The most you can withdraw from this ` +
-          `request is ${amount.toDecimalPlaces(decimals, Decimal.ROUND_DOWN).toFixed(decimals)} ` +
-          `${currency}.`,
-      );
-    }
-
-    /*
      * Absolute bounds — PLATFORM-CONVENTIONS R-5.1.
      *
      * Balance and KYC level were already checked below, and they are the RIGHT
@@ -695,6 +655,54 @@ export class TransactionsService {
       .limit(1);
     if (!method || !method.enabled) {
       throw new ValidationError('That withdrawal method is not available.');
+    }
+
+    /*
+     * The amount must be one this withdrawal can actually PAY — D-77.
+     *
+     * Two scales bound a payout and only one of them used to be checked:
+     *
+     *   currencies.decimals   what the OPERATOR says the currency holds.
+     *                         Editable from 0 to 8 on the admin screen.
+     *   gateways.payoutScale  what the PROVIDER can send exactly.
+     *                         Rival settles at 2 (RIVAL_MONEY_SCALE).
+     *
+     * Checking only the first closed this for USD — which declares 2 — and left
+     * it wide open the moment anybody configured a currency to more places than
+     * Rival supports: the CRM would accept 100.12345678, debit all of it, and
+     * Rival would be asked for 100.12, keeping the difference exactly as before.
+     * The fix would have LOOKED applied while doing nothing, which is worse than
+     * not having it.
+     *
+     * So the bound is the SMALLER of the two. A desk-paid withdrawal has no rail
+     * and is bounded by the currency alone — a human settling it can send
+     * whatever the currency expresses.
+     *
+     * `quantiseOut` refuses rather than rounds, so a value that somehow reaches
+     * Rival with too many places is a loud, recoverable failure instead of
+     * silent dust. This check is what stops the client meeting that refusal at
+     * approval time, hours after they asked.
+     */
+    const railScale = this.gateways.payoutScale(method.key);
+    const payableDecimals = railScale === null ? decimals : Math.min(decimals, railScale);
+    if (amount.decimalPlaces() > payableDecimals) {
+      /*
+       * The message names the largest amount that WOULD be accepted, rounded
+       * DOWN so it is never more than the client has.
+       *
+       * A client's balance can legitimately carry sub-cent value — commission
+       * and rebates are percentages stored at the full NUMERIC(28,8) scale — so
+       * "withdraw everything" can produce an amount this rule refuses. Without
+       * the figure the refusal is a dead end on the one action the client most
+       * wants; with it, it is an instruction they can act on immediately.
+       */
+      throw new ValidationError(
+        `${method.name} settles ${currency} to ${payableDecimals} decimal ` +
+          `${payableDecimals === 1 ? 'place' : 'places'}. The most you can withdraw from this ` +
+          `request is ` +
+          `${amount.toDecimalPlaces(payableDecimals, Decimal.ROUND_DOWN).toFixed(payableDecimals)} ` +
+          `${currency}.`,
+      );
     }
 
     /*
