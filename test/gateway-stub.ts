@@ -36,6 +36,17 @@ export function gatewayStub() {
      * has no bank account.
      */
     isImplemented: vi.fn((key: string) => key === 'whish'),
+    /*
+     * The rail's settlement scale, mirroring the real registry — 2 for whish,
+     * null for anything settled by a human.
+     *
+     * Not stubbed to a constant: the withdrawal door validates against the
+     * SMALLER of this and the currency's own decimals, so a stub that always
+     * answered null would quietly stop testing that half of the rule, and a
+     * stub that always answered 2 would apply a rail's limit to manual methods
+     * that have none.
+     */
+    settlementScale: vi.fn((key: string) => (key === 'whish' ? 2 : null)),
     // Async, like the real registry: the answer now lives in rival_settings.
     isConfigured: vi.fn().mockResolvedValue(false),
     startPayment: vi.fn().mockResolvedValue({

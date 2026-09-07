@@ -158,7 +158,16 @@ const rivalRow = (id: string, overrides: Record<string, unknown> = {}) => ({
   id,
   amount: '100.00',
   currency: 'USD',
-  netAmount: '98.00',
+  /*
+   * net EQUALS amount, which is what every commission rule configured for this
+   * company actually produces: the payout fee is ON_TOP, charged to OxShare,
+   * so the client receives the full amount they asked for.
+   *
+   * It used to default to '98.00' — a DEDUCTED fee nobody has configured — so
+   * the fixture quietly modelled a short payment as the normal case. The
+   * shortfall is now an explicit override in the one test that is about it.
+   */
+  netAmount: '100.00',
   totalAmount: '100.00',
   status: 'PENDING',
   externalReference: null,
@@ -194,6 +203,30 @@ describe('submit on approval — the no-idempotency-key defence', () => {
 
     await Promise.all([service.submitApproved(txId), service.submitApproved(txId)]);
     expect(rival.createWithdrawal).toHaveBeenCalledTimes(1);
+  });
+
+  it('FLAGS a payout that will pay the client less than we debited', async () => {
+    /*
+     * The client is debited in full at REQUEST time. If the platform's fee rule
+     * is DEDUCTED rather than ON_TOP, it sends less than that — and nothing in
+     * this system recorded the difference, even though `netAmount` was on the
+     * create response all along.
+     *
+     * Flagged rather than refused: the payout genuinely exists at Rival by this
+     * point, the create has no idempotency key, and unwinding to retry is the
+     * double payment this whole file is arranged to prevent. What is owed is
+     * that a human sees it before the client does.
+     */
+    const { txId } = await makeApprovedWithdrawal();
+    rival.createWithdrawal.mockResolvedValue(rivalRow('rw-short', { netAmount: '98.00' }));
+
+    await service.submitApproved(txId);
+
+    const row = await rowOf(txId);
+    expect(row.rival_withdrawal_id, 'the payout still exists and is recorded').toBe('rw-short');
+    expect(row.rival_needs_attention).toBe(true);
+    expect(String(row.rival_attention_reason)).toMatch(/98/);
+    expect(String(row.rival_attention_reason)).toMatch(/2 USD short/);
   });
 
   it('a definite refusal clears the claim, flags the row, tells the approvers', async () => {

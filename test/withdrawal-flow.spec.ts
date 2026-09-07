@@ -390,6 +390,83 @@ describe('limits', () => {
     await expect(request(userId, '1')).rejects.toThrow(/minimum/i);
   });
 
+  it('refuses more decimal places than the currency holds — D-77', async () => {
+    /*
+     * The dust bug, at the door.
+     *
+     * Storage is NUMERIC(28,8) and the payout rail sends 2 places, so this used
+     * to be ACCEPTED: 50.123456789 was debited as 50.12345679 and paid as 50.12,
+     * and the 0.00345679 difference was never refunded and never recorded. Under
+     * a cent each time, entirely silent, and it scales with volume.
+     *
+     * The bound is the operator's `currencies.decimals`, not a hardcoded 2 —
+     * so a currency legitimately carrying more places is not blocked by a
+     * constant nobody chose.
+     */
+    const userId = await makeFundedClient('dust@test.local');
+
+    await expect(request(userId, '50.123456789')).rejects.toThrow(/2 decimal places/i);
+    await expect(request(userId, '50.001')).rejects.toThrow(/2 decimal places/i);
+  });
+
+  it('a currency configured to 8 places is STILL bounded by what the rail can send', async () => {
+    /*
+     * THE hole the first version of this rule left open, and the reason the
+     * bound is the smaller of two numbers rather than one.
+     *
+     * `currencies.decimals` is operator data — the admin screen accepts 0 to 8 —
+     * while Rival settles at 2 (RIVAL_MONEY_SCALE). Validating against the
+     * currency alone closed this for USD, which declares 2, and did nothing at
+     * all for a currency somebody configured to more: the CRM would accept
+     * 100.12345678, debit every place of it, and ask Rival for 100.12, keeping
+     * the difference exactly as before. The fix would have LOOKED applied while
+     * doing nothing, which is worse than not having it.
+     *
+     * So: declare 8, and the whish rail must still refuse anything past 2.
+     */
+    await ctx.db.execute(sql`UPDATE currencies SET decimals = 8 WHERE code = 'USD'`);
+    try {
+      const userId = await makeFundedClient('rail-bound@test.local');
+
+      await expect(request(userId, '50.12345678')).rejects.toThrow(/2 decimal places/i);
+      // And the message names the RAIL, because that is what the client has to
+      // act on — the currency would have allowed it.
+      await expect(request(userId, '50.12345678')).rejects.toThrow(/50\.12/);
+      // Two places still go through: the bound is the rail's, not zero.
+      await expect(request(userId, '50.12')).resolves.toBeDefined();
+    } finally {
+      await ctx.db.execute(sql`UPDATE currencies SET decimals = 2 WHERE code = 'USD'`);
+    }
+  });
+
+  it('the refusal NAMES the largest amount that would work, rounded down', async () => {
+    /*
+     * A client's balance can legitimately carry sub-cent value — commission and
+     * rebates are percentages stored at the full NUMERIC(28,8) scale — so
+     * "withdraw everything" can produce an amount this rule refuses. Without the
+     * figure, the refusal is a dead end on the action the client most wants.
+     *
+     * Rounded DOWN, always: naming a number larger than they hold would replace
+     * one refusal with another.
+     */
+    const userId = await makeFundedClient('dust-message@test.local');
+
+    await expect(request(userId, '50.126789')).rejects.toThrow(/50\.12 USD/);
+    await expect(request(userId, '50.999999')).rejects.toThrow(/50\.99 USD/);
+  });
+
+  it('still accepts everything expressible in the currency', async () => {
+    // The guard must not become "round numbers only" — cents are money.
+    const userId = await makeFundedClient('cents@test.local');
+
+    await expect(request(userId, '50.12')).resolves.toBeDefined();
+    await expect(request(userId, '50.1')).resolves.toBeDefined();
+    await expect(request(userId, '50')).resolves.toBeDefined();
+    // Trailing zeros are the SAME number, not extra precision — refusing them
+    // would reject a value most UI number formatters produce.
+    await expect(request(userId, '50.10000000')).resolves.toBeDefined();
+  });
+
   it('caps a rolling 24 hours, not just one request', async () => {
     const userId = await makeFundedClient('daycap@test.local', '250000');
 

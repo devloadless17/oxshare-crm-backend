@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import Decimal from 'decimal.js';
 import { randomBytes } from 'crypto';
 import {
   and,
@@ -612,7 +613,7 @@ export class TransactionsService {
     // The NORMALISED code is what the rest of this method uses: `assertUsable`
     // upper-cases and trims, so 'usd' and 'USD' cannot become two currencies on
     // the rows this writes.
-    const currency = await this.currencies.assertUsable(params.currency);
+    const { code: currency, decimals } = await this.currencies.assertUsableDetail(params.currency);
 
     const amount = toDecimal(params.amount);
     if (!amount.isPositive()) throw new ValidationError('Withdrawal amount must be positive.');
@@ -654,6 +655,54 @@ export class TransactionsService {
       .limit(1);
     if (!method || !method.enabled) {
       throw new ValidationError('That withdrawal method is not available.');
+    }
+
+    /*
+     * The amount must be one this withdrawal can actually PAY — D-77.
+     *
+     * Two scales bound a payout and only one of them used to be checked:
+     *
+     *   currencies.decimals   what the OPERATOR says the currency holds.
+     *                         Editable from 0 to 8 on the admin screen.
+     *   gateways.payoutScale  what the PROVIDER can send exactly.
+     *                         Rival settles at 2 (RIVAL_MONEY_SCALE).
+     *
+     * Checking only the first closed this for USD — which declares 2 — and left
+     * it wide open the moment anybody configured a currency to more places than
+     * Rival supports: the CRM would accept 100.12345678, debit all of it, and
+     * Rival would be asked for 100.12, keeping the difference exactly as before.
+     * The fix would have LOOKED applied while doing nothing, which is worse than
+     * not having it.
+     *
+     * So the bound is the SMALLER of the two. A desk-paid withdrawal has no rail
+     * and is bounded by the currency alone — a human settling it can send
+     * whatever the currency expresses.
+     *
+     * `quantiseOut` refuses rather than rounds, so a value that somehow reaches
+     * Rival with too many places is a loud, recoverable failure instead of
+     * silent dust. This check is what stops the client meeting that refusal at
+     * approval time, hours after they asked.
+     */
+    const railScale = this.gateways.settlementScale(method.key);
+    const payableDecimals = railScale === null ? decimals : Math.min(decimals, railScale);
+    if (amount.decimalPlaces() > payableDecimals) {
+      /*
+       * The message names the largest amount that WOULD be accepted, rounded
+       * DOWN so it is never more than the client has.
+       *
+       * A client's balance can legitimately carry sub-cent value — commission
+       * and rebates are percentages stored at the full NUMERIC(28,8) scale — so
+       * "withdraw everything" can produce an amount this rule refuses. Without
+       * the figure the refusal is a dead end on the one action the client most
+       * wants; with it, it is an instruction they can act on immediately.
+       */
+      throw new ValidationError(
+        `${method.name} settles ${currency} to ${payableDecimals} decimal ` +
+          `${payableDecimals === 1 ? 'place' : 'places'}. The most you can withdraw from this ` +
+          `request is ` +
+          `${amount.toDecimalPlaces(payableDecimals, Decimal.ROUND_DOWN).toFixed(payableDecimals)} ` +
+          `${currency}.`,
+      );
     }
 
     /*
@@ -2428,7 +2477,9 @@ export class TransactionsService {
      * method denominated in one currency and a wallet in another, and the money
      * would land somewhere the operator never agreed to receive it.
      */
-    const currency = await this.currencies.assertUsable(paymentMethod.currency);
+    const { code: currency, decimals } = await this.currencies.assertUsableDetail(
+      paymentMethod.currency,
+    );
 
     /*
      * Does this deposit go through a hosted payment page, or is it a declaration
@@ -2450,6 +2501,38 @@ export class TransactionsService {
     // Per-method bounds AND the platform's own, because neither is derivable
     // from the other — a provider may refuse under $20 while the platform's
     // floor is $10.
+    /*
+     * Same two-scale rule as a withdrawal (D-77), and the deposit side is the
+     * one where it bites harder.
+     *
+     * A deposit CREDITS `tx.amount` while the payment link is created at the
+     * rail's scale (`quantiseIn`), so an amount with more places than the rail
+     * can handle asks the client to pay one figure and credits them another.
+     * Money-in rounds to NEAREST rather than down, so it can credit MORE than
+     * was collected — the broker pays the difference, on every such deposit.
+     *
+     * Bounded by the SMALLER of the currency's decimals and the rail's scale,
+     * for the reason the withdrawal path spells out: `currencies.decimals` is
+     * operator data accepting 0 to 8, so checking it alone leaves the whole rule
+     * inert the moment a currency is configured past what the rail supports.
+     *
+     * A MANUAL method has no rail and is bounded by the currency alone — an
+     * operator reconciling a bank statement can handle whatever it expresses.
+     */
+    const railScale = this.gateways.settlementScale(paymentMethod.key);
+    const payableDecimals = railScale === null ? decimals : Math.min(decimals, railScale);
+    if (amount.decimalPlaces() > payableDecimals) {
+      // Rounded DOWN in the suggestion, purely for consistency with the
+      // withdrawal message: on a deposit either direction is defensible, and
+      // one rule is easier to trust than two.
+      throw new ValidationError(
+        `${paymentMethod.name} takes ${currency} to ${payableDecimals} decimal ` +
+          `${payableDecimals === 1 ? 'place' : 'places'}. Try ` +
+          `${amount.toDecimalPlaces(payableDecimals, Decimal.ROUND_DOWN).toFixed(payableDecimals)} ` +
+          `${currency}.`,
+      );
+    }
+
     this.paymentMethods.assertAmountWithin(paymentMethod, amount);
 
     const min = this.limits.minDeposit();
@@ -2878,9 +2961,63 @@ export class TransactionsService {
     }
 
     /*
-     * PAID. The credit and the state change share one transaction, so a
-     * deposit marked success with no ledger entry behind it — or a credit with
-     * no transaction pointing at it — is a state this system cannot reach.
+     * PAID — but check WHAT was paid before crediting it.
+     *
+     * The amount credited is `tx.amount`, the figure this system recorded when
+     * it created the payment link, and that is correct: a Whish link is
+     * fixed-amount, so the client cannot pay a different sum. What was missing
+     * is any confirmation that the provider AGREES — its answer carries the
+     * amount and currency, and both were being read and thrown away.
+     *
+     * The two have never diverged here, and this is defence rather than a
+     * repair. But the failure it guards is the worst shape a deposit can take:
+     * a mismatch means crediting a client money nobody paid in, silently, with
+     * the ledger perfectly self-consistent afterwards and nothing to reconcile
+     * against except the provider's dashboard months later. Divergence needs
+     * only a re-used external id, a link edited on the provider side, or a
+     * future rail whose amount is chosen by the PAYER rather than by us.
+     *
+     * So it REFUSES rather than guessing — the same choice `reversed` above
+     * makes, and the same one `checkPlausible` makes in the commission engine.
+     * Crediting the smaller figure would be inventing a business rule nobody
+     * agreed to; crediting the larger gives money away. The row stays
+     * `pending`, which is the only state that keeps every option open: it can
+     * still be settled by hand once a human has decided what actually happened.
+     */
+    const claimed = result.amount;
+    if (claimed !== undefined && !toDecimal(claimed).equals(toDecimal(tx.amount))) {
+      const reason =
+        `The payment platform reports ${claimed} ${result.currency ?? tx.currency} for this ` +
+        `deposit, but it was created for ${tx.amount} ${tx.currency}. Nothing has been ` +
+        'credited — confirm which figure is real before settling this by hand.';
+      await this.db
+        .update(transactions)
+        .set({ rivalNeedsAttention: true, rivalAttentionReason: reason })
+        .where(eq(transactions.id, tx.id));
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.PAYMENT_STATE_MISMATCH,
+        'page',
+        'A settled deposit does not match the amount the payment platform reports. NOTHING ' +
+          'was credited. Reconcile against the platform before settling it by hand.',
+        {
+          transactionId: tx.id,
+          expected: tx.amount,
+          reported: claimed,
+          currency: tx.currency,
+          // The alert context takes string|number; the gateway's currency is
+          // optional, and a rail that reports an amount without one is telling
+          // us so rather than erroring.
+          reportedCurrency: result.currency ?? '(not reported)',
+        },
+      );
+      return { state: tx.state };
+    }
+
+    /*
+     * The credit and the state change share one transaction, so a deposit
+     * marked success with no ledger entry behind it — or a credit with no
+     * transaction pointing at it — is a state this system cannot reach.
      */
     const transitioned = await this.db.transaction(async (dbTx) => {
       await this.wallets.post(

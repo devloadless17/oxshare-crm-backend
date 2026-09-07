@@ -20,7 +20,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { AdminsStore } from '../../store/admins.store';
 import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
-import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
 import { decodeCursor } from '../../common/pagination';
@@ -541,7 +541,37 @@ export class AdminMoneyService {
     }
 
     const current = await this.transactions.getById(id);
-    // Rival first: if the payout can no longer be stopped this throws and
+
+    /*
+     * LOCAL STATE FIRST — and the order here is the whole correctness argument.
+     *
+     * `markFailed` below is what enforces "only an approved withdrawal can be
+     * cancelled", and it used to be the ONLY enforcement. But it runs AFTER the
+     * call to Rival, so cancelling a row that is already `success` cancelled the
+     * PAYOUT AT RIVAL and only then refused locally: the desk saw a 422 and
+     * assumed nothing had happened, the CRM row stayed `success`, the client had
+     * already been emailed "paid" — and the money never left Rival.
+     *
+     * That is precisely the "cancelled there, paid here" split-brain this
+     * integration exists to prevent, reached from the opposite direction, and
+     * the 422 made it invisible: the failure looks like a refusal.
+     *
+     * So the cheap local check happens BEFORE the irreversible remote one.
+     * `markFailed`'s conditional transition remains the real guard — it is
+     * atomic and this is not — but a fail-fast in front of a side effect that
+     * cannot be undone is worth having even when a race can still slip past it.
+     * The residual window (a webhook settling the row between this read and
+     * `markFailed`) leaves Rival cancelled and the CRM `success`, which is the
+     * same bad state — but it now needs a collision measured in milliseconds
+     * rather than being the guaranteed outcome of an ordinary mis-click.
+     */
+    if (current.state !== 'approved') {
+      throw new MoneyRuleError(
+        `Only an approved withdrawal can be cancelled; this one is ${current.state}.`,
+      );
+    }
+
+    // Rival next: if the payout can no longer be stopped this throws and
     // NOTHING local changes — the desk is told to act on the outcome instead.
     await this.rivalWithdrawals.cancelApproved({
       id: current.id,

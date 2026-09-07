@@ -113,6 +113,38 @@ async function makeClient(email: string, verificationLevel = 1): Promise<string>
   return rows[0].id;
 }
 
+/**
+ * A two-rung chain on the default ladder — a level-1 partner, a level-2
+ * partner beneath them — and a client attributed to the level-2 one: the exact
+ * shape the chain-room rule exists for. The attribution is written directly
+ * because that is what registration with a referral code does; going through
+ * `apply` is impossible here, since refusing that client is the behaviour
+ * under test.
+ */
+async function twoRungChain(
+  prefix: string,
+  bottomVerification = 1,
+): Promise<{ top: string; middle: string; client: string }> {
+  const top = await makeClient(`${prefix}-top@test.local`);
+  const topAccount = await service.approve(
+    (await service.apply(top, { agencyId: AGENCY.id })).id,
+    REVIEWER,
+    UNRESTRICTED,
+  );
+  const middle = await makeClient(`${prefix}-middle@test.local`);
+  const middleAccount = await service.approve(
+    (await service.apply(middle, { agencyId: AGENCY.id })).id,
+    REVIEWER,
+    UNRESTRICTED,
+    { parentIbUserId: topAccount.userId },
+  );
+  const client = await makeClient(`${prefix}-bottom@test.local`, bottomVerification);
+  await ctx.db.execute(
+    sql`UPDATE users SET referred_by_ib_user_id = ${middleAccount.userId} WHERE id = ${client}`,
+  );
+  return { top: topAccount.userId, middle: middleAccount.userId, client };
+}
+
 beforeEach(async () => {
   sendPartnerDecisionEmail.mockClear();
   /*
@@ -560,84 +592,119 @@ describe('status', () => {
   });
 
   /*
-   * ── THE CEILING IS GONE (0102), AND THIS IS WHAT REPLACED TWO TESTS ────────
+   * ── THE CEILING IS BACK, AND THE LADDER IS WHAT CARRIES IT ─────────────────
    *
-   * There used to be a `chain_full` refusal: the ladder was two rungs deep, so a
-   * client introduced by a level-2 partner had nowhere to stand and was refused
-   * both at the form (`statusFor`) and at the door (`apply`). Two tests pinned
-   * it, and both are gone with the condition — a verified client can no longer
-   * be locked out of the partner programme by how their introducer was placed.
+   * 0102 removed the `chain_full` refusal on the reasoning that nesting a
+   * partner under another is always structurally possible. 0112 made the rung
+   * a partner stands on the whole of their terms again, and the business rule
+   * followed: the tree ends where the Commission Levels ladder ends, so a
+   * client introduced by a partner on the deepest ENABLED level cannot become
+   * a partner — the committed scope (IB-17) is two levels, and the seeded
+   * ladder carries exactly L1 and L2.
    *
-   * What replaces them asserts the opposite, because the removal is a behaviour
-   * change and not merely dead code: three deep, and still eligible.
-   *
-   * The commercial half of the old rule survives where it is actually true —
-   * `calculate` pays an ancestor nothing past the end of their own programme's
-   * ladder, with the programme and depth named in the reason. That is a fact
-   * about somebody's terms, not a reason to refuse an application.
+   * DELIBERATELY not a constant 2: the cases below pin BOTH halves — the door
+   * is shut beneath a level-2 partner on the default ladder, and enabling a
+   * level 3 opens it with no code change, because depth is the IB Levels
+   * page's decision (0113).
    */
-  it('leaves a client eligible however deep their introducer sits', async () => {
-    const top = await makeClient('deep-top@test.local');
-    const middle = await makeClient('deep-middle@test.local');
-
-    const topAccount = await service.approve(
-      (await service.apply(top, { agencyId: AGENCY.id })).id,
-      REVIEWER,
-      UNRESTRICTED,
-    );
-    const middleAccount = await service.approve(
-      (await service.apply(middle, { agencyId: AGENCY.id })).id,
-      REVIEWER,
-      UNRESTRICTED,
-      { parentIbUserId: topAccount.userId },
-    );
-
-    const client = await makeClient('deep-bottom@test.local');
-    await ctx.db.execute(
-      sql`UPDATE users SET referred_by_ib_user_id = ${middleAccount.userId} WHERE id = ${client}`,
-    );
+  it('refuses a client whose introducer is on the deepest enabled level', async () => {
+    const { client } = await twoRungChain('deep');
 
     const status = await service.statusFor(client);
-    expect(status.eligible).toBe(true);
-    expect(status.ineligibleCode).toBeNull();
+    expect(status.eligible).toBe(false);
+    expect(status.ineligibleCode).toBe('chain_full');
+    // The sentence the portal renders verbatim.
+    expect(status.ineligibleReason).toMatch(/deepest level/i);
+  });
+
+  it('opens the door the moment an operator enables a deeper level', async () => {
+    const { client } = await twoRungChain('reopened');
+
+    await new IbLevelsService(ctx.db, auditStubAs()).create(
+      { level: 3, name: 'Three Deep', commissionRate: '10' },
+      REVIEWER,
+    );
+    try {
+      const status = await service.statusFor(client);
+      expect(status.eligible).toBe(true);
+      expect(status.ineligibleCode).toBeNull();
+    } finally {
+      await ctx.db.execute(sql`DELETE FROM ib_levels WHERE level > 2`);
+    }
   });
 
   /*
-   * And the application itself goes through, not merely the form.
-   *
-   * Asserted separately for the reason the refusal it replaced was: `statusFor`
-   * decides what a screen SHOWS, and `apply` is the control. A form that offers
-   * something the endpoint refuses — or the reverse — is the disagreement worth
-   * pinning in both directions.
+   * A DISABLED rung is no rung. It pays nobody standing on it, which is the
+   * same reason `changeLevel` refuses to move a partner onto one — so a client
+   * under a LEVEL-1 partner is blocked while level 2 is switched off.
    */
-  it('accepts an application from a client three levels down', async () => {
-    const top = await makeClient('accepted-top@test.local');
-    const middle = await makeClient('accepted-middle@test.local');
-
+  it('treats a disabled rung as no rung at all', async () => {
+    const top = await makeClient('disabled-rung-top@test.local');
     const topAccount = await service.approve(
       (await service.apply(top, { agencyId: AGENCY.id })).id,
       REVIEWER,
       UNRESTRICTED,
     );
-    const middleAccount = await service.approve(
-      (await service.apply(middle, { agencyId: AGENCY.id })).id,
-      REVIEWER,
-      UNRESTRICTED,
-      { parentIbUserId: topAccount.userId },
-    );
-
-    const client = await makeClient('accepted-bottom@test.local');
+    const client = await makeClient('disabled-rung-bottom@test.local');
     await ctx.db.execute(
-      sql`UPDATE users SET referred_by_ib_user_id = ${middleAccount.userId} WHERE id = ${client}`,
+      sql`UPDATE users SET referred_by_ib_user_id = ${topAccount.userId} WHERE id = ${client}`,
     );
 
-    const application = await service.apply(client, { agencyId: AGENCY.id });
-    expect(application.status).toBe('pending');
+    await ctx.db.execute(sql`UPDATE ib_levels SET enabled = false WHERE level = 2`);
+    try {
+      const status = await service.statusFor(client);
+      expect(status.eligible).toBe(false);
+      expect(status.ineligibleCode).toBe('chain_full');
+    } finally {
+      await ctx.db.execute(sql`UPDATE ib_levels SET enabled = true WHERE level = 2`);
+    }
+  });
 
-    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
-      parentIbUserId: middleAccount.userId,
-    });
-    expect(account.parentIbUserId).toBe(middleAccount.userId);
+  /*
+   * `chain_full` OUTRANKS `unverified` when both are unmet. `unverified` comes
+   * with a "Verify now" button, and sending a client through the whole KYC
+   * wizard to reach a door that stays shut is an errand the platform knows to
+   * be pointless.
+   */
+  it('reports chain_full ahead of unverified — no errand unlocks a full ladder', async () => {
+    const { client } = await twoRungChain('unverified-under', 0);
+
+    const status = await service.statusFor(client);
+    expect(status.eligible).toBe(false);
+    expect(status.ineligibleCode).toBe('chain_full');
+  });
+
+  /*
+   * And the door is shut, not merely the form: `statusFor` decides what a
+   * screen SHOWS, and `apply` is the control. A form that offers something the
+   * endpoint refuses — or the reverse — is the disagreement worth pinning in
+   * both directions.
+   */
+  it('refuses the application at the door, with the sentence the form shows', async () => {
+    const { client } = await twoRungChain('door');
+
+    await expect(service.apply(client, { agencyId: AGENCY.id })).rejects.toThrow(/deepest level/i);
+  });
+
+  it('accepts an application three levels down once the ladder reaches that deep', async () => {
+    const { middle, client } = await twoRungChain('accepted');
+
+    await new IbLevelsService(ctx.db, auditStubAs()).create(
+      { level: 3, name: 'Three Deep', commissionRate: '10' },
+      REVIEWER,
+    );
+    try {
+      const application = await service.apply(client, { agencyId: AGENCY.id });
+      expect(application.status).toBe('pending');
+
+      const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+        parentIbUserId: middle,
+      });
+      expect(account.parentIbUserId).toBe(middle);
+      expect(account.level).toBe(3);
+    } finally {
+      await ctx.db.execute(sql`DELETE FROM ib_levels WHERE level > 2`);
+    }
   });
 
   /*
@@ -965,6 +1032,55 @@ describe('approval', () => {
     await expect(
       service.approve(childApp.id, REVIEWER, UNRESTRICTED, { parentIbUserId: parentId }),
     ).rejects.toThrow(/suspended/i);
+  });
+
+  /*
+   * The approval half of the chain-room rule. `apply` shuts the door on a
+   * client whose INTRODUCER is on the deepest rung, but the reviewer resolves
+   * the parent at approval time — so an application that entered the queue
+   * legitimately (no introducer at all) can still be AIMED beneath a partner
+   * the ladder ends at, and that is where this refusal bites. The message
+   * names both remedies, because both are ordinary decisions.
+   */
+  it('refuses to nest a new partner beneath a parent on the deepest enabled level', async () => {
+    const { middle } = await twoRungChain('nest-refused');
+
+    const applicant = await makeClient('nest-refused-applicant@test.local');
+    const application = await service.apply(applicant, { agencyId: AGENCY.id });
+
+    await expect(
+      service.approve(application.id, REVIEWER, UNRESTRICTED, { parentIbUserId: middle }),
+    ).rejects.toThrow(/no enabled level 3/i);
+  });
+
+  /*
+   * The escape hatch the refusal must not close: a reviewer may still ROOT an
+   * applicant whose introducer is chain-blocked. Explicit null means "deal
+   * direct", the rung written is 1, and the ladder has nothing to say about a
+   * partner placed at its top. The application predates the attribution here
+   * because `apply` would refuse it afterwards — the same order the door test
+   * pins from the other side.
+   */
+  it('still lets the reviewer root an applicant whose introducer is chain-blocked', async () => {
+    const applicant = await makeClient('rooted-anyway@test.local');
+    const application = await service.apply(applicant, { agencyId: AGENCY.id });
+
+    const { middle } = await twoRungChain('rooted-anyway');
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${middle} WHERE id = ${applicant}`,
+    );
+
+    // Omitting the parent would inherit the level-2 introducer and be refused;
+    // the explicit null is the reviewer's decision, and it stands.
+    await expect(
+      service.approve(application.id, REVIEWER, UNRESTRICTED, { parentIbUserId: middle }),
+    ).rejects.toThrow(/no enabled level 3/i);
+
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+      parentIbUserId: null,
+    });
+    expect(account.level).toBe(1);
+    expect(account.parentIbUserId).toBeNull();
   });
 
   it('refuses when a second reviewer already decided — the WHERE clause, not the pre-read', async () => {

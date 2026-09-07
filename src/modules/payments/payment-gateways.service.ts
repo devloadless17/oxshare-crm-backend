@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PaymentIndeterminateError, ValidationError } from '../../common/errors/domain-errors';
-import { RivalClient } from './rival/rival.client';
+import { RivalClient, RIVAL_MONEY_SCALE } from './rival/rival.client';
 import { RivalConfigService } from './rival/rival-config.service';
 
 /**
@@ -79,6 +79,37 @@ export class PaymentGateways {
   }
 
   /**
+   * The number of decimal places this rail settles EXACTLY, in BOTH directions,
+   * or null when the key is not a rail this build moves money through.
+   *
+   * A transfer is bounded by two scales and only one of them was ever checked.
+   * `currencies.decimals` says what the OPERATOR declares the currency holds and
+   * is editable from 0 to 8; this says what the PROVIDER can actually handle.
+   * Where the currency allows more places than the rail, the difference is money
+   * that changes hands without being recorded — and it is the SAME 2 either way,
+   * because `quantiseIn` and `quantiseOut` both round to `RIVAL_MONEY_SCALE`:
+   *
+   *   money OUT  the client is debited the full amount and the rail sends the
+   *              rounded one. The remainder is kept.
+   *   money IN   the link is created at the rounded amount and the wallet is
+   *              credited `tx.amount`. The client pays one figure and is
+   *              credited another — and because money-in rounds to NEAREST
+   *              rather than down, that can credit MORE than was collected.
+   *
+   * One method rather than a payout/deposit pair precisely because the number is
+   * one number: splitting it would invite the two to drift, and a rail that
+   * genuinely differed by direction would be a new fact worth stating loudly
+   * rather than a second constant nobody compares.
+   *
+   * Null means "no rail, no extra constraint" — a manual deposit or a desk-paid
+   * withdrawal is settled by a human who can handle whatever the currency
+   * expresses.
+   */
+  settlementScale(key: string): number | null {
+    return key === 'whish' ? RIVAL_MONEY_SCALE : null;
+  }
+
+  /**
    * Start a hosted payment and return the URL to send the client to, plus
    * Rival's `externalId` — the identifier every inbound event and poll will
    * address this payment by. The caller stores it on the row immediately.
@@ -148,7 +179,24 @@ export class PaymentGateways {
   async checkPayment(
     key: string,
     rivalExternalId: string,
-  ): Promise<{ settled: boolean; paid: boolean; rawStatus: string; needsAttention: boolean }> {
+  ): Promise<{
+    settled: boolean;
+    paid: boolean;
+    rawStatus: string;
+    needsAttention: boolean;
+    /**
+     * What the PROVIDER says the payment is for, so the caller can check it
+     * against what this system is about to credit.
+     *
+     * Carried rather than discarded because the provider's own answer is the
+     * only independent statement of the amount we have, and crediting a figure
+     * nobody re-checked is how a system pays out money nobody paid in.
+     * Optional: a gateway that cannot report an amount must not be forced to
+     * invent one — the caller treats absent as "no second opinion available".
+     */
+    amount?: string;
+    currency?: string;
+  }> {
     switch (key) {
       case 'whish': {
         const payment = await this.rival.getWhishPayment(rivalExternalId);
@@ -157,6 +205,8 @@ export class PaymentGateways {
           paid: payment.status === 'PAID',
           rawStatus: payment.status,
           needsAttention: payment.needsAttention,
+          amount: payment.amount,
+          currency: payment.currency,
         };
       }
       default:
