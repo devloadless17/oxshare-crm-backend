@@ -509,15 +509,27 @@ if (toppedUp) {
   );
 }
 
-if (!toppedUp) {
-  // Leave no stranded row behind: without the top-up the first withdrawal is
-  // still `approved` with the client's money inside it, which is exactly the
-  // state this script exists to detect — it must not be the state it LEAVES.
-  await call(admin, 'admin', `/admin/withdrawals/${txId}/cancel`, {
-    method: 'PATCH', headers: idem(),
-    body: JSON.stringify({ reason: 'Cleanup: top-up path unavailable in this run.' }),
-  });
-  console.log('    ⚠ refunded the first withdrawal so the run leaves no stranded row');
+/*
+ * Leave no stranded row behind, whatever happened above.
+ *
+ * An `approved` row holding a client's money is exactly the state this script
+ * exists to DETECT; it must never be the state it LEAVES. Keying the cleanup on
+ * `!toppedUp` was not enough — when the top-up succeeded but the retry or the
+ * settlement then failed, the row fell through every branch and stayed
+ * approved, and repeated runs quietly accumulated them.
+ *
+ * So the condition is the row's ACTUAL state, read back now, rather than an
+ * assumption about which path ran.
+ */
+{
+  const still = await rowOf();
+  if (still?.state === 'approved') {
+    await call(admin, 'admin', `/admin/withdrawals/${txId}/cancel`, {
+      method: 'PATCH', headers: idem(),
+      body: JSON.stringify({ reason: 'Cleanup: verification run did not settle this row.' }),
+    });
+    console.log('    ⚠ refunded the first withdrawal so the run leaves no stranded row');
+  }
 }
 
 /* ── 11. recovery C: the alternative — reject and make the client whole ───── */
