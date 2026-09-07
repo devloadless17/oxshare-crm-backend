@@ -409,6 +409,22 @@ describe('limits', () => {
     await expect(request(userId, '50.001')).rejects.toThrow(/2 decimal places/i);
   });
 
+  it('the refusal NAMES the largest amount that would work, rounded down', async () => {
+    /*
+     * A client's balance can legitimately carry sub-cent value — commission and
+     * rebates are percentages stored at the full NUMERIC(28,8) scale — so
+     * "withdraw everything" can produce an amount this rule refuses. Without the
+     * figure, the refusal is a dead end on the action the client most wants.
+     *
+     * Rounded DOWN, always: naming a number larger than they hold would replace
+     * one refusal with another.
+     */
+    const userId = await makeFundedClient('dust-message@test.local');
+
+    await expect(request(userId, '50.126789')).rejects.toThrow(/50\.12 USD/);
+    await expect(request(userId, '50.999999')).rejects.toThrow(/50\.99 USD/);
+  });
+
   it('still accepts everything expressible in the currency', async () => {
     // The guard must not become "round numbers only" — cents are money.
     const userId = await makeFundedClient('cents@test.local');

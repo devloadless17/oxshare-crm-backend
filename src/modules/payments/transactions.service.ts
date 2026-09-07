@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import Decimal from 'decimal.js';
 import { randomBytes } from 'crypto';
 import {
   and,
@@ -638,9 +639,22 @@ export class TransactionsService {
      * 2 — see `assertUsableDetail` for why that distinction is load-bearing.
      */
     if (amount.decimalPlaces() > decimals) {
+      /*
+       * The message names the largest amount that WOULD be accepted, rounded
+       * DOWN so it is never more than the client has.
+       *
+       * This matters more than it looks. A client's balance can legitimately
+       * carry sub-cent value — commission and rebates are percentages, stored
+       * at the full NUMERIC(28,8) scale — so "withdraw everything" can produce
+       * an amount this rule refuses. Without the figure the refusal is a dead
+       * end on the one action the client most wants; with it, it is an
+       * instruction they can act on immediately.
+       */
       throw new ValidationError(
         `${currency} amounts are held to ${decimals} decimal ` +
-          `${decimals === 1 ? 'place' : 'places'}. Please round ${params.amount} and try again.`,
+          `${decimals === 1 ? 'place' : 'places'}. The most you can withdraw from this ` +
+          `request is ${amount.toDecimalPlaces(decimals, Decimal.ROUND_DOWN).toFixed(decimals)} ` +
+          `${currency}.`,
       );
     }
 
@@ -2489,9 +2503,12 @@ export class TransactionsService {
      * either way — including crediting more than was collected.
      */
     if (amount.decimalPlaces() > decimals) {
+      // Rounded DOWN here too, purely for consistency: on a deposit either
+      // direction is defensible, and one rule is easier to trust than two.
       throw new ValidationError(
         `${currency} amounts are held to ${decimals} decimal ` +
-          `${decimals === 1 ? 'place' : 'places'}. Please round ${params.amount} and try again.`,
+          `${decimals === 1 ? 'place' : 'places'}. Try ` +
+          `${amount.toDecimalPlaces(decimals, Decimal.ROUND_DOWN).toFixed(decimals)} ${currency}.`,
       );
     }
 
