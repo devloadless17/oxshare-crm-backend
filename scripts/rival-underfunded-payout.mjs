@@ -404,7 +404,15 @@ if (superLogin.status >= 400) {
   // (admin load = "the company handed us funds off-platform"), not a DB write:
   // a hand-written balance would prove the CRM works against a state Rival's
   // own ledger never produces.
-  const topUp = (BigInt(scaled(AMOUNT) / 100000000n) - BigInt(scaled(rivalAvailable) / 100000000n) + 50n).toString();
+  /*
+   * Cover the shortfall PLUS the payout fee, which is charged ON TOP and scales
+   * with the amount (~5%), so a flat margin silently stops being enough as the
+   * wallet — and therefore the test's amount — grows. A 20% buffer keeps this
+   * repeatable at any balance; the earlier flat +50 worked at $808 and failed
+   * at $2,533 for exactly this reason.
+   */
+  const shortfall = BigInt(scaled(AMOUNT) / 100000000n) - BigInt(scaled(rivalAvailable) / 100000000n);
+  const topUp = (shortfall + BigInt(scaled(AMOUNT) / 100000000n) / 5n + 50n).toString();
   const load = await rivalAdmin.call('/admin/loads', {
     method: 'POST',
     body: JSON.stringify({
