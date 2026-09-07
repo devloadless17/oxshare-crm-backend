@@ -2922,7 +2922,10 @@ export class TransactionsService {
           expected: tx.amount,
           reported: claimed,
           currency: tx.currency,
-          reportedCurrency: result.currency,
+          // The alert context takes string|number; the gateway's currency is
+          // optional, and a rail that reports an amount without one is telling
+          // us so rather than erroring.
+          reportedCurrency: result.currency ?? '(not reported)',
         },
       );
       return { state: tx.state };

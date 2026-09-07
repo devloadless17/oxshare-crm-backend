@@ -58,7 +58,7 @@ async function seedSubmitted(state: 'success' | 'failure' | 'pending') {
       passwordHash: 'x',
       firstName: 'Cancel',
       lastName: 'Order',
-      emailVerifiedAt: new Date(),
+      emailVerified: true,
     })
     .returning();
   const [wallet] = await db
