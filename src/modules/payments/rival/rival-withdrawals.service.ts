@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import Decimal from 'decimal.js';
 import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
@@ -182,15 +183,61 @@ export class RivalWithdrawalsService {
         recipientPhone: tx.destination ?? '',
       });
 
-      // 3. RECORD — the partial unique index backs this being one-to-one.
+      /*
+       * 3. RECORD — the partial unique index backs this being one-to-one.
+       *
+       * `netAmount` is what the CLIENT will actually receive, and it is not
+       * necessarily what we asked to send: the platform's fee rule decides.
+       * Under ON_TOP — every rule configured today — the fee is charged to
+       * OxShare and the net equals the amount, so this never fires. Under
+       * DEDUCTED it would not, and the client would be debited in full here
+       * while receiving less at the other end, with nothing in this system
+       * recording the difference. The figure was already on the create
+       * response and was being ignored.
+       *
+       * FLAGGED, not refused. The payout genuinely exists at Rival by this
+       * point and cancelling it to "protect" the client is a bigger risk than
+       * a short payment somebody is told about — and there is no idempotency
+       * key on the create, so unwinding and retrying is the double-payment
+       * this whole file is arranged to prevent. What is owed is that a human
+       * sees it before the client does.
+       */
+      const shortfall =
+        created.netAmount !== undefined && created.netAmount !== null
+          ? shortOf(tx.amount, created.netAmount)
+          : null;
+
       await this.db
         .update(transactions)
         .set({
           rivalWithdrawalId: created.id,
-          rivalNeedsAttention: false,
-          rivalAttentionReason: null,
+          rivalNeedsAttention: shortfall !== null,
+          rivalAttentionReason:
+            shortfall === null
+              ? null
+              : `The platform will pay ${created.netAmount} ${tx.currency} on a ` +
+                `${tx.amount} ${tx.currency} withdrawal — the client is ${shortfall} ` +
+                `${tx.currency} short because the payout fee is being DEDUCTED rather than ` +
+                'charged on top. The client has been debited the full amount.',
         })
         .where(eq(transactions.id, tx.id));
+
+      if (shortfall !== null) {
+        raiseAlert(
+          this.logger,
+          ALERT_KINDS.PAYMENT_STATE_MISMATCH,
+          'page',
+          'A payout will pay the client LESS than the CRM debited — the platform is deducting ' +
+            'its fee from the amount instead of charging it on top. Check the commission rule.',
+          {
+            transactionId: tx.id,
+            debited: tx.amount,
+            willReceive: created.netAmount,
+            shortfall,
+            currency: tx.currency,
+          },
+        );
+      }
 
       this.recordSystemAction('withdrawal.rival.submit', tx.id, {
         rivalWithdrawalId: created.id,
@@ -700,4 +747,20 @@ export class RivalWithdrawalsService {
       );
     }
   }
+}
+
+/**
+ * How much SHORT of `asked` the payout will land, or `null` when it will not.
+ *
+ * Decimal throughout — `Number()` and `parseFloat` are lint errors under
+ * `modules/payments` for the reason §6.1 gives, and a fee comparison is exactly
+ * where a float would round the difference away to nothing.
+ *
+ * Returns `null` rather than "0" when the amounts agree, so the caller's
+ * `shortfall !== null` reads as "there is a problem" and a legitimate zero can
+ * never be mistaken for one.
+ */
+function shortOf(asked: string, net: string): string | null {
+  const difference = new Decimal(asked).minus(new Decimal(net));
+  return difference.greaterThan(0) ? difference.toFixed() : null;
 }
