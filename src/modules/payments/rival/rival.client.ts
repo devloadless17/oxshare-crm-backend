@@ -369,11 +369,37 @@ export class RivalClient {
   }
 }
 
-/** Money IN: quantise to Rival's 2dp scale, rounding to nearest (its own rule). */
+/**
+ * Money IN: REFUSE anything Rival cannot collect exactly — symmetrically with
+ * `quantiseOut`.
+ *
+ * This rounded to NEAREST, which is worse than it sounds on a deposit. The link
+ * is created at the rounded figure while the wallet is later credited
+ * `tx.amount`, so the client pays one number and is credited another — and
+ * because the rounding is half-UP rather than down, the CRM can credit MORE
+ * than was collected, with the broker paying the difference every time.
+ *
+ * ## Why "never reject money-in" does not apply here
+ *
+ * Rival's own schemas quantise an incoming amount rather than rejecting it, and
+ * give the reason: *"the deposit already happened at the provider, so a 400 here
+ * would strand real money."* That is right — for INGESTING a payment somebody
+ * has already made.
+ *
+ * This is the opposite moment. `createWhishPayment` is the only caller and it
+ * CREATES the link: nothing has been paid, so there is nothing to strand, and
+ * refusing costs a client one corrected amount instead of a permanent
+ * discrepancy between what they paid and what they hold.
+ */
 function quantiseIn(amount: string): string {
-  return new Decimal(amount)
-    .toDecimalPlaces(RIVAL_MONEY_SCALE, Decimal.ROUND_HALF_UP)
-    .toFixed(RIVAL_MONEY_SCALE);
+  const value = new Decimal(amount);
+  if (value.decimalPlaces() > RIVAL_MONEY_SCALE) {
+    throw new ValidationError(
+      `The payment platform collects to ${RIVAL_MONEY_SCALE} decimal places and cannot take ` +
+        `${amount} exactly. Crediting a different figure than the client pays is refused.`,
+    );
+  }
+  return value.toFixed(RIVAL_MONEY_SCALE);
 }
 
 /**

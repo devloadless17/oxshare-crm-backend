@@ -46,7 +46,7 @@ export function gatewayStub() {
      * stub that always answered 2 would apply a rail's limit to manual methods
      * that have none.
      */
-    payoutScale: vi.fn((key: string) => (key === 'whish' ? 2 : null)),
+    settlementScale: vi.fn((key: string) => (key === 'whish' ? 2 : null)),
     // Async, like the real registry: the answer now lives in rival_settings.
     isConfigured: vi.fn().mockResolvedValue(false),
     startPayment: vi.fn().mockResolvedValue({

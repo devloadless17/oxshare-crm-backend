@@ -62,6 +62,35 @@ const payout = (amount: string) => ({
 });
 
 describe('the amount handed to Rival', () => {
+  it('REFUSES a deposit amount the platform cannot collect exactly', async () => {
+    /*
+     * The money-IN twin, and on a deposit the divergence can favour either side:
+     * the link is created at the rounded figure while the wallet is credited
+     * `tx.amount`, and the rounding was half-UP, so the CRM could credit MORE
+     * than was collected.
+     *
+     * Rival's own schemas quantise an incoming amount rather than rejecting it,
+     * because "the deposit already happened at the provider" — true when
+     * INGESTING a payment already made, and the opposite of this moment.
+     * `createWhishPayment` creates the link: nothing is paid yet, so nothing can
+     * be stranded by refusing.
+     */
+    const capture: { body?: Record<string, unknown> } = {};
+    const client = clientSending(capture);
+
+    await expect(
+      client.createWhishPayment({
+        amount: '25.12345678',
+        currency: 'USD',
+        invoice: 'OX-TEST',
+        idempotencyKey: 'OX-TEST',
+      }),
+    ).rejects.toThrow(/cannot take 25\.12345678 exactly/i);
+
+    expect(capture.body, 'no link may be created for an uncollectable amount').toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
   it('REFUSES an amount the platform cannot send exactly', async () => {
     const capture: { body?: Record<string, unknown> } = {};
     const client = clientSending(capture);

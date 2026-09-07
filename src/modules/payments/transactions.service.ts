@@ -683,7 +683,7 @@ export class TransactionsService {
      * silent dust. This check is what stops the client meeting that refusal at
      * approval time, hours after they asked.
      */
-    const railScale = this.gateways.payoutScale(method.key);
+    const railScale = this.gateways.settlementScale(method.key);
     const payableDecimals = railScale === null ? decimals : Math.min(decimals, railScale);
     if (amount.decimalPlaces() > payableDecimals) {
       /*
@@ -2502,21 +2502,34 @@ export class TransactionsService {
     // from the other — a provider may refuse under $20 while the platform's
     // floor is $10.
     /*
-     * Same scale rule as a withdrawal (D-77), for the mirror-image reason.
+     * Same two-scale rule as a withdrawal (D-77), and the deposit side is the
+     * one where it bites harder.
      *
-     * A deposit is CREDITED at `tx.amount` but the payment link is created at
-     * the provider's own scale, so an amount with more places than the currency
-     * declares asks the client to pay one figure and credits them another.
-     * Money-in rounds to NEAREST rather than down, so the divergence can go
-     * either way — including crediting more than was collected.
+     * A deposit CREDITS `tx.amount` while the payment link is created at the
+     * rail's scale (`quantiseIn`), so an amount with more places than the rail
+     * can handle asks the client to pay one figure and credits them another.
+     * Money-in rounds to NEAREST rather than down, so it can credit MORE than
+     * was collected — the broker pays the difference, on every such deposit.
+     *
+     * Bounded by the SMALLER of the currency's decimals and the rail's scale,
+     * for the reason the withdrawal path spells out: `currencies.decimals` is
+     * operator data accepting 0 to 8, so checking it alone leaves the whole rule
+     * inert the moment a currency is configured past what the rail supports.
+     *
+     * A MANUAL method has no rail and is bounded by the currency alone — an
+     * operator reconciling a bank statement can handle whatever it expresses.
      */
-    if (amount.decimalPlaces() > decimals) {
-      // Rounded DOWN here too, purely for consistency: on a deposit either
-      // direction is defensible, and one rule is easier to trust than two.
+    const railScale = this.gateways.settlementScale(paymentMethod.key);
+    const payableDecimals = railScale === null ? decimals : Math.min(decimals, railScale);
+    if (amount.decimalPlaces() > payableDecimals) {
+      // Rounded DOWN in the suggestion, purely for consistency with the
+      // withdrawal message: on a deposit either direction is defensible, and
+      // one rule is easier to trust than two.
       throw new ValidationError(
-        `${currency} amounts are held to ${decimals} decimal ` +
-          `${decimals === 1 ? 'place' : 'places'}. Try ` +
-          `${amount.toDecimalPlaces(decimals, Decimal.ROUND_DOWN).toFixed(decimals)} ${currency}.`,
+        `${paymentMethod.name} takes ${currency} to ${payableDecimals} decimal ` +
+          `${payableDecimals === 1 ? 'place' : 'places'}. Try ` +
+          `${amount.toDecimalPlaces(payableDecimals, Decimal.ROUND_DOWN).toFixed(payableDecimals)} ` +
+          `${currency}.`,
       );
     }
 

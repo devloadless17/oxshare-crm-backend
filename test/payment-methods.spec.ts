@@ -306,6 +306,52 @@ describe('depositing through a method', () => {
  * These two tests are the whole rule, and they must disagree with each other.
  */
 describe('the amount must be expressible in the currency (D-77)', () => {
+  it('a currency configured to 8 places is STILL bounded by the RAIL — whish takes 2', async () => {
+    /*
+     * The deposit half of the hole the withdrawal path had.
+     *
+     * `currencies.decimals` is operator data and the admin screen accepts 0 to
+     * 8; Rival takes 2 in BOTH directions (`quantiseIn` rounds to
+     * RIVAL_MONEY_SCALE just as `quantiseOut` does). Checking the currency alone
+     * closed this for USD, which declares 2, and left it inert for any currency
+     * configured to more.
+     *
+     * It bites harder on a deposit than on a withdrawal: the wallet is credited
+     * `tx.amount` while the payment LINK is created at the rounded figure, so
+     * the client pays one number and is credited another — and because money-in
+     * rounds to NEAREST rather than down, the CRM can credit MORE than was
+     * collected, with the broker paying the difference on every such deposit.
+     */
+    gateways.isConfigured.mockReturnValue(true);
+    await ctx.db.execute(sql`UPDATE payment_methods SET enabled = true WHERE key = 'whish'`);
+    await ctx.db.execute(sql`UPDATE currencies SET decimals = 8 WHERE code = 'USD'`);
+    try {
+      const userId = await makeClient('deposit-rail-bound@test.local');
+
+      await expect(
+        transactions.requestDeposit({
+          userId,
+          amount: '100.12345678',
+          currency: 'USD',
+          method: 'whish',
+        }),
+      ).rejects.toThrow(/2 decimal places/i);
+
+      // Two places still go through — the bound is the rail's, not zero.
+      await expect(
+        transactions.requestDeposit({
+          userId,
+          amount: '100.12',
+          currency: 'USD',
+          method: 'whish',
+        }),
+      ).resolves.toBeDefined();
+    } finally {
+      await ctx.db.execute(sql`UPDATE currencies SET decimals = 2 WHERE code = 'USD'`);
+      gateways.isConfigured.mockReturnValue(false);
+    }
+  });
+
   it('refuses more decimal places than the currency holds', async () => {
     /*
      * The mirror of the withdrawal rule, and it can go the WRONG WAY here.

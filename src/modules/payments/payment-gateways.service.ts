@@ -79,22 +79,33 @@ export class PaymentGateways {
   }
 
   /**
-   * The number of decimal places this rail can settle EXACTLY, or null when the
-   * key is not a rail this build pays through.
+   * The number of decimal places this rail settles EXACTLY, in BOTH directions,
+   * or null when the key is not a rail this build moves money through.
    *
-   * A payout is bounded by two scales, and only one of them was ever checked.
+   * A transfer is bounded by two scales and only one of them was ever checked.
    * `currencies.decimals` says what the OPERATOR declares the currency holds and
-   * is editable from 0 to 8; this says what the PROVIDER can actually send. When
-   * the currency allows more places than the rail, the difference is money the
-   * client is debited and never paid — which is exactly the bug D-77 closed for
-   * USD and would have left open the moment somebody configured a currency to
-   * more than two places.
+   * is editable from 0 to 8; this says what the PROVIDER can actually handle.
+   * Where the currency allows more places than the rail, the difference is money
+   * that changes hands without being recorded — and it is the SAME 2 either way,
+   * because `quantiseIn` and `quantiseOut` both round to `RIVAL_MONEY_SCALE`:
    *
-   * So the withdrawal door validates against the SMALLER of the two. Null means
-   * "no rail involved, no extra constraint" — a desk-paid withdrawal is settled
-   * by a human who can send whatever the currency expresses.
+   *   money OUT  the client is debited the full amount and the rail sends the
+   *              rounded one. The remainder is kept.
+   *   money IN   the link is created at the rounded amount and the wallet is
+   *              credited `tx.amount`. The client pays one figure and is
+   *              credited another — and because money-in rounds to NEAREST
+   *              rather than down, that can credit MORE than was collected.
+   *
+   * One method rather than a payout/deposit pair precisely because the number is
+   * one number: splitting it would invite the two to drift, and a rail that
+   * genuinely differed by direction would be a new fact worth stating loudly
+   * rather than a second constant nobody compares.
+   *
+   * Null means "no rail, no extra constraint" — a manual deposit or a desk-paid
+   * withdrawal is settled by a human who can handle whatever the currency
+   * expresses.
    */
-  payoutScale(key: string): number | null {
+  settlementScale(key: string): number | null {
     return key === 'whish' ? RIVAL_MONEY_SCALE : null;
   }
 
