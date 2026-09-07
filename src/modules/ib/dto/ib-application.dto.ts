@@ -205,15 +205,19 @@ export class IbStatusDto {
 /**
  * @see IbStatusDto.ineligibleCode
  *
- * `'chain_full'` went in 0102 with the ladder that produced it: with no
- * platform-wide depth ceiling, there is no longer a state where a verified
- * client cannot be placed beneath their introducer.
+ * `'chain_full'` is BACK. It went in 0102 with the first ladder; 0112 made the
+ * rung a partner stands on their whole terms again, and the business rule
+ * followed: a client whose introducer stands on the deepest ENABLED level of
+ * the Commission Levels ladder has no rung to be placed on and cannot become
+ * a partner. The Swagger enum on `IbStatusDto.ineligibleCode` kept advertising
+ * both codes throughout, so the wire contract does not move.
  *
- * Kept as a UNION of one rather than collapsed to a boolean — the portal
- * branches on the code, and the next gate should extend this rather than
- * reintroduce a second field beside it.
+ * The portal branches on the code — `chain_full` draws no "Verify now" button,
+ * hides the Partner page from a client with no application history, and
+ * `RequireAuth` bounces a typed URL. The next gate should extend this union
+ * rather than reintroduce a second field beside it.
  */
-export type IbIneligibleCode = 'unverified';
+export type IbIneligibleCode = 'unverified' | 'chain_full';
 
 export class ApproveIbApplicationDto {
   /*
