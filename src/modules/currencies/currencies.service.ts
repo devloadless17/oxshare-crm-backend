@@ -138,10 +138,32 @@ export class CurrenciesService {
    * stay readable and spendable; what it must not do is accept new money.
    */
   async assertUsable(code: string, executor?: Executor): Promise<string> {
+    return (await this.assertUsableDetail(code, executor)).code;
+  }
+
+  /**
+   * `assertUsable`, plus the currency's declared SCALE.
+   *
+   * Same query, same refusals — it exists because callers that accept an amount
+   * from a client need to know how many decimal places that currency actually
+   * has, and re-reading the row to find out would be a second round trip on a
+   * money path.
+   *
+   * `decimals` is documented as DISPLAY precision, and using it to VALIDATE
+   * widens that meaning deliberately. The alternative was to hardcode 2, which
+   * this project's working agreement forbids ("never hardcode a number nobody
+   * gave us") — and the operator has already stated the answer on the currency
+   * row. A currency that renders two decimals while accepting eight is not
+   * displaying a rounded figure; it is accepting money it cannot pay back.
+   */
+  async assertUsableDetail(
+    code: string,
+    executor?: Executor,
+  ): Promise<{ code: string; decimals: number }> {
     const db = executor ?? this.db;
     const normalised = this.normalise(code);
     const [row] = await db
-      .select({ enabled: currencies.enabled })
+      .select({ enabled: currencies.enabled, decimals: currencies.decimals })
       .from(currencies)
       .where(eq(currencies.code, normalised))
       .limit(1);
@@ -150,7 +172,7 @@ export class CurrenciesService {
     if (!row.enabled) {
       throw new ValidationError(`${normalised} is not currently available on this platform.`);
     }
-    return normalised;
+    return { code: normalised, decimals: row.decimals };
   }
 
   /**

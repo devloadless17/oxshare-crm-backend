@@ -390,6 +390,37 @@ describe('limits', () => {
     await expect(request(userId, '1')).rejects.toThrow(/minimum/i);
   });
 
+  it('refuses more decimal places than the currency holds — D-77', async () => {
+    /*
+     * The dust bug, at the door.
+     *
+     * Storage is NUMERIC(28,8) and the payout rail sends 2 places, so this used
+     * to be ACCEPTED: 50.123456789 was debited as 50.12345679 and paid as 50.12,
+     * and the 0.00345679 difference was never refunded and never recorded. Under
+     * a cent each time, entirely silent, and it scales with volume.
+     *
+     * The bound is the operator's `currencies.decimals`, not a hardcoded 2 —
+     * so a currency legitimately carrying more places is not blocked by a
+     * constant nobody chose.
+     */
+    const userId = await makeFundedClient('dust@test.local');
+
+    await expect(request(userId, '50.123456789')).rejects.toThrow(/2 decimal places/i);
+    await expect(request(userId, '50.001')).rejects.toThrow(/2 decimal places/i);
+  });
+
+  it('still accepts everything expressible in the currency', async () => {
+    // The guard must not become "round numbers only" — cents are money.
+    const userId = await makeFundedClient('cents@test.local');
+
+    await expect(request(userId, '50.12')).resolves.toBeDefined();
+    await expect(request(userId, '50.1')).resolves.toBeDefined();
+    await expect(request(userId, '50')).resolves.toBeDefined();
+    // Trailing zeros are the SAME number, not extra precision — refusing them
+    // would reject a value most UI number formatters produce.
+    await expect(request(userId, '50.10000000')).resolves.toBeDefined();
+  });
+
   it('caps a rolling 24 hours, not just one request', async () => {
     const userId = await makeFundedClient('daycap@test.local', '250000');
 

@@ -612,10 +612,37 @@ export class TransactionsService {
     // The NORMALISED code is what the rest of this method uses: `assertUsable`
     // upper-cases and trims, so 'usd' and 'USD' cannot become two currencies on
     // the rows this writes.
-    const currency = await this.currencies.assertUsable(params.currency);
+    const { code: currency, decimals } = await this.currencies.assertUsableDetail(params.currency);
 
     const amount = toDecimal(params.amount);
     if (!amount.isPositive()) throw new ValidationError('Withdrawal amount must be positive.');
+
+    /*
+     * The amount must be expressible IN THIS CURRENCY — D-77.
+     *
+     * Storage is NUMERIC(28,8) and the payout rail sends 2, so an amount with
+     * more places than the currency declares was accepted, DEBITED in full, and
+     * then paid rounded DOWN: a request for 50.123456789 debited 50.12345679 and
+     * sent 50.12. The rounding direction is right — never ask a platform to pay
+     * more than was debited — but nothing gave the remainder back or recorded
+     * that it had been kept. Under a cent each time, silent, and it scales.
+     *
+     * Refused at the door rather than repaired downstream, because the other two
+     * options both make the system carry a rounding concept in order to keep
+     * accepting input that has no meaning on any rail it supports: quantising
+     * the debit silently changes the number the client asked for, and booking
+     * the dust back puts a sub-cent ledger row against something nobody
+     * requested. The amount a client asks for should be the amount they get.
+     *
+     * The bound is the OPERATOR'S, from `currencies.decimals`, not a hardcoded
+     * 2 — see `assertUsableDetail` for why that distinction is load-bearing.
+     */
+    if (amount.decimalPlaces() > decimals) {
+      throw new ValidationError(
+        `${currency} amounts are held to ${decimals} decimal ` +
+          `${decimals === 1 ? 'place' : 'places'}. Please round ${params.amount} and try again.`,
+      );
+    }
 
     /*
      * Absolute bounds — PLATFORM-CONVENTIONS R-5.1.
@@ -2428,7 +2455,9 @@ export class TransactionsService {
      * method denominated in one currency and a wallet in another, and the money
      * would land somewhere the operator never agreed to receive it.
      */
-    const currency = await this.currencies.assertUsable(paymentMethod.currency);
+    const { code: currency, decimals } = await this.currencies.assertUsableDetail(
+      paymentMethod.currency,
+    );
 
     /*
      * Does this deposit go through a hosted payment page, or is it a declaration
@@ -2450,6 +2479,22 @@ export class TransactionsService {
     // Per-method bounds AND the platform's own, because neither is derivable
     // from the other — a provider may refuse under $20 while the platform's
     // floor is $10.
+    /*
+     * Same scale rule as a withdrawal (D-77), for the mirror-image reason.
+     *
+     * A deposit is CREDITED at `tx.amount` but the payment link is created at
+     * the provider's own scale, so an amount with more places than the currency
+     * declares asks the client to pay one figure and credits them another.
+     * Money-in rounds to NEAREST rather than down, so the divergence can go
+     * either way — including crediting more than was collected.
+     */
+    if (amount.decimalPlaces() > decimals) {
+      throw new ValidationError(
+        `${currency} amounts are held to ${decimals} decimal ` +
+          `${decimals === 1 ? 'place' : 'places'}. Please round ${params.amount} and try again.`,
+      );
+    }
+
     this.paymentMethods.assertAmountWithin(paymentMethod, amount);
 
     const min = this.limits.minDeposit();

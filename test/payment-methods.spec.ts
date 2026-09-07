@@ -305,6 +305,47 @@ describe('depositing through a method', () => {
  *
  * These two tests are the whole rule, and they must disagree with each other.
  */
+describe('the amount must be expressible in the currency (D-77)', () => {
+  it('refuses more decimal places than the currency holds', async () => {
+    /*
+     * The mirror of the withdrawal rule, and it can go the WRONG WAY here.
+     *
+     * A deposit is credited at `tx.amount`, but the payment link is created at
+     * the provider's own scale, and money-in rounds to NEAREST rather than
+     * down — so an over-precise amount can ask the client to pay one figure
+     * and credit them a larger one.
+     */
+    await configureManualMethod();
+    const userId = await makeClient('deposit-scale@test.local');
+
+    await expect(
+      transactions.requestDeposit({
+        userId,
+        amount: '100.123456789',
+        currency: 'USD',
+        method: MANUAL,
+      }),
+    ).rejects.toThrow(/2 decimal places/i);
+  });
+
+  it('accepts cents, and trailing zeros are not extra precision', async () => {
+    await configureManualMethod();
+    const userId = await makeClient('deposit-cents@test.local');
+
+    await expect(
+      transactions.requestDeposit({ userId, amount: '100.05', currency: 'USD', method: MANUAL }),
+    ).resolves.toBeDefined();
+    await expect(
+      transactions.requestDeposit({
+        userId,
+        amount: '100.50000000',
+        currency: 'USD',
+        method: MANUAL,
+      }),
+    ).resolves.toBeDefined();
+  });
+});
+
 describe('a gateway that will not start the payment', () => {
   beforeEach(() => {
     // Whish reachable and enabled, so the deposit gets as far as the provider.
