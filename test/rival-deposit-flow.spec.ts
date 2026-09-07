@@ -98,11 +98,26 @@ async function makePendingDeposit(amount = '150'): Promise<{
   return { txId: txRows[0].id, userId, externalId, reference };
 }
 
-async function stateOf(txId: string): Promise<{ state: string; needsAttention: boolean }> {
-  const { rows } = await ctx.db.execute<{ state: string; rival_needs_attention: boolean }>(
-    sql`SELECT state, rival_needs_attention FROM transactions WHERE id = ${txId}`,
+async function stateOf(txId: string): Promise<{
+  state: string;
+  needsAttention: boolean;
+  // The REASON as well as the flag: a flag with no words sends the operator to
+  // the logs, so the message is part of the contract and worth asserting.
+  rivalAttentionReason: string | null;
+}> {
+  const { rows } = await ctx.db.execute<{
+    state: string;
+    rival_needs_attention: boolean;
+    rival_attention_reason: string | null;
+  }>(
+    sql`SELECT state, rival_needs_attention, rival_attention_reason
+          FROM transactions WHERE id = ${txId}`,
   );
-  return { state: rows[0].state, needsAttention: rows[0].rival_needs_attention };
+  return {
+    state: rows[0].state,
+    needsAttention: rows[0].rival_needs_attention,
+    rivalAttentionReason: rows[0].rival_attention_reason,
+  };
 }
 
 async function balanceOf(userId: string): Promise<string> {
@@ -112,12 +127,21 @@ async function balanceOf(userId: string): Promise<string> {
   return rows[0].balance;
 }
 
-function rivalSays(status: 'PENDING' | 'PAID' | 'FAILED') {
+function rivalSays(
+  status: 'PENDING' | 'PAID' | 'FAILED',
+  /**
+   * What the PLATFORM says the payment is for. Omitted by every other caller on
+   * purpose — an absent amount means "this gateway offers no second opinion",
+   * which is the shape the cross-check must treat as nothing to compare.
+   */
+  claims?: { amount: string; currency?: string },
+) {
   gateway.checkPayment.mockResolvedValue({
     settled: status !== 'PENDING',
     paid: status === 'PAID',
     rawStatus: status,
     needsAttention: false,
+    ...(claims ? { amount: claims.amount, currency: claims.currency ?? 'USD' } : {}),
   });
 }
 
@@ -151,6 +175,43 @@ describe('the mapping table, row by row', () => {
           JOIN wallets w ON w.id = le.wallet_id WHERE w.user_id = ${userId}`,
     );
     expect(rows[0].n).toBe('1');
+  });
+
+  it('REFUSES to credit when the platform names a different amount', async () => {
+    /*
+     * The deposit was created for 150; the platform says 40 was paid.
+     *
+     * Crediting `tx.amount` regardless is how a system pays out money nobody
+     * paid in — and it leaves a ledger that is perfectly self-consistent
+     * afterwards, so nothing surfaces until somebody reconciles against the
+     * provider's dashboard months later.
+     *
+     * It REFUSES rather than picking a figure. Crediting the smaller invents a
+     * business rule nobody agreed to; crediting the larger gives money away.
+     * `pending` is the only state that keeps both options open for a human.
+     */
+    const { txId, userId, externalId } = await makePendingDeposit('150');
+    rivalSays('PAID', { amount: '40.00' });
+
+    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('pending');
+
+    const row = await stateOf(txId);
+    expect(row.state, 'a disputed deposit must stay settleable by hand').toBe('pending');
+    expect(await balanceOf(userId), 'nothing may be credited').toBe('0.00000000');
+    expect(row.needsAttention).toBe(true);
+    expect(String(row.rivalAttentionReason)).toMatch(/40/);
+    expect(String(row.rivalAttentionReason)).toMatch(/150/);
+  });
+
+  it('credits normally when the platform AGREES, including on trailing zeros', async () => {
+    // '150.00' vs '150.00000000' is the same money. Comparing the STRINGS would
+    // flag every healthy deposit — which is how a good guard gets switched off.
+    const { txId, userId, externalId } = await makePendingDeposit('150');
+    rivalSays('PAID', { amount: '150.00' });
+
+    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('applied');
+    expect((await stateOf(txId)).state).toBe('success');
+    expect(await balanceOf(userId)).toBe('150.00000000');
   });
 
   it('failed on a pending row is terminal and credits nothing', async () => {

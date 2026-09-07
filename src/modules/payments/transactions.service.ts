@@ -2878,9 +2878,60 @@ export class TransactionsService {
     }
 
     /*
-     * PAID. The credit and the state change share one transaction, so a
-     * deposit marked success with no ledger entry behind it — or a credit with
-     * no transaction pointing at it — is a state this system cannot reach.
+     * PAID — but check WHAT was paid before crediting it.
+     *
+     * The amount credited is `tx.amount`, the figure this system recorded when
+     * it created the payment link, and that is correct: a Whish link is
+     * fixed-amount, so the client cannot pay a different sum. What was missing
+     * is any confirmation that the provider AGREES — its answer carries the
+     * amount and currency, and both were being read and thrown away.
+     *
+     * The two have never diverged here, and this is defence rather than a
+     * repair. But the failure it guards is the worst shape a deposit can take:
+     * a mismatch means crediting a client money nobody paid in, silently, with
+     * the ledger perfectly self-consistent afterwards and nothing to reconcile
+     * against except the provider's dashboard months later. Divergence needs
+     * only a re-used external id, a link edited on the provider side, or a
+     * future rail whose amount is chosen by the PAYER rather than by us.
+     *
+     * So it REFUSES rather than guessing — the same choice `reversed` above
+     * makes, and the same one `checkPlausible` makes in the commission engine.
+     * Crediting the smaller figure would be inventing a business rule nobody
+     * agreed to; crediting the larger gives money away. The row stays
+     * `pending`, which is the only state that keeps every option open: it can
+     * still be settled by hand once a human has decided what actually happened.
+     */
+    const claimed = result.amount;
+    if (claimed !== undefined && !toDecimal(claimed).equals(toDecimal(tx.amount))) {
+      const reason =
+        `The payment platform reports ${claimed} ${result.currency ?? tx.currency} for this ` +
+        `deposit, but it was created for ${tx.amount} ${tx.currency}. Nothing has been ` +
+        'credited — confirm which figure is real before settling this by hand.';
+      await this.db
+        .update(transactions)
+        .set({ rivalNeedsAttention: true, rivalAttentionReason: reason })
+        .where(eq(transactions.id, tx.id));
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.PAYMENT_STATE_MISMATCH,
+        'page',
+        'A settled deposit does not match the amount the payment platform reports. NOTHING ' +
+          'was credited. Reconcile against the platform before settling it by hand.',
+        {
+          transactionId: tx.id,
+          expected: tx.amount,
+          reported: claimed,
+          currency: tx.currency,
+          reportedCurrency: result.currency,
+        },
+      );
+      return { state: tx.state };
+    }
+
+    /*
+     * The credit and the state change share one transaction, so a deposit
+     * marked success with no ledger entry behind it — or a credit with no
+     * transaction pointing at it — is a state this system cannot reach.
      */
     const transitioned = await this.db.transaction(async (dbTx) => {
       await this.wallets.post(

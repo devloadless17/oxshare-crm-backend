@@ -148,7 +148,24 @@ export class PaymentGateways {
   async checkPayment(
     key: string,
     rivalExternalId: string,
-  ): Promise<{ settled: boolean; paid: boolean; rawStatus: string; needsAttention: boolean }> {
+  ): Promise<{
+    settled: boolean;
+    paid: boolean;
+    rawStatus: string;
+    needsAttention: boolean;
+    /**
+     * What the PROVIDER says the payment is for, so the caller can check it
+     * against what this system is about to credit.
+     *
+     * Carried rather than discarded because the provider's own answer is the
+     * only independent statement of the amount we have, and crediting a figure
+     * nobody re-checked is how a system pays out money nobody paid in.
+     * Optional: a gateway that cannot report an amount must not be forced to
+     * invent one — the caller treats absent as "no second opinion available".
+     */
+    amount?: string;
+    currency?: string;
+  }> {
     switch (key) {
       case 'whish': {
         const payment = await this.rival.getWhishPayment(rivalExternalId);
@@ -157,6 +174,8 @@ export class PaymentGateways {
           paid: payment.status === 'PAID',
           rawStatus: payment.status,
           needsAttention: payment.needsAttention,
+          amount: payment.amount,
+          currency: payment.currency,
         };
       }
       default:
