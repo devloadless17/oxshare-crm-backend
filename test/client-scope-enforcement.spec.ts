@@ -7,6 +7,7 @@ import {
   admins,
   clientTagAssignments,
   clientTags,
+  kycSubmissions,
   roles,
   users,
 } from '../src/database/schema';
@@ -159,6 +160,20 @@ beforeAll(async () => {
     tagId: mineTag.id,
     createdBy: scopedAdmin.id,
   });
+
+  /*
+   * A KYC submission on BOTH sides of the boundary.
+   *
+   * Without these the queue is empty for everyone, and the count assertions
+   * below pass on 0 === 0 — a test that proves the boundary holds by proving
+   * there is nothing to hold back. Two rows, one in the territory and one
+   * outside it, are the smallest fixture that can tell a working count from a
+   * silent one.
+   */
+  await db.insert(kycSubmissions).values([
+    { userId: mineId, status: 'submitted', submittedAt: new Date() },
+    { userId: theirsId, status: 'submitted', submittedAt: new Date() },
+  ]);
 });
 
 afterAll(async () => {
@@ -206,6 +221,57 @@ describe('list routes omit out-of-scope clients', () => {
     const session = await actingAs(ctx, 'admin', SCOPED);
     const res = await session.get('/v1/admin/clients?q=oxshare-e2e.test');
     expect(clientIdsIn(res.body)).toContain(mineId);
+  });
+
+  it('kyc: the TAB COUNTS stay inside the territory too, not just the rows', async () => {
+    /*
+     * Reported from the running console: a reviewer scoped to two tags, with no
+     * intake grant, saw a sidebar badge of 15 and tabs reading 12 / 3 / 89 /
+     * 111 above a queue with nothing in it.
+     *
+     * The rows and the total were scoped; the status-count query carried no
+     * predicate at all, on the reasoning that tab counts should span every
+     * STATUS. They did — and every CLIENT with them.
+     *
+     * Two harms, in rising order. The badge is a promise about the reader's own
+     * work and it was counting somebody else's, on the one control that exists
+     * to say "there is something to do". And it disclosed platform-wide volumes
+     * to an admin whose whole configuration says they may not see them: RBAC-08
+     * territory bounds what a reviewer LEARNS, not only what they can open.
+     *
+     * Asserted as an identity — counts must agree with the rows the same
+     * request returned — because that is the property a reader relies on, and
+     * it cannot be satisfied by a count that is merely smaller.
+     */
+    const session = await actingAs(ctx, 'admin', SCOPED);
+    const res = await session.get('/v1/admin/kyc?limit=100');
+    expect(res.status).toBe(200);
+
+    const body = res.body as {
+      items: unknown[];
+      total: number;
+      counts: Record<string, number>;
+    };
+    expect(body.counts['all'], 'the tab counts reach past the territory').toBe(body.total);
+    expect(body.total).toBe(body.items.length);
+    // Non-vacuous: there IS a submission outside the territory to have leaked.
+    expect(body.total, 'the fixture has nothing to count').toBe(1);
+    expect(clientIdsIn(res.body)).not.toContain(theirsId);
+  });
+
+  it('kyc: a MASTER admin still counts the whole platform', async () => {
+    // The control. A scoped count that is right because NOBODY sees anything
+    // is a broken screen, not a working boundary.
+    const scoped = await actingAs(ctx, 'admin', SCOPED);
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const mine = (await scoped.get('/v1/admin/kyc?limit=100')).body as {
+      counts: Record<string, number>;
+    };
+    const all = (await master.get('/v1/admin/kyc?limit=100')).body as {
+      counts: Record<string, number>;
+    };
+    expect(mine.counts['all'], 'the scoped reviewer sees only their own').toBe(1);
+    expect(all.counts['all'], 'the master counts both sides of the boundary').toBe(2);
   });
 
   it('clients: a MASTER admin still sees both', async () => {

@@ -244,6 +244,33 @@ export class AdminComplianceController {
     return this.compliance.claimKyc(userId, req.admin);
   }
 
+  @Patch('kyc/:userId/release')
+  @AnnouncesChange('kyc')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.review')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Hand a claimed KYC back to the queue (under_review → submitted)',
+    description:
+      'The way out of a claim. A reviewer who picked a submission up and cannot finish it — ' +
+      'reassigned, off shift, or moved out of that territory — would otherwise leave a row that ' +
+      'looks taken to everyone else. Gated exactly like a decision, because approve and reject ' +
+      'already accept an under_review row from any reviewer who can see it: a claim is advisory, ' +
+      'never a lock. Refuses a submission that has already been DECIDED — reopening one is ' +
+      "reject's job, with a reason attached.",
+  })
+  @ApiOkResponse({ type: KycSubmissionDto })
+  @ScopedToClients(
+    "The predicate joins the transition's UPDATE ... WHERE, so check and write stay one statement.",
+  )
+  @Audited('kyc.release')
+  releaseKyc(
+    @Param('userId', UuidParam) userId: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.compliance.releaseKyc(userId, req.admin);
+  }
+
   @Patch('kyc/:userId/approve')
   @AnnouncesChange('kyc')
   @UseGuards(PermissionsGuard)

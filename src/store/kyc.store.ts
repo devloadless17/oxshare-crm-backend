@@ -153,7 +153,9 @@ const toSubmission = (r: Row): KycSubmission => ({
 
 // Explicit nulls clear columns (e.g. resubmission clears rejection data);
 // absent keys leave them untouched.
-const toColumns = (patch: Partial<KycSubmission>) => {
+const toColumns = (
+  patch: Partial<Omit<KycSubmission, 'reviewedBy'>> & { reviewedBy?: string | null },
+) => {
   const set: Record<string, unknown> = { updatedAt: new Date() };
   const map: Array<[keyof KycSubmission, string]> = [
     ['status', 'status'],
@@ -167,6 +169,11 @@ const toColumns = (patch: Partial<KycSubmission>) => {
     ['selfie', 'selfie'],
     ['addressProof', 'addressProof'],
   ];
+  /*
+   * `key in patch`, not a truthiness test: a key present with `null` MEANS
+   * "clear this column", and a key that is absent means "leave it alone".
+   * Collapsing the two would make `release` unable to detach a reviewer.
+   */
   for (const [key, col] of map) {
     if (key in patch) set[col] = patch[key] ?? null;
   }
@@ -244,10 +251,17 @@ export class KycStore {
    * ("`UPDATE … WHERE state='approved'` with a rowcount check"). KYC is not
    * `ledger_entries`, but it is what GATES `ledger_entries`.
    */
+  /**
+   * @param patch `reviewedBy: null` CLEARS the reviewer; omitting the key
+   *   leaves it alone. The distinction matters — `release` has to put a
+   *   submission back in the pool with nobody's name on it, and a patch that
+   *   could only ever SET an id would leave the previous holder attached to a
+   *   row that is once again unclaimed.
+   */
   async transition(
     userId: string,
     from: readonly KycStatus[],
-    patch: Partial<KycSubmission>,
+    patch: Partial<Omit<KycSubmission, 'reviewedBy'>> & { reviewedBy?: string | null },
     executor?: Executor,
   ): Promise<KycSubmission | undefined> {
     const [row] = await (executor ?? this.db)
@@ -304,18 +318,39 @@ export class KycStore {
       conditions.push(eq(kycSubmissions.status, filter.status));
     }
 
+    /*
+     * ⚠️ EVERYTHING EXCEPT THE STATUS, kept separately — the tab counts need
+     * these and must not be narrowed to one status.
+     *
+     * The counts query used to carry NO predicate at all, on the reasoning
+     * below that they should span every status. They did, and they also spanned
+     * every CLIENT: a reviewer scoped to two tags, with no intake grant, saw a
+     * sidebar badge of 15 and tabs reading 12 / 3 / 89 / 111 above a queue with
+     * nothing in it. Reported from the running console.
+     *
+     * Two things wrong with that, in rising order. The badge is a promise about
+     * the reader's own work and it was counting somebody else's — a number you
+     * cannot act on, on the one control that exists to say "there is something
+     * to do". And it disclosed platform-wide volumes to an admin whose whole
+     * configuration says they may not see them; RBAC-08 territory is meant to
+     * bound what a reviewer learns, not just what they can open.
+     */
+    const visibility: SQL[] = [];
     // In the WHERE clause, so an out-of-scope submission never enters the
     // result set — and therefore cannot be missed by a later projection, count
     // or export that forgot to filter. See common/security/client-scope.ts.
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, kycSubmissions.userId);
-    if (scoped) conditions.push(scoped);
+    if (scoped) visibility.push(scoped);
     if (filter.q) {
       const term = `%${escapeLike(filter.q)}%`;
-      conditions.push(
+      visibility.push(
         or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))!,
       );
     }
+    conditions.push(...visibility);
     const where = conditions.length > 0 ? and(...conditions) : undefined;
+    /** Scope and search, without the status narrowing — for the tab counts. */
+    const countsWhere = visibility.length > 0 ? and(...visibility) : undefined;
 
     const [rows, [countRow], statusCounts] = await Promise.all([
       /*
@@ -341,6 +376,14 @@ export class KycStore {
           status: kycSubmissions.status,
           submittedAt: kycSubmissions.submittedAt,
           reviewedAt: kycSubmissions.reviewedAt,
+          /*
+           * WHO holds it. An ADMIN id, not client data — so it costs the
+           * minimisation above nothing, and without it a claim communicates
+           * only "somebody has this", which is the half that helps nobody:
+           * the Claim button disappears for every colleague and there is no
+           * name to ask. The service resolves it to a name.
+           */
+          reviewedBy: kycSubmissions.reviewedBy,
           createdAt: kycSubmissions.createdAt,
           updatedAt: kycSubmissions.updatedAt,
           country: sql<string | null>`${kycSubmissions.personalInfo}->>'country'`,
@@ -384,13 +427,22 @@ export class KycStore {
         .from(kycSubmissions)
         .innerJoin(users, eq(kycSubmissions.userId, users.id))
         .where(where),
-      // Counts over the FULL set so admin tab counts stay correct under a filter.
+      /*
+       * Every STATUS this reader may see — so a tab count stays right while a
+       * status filter is applied, without ever reaching past their territory.
+       *
+       * The join matches the total query above: `q` filters on `users`, and an
+       * inner join cannot change the count because `user_id` is NOT NULL with
+       * a foreign key.
+       */
       db
         .select({
           status: kycSubmissions.status,
           value: sql<number>`count(*)::int`,
         })
         .from(kycSubmissions)
+        .innerJoin(users, eq(kycSubmissions.userId, users.id))
+        .where(countsWhere)
         .groupBy(kycSubmissions.status),
     ]);
 
@@ -399,6 +451,27 @@ export class KycStore {
       counts[row.status] = row.value;
       counts['all'] += row.value;
     }
+    /*
+     * The pseudo-status, counted HERE so it has one definition.
+     *
+     * `needs_review` is a filter value the API already accepts and resolves to
+     * submitted + under_review, but it was never a KEY in this object — those
+     * come from a GROUP BY over a column, and no row's status is ever
+     * `needs_review`. So the console's "Needs review" tab read
+     * `counts['needs_review'] ?? 0` and displayed **0 for ever**, on the one
+     * tab that means "work waiting for a human", above a list that was not
+     * empty.
+     *
+     * The sidebar badge got the same number right by summing the two itself —
+     * which is the deeper problem: the definition of "needs review" lived in
+     * the backend filter, in the badge, and nowhere the tab could reach.
+     * Computed once, from `NEEDS_REVIEW_STATUSES`, so all three agree by
+     * construction rather than by three authors remembering the same pair.
+     */
+    counts[NEEDS_REVIEW] = NEEDS_REVIEW_STATUSES.reduce(
+      (sum, status) => sum + (counts[status] ?? 0),
+      0,
+    );
 
     return {
       items: rows.map((r) => ({
@@ -406,6 +479,7 @@ export class KycStore {
         status: r.status,
         submittedAt: r.submittedAt ?? undefined,
         reviewedAt: r.reviewedAt ?? undefined,
+        reviewedBy: r.reviewedBy ?? undefined,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
         // The queue's country column, and nothing else from the profile.

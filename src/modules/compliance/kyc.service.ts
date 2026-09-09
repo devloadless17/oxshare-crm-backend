@@ -518,6 +518,67 @@ export class KycService {
   // ─── Admin: claim for review ───────────────────────────────────────────────
   // Marks a submitted KYC as under_review by this admin, so two reviewers
   // don't process the same submission concurrently.
+  /**
+   * Hand a claimed submission back to the queue.
+   *
+   * ## Why this exists
+   *
+   * A claim was a one-way door: `submitted → under_review` with no way back.
+   * A reviewer who picked one up and then could not finish it — reassigned,
+   * off shift, or moved out of that territory by an administrator — left a row
+   * that LOOKS taken to everyone else, with the Claim button hidden and no
+   * name on it to chase.
+   *
+   * ## Who may do it
+   *
+   * Anyone who could DECIDE it. A claim has never been a lock: `approve` and
+   * `reject` both accept `under_review` from any reviewer with the permission
+   * and the scope, deliberately, so one person's absence cannot strand a
+   * client's verification. Refusing those same people the LESSER action —
+   * putting it back in the pool rather than deciding it themselves — would be
+   * incoherent, and would leave "stuck" as the only outcome of an ordinary
+   * handover. The caller's identity is recorded by the audit row, which is
+   * what makes a release accountable rather than restricted.
+   *
+   * ## What it is not
+   *
+   * Not a way to undo a DECISION. `from` is `under_review` alone, so an
+   * approved or rejected submission is refused: reopening a decided
+   * verification is `reject`'s job, with a reason attached, not a silent
+   * reversal that leaves no trace of what was decided or why.
+   */
+  async release(userId: string) {
+    const submission = await this.kycStore.findByUserId(userId);
+    if (!submission) throw new NotFoundError('KYC submission not found.');
+    if (submission.status !== 'under_review') {
+      throw new ValidationError(
+        submission.status === 'submitted'
+          ? 'This submission is already waiting in the queue.'
+          : 'Only a submission that is under review can be handed back.',
+      );
+    }
+
+    /*
+     * `transition`, for the reason `claim` documents: the read above is for
+     * its error messages and cannot be the guard. Two reviewers releasing in
+     * the same tick, or a release racing a decision, must resolve to exactly
+     * one winner — the expected status goes in the WHERE clause.
+     *
+     * `reviewedBy: null` matters as much as the status. Leaving the id behind
+     * would show the next reader a submission in the pool that still names a
+     * reviewer, which is the confusion this whole change is about.
+     */
+    const released = await this.kycStore.transition(userId, ['under_review'], {
+      status: 'submitted',
+      reviewedBy: null,
+    });
+
+    if (!released) {
+      throw new ConflictError('This submission was decided or released first.');
+    }
+    return this.getByUserId(userId);
+  }
+
   async claim(userId: string, adminId: string) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');

@@ -182,6 +182,16 @@ export class KycSubmissionDto {
   @ApiPropertyOptional() submittedAt?: Date;
   @ApiPropertyOptional() reviewedAt?: Date;
   @ApiPropertyOptional() reviewedBy?: string;
+  /**
+   * The reviewer's NAME, resolved from `reviewedBy`.
+   *
+   * "Who has this" is the only question a claim answers for a colleague, and a
+   * uuid answers it to nobody — so the queue showed a submission as taken with
+   * no way to find out by whom, and hid the Claim button from everyone else.
+   * Null when unclaimed, and null when the administrator who held it has since
+   * been deleted: an absence the screen states rather than filling with an id.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true }) reviewedByName?: string | null;
   @ApiPropertyOptional() rejectionReason?: string;
   @ApiPropertyOptional({ type: [String] }) rejectedFields?: string[];
   @ApiPropertyOptional({
@@ -213,6 +223,16 @@ export class KycAttemptDto {
   @ApiPropertyOptional() submittedAt?: Date;
   @ApiPropertyOptional() reviewedAt?: Date;
   @ApiPropertyOptional() reviewedBy?: string;
+  /**
+   * The reviewer's NAME, resolved from `reviewedBy`.
+   *
+   * "Who has this" is the only question a claim answers for a colleague, and a
+   * uuid answers it to nobody — so the queue showed a submission as taken with
+   * no way to find out by whom, and hid the Claim button from everyone else.
+   * Null when unclaimed, and null when the administrator who held it has since
+   * been deleted: an absence the screen states rather than filling with an id.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true }) reviewedByName?: string | null;
   @ApiPropertyOptional() rejectionReason?: string;
   @ApiPropertyOptional({ type: [String] }) rejectedFields?: string[];
   @ApiPropertyOptional({ type: 'object', additionalProperties: { type: 'string' } })

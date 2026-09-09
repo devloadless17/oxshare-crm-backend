@@ -297,7 +297,21 @@ scenario(4, 'Double approve on the CRM — the second is refused');
 scenario(5, 'Client asks for more than the balance — refused, nothing written');
 {
   const bal = await balance();
-  const over = String(Number(bal) + 1000);
+  /*
+   * Whole dollars above the balance, built from the STRING — never
+   * `Number(bal) + 1000`.
+   *
+   * Two things were wrong with the float version. It coerced a money value,
+   * which §6.1 forbids everywhere else in this codebase. And it inherited the
+   * balance's decimals: a wallet holding sub-cent value (commission and rebates
+   * are percentages, so this is ordinary) produced an 8-decimal request, which
+   * D-77's precision rule now refuses FIRST — so this case reported
+   * VALIDATION_FAILED and never reached the balance check it exists to test.
+   *
+   * Taking the integer part and adding 1000 is unambiguously over the balance
+   * and carries no decimals at all, so only the rule under test can refuse it.
+   */
+  const over = (BigInt(bal.split('.')[0]) + 1000n).toString();
   const r = await crm(portal, '/payments/withdrawals', {
     method: 'POST', headers: idem(),
     body: JSON.stringify({ amount: over, currency: 'USD', methodKey: 'whish', destination: '+96170123456' }),
