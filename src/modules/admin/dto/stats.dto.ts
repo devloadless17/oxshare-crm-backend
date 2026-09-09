@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import {
   ibApplicationStatusEnum,
   kycStatusEnum,
@@ -22,6 +23,9 @@ import {
  */
 
 /** Clients registered inside each rolling window. Every count scoped to the actor. */
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class ClientRegistrationWindowDto {
   @ApiProperty({ description: 'Registered since midnight UTC today.' })
   today: number;
@@ -33,6 +37,9 @@ export class ClientRegistrationWindowDto {
   thisMonth: number;
 }
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class ClientStatusCountsDto {
   @ApiProperty() active: number;
   @ApiProperty() pending: number;
@@ -47,11 +54,17 @@ export class ClientStatusCountsDto {
  * this DTO has to change, and that is the right amount of friction for a change
  * that alters what "verified" means on a compliance screen.
  */
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class ClientVerificationCountsDto {
   @ApiProperty({ description: 'verification_level >= 1.' }) verified: number;
   @ApiProperty({ description: 'verification_level < 1.' }) notVerified: number;
 }
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class ClientStatsDto {
   @ApiProperty({ description: 'Every client visible to the calling admin.' })
   total: number;
@@ -66,6 +79,9 @@ export class ClientStatsDto {
   byVerification: ClientVerificationCountsDto;
 }
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class KycStatsDto {
   @ApiProperty({
     description:
@@ -94,6 +110,9 @@ export class KycStatsDto {
   byStatus: Record<string, number>;
 }
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class WithdrawalStateTotalDto {
   @ApiProperty({ enum: transactionStateEnum.enumValues })
   state: string;
@@ -110,6 +129,9 @@ export class WithdrawalStateTotalDto {
   totalAmount: string;
 }
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class WithdrawalStatsDto {
   @ApiProperty({
     type: [WithdrawalStateTotalDto],
@@ -120,6 +142,9 @@ export class WithdrawalStatsDto {
   byState: WithdrawalStateTotalDto[];
 }
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class IbStatsDto {
   @ApiProperty({
     description:
@@ -158,6 +183,9 @@ export class IbStatsDto {
  * `/stats/kyc-trend`, `/stats/withdrawal-volume`) exist so a partial-permission
  * admin can still load the charts they are entitled to.
  */
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class StatsOverviewDto {
   @ApiPropertyOptional({
     type: ClientStatsDto,
@@ -214,6 +242,9 @@ export class StatsOverviewDto {
  * `generate_series` so the shape is right at the source.
  */
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class RegistrationPointDto {
   @ApiProperty({ example: '2026-08-01', description: 'UTC calendar day, YYYY-MM-DD.' })
   date: string;
@@ -222,6 +253,9 @@ export class RegistrationPointDto {
   count: number;
 }
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class RegistrationSeriesDto {
   @ApiProperty({ description: 'The window actually served, echoed back.' })
   days: number;
@@ -236,6 +270,9 @@ export class RegistrationSeriesDto {
   scoped: boolean;
 }
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class KycTrendPointDto {
   @ApiProperty({ example: '2026-08-01' }) date: string;
 
@@ -250,6 +287,9 @@ export class KycTrendPointDto {
   approved: number;
 }
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class KycTrendSeriesDto {
   @ApiProperty() days: number;
 
@@ -259,6 +299,9 @@ export class KycTrendSeriesDto {
   @ApiProperty() scoped: boolean;
 }
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class WithdrawalVolumePointDto {
   @ApiProperty({ example: '2026-08-01' }) date: string;
 
@@ -275,6 +318,9 @@ export class WithdrawalVolumePointDto {
   totalAmount: string;
 }
 
+@NoClientFields(
+  'aggregate counts and time series - every figure is a total over clients, never one of them',
+)
 export class WithdrawalVolumeSeriesDto {
   @ApiProperty() days: number;
 

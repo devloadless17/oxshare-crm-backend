@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
 
 /**
@@ -10,6 +11,7 @@ import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
  * `webhookKeyFingerprint` carry the only parts a screen needs: whether one
  * exists, and which one.
  */
+@NoClientFields('operator configuration - payout-rail credentials and toggles, no client attribute')
 export class RivalSettingsDto {
   @ApiPropertyOptional({
     type: String,
@@ -106,6 +108,7 @@ export class UpdateRivalSettingsDto {
  * server-side, shown here, and not retrievable afterwards — only its
  * fingerprint survives.
  */
+@NoClientFields('operator configuration - payout-rail credentials and toggles, no client attribute')
 export class RivalWebhookKeyDto {
   @ApiProperty({
     description:
@@ -125,6 +128,9 @@ export class RivalWebhookKeyDto {
   endpoint: string | null;
 }
 
+@NoClientFields(
+  'operator configuration - the payout rail URL and whether a key is set, with no client attribute on it',
+)
 class RivalCrmConfigView {
   @ApiPropertyOptional({ type: String, nullable: true })
   apiUrl: string | null;
@@ -141,6 +147,7 @@ class RivalCrmConfigView {
  * our webhook configuration to be — rendered beside what we minted, so a
  * mismatch between the two sides is visible on one screen.
  */
+@NoClientFields('operator configuration - payout-rail credentials and toggles, no client attribute')
 export class RivalTestResultDto {
   @ApiProperty()
   ok: boolean;

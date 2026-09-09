@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { DOCUMENT_CATALOGUE, documentFieldType } from '../../../common/kyc/document-catalogue';
 
 // Response DTOs for the client-facing KYC surface.
@@ -69,6 +70,9 @@ const KYC_FIELD_TYPES = [
  * whose second page is supporting evidence — which is otherwise a second
  * mechanism.
  */
+@NoClientFields(
+  "the CLIENT's own KYC view in the portal, which carries no admin-maskable projection",
+)
 export class KycDocumentPartDto {
   @ApiProperty({ description: 'Slot identifier, unique within the type.', example: 'back' })
   key: string;
@@ -87,6 +91,9 @@ export class KycDocumentPartDto {
  * national ID is two, a utility bill is one, a tenancy agreement may be several
  * — and no portal can know that without being told.
  */
+@NoClientFields(
+  "the CLIENT's own KYC view in the portal, which carries no admin-maskable projection",
+)
 export class KycDocumentTypeDto {
   @ApiProperty({ description: 'Stored in document.docType. Never renamed.', example: 'passport' })
   value: string;

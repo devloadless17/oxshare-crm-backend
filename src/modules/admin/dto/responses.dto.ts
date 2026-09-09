@@ -1,5 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ClientField, NotClientField } from '../../../common/security/client-field.decorator';
+import {
+  ClientField,
+  ClientFieldMap,
+  NoClientFields,
+  NotClientField,
+} from '../../../common/security/client-field.decorator';
 import {
   rejectionContextEnum,
   transactionDirectionEnum,
@@ -13,6 +18,9 @@ import type { RejectionContext } from '../../../store/rejection-reasons.store';
 // keep these in sync with what the services actually return.
 
 /** A tag an administrator's client view is restricted to. */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminScopeTagDto {
   @ApiProperty() tagId: string;
   @ApiProperty() slug: string;
@@ -20,16 +28,29 @@ export class AdminScopeTagDto {
 }
 
 export class AdminProfileDto {
-  @ApiProperty() id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
   @NotClientField(
     'the administrator OWN address - this DTO describes the operator reading the screen, not a client',
   )
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 email describes the record rather than the person',
+  )
   email: string;
-  @ApiProperty() name: string;
-  @ApiProperty({ enum: ['master_admin', 'sub_admin'] }) role: 'master_admin' | 'sub_admin';
-  @ApiProperty({ type: [String] }) permissions: string[];
-  @ApiPropertyOptional() roleId?: string;
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
+  @ApiProperty()
+  name: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['master_admin', 'sub_admin'] })
+  role: 'master_admin' | 'sub_admin';
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
+  @ApiProperty({ type: [String] })
+  permissions: string[];
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiPropertyOptional()
+  roleId?: string;
   /**
    * The role's display name — what the console shows beside the operator's own.
    *
@@ -38,7 +59,9 @@ export class AdminProfileDto {
    * their email address where their job title should be. Absent when the admin
    * is on no role, which is a real state and must not be guessed at.
    */
-  @ApiPropertyOptional() roleName?: string;
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
+  @ApiPropertyOptional()
+  roleName?: string;
   /*
    * The admin directory rendered a hardcoded "Active" badge for every row,
    * because this field did not exist and the screen showed something rather
@@ -48,7 +71,9 @@ export class AdminProfileDto {
    * Suspension has always been ENFORCED — admin.guard.ts refuses a suspended
    * admin on every request — so the gap was purely in what the API admitted to.
    */
-  @ApiProperty({ enum: ['active', 'suspended'] }) status: 'active' | 'suspended';
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['active', 'suspended'] })
+  status: 'active' | 'suspended';
 
   /**
    * RBAC-03 — the client fields this administrator cannot see RIGHT NOW, role
@@ -59,7 +84,9 @@ export class AdminProfileDto {
    * confident lie, and the row is exactly where an operator checks before
    * trusting an account.
    */
-  @ApiProperty({ type: [String] }) maskedFields: string[];
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiProperty({ type: [String] })
+  maskedFields: string[];
 
   /**
    * The STORED override — `null` when this administrator follows their role.
@@ -69,6 +96,7 @@ export class AdminProfileDto {
    * and so could never offer to put somebody back on their role.
    */
   @ApiPropertyOptional({ type: [String], nullable: true })
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
   maskedFieldsOverride?: string[] | null;
 
   /**
@@ -77,14 +105,18 @@ export class AdminProfileDto {
    * EMPTY MEANS UNRESTRICTED, not "sees nothing" (D-10). Any screen rendering
    * this has to say so in words; it is not inferable from an empty array.
    */
-  @ApiProperty({ type: [AdminScopeTagDto] }) scopedTags: AdminScopeTagDto[];
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
+  @ApiProperty({ type: [AdminScopeTagDto] })
+  scopedTags: AdminScopeTagDto[];
 
   /**
    * D-60 — sees the intake pool: clients with no tag assignments yet.
    * "Untriaged" is a DERIVED state, not a tag; this grant is the flag beside
    * the territory list. Meaningful only when the admin is scoped.
    */
-  @ApiProperty() seesUntriaged: boolean;
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
+  @ApiProperty()
+  seesUntriaged: boolean;
 
   /**
    * The profile photo, on `me` rather than behind a profile endpoint of its
@@ -92,6 +124,7 @@ export class AdminProfileDto {
    * round trip per navigation to draw one 32px circle.
    */
   @ApiPropertyOptional({ type: String, nullable: true, example: '/uploads/avatars/6f1c.png' })
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   avatarUrl?: string | null;
 
   /**
@@ -101,9 +134,12 @@ export class AdminProfileDto {
    * changed" — the profile screen words it as unknown rather than guessing.
    */
   @ApiPropertyOptional({ type: String, format: 'date-time', nullable: true })
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   passwordChangedAt?: Date | null;
 
-  @ApiProperty() createdAt: Date;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  createdAt: Date;
 }
 
 /**
@@ -121,6 +157,9 @@ export class AdminProfileDto {
  * recreated the very exposure the migration removed. Removing the fields makes
  * that impossible rather than merely discouraged.
  */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminLoginResponseDto {
   @ApiProperty({ type: AdminProfileDto }) admin: AdminProfileDto;
 }
@@ -144,35 +183,63 @@ export class AdminLoginResponseDto {
  * and the reviewer was being asked to decide without them.
  */
 export class KycUserDto {
-  @ApiProperty() id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
   @ClientField('client.email')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 email describes the record rather than the person',
+  )
   email: string;
   @ClientField('client.firstName')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
+  )
   firstName: string;
   @ClientField('client.lastName')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
+  )
   lastName: string;
-  @ApiPropertyOptional({ enum: ['individual', 'referral', 'partner'] }) type?: string;
-  @ApiPropertyOptional({ enum: ['active', 'pending', 'suspended'] }) status?: string;
-  @ApiPropertyOptional({ enum: [0, 1] }) verificationLevel?: number;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiPropertyOptional({ enum: ['individual', 'referral', 'partner'] })
+  type?: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiPropertyOptional({ enum: ['active', 'pending', 'suspended'] })
+  status?: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiPropertyOptional({ enum: [0, 1] })
+  verificationLevel?: number;
   @NotClientField(
     'a verification STATUS rather than the address; the catalogue offers no key for it, and hiding it would blank the badge rather than protect anything',
   )
   @ApiPropertyOptional()
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   emailVerified?: boolean;
   @ClientField('client.country')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 country describes the record rather than the person',
+  )
   country?: string;
   @ClientField('client.phone')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 phone describes the record rather than the person',
+  )
   phone?: string;
   @ClientField('client.createdAt')
   @ApiPropertyOptional({ type: String, format: 'date-time' })
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   createdAt?: string;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class KycDocumentDto {
   @ApiPropertyOptional() docType?: string;
   @ApiPropertyOptional() frontFilePath?: string;
@@ -181,11 +248,17 @@ export class KycDocumentDto {
   @ApiPropertyOptional() backFileName?: string;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class KycSelfieDto {
   @ApiPropertyOptional() filePath?: string;
   @ApiPropertyOptional() fileName?: string;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class KycAddressProofDto {
   @ApiPropertyOptional() docType?: string;
   @ApiPropertyOptional() filePath?: string;
@@ -195,14 +268,23 @@ export class KycAddressProofDto {
 }
 
 export class KycSubmissionDto {
-  @ApiProperty() userId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  userId: string;
   @ApiProperty({
     enum: ['not_started', 'in_progress', 'submitted', 'under_review', 'approved', 'rejected'],
   })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   status: string;
-  @ApiPropertyOptional() submittedAt?: Date;
-  @ApiPropertyOptional() reviewedAt?: Date;
-  @ApiPropertyOptional() reviewedBy?: string;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional()
+  submittedAt?: Date;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional()
+  reviewedAt?: Date;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiPropertyOptional()
+  reviewedBy?: string;
   /**
    * The reviewer's NAME, resolved from `reviewedBy`.
    *
@@ -212,22 +294,49 @@ export class KycSubmissionDto {
    * Null when unclaimed, and null when the administrator who held it has since
    * been deleted: an absence the screen states rather than filling with an id.
    */
-  @ApiPropertyOptional({ type: String, nullable: true }) reviewedByName?: string | null;
-  @ApiPropertyOptional() rejectionReason?: string;
-  @ApiPropertyOptional({ type: [String] }) rejectedFields?: string[];
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  reviewedByName?: string | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 rejectionReason describes the record rather than the person',
+  )
+  @ApiPropertyOptional()
+  rejectionReason?: string;
+  @NotClientField(
+    'not a client-owned attribute \u2014 rejectedFields describes the record rather than the person',
+  )
+  @ApiPropertyOptional({ type: [String] })
+  rejectedFields?: string[];
   @ApiPropertyOptional({
     type: 'object',
     additionalProperties: { type: 'string' },
   })
+  @ClientFieldMap('kyc.personalInfo')
   personalInfo?: Record<string, string>;
-  @ApiPropertyOptional({ type: KycDocumentDto }) document?: KycDocumentDto;
-  @ApiPropertyOptional({ type: KycSelfieDto }) selfie?: KycSelfieDto;
+  @NotClientField(
+    'a stored-document REFERENCE (its type and file name), never the document contents',
+  )
+  @ApiPropertyOptional({ type: KycDocumentDto })
+  document?: KycDocumentDto;
+  @NotClientField(
+    'a stored-document REFERENCE (its type and file name), never the document contents',
+  )
+  @ApiPropertyOptional({ type: KycSelfieDto })
+  selfie?: KycSelfieDto;
   @ApiPropertyOptional({ type: KycAddressProofDto })
+  @NotClientField(
+    'a stored-document REFERENCE (its type and file name), never the document contents',
+  )
   addressProof?: KycAddressProofDto;
   @ApiPropertyOptional({ type: KycUserDto, nullable: true })
+  @NotClientField(
+    'the nested person, whose own shape carries the marks \u2014 masked there, not here',
+  )
   user?: KycUserDto | null;
   /** RBAC-03: the `kyc.*` keys hidden from this viewer, omitted from the body. */
-  @ApiPropertyOptional({ type: [String] }) maskedFields?: string[];
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiPropertyOptional({ type: [String] })
+  maskedFields?: string[];
 }
 
 /**
@@ -239,11 +348,21 @@ export class KycSubmissionDto {
  * makes "the third try" a thing the UI can say.
  */
 export class KycAttemptDto {
-  @ApiProperty({ description: 'Dense from 1, per client.' }) attemptNo: number;
-  @ApiProperty({ enum: ['approved', 'rejected'] }) status: string;
-  @ApiPropertyOptional() submittedAt?: Date;
-  @ApiPropertyOptional() reviewedAt?: Date;
-  @ApiPropertyOptional() reviewedBy?: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ description: 'Dense from 1, per client.' })
+  attemptNo: number;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['approved', 'rejected'] })
+  status: string;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional()
+  submittedAt?: Date;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional()
+  reviewedAt?: Date;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiPropertyOptional()
+  reviewedBy?: string;
   /**
    * The reviewer's NAME, resolved from `reviewedBy`.
    *
@@ -253,29 +372,78 @@ export class KycAttemptDto {
    * Null when unclaimed, and null when the administrator who held it has since
    * been deleted: an absence the screen states rather than filling with an id.
    */
-  @ApiPropertyOptional({ type: String, nullable: true }) reviewedByName?: string | null;
-  @ApiPropertyOptional() rejectionReason?: string;
-  @ApiPropertyOptional({ type: [String] }) rejectedFields?: string[];
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  reviewedByName?: string | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 rejectionReason describes the record rather than the person',
+  )
+  @ApiPropertyOptional()
+  rejectionReason?: string;
+  @NotClientField(
+    'not a client-owned attribute \u2014 rejectedFields describes the record rather than the person',
+  )
+  @ApiPropertyOptional({ type: [String] })
+  rejectedFields?: string[];
   @ApiPropertyOptional({ type: 'object', additionalProperties: { type: 'string' } })
+  @ClientFieldMap('kyc.personalInfo')
   personalInfo?: Record<string, string>;
-  @ApiPropertyOptional({ type: KycDocumentDto }) document?: KycDocumentDto;
-  @ApiPropertyOptional({ type: KycSelfieDto }) selfie?: KycSelfieDto;
-  @ApiPropertyOptional({ type: KycAddressProofDto }) addressProof?: KycAddressProofDto;
-  @ApiProperty() archivedAt: Date;
+  @NotClientField(
+    'a stored-document REFERENCE (its type and file name), never the document contents',
+  )
+  @ApiPropertyOptional({ type: KycDocumentDto })
+  document?: KycDocumentDto;
+  @NotClientField(
+    'a stored-document REFERENCE (its type and file name), never the document contents',
+  )
+  @ApiPropertyOptional({ type: KycSelfieDto })
+  selfie?: KycSelfieDto;
+  @NotClientField(
+    'a stored-document REFERENCE (its type and file name), never the document contents',
+  )
+  @ApiPropertyOptional({ type: KycAddressProofDto })
+  addressProof?: KycAddressProofDto;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  archivedAt: Date;
 }
 
 export class KycListResponseDto {
-  @ApiProperty({ type: [KycSubmissionDto] }) items: KycSubmissionDto[];
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ type: [KycSubmissionDto] })
+  items: KycSubmissionDto[];
   /** RBAC-03: the `kyc.*` keys hidden from this viewer, omitted from every row. */
-  @ApiPropertyOptional({ type: [String] }) maskedFields?: string[];
-  @ApiProperty() total: number;
-  @ApiProperty() page: number;
-  @ApiProperty() limit: number;
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiPropertyOptional({ type: [String] })
+  maskedFields?: string[];
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  total: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  page: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  limit: number;
   @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   counts: Record<string, number>;
 }
 
 /** RBAC-03 — one maskable (or deliberately unmaskable) client field. */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ClientFieldDto {
   @ApiProperty({ description: 'Path-qualified, e.g. client.email or kyc.personalInfo.phone.' })
   key: string;
@@ -286,6 +454,9 @@ export class ClientFieldDto {
   reason?: string;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ClientFieldGroupDto {
   @ApiProperty() groupName: string;
   @ApiProperty() description: string;
@@ -293,6 +464,9 @@ export class ClientFieldGroupDto {
 }
 
 /** ADM-14 — an arbitrary client label. */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ClientTagDto {
   @ApiProperty() id: string;
   @ApiProperty({
@@ -314,6 +488,9 @@ export class ClientTagDto {
  * RBAC-03 territory — they decide which administrator sees whom — so that is a
  * question about ACCESS, not about labels.
  */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ClientTagAssignmentDto extends ClientTagDto {
   @ApiPropertyOptional({ type: String, nullable: true }) assignedBy?: string | null;
   /** Null when the assignment predates the column, or the admin was deleted. */
@@ -321,6 +498,9 @@ export class ClientTagAssignmentDto extends ClientTagDto {
   @ApiProperty() assignedAt: Date;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ClientTagWithCountDto extends ClientTagDto {
   @ApiProperty({ description: 'How many clients carry this tag.' })
   clientCount: number;
@@ -334,28 +514,43 @@ export class ClientTagWithCountDto extends ClientTagDto {
  * none" — two answers an operator must be able to tell apart.
  */
 export class ClientRowDto {
-  @ApiProperty() id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
   @ClientField('client.email')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 email describes the record rather than the person',
+  )
   email?: string;
   @ClientField('client.firstName')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
+  )
   firstName?: string;
   @ClientField('client.lastName')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
+  )
   lastName?: string;
-  @ApiProperty({ enum: ['individual', 'referral', 'partner'] }) type: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['individual', 'referral', 'partner'] })
+  type: string;
   @ApiProperty({
     enum: ['active', 'pending', 'suspended'],
     description:
       'The ACCOUNT state, and only that: whether this person may sign in. It is deliberately not a verification state — read `emailVerified` and `kycStatus` for those. "pending" here means the account itself is not yet active, and says nothing about documents.',
   })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   status: string;
 
   @ApiProperty({
     description:
       'Whether the client confirmed the address they registered with. Separate from KYC: an unconfirmed email is a self-service problem the client can fix, while a KYC decision is work for a reviewer.',
   })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   emailVerified: boolean;
 
   @ApiProperty({
@@ -363,6 +558,7 @@ export class ClientRowDto {
     description:
       "The client's identity-verification state, joined from kyc_submissions. Total: a client who never began verification reads as 'not_started' rather than null.",
   })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   kycStatus: string;
 
   @ApiProperty({
@@ -370,6 +566,7 @@ export class ClientRowDto {
     description:
       'The verification TIER the account has reached (0 or 1), which gates what the client may do. Not a synonym for `kycStatus`: a rejected submission leaves the level at 0, and the reason lives in the status.',
   })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   verificationLevel: number;
 
   /*
@@ -386,19 +583,32 @@ export class ClientRowDto {
    */
   @ClientField('client.phone')
   @ApiPropertyOptional({ type: String, nullable: true })
+  @NotClientField(
+    'not a client-owned attribute \u2014 phone describes the record rather than the person',
+  )
   phone?: string | null;
 
   @ClientField('client.country')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 country describes the record rather than the person',
+  )
   country?: string;
   @ClientField('client.createdAt')
   @ApiPropertyOptional()
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   createdAt?: Date;
   @ClientField('client.tags')
   @ApiPropertyOptional({ type: [ClientTagDto] })
+  @NotClientField(
+    'not a client-owned attribute \u2014 tags describes the record rather than the person',
+  )
   tags?: ClientTagDto[];
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ProfileTradingAccountDto {
   @ApiProperty() id: string;
   @ApiProperty({
@@ -419,36 +629,68 @@ export class ProfileTradingAccountDto {
 }
 
 export class ProfileReferrerDto {
-  @ApiProperty() ibUserId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  ibUserId: string;
   @ClientField('client.email')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 email describes the record rather than the person',
+  )
   email: string;
   @ClientField('client.firstName')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
+  )
   firstName: string;
   @ClientField('client.lastName')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
+  )
   lastName: string;
   @ApiProperty({ description: 'False when the attribution was switched off.' })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   active: boolean;
-  @ApiProperty() since: Date;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  since: Date;
 }
 
 export class ProfileReferredClientDto {
-  @ApiProperty() clientUserId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  clientUserId: string;
   @ClientField('client.email')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 email describes the record rather than the person',
+  )
   email: string;
   @ClientField('client.firstName')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
+  )
   firstName: string;
   @ClientField('client.lastName')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
+  )
   lastName: string;
-  @ApiProperty() active: boolean;
-  @ApiProperty() since: Date;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty()
+  active: boolean;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  since: Date;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ProfileKycDto {
   @ApiProperty({ enum: ['none', 'pending', 'in_review', 'approved', 'rejected'] })
   status: string;
@@ -487,34 +729,59 @@ export class ProfileKycDto {
  * would have surfaced as a runtime undefined rather than a compile error.
  */
 export class ClientAccountDto {
-  @ApiProperty({ format: 'uuid' }) id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ format: 'uuid' })
+  id: string;
   @ClientField('client.email')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 email describes the record rather than the person',
+  )
   email: string;
   @ClientField('client.firstName')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
+  )
   firstName: string;
   @ClientField('client.lastName')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
+  )
   lastName: string;
-  @ApiProperty({ enum: ['individual', 'referral', 'partner'] }) type: string;
-  @ApiProperty({ enum: ['active', 'pending', 'suspended'] }) status: string;
-  @ApiProperty({ enum: [0, 1] }) verificationLevel: number;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['individual', 'referral', 'partner'] })
+  type: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['active', 'pending', 'suspended'] })
+  status: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: [0, 1] })
+  verificationLevel: number;
 
   @ApiProperty({
     description:
       'Reset to false by an email change, and stays false until the new address is verified.',
   })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   emailVerified: boolean;
 
   @ClientField('client.country')
   @ApiProperty({ type: String, nullable: true })
+  @NotClientField(
+    'not a client-owned attribute \u2014 country describes the record rather than the person',
+  )
   country: string | null;
   @ClientField('client.phone')
   @ApiProperty({ type: String, nullable: true })
+  @NotClientField(
+    'not a client-owned attribute \u2014 phone describes the record rather than the person',
+  )
   phone: string | null;
   @ClientField('client.createdAt')
   @ApiProperty()
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   createdAt: Date;
 
   @ApiProperty({
@@ -524,55 +791,93 @@ export class ClientAccountDto {
       'absent from the payload entirely, so this list is the only way to tell "hidden from you" ' +
       'apart from "this client has none" — an empty box otherwise reads as the second.',
   })
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
   maskedFields: string[];
 }
 
 export class ClientProfileDto {
-  @ApiProperty() id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
   @ClientField('client.email')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 email describes the record rather than the person',
+  )
   email?: string;
   @ClientField('client.firstName')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
+  )
   firstName?: string;
   @ClientField('client.lastName')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
+  )
   lastName?: string;
-  @ApiProperty({ enum: ['individual', 'referral', 'partner'] }) type: string;
-  @ApiProperty({ enum: ['active', 'pending', 'suspended'] }) status: string;
-  @ApiProperty({ enum: [0, 1] }) verificationLevel: number;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['individual', 'referral', 'partner'] })
+  type: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['active', 'pending', 'suspended'] })
+  status: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: [0, 1] })
+  verificationLevel: number;
   @NotClientField(
     'a verification STATUS rather than the address; the catalogue offers no key for it, and hiding it would blank the badge rather than protect anything',
   )
   @ApiProperty()
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   emailVerified: boolean;
   @ClientField('client.country')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 country describes the record rather than the person',
+  )
   country?: string;
   @ClientField('client.phone')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 phone describes the record rather than the person',
+  )
   phone?: string;
   @ClientField('client.createdAt')
   @ApiPropertyOptional()
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   createdAt?: Date;
 
   @ClientField('client.tags')
   @ApiProperty({ type: [ClientTagDto] })
+  @NotClientField(
+    'not a client-owned attribute \u2014 tags describes the record rather than the person',
+  )
   tags: ClientTagDto[];
 
   @ApiPropertyOptional({ type: ProfileKycDto, description: 'Absent without kyc.view.' })
+  @NotClientField(
+    'not a client-owned attribute \u2014 kyc describes the record rather than the person',
+  )
   kyc?: ProfileKycDto;
 
   @ApiPropertyOptional({
     type: [String],
     description: 'Document filenames. Absent without kyc.documents.view.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 documents describes the record rather than the person',
+  )
   documents?: string[];
 
   @ApiPropertyOptional({
     type: [ProfileTradingAccountDto],
     description: 'Absent without trading.view.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 tradingAccounts describes the record rather than the person',
+  )
   tradingAccounts?: ProfileTradingAccountDto[];
 
   @ApiPropertyOptional({
@@ -581,24 +886,39 @@ export class ClientProfileDto {
       'Absent without ib.view, and absent when nobody introduced this client — the UI tells ' +
       'the two apart by its own permission check.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 referrer describes the record rather than the person',
+  )
   referrer?: ProfileReferrerDto;
 
   @ApiPropertyOptional({
     type: [ProfileReferredClientDto],
     description: 'Capped — see referredShown. Absent without ib.view; empty when none.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 referredClients describes the record rather than the person',
+  )
   referredClients?: ProfileReferredClientDto[];
 
   @ApiPropertyOptional({
     description: 'How many referredClients were returned; the list is capped for one screen.',
   })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   referredShown?: number;
 
-  @ApiProperty({ type: [String] }) maskedFields: string[];
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiProperty({ type: [String] })
+  maskedFields: string[];
 }
 
 export class ClientListResponseDto {
-  @ApiProperty({ type: [ClientRowDto] }) items: ClientRowDto[];
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ type: [ClientRowDto] })
+  items: ClientRowDto[];
 
   /**
    * The client fields THIS VIEWER cannot see — RBAC-03.
@@ -610,6 +930,7 @@ export class ClientListResponseDto {
    * client has not given us one".
    */
   @ApiProperty({ type: [String] })
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
   maskedFields: string[];
   /**
    * Pass back as `?cursor=` for the next page; `null` on the last (R-2.4).
@@ -618,16 +939,33 @@ export class ClientListResponseDto {
    * scan of the filtered set and is only performed on request.
    */
   @ApiProperty({ type: String, nullable: true })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   nextCursor: string | null;
 
   @ApiPropertyOptional({
     description: 'Only when ?withTotal=true. Counting 219,000 rows is a full scan.',
   })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   total?: number;
-  @ApiProperty() page: number;
-  @ApiProperty() limit: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  page: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  limit: number;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class RoleResponseDto {
   @ApiProperty() id: string;
   @ApiProperty() name: string;
@@ -646,6 +984,9 @@ export class RoleResponseDto {
   @ApiProperty() createdAt: Date;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class RejectionReasonResponseDto {
   @ApiProperty() id: string;
   /*
@@ -664,17 +1005,26 @@ export class RejectionReasonResponseDto {
   @ApiProperty() createdAt: Date;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class PermissionItemDto {
   @ApiProperty() key: string;
   @ApiProperty() label: string;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class PermissionModuleDto {
   @ApiProperty() moduleName: string;
   @ApiProperty() description: string;
   @ApiProperty({ type: [PermissionItemDto] }) permissions: PermissionItemDto[];
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class InviteResponseDto {
   @ApiProperty() message: string;
   /*
@@ -707,13 +1057,18 @@ export class InviteResponseDto {
  */
 export class InviteValidationDto {
   @ApiProperty({ description: 'The address the invite was sent to; the form shows it read-only.' })
+  @NotClientField(
+    'not a client-owned attribute \u2014 email describes the record rather than the person',
+  )
   email: string;
   @ApiProperty({ description: 'Used only to greet the invitee by name.' })
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   name: string;
   @ApiProperty({
     enum: ['sub_admin'],
     description: 'Always sub_admin — an invite cannot mint a master.',
   })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   role: 'sub_admin';
 }
 
@@ -723,6 +1078,9 @@ export class InviteValidationDto {
  * No tokens in the body, like every other session-establishing response here:
  * the cookies are set on the response and the admin app reads none of them.
  */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AcceptInviteResponseDto {
   @ApiProperty({ example: 'Account created. Welcome aboard!' }) message: string;
   @ApiProperty({ type: AdminProfileDto }) admin: AdminProfileDto;
@@ -730,19 +1088,36 @@ export class AcceptInviteResponseDto {
 
 /** An invite that has been sent and not yet accepted. Never carries the token. */
 export class PendingInviteDto {
-  @ApiProperty() id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
   @NotClientField('the invited ADMINISTRATOR, not a client')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 email describes the record rather than the person',
+  )
   email: string;
-  @ApiProperty() name: string;
-  @ApiPropertyOptional() roleId?: string;
-  @ApiProperty({ description: 'Admin id of whoever sent it.' }) invitedBy: string;
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
+  @ApiProperty()
+  name: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiPropertyOptional()
+  roleId?: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ description: 'Admin id of whoever sent it.' })
+  invitedBy: string;
   @ApiProperty({ description: 'After this the link is dead; re-invite to replace it.' })
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   expiresAt: Date;
-  @ApiProperty() createdAt: Date;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  createdAt: Date;
 }
 
 /** One entry in the action-filter vocabulary — see audit-actions.catalog.ts. */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AuditActionDto {
   @ApiProperty() action: string;
   @ApiProperty() label: string;
@@ -751,12 +1126,19 @@ export class AuditActionDto {
 }
 
 export class AuditEntryDto {
-  @ApiProperty() id: string;
-  @ApiProperty() actorId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  actorId: string;
   @NotClientField(
     'the ACTOR who performed the action, an administrator; a client field mask has no standing over it',
   )
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 actorEmail describes the record rather than the person',
+  )
   actorEmail: string;
   /*
    * WHO KIND of actor, and from WHERE. Both were stored, returned by the store,
@@ -774,6 +1156,7 @@ export class AuditEntryDto {
     enum: ['admin', 'client', 'system', 'provider'],
     description: 'A background job records as `system`, with a named identity — never anonymously.',
   })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   actorKind: string;
   @ApiPropertyOptional({
     // `type` is not decoration here: without it, `nullable: true` generates as
@@ -786,15 +1169,34 @@ export class AuditEntryDto {
       'The address the action came from. Null for an action with no request context, such as ' +
       'a scheduled job.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 ipAddress describes the record rather than the person',
+  )
   ipAddress?: string | null;
-  @ApiProperty() action: string;
-  @ApiProperty() subjectType: string;
-  @ApiProperty() subjectId: string;
+  @NotClientField(
+    'not a client-owned attribute \u2014 action describes the record rather than the person',
+  )
+  @ApiProperty()
+  action: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty()
+  subjectType: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  subjectId: string;
   @ApiPropertyOptional({ type: 'object', additionalProperties: true })
+  @NotClientField(
+    'not a client-owned attribute \u2014 details describes the record rather than the person',
+  )
   details?: Record<string, unknown>;
-  @ApiProperty() createdAt: Date;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  createdAt: Date;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AuditListResponseDto {
   @ApiProperty({ type: [AuditEntryDto] }) items: AuditEntryDto[];
   /**
@@ -830,31 +1232,54 @@ export { MessageResponseDto } from '../../../common/dto/message-response.dto';
  * marks `client.id` unmaskable.
  */
 export class WithdrawalUserDto {
-  @ApiProperty() id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
   @ClientField('client.email')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 email describes the record rather than the person',
+  )
   email?: string;
   @ClientField('client.firstName')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
+  )
   firstName?: string;
   @ClientField('client.lastName')
   @ApiPropertyOptional()
+  @NotClientField(
+    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
+  )
   lastName?: string;
 }
 
 export class WithdrawalRowDto {
-  @ApiProperty() id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
   @ApiProperty({
     description: 'Monetary value — always a string, never a number',
   })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   amount: string;
   // A CODE, not a fixed set — currencies are operator data (see WalletDto).
-  @ApiProperty({ description: 'A currency code.', example: 'USD' }) currency: string;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ description: 'A currency code.', example: 'USD' })
+  currency: string;
   @ApiProperty({
     enum: transactionStateEnum.enumValues,
   })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   state: string;
-  @ApiProperty() provider: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty()
+  provider: string;
   /**
    * What to CALL the payout rail on screen — 'Whish Money'.
    *
@@ -868,12 +1293,32 @@ export class WithdrawalRowDto {
    * records: it is the operator's own name for their own rail — a brand, which
    * does not translate.
    */
-  @ApiProperty({ example: 'Whish Money' }) methodName: string;
-  @ApiPropertyOptional({ type: String, nullable: true }) providerRef?: string | null;
-  @ApiPropertyOptional({ type: String, nullable: true }) destination?: string | null;
-  @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;
-  @ApiProperty() requestedAt: Date;
-  @ApiPropertyOptional({ type: Date, nullable: true }) reviewedAt?: Date | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 methodName describes the record rather than the person',
+  )
+  @ApiProperty({ example: 'Whish Money' })
+  methodName: string;
+  @NotClientField(
+    'not a client-owned attribute \u2014 providerRef describes the record rather than the person',
+  )
+  @ApiPropertyOptional({ type: String, nullable: true })
+  providerRef?: string | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 destination describes the record rather than the person',
+  )
+  @ApiPropertyOptional({ type: String, nullable: true })
+  destination?: string | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 rejectionReason describes the record rather than the person',
+  )
+  @ApiPropertyOptional({ type: String, nullable: true })
+  rejectionReason?: string | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  requestedAt: Date;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional({ type: Date, nullable: true })
+  reviewedAt?: Date | null;
   /**
    * The reviewer's NAME, resolved from `reviewedBy`.
    *
@@ -885,8 +1330,12 @@ export class WithdrawalRowDto {
    * decided has since been deleted: an absence the screen states rather than
    * filling with the id.
    */
-  @ApiPropertyOptional({ type: String, nullable: true }) reviewedByName?: string | null;
-  @ApiPropertyOptional({ type: Date, nullable: true }) settledAt?: Date | null;
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  reviewedByName?: string | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional({ type: Date, nullable: true })
+  settledAt?: Date | null;
   /*
    * The Rival payout leg, for the desk's badges. `rivalWithdrawalId` set =
    * submitted and awaiting Rival's decision; `rivalSubmittedAt` without an id
@@ -899,16 +1348,21 @@ export class WithdrawalRowDto {
     nullable: true,
     description: 'The payment platform’s withdrawal id, once submitted. Null before.',
   })
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   rivalWithdrawalId?: string | null;
   @ApiPropertyOptional({
     type: Date,
     nullable: true,
     description: 'When the submission claim was taken. Set with no id = outcome being reconciled.',
   })
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   rivalSubmittedAt?: Date | null;
   @ApiProperty({
     description: 'A human must reconcile this row against the payment platform.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 rivalNeedsAttention describes the record rather than the person',
+  )
   rivalNeedsAttention: boolean;
   @ApiPropertyOptional({
     type: 'string',
@@ -917,10 +1371,20 @@ export class WithdrawalRowDto {
       'WHY the row needs attention, in words the operator can act on. Written whenever ' +
       'rivalNeedsAttention flips true; null once a retry lands or the flag was never raised.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 rivalAttentionReason describes the record rather than the person',
+  )
   rivalAttentionReason?: string | null;
-  @ApiProperty({ type: WithdrawalUserDto }) user: WithdrawalUserDto;
+  @NotClientField(
+    'the nested person, whose own shape carries the marks \u2014 masked there, not here',
+  )
+  @ApiProperty({ type: WithdrawalUserDto })
+  user: WithdrawalUserDto;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class WithdrawalListResponseDto {
   @ApiProperty({ type: [WithdrawalRowDto] }) items: WithdrawalRowDto[];
   /**
@@ -951,7 +1415,9 @@ export class WithdrawalListResponseDto {
 // ── The Financial page: every money movement, platform-wide ─────────────────
 
 export class AdminTransactionRowDto {
-  @ApiProperty() id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
   /**
    * What a renderer BRANCHES on — a `payment` crossed the platform boundary
    * through a provider, a `transfer` moved wallet ⇄ trading account, a
@@ -960,6 +1426,7 @@ export class AdminTransactionRowDto {
    * not a table enum.
    */
   @ApiProperty({ enum: TRANSACTION_KINDS })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   kind: string;
   /**
    * Stated FROM THE WALLET'S SIDE for every kind — a wallet→account transfer
@@ -967,6 +1434,7 @@ export class AdminTransactionRowDto {
    * branch on `kind` for the rest, the rule the client portal already follows.
    */
   @ApiProperty({ enum: transactionDirectionEnum.enumValues })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   direction: string;
   /**
    * One vocabulary for both tables: transfer states arrive pre-mapped
@@ -975,6 +1443,7 @@ export class AdminTransactionRowDto {
    * for transfers.
    */
   @ApiProperty({ enum: transactionStateEnum.enumValues })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   state: string;
   @ApiProperty({
     type: 'string',
@@ -983,19 +1452,36 @@ export class AdminTransactionRowDto {
       'Monetary value — ALWAYS a string, never a number. NUMERIC(28,8) exceeds what a ' +
       'JavaScript number represents exactly (§6.1).',
   })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   amount: string;
   // A CODE, not a fixed set — currencies are operator data (see WalletDto).
-  @ApiProperty({ description: 'A currency code.', example: 'USD' }) currency: string;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ description: 'A currency code.', example: 'USD' })
+  currency: string;
   /**
    * What to CALL the rail on screen, resolved server-side — the
    * `WithdrawalRowDto.methodName` rule. Falls back to `provider` where no
    * method was named: historical rows, and both transfer kinds, whose
    * providers ('transfer' / 'commission') the screens translate via `kind`.
    */
-  @ApiProperty({ example: 'Whish Money' }) methodName: string;
+  @NotClientField(
+    'not a client-owned attribute \u2014 methodName describes the record rather than the person',
+  )
+  @ApiProperty({ example: 'Whish Money' })
+  methodName: string;
   /** An OPEN set no screen may switch on exhaustively (see TransactionDto). */
-  @ApiProperty() provider: string;
-  @ApiPropertyOptional({ type: String, nullable: true }) providerRef?: string | null;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty()
+  provider: string;
+  @NotClientField(
+    'not a client-owned attribute \u2014 providerRef describes the record rather than the person',
+  )
+  @ApiPropertyOptional({ type: String, nullable: true })
+  providerRef?: string | null;
 
   @ApiPropertyOptional({
     description:
@@ -1011,22 +1497,45 @@ export class AdminTransactionRowDto {
    * of the integration; only ours was ever rendered, so an operator raising a
    * payment ticket had one identifier and needed an engineer to recover the other.
    */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   rivalExternalId?: string | null;
-  @ApiPropertyOptional({ type: String, nullable: true }) destination?: string | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 destination describes the record rather than the person',
+  )
+  @ApiPropertyOptional({ type: String, nullable: true })
+  destination?: string | null;
   /** Also carries a transfer's failure reason — one column for "why not". */
-  @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 rejectionReason describes the record rather than the person',
+  )
+  @ApiPropertyOptional({ type: String, nullable: true })
+  rejectionReason?: string | null;
   @ApiPropertyOptional({
     type: String,
     nullable: true,
     description: 'The trading account a TRANSFER moved money to or from. Null on other kinds.',
   })
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   tradingAccountId?: string | null;
-  @ApiProperty() walletId: string;
-  @ApiProperty() createdAt: Date;
-  @ApiPropertyOptional({ type: Date, nullable: true }) settledAt?: Date | null;
-  @ApiProperty({ type: WithdrawalUserDto }) user: WithdrawalUserDto;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  walletId: string;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  createdAt: Date;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional({ type: Date, nullable: true })
+  settledAt?: Date | null;
+  @NotClientField(
+    'the nested person, whose own shape carries the marks \u2014 masked there, not here',
+  )
+  @ApiProperty({ type: WithdrawalUserDto })
+  user: WithdrawalUserDto;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminTransactionListResponseDto {
   @ApiProperty({ type: [AdminTransactionRowDto] }) items: AdminTransactionRowDto[];
   /** Pass back as `?cursor=` for the next page; `null` on the last (R-2.4). */
@@ -1059,6 +1568,9 @@ export class AdminTransactionListResponseDto {
   @ApiPropertyOptional({ type: [String] }) maskedFields?: string[];
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminTransactionSummaryRowDto {
   @ApiProperty({ enum: transactionDirectionEnum.enumValues }) direction: string;
   @ApiProperty({ enum: TRANSACTION_KINDS }) kind: string;
@@ -1085,6 +1597,9 @@ export class AdminTransactionSummaryRowDto {
  * "Deposits — $12,400" must be ONE server-computed number, and deriving it
  * from `rows` would mean the page adding decimal strings, which it never does.
  */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminTransactionDirectionTotalDto {
   @ApiProperty({ enum: transactionDirectionEnum.enumValues }) direction: string;
   /** Part of the group key — a sum across currencies is not a number. */
@@ -1098,6 +1613,9 @@ export class AdminTransactionDirectionTotalDto {
   total: string;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminTransactionsSummaryDto {
   @ApiProperty({ type: [AdminTransactionSummaryRowDto] })
   rows: AdminTransactionSummaryRowDto[];
@@ -1115,26 +1633,40 @@ export class AdminTransactionsSummaryDto {
 
 /** The owner a holding is displayed against. Joined, never fetched per row. */
 export class HoldingOwnerDto {
-  @ApiProperty() id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
   @ClientField('client.email')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 email describes the record rather than the person',
+  )
   email: string;
   @ClientField('client.firstName')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
+  )
   firstName: string;
   @ClientField('client.lastName')
   @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
+  )
   lastName: string;
 }
 
 export class WalletRowDto {
-  @ApiProperty() id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
   @ApiProperty({
     example: '4f7kq2nm8xcb',
     description:
       'Human-friendly wallet number — 12 lowercase Crockford base32 chars. ' +
       'Display and support reference only; `id` remains the key.',
   })
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   walletNumber: string;
   @ApiProperty({
     type: 'string',
@@ -1144,6 +1676,9 @@ export class WalletRowDto {
       'JavaScript number represents exactly, so Number()/parseFloat lose value before any ' +
       'formatting starts (§6.1).',
   })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   balance: string;
   @ApiProperty({
     type: 'string',
@@ -1152,8 +1687,15 @@ export class WalletRowDto {
       'Reserved against a pending transfer — a string for the same reason as `balance`. ' +
       'Available = balance − onHold, and that subtraction belongs in decimal arithmetic.',
   })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   onHold: string;
-  @ApiProperty({ example: 'USD' }) currency: string;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ example: 'USD' })
+  currency: string;
   /**
    * WHICH wallet of this owner's, in this currency — `main` or `commission`.
    *
@@ -1178,12 +1720,24 @@ export class WalletRowDto {
       "`commission` holds a partner's earnings until they move them across; it is invisible to " +
       'GET /wallet and reachable only through POST /ib/wallet/transfer.',
   })
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   kind: 'main' | 'commission';
-  @ApiProperty() createdAt: Date;
-  @ApiProperty() updatedAt: Date;
-  @ApiProperty({ type: HoldingOwnerDto }) user: HoldingOwnerDto;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  createdAt: Date;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  updatedAt: Date;
+  @NotClientField(
+    'the nested person, whose own shape carries the marks \u2014 masked there, not here',
+  )
+  @ApiProperty({ type: HoldingOwnerDto })
+  user: HoldingOwnerDto;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class WalletListResponseDto {
   @ApiProperty({ type: [WalletRowDto] }) items: WalletRowDto[];
   /** Pass back as `?cursor=` for the next page; `null` on the last (R-2.4). */
@@ -1194,7 +1748,9 @@ export class WalletListResponseDto {
 }
 
 export class TradingAccountRowDto {
-  @ApiProperty() id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
   @ApiPropertyOptional({
     type: String,
     nullable: true,
@@ -1202,10 +1758,23 @@ export class TradingAccountRowDto {
       'The MT5 login, once there is an MT5 to issue one. NULL until assigned, and a STRING ' +
       'rather than a number because leading zeros are significant to the bridge.',
   })
+  @NotClientField(
+    'the MT5 account NUMBER \u2014 identifying, but the catalogue defines no key to hide it',
+  )
   login?: string | null;
-  @ApiPropertyOptional({ type: String, nullable: true }) mt5Group?: string | null;
-  @ApiProperty({ enum: ['live', 'demo'] }) environment: string;
-  @ApiProperty({ example: 'USD' }) currency: string;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiPropertyOptional({ type: String, nullable: true })
+  mt5Group?: string | null;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['live', 'demo'] })
+  environment: string;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ example: 'USD' })
+  currency: string;
   @ApiProperty({
     type: 'string',
     example: '1000.00000000',
@@ -1213,6 +1782,9 @@ export class TradingAccountRowDto {
       'Monetary value — ALWAYS a string. CRM-owned until the MT5 bridge lands, at which ' +
       'point it becomes a mirror of MT5 or is removed (see the schema comment).',
   })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   balance: string;
   /**
    * The product this account was opened under, replacing `tier`.
@@ -1226,7 +1798,11 @@ export class TradingAccountRowDto {
    * NULL is a real state: an account may be opened straight into an MT5 group
    * the catalogue does not sell.
    */
-  @ApiPropertyOptional({ type: String, nullable: true }) product?: string | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 product describes the record rather than the person',
+  )
+  @ApiPropertyOptional({ type: String, nullable: true })
+  product?: string | null;
   /**
    * When MT5 last confirmed `balance`. NULL means never.
    *
@@ -1236,14 +1812,32 @@ export class TradingAccountRowDto {
    * must not do.
    */
   @ApiPropertyOptional({ type: String, format: 'date-time', nullable: true })
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   balanceSyncedAt?: Date | null;
-  @ApiPropertyOptional({ type: Number, nullable: true }) leverage?: number | null;
-  @ApiProperty({ enum: ['active', 'suspended', 'closed'] }) status: string;
-  @ApiProperty() createdAt: Date;
-  @ApiProperty() updatedAt: Date;
-  @ApiProperty({ type: HoldingOwnerDto }) user: HoldingOwnerDto;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiPropertyOptional({ type: Number, nullable: true })
+  leverage?: number | null;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['active', 'suspended', 'closed'] })
+  status: string;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  createdAt: Date;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  updatedAt: Date;
+  @NotClientField(
+    'the nested person, whose own shape carries the marks \u2014 masked there, not here',
+  )
+  @ApiProperty({ type: HoldingOwnerDto })
+  user: HoldingOwnerDto;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class TradingAccountListResponseDto {
   @ApiProperty({ type: [TradingAccountRowDto] }) items: TradingAccountRowDto[];
   @ApiProperty({ type: String, nullable: true }) nextCursor: string | null;
@@ -1252,6 +1846,9 @@ export class TradingAccountListResponseDto {
   @ApiProperty() limit: number;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class IbProgramDto {
   @ApiProperty() id: string;
   @ApiProperty() name: string;
@@ -1304,6 +1901,9 @@ export { LedgerEntryDto, LedgerListResponseDto } from '../../wallet/dto/wallet-r
  * match one found in a log against a row; the secret itself exists only as a
  * SHA-256 hash at rest and is returned exactly once, by `POST`.
  */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ApiKeyDto {
   @ApiProperty() id: string;
   @ApiProperty({ example: 'Nightly reporting job' }) name: string;
@@ -1370,6 +1970,9 @@ export class ApiKeyDto {
  * now must issue a new key. That is the intended trade: a secret this system
  * could show twice is one a database dump could show an attacker.
  */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class IssuedApiKeyDto {
   @ApiProperty({ type: ApiKeyDto })
   key: ApiKeyDto;
@@ -1390,6 +1993,9 @@ export class IssuedApiKeyDto {
  * float here could render a real 0.00000001 drift as a clean 0 — reporting
  * "balanced" for the exact condition this screen exists to catch.
  */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class WalletDiscrepancyDto {
   @ApiProperty() walletId: string;
   @ApiProperty({
@@ -1431,6 +2037,9 @@ export class WalletDiscrepancyDto {
  * frontends generated `unknown` for it and any screen showing the report had to
  * hand-write the shape — which is how a field gets renamed on one side only.
  */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ReconciliationReportDto {
   @ApiProperty({ description: 'When this run completed (ISO 8601).' })
   checkedAt: string;
@@ -1478,6 +2087,9 @@ export class ReconciliationReportDto {
  * A month-old session is thousands of rotations and one thing the
  * administrator actually did, so the list is keyed by refresh-token family.
  */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminSessionDto {
   @ApiProperty({
     description: 'Refresh-token family id. Pass this to DELETE /admin/auth/sessions/:id.',
@@ -1520,6 +2132,9 @@ export class AdminSessionDto {
 }
 
 /** Where a profile photo is served from, or null when there is none. */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminAvatarResponseDto {
   @ApiPropertyOptional({
     type: String,
@@ -1533,6 +2148,9 @@ export class AdminAvatarResponseDto {
 }
 
 /** The stored display name after a self-service change — trimmed, as saved. */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminProfileNameDto {
   @ApiProperty({ example: 'Ada Lovelace' })
   name: string;
@@ -1545,6 +2163,9 @@ export class AdminProfileNameDto {
  * the money, and for the prices because a JPY pair quotes to 3 places while
  * most others quote to 5, so there is no single float that round-trips them.
  */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ClientPositionRowDto {
   @ApiProperty() id: string;
   @ApiProperty() ticket: string;
@@ -1576,6 +2197,9 @@ export class ClientPositionRowDto {
   login: string | null;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ClientPositionsPageDto {
   @ApiProperty({ type: [ClientPositionRowDto] }) rows: ClientPositionRowDto[];
   @ApiProperty() total: number;
@@ -1584,6 +2208,9 @@ export class ClientPositionsPageDto {
 }
 
 /** One movement of a client's money, in either direction. */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ClientTransactionRowDto {
   @ApiProperty() id: string;
   @ApiProperty({ enum: ['deposit', 'withdrawal', 'transfer'] }) direction: string;
@@ -1598,6 +2225,9 @@ export class ClientTransactionRowDto {
   @ApiProperty({ type: Date, nullable: true }) settledAt: Date | null;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class ClientTransactionsPageDto {
   @ApiProperty({ type: [ClientTransactionRowDto] }) rows: ClientTransactionRowDto[];
   @ApiProperty() total: number;
@@ -1606,6 +2236,9 @@ export class ClientTransactionsPageDto {
 }
 
 /** RBAC-08 — one allowlist rule. */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class IpAllowlistRuleDto {
   @ApiProperty() id: string;
   @ApiProperty({ example: '203.0.113.0/24' }) cidr: string;
@@ -1614,6 +2247,9 @@ export class IpAllowlistRuleDto {
   @ApiProperty() createdAt: string;
 }
 
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class IpAllowlistStatusDto {
   @ApiProperty({
     description:
@@ -1656,6 +2292,9 @@ export class IpAllowlistStatusDto {
  * stops short of choosing a paging provider, so on a deployment with no log
  * drain it reaches nobody. This is the console's answer to that.
  */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class StuckTransfersDto {
   @ApiProperty({
     example: 1,

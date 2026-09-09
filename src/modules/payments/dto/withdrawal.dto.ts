@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { transactionStateEnum } from '../../../database/schema';
 import { IsNotEmpty, IsNumberString, IsString } from 'class-validator';
 
@@ -125,6 +126,9 @@ export class RequestWithdrawalDto {
    */
 }
 
+@NoClientFields(
+  'a withdrawal request shape addressed by ids; the desk row that names a person is marked separately',
+)
 export class TransactionDto {
   @ApiProperty() id: string;
   @ApiProperty() userId: string;

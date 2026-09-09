@@ -62,10 +62,44 @@ export function ClientField(catalogueKey: string): PropertyDecorator {
   };
 }
 
-/** The marked fields declared directly on `type`, or an empty map. */
-export function clientFieldsOf(type: unknown): ClientFieldMap {
+/**
+ * Merge a metadata map along the PROTOTYPE CHAIN, child winning.
+ *
+ * `getOwnMetadata` stops at the class it is asked about, and these DTOs inherit:
+ * `IbSubPartnerRowDto extends IbPartnerPersonDto`, whose `email`, `firstName`
+ * and `lastName` carry the marks. Read as own-metadata the child declares
+ * nothing, so the walker would not mask a sub-partner's address and the census
+ * would demand a statement for a field that already has one — a bug in the
+ * mechanism, found by the census on the first shape that inherits.
+ *
+ * `getMetadata` alone is no better: it returns the NEAREST ancestor's map whole,
+ * so a child that adds marks of its own would hide the parent's. Merging from
+ * the base down, with the child written last, is the only reading that keeps
+ * both.
+ */
+function inherited(key: string, type: unknown): ClientFieldMap {
   if (typeof type !== 'function') return new Map();
-  return (Reflect.getOwnMetadata(CLIENT_FIELD_KEY, type) ?? new Map()) as ClientFieldMap;
+
+  const chain: unknown[] = [];
+  for (
+    let c: unknown = type;
+    typeof c === 'function' && c !== Function.prototype;
+    c = Object.getPrototypeOf(c)
+  ) {
+    chain.unshift(c);
+  }
+
+  const merged = new Map<string, string>();
+  for (const link of chain) {
+    const own = Reflect.getOwnMetadata(key, link as object) as Map<string, string> | undefined;
+    if (own) for (const [property, value] of own) merged.set(property, value);
+  }
+  return merged;
+}
+
+/** The marked fields on `type`, including any it inherits. */
+export function clientFieldsOf(type: unknown): ClientFieldMap {
+  return inherited(CLIENT_FIELD_KEY, type);
 }
 
 export const NOT_CLIENT_FIELD_KEY = 'rbac03:not_client_field';
@@ -125,12 +159,53 @@ export const NoClientFields =
 
 /** The fields declared NOT client-owned on `type`, as `property -> reason`. */
 export function notClientFieldsOf(type: unknown): ClientFieldMap {
-  if (typeof type !== 'function') return new Map();
-  return (Reflect.getOwnMetadata(NOT_CLIENT_FIELD_KEY, type) ?? new Map()) as ClientFieldMap;
+  return inherited(NOT_CLIENT_FIELD_KEY, type);
 }
 
 /** The class-level exemption reason, if `type` carries one. */
 export function noClientFieldsReason(type: unknown): string | undefined {
   if (typeof type !== 'function') return undefined;
   return Reflect.getOwnMetadata(NO_CLIENT_FIELDS_KEY, type) as string | undefined;
+}
+
+export const CLIENT_FIELD_MAP_KEY = 'rbac03:client_field_map';
+
+/**
+ * This property is a FREE-FORM MAP whose keys are catalogue-addressed under a
+ * prefix.
+ *
+ * The case a shape cannot describe, and it is the most sensitive one in the
+ * system. `KycSubmissionDto.personalInfo` is `Record<string, string>` because
+ * the KYC step builder lets an operator ADD FIELDS — so the shape genuinely is
+ * not knowable at compile time, and a fixed DTO would under-declare it by
+ * design rather than by mistake.
+ *
+ * Meanwhile the catalogue masks `kyc.personalInfo.dateOfBirth`,
+ * `.nationality`, `.address` and `.phone`. Walking declared properties finds
+ * none of them: an untyped map has no declared properties at all. So
+ * `applyMask` — which removes by path from the object that exists — was the
+ * only thing protecting the single richest concentration of client PII in the
+ * product, and masking by shape was blind to all of it.
+ *
+ * `@ClientFieldMap('kyc.personalInfo')` says: every key inside this object is
+ * `kyc.personalInfo.<key>` in the catalogue. The walker then removes the keys
+ * the reader may not see, whatever they happen to be called — including custom
+ * fields added after this code was written, which is the property a fixed DTO
+ * could never have.
+ *
+ * @param prefix the catalogue prefix the map's own keys hang off.
+ */
+export const ClientFieldMap =
+  (prefix: string): PropertyDecorator =>
+  (target, propertyKey) => {
+    const owner = target.constructor;
+    const existing = (Reflect.getOwnMetadata(CLIENT_FIELD_MAP_KEY, owner) ??
+      new Map<string, string>()) as Map<string, string>;
+    existing.set(String(propertyKey), prefix);
+    Reflect.defineMetadata(CLIENT_FIELD_MAP_KEY, existing, owner);
+  };
+
+/** The free-form maps declared on `type`, as `property -> catalogue prefix`. */
+export function clientFieldMapsOf(type: unknown): ClientFieldMap {
+  return inherited(CLIENT_FIELD_MAP_KEY, type);
 }

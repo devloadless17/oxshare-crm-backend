@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { PLATFORM_KEYS } from '../platform-links.service';
 
@@ -10,6 +11,7 @@ import { PLATFORM_KEYS } from '../platform-links.service';
  * "the operator has not configured this yet" is a state the portal must render
  * differently from a working link, and a non-nullable string would hide it.
  */
+@NoClientFields('operator configuration - the platform download links')
 export class PlatformLinkDto {
   @ApiProperty({ enum: PLATFORM_KEYS, example: 'desktop' })
   key: string;

@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Min } from 'class-validator';
 
 /**
@@ -25,6 +26,7 @@ const LOGO_URL_MESSAGE =
   'logoUrl must be an https URL or a path returned by POST /admin/payment-methods/logo';
 
 /** What a client is shown and what a deposit is checked against. */
+@NoClientFields('operator configuration - the payment methods offered, not who used them')
 export class PaymentMethodDto {
   @ApiProperty({ example: 'whish', description: 'A stable machine key. Never renamed.' })
   key: string;
@@ -174,6 +176,7 @@ export class UpdatePaymentMethodDto {
  * would change what every client sees on the deposit screen before Save was
  * ever pressed.
  */
+@NoClientFields('operator configuration - the payment methods offered, not who used them')
 export class PaymentLogoResponseDto {
   @ApiProperty({
     example: '/v1/uploads/payment-logos/8f2c….png',

@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { IsIn, IsString, IsUUID, Matches } from 'class-validator';
 
 export const TRANSFER_DIRECTIONS = ['wallet_to_account', 'account_to_wallet'] as const;
@@ -32,6 +33,7 @@ export class RequestTransferDto {
   currency: string;
 }
 
+@NoClientFields('a transfer between a wallet and a trading account, addressed by ids')
 export class TransferDto {
   @ApiProperty() id: string;
   @ApiProperty() userId: string;

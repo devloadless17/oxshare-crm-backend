@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
 
 /**
@@ -8,6 +9,7 @@ import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Max, Min } fro
  * for every currency (ARCHITECTURE §6.1) — this number tells a UI how to
  * format, and any code that uses it to ROUND a stored balance is a bug.
  */
+@NoClientFields('operator configuration - the currency catalogue')
 export class CurrencyDto {
   @ApiProperty({ example: 'USD' }) code: string;
   @ApiProperty({ example: 'US Dollar' }) name: string;

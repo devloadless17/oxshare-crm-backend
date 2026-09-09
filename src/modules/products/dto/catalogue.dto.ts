@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import {
   IsArray,
   IsBoolean,
@@ -33,6 +34,9 @@ const SPREAD_MARKUP_MESSAGE =
 
 /* ── Products ─────────────────────────────────────────────────────────────── */
 
+@NoClientFields(
+  'operator configuration - the product and agency catalogue, which describes what is sold and not who bought it',
+)
 export class ProductGroupDto {
   @ApiProperty({ format: 'uuid' })
   id: string;
@@ -51,6 +55,9 @@ export class ProductGroupDto {
   currency: string;
 }
 
+@NoClientFields(
+  'operator configuration - the product and agency catalogue, which describes what is sold and not who bought it',
+)
 export class ProductDto {
   @ApiProperty({ format: 'uuid' })
   id: string;
@@ -168,6 +175,9 @@ export class AttachGroupDto {
 }
 
 /** One group the MT5 server reports, and whether a product already has it. */
+@NoClientFields(
+  'operator configuration - the product and agency catalogue, which describes what is sold and not who bought it',
+)
 export class AvailableGroupDto {
   @ApiProperty({ example: 'real\\Standard-USD' })
   name: string;
@@ -197,6 +207,9 @@ export class AvailableGroupDto {
 
 /* ── Agencies ─────────────────────────────────────────────────────────────── */
 
+@NoClientFields(
+  'operator configuration - the product and agency catalogue, which describes what is sold and not who bought it',
+)
 export class AgencyDto {
   @ApiProperty({ format: 'uuid' })
   id: string;

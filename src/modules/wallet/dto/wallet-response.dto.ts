@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 
 // Response DTOs for the client-facing wallet endpoints.
 //
@@ -101,6 +102,9 @@ export class WalletDto {
  * direction. It was briefly declared in both places, which is a silent schema
  * collision: Swagger keys by class name and one definition overwrites the other.
  */
+@NoClientFields(
+  'a wallet and its balances, addressed by id; the person who owns it is not projected here',
+)
 export class LedgerEntryDto {
   @ApiProperty() id: string;
   @ApiProperty() walletId: string;
@@ -130,6 +134,9 @@ export class LedgerEntryDto {
  * `GET /wallet` which returns a bare array. The portal hand-wrote the client
  * ledger call as returning a bare array, which this makes impossible.
  */
+@NoClientFields(
+  'a wallet and its balances, addressed by id; the person who owns it is not projected here',
+)
 export class LedgerListResponseDto {
   @ApiProperty({ type: [LedgerEntryDto] }) items: LedgerEntryDto[];
   /**

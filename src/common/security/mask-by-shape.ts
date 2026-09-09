@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { clientFieldsOf } from './client-field.decorator';
+import { clientFieldMapsOf, clientFieldsOf } from './client-field.decorator';
 import type { FieldMask } from './field-mask';
 
 /**
@@ -125,6 +125,30 @@ function walk(
 
   for (const [property, catalogueKey] of fields) {
     if (hidden.has(catalogueKey) && property in row) replace(property, undefined);
+  }
+
+  /*
+   * Free-form maps, keyed by CATALOGUE PREFIX rather than by declared property.
+   *
+   * `personalInfo` is `Record<string, string>` because the KYC builder lets an
+   * operator add fields, so there are no declared properties to walk and the
+   * loop above finds nothing — while the catalogue masks four keys inside it.
+   * Removing by `<prefix>.<key>` reaches them whatever they are called,
+   * including fields added after this was written.
+   */
+  for (const [property, prefix] of clientFieldMapsOf(shape)) {
+    const map = row[property];
+    if (map === null || typeof map !== 'object' || Array.isArray(map)) continue;
+
+    const entries = map as Record<string, unknown>;
+    const doomed = Object.keys(entries).filter((key) => hidden.has(`${prefix}.${key}`));
+    if (doomed.length === 0) continue;
+
+    const kept: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(entries)) {
+      if (!doomed.includes(key)) kept[key] = value;
+    }
+    replace(property, kept);
   }
 
   for (const key of Object.keys(row)) {
