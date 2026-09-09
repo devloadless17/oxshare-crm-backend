@@ -451,6 +451,27 @@ export class KycStore {
       counts[row.status] = row.value;
       counts['all'] += row.value;
     }
+    /*
+     * The pseudo-status, counted HERE so it has one definition.
+     *
+     * `needs_review` is a filter value the API already accepts and resolves to
+     * submitted + under_review, but it was never a KEY in this object — those
+     * come from a GROUP BY over a column, and no row's status is ever
+     * `needs_review`. So the console's "Needs review" tab read
+     * `counts['needs_review'] ?? 0` and displayed **0 for ever**, on the one
+     * tab that means "work waiting for a human", above a list that was not
+     * empty.
+     *
+     * The sidebar badge got the same number right by summing the two itself —
+     * which is the deeper problem: the definition of "needs review" lived in
+     * the backend filter, in the badge, and nowhere the tab could reach.
+     * Computed once, from `NEEDS_REVIEW_STATUSES`, so all three agree by
+     * construction rather than by three authors remembering the same pair.
+     */
+    counts[NEEDS_REVIEW] = NEEDS_REVIEW_STATUSES.reduce(
+      (sum, status) => sum + (counts[status] ?? 0),
+      0,
+    );
 
     return {
       items: rows.map((r) => ({
