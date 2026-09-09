@@ -30,9 +30,10 @@ import { ReplayNonceModule } from './common/security/replay-nonce.module';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
-import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { FieldMaskInterceptor } from './common/security/field-mask.interceptor';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { CsrfEchoMiddleware } from './common/security/csrf-echo.middleware';
 import { validateEnv } from './config/env.validation';
@@ -168,6 +169,21 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     // The one place domain errors become HTTP responses, and where an
     // unexpected error is logged in full but answered generically.
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    /*
+     * RBAC-03, on every admin response, without a call at any surface.
+     *
+     * The mask has been opt-in per response since it was built, and that has
+     * failed nine times — twice on a mutation sitting beside a correctly masked
+     * read, in the same file. This asks the one question the guard table already
+     * answers on every route: did this request carry an administrator? The
+     * portal is not exempted by a list, it is structurally outside, because it
+     * never sets `req.admin` at all.
+     *
+     * A NO-OP until a DTO field carries `@ClientField`. `applyMask` keeps doing
+     * the work through the migration, so there is never a window where neither
+     * mechanism is running.
+     */
+    { provide: APP_INTERCEPTOR, useClass: FieldMaskInterceptor },
     // Global baseline throttle; sensitive routes tighten it with @Throttle.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     /*
