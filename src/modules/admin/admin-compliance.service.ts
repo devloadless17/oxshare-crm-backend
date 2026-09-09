@@ -242,7 +242,23 @@ export class AdminComplianceService {
       status: result.status,
       verificationLevel: result.user?.verificationLevel,
     });
-    return result;
+    /*
+     * RBAC-03 on the DECISION's own response.
+     *
+     * `getKyc` masks this submission and these did not, so a reviewer who
+     * cannot see the client's phone number on the review screen got it back in
+     * the body of the Claim button sitting on that screen. The read was
+     * protected and the write handed the value over — the same shape as the
+     * history leak (20332db), one method along.
+     *
+     * Proved on the wire before it was fixed: PATCH .../claim returned
+     * personalInfo.phone, personalInfo.dateOfBirth, personalInfo.nationality
+     * and user.email, with no `maskedFields` at all.
+     */
+    return {
+      ...applyMask('kyc', result, actor.fieldMask),
+      maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
+    };
   }
   // ─── KYC: claim for review ────────────────────────────────────────────────
   async claimKyc(userId: string, actor: AuthenticatedAdmin) {
@@ -250,7 +266,23 @@ export class AdminComplianceService {
     await this.visibility.assertVisible(userId, actor.clientScope);
     const result = await this.kycService.claim(userId, actor.id);
     this.audit.record(actor.id, 'kyc.claim', 'kyc_submission', userId, { status: result.status });
-    return result;
+    /*
+     * RBAC-03 on the DECISION's own response.
+     *
+     * `getKyc` masks this submission and these did not, so a reviewer who
+     * cannot see the client's phone number on the review screen got it back in
+     * the body of the Claim button sitting on that screen. The read was
+     * protected and the write handed the value over — the same shape as the
+     * history leak (20332db), one method along.
+     *
+     * Proved on the wire before it was fixed: PATCH .../claim returned
+     * personalInfo.phone, personalInfo.dateOfBirth, personalInfo.nationality
+     * and user.email, with no `maskedFields` at all.
+     */
+    return {
+      ...applyMask('kyc', result, actor.fieldMask),
+      maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
+    };
   }
   /**
    * Hand a claimed submission back to the queue.
@@ -280,7 +312,23 @@ export class AdminComplianceService {
       // colleague's claim back into the pool, rather than dropping their own.
       ownClaim: before?.reviewedBy === actor.id,
     });
-    return result;
+    /*
+     * RBAC-03 on the DECISION's own response.
+     *
+     * `getKyc` masks this submission and these did not, so a reviewer who
+     * cannot see the client's phone number on the review screen got it back in
+     * the body of the Claim button sitting on that screen. The read was
+     * protected and the write handed the value over — the same shape as the
+     * history leak (20332db), one method along.
+     *
+     * Proved on the wire before it was fixed: PATCH .../claim returned
+     * personalInfo.phone, personalInfo.dateOfBirth, personalInfo.nationality
+     * and user.email, with no `maskedFields` at all.
+     */
+    return {
+      ...applyMask('kyc', result, actor.fieldMask),
+      maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
+    };
   }
   // ─── KYC: reject ──────────────────────────────────────────────────────────
   async rejectKyc(
@@ -311,7 +359,23 @@ export class AdminComplianceService {
       reason: effectiveReason,
       rejectedFields,
     });
-    return result;
+    /*
+     * RBAC-03 on the DECISION's own response.
+     *
+     * `getKyc` masks this submission and these did not, so a reviewer who
+     * cannot see the client's phone number on the review screen got it back in
+     * the body of the Claim button sitting on that screen. The read was
+     * protected and the write handed the value over — the same shape as the
+     * history leak (20332db), one method along.
+     *
+     * Proved on the wire before it was fixed: PATCH .../claim returned
+     * personalInfo.phone, personalInfo.dateOfBirth, personalInfo.nationality
+     * and user.email, with no `maskedFields` at all.
+     */
+    return {
+      ...applyMask('kyc', result, actor.fieldMask),
+      maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
+    };
   }
   // ─── Rejection reasons (FR-ADM-03 configurable list) ──────────────────────
   async listRejectionReasons(context?: RejectionContext) {
