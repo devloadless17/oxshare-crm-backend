@@ -152,3 +152,44 @@ describe('the partner detail — the parent AND every sub-partner', () => {
     expect(masked.directPartners.map((r) => r.userId)).toEqual(['a', 'b']);
   });
 });
+
+describe('opening an account hands back the address it just used', () => {
+  /*
+   * `POST /admin/trading-accounts` returns `credentialsSentTo`, which IS the
+   * client's email. An operator whose role hides `client.email` was given it by
+   * opening an account for that client.
+   *
+   * It survived every earlier sweep because the route declares no response
+   * schema, so the openapi-driven census could not see the field to ask about
+   * it — the same blind spot that hid the wallet CSV. 15 admin routes return
+   * JSON with no declared shape; this was the one carrying a client field.
+   *
+   * The two portal twins (`createOwnAccount`, `resetOwnAccountPassword`) return
+   * the same field and must stay unmasked: a client reading their own address.
+   */
+  const mask = expand(['client.email']);
+
+  it('expands to the create-response alias', () => {
+    expect(mask).toContain('tradingAccountCreated.credentialsSentTo');
+  });
+
+  it('hides the address while leaving the account usable on screen', () => {
+    const response = {
+      id: 'acc1',
+      login: '5001',
+      group: 'real\\Standard',
+      credentialsSentTo: 'alpha@x.test',
+    };
+    const masked = applyMask('tradingAccountCreated', response, mask);
+
+    expect('credentialsSentTo' in masked).toBe(false);
+    // Non-vacuous: the operator still gets the account they just created.
+    expect(masked.login).toBe('5001');
+    expect(masked.id).toBe('acc1');
+  });
+
+  it('leaves the address alone for a reader who may see it', () => {
+    const response = { id: 'acc1', login: '5001', credentialsSentTo: 'alpha@x.test' };
+    expect(applyMask('tradingAccountCreated', response, []).credentialsSentTo).toBe('alpha@x.test');
+  });
+});
