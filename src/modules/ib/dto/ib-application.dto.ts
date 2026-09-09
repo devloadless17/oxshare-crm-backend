@@ -1,5 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ClientField,
+  NoClientFields,
+  NotClientField,
+} from '../../../common/security/client-field.decorator';
+import {
   IsBoolean,
   IsInt,
   IsOptional,
@@ -96,6 +101,9 @@ export class CreateIbApplicationDto {
   website?: string;
 }
 
+@NoClientFields(
+  'the application and its commission terms; the shapes naming a PERSON in this file are marked field by field',
+)
 export class IbApplicationDto {
   @ApiProperty() id: string;
   @ApiProperty() userId: string;
@@ -122,6 +130,9 @@ export class IbApplicationDto {
   @ApiProperty() submittedAt: Date;
 }
 
+@NoClientFields(
+  'the application and its commission terms; the shapes naming a PERSON in this file are marked field by field',
+)
 export class IbAccountDto {
   @ApiProperty() userId: string;
   @ApiProperty() level: number;
@@ -393,18 +404,30 @@ export class SetIbActiveDto {
 
 /** A person named on the partner tab — the parent, or one of the line below. */
 export class IbPartnerPersonDto {
-  @ApiProperty() userId: string;
-  @ApiProperty() email: string;
-  @ApiProperty({ type: 'string', nullable: true }) firstName: string | null;
-  @ApiProperty({ type: 'string', nullable: true }) lastName: string | null;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  userId: string;
+  @ClientField('client.email')
+  @ApiProperty()
+  email: string;
+  @ClientField('client.firstName')
+  @ApiProperty({ type: 'string', nullable: true })
+  firstName: string | null;
+  @ClientField('client.lastName')
+  @ApiProperty({ type: 'string', nullable: true })
+  lastName: string | null;
 }
 
 /** One partner directly beneath this one, with the terms they are paid on. */
 export class IbSubPartnerRowDto extends IbPartnerPersonDto {
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   @ApiProperty({
     example: 2,
     description: 'The rung this sub-partner stands on, which is what decides their terms (0112).',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 level describes the record rather than the person',
+  )
   level: number;
   @ApiProperty({
     type: 'string',
@@ -415,13 +438,30 @@ export class IbSubPartnerRowDto extends IbPartnerPersonDto {
       'ladder pays earns nothing until it is extended, and a client rendering the null as a ' +
       'name would hide that.',
   })
+  @NotClientField(
+    'the name of the RUNG they stand on - commission terms, not an attribute of the person',
+  )
   levelName: string | null;
-  @ApiProperty() referralCode: string;
-  @ApiProperty() active: boolean;
-  @ApiProperty() approvedAt: Date;
+  @NotClientField(
+    'a relationship or record attribute; the person it points at is masked on their own shape',
+  )
+  @ApiProperty()
+  @NotClientField(
+    'not a client-owned attribute \u2014 referralCode describes the record rather than the person',
+  )
+  referralCode: string;
+  @NotClientField('a lifecycle state the desk acts on, not client-owned data')
+  @ApiProperty()
+  active: boolean;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  approvedAt: Date;
 }
 
 /** Confirmed and pending totals, as decimal strings (§6.1). */
+@NoClientFields(
+  'the application and its commission terms; the shapes naming a PERSON in this file are marked field by field',
+)
 export class IbPartnerEarningsDto {
   @ApiProperty({ type: 'string', example: '73.50000000' }) confirmed: string;
   @ApiProperty({ type: 'string', example: '0.00000000' }) pending: string;
@@ -440,7 +480,9 @@ export class IbPartnerEarningsDto {
  * which is the one place this contract is weaker than the runtime.
  */
 export class IbPartnerDetailDto {
-  @ApiProperty() userId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  userId: string;
   /*
    * The RUNG this partner stands on, and the terms it carries (0112).
    *
@@ -462,60 +504,118 @@ export class IbPartnerDetailDto {
     description:
       'The rung, and what decides their terms. 1 is a partner dealing with the broker directly.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 level describes the record rather than the person',
+  )
   level: number;
   @ApiProperty({
     type: 'string',
     nullable: true,
     description: 'Null when no level is configured at this depth.',
   })
+  @NotClientField(
+    'the name of the RUNG they stand on - commission terms, not an attribute of the person',
+  )
   levelName: string | null;
   @ApiProperty({
     description:
       'False when the level is disabled OR not configured at all. A disabled level pays nothing.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 levelEnabled describes the record rather than the person',
+  )
   levelEnabled: boolean;
   @ApiProperty({
     enum: ['percent', 'per_lot'],
     nullable: true,
     description: 'How their own commission is priced.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 levelCommissionMode describes the record rather than the person',
+  )
   levelCommissionMode: 'percent' | 'per_lot' | null;
   @ApiProperty({
     type: 'string',
     nullable: true,
     description: 'Their share of broker revenue, as a percentage. Read in `percent` mode.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 levelCommissionRate describes the record rather than the person',
+  )
   levelCommissionRate: string | null;
   @ApiProperty({
     type: 'string',
     nullable: true,
     description: 'Money per standard lot. Read in `per_lot` mode.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 levelCommissionAmountPerLot describes the record rather than the person',
+  )
   levelCommissionAmountPerLot: string | null;
   @ApiProperty({ enum: ['percent', 'per_lot'], nullable: true })
+  @NotClientField(
+    'not a client-owned attribute \u2014 levelRebateMode describes the record rather than the person',
+  )
   levelRebateMode: 'percent' | 'per_lot' | null;
   @ApiProperty({
     type: 'string',
     nullable: true,
     description: 'What their clients get back, as a percentage of the same revenue.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 levelRebateRate describes the record rather than the person',
+  )
   levelRebateRate: string | null;
   @ApiProperty({ type: 'string', nullable: true })
+  @NotClientField(
+    'not a client-owned attribute \u2014 levelRebateAmountPerLot describes the record rather than the person',
+  )
   levelRebateAmountPerLot: string | null;
-  @ApiProperty() referralCode: string;
+  @NotClientField(
+    'not a client-owned attribute \u2014 referralCode describes the record rather than the person',
+  )
+  @ApiProperty()
+  referralCode: string;
   @ApiProperty({ description: 'A suspended partner keeps their code and tree, and stops earning.' })
+  @NotClientField('a lifecycle state the desk acts on, not client-owned data')
   active: boolean;
-  @ApiProperty() approvedAt: Date;
-  @ApiProperty({ type: 'string', nullable: true }) agencyId: string | null;
-  @ApiProperty({ type: 'string', nullable: true }) agencyName: string | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  approvedAt: Date;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: 'string', nullable: true })
+  agencyId: string | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 agencyName describes the record rather than the person',
+  )
+  @ApiProperty({ type: 'string', nullable: true })
+  agencyName: string | null;
   @ApiProperty({
     type: [String],
     description: 'What the agency lets them sell. Empty means the full catalogue.',
   })
+  @NotClientField(
+    'not a client-owned attribute \u2014 products describes the record rather than the person',
+  )
   products: string[];
   @ApiProperty({ type: IbPartnerPersonDto, nullable: true })
+  @NotClientField(
+    'the nested partner, whose own shape carries the marks \u2014 masked there, not here',
+  )
   parent: IbPartnerPersonDto | null;
-  @ApiProperty({ type: [IbSubPartnerRowDto] }) directPartners: IbSubPartnerRowDto[];
-  @ApiProperty({ description: 'How many clients they introduced.' }) referredClientCount: number;
-  @ApiProperty({ type: IbPartnerEarningsDto }) earnings: IbPartnerEarningsDto;
+  @NotClientField(
+    'the nested partner, whose own shape carries the marks \u2014 masked there, not here',
+  )
+  @ApiProperty({ type: [IbSubPartnerRowDto] })
+  directPartners: IbSubPartnerRowDto[];
+  @NotClientField(
+    'not a client-owned attribute \u2014 referredClientCount describes the record rather than the person',
+  )
+  @ApiProperty({ description: 'How many clients they introduced.' })
+  referredClientCount: number;
+  @NotClientField(
+    'not a client-owned attribute \u2014 earnings describes the record rather than the person',
+  )
+  @ApiProperty({ type: IbPartnerEarningsDto })
+  earnings: IbPartnerEarningsDto;
 }

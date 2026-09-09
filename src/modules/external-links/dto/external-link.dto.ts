@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { IsBoolean, IsInt, IsOptional, IsString, Length, MaxLength } from 'class-validator';
 
 /**
@@ -9,6 +10,7 @@ import { IsBoolean, IsInt, IsOptional, IsString, Length, MaxLength } from 'class
  * the field an operator edits most often — keying on either would turn a typo
  * correction into a delete-and-recreate, and take the row's position with it.
  */
+@NoClientFields('operator configuration - the external links shown in the console')
 export class ExternalLinkDto {
   @ApiProperty({ format: 'uuid' }) id: string;
   @ApiProperty({ maxLength: 80, example: 'Economic calendar' }) title: string;

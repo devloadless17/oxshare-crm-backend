@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NotClientField, NoClientFields } from '../../../common/security/client-field.decorator';
 import {
   IsBoolean,
   IsInt,
@@ -28,24 +29,32 @@ import {
  * reasonably believe they can edit.
  */
 export class SmtpSettingsDto {
+  @NotClientField('a system or configuration value with no client attribute on it at all')
   @ApiProperty({ example: 'smtp.postmarkapp.com' })
   host: string;
 
+  @NotClientField('a system or configuration value with no client attribute on it at all')
   @ApiProperty({ example: 587 })
   port: number;
 
+  @NotClientField('a system or configuration value with no client attribute on it at all')
   @ApiPropertyOptional({ type: String, nullable: true, example: 'apikey' })
   username: string | null;
 
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   @ApiProperty({
     example: true,
     description: 'Whether a password is stored. The password itself is never returned.',
   })
   passwordSet: boolean;
 
+  @NotClientField(
+    'the address the PLATFORM sends mail FROM - an SMTP configuration value, not a client attribute',
+  )
   @ApiProperty({ example: '"OxShare" <no-reply@oxshare.com>' })
   fromAddress: string;
 
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   @ApiProperty({
     example: false,
     description: 'Implicit TLS on connect (SMTPS). False means STARTTLS.',
@@ -58,8 +67,12 @@ export class SmtpSettingsDto {
       'Which configuration is actually in force. "environment" means nothing has been saved ' +
       'here yet and the server is using its boot configuration.',
   })
+  @NotClientField(
+    'where the setting came from - stored row or environment; a provenance flag, not a person',
+  )
   source: 'database' | 'environment';
 
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
   updatedAt: string | null;
   /**
@@ -72,6 +85,7 @@ export class SmtpSettingsDto {
    * Null when nothing has been saved here yet, or when the administrator has
    * since been deleted.
    */
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   @ApiPropertyOptional({ type: String, nullable: true })
   updatedByName: string | null;
 }
@@ -130,6 +144,9 @@ export class UpdateSmtpSettingsDto {
 }
 
 /** What a test send reports back. */
+@NoClientFields(
+  'operator configuration - platform settings, with the one address on it stated separately',
+)
 export class SmtpTestResultDto {
   @ApiProperty({ example: 'admin@oxshare.com', description: 'Always the acting admin.' })
   sentTo: string;
@@ -143,6 +160,9 @@ export class SmtpTestResultDto {
 
 /* ── Trading ──────────────────────────────────────────────────────────────── */
 
+@NoClientFields(
+  'operator configuration - platform settings, with the one address on it stated separately',
+)
 export class TradingSettingsDto {
   /*
    * `leverages` was here. The ladder is its own resource now — `GET

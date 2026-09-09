@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import {
   IsBoolean,
   IsIn,
@@ -121,6 +122,7 @@ const MAX_LEVEL = 10;
  * commission pays no partner; one with a zero rebate returns nothing to the
  * client; one with both pays both.
  */
+@NoClientFields('commission terms for a RUNG - rates and modes, not the partners standing on it')
 export class IbLevelDto {
   @ApiProperty({ format: 'uuid' })
   id: string;
@@ -213,6 +215,7 @@ export class IbLevelDto {
 }
 
 /** The bounds a rung must fit inside, read by the form rather than hardcoded. */
+@NoClientFields('commission terms for a RUNG - rates and modes, not the partners standing on it')
 export class IbLevelLimitsDto {
   @ApiProperty({
     example: 2,

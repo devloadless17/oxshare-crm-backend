@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { IsBoolean, IsInt, IsOptional, IsString, Length, Min } from 'class-validator';
 
 /**
@@ -9,6 +10,7 @@ import { IsBoolean, IsInt, IsOptional, IsString, Length, Min } from 'class-valid
  * would leave the number that actually matters unconstrained, and nothing would
  * stop two rows both claiming 500.
  */
+@NoClientFields('operator configuration - the leverage catalogue')
 export class LeverageDto {
   @ApiProperty({ example: 500, description: '500 means 500:1.' }) ratio: number;
   @ApiProperty({

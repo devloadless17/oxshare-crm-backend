@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
 
 /**
  * One bell row.
@@ -8,6 +9,7 @@ import { ApiProperty } from '@nestjs/swagger';
  * link. Money values inside `params` are STRINGS — the schema note and §6.1
  * say why.
  */
+@NoClientFields('a notification envelope; its params are ids by design, never a name or an address')
 export class NotificationDto {
   @ApiProperty() id: string;
 
@@ -33,6 +35,7 @@ export class NotificationDto {
   @ApiProperty() createdAt: Date;
 }
 
+@NoClientFields('a notification envelope; its params are ids by design, never a name or an address')
 export class NotificationListResponseDto {
   @ApiProperty({ type: [NotificationDto] }) items: NotificationDto[];
 
@@ -41,11 +44,13 @@ export class NotificationListResponseDto {
   nextCursor: string | null;
 }
 
+@NoClientFields('a notification envelope; its params are ids by design, never a name or an address')
 export class NotificationUnreadCountDto {
   @ApiProperty({ description: 'Unread rows for the caller. The bell badge number.' })
   count: number;
 }
 
+@NoClientFields('a notification envelope; its params are ids by design, never a name or an address')
 export class NotificationsMarkAllReadResponseDto {
   @ApiProperty({ description: 'Rows marked read by this call. 0 when everything already was.' })
   updated: number;

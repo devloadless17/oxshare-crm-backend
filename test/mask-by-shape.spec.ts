@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ApiProperty } from '@nestjs/swagger';
-import { ClientField } from '../src/common/security/client-field.decorator';
+import { ClientField, ClientFieldMap } from '../src/common/security/client-field.decorator';
 import { maskByShape } from '../src/common/security/mask-by-shape';
 
 /**
@@ -163,5 +163,67 @@ describe('masking by shape', () => {
      */
     const row = { user: { email: 'a@x.test' } };
     expect(maskByShape(undefined, row, HIDE_EMAIL)).toBe(row);
+  });
+});
+
+describe('free-form maps, which a shape cannot describe', () => {
+  /*
+   * `KycSubmissionDto.personalInfo` is `Record<string, string>` because the KYC
+   * step builder lets an operator ADD FIELDS — the shape genuinely is not
+   * knowable at compile time. Walking declared properties therefore finds
+   * nothing, while the catalogue masks four keys inside it.
+   *
+   * That made this the single largest hole in masking-by-shape, on the richest
+   * concentration of client PII in the product. Keyed by catalogue PREFIX
+   * instead, the reader's mask reaches keys whatever they are called —
+   * including custom fields added after this code was written, which is the
+   * property a fixed DTO could never have had.
+   */
+  class SubmissionDto {
+    @ApiProperty() userId: string = '';
+    @ClientFieldMap('kyc.personalInfo') @ApiProperty() personalInfo: Record<string, string> = {};
+  }
+
+  const submission = () => ({
+    userId: 'u1',
+    personalInfo: {
+      firstName: 'Alpha',
+      dateOfBirth: '1990-01-01',
+      nationality: 'Lebanon',
+      favouriteColour: 'blue',
+    },
+  });
+
+  it('removes a masked key from inside the map', () => {
+    const masked = maskByShape(SubmissionDto, submission(), ['kyc.personalInfo.dateOfBirth']);
+
+    expect('dateOfBirth' in masked.personalInfo).toBe(false);
+    // Non-vacuous: the rest of the map survives, including the unmasked ones.
+    expect(masked.personalInfo.nationality).toBe('Lebanon');
+    expect(masked.personalInfo.firstName).toBe('Alpha');
+    expect(masked.userId).toBe('u1');
+  });
+
+  it('removes a CUSTOM key the DTO could never have declared', () => {
+    /*
+     * The case that decides between this and a fixed DTO. An operator adds a
+     * field in the KYC builder and masks it; nothing recompiles, and the
+     * catalogue key is all either side needs to agree on.
+     */
+    const masked = maskByShape(SubmissionDto, submission(), ['kyc.personalInfo.favouriteColour']);
+    expect('favouriteColour' in masked.personalInfo).toBe(false);
+    expect(masked.personalInfo.dateOfBirth).toBe('1990-01-01');
+  });
+
+  it('leaves the map untouched when nothing in it is masked', () => {
+    const body = submission();
+    expect(maskByShape(SubmissionDto, body, ['client.email'])).toBe(body);
+  });
+
+  it('does not mutate the map it was given', () => {
+    const body = submission();
+    const original = body.personalInfo;
+    maskByShape(SubmissionDto, body, ['kyc.personalInfo.dateOfBirth']);
+    expect(original.dateOfBirth).toBe('1990-01-01');
   });
 });
