@@ -494,7 +494,21 @@ export class AdminClientsService {
     const updated = (await this.users.update(userId, changes))!;
 
     this.audit.record(actor.id, 'client.profile_update', 'user', userId, {
-      email: user.email,
+      /*
+       * The client's address is NOT recorded here, and its absence is the point.
+       *
+       * `subject_id` on this row IS the client, and `before`/`after` carry the
+       * change itself, so the address was pure denormalised context — it made
+       * the row no more answerable and put client PII into the one store this
+       * system cannot mask. `audit_log.details` is free-form jsonb with no
+       * declared shape, so neither `applyMask` nor the response interceptor can
+       * reach inside it: an administrator whose role hides `client.email` read
+       * addresses straight off the audit screen.
+       *
+       * `client.email_change` still records both addresses, and must — there
+       * the addresses ARE the change, and a record of an email change that does
+       * not say which emails is not a record of anything.
+       */
       before,
       after,
     });
@@ -679,7 +693,9 @@ export class AdminClientsService {
       'user',
       userId,
       {
-        email: user.email,
+        // Same reasoning as `client.profile_update` above: the subject id is the
+        // client, the status is the change, and the address only spread PII into
+        // a store nothing can mask.
         before: user.status,
         after: status,
       },

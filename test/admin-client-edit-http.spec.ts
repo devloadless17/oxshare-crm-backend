@@ -256,6 +256,48 @@ describe('editing a profile', () => {
     expect(row.phone).toBe('+9613111222');
   });
 
+  it('records NO client address, because the log is the one store nothing can mask', async () => {
+    /*
+     * `audit_log.details` is free-form jsonb with no declared shape, so neither
+     * `applyMask` nor the response interceptor can reach inside it. An
+     * administrator whose role hides `client.email` was reading addresses
+     * straight off the audit screen — and the address was pure denormalised
+     * context here: `subject_id` IS the client, and `before`/`after` carry the
+     * change. Recording it made the row no more answerable and spread PII into
+     * the one place this system cannot take it back out of.
+     *
+     * Asserted on the whole serialised row rather than on a key, because the
+     * next author's habit is to add context, and `{ client: { email } }` would
+     * pass a check that only looked for a top-level `email`.
+     */
+    await master.patch(`/v1/admin/clients/${clientId}`, { firstName: 'Nadia' }).expect(200);
+
+    /*
+     * EVERY row of this action, not the first one. The rows accumulate across
+     * this file, so indexing picked up an earlier test's edit and asserted
+     * about the wrong write — a pass that would have meant nothing.
+     */
+    /*
+     * POLLED. `audit.record` is fire-and-forget by design — right for a profile
+     * edit, where failing the operator's save over a log write would be the
+     * wrong trade — so the row lands shortly AFTER the 200. Reading immediately
+     * asserted about the previous test's write instead of this one.
+     */
+    let rows = await auditRows('client.profile_update');
+    for (let i = 0; i < 40 && !JSON.stringify(rows).includes('Nadia'); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      rows = await auditRows('client.profile_update');
+    }
+    for (const row of rows) {
+      expect(JSON.stringify(row.details), 'an address reached the audit log').not.toContain('@');
+      // Still identified — by id, which a reader resolves through the client
+      // screens, under their OWN mask.
+      expect(row.subjectId).toBe(clientId);
+    }
+    // Non-vacuous: the rows still record the changes they exist to record.
+    expect(JSON.stringify(rows.map((r) => r.details))).toContain('Nadia');
+  });
+
   it('records only what actually moved', async () => {
     await master
       .patch(`/v1/admin/clients/${clientId}`, { firstName: 'Leila', country: 'Lebanon' })
