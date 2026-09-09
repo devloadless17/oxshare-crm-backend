@@ -2,6 +2,8 @@ import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
+import 'reflect-metadata';
+import { ClientProfileDto, ClientRowDto } from '../src/modules/admin/dto/responses.dto';
 import {
   admins,
   ibAccounts,
@@ -468,6 +470,70 @@ describe('the DECISION is not a bypass either', () => {
 
     // Left as it was found, so the ordering of this file cannot matter.
     await session.patch(`/v1/admin/kyc/${clientId}/release`).expect(200);
+  });
+});
+
+describe('a DTO that under-declares its response is a hole in shape-masking', () => {
+  /*
+   * `applyMask` removes by PATH from the object that actually exists. The
+   * response interceptor removes what the DECLARED shape says is there. Those
+   * are only the same mechanism while the DTO is complete — and one was not.
+   *
+   * `UsersStore.findPage` has always projected `phone` onto every client row
+   * and `ClientRowDto` never declared it, so the generated frontend types were
+   * missing a field the API returns, and shape-masking could not see it.
+   * Deleting `applyMaskAll` from `listClients` masked email, name and country
+   * and leaked the phone number.
+   *
+   * So completeness is a SEPARATE property from having a shape at all, and
+   * `response-shape-coverage.spec.ts` only enforces the second. This enforces
+   * the first, where it can be observed rather than inferred: against a real
+   * response, read as a MASTER so nothing has been masked away and every key
+   * the endpoint can emit is present to be checked.
+   */
+  const declaredOn = (dto: unknown): Set<string> => {
+    const properties = Reflect.getMetadata(
+      'swagger/apiModelPropertiesArray',
+      (dto as { prototype: object }).prototype,
+    ) as string[] | undefined;
+    return new Set((properties ?? []).map((name) => name.replace(/^:/, '')));
+  };
+
+  it('the client LIST declares every key it returns', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`${CLIENTS}?q=mask-target`).expect(200);
+
+    const rows = (res.body as ListBody).items;
+    expect(rows.length, 'nothing to check — the fixture is missing').toBeGreaterThan(0);
+
+    const declared = declaredOn(ClientRowDto);
+    const undeclared = [...new Set(rows.flatMap((row) => Object.keys(row)))].filter(
+      (key) => !declared.has(key),
+    );
+
+    expect(
+      undeclared,
+      'These keys are RETURNED and not declared on ClientRowDto. Both frontends are ' +
+        'missing them, and the response interceptor cannot mask what the shape does ' +
+        `not mention:\n${undeclared.map((k) => `  ${k}`).join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('the client PROFILE declares every key it returns', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`${CLIENTS}/${clientId}`).expect(200);
+
+    const declared = declaredOn(ClientProfileDto);
+    const undeclared = Object.keys(res.body as Record<string, unknown>).filter(
+      (key) => !declared.has(key),
+    );
+
+    expect(
+      undeclared,
+      `Returned but not declared on ClientProfileDto:\n${undeclared
+        .map((k) => `  ${k}`)
+        .join('\n')}`,
+    ).toEqual([]);
   });
 });
 
