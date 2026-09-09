@@ -71,7 +71,9 @@
           "wallet.user.firstName",
           "tradingAccount.user.firstName",
           "walletExport.userFirstName",
-          "tradingAccountExport.userFirstName"
+          "tradingAccountExport.userFirstName",
+          "ibPartner.parent.firstName",
+          "ibPartner.directPartners.firstName"
         ]
       },
       {
@@ -90,7 +92,9 @@
           "wallet.user.lastName",
           "tradingAccount.user.lastName",
           "walletExport.userLastName",
-          "tradingAccountExport.userLastName"
+          "tradingAccountExport.userLastName",
+          "ibPartner.parent.lastName",
+          "ibPartner.directPartners.lastName"
         ]
       }
     ]
@@ -115,7 +119,9 @@
           "wallet.user.email",
           "tradingAccount.user.email",
           "walletExport.userEmail",
-          "tradingAccountExport.userEmail"
+          "tradingAccountExport.userEmail",
+          "ibPartner.parent.email",
+          "ibPartner.directPartners.email"
         ]
       },
       {

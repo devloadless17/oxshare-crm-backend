@@ -28,6 +28,7 @@ import { ProductsStore } from '../../store/products.store';
 import { WalletProvisioningService } from '../wallet/wallet-provisioning.service';
 import type { Actor } from '../../common/security/actor';
 import type { ClientScope } from '../../common/security/client-scope';
+import { applyMask, maskedFieldsFor, type FieldMask } from '../../common/security/field-mask';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import type { IbIneligibleCode } from './dto/ib-application.dto';
 
@@ -1069,7 +1070,15 @@ export class IbApplicationsService {
    * would act on. The relationships are facts about the subject, and the
    * subject is one they are already entitled to see.
    */
-  async partnerDetailFor(userId: string, scope: ClientScope) {
+  /**
+   * @param fieldMask RBAC-03. This response carries the client identity of the
+   *   partner's PARENT and of every direct sub-partner, and it carried them
+   *   unmasked — the same address `/admin/clients/:id` correctly hides for the
+   *   same reader, one screen away. Threaded in rather than masked in the
+   *   controller so it sits with the other applyMask calls, where the census
+   *   can see it.
+   */
+  async partnerDetailFor(userId: string, scope: ClientScope, fieldMask: FieldMask) {
     await this.visibility.assertVisible(userId, scope);
 
     const account = await this.ib.findAccount(userId);
@@ -1114,7 +1123,7 @@ export class IbApplicationsService {
      */
     const levelTerms = await this.levels.findOne(account.level);
 
-    return {
+    const detail = {
       userId,
       /*
        * The rung, and nothing about a catalogue. It is EDITABLE (see
@@ -1154,6 +1163,17 @@ export class IbApplicationsService {
          and the number the earnings are a consequence of. */
       referredClientCount: referredCount,
       earnings: earningsMap.get(userId) ?? { confirmed: '0', pending: '0' },
+    };
+
+    /*
+     * Masked over the ASSEMBLED object, after the sections rather than before,
+     * so a hidden field cannot survive inside one of them — `client.email`
+     * removes the parent's address and, through the catalogue's aliases, the
+     * same value on every row of `directPartners`.
+     */
+    return {
+      ...applyMask('ibPartner', detail, fieldMask),
+      maskedFields: maskedFieldsFor('ibPartner', fieldMask),
     };
   }
 

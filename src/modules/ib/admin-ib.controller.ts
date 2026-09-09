@@ -475,7 +475,7 @@ export class AdminIbController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('userId', ParseUUIDPipe) userId: string,
   ) {
-    return this.applications.partnerDetailFor(userId, req.admin.clientScope);
+    return this.applications.partnerDetailFor(userId, req.admin.clientScope, req.admin.fieldMask);
   }
 
   /*
