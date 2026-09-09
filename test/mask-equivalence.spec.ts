@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import 'reflect-metadata';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { applyMask, maskedPathsFor, type FieldMask } from '../src/common/security/field-mask';
+import { maskedPathsFor, type FieldMask } from '../src/common/security/field-mask';
 import { maskByShape } from '../src/common/security/mask-by-shape';
 import {
   AdminTransactionRowDto,
@@ -17,23 +17,26 @@ import {
 import { IbPartnerDetailDto } from '../src/modules/ib/dto/ib-application.dto';
 
 /**
- * THE TWO MECHANISMS REMOVE THE SAME THINGS.
+ * EVERY PATH THE CATALOGUE CAN MASK IS ACTUALLY MARKED ON A SHAPE.
  *
- * `applyMask` strips by PATH from the object that actually exists.
- * `maskByShape` strips what the DECLARED shape says is there.
- *
- * They are equivalent only while every path the catalogue knows is also marked
- * on the DTO — and they were NOT, twice, in ways nothing else caught:
+ * Masking is now done in one place — the response interceptor walks a route's
+ * declared DTO and removes the fields marked `@ClientField`. That is only
+ * complete while every path the CATALOGUE offers an operator has a
+ * corresponding mark, and twice it did not, in ways nothing else caught:
  * `ClientRowDto` omitted `phone` while the API returned it, and
  * `KycSubmissionDto.personalInfo` is a free-form map whose four catalogue keys
  * no declared property could describe.
  *
- * So this is the precondition for deleting `applyMask`, asserted rather than
- * argued. For every resource the catalogue defines, an object is built carrying
- * a value at EVERY path that resource can mask — including inside arrays and
- * free-form maps — and both mechanisms are run over it with the full mask. If
- * the results differ, shape-masking would lose something the path mask removes,
- * and removing the path mask would open exactly that hole.
+ * The catalogue is what the ROLE EDITOR offers. So a key an operator can tick
+ * with no mark behind it is the worst shape this feature has: the console says
+ * the field is hidden and the API returns it. This is the assertion that cannot
+ * happen — for every resource, an object is built carrying a value at every
+ * path that resource can mask, and the shape mask must remove all of them.
+ *
+ * It was written to license deleting the old path-based `applyMask`, by running
+ * both over the same object and requiring identical output. That comparison is
+ * gone with the function; what it was really checking — that the marks cover the
+ * catalogue — is what remains, and is the part worth keeping running.
  *
  * It needs no fixture and no HTTP round trip, which is why it can cover every
  * surface rather than the two that happen to have seeded rows.
@@ -160,22 +163,24 @@ describe('masking by shape removes exactly what masking by path removes', () => 
       const row: Record<string, unknown> = { id: 'keep-me', untouched: 'keep-me' };
       for (const path of paths) plant(row, path, `SECRET:${path}`);
 
-      const byPath = applyMask(resource, structuredClone(row), mask);
       const byShape = maskByShape(shape, structuredClone(row), mask);
 
       /*
-       * Compared as JSON so a difference reads as the missing FIELD rather than
-       * as two object dumps — which one is absent is the whole answer.
+       * Reported as the surviving PATHS rather than as an object dump: which
+       * catalogue key an operator could tick and still be shown is the whole
+       * answer, and a diff of two nested objects buries it.
        */
+      const survived = paths.filter((path) => JSON.stringify(byShape).includes(`SECRET:${path}`));
       expect(
-        JSON.stringify(byShape),
-        `masking '${resource}' by shape kept something the path mask removes, so ` +
-          `deleting applyMask here would leak it`,
-      ).toBe(JSON.stringify(byPath));
+        survived,
+        `The role editor offers these keys on '${resource}' and the shape mask does not ` +
+          `remove them — the console would say hidden while the API returns the ` +
+          `value:\n${survived.map((p) => `  ${resource}.${p}`).join('\n')}`,
+      ).toEqual([]);
 
-      // Non-vacuous, twice over: something was removed, and the rest survived.
-      expect(JSON.stringify(byShape)).not.toContain('SECRET:');
+      // Non-vacuous: the rest of the row survived, so an emptied response cannot pass.
       expect((byShape as { id: string }).id).toBe('keep-me');
+      expect((byShape as { untouched: string }).untouched).toBe('keep-me');
     });
   }
 
@@ -227,9 +232,7 @@ describe('masking by shape removes exactly what masking by path removes', () => 
     // Two shapes, one catalogue resource: the list was masked before the
     // profile was, and they drifted once already over `phone`.
     const declared = declaredOn(ClientRowDto);
-    const paths = maskedPathsFor('client', mask).filter((path) =>
-      declared.has(path.split('.')[0]),
-    );
+    const paths = maskedPathsFor('client', mask).filter((path) => declared.has(path.split('.')[0]));
     expect(paths.length, 'nothing to plant — the filter removed everything').toBeGreaterThan(0);
 
     const row: Record<string, unknown> = { id: 'c1' };

@@ -227,3 +227,63 @@ describe('free-form maps, which a shape cannot describe', () => {
     expect(original.dateOfBirth).toBe('1990-01-01');
   });
 });
+
+describe('shapes that are not errors', () => {
+  /*
+   * Ported from `field-mask.spec.ts` when the path-based mask was deleted.
+   * Every case here is one that spec had pinned about `applyMask`, and each is
+   * a way a response can legitimately be shaped — none of them is a bug, and a
+   * mask that threw or mangled any of them would break a working screen.
+   */
+  class OwnerDto {
+    @ApiProperty() id: string = '';
+    @ClientField('client.email') @ApiProperty() email: string | null = '';
+    @ClientField('client.phone') @ApiProperty() phone?: string;
+  }
+  class RowDto {
+    @ApiProperty() id: string = '';
+    @ApiProperty({ type: OwnerDto }) user: OwnerDto | null = new OwnerDto();
+    @ApiProperty({ type: [OwnerDto] }) others: OwnerDto[] = [];
+  }
+  const HIDE = ['client.email'];
+
+  it('removes a field whose value is NULL, rather than reading null as absent', () => {
+    // "Has no address" and "may not see the address" must not converge: the
+    // screen renders them differently, which is what `maskedFields` is for.
+    const masked = maskByShape(RowDto, { id: 'r', user: { id: 'u', email: null } }, HIDE);
+    expect('email' in (masked.user as object)).toBe(false);
+  });
+
+  it('is a no-op when a parent on the path is null or missing', () => {
+    const nulled = { id: 'r', user: null };
+    expect(maskByShape(RowDto, nulled, HIDE)).toBe(nulled);
+    const absent = { id: 'r' };
+    expect(maskByShape(RowDto, absent, HIDE)).toBe(absent);
+  });
+
+  it('passes non-objects straight through', () => {
+    expect(maskByShape(RowDto, null, HIDE)).toBeNull();
+    expect(maskByShape(RowDto, undefined, HIDE)).toBeUndefined();
+    expect(maskByShape(RowDto, 'a string', HIDE)).toBe('a string');
+  });
+
+  it('copes with an empty list, and with elements that are not objects', () => {
+    const empty = { id: 'r', others: [] };
+    expect(maskByShape(RowDto, empty, HIDE)).toBe(empty);
+    const odd = { id: 'r', others: [null, 'x'] };
+    expect(maskByShape(RowDto, odd, HIDE)).toBe(odd);
+  });
+
+  it('clones only along the masked path, so a page is not deep-copied', () => {
+    /*
+     * A list response shares its rows with whatever else read them. Copying
+     * every row to hide one field on one of them would make masking cost the
+     * size of the page rather than the size of what it removes.
+     */
+    const untouched = { id: 'u2', email: 'b@x.test' };
+    const row = { id: 'r', user: { id: 'u1', email: 'a@x.test' }, others: [untouched] };
+    const masked = maskByShape(RowDto, row, ['client.phone']);
+    expect(masked).toBe(row);
+    expect(masked.others[0]).toBe(untouched);
+  });
+});

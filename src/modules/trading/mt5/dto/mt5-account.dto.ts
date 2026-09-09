@@ -1,5 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ClientField,
+  NoClientFields,
+  NotClientField,
+} from '../../../../common/security/client-field.decorator';
+import {
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -91,4 +96,60 @@ export class Mt5BalanceDto {
   @IsNotEmpty()
   @MaxLength(128)
   comment: string;
+}
+
+/**
+ * What opening an account returns, ONCE.
+ *
+ * Declared so the route has a response type — which is not documentation here
+ * but enforcement. The RBAC-03 interceptor masks by walking a route's declared
+ * shape, so an undeclared response is one it cannot protect; this route was the
+ * ninth masking exposure precisely because `credentialsSentTo` IS the client's
+ * address and nothing could see it to hide it.
+ */
+@NoClientFields(
+  'the passwords are the MT5 account credentials, shown once and never stored; no client attribute',
+)
+export class Mt5AccountCredentialsDto {
+  @ApiProperty({ description: 'Shown once. Never stored.' }) masterPassword!: string;
+  @ApiProperty({ description: 'Shown once. Never stored.' }) investorPassword!: string;
+}
+
+export class CreatedMt5AccountDto {
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id!: string;
+
+  @NotClientField('the MT5 account NUMBER — identifying, but the catalogue defines no key for it')
+  @ApiProperty()
+  login!: string;
+
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty()
+  group!: string;
+
+  @NotClientField('a money or configuration value on the RECORD, carrying no client attribute')
+  @ApiProperty()
+  currency!: string;
+
+  @NotClientField('a money or configuration value on the RECORD, carrying no client attribute')
+  @ApiProperty()
+  leverage!: number;
+
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['live', 'demo'] })
+  environment!: 'live' | 'demo';
+
+  /*
+   * THE NINTH EXPOSURE. This IS the client's email address, under a name no
+   * heuristic over field names would ever have matched — which is the whole
+   * argument for stating whose data a field holds rather than inferring it.
+   */
+  @ClientField('client.email')
+  @ApiPropertyOptional({ type: String })
+  credentialsSentTo?: string;
+
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiPropertyOptional({ type: [String] })
+  maskedFields?: string[];
 }

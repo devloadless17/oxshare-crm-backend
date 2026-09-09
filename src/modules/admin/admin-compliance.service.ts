@@ -6,7 +6,7 @@ import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-r
 import { KycService } from '../compliance/kyc.service';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
-import { applyMask, applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
+import { maskedFieldsFor } from '../../common/security/field-mask';
 import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
@@ -99,7 +99,7 @@ export class AdminComplianceService {
      */
     return {
       ...page,
-      items: await this.withReviewerNames(applyMaskAll('kyc', page.items, actor.fieldMask)),
+      items: await this.withReviewerNames(page.items),
       maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
     };
   }
@@ -137,9 +137,7 @@ export class AdminComplianceService {
      * The expansion happened; nothing applied it here.
      */
     if (!actor) return submission;
-    const [withReviewer] = await this.withReviewerNames([
-      applyMask('kyc', submission, actor.fieldMask),
-    ]);
+    const [withReviewer] = await this.withReviewerNames([submission]);
     return {
       ...withReviewer,
       maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
@@ -185,7 +183,7 @@ export class AdminComplianceService {
      * this viewer, so a second copy would be one more thing to keep in step.
      */
     const attempts = await this.kycService.getHistory(userId);
-    return applyMaskAll('kyc', attempts, actor.fieldMask);
+    return attempts;
   }
   /*
    * The three decisions below assert on the ACTOR, not only in the guard —
@@ -256,7 +254,7 @@ export class AdminComplianceService {
      * and user.email, with no `maskedFields` at all.
      */
     return {
-      ...applyMask('kyc', result, actor.fieldMask),
+      ...result,
       maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
     };
   }
@@ -280,7 +278,7 @@ export class AdminComplianceService {
      * and user.email, with no `maskedFields` at all.
      */
     return {
-      ...applyMask('kyc', result, actor.fieldMask),
+      ...result,
       maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
     };
   }
@@ -326,7 +324,7 @@ export class AdminComplianceService {
      * and user.email, with no `maskedFields` at all.
      */
     return {
-      ...applyMask('kyc', result, actor.fieldMask),
+      ...result,
       maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
     };
   }
@@ -373,7 +371,7 @@ export class AdminComplianceService {
      * and user.email, with no `maskedFields` at all.
      */
     return {
-      ...applyMask('kyc', result, actor.fieldMask),
+      ...result,
       maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
     };
   }
