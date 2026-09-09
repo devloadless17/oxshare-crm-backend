@@ -1,0 +1,99 @@
+import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { applyMask, maskedPathsFor } from '../src/common/security/field-mask';
+
+/**
+ * RBAC-03 on the WALLET and TRADING-ACCOUNT desks.
+ *
+ * Both screens join the client under `user` — the same shape the withdrawal
+ * desk uses — and both served `user.email` to an administrator whose role was
+ * configured to hide it. `applyMask` is opt-in, nothing on either path called
+ * it, and the catalog carried no `wallet.` or `tradingAccount.` prefix, so even
+ * adding the call would have masked nothing. Two halves, both missing, and no
+ * test in the repo asserted about either.
+ *
+ * Found by `test/mask-coverage.spec.ts` on the day it was written, which is
+ * exactly the argument for that census: the four surfaces that DID mask were
+ * the four somebody had already thought about.
+ *
+ * Asserted at the seam that was actually broken — the expansion — rather than
+ * over HTTP. The end-to-end version, an admin holding `wallets.view` with a
+ * mask reading a real page, lives in `field-mask-enforcement.spec.ts` and is
+ * driven from the route metadata so it cannot go missing.
+ */
+
+// Expand exactly as client-fields.service.ts does: key -> [key, ...aliases]
+const catalog = JSON.parse(readFileSync('src/config/client-fields.json', 'utf8')) as Record<
+  string,
+  { fields?: { key?: string; aliases?: string[] }[] }
+>;
+function expand(keys: string[]): string[] {
+  const map = new Map<string, string[]>();
+  for (const [g, v] of Object.entries(catalog)) {
+    if (g === '$comment' || typeof v !== 'object' || v === null) continue;
+    for (const f of v.fields ?? []) if (f.key) map.set(f.key, [f.key, ...(f.aliases ?? [])]);
+  }
+  return keys.flatMap((k) => map.get(k) ?? [k]);
+}
+
+describe('masking client.email reaches the wallet and trading-account desks', () => {
+  const mask = expand(['client.email']);
+
+  it('expands to the wallet and tradingAccount aliases', () => {
+    expect(mask).toContain('wallet.user.email');
+    expect(mask).toContain('tradingAccount.user.email');
+  });
+
+  it('removes the address from a wallet row', () => {
+    expect(maskedPathsFor('wallet', mask)).toContain('user.email');
+    const row = { id: 'w1', user: { id: 'u1', email: 'alpha@x.test', firstName: 'Alpha' } };
+    const masked = applyMask('wallet', row, mask);
+    expect('email' in masked.user).toBe(false);
+    expect(masked.user.firstName, 'it removed more than it was asked to').toBe('Alpha');
+  });
+
+  it('removes the address from a trading-account row', () => {
+    const row = { id: 'a1', user: { id: 'u1', email: 'alpha@x.test' } };
+    const masked = applyMask('tradingAccount', row, mask);
+    expect('email' in masked.user).toBe(false);
+  });
+});
+
+describe('the CSV half — the exports flatten the person, and must mask that too', () => {
+  /*
+   * The list was masked when this bypass was found; the EXPORT was not, and it
+   * is the more damaging of the two: a file leaves the building carrying every
+   * row in it.
+   *
+   * It survived the first pass because `GET /admin/wallets/export` declares no
+   * response schema, so the openapi-driven census could not see it. 42 of 170
+   * admin routes sit in that blind spot — which is why the census can promise
+   * completeness over DECLARED schemas and not over routes.
+   *
+   * Separate prefixes, exactly as `withdrawal`/`withdrawalExport` are separate:
+   * the desk nests the person under `user`, the CSV flattens them to
+   * `userEmail`. One shared prefix would have the desk announce a flat key that
+   * appears on none of the rows it returned.
+   */
+  const mask = expand(['client.email']);
+
+  it('expands to the flattened export aliases', () => {
+    expect(mask).toContain('walletExport.userEmail');
+    expect(mask).toContain('tradingAccountExport.userEmail');
+  });
+
+  it('removes the address from an exported wallet row', () => {
+    const row = { id: 'w1', userEmail: 'alpha@x.test', userFirstName: 'Alpha', balance: '0' };
+    const masked = applyMask('walletExport', row, mask);
+    expect('userEmail' in masked).toBe(false);
+    expect(masked.userFirstName, 'it removed more than it was asked to').toBe('Alpha');
+    expect(masked.balance, 'the money column is not a client field').toBe('0');
+  });
+
+  it('removes the address from an exported trading-account row', () => {
+    const row = { id: 'a1', userEmail: 'alpha@x.test', login: '5001' };
+    const masked = applyMask('tradingAccountExport', row, mask);
+    expect('userEmail' in masked).toBe(false);
+    expect(masked.login).toBe('5001');
+  });
+});

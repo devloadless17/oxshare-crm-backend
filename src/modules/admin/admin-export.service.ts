@@ -378,7 +378,23 @@ export class AdminExportService {
     limit: number,
   ): Promise<WalletExportRow[]> {
     assertActorCan(actor, 'wallets.view', 'export client wallets');
-    return this.holdings.walletExportBatch(query, actor, offset, limit);
+    /*
+     * The CSV half of the wallet/trading-account exposure. The LIST was masked
+     * when that bypass was found; this was not, and it is the more damaging of
+     * the two — a file leaves the building with every row in it.
+     *
+     * A SEPARATE prefix from the desk's, exactly as `withdrawalExport` is:
+     * the desk nests the person under `user`, the CSV flattens them to
+     * `userEmail`, and one shared prefix would have the desk announce a flat
+     * key that appears on none of the rows it returned.
+     *
+     * Missed on the first pass because this route declares no response schema,
+     * so the openapi-driven census could not see it — 42 admin routes are in
+     * that blind spot, which is why the census promises completeness over
+     * DECLARED schemas and not over routes.
+     */
+    const rows = await this.holdings.walletExportBatch(query, actor, offset, limit);
+    return applyMaskAll('walletExport', rows, actor.fieldMask);
   }
 
   // ── Trading accounts ──────────────────────────────────────────────────────
@@ -426,7 +442,23 @@ export class AdminExportService {
     limit: number,
   ): Promise<TradingAccountExportRow[]> {
     assertActorCan(actor, 'trading.view', 'export client trading accounts');
-    return this.holdings.tradingAccountExportBatch(query, actor, offset, limit);
+    /*
+     * The CSV half of the wallet/trading-account exposure. The LIST was masked
+     * when that bypass was found; this was not, and it is the more damaging of
+     * the two — a file leaves the building with every row in it.
+     *
+     * A SEPARATE prefix from the desk's, exactly as `withdrawalExport` is:
+     * the desk nests the person under `user`, the CSV flattens them to
+     * `userEmail`, and one shared prefix would have the desk announce a flat
+     * key that appears on none of the rows it returned.
+     *
+     * Missed on the first pass because this route declares no response schema,
+     * so the openapi-driven census could not see it — 42 admin routes are in
+     * that blind spot, which is why the census promises completeness over
+     * DECLARED schemas and not over routes.
+     */
+    const rows = await this.holdings.tradingAccountExportBatch(query, actor, offset, limit);
+    return applyMaskAll('tradingAccountExport', rows, actor.fieldMask);
   }
 
   // ── KYC ───────────────────────────────────────────────────────────────────

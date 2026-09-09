@@ -405,6 +405,72 @@ describe('the KYC screen is not a bypass', () => {
   });
 });
 
+describe('the DECISION is not a bypass either', () => {
+  /*
+   * The seventh RBAC-03 exposure, and the one with the sharpest shape.
+   *
+   * `getKyc` masks. The four TRANSITIONS on the same submission — claim,
+   * release, approve, reject — returned the row straight from the service with
+   * no mask at all. So a reviewer who could not see the client's phone number
+   * on the review screen got it back in the response body of the Claim button
+   * sitting on that screen. The read was protected and the write handed the
+   * value over.
+   *
+   * Proved on the wire before the fix: PATCH .../claim returned
+   * personalInfo.phone, personalInfo.dateOfBirth, personalInfo.nationality and
+   * user.email, with no `maskedFields` key at all.
+   *
+   * The same hole was in the four withdrawal transitions, whose `WithdrawalRowDto`
+   * nests `WithdrawalUserDto` and its email; `withdrawal-desk-masking` covers those.
+   *
+   * Written with BOTH legs, per the failure this suite has to avoid: a masked
+   * admin who cannot REACH a route also returns no email, and "the address is
+   * absent" is then true of a 403 body. Every case asserts 200, and the master
+   * leg proves the value was there to be hidden.
+   */
+
+  it('hides the client on the CLAIM response, and says what it hid', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.patch(`/v1/admin/kyc/${clientId}/claim`).expect(200);
+
+    const text = JSON.stringify(res.body);
+    expect(text).not.toContain('mask-target@oxshare-e2e.test');
+    expect(text).not.toContain('+961 1 000 000');
+    // A mask, not a 403 and not an empty body: the submission still arrives.
+    expect((res.body as { userId: string }).userId).toBe(clientId);
+    expect((res.body as { maskedFields: string[] }).maskedFields).toEqual(
+      expect.arrayContaining(['kyc.user.email']),
+    );
+  });
+
+  it('hides the client on the RELEASE response, which undoes the claim', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.patch(`/v1/admin/kyc/${clientId}/release`).expect(200);
+
+    const text = JSON.stringify(res.body);
+    expect(text).not.toContain('mask-target@oxshare-e2e.test');
+    expect(text).not.toContain('+961 1 000 000');
+    expect((res.body as { status: string }).status).toBe('submitted');
+  });
+
+  it('the MASTER sees the address on the very same transition', async () => {
+    /*
+     * The control, and it is not optional. Without it every assertion above is
+     * satisfied by a transition that returns nothing at all — and a mask that
+     * empties the response is a broken screen, not a working control. This also
+     * catches the catalogue half of the bug: a resource with no prefix in
+     * `client-fields.json` passes the masked leg by masking nothing, and only
+     * this leg notices the difference.
+     */
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const claimed = await session.patch(`/v1/admin/kyc/${clientId}/claim`).expect(200);
+    expect(JSON.stringify(claimed.body)).toContain('mask-target@oxshare-e2e.test');
+
+    // Left as it was found, so the ordering of this file cannot matter.
+    await session.patch(`/v1/admin/kyc/${clientId}/release`).expect(200);
+  });
+});
+
 describe('the field catalog', () => {
   it('serves the vocabulary the frontend configures masks from', async () => {
     // R-4.5: the frontend never invents a key. A mask key with no backend

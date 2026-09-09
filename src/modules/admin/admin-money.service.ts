@@ -15,7 +15,7 @@ import {
 } from '../payments/transactions.service';
 import { TransfersService } from '../payments/transfers.service';
 import { sortKey, sortOrder } from '../../common/sorting';
-import { applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
+import { applyMask, applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
 import { WalletService } from '../wallet/wallet.service';
 import { AdminsStore } from '../../store/admins.store';
 import { UsersStore } from '../../store/users.store';
@@ -495,7 +495,22 @@ export class AdminMoneyService {
      * on the desk is the failure surface.
      */
     void this.rivalWithdrawals.submitApproved(row.id);
-    return row;
+    /*
+     * RBAC-03 on the DECISION's own response.
+     *
+     * The desk list masks; these did not, so a reviewer who cannot see the
+     * client's address on the screen got it back in the body of the button they
+     * pressed on that same screen. The read was protected and the write handed
+     * the value over.
+     *
+     * Found by cross-checking the route census against the services that
+     * actually mask — `WithdrawalRowDto` nests `WithdrawalUserDto`, which
+     * carries the email.
+     */
+    return {
+      ...applyMask('withdrawal', row, actor.fieldMask),
+      maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
+    };
   }
 
   /**
@@ -606,7 +621,22 @@ export class AdminMoneyService {
       },
     );
     void this.emailWithdrawalDecision(row, 'rejected', effectiveReason);
-    return row;
+    /*
+     * RBAC-03 on the DECISION's own response.
+     *
+     * The desk list masks; these did not, so a reviewer who cannot see the
+     * client's address on the screen got it back in the body of the button they
+     * pressed on that same screen. The read was protected and the write handed
+     * the value over.
+     *
+     * Found by cross-checking the route census against the services that
+     * actually mask — `WithdrawalRowDto` nests `WithdrawalUserDto`, which
+     * carries the email.
+     */
+    return {
+      ...applyMask('withdrawal', row, actor.fieldMask),
+      maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
+    };
   }
 
   /**
@@ -673,7 +703,22 @@ export class AdminMoneyService {
       },
     );
     void this.emailWithdrawalDecision(row, 'rejected', effectiveReason);
-    return row;
+    /*
+     * RBAC-03 on the DECISION's own response.
+     *
+     * The desk list masks; these did not, so a reviewer who cannot see the
+     * client's address on the screen got it back in the body of the button they
+     * pressed on that same screen. The read was protected and the write handed
+     * the value over.
+     *
+     * Found by cross-checking the route census against the services that
+     * actually mask — `WithdrawalRowDto` nests `WithdrawalUserDto`, which
+     * carries the email.
+     */
+    return {
+      ...applyMask('withdrawal', row, actor.fieldMask),
+      maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
+    };
   }
   async settleWithdrawal(id: string, actor: AuthenticatedAdmin, providerRef: string) {
     /*
@@ -716,7 +761,22 @@ export class AdminMoneyService {
       );
     });
     void this.emailWithdrawalDecision(row, 'paid');
-    return row;
+    /*
+     * RBAC-03 on the DECISION's own response.
+     *
+     * The desk list masks; these did not, so a reviewer who cannot see the
+     * client's address on the screen got it back in the body of the button they
+     * pressed on that same screen. The read was protected and the write handed
+     * the value over.
+     *
+     * Found by cross-checking the route census against the services that
+     * actually mask — `WithdrawalRowDto` nests `WithdrawalUserDto`, which
+     * carries the email.
+     */
+    return {
+      ...applyMask('withdrawal', row, actor.fieldMask),
+      maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
+    };
   }
 
   /**
