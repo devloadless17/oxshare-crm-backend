@@ -374,6 +374,43 @@ describe('the amount must be expressible in the currency (D-77)', () => {
     ).rejects.toThrow(/2 decimal places/i);
   });
 
+  it('suggests the SAME figure the pay button shows — half-up, not down', async () => {
+    /*
+     * The screen used to contradict itself.
+     *
+     * The portal's pay button renders the amount through `formatMoney`, which
+     * rounds HALF-UP for display, so `50.129` produced a button promising
+     * "Pay $50.13" beside a server message saying "Try 50.12 USD" — and
+     * clicking the button failed. The message rounded down "for consistency
+     * with the withdrawal message", which mattered far less than consistency
+     * with the number on the same screen.
+     *
+     * A deposit has no balance to overshoot, so nothing is protected by
+     * rounding down. 50.129 means 50.13.
+     */
+    await configureManualMethod();
+    const userId = await makeClient('deposit-suggestion@test.local');
+
+    await expect(
+      transactions.requestDeposit({
+        userId,
+        amount: '50.129',
+        currency: 'USD',
+        method: MANUAL,
+      }),
+    ).rejects.toThrow(/50\.13/);
+
+    // And never the floored figure, which is what the button contradicted.
+    await expect(
+      transactions.requestDeposit({
+        userId,
+        amount: '50.129',
+        currency: 'USD',
+        method: MANUAL,
+      }),
+    ).rejects.not.toThrow(/50\.12/);
+  });
+
   it('accepts cents, and trailing zeros are not extra precision', async () => {
     await configureManualMethod();
     const userId = await makeClient('deposit-cents@test.local');

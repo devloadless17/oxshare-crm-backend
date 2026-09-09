@@ -2522,14 +2522,29 @@ export class TransactionsService {
     const railScale = this.gateways.settlementScale(paymentMethod.key);
     const payableDecimals = railScale === null ? decimals : Math.min(decimals, railScale);
     if (amount.decimalPlaces() > payableDecimals) {
-      // Rounded DOWN in the suggestion, purely for consistency with the
-      // withdrawal message: on a deposit either direction is defensible, and
-      // one rule is easier to trust than two.
+      /*
+       * HALF-UP, and this was wrong the other way round for a while.
+       *
+       * It rounded DOWN "for consistency with the withdrawal message", which
+       * sounded reasonable and put two different numbers on one screen: the pay
+       * button renders the amount through the portal's `formatMoney`, which
+       * rounds HALF-UP for display, so `50.129` produced a button promising
+       * "Pay $50.13" beside this message saying "Try 50.12 USD" — and clicking
+       * the button failed.
+       *
+       * Consistency with the OTHER endpoint's wording mattered far less than
+       * consistency with the number the client is looking at. A deposit also has
+       * no balance to overshoot: the client is paying, so there is nothing to
+       * protect by rounding down, and half-up is what they meant by 50.129.
+       *
+       * A WITHDRAWAL still floors, for the reason that does not apply here —
+       * suggesting more than the client holds trades one refusal for another.
+       */
       throw new ValidationError(
         `${paymentMethod.name} takes ${currency} to ${payableDecimals} decimal ` +
-          `${payableDecimals === 1 ? 'place' : 'places'}. Try ` +
-          `${amount.toDecimalPlaces(payableDecimals, Decimal.ROUND_DOWN).toFixed(payableDecimals)} ` +
-          `${currency}.`,
+          `${payableDecimals === 1 ? 'place' : 'places'}. Use ` +
+          `${amount.toDecimalPlaces(payableDecimals, Decimal.ROUND_HALF_UP).toFixed(payableDecimals)} ` +
+          `${currency} instead.`,
       );
     }
 
