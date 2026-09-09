@@ -46,28 +46,39 @@ export class InheritedAgencyDto {
  */
 export class CreateIbApplicationDto {
   /**
-   * The agency (وكالة) being applied for. REQUIRED.
+   * The agency (وكالة) being applied for. Required for a DIRECT applicant,
+   * absent BY DESIGN for an introduced one — and only the SERVICE can tell
+   * them apart.
    *
-   * It was optional, so that a deployment with no agencies configured could
-   * still take applications — and a blank field appointed a partner whose
-   * clients are offered the whole catalogue, the broadest grant in the system,
-   * reached by omission. `IsUUID` alone now carries the requirement; the
-   * service repeats it, because a DTO protects a ROUTE and the rule has to hold
-   * for anything calling the service directly.
+   * A client introduced by an existing partner does not choose: the service
+   * derives their programme from the introducer and IGNORES this field, and
+   * the portal deliberately sends nothing (see apply-panel.tsx — sending a
+   * copy invites the two to disagree, and the API would silently win). A bare
+   * `@IsUUID()` here refused that shape at the pipe with "agencyId must be a
+   * UUID" — every introduced applicant was blocked by the transport edge
+   * before the rule that welcomes them could run.
+   *
+   * So the DTO validates the SHAPE (present means a UUID) and the service owns
+   * the REQUIREMENT: `apply()` refuses a direct applicant with no agency using
+   * a sentence a person can act on, which also holds for anything calling the
+   * service directly. The blank-grants-everything hole this field's history
+   * warns about stays closed — the refusal moved, it did not go.
    *
    * Validated against the OPEN agencies on submit. A disabled one is refused
    * rather than accepted-and-queued: the programme is closed, and letting the
    * application sit means telling somebody later that the thing they applied
    * for was never available.
    */
-  @ApiProperty({
+  @ApiPropertyOptional({
     format: 'uuid',
     description:
-      'Which agency the applicant wants to be appointed under. Required — it decides what they ' +
-      'may sell, and there is no "any" option.',
+      'Which agency the applicant wants to be appointed under. Required for an applicant who ' +
+      'chooses; omitted when they were introduced by a partner — the programme is inherited from ' +
+      'the introducer and anything sent here is ignored.',
   })
+  @IsOptional()
   @IsUUID()
-  agencyId: string;
+  agencyId?: string;
 
   @ApiPropertyOptional({
     maxLength: 2000,

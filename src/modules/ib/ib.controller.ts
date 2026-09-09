@@ -141,9 +141,9 @@ export class IbController {
       'name. Disabled agencies are ABSENT rather than greyed out: nobody here can answer "when ' +
       'does it reopen", and offering a choice that will be refused is a poor way to learn it is ' +
       'closed.\n\n' +
-      'An empty list means no programme is configured yet. The portal should let the client ' +
-      'apply anyway — an agency is optional on the application, so a deployment that has not set ' +
-      'them up still takes partners.',
+      'An empty list means no programme is open, and there is nothing to apply for — the portal ' +
+      'says so instead of offering a button that can only be refused. An applicant introduced by ' +
+      'a partner never consults this list at all: their programme is inherited, not chosen.',
   })
   @ApiOkResponse({ type: [PublicAgencyDto] })
   openAgencies() {
@@ -195,7 +195,9 @@ export class IbController {
     description:
       'Requires a verified identity (KYC level 1). Refuses a second application while one is ' +
       'still awaiting review, and refuses outright if the client is already a partner. ' +
-      '`agencyId` names the programme applied for and must be one GET /ib/agencies returned.',
+      '`agencyId` names the programme applied for and must be one GET /ib/agencies returned — ' +
+      'OMITTED by an applicant introduced by a partner, whose programme is inherited from the ' +
+      'introducer and cannot be chosen.',
   })
   @ApiOkResponse({ type: IbApplicationDto })
   apply(@Req() req: Request & { user: User }, @Body() dto: CreateIbApplicationDto) {
