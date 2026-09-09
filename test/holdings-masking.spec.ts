@@ -58,3 +58,42 @@ describe('masking client.email reaches the wallet and trading-account desks', ()
     expect('email' in masked.user).toBe(false);
   });
 });
+
+describe('the CSV half — the exports flatten the person, and must mask that too', () => {
+  /*
+   * The list was masked when this bypass was found; the EXPORT was not, and it
+   * is the more damaging of the two: a file leaves the building carrying every
+   * row in it.
+   *
+   * It survived the first pass because `GET /admin/wallets/export` declares no
+   * response schema, so the openapi-driven census could not see it. 42 of 170
+   * admin routes sit in that blind spot — which is why the census can promise
+   * completeness over DECLARED schemas and not over routes.
+   *
+   * Separate prefixes, exactly as `withdrawal`/`withdrawalExport` are separate:
+   * the desk nests the person under `user`, the CSV flattens them to
+   * `userEmail`. One shared prefix would have the desk announce a flat key that
+   * appears on none of the rows it returned.
+   */
+  const mask = expand(['client.email']);
+
+  it('expands to the flattened export aliases', () => {
+    expect(mask).toContain('walletExport.userEmail');
+    expect(mask).toContain('tradingAccountExport.userEmail');
+  });
+
+  it('removes the address from an exported wallet row', () => {
+    const row = { id: 'w1', userEmail: 'alpha@x.test', userFirstName: 'Alpha', balance: '0' };
+    const masked = applyMask('walletExport', row, mask);
+    expect('userEmail' in masked).toBe(false);
+    expect(masked.userFirstName, 'it removed more than it was asked to').toBe('Alpha');
+    expect(masked.balance, 'the money column is not a client field').toBe('0');
+  });
+
+  it('removes the address from an exported trading-account row', () => {
+    const row = { id: 'a1', userEmail: 'alpha@x.test', login: '5001' };
+    const masked = applyMask('tradingAccountExport', row, mask);
+    expect('userEmail' in masked).toBe(false);
+    expect(masked.login).toBe('5001');
+  });
+});

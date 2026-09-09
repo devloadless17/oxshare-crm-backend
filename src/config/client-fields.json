@@ -69,7 +69,9 @@
           "financial.user.firstName",
           "financialExport.userFirstName",
           "wallet.user.firstName",
-          "tradingAccount.user.firstName"
+          "tradingAccount.user.firstName",
+          "walletExport.userFirstName",
+          "tradingAccountExport.userFirstName"
         ]
       },
       {
@@ -86,7 +88,9 @@
           "financial.user.lastName",
           "financialExport.userLastName",
           "wallet.user.lastName",
-          "tradingAccount.user.lastName"
+          "tradingAccount.user.lastName",
+          "walletExport.userLastName",
+          "tradingAccountExport.userLastName"
         ]
       }
     ]
@@ -109,7 +113,9 @@
           "financial.user.email",
           "financialExport.userEmail",
           "wallet.user.email",
-          "tradingAccount.user.email"
+          "tradingAccount.user.email",
+          "walletExport.userEmail",
+          "tradingAccountExport.userEmail"
         ]
       },
       {
