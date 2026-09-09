@@ -589,6 +589,38 @@ section('G', 'Leaving nothing behind');
     }
   }
   console.log(`      tidied ${tidied} row(s)`);
+
+  /*
+   * Leave the company wallet USABLE.
+   *
+   * Cancelling a withdrawal releases its reserve, but anything under Rival's
+   * auto-approval cap ($500) is completed by the poller before cleanup runs —
+   * so a full pass genuinely SPENDS several thousand dollars of the company
+   * balance. A run that drains it leaves every other suite failing for a reason
+   * that has nothing to do with them: the payout rail refuses, correctly, and
+   * two Playwright specs time out looking like product faults.
+   *
+   * Topping back up is part of finishing, not a courtesy.
+   */
+  const FLOOR = process.env.MATRIX_COMPANY_FLOOR ?? '4000';
+  const left = await companyAvailable();
+  if (scaled(left) < scaled(FLOOR)) {
+    const top = subM(FLOOR, left);
+    const r = await rival.call('/admin/loads', {
+      method: 'POST',
+      body: JSON.stringify({
+        companyId: COMPANY,
+        amount: top.split('.')[0],
+        currency: 'USD',
+        notes: 'integration matrix: restoring the company float',
+        payout: { method: 'CASH', recipientName: 'OxShare CRM', recipientPhone: '+96170123456' },
+        externalReference: `matrix-restore-${Date.now()}`,
+      }),
+    });
+    check(r.status < 400, 'company wallet restored for the next run', await companyAvailable());
+  } else {
+    ok('company wallet still funded', left);
+  }
   const { rows: stranded } = await db.query(
     `SELECT count(*)::int AS n FROM transactions
       WHERE state = 'approved' AND rival_needs_attention = true`,
