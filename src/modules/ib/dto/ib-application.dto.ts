@@ -239,14 +239,25 @@ export class ApproveIbApplicationDto {
    * them — so approval has no commercial choice left in it.
    */
 
+  /**
+   * OMITTED and NULL are different instructions, and collapsing them was a
+   * live bug: the console omits this field, the controller once coalesced
+   * that to null, and every partner it approved landed at the root on level 1
+   * with no tree edge — which also let a client under a mislabeled "level-1"
+   * partner apply past the two-level ladder.
+   */
   @ApiPropertyOptional({
     type: 'string',
     nullable: true,
-    description: 'The partner who introduced them. Omitted or null means they deal direct.',
+    description:
+      'The parent to nest the new partner under. OMITTED means "the reviewer did not say" — ' +
+      'the introducer recorded at registration becomes the parent, which is the ordinary case. ' +
+      'An explicit NULL roots them: they deal with the broker directly at level 1, whoever ' +
+      'introduced them.',
   })
   @IsOptional()
   @IsUUID()
-  parentIbUserId?: string;
+  parentIbUserId?: string | null;
 
   /**
    * Override the agency the applicant asked for.

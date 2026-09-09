@@ -827,6 +827,13 @@
       "when": 1787101221030,
       "tag": "0117_a_level_is_priced_per_lot",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1787101222030,
+      "tag": "0118_adopt_orphaned_sub_partners",
+      "breakpoints": true
     }
   ]
 }

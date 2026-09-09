@@ -207,13 +207,20 @@ export class AdminIbController {
     @Body() dto: ApproveIbApplicationDto,
   ) {
     return this.applications.approve(id, req.admin, req.admin.clientScope, {
-      parentIbUserId: dto.parentIbUserId ?? null,
       /*
-       * `undefined` deliberately, not `?? null`. Undefined means "the reviewer
-       * did not say", and the service falls back to what the applicant asked
-       * for; null would mean "appoint them under no agency at all", which is a
-       * different decision and not the one an omitted field expresses.
+       * Passed THROUGH, never `?? null` — for BOTH fields, and the distinction
+       * is the whole bug this line once was. To the service, `undefined` means
+       * "the reviewer did not say" (inherit the introducer as parent, grant
+       * the agency applied for) while `null` is an explicit instruction (root
+       * this partner / no agency). The console omits both in the ordinary
+       * case, and coalescing the parent to null here turned every ordinary
+       * approval into "root them": no tree edge, level 1 for everyone, and a
+       * chain-full guard that never fired because there was never a parent to
+       * check. That is the exact gap `inheritedParentIbUserIdFor` documents
+       * closing in the service — reopened one layer up, where no spec looked.
+       * `admin-ib-approve-mapping.spec.ts` pins this mapping now.
        */
+      parentIbUserId: dto.parentIbUserId,
       agencyId: dto.agencyId,
     });
   }
