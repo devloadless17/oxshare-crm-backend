@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ClientField, NotClientField } from '../../../common/security/client-field.decorator';
 import {
   rejectionContextEnum,
   transactionDirectionEnum,
@@ -20,7 +21,11 @@ export class AdminScopeTagDto {
 
 export class AdminProfileDto {
   @ApiProperty() id: string;
-  @ApiProperty() email: string;
+  @NotClientField(
+    'the administrator OWN address - this DTO describes the operator reading the screen, not a client',
+  )
+  @ApiProperty()
+  email: string;
   @ApiProperty() name: string;
   @ApiProperty({ enum: ['master_admin', 'sub_admin'] }) role: 'master_admin' | 'sub_admin';
   @ApiProperty({ type: [String] }) permissions: string[];
@@ -140,16 +145,32 @@ export class AdminLoginResponseDto {
  */
 export class KycUserDto {
   @ApiProperty() id: string;
-  @ApiProperty() email: string;
-  @ApiProperty() firstName: string;
-  @ApiProperty() lastName: string;
+  @ClientField('client.email')
+  @ApiProperty()
+  email: string;
+  @ClientField('client.firstName')
+  @ApiProperty()
+  firstName: string;
+  @ClientField('client.lastName')
+  @ApiProperty()
+  lastName: string;
   @ApiPropertyOptional({ enum: ['individual', 'referral', 'partner'] }) type?: string;
   @ApiPropertyOptional({ enum: ['active', 'pending', 'suspended'] }) status?: string;
   @ApiPropertyOptional({ enum: [0, 1] }) verificationLevel?: number;
-  @ApiPropertyOptional() emailVerified?: boolean;
-  @ApiPropertyOptional() country?: string;
-  @ApiPropertyOptional() phone?: string;
-  @ApiPropertyOptional({ type: String, format: 'date-time' }) createdAt?: string;
+  @NotClientField(
+    'a verification STATUS rather than the address; the catalogue offers no key for it, and hiding it would blank the badge rather than protect anything',
+  )
+  @ApiPropertyOptional()
+  emailVerified?: boolean;
+  @ClientField('client.country')
+  @ApiPropertyOptional()
+  country?: string;
+  @ClientField('client.phone')
+  @ApiPropertyOptional()
+  phone?: string;
+  @ClientField('client.createdAt')
+  @ApiPropertyOptional({ type: String, format: 'date-time' })
+  createdAt?: string;
 }
 
 export class KycDocumentDto {
@@ -314,9 +335,15 @@ export class ClientTagWithCountDto extends ClientTagDto {
  */
 export class ClientRowDto {
   @ApiProperty() id: string;
-  @ApiPropertyOptional() email?: string;
-  @ApiPropertyOptional() firstName?: string;
-  @ApiPropertyOptional() lastName?: string;
+  @ClientField('client.email')
+  @ApiPropertyOptional()
+  email?: string;
+  @ClientField('client.firstName')
+  @ApiPropertyOptional()
+  firstName?: string;
+  @ClientField('client.lastName')
+  @ApiPropertyOptional()
+  lastName?: string;
   @ApiProperty({ enum: ['individual', 'referral', 'partner'] }) type: string;
   @ApiProperty({
     enum: ['active', 'pending', 'suspended'],
@@ -345,9 +372,31 @@ export class ClientRowDto {
   })
   verificationLevel: number;
 
-  @ApiPropertyOptional() country?: string;
-  @ApiPropertyOptional() createdAt?: Date;
-  @ApiPropertyOptional({ type: [ClientTagDto] }) tags?: ClientTagDto[];
+  /*
+   * DECLARED because it is RETURNED. `UsersStore.findPage` projects `phone` on
+   * every client row and this DTO did not mention it — a contract the generated
+   * frontend types were missing, and a hole in masking-by-shape: `applyMask`
+   * strips by PATH from the real object and does not care what the DTO says,
+   * while the response interceptor can only remove what the shape declares. An
+   * under-declared field is therefore invisible to the new mechanism and still
+   * in the body.
+   *
+   * Found by deleting `applyMaskAll` from `listClients` and watching the
+   * interceptor cover email, name and country and MISS this one.
+   */
+  @ClientField('client.phone')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  phone?: string | null;
+
+  @ClientField('client.country')
+  @ApiPropertyOptional()
+  country?: string;
+  @ClientField('client.createdAt')
+  @ApiPropertyOptional()
+  createdAt?: Date;
+  @ClientField('client.tags')
+  @ApiPropertyOptional({ type: [ClientTagDto] })
+  tags?: ClientTagDto[];
 }
 
 export class ProfileTradingAccountDto {
@@ -371,9 +420,15 @@ export class ProfileTradingAccountDto {
 
 export class ProfileReferrerDto {
   @ApiProperty() ibUserId: string;
-  @ApiProperty() email: string;
-  @ApiProperty() firstName: string;
-  @ApiProperty() lastName: string;
+  @ClientField('client.email')
+  @ApiProperty()
+  email: string;
+  @ClientField('client.firstName')
+  @ApiProperty()
+  firstName: string;
+  @ClientField('client.lastName')
+  @ApiProperty()
+  lastName: string;
   @ApiProperty({ description: 'False when the attribution was switched off.' })
   active: boolean;
   @ApiProperty() since: Date;
@@ -381,9 +436,15 @@ export class ProfileReferrerDto {
 
 export class ProfileReferredClientDto {
   @ApiProperty() clientUserId: string;
-  @ApiProperty() email: string;
-  @ApiProperty() firstName: string;
-  @ApiProperty() lastName: string;
+  @ClientField('client.email')
+  @ApiProperty()
+  email: string;
+  @ClientField('client.firstName')
+  @ApiProperty()
+  firstName: string;
+  @ClientField('client.lastName')
+  @ApiProperty()
+  lastName: string;
   @ApiProperty() active: boolean;
   @ApiProperty() since: Date;
 }
@@ -427,9 +488,15 @@ export class ProfileKycDto {
  */
 export class ClientAccountDto {
   @ApiProperty({ format: 'uuid' }) id: string;
-  @ApiProperty() email: string;
-  @ApiProperty() firstName: string;
-  @ApiProperty() lastName: string;
+  @ClientField('client.email')
+  @ApiProperty()
+  email: string;
+  @ClientField('client.firstName')
+  @ApiProperty()
+  firstName: string;
+  @ClientField('client.lastName')
+  @ApiProperty()
+  lastName: string;
   @ApiProperty({ enum: ['individual', 'referral', 'partner'] }) type: string;
   @ApiProperty({ enum: ['active', 'pending', 'suspended'] }) status: string;
   @ApiProperty({ enum: [0, 1] }) verificationLevel: number;
@@ -440,9 +507,15 @@ export class ClientAccountDto {
   })
   emailVerified: boolean;
 
-  @ApiProperty({ type: String, nullable: true }) country: string | null;
-  @ApiProperty({ type: String, nullable: true }) phone: string | null;
-  @ApiProperty() createdAt: Date;
+  @ClientField('client.country')
+  @ApiProperty({ type: String, nullable: true })
+  country: string | null;
+  @ClientField('client.phone')
+  @ApiProperty({ type: String, nullable: true })
+  phone: string | null;
+  @ClientField('client.createdAt')
+  @ApiProperty()
+  createdAt: Date;
 
   @ApiProperty({
     type: [String],
@@ -456,18 +529,36 @@ export class ClientAccountDto {
 
 export class ClientProfileDto {
   @ApiProperty() id: string;
-  @ApiPropertyOptional() email?: string;
-  @ApiPropertyOptional() firstName?: string;
-  @ApiPropertyOptional() lastName?: string;
+  @ClientField('client.email')
+  @ApiPropertyOptional()
+  email?: string;
+  @ClientField('client.firstName')
+  @ApiPropertyOptional()
+  firstName?: string;
+  @ClientField('client.lastName')
+  @ApiPropertyOptional()
+  lastName?: string;
   @ApiProperty({ enum: ['individual', 'referral', 'partner'] }) type: string;
   @ApiProperty({ enum: ['active', 'pending', 'suspended'] }) status: string;
   @ApiProperty({ enum: [0, 1] }) verificationLevel: number;
-  @ApiProperty() emailVerified: boolean;
-  @ApiPropertyOptional() country?: string;
-  @ApiPropertyOptional() phone?: string;
-  @ApiPropertyOptional() createdAt?: Date;
+  @NotClientField(
+    'a verification STATUS rather than the address; the catalogue offers no key for it, and hiding it would blank the badge rather than protect anything',
+  )
+  @ApiProperty()
+  emailVerified: boolean;
+  @ClientField('client.country')
+  @ApiPropertyOptional()
+  country?: string;
+  @ClientField('client.phone')
+  @ApiPropertyOptional()
+  phone?: string;
+  @ClientField('client.createdAt')
+  @ApiPropertyOptional()
+  createdAt?: Date;
 
-  @ApiProperty({ type: [ClientTagDto] }) tags: ClientTagDto[];
+  @ClientField('client.tags')
+  @ApiProperty({ type: [ClientTagDto] })
+  tags: ClientTagDto[];
 
   @ApiPropertyOptional({ type: ProfileKycDto, description: 'Absent without kyc.view.' })
   kyc?: ProfileKycDto;
@@ -640,7 +731,9 @@ export class AcceptInviteResponseDto {
 /** An invite that has been sent and not yet accepted. Never carries the token. */
 export class PendingInviteDto {
   @ApiProperty() id: string;
-  @ApiProperty() email: string;
+  @NotClientField('the invited ADMINISTRATOR, not a client')
+  @ApiProperty()
+  email: string;
   @ApiProperty() name: string;
   @ApiPropertyOptional() roleId?: string;
   @ApiProperty({ description: 'Admin id of whoever sent it.' }) invitedBy: string;
@@ -660,7 +753,11 @@ export class AuditActionDto {
 export class AuditEntryDto {
   @ApiProperty() id: string;
   @ApiProperty() actorId: string;
-  @ApiProperty() actorEmail: string;
+  @NotClientField(
+    'the ACTOR who performed the action, an administrator; a client field mask has no standing over it',
+  )
+  @ApiProperty()
+  actorEmail: string;
   /*
    * WHO KIND of actor, and from WHERE. Both were stored, returned by the store,
    * and absent from this contract — so the API sent them and the document
@@ -734,9 +831,15 @@ export { MessageResponseDto } from '../../../common/dto/message-response.dto';
  */
 export class WithdrawalUserDto {
   @ApiProperty() id: string;
-  @ApiPropertyOptional() email?: string;
-  @ApiPropertyOptional() firstName?: string;
-  @ApiPropertyOptional() lastName?: string;
+  @ClientField('client.email')
+  @ApiPropertyOptional()
+  email?: string;
+  @ClientField('client.firstName')
+  @ApiPropertyOptional()
+  firstName?: string;
+  @ClientField('client.lastName')
+  @ApiPropertyOptional()
+  lastName?: string;
 }
 
 export class WithdrawalRowDto {
@@ -1013,9 +1116,15 @@ export class AdminTransactionsSummaryDto {
 /** The owner a holding is displayed against. Joined, never fetched per row. */
 export class HoldingOwnerDto {
   @ApiProperty() id: string;
-  @ApiProperty() email: string;
-  @ApiProperty() firstName: string;
-  @ApiProperty() lastName: string;
+  @ClientField('client.email')
+  @ApiProperty()
+  email: string;
+  @ClientField('client.firstName')
+  @ApiProperty()
+  firstName: string;
+  @ClientField('client.lastName')
+  @ApiProperty()
+  lastName: string;
 }
 
 export class WalletRowDto {
