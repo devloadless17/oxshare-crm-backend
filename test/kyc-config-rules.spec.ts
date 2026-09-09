@@ -65,6 +65,8 @@ function makeService(steps: KycStepConfig[] = DEFAULT_STEPS) {
     // CONFIGURATION is a schema, not anybody's submission, so there is no
     // client row to scope.
     {} as never,
+    // The admins store, for resolving a claim holder's name.
+    {} as never,
   );
 }
 
@@ -114,6 +116,8 @@ describe('replacing the whole KYC configuration', () => {
       { setSteps, updateStep, deleteStep, getSteps } as never,
       {} as never,
       { record } as never,
+      {} as never,
+      // The admins store, for resolving a claim holder's name.
       {} as never,
     );
     const steps = DEFAULT_STEPS.map((s) => (s.slug === 'address' ? { ...s, enabled: false } : s));

@@ -12,6 +12,7 @@ import { ClientVisibilityService } from '../../common/security/client-visibility
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { Admin } from '../../store/admins.store';
 import { NEEDS_REVIEW, NEEDS_REVIEW_STATUSES } from '../../store/kyc.store';
+import { AdminsStore } from '../../store/admins.store';
 
 /**
  * The admin side of compliance: the KYC review queue, the step configurator,
@@ -26,7 +27,31 @@ export class AdminComplianceService {
     private readonly rejectionReasons: RejectionReasonsStore,
     private readonly audit: AdminAuditService,
     private readonly visibility: ClientVisibilityService,
+    private readonly admins: AdminsStore,
   ) {}
+
+  /**
+   * Resolve the holders of the claims on a page, in ONE query.
+   *
+   * A reviewer's NAME rather than their id, because "who has this" is the only
+   * question a claim exists to answer for a colleague, and a uuid answers it
+   * to nobody. Null when the row is unclaimed, and null too when the
+   * administrator who held it has since been deleted — an absence the screen
+   * states rather than filling with an id.
+   *
+   * Batched: a page of 25 that resolved a name per row would be 25 round trips
+   * for a column, which is how a list screen becomes slow without anyone
+   * noticing a single slow query.
+   */
+  private async withReviewerNames<T extends { reviewedBy?: string }>(
+    rows: T[],
+  ): Promise<(T & { reviewedByName: string | null })[]> {
+    const names = await this.admins.namesByIds(rows.map((r) => r.reviewedBy ?? '').filter(Boolean));
+    return rows.map((row) => ({
+      ...row,
+      reviewedByName: row.reviewedBy ? (names.get(row.reviewedBy) ?? null) : null,
+    }));
+  }
 
   // ─── KYC: list all ────────────────────────────────────────────────────────
   async listKyc(
@@ -74,7 +99,7 @@ export class AdminComplianceService {
      */
     return {
       ...page,
-      items: applyMaskAll('kyc', page.items, actor.fieldMask),
+      items: await this.withReviewerNames(applyMaskAll('kyc', page.items, actor.fieldMask)),
       maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
     };
   }
@@ -112,8 +137,11 @@ export class AdminComplianceService {
      * The expansion happened; nothing applied it here.
      */
     if (!actor) return submission;
+    const [withReviewer] = await this.withReviewerNames([
+      applyMask('kyc', submission, actor.fieldMask),
+    ]);
     return {
-      ...applyMask('kyc', submission, actor.fieldMask),
+      ...withReviewer,
       maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
     };
   }
@@ -222,6 +250,36 @@ export class AdminComplianceService {
     await this.visibility.assertVisible(userId, actor.clientScope);
     const result = await this.kycService.claim(userId, actor.id);
     this.audit.record(actor.id, 'kyc.claim', 'kyc_submission', userId, { status: result.status });
+    return result;
+  }
+  /**
+   * Hand a claimed submission back to the queue.
+   *
+   * Gated exactly like a DECISION — `kyc.review` plus the client being in this
+   * actor's territory — and for the same reason `KycService.release` gives:
+   * approve and reject already accept an `under_review` row from any reviewer
+   * who can see it, so a claim has never been a lock. Anyone who could decide
+   * it may put it back instead; a stricter rule here would make "stuck" the
+   * outcome of an ordinary handover.
+   *
+   * The previous holder is recorded in the audit row rather than checked in a
+   * guard: that is what makes a release accountable, which is the property
+   * this needs, instead of restricted, which is the property that strands work.
+   */
+  async releaseKyc(userId: string, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'kyc.review', 'hand a KYC submission back to the queue');
+    await this.visibility.assertVisible(userId, actor.clientScope);
+    // Read BEFORE the release, or the id it names has already been cleared.
+    const before = await this.kycService.getByUserId(userId).catch(() => null);
+    const result = await this.kycService.release(userId);
+    this.audit.record(actor.id, 'kyc.release', 'kyc_submission', userId, {
+      status: result.status,
+      // Who was holding it — the question anyone reading this row will ask.
+      releasedFrom: before?.reviewedBy ?? null,
+      // Stated because it is the interesting case: a reviewer taking a
+      // colleague's claim back into the pool, rather than dropping their own.
+      ownClaim: before?.reviewedBy === actor.id,
+    });
     return result;
   }
   // ─── KYC: reject ──────────────────────────────────────────────────────────

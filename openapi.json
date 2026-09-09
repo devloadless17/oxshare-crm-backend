@@ -6988,6 +6988,43 @@
         ]
       }
     },
+    "/v1/admin/kyc/{userId}/release": {
+      "patch": {
+        "description": "The way out of a claim. A reviewer who picked a submission up and cannot finish it — reassigned, off shift, or moved out of that territory — would otherwise leave a row that looks taken to everyone else. Gated exactly like a decision, because approve and reject already accept an under_review row from any reviewer who can see it: a claim is advisory, never a lock. Refuses a submission that has already been DECIDED — reopening one is reject's job, with a reason attached.",
+        "operationId": "AdminComplianceController_releaseKyc",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycSubmissionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Hand a claimed KYC back to the queue (under_review → submitted)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/kyc/{userId}/approve": {
       "patch": {
         "operationId": "AdminComplianceController_approveKyc",
@@ -15560,6 +15597,10 @@
           "reviewedBy": {
             "type": "string"
           },
+          "reviewedByName": {
+            "type": "string",
+            "nullable": true
+          },
           "rejectionReason": {
             "type": "string"
           },
@@ -15668,6 +15709,10 @@
           },
           "reviewedBy": {
             "type": "string"
+          },
+          "reviewedByName": {
+            "type": "string",
+            "nullable": true
           },
           "rejectionReason": {
             "type": "string"

@@ -153,7 +153,9 @@ const toSubmission = (r: Row): KycSubmission => ({
 
 // Explicit nulls clear columns (e.g. resubmission clears rejection data);
 // absent keys leave them untouched.
-const toColumns = (patch: Partial<KycSubmission>) => {
+const toColumns = (
+  patch: Partial<Omit<KycSubmission, 'reviewedBy'>> & { reviewedBy?: string | null },
+) => {
   const set: Record<string, unknown> = { updatedAt: new Date() };
   const map: Array<[keyof KycSubmission, string]> = [
     ['status', 'status'],
@@ -167,6 +169,11 @@ const toColumns = (patch: Partial<KycSubmission>) => {
     ['selfie', 'selfie'],
     ['addressProof', 'addressProof'],
   ];
+  /*
+   * `key in patch`, not a truthiness test: a key present with `null` MEANS
+   * "clear this column", and a key that is absent means "leave it alone".
+   * Collapsing the two would make `release` unable to detach a reviewer.
+   */
   for (const [key, col] of map) {
     if (key in patch) set[col] = patch[key] ?? null;
   }
@@ -244,10 +251,17 @@ export class KycStore {
    * ("`UPDATE … WHERE state='approved'` with a rowcount check"). KYC is not
    * `ledger_entries`, but it is what GATES `ledger_entries`.
    */
+  /**
+   * @param patch `reviewedBy: null` CLEARS the reviewer; omitting the key
+   *   leaves it alone. The distinction matters — `release` has to put a
+   *   submission back in the pool with nobody's name on it, and a patch that
+   *   could only ever SET an id would leave the previous holder attached to a
+   *   row that is once again unclaimed.
+   */
   async transition(
     userId: string,
     from: readonly KycStatus[],
-    patch: Partial<KycSubmission>,
+    patch: Partial<Omit<KycSubmission, 'reviewedBy'>> & { reviewedBy?: string | null },
     executor?: Executor,
   ): Promise<KycSubmission | undefined> {
     const [row] = await (executor ?? this.db)
@@ -362,6 +376,14 @@ export class KycStore {
           status: kycSubmissions.status,
           submittedAt: kycSubmissions.submittedAt,
           reviewedAt: kycSubmissions.reviewedAt,
+          /*
+           * WHO holds it. An ADMIN id, not client data — so it costs the
+           * minimisation above nothing, and without it a claim communicates
+           * only "somebody has this", which is the half that helps nobody:
+           * the Claim button disappears for every colleague and there is no
+           * name to ask. The service resolves it to a name.
+           */
+          reviewedBy: kycSubmissions.reviewedBy,
           createdAt: kycSubmissions.createdAt,
           updatedAt: kycSubmissions.updatedAt,
           country: sql<string | null>`${kycSubmissions.personalInfo}->>'country'`,
@@ -436,6 +458,7 @@ export class KycStore {
         status: r.status,
         submittedAt: r.submittedAt ?? undefined,
         reviewedAt: r.reviewedAt ?? undefined,
+        reviewedBy: r.reviewedBy ?? undefined,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
         // The queue's country column, and nothing else from the profile.

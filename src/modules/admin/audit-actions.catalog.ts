@@ -60,6 +60,7 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'kyc.approve', label: 'KYC approved', group: 'Verification' },
   { action: 'kyc.reject', label: 'KYC rejected', group: 'Verification' },
   { action: 'kyc.claim', label: 'KYC claimed for review', group: 'Verification' },
+  { action: 'kyc.release', label: 'KYC handed back to the queue', group: 'Verification' },
   { action: 'kyc.submission.view', label: 'KYC submission opened', group: 'Verification' },
   { action: 'kyc.document.view', label: 'KYC document viewed', group: 'Verification' },
 
