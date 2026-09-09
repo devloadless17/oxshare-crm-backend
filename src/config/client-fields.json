@@ -67,7 +67,9 @@
           "withdrawal.user.firstName",
           "withdrawalExport.userFirstName",
           "financial.user.firstName",
-          "financialExport.userFirstName"
+          "financialExport.userFirstName",
+          "wallet.user.firstName",
+          "tradingAccount.user.firstName"
         ]
       },
       {
@@ -82,7 +84,9 @@
           "withdrawal.user.lastName",
           "withdrawalExport.userLastName",
           "financial.user.lastName",
-          "financialExport.userLastName"
+          "financialExport.userLastName",
+          "wallet.user.lastName",
+          "tradingAccount.user.lastName"
         ]
       }
     ]
@@ -103,7 +107,9 @@
           "withdrawal.user.email",
           "withdrawalExport.userEmail",
           "financial.user.email",
-          "financialExport.userEmail"
+          "financialExport.userEmail",
+          "wallet.user.email",
+          "tradingAccount.user.email"
         ]
       },
       {

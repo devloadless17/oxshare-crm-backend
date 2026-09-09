@@ -34,6 +34,7 @@ import {
 } from '../../common/pagination';
 import { sortKey, sortOrder, type SortOrder } from '../../common/sorting';
 import { assertActorCan } from '../../common/security/actor';
+import { applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
 import { enumQuery } from '../../common/query-params';
 import { tradingAccountStatusEnum, tradingEnvironmentEnum } from '../../database/schema';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
@@ -210,7 +211,22 @@ export class AdminHoldingsService {
     const order = sortOrder(query.order);
     const cursor = query.cursor ? decodeCursor(query.cursor, sort) : undefined;
 
-    return this.walletPage({
+    /*
+     * RBAC-03, applied HERE rather than inside `walletPage` because the mask is the
+     * actor's and the page helper is deliberately actor-free — it decides rows,
+     * not fields.
+     *
+     * These rows carry the client under `user`, the same shape the withdrawal
+     * desk uses, and this screen served the email address a role was configured
+     * to hide: `applyMask` is opt-in and nothing on this path ever called it.
+     * The catalog carried no `wallet.` prefix either, so the call alone would
+     * have been a silent no-op — the aliases went in beside it.
+     *
+     * Found by `test/mask-coverage.spec.ts`, which is what that census is for:
+     * two sibling surfaces masked, this one not, and no behavioural test in the
+     * repo asserting anything about it.
+     */
+    const page = await this.walletPage({
       userId: query.userId,
       currency: query.currency,
       page: Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1),
@@ -222,6 +238,11 @@ export class AdminHoldingsService {
       // The whole point. Row-level visibility, in the WHERE clause.
       scope: actor.clientScope,
     });
+    return {
+      ...page,
+      items: applyMaskAll('wallet', page.items, actor.fieldMask),
+      maskedFields: maskedFieldsFor('wallet', actor.fieldMask),
+    };
   }
 
   private walletConditions(filter: {
@@ -478,7 +499,22 @@ export class AdminHoldingsService {
     const order = sortOrder(query.order);
     const cursor = query.cursor ? decodeCursor(query.cursor, sort) : undefined;
 
-    return this.tradingAccountPage({
+    /*
+     * RBAC-03, applied HERE rather than inside `tradingAccountPage` because the mask is the
+     * actor's and the page helper is deliberately actor-free — it decides rows,
+     * not fields.
+     *
+     * These rows carry the client under `user`, the same shape the withdrawal
+     * desk uses, and this screen served the email address a role was configured
+     * to hide: `applyMask` is opt-in and nothing on this path ever called it.
+     * The catalog carried no `tradingAccount.` prefix either, so the call alone would
+     * have been a silent no-op — the aliases went in beside it.
+     *
+     * Found by `test/mask-coverage.spec.ts`, which is what that census is for:
+     * two sibling surfaces masked, this one not, and no behavioural test in the
+     * repo asserting anything about it.
+     */
+    const page = await this.tradingAccountPage({
       userId: query.userId,
       // Checked against the schema's own enum, never cast. `?environment=nonsense`
       // compared against a Postgres enum column surfaces as a 500 carrying a
@@ -493,6 +529,11 @@ export class AdminHoldingsService {
       order,
       scope: actor.clientScope,
     });
+    return {
+      ...page,
+      items: applyMaskAll('tradingAccount', page.items, actor.fieldMask),
+      maskedFields: maskedFieldsFor('tradingAccount', actor.fieldMask),
+    };
   }
 
   private tradingAccountConditions(filter: {
