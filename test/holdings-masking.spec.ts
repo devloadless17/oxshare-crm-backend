@@ -97,3 +97,58 @@ describe('the CSV half — the exports flatten the person, and must mask that to
     expect(masked.login).toBe('5001');
   });
 });
+
+describe('the partner detail — the parent AND every sub-partner', () => {
+  /*
+   * `GET /admin/ib/partners/:userId` returned the parent partner's email and
+   * the identity of every direct sub-partner, unmasked — the same addresses
+   * `/admin/clients/:id` correctly hides for the same reader, one screen away.
+   * No service under `modules/ib` called applyMask at all.
+   *
+   * `directPartners` is an ARRAY, which is the half that has bitten this
+   * feature before: `client.referredClients[].email` shipped a scoped admin's
+   * whole downline until `removePath` learned to walk arrays (e808729). So the
+   * array case is asserted on its own, not inferred from the parent's.
+   *
+   * The three portal-side projections in `ib-overview.service.ts` are
+   * deliberately NOT masked and must stay that way: `overviewFor` and
+   * `commissionsFor` are reached with `req.user.id` from the client portal, so
+   * they are a partner reading their own network. An admin field mask has no
+   * business there.
+   */
+  const mask = expand(['client.email']);
+
+  it('expands to the partner-detail aliases, parent and downline', () => {
+    expect(mask).toContain('ibPartner.parent.email');
+    expect(mask).toContain('ibPartner.directPartners.email');
+  });
+
+  it("removes the parent's address while leaving the rest of the record", () => {
+    const detail = {
+      userId: 'p1',
+      level: 1,
+      parent: { userId: 'p0', email: 'parent@x.test', firstName: 'Pat', lastName: 'Rent' },
+      directPartners: [],
+    };
+    const masked = applyMask('ibPartner', detail, mask);
+    expect('email' in masked.parent).toBe(false);
+    expect(masked.parent.firstName, 'it removed more than it was asked to').toBe('Pat');
+    expect(masked.level, 'the commission terms are not client fields').toBe(1);
+  });
+
+  it('removes the address from EVERY row of the sub-partner array', () => {
+    const detail = {
+      userId: 'p1',
+      parent: null,
+      directPartners: [
+        { userId: 'a', email: 'a@x.test', firstName: 'A' },
+        { userId: 'b', email: 'b@x.test', firstName: 'B' },
+      ],
+    };
+    const masked = applyMask('ibPartner', detail, mask);
+    expect(masked.directPartners).toHaveLength(2);
+    for (const row of masked.directPartners) expect('email' in row).toBe(false);
+    // Non-vacuous: the rows are still there and still identifiable.
+    expect(masked.directPartners.map((r) => r.userId)).toEqual(['a', 'b']);
+  });
+});
