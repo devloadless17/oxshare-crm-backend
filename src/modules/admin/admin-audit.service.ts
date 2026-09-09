@@ -1,4 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { maskAuditDetails } from '../../common/security/audit-detail-fields';
+import { maskedFieldsFor } from '../../common/security/field-mask';
 import { AdminsStore } from '../../store/admins.store';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { AuthorizationError } from '../../common/errors/domain-errors';
@@ -108,7 +110,7 @@ export class AdminAuditService {
    * anybody can be given, which is the whole point of the distinction, and
    * inventing an `audit.view` key here would let a sub-admin be granted it.
    */
-  listAuditLog(
+  async listAuditLog(
     actor: AuthenticatedAdmin,
     query: {
       page?: string;
@@ -145,7 +147,22 @@ export class AdminAuditService {
     const sort = sortKey(query.sort, AUDIT_SORT_COLUMNS, DEFAULT_AUDIT_SORT, 'the audit log');
     const order = sortOrder(query.order);
 
-    return this.auditLog.findAll({
+    /*
+     * RBAC-03 reaches inside `details`, which nothing else can.
+     *
+     * `details` is free-form jsonb — no DTO for the interceptor to walk, no
+     * catalogue path for `applyMask` to remove — so it was the one store a field
+     * mask could not touch. Most of what was in there was denormalised context
+     * and has been removed at the WRITE. What remains is the case that cannot
+     * be: `client.email_change` records both addresses because there the
+     * addresses ARE the change.
+     *
+     * So the record keeps them and the READ is narrowed, per the declaration in
+     * `audit-detail-fields.ts`. The row is still written whole and the table is
+     * still append-only, which is the difference between a redacted VIEW and a
+     * redacted RECORD — only the first leaves the log usable as evidence.
+     */
+    const page = await this.auditLog.findAll({
       // D-54, resolved: client-subject rows follow the reader's territory.
       scope: actor.clientScope,
       page: parseInt(query.page ?? '1', 10) || 1,
@@ -159,5 +176,14 @@ export class AdminAuditService {
       sort,
       order,
     });
+
+    return {
+      ...page,
+      items: page.items.map((row) => ({
+        ...row,
+        details: maskAuditDetails(row.action, row.details, actor.fieldMask),
+      })),
+      maskedFields: maskedFieldsFor('client', actor.fieldMask),
+    };
   }
 }

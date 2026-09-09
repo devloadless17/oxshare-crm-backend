@@ -3,7 +3,7 @@ import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swa
 import { Request } from 'express';
 import { ParseUUIDPipe } from '@nestjs/common';
 import { Mt5AccountsService } from './mt5-accounts.service';
-import { CreateMt5AccountDto, Mt5BalanceDto } from './dto/mt5-account.dto';
+import { CreateMt5AccountDto, Mt5BalanceDto, CreatedMt5AccountDto } from './dto/mt5-account.dto';
 import {
   PermissionsGuard,
   RequirePermissions,
@@ -77,6 +77,7 @@ export class Mt5AccountsController {
       'open accounts for clients outside their territory.',
   )
   @Audited('trading.account_create')
+  @ApiOkResponse({ type: CreatedMt5AccountDto })
   create(@Req() req: Request & { admin: AuthenticatedAdmin }, @Body() dto: CreateMt5AccountDto) {
     return this.accounts.createAccount(
       {

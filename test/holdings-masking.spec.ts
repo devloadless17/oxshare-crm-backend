@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { maskByShape } from '../src/common/security/mask-by-shape';
+import { TradingAccountRowDto, WalletRowDto } from '../src/modules/admin/dto/responses.dto';
+import {
+  TradingAccountExportRowDto,
+  WalletExportRowDto,
+} from '../src/modules/admin/dto/export-rows.dto';
+import { IbPartnerDetailDto } from '../src/modules/ib/dto/ib-application.dto';
+import { CreatedMt5AccountDto } from '../src/modules/trading/mt5/dto/mt5-account.dto';
 import { readFileSync } from 'node:fs';
-import { applyMask, maskedPathsFor } from '../src/common/security/field-mask';
+import { maskedPathsFor } from '../src/common/security/field-mask';
 
 /**
  * RBAC-03 on the WALLET and TRADING-ACCOUNT desks.
@@ -47,14 +55,14 @@ describe('masking client.email reaches the wallet and trading-account desks', ()
   it('removes the address from a wallet row', () => {
     expect(maskedPathsFor('wallet', mask)).toContain('user.email');
     const row = { id: 'w1', user: { id: 'u1', email: 'alpha@x.test', firstName: 'Alpha' } };
-    const masked = applyMask('wallet', row, mask);
+    const masked = maskByShape(WalletRowDto, row, mask);
     expect('email' in masked.user).toBe(false);
     expect(masked.user.firstName, 'it removed more than it was asked to').toBe('Alpha');
   });
 
   it('removes the address from a trading-account row', () => {
     const row = { id: 'a1', user: { id: 'u1', email: 'alpha@x.test' } };
-    const masked = applyMask('tradingAccount', row, mask);
+    const masked = maskByShape(TradingAccountRowDto, row, mask);
     expect('email' in masked.user).toBe(false);
   });
 });
@@ -84,7 +92,7 @@ describe('the CSV half — the exports flatten the person, and must mask that to
 
   it('removes the address from an exported wallet row', () => {
     const row = { id: 'w1', userEmail: 'alpha@x.test', userFirstName: 'Alpha', balance: '0' };
-    const masked = applyMask('walletExport', row, mask);
+    const masked = maskByShape(WalletExportRowDto, row, mask);
     expect('userEmail' in masked).toBe(false);
     expect(masked.userFirstName, 'it removed more than it was asked to').toBe('Alpha');
     expect(masked.balance, 'the money column is not a client field').toBe('0');
@@ -92,7 +100,7 @@ describe('the CSV half — the exports flatten the person, and must mask that to
 
   it('removes the address from an exported trading-account row', () => {
     const row = { id: 'a1', userEmail: 'alpha@x.test', login: '5001' };
-    const masked = applyMask('tradingAccountExport', row, mask);
+    const masked = maskByShape(TradingAccountExportRowDto, row, mask);
     expect('userEmail' in masked).toBe(false);
     expect(masked.login).toBe('5001');
   });
@@ -130,7 +138,7 @@ describe('the partner detail — the parent AND every sub-partner', () => {
       parent: { userId: 'p0', email: 'parent@x.test', firstName: 'Pat', lastName: 'Rent' },
       directPartners: [],
     };
-    const masked = applyMask('ibPartner', detail, mask);
+    const masked = maskByShape(IbPartnerDetailDto, detail, mask);
     expect('email' in masked.parent).toBe(false);
     expect(masked.parent.firstName, 'it removed more than it was asked to').toBe('Pat');
     expect(masked.level, 'the commission terms are not client fields').toBe(1);
@@ -145,7 +153,7 @@ describe('the partner detail — the parent AND every sub-partner', () => {
         { userId: 'b', email: 'b@x.test', firstName: 'B' },
       ],
     };
-    const masked = applyMask('ibPartner', detail, mask);
+    const masked = maskByShape(IbPartnerDetailDto, detail, mask);
     expect(masked.directPartners).toHaveLength(2);
     for (const row of masked.directPartners) expect('email' in row).toBe(false);
     // Non-vacuous: the rows are still there and still identifiable.
@@ -180,7 +188,7 @@ describe('opening an account hands back the address it just used', () => {
       group: 'real\\Standard',
       credentialsSentTo: 'alpha@x.test',
     };
-    const masked = applyMask('tradingAccountCreated', response, mask);
+    const masked = maskByShape(CreatedMt5AccountDto, response, mask);
 
     expect('credentialsSentTo' in masked).toBe(false);
     // Non-vacuous: the operator still gets the account they just created.
@@ -190,6 +198,6 @@ describe('opening an account hands back the address it just used', () => {
 
   it('leaves the address alone for a reader who may see it', () => {
     const response = { id: 'acc1', login: '5001', credentialsSentTo: 'alpha@x.test' };
-    expect(applyMask('tradingAccountCreated', response, []).credentialsSentTo).toBe('alpha@x.test');
+    expect(maskByShape(CreatedMt5AccountDto, response, []).credentialsSentTo).toBe('alpha@x.test');
   });
 });

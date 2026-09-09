@@ -28,7 +28,7 @@ import { ProductsStore } from '../../store/products.store';
 import { WalletProvisioningService } from '../wallet/wallet-provisioning.service';
 import type { Actor } from '../../common/security/actor';
 import type { ClientScope } from '../../common/security/client-scope';
-import { applyMask, maskedFieldsFor, type FieldMask } from '../../common/security/field-mask';
+import { maskedFieldsFor, type FieldMask } from '../../common/security/field-mask';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import type { IbIneligibleCode } from './dto/ib-application.dto';
 
@@ -1172,7 +1172,7 @@ export class IbApplicationsService {
      * same value on every row of `directPartners`.
      */
     return {
-      ...applyMask('ibPartner', detail, fieldMask),
+      ...detail,
       maskedFields: maskedFieldsFor('ibPartner', fieldMask),
     };
   }

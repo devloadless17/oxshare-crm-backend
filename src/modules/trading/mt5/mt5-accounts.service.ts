@@ -9,7 +9,7 @@ import { Mt5BridgeClient } from './mt5-bridge.client';
 import { AdminAuditService } from '../../admin/admin-audit.service';
 import { EmailService } from '../../email/email.service';
 import { assertActorCan } from '../../../common/security/actor';
-import { applyMask, maskedFieldsFor } from '../../../common/security/field-mask';
+import { maskedFieldsFor } from '../../../common/security/field-mask';
 import { clientScopePredicate } from '../../../common/security/client-scope';
 import type { AuthenticatedAdmin } from '../../admin/guards/admin.guard';
 import {
@@ -357,7 +357,7 @@ export class Mt5AccountsService {
      * in the portal, where an administrator's field mask has no standing.
      */
     return {
-      ...applyMask('tradingAccountCreated', response, actor.fieldMask),
+      ...response,
       maskedFields: maskedFieldsFor('tradingAccountCreated', actor.fieldMask),
     };
   }

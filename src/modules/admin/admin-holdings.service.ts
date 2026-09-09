@@ -34,7 +34,7 @@ import {
 } from '../../common/pagination';
 import { sortKey, sortOrder, type SortOrder } from '../../common/sorting';
 import { assertActorCan } from '../../common/security/actor';
-import { applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
+import { maskedFieldsFor } from '../../common/security/field-mask';
 import { enumQuery } from '../../common/query-params';
 import { tradingAccountStatusEnum, tradingEnvironmentEnum } from '../../database/schema';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
@@ -240,7 +240,7 @@ export class AdminHoldingsService {
     });
     return {
       ...page,
-      items: applyMaskAll('wallet', page.items, actor.fieldMask),
+      items: page.items,
       maskedFields: maskedFieldsFor('wallet', actor.fieldMask),
     };
   }
@@ -531,7 +531,7 @@ export class AdminHoldingsService {
     });
     return {
       ...page,
-      items: applyMaskAll('tradingAccount', page.items, actor.fieldMask),
+      items: page.items,
       maskedFields: maskedFieldsFor('tradingAccount', actor.fieldMask),
     };
   }

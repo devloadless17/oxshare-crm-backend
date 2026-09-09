@@ -6,7 +6,7 @@ import { ClientNotFoundError, ValidationError } from '../../common/errors/domain
 import { buildCursorPage, decodeCursor, pageSize } from '../../common/pagination';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
-import { applyMask, applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
+import { maskedFieldsFor } from '../../common/security/field-mask';
 import { KycStore, type KycSubmission } from '../../store/kyc.store';
 import { actorHasPermission } from '../../common/security/actor';
 import { EmailService } from '../email/email.service';
@@ -238,7 +238,7 @@ export class AdminClientsService {
        * saying so without stripping is a UI convention rather than access
        * control (R-4.1 — the backend enforces, the frontend only hides).
        */
-      items: applyMaskAll('client', withTags, actor.fieldMask),
+      items: withTags,
       maskedFields: maskedFieldsFor('client', actor.fieldMask),
       page,
       limit,
@@ -368,7 +368,7 @@ export class AdminClientsService {
      * its catalog aliases, the same value wherever else it was copied.
      */
     return {
-      ...applyMask('client', profile, actor.fieldMask),
+      ...profile,
       maskedFields: maskedFieldsFor('client', actor.fieldMask),
     };
   }
@@ -667,7 +667,7 @@ export class AdminClientsService {
       createdAt: user.createdAt,
     };
     return {
-      ...applyMask('client', view, actor.fieldMask),
+      ...view,
       maskedFields: maskedFieldsFor('client', actor.fieldMask),
     };
   }
@@ -716,7 +716,7 @@ export class AdminClientsService {
       createdAt: updated.createdAt,
     };
     return {
-      ...applyMask('client', view, actor.fieldMask),
+      ...view,
       maskedFields: maskedFieldsFor('client', actor.fieldMask),
     };
   }

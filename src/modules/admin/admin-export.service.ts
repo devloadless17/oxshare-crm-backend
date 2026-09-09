@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { maskAuditDetails } from '../../common/security/audit-detail-fields';
 import { UsersStore, clientSortKey, clientSortOrder } from '../../store/users.store';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import { KycStore } from '../../store/kyc.store';
@@ -7,7 +8,14 @@ import { IbStore } from '../../store/ib.store';
 import { RolesStore } from '../../store/roles.store';
 import { AuthorizationError, ValidationError } from '../../common/errors/domain-errors';
 import { actorHasPermission, assertActorCan, assertActorCanAny } from '../../common/security/actor';
-import { applyMaskAll } from '../../common/security/field-mask';
+import { maskByShape } from '../../common/security/mask-by-shape';
+import { ClientRowDto, KycSubmissionDto } from './dto/responses.dto';
+import {
+  FinancialExportRowDto,
+  TradingAccountExportRowDto,
+  WalletExportRowDto,
+  WithdrawalExportRowDto,
+} from './dto/export-rows.dto';
 import {
   TransactionsService,
   type AdminMovementsFilter,
@@ -186,7 +194,7 @@ export class AdminExportService {
      * this would make the export button a documented bypass of the masking
      * feature, which is the same class of defect as skipping the client scope.
      */
-    return applyMaskAll('client', withTags, actor.fieldMask);
+    return maskByShape(ClientRowDto, withTags, actor.fieldMask);
   }
 
   // ── Withdrawals ───────────────────────────────────────────────────────────
@@ -249,7 +257,7 @@ export class AdminExportService {
      * re-imports it. A CSV has nowhere to put `maskedFields`, so the header is
      * the only place left to say the column exists at all.
      */
-    return applyMaskAll('withdrawalExport', rows, actor.fieldMask);
+    return maskByShape(WithdrawalExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Financial transactions (the platform-wide movement list) ──────────────
@@ -316,7 +324,7 @@ export class AdminExportService {
      * CSV writer renders the removed field as blank, never a dropped column
      * that shifts every later value under the wrong heading.
      */
-    return applyMaskAll('financialExport', rows, actor.fieldMask);
+    return maskByShape(FinancialExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Wallets ───────────────────────────────────────────────────────────────
@@ -394,7 +402,7 @@ export class AdminExportService {
      * DECLARED schemas and not over routes.
      */
     const rows = await this.holdings.walletExportBatch(query, actor, offset, limit);
-    return applyMaskAll('walletExport', rows, actor.fieldMask);
+    return maskByShape(WalletExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Trading accounts ──────────────────────────────────────────────────────
@@ -458,7 +466,7 @@ export class AdminExportService {
      * DECLARED schemas and not over routes.
      */
     const rows = await this.holdings.tradingAccountExportBatch(query, actor, offset, limit);
-    return applyMaskAll('tradingAccountExport', rows, actor.fieldMask);
+    return maskByShape(TradingAccountExportRowDto, rows, actor.fieldMask);
   }
 
   // ── KYC ───────────────────────────────────────────────────────────────────
@@ -515,7 +523,7 @@ export class AdminExportService {
     // The same mask the queue applies (admin-compliance.service.ts). Without
     // it the export was the one KYC surface that handed a masked reviewer the
     // client email — a downloadable copy of exactly what every screen withheld.
-    return applyMaskAll('kyc', items, actor.fieldMask);
+    return maskByShape(KycSubmissionDto, items, actor.fieldMask);
   }
 
   // ── Audit log ─────────────────────────────────────────────────────────────
@@ -576,7 +584,19 @@ export class AdminExportService {
       scope: actor.clientScope,
     });
     // `findAll` fetches limit + 1 for its cursor; drop the lookahead row.
-    return items.slice(0, limit);
+    /*
+     * The CSV half of the audit mask. A file leaves the building carrying every
+     * row in it, so this matters more than the screen, not less — and it is the
+     * asymmetry that let the withdrawal desk's export leak for seventeen days
+     * after its list was fixed.
+     *
+     * Same declaration as the list read (`audit-detail-fields.ts`), so the two
+     * cannot drift: one definition, two call sites.
+     */
+    return items.slice(0, limit).map((row) => ({
+      ...row,
+      details: maskAuditDetails(row.action, row.details, actor.fieldMask),
+    }));
   }
 
   // ── IB applications ───────────────────────────────────────────────────────

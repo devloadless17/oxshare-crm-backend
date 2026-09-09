@@ -15,7 +15,7 @@ import {
 } from '../payments/transactions.service';
 import { TransfersService } from '../payments/transfers.service';
 import { sortKey, sortOrder } from '../../common/sorting';
-import { applyMask, applyMaskAll, maskedFieldsFor } from '../../common/security/field-mask';
+import { maskedFieldsFor } from '../../common/security/field-mask';
 import { WalletService } from '../wallet/wallet.service';
 import { AdminsStore } from '../../store/admins.store';
 import { UsersStore } from '../../store/users.store';
@@ -363,7 +363,7 @@ export class AdminMoneyService {
 
     return {
       ...page,
-      items: applyMaskAll('withdrawal', page.items, actor.fieldMask).map((item) => ({
+      items: page.items.map((item) => ({
         ...item,
         reviewedByName: item.reviewedBy ? (reviewerNames.get(item.reviewedBy) ?? null) : null,
       })),
@@ -508,7 +508,7 @@ export class AdminMoneyService {
      * carries the email.
      */
     return {
-      ...applyMask('withdrawal', row, actor.fieldMask),
+      ...row,
       maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
     };
   }
@@ -634,7 +634,7 @@ export class AdminMoneyService {
      * carries the email.
      */
     return {
-      ...applyMask('withdrawal', row, actor.fieldMask),
+      ...row,
       maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
     };
   }
@@ -716,7 +716,7 @@ export class AdminMoneyService {
      * carries the email.
      */
     return {
-      ...applyMask('withdrawal', row, actor.fieldMask),
+      ...row,
       maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
     };
   }
@@ -774,7 +774,7 @@ export class AdminMoneyService {
      * carries the email.
      */
     return {
-      ...applyMask('withdrawal', row, actor.fieldMask),
+      ...row,
       maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
     };
   }
@@ -949,7 +949,7 @@ export class AdminMoneyService {
      */
     return {
       ...page,
-      items: applyMaskAll('financial', page.items, actor.fieldMask),
+      items: page.items,
       maskedFields: maskedFieldsFor('financial', actor.fieldMask),
     };
   }
