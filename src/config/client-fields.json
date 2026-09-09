@@ -121,7 +121,8 @@
           "walletExport.userEmail",
           "tradingAccountExport.userEmail",
           "ibPartner.parent.email",
-          "ibPartner.directPartners.email"
+          "ibPartner.directPartners.email",
+          "tradingAccountCreated.credentialsSentTo"
         ]
       },
       {

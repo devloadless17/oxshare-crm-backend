@@ -9,6 +9,7 @@ import { Mt5BridgeClient } from './mt5-bridge.client';
 import { AdminAuditService } from '../../admin/admin-audit.service';
 import { EmailService } from '../../email/email.service';
 import { assertActorCan } from '../../../common/security/actor';
+import { applyMask, maskedFieldsFor } from '../../../common/security/field-mask';
 import { clientScopePredicate } from '../../../common/security/client-scope';
 import type { AuthenticatedAdmin } from '../../admin/guards/admin.guard';
 import {
@@ -324,7 +325,7 @@ export class Mt5AccountsService {
       created.investorPassword,
     );
 
-    return {
+    const response = {
       id: row.id,
       login: String(created.login),
       group: created.group,
@@ -337,6 +338,27 @@ export class Mt5AccountsService {
        * successful create reads as though something was forgotten.
        */
       credentialsSentTo: client.email,
+    };
+
+    /*
+     * RBAC-03. `credentialsSentTo` IS the client's email address, so an operator
+     * whose role hides `client.email` was handed it simply by opening an account
+     * for that client — on a route declaring no response schema, which is why
+     * the census could not see it either.
+     *
+     * Masked rather than dropped for everyone: "sent to ada@example.com" is
+     * genuinely actionable, and silence after a successful create reads as
+     * though something was forgotten. A reader who may see the address still
+     * gets it; one who may not gets the field absent and `maskedFields` saying
+     * so — the same contract every other screen makes.
+     *
+     * `createOwnAccount` and `resetOwnAccountPassword` return the same field and
+     * are deliberately NOT masked: they are a CLIENT reading their own address
+     * in the portal, where an administrator's field mask has no standing.
+     */
+    return {
+      ...applyMask('tradingAccountCreated', response, actor.fieldMask),
+      maskedFields: maskedFieldsFor('tradingAccountCreated', actor.fieldMask),
     };
   }
 
