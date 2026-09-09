@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { maskAuditDetails } from '../../common/security/audit-detail-fields';
 import { UsersStore, clientSortKey, clientSortOrder } from '../../store/users.store';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import { KycStore } from '../../store/kyc.store';
@@ -576,7 +577,19 @@ export class AdminExportService {
       scope: actor.clientScope,
     });
     // `findAll` fetches limit + 1 for its cursor; drop the lookahead row.
-    return items.slice(0, limit);
+    /*
+     * The CSV half of the audit mask. A file leaves the building carrying every
+     * row in it, so this matters more than the screen, not less — and it is the
+     * asymmetry that let the withdrawal desk's export leak for seventeen days
+     * after its list was fixed.
+     *
+     * Same declaration as the list read (`audit-detail-fields.ts`), so the two
+     * cannot drift: one definition, two call sites.
+     */
+    return items.slice(0, limit).map((row) => ({
+      ...row,
+      details: maskAuditDetails(row.action, row.details, actor.fieldMask),
+    }));
   }
 
   // ── IB applications ───────────────────────────────────────────────────────
