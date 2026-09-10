@@ -768,6 +768,100 @@ export async function runSeeds(): Promise<void> {
   }
 
   /*
+   * ── The REVIEW POOL: one pending-KYC client per spec that needs one ──────
+   *
+   * SEEDED, for the reason the cohort above already states and this repo
+   * already learned: `POST /auth/register` is capped at 10 an hour per IP.
+   *
+   * `mintClientWithPendingKyc` was added after that note and registers a client
+   * at runtime, once per spec that needs a reviewable submission — ELEVEN of
+   * them across the admin suite. So the suite cannot finish a single run inside
+   * its own budget, let alone a second: the later mints answer 429, the helper
+   * skips, and a skipped Playwright test reports as PASSING. Eighteen tests
+   * vanished from one green run that way, including the entire payout rail.
+   *
+   * `verify-email` (10 per 15 minutes) is exhausted by the same path.
+   *
+   * ONE CLIENT PER LABEL, never a shared one. These fixtures are DECIDED by the
+   * specs that use them — claimed, approved, rejected — so two specs sharing a
+   * row would fail in an order that depends on which ran first, which is the
+   * trap the `suspend-target` note above already records.
+   *
+   * ⚠️ RE-ASSERTED on every boot, not `onConflictDoNothing`. That is the
+   * difference between this and alpha's submission, and it is deliberate: these
+   * rows exist to BE decided, so a run that approves one must find it pending
+   * again next time. Alpha's is left alone because no spec decides it and a
+   * human's decision there should stick.
+   */
+  const REVIEW_POOL = [
+    'desk',
+    'needs-attention',
+    'claim',
+    'decided',
+    'rt',
+    'rt-in',
+    'auth',
+    'dbl',
+    'rej',
+    'ui',
+    'settle',
+  ] as const;
+
+  for (const label of REVIEW_POOL) {
+    const email = `e2e-pool-${label}@${E2E_DOMAIN}`;
+    const [pooled] = await db
+      .insert(users)
+      .values({
+        email,
+        passwordHash: clientHash,
+        firstName: 'Pool',
+        lastName: label,
+        type: 'individual',
+        status: 'active',
+        emailVerified: true,
+        verificationLevel: 0,
+        country: 'Lebanon',
+      })
+      .onConflictDoUpdate({
+        target: users.email,
+        // Re-verified and re-activated: a spec that suspends one must not leave
+        // the next run unable to sign in as it.
+        set: { emailVerified: true, status: 'active' },
+      })
+      .returning();
+
+    await db
+      .insert(kycSubmissions)
+      .values({
+        userId: pooled.id,
+        status: 'submitted',
+        submittedAt: new Date(),
+        personalInfo: {
+          firstName: 'Pool',
+          lastName: label,
+          email,
+          phone: '+96170000900',
+          dateOfBirth: '1990-06-15',
+          nationality: 'Lebanon',
+          country: 'Lebanon',
+        },
+        document: { docType: 'passport', fileName: 'pool-doc.png' },
+        selfie: { fileName: 'pool-selfie.png' },
+        addressProof: { docType: 'utility_bill', fileName: 'pool-address.png' },
+      })
+      .onConflictDoUpdate({
+        target: kycSubmissions.userId,
+        set: {
+          status: 'submitted',
+          submittedAt: new Date(),
+          reviewedAt: null,
+          reviewedBy: null,
+          rejectionReason: null,
+        },
+      });
+  }
+
+  /*
    * Two tags the suite owns, prefixed so they read as suite-owned in the tag
    * picker and sort together away from an operator's real segments.
    *

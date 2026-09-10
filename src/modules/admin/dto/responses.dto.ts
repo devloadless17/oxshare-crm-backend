@@ -1394,6 +1394,54 @@ export class WithdrawalRowDto {
   )
   @ApiProperty({ type: WithdrawalUserDto })
   user: WithdrawalUserDto;
+
+  /*
+   * ── What the four TRANSITIONS return, and the desk does not ──────────────
+   *
+   * approve / reject / settle / cancel all declare this DTO and hand back the
+   * transaction ROW, which carries ten keys the desk list never sends. So the
+   * declaration was a contract lie: both frontends typed those responses as a
+   * desk row, `user` included, and would have read `undefined` from a field
+   * TypeScript promised. Nothing broke only because the admin discards the body
+   * and refetches (`transactions/page.tsx` — `onSuccess: async (_data, row)`).
+   *
+   * It is NOT a masking leak — the transitions return no `user` object at all,
+   * so there was never a client field on them to hide. It is the OTHER half:
+   * a response the shape did not admit to, exactly what `phone` was on
+   * ClientRowDto. Declared here rather than split into a second DTO, because
+   * one resource keeps one shape and every addition is optional, so the desk's
+   * rows still satisfy it.
+   */
+  @NotClientField('addresses the record\u2019s owner; client.id is unmaskable for that reason')
+  @ApiPropertyOptional({ type: String })
+  userId?: string;
+  @NotClientField('an identifier addressing the wallet, not an attribute of the person')
+  @ApiPropertyOptional({ type: String })
+  walletId?: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiPropertyOptional({ type: String })
+  direction?: string;
+  @NotClientField('operator configuration naming the rail, carrying no client attribute')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  methodKey?: string | null;
+  @NotClientField('operator configuration naming the rail, carrying no client attribute')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  withdrawalMethodKey?: string | null;
+  @NotClientField('an identifier addressing a trading account, not an attribute of the person')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  destinationTradingAccountId?: string | null;
+  @NotClientField('the ADMIN who decided; an operator identity, never client-owned data')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  reviewedBy?: string | null;
+  @NotClientField('a payment-platform reference describing the record rather than the person')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  rivalExternalId?: string | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional({ type: Date, nullable: true })
+  createdAt?: Date | null;
+  @NotClientField('the interceptor\u2019s own report of what it hid, not client data')
+  @ApiPropertyOptional({ type: [String] })
+  maskedFields?: string[];
 }
 
 @NoClientFields(
@@ -1759,6 +1807,19 @@ export class WalletListResponseDto {
   @ApiProperty() total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
+  /*
+   * DECLARED because it is RETURNED. The desk began reporting its mask when the
+   * wallet and trading-account exposures were closed, and the envelope was never
+   * updated — so both frontends' generated types were missing the one field that
+   * tells a screen "hidden" rather than "empty".
+   *
+   * Found by `response-completeness.spec.ts` on the change that introduced it,
+   * which is the whole point of checking a real response against the shape that
+   * claims to describe it.
+   */
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiPropertyOptional({ type: [String] })
+  maskedFields?: string[];
 }
 
 export class TradingAccountRowDto {
@@ -1858,6 +1919,19 @@ export class TradingAccountListResponseDto {
   @ApiProperty() total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
+  /*
+   * DECLARED because it is RETURNED. The desk began reporting its mask when the
+   * wallet and trading-account exposures were closed, and the envelope was never
+   * updated — so both frontends' generated types were missing the one field that
+   * tells a screen "hidden" rather than "empty".
+   *
+   * Found by `response-completeness.spec.ts` on the change that introduced it,
+   * which is the whole point of checking a real response against the shape that
+   * claims to describe it.
+   */
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiPropertyOptional({ type: [String] })
+  maskedFields?: string[];
 }
 
 @NoClientFields(

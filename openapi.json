@@ -16623,6 +16623,46 @@
           },
           "user": {
             "$ref": "#/components/schemas/WithdrawalUserDto"
+          },
+          "userId": {
+            "type": "string"
+          },
+          "walletId": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "methodKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "withdrawalMethodKey": {
+            "type": "string",
+            "nullable": true
+          },
+          "destinationTradingAccountId": {
+            "type": "string",
+            "nullable": true
+          },
+          "reviewedBy": {
+            "type": "string",
+            "nullable": true
+          },
+          "rivalExternalId": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -17595,6 +17635,12 @@
           },
           "limit": {
             "type": "number"
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -17701,6 +17747,12 @@
           },
           "limit": {
             "type": "number"
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
