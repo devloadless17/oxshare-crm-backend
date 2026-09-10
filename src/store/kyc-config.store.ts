@@ -68,8 +68,31 @@ export interface KycFieldConfig {
  * running server: `PUT /admin/kyc-config` accepted a config with `personal`
  * disabled (200), and `DELETE /admin/kyc-config/steps/step-2` removed the identity
  * document step (200). So the rule held only for users of one screen, and any
- * script, integration or future admin client bypassed it. It is enforced in
- * AdminComplianceService now, with this as the single definition.
+ * script, integration or future admin client bypassed it.
+ *
+ * ⚠️ **THE ENFORCEMENT THIS PARAGRAPH USED TO PROMISE IS GONE, ON PURPOSE.**
+ * It said "it is enforced in AdminComplianceService now". That stopped being
+ * true on 15 Aug 2026, when the owner retired the rule — see the block above
+ * `updateKycConfig` in `admin-compliance.service.ts`, which states it at
+ * length. The objection that retired it: a KYC flow sold as configurable that
+ * refuses to drop four of its steps is not configurable, and which documents a
+ * jurisdiction requires is the broker's decision, not this file's.
+ *
+ * So today NOTHING stops a step being disabled or deleted, by design. What
+ * replaces the rule is the AUDIT TRAIL — `kyc_config.replace` records the full
+ * slug list and the enabled subset on every save, so "onboarding stopped asking
+ * for proof of address on the 12th" is answerable with a name attached.
+ *
+ * This constant survives as the DEFAULT set and as a test fixture
+ * (`test/kyc-config-rules.spec.ts`), not as a guard. The name is now a
+ * misnomer and is left alone only because renaming it would touch the seed;
+ * read it as DEFAULT_REQUIRED_SLUGS and do not write code that assumes it is
+ * enforced.
+ *
+ * Corrected 10 Sep 2026. It is recorded rather than deleted because the
+ * paragraph asserted an enforcement that did not exist for roughly four weeks,
+ * which is the same shape as ARCHITECTURE §6.4's append-only claim surviving
+ * the loss of its triggers: a guarantee stated in a comment is not a guarantee.
  */
 export const MANDATORY_KYC_SLUGS: readonly string[] = ['personal', 'document', 'selfie', 'address'];
 
