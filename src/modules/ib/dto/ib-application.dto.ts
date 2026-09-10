@@ -618,4 +618,18 @@ export class IbPartnerDetailDto {
   )
   @ApiProperty({ type: IbPartnerEarningsDto })
   earnings: IbPartnerEarningsDto;
+  /**
+   * RBAC-03: the keys hidden from this viewer, omitted from the body.
+   *
+   * DECLARED because it is RETURNED. The interceptor adds it to every masked
+   * response, and this shape did not mention it — so both frontends were
+   * missing the one field that lets the partner screen say "hidden" rather than
+   * an em dash. That matters here more than most: this is the response of
+   * exposure 8, where the parent partner and the whole downline were served
+   * unmasked, so it is the screen most likely to be showing an operator
+   * something withheld.
+   */
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiPropertyOptional({ type: [String] })
+  maskedFields?: string[];
 }

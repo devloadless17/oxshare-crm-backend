@@ -4,18 +4,30 @@ import { ALL_PERMISSIONS } from './support/all-permissions';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
 import { eq } from 'drizzle-orm';
+import { IbPartnerDetailDto } from '../src/modules/ib/dto/ib-application.dto';
+import { CreatedMt5AccountDto } from '../src/modules/trading/mt5/dto/mt5-account.dto';
+import { Mt5BridgeClient } from '../src/modules/trading/mt5/mt5-bridge.client';
+import { RivalWithdrawalsService } from '../src/modules/payments/rival/rival-withdrawals.service';
 import {
   admins,
+  ibAccounts,
   kycSubmissions,
   roles,
+  tradingAccounts,
   transactions,
   users,
   wallets,
 } from '../src/database/schema';
 import {
+  AdminTransactionListResponseDto,
+  AdminTransactionRowDto,
+  ClientAccountDto,
   KycListResponseDto,
   KycSubmissionDto,
+  TradingAccountListResponseDto,
+  TradingAccountRowDto,
   WalletListResponseDto,
+  WithdrawalListResponseDto,
   WithdrawalRowDto,
 } from '../src/modules/admin/dto/responses.dto';
 
@@ -85,7 +97,46 @@ const report = (name: string, keys: string[]) =>
   `mention:\n${keys.map((k) => `  ${k}`).join('\n')}`;
 
 beforeAll(async () => {
-  ctx = await startHttpTestApp();
+  ctx = await startHttpTestApp({
+    /*
+     * The two routes that cross to a service we do not own. What is being
+     * asserted is the shape OUR code returns — the real controller, service,
+     * DTO and mask interceptor all run; only the far end is canned. Without
+     * this the two routes are untestable here, and an untestable route
+     * becomes a skipped test, which reports as passing.
+     */
+    overrides: [
+      {
+        token: Mt5BridgeClient,
+        value: {
+          isConfigured: () => true,
+          createAccount: () =>
+            Promise.resolve({
+              login: 5099002,
+              group: 'real\\Standard',
+              leverage: 100,
+              currency: 'USD',
+              masterPassword: 'Master!1',
+              investorPassword: 'Investor!1',
+            }),
+        },
+      },
+      {
+        /*
+         * All THREE methods the rest of the code calls, not just the one this
+         * file drives. `willPayOut` stays FALSE so the no-rail behaviour the
+         * transition cases depend on is unchanged — approve settles in one
+         * step, exactly as it does without this stub.
+         */
+        token: RivalWithdrawalsService,
+        value: {
+          submitApproved: () => Promise.resolve(),
+          cancelApproved: () => Promise.resolve(),
+          willPayOut: () => Promise.resolve(false),
+        },
+      },
+    ],
+  });
   const db = ctx.db.db;
   const passwords = new PasswordService();
 
@@ -337,5 +388,215 @@ describe('the withdrawal transitions declare the keys they return', () => {
 
     const keys = undeclared(WithdrawalRowDto, res.body as Record<string, unknown>);
     expect(keys, report('WithdrawalRowDto (cancel response)', keys)).toEqual([]);
+  });
+});
+
+/*
+ * THE REMAINING LIST AND EDIT SURFACES.
+ *
+ * Every shape this check has been pointed at has been under-declared, so these
+ * are written expecting to fail rather than to confirm. Each mints what it
+ * needs: the desk and financial lists are empty until something is on them, and
+ * "is every key declared" against an empty page is vacuously true.
+ */
+describe('the remaining person-carrying responses declare the keys they return', () => {
+  const rowsOf = (body: unknown): Record<string, unknown>[] =>
+    (body as { items?: Record<string, unknown>[] }).items ?? [];
+
+  const mintWithdrawal = async (tag: string): Promise<string> => {
+    const db = ctx.db.db;
+    const [wallet] = await db.select().from(wallets).where(eq(wallets.userId, clientId)).limit(1);
+    const [row] = await db
+      .insert(transactions)
+      .values({
+        userId: clientId,
+        walletId: wallet.id,
+        direction: 'withdrawal',
+        amount: '15.00000000',
+        currency: 'USD',
+        state: 'pending',
+        provider: 'manual_test',
+        destination: `remaining-${tag}`,
+      })
+      .returning();
+    return row.id;
+  };
+
+  it('the WITHDRAWAL desk list, envelope and rows', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    await mintWithdrawal('desk');
+
+    const res = await session.get('/v1/admin/withdrawals?state=pending&limit=25').expect(200);
+
+    const envelope = undeclared(WithdrawalListResponseDto, res.body as Record<string, unknown>);
+    expect(envelope, report('WithdrawalListResponseDto', envelope)).toEqual([]);
+
+    const rows = rowsOf(res.body);
+    expect(rows.length, 'no payout on the desk — the assertion would be vacuous').toBeGreaterThan(
+      0,
+    );
+    const onRow = [...new Set(rows.flatMap((r) => undeclared(WithdrawalRowDto, r)))];
+    expect(onRow, report('WithdrawalRowDto (desk row)', onRow)).toEqual([]);
+  });
+
+  it('the FINANCIAL list, envelope and rows', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    await mintWithdrawal('financial');
+
+    const res = await session.get('/v1/admin/transactions?limit=25').expect(200);
+
+    const envelope = undeclared(
+      AdminTransactionListResponseDto,
+      res.body as Record<string, unknown>,
+    );
+    expect(envelope, report('AdminTransactionListResponseDto', envelope)).toEqual([]);
+
+    const rows = rowsOf(res.body);
+    expect(rows.length, 'no transactions — the assertion would be vacuous').toBeGreaterThan(0);
+    const onRow = [...new Set(rows.flatMap((r) => undeclared(AdminTransactionRowDto, r)))];
+    expect(onRow, report('AdminTransactionRowDto', onRow)).toEqual([]);
+  });
+
+  it('the TRADING ACCOUNT list, envelope and rows', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    await ctx.db.db.insert(tradingAccounts).values({
+      userId: clientId,
+      login: '5099001',
+      name: 'Completeness Target',
+      mt5Group: 'real\\Standard',
+      environment: 'live',
+      currency: 'USD',
+      balance: '100.00000000',
+    });
+
+    const res = await session.get('/v1/admin/trading-accounts?limit=25').expect(200);
+
+    const envelope = undeclared(TradingAccountListResponseDto, res.body as Record<string, unknown>);
+    expect(envelope, report('TradingAccountListResponseDto', envelope)).toEqual([]);
+
+    const rows = rowsOf(res.body);
+    expect(rows.length, 'no trading account — the assertion would be vacuous').toBeGreaterThan(0);
+    const onRow = [...new Set(rows.flatMap((r) => undeclared(TradingAccountRowDto, r)))];
+    expect(onRow, report('TradingAccountRowDto', onRow)).toEqual([]);
+  });
+
+  it('the client PROFILE EDIT response', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session
+      .patch(`/v1/admin/clients/${clientId}`, { firstName: 'Completeness', lastName: 'Edited' })
+      .expect(200);
+
+    const keys = undeclared(ClientAccountDto, res.body as Record<string, unknown>);
+    expect(keys, report('ClientAccountDto (profile edit)', keys)).toEqual([]);
+  });
+
+  it('the client EMAIL CHANGE response', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session
+      .patch(`/v1/admin/clients/${clientId}/email`, {
+        email: 'completeness-target-changed@oxshare-e2e.test',
+      })
+      .expect(200);
+
+    const keys = undeclared(ClientAccountDto, res.body as Record<string, unknown>);
+    expect(keys, report('ClientAccountDto (email change)', keys)).toEqual([]);
+  });
+
+  it('the KYC REJECT response', async () => {
+    /*
+     * Its own client: the fixture's submission is APPROVED by the transition
+     * case above and approval is terminal, so rejecting it would either fail or
+     * make the order of these two load-bearing.
+     */
+    const db = ctx.db.db;
+    const [target] = await db
+      .insert(users)
+      .values({
+        email: 'completeness-reject@oxshare-e2e.test',
+        passwordHash: 'x',
+        firstName: 'Reject',
+        lastName: 'Target',
+        emailVerified: true,
+      })
+      .returning();
+    await db.insert(kycSubmissions).values({
+      userId: target.id,
+      status: 'submitted',
+      submittedAt: new Date(),
+      personalInfo: { firstName: 'Reject', lastName: 'Target' },
+      document: { docType: 'passport', fileName: 'doc.png' },
+      addressProof: { docType: 'utility_bill', fileName: 'proof.png' },
+    });
+
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session
+      .patch(`/v1/admin/kyc/${target.id}/reject`, { reason: 'completeness check' })
+      .expect(200);
+
+    const keys = undeclared(KycSubmissionDto, res.body as Record<string, unknown>);
+    expect(keys, report('KycSubmissionDto (reject response)', keys)).toEqual([]);
+  });
+
+  it('the IB PARTNER detail response', async () => {
+    /*
+     * The partner detail returns the parent partner AND every direct
+     * sub-partner — the shape exposure 8 was found on, where an array of people
+     * was the thing that leaked. Its own client, so the fixture's client stays
+     * an ordinary one for every case above.
+     */
+    const db = ctx.db.db;
+    const [partner] = await db
+      .insert(users)
+      .values({
+        email: 'completeness-partner@oxshare-e2e.test',
+        passwordHash: 'x',
+        firstName: 'Partner',
+        lastName: 'Target',
+        emailVerified: true,
+      })
+      .returning();
+    await db
+      .insert(ibAccounts)
+      .values({ userId: partner.id, level: 1, referralCode: 'COMPLETENESS1', active: true });
+
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`/v1/admin/ib/partners/${partner.id}`).expect(200);
+
+    const keys = undeclared(IbPartnerDetailDto, res.body as Record<string, unknown>);
+    expect(keys, report('IbPartnerDetailDto', keys)).toEqual([]);
+  });
+
+  it('the TRADING ACCOUNT CREATE response', async () => {
+    /*
+     * Exposure 9's route: it returns `credentialsSentTo`, which IS the client's
+     * email under a name no heuristic matches, and it was found by hand. The
+     * bridge is stubbed — MT5 being reachable is not what this proves.
+     */
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session
+      .post('/v1/admin/trading-accounts', {
+        userId: clientId,
+        group: 'real\\Standard',
+        environment: 'live',
+      })
+      .expect(201);
+
+    const keys = undeclared(CreatedMt5AccountDto, res.body as Record<string, unknown>);
+    expect(keys, report('CreatedMt5AccountDto', keys)).toEqual([]);
+  });
+
+  it('the RIVAL RESUBMIT response', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const id = await mintWithdrawal('rival');
+    await ctx.db.db.update(transactions).set({ state: 'approved' }).where(eq(transactions.id, id));
+
+    const res = await session
+      .post(`/v1/admin/withdrawals/${id}/rival-submit`, undefined, {
+        headers: { 'idempotency-key': `completeness-rival-${id}` },
+      })
+      .expect(201);
+
+    const keys = undeclared(WithdrawalRowDto, res.body as Record<string, unknown>);
+    expect(keys, report('WithdrawalRowDto (rival resubmit)', keys)).toEqual([]);
   });
 });

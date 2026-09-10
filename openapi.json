@@ -11859,6 +11859,12 @@
           },
           "earnings": {
             "$ref": "#/components/schemas/IbPartnerEarningsDto"
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
