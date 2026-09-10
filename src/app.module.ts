@@ -34,6 +34,7 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { FieldMaskInterceptor } from './common/security/field-mask.interceptor';
+import { E2eFixturesModule } from './modules/e2e-fixtures/e2e-fixtures.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { CsrfEchoMiddleware } from './common/security/csrf-echo.middleware';
 import { validateEnv } from './config/env.validation';
@@ -64,6 +65,14 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
 
 @Module({
   imports: [
+    /*
+     * Development-only fixture maintenance, so an E2E run can put the pooled KYC
+     * submissions back to pending without a backend restart. Gated exactly like
+     * Swagger and the seeds: in production the routes do not exist, rather than
+     * existing and refusing. See e2e-fixtures.controller.ts for why it is a
+     * route rather than a database call from the test process.
+     */
+    ...(process.env['NODE_ENV'] !== 'production' ? [E2eFixturesModule] : []),
     ReplayNonceModule,
     /*
      * Global config — loads .env in EVERY environment, production included,

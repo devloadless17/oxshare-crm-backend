@@ -793,73 +793,7 @@ export async function runSeeds(): Promise<void> {
    * again next time. Alpha's is left alone because no spec decides it and a
    * human's decision there should stick.
    */
-  const REVIEW_POOL = [
-    'desk',
-    'needs-attention',
-    'claim',
-    'decided',
-    'rt',
-    'rt-in',
-    'auth',
-    'dbl',
-    'rej',
-    'ui',
-    'settle',
-  ] as const;
-
-  for (const label of REVIEW_POOL) {
-    const email = `e2e-pool-${label}@${E2E_DOMAIN}`;
-    const [pooled] = await db
-      .insert(users)
-      .values({
-        email,
-        passwordHash: clientHash,
-        firstName: 'Pool',
-        lastName: label,
-        type: 'individual',
-        status: 'active',
-        emailVerified: true,
-        verificationLevel: 0,
-        country: 'Lebanon',
-      })
-      .onConflictDoUpdate({
-        target: users.email,
-        // Re-verified and re-activated: a spec that suspends one must not leave
-        // the next run unable to sign in as it.
-        set: { emailVerified: true, status: 'active' },
-      })
-      .returning();
-
-    await db
-      .insert(kycSubmissions)
-      .values({
-        userId: pooled.id,
-        status: 'submitted',
-        submittedAt: new Date(),
-        personalInfo: {
-          firstName: 'Pool',
-          lastName: label,
-          email,
-          phone: '+96170000900',
-          dateOfBirth: '1990-06-15',
-          nationality: 'Lebanon',
-          country: 'Lebanon',
-        },
-        document: { docType: 'passport', fileName: 'pool-doc.png' },
-        selfie: { fileName: 'pool-selfie.png' },
-        addressProof: { docType: 'utility_bill', fileName: 'pool-address.png' },
-      })
-      .onConflictDoUpdate({
-        target: kycSubmissions.userId,
-        set: {
-          status: 'submitted',
-          submittedAt: new Date(),
-          reviewedAt: null,
-          reviewedBy: null,
-          rejectionReason: null,
-        },
-      });
-  }
+  await reassertReviewPool(db);
 
   /*
    * Two tags the suite owns, prefixed so they read as suite-owned in the tag
@@ -1054,4 +988,111 @@ export async function runSeeds(): Promise<void> {
   console.log(
     '🌱 Seeds applied (idempotent): master role/admin, demo client, rejection reasons, e2e cohort',
   );
+}
+
+/**
+ * The labels the admin suite leases a pending KYC submission by.
+ *
+ * Exported because a lease site that names a label NOT in here is a different
+ * mistake from one whose fixture was decided — "you need to add a label" rather
+ * than "a previous run consumed it" — and the helper cannot tell them apart
+ * without seeing the list.
+ */
+export const REVIEW_POOL_LABELS = [
+  'desk',
+  'needs-attention',
+  'claim',
+  'decided',
+  'rt',
+  'rt-in',
+  'auth',
+  'dbl',
+  'rej',
+  'ui',
+  'settle',
+] as const;
+
+export const E2E_POOL_DOMAIN = 'oxshare-e2e.test';
+
+/**
+ * Put every pooled fixture back to PENDING, UNCLAIMED and UNDECIDED.
+ *
+ * Extracted from `runSeeds` so it can run per E2E RUN rather than only per
+ * boot. The boot-only version was correct and insufficient: these rows exist to
+ * be decided, so one strict run consumes them and the next fails on fixtures a
+ * previous run approved. The remedy was "restart the backend", which is exactly
+ * the friction that teaches people to unset E2E_STRICT — and unsetting it turns
+ * every skip back into a silent pass, which is the failure the flag exists to
+ * prevent.
+ *
+ * ⚠️ It resets the WHOLE DECISION, not the column the queue filters on. A row
+ * put back to `submitted` while still carrying `reviewedBy` is pending AND
+ * claimed — a state no submission reaches on its own — and the claim specs
+ * assert on exactly that pair, so they would pass against a row they did not
+ * create and fail in ways that look like a claim bug.
+ *
+ * Scoped to `@oxshare-e2e.test` by construction: every address it touches is
+ * built from a label in `REVIEW_POOL_LABELS`, so it cannot reach a real client
+ * even if it were somehow invoked against a populated database.
+ */
+export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<number> {
+  const clientHash = await new PasswordService().hash('client123');
+  const E2E_DOMAIN = E2E_POOL_DOMAIN;
+  const REVIEW_POOL = REVIEW_POOL_LABELS;
+
+  for (const label of REVIEW_POOL) {
+    const email = `e2e-pool-${label}@${E2E_DOMAIN}`;
+    const [pooled] = await db
+      .insert(users)
+      .values({
+        email,
+        passwordHash: clientHash,
+        firstName: 'Pool',
+        lastName: label,
+        type: 'individual',
+        status: 'active',
+        emailVerified: true,
+        verificationLevel: 0,
+        country: 'Lebanon',
+      })
+      .onConflictDoUpdate({
+        target: users.email,
+        // Re-verified and re-activated: a spec that suspends one must not leave
+        // the next run unable to sign in as it.
+        set: { emailVerified: true, status: 'active' },
+      })
+      .returning();
+
+    await db
+      .insert(kycSubmissions)
+      .values({
+        userId: pooled.id,
+        status: 'submitted',
+        submittedAt: new Date(),
+        personalInfo: {
+          firstName: 'Pool',
+          lastName: label,
+          email,
+          phone: '+96170000900',
+          dateOfBirth: '1990-06-15',
+          nationality: 'Lebanon',
+          country: 'Lebanon',
+        },
+        document: { docType: 'passport', fileName: 'pool-doc.png' },
+        selfie: { fileName: 'pool-selfie.png' },
+        addressProof: { docType: 'utility_bill', fileName: 'pool-address.png' },
+      })
+      .onConflictDoUpdate({
+        target: kycSubmissions.userId,
+        set: {
+          status: 'submitted',
+          submittedAt: new Date(),
+          reviewedAt: null,
+          reviewedBy: null,
+          rejectionReason: null,
+        },
+      });
+  }
+
+  return REVIEW_POOL.length;
 }
