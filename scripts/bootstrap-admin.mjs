@@ -98,6 +98,12 @@ try {
       description: 'Every permission in the catalog.',
       permissions: ALL_PERMISSIONS,
       maskedFields: [],
+      // A SYSTEM role, matching seed.ts. This is the flag permission-drift.ts
+      // matches on, so omitting it here would bootstrap an installation whose
+      // top role never receives a permission added later — the drift this whole
+      // mechanism closes, reintroduced on exactly the deployments that were
+      // built by this script rather than by the seed.
+      isSystem: true,
     })
     .onConflictDoNothing({ target: roles.name })
     .returning({ id: roles.id });
