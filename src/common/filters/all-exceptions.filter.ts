@@ -14,6 +14,7 @@ import {
   KycNotVerifiedError,
   AccountNameTakenError,
   ConflictError,
+  KycCorrectionRefusedError,
   ExternalServiceError,
   DomainError,
   MailNotConfiguredError,
@@ -58,6 +59,9 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   [EmailNotVerifiedError, HttpStatus.FORBIDDEN],
   [KycNotVerifiedError, HttpStatus.FORBIDDEN],
   [ConflictError, HttpStatus.CONFLICT],
+  // Its own code (KYC_CORRECTION_REFUSED) but the same status: the caller
+  // branches on the code, and 409 is still what happened.
+  [KycCorrectionRefusedError, HttpStatus.CONFLICT],
   // Same 409, and the point is the distinct `code` — the portal puts this one on
   // the name FIELD rather than at the top of the dialog. See the class.
   [AccountNameTakenError, HttpStatus.CONFLICT],

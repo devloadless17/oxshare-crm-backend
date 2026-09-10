@@ -9,6 +9,7 @@ import { AdminAuditService } from './admin-audit.service';
 import { maskedFieldsFor } from '../../common/security/field-mask';
 import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
+import type { CorrectKycIdentityDto } from './dto/requests/compliance.dto';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { Admin } from '../../store/admins.store';
 import { NEEDS_REVIEW, NEEDS_REVIEW_STATUSES } from '../../store/kyc.store';
@@ -229,6 +230,56 @@ export class AdminComplianceService {
    * not un-make it. Making the two atomic needs an Executor threaded through
    * KycStore and UsersStore (see kyc.service.ts) — a separate, larger change.
    */
+  // ─── KYC: correct an identity field on an approved submission (CORE-18) ────
+  /**
+   * The authorization, visibility and audit half. The state machine, the
+   * merge and the re-validation are `KycService.correctIdentity`, which
+   * carries the reasoning.
+   *
+   * ITS OWN PERMISSION, not `clients.edit` and not `kyc.review`. Changing an
+   * identity field on a KYC-BEARING record is not the same power as fixing a
+   * surname — `PATCH /admin/clients/:id/email` is already split out on exactly
+   * that reasoning — and it is not the same power as deciding a submission: a
+   * reviewer approves or rejects what the client claimed, this rewrites the
+   * claim. `kyc.edit` is taken and means the step BUILDER, which is a third
+   * thing again.
+   *
+   * ⚠️ AUDITED WITH BOTH SIDES. "Who changed this date of birth and what was it
+   * before" is the entire question somebody asks later, and a row carrying only
+   * the new value cannot answer it — the client's own copy of the old value is
+   * the thing in dispute. `ib.level_change` is the precedent (`before`/`after`,
+   * the rung on both sides).
+   *
+   * Subject `kyc_submission`, not `user`: the values live in
+   * `kyc_submissions.personalInfo` and nowhere else, and an audit row filed
+   * against the wrong subject is one a reviewer reading the submission's
+   * history will not find.
+   */
+  async correctKycIdentity(userId: string, dto: CorrectKycIdentityDto, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'kyc.identity.correct', 'correct identity details');
+    // FIRST, as everywhere on this surface: an out-of-scope client 404s exactly
+    // as a missing one does, so nothing about the response says they exist.
+    await this.visibility.assertVisible(userId, actor.clientScope);
+
+    const patch: Record<string, unknown> = {};
+    if (dto.dateOfBirth !== undefined) patch['dateOfBirth'] = dto.dateOfBirth;
+    if (dto.address !== undefined) patch['address'] = dto.address;
+    if (Object.keys(patch).length === 0) {
+      throw new ValidationError('Send a dateOfBirth or an address to correct.');
+    }
+
+    const result = await this.kycService.correctIdentity(userId, patch);
+
+    // AFTER the write and describing the OBSERVED change — see the block above
+    // `approveKyc` on why this is not fire-and-forget before the fact.
+    this.audit.record(actor.id, 'kyc.identity_correct', 'kyc_submission', userId, {
+      before: result.before,
+      after: result.after,
+    });
+
+    return result.submission;
+  }
+
   // ─── KYC: approve ─────────────────────────────────────────────────────────
   async approveKyc(userId: string, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'kyc.review', 'approve a KYC submission');

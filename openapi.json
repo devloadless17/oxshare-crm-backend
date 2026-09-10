@@ -7041,6 +7041,53 @@
         ]
       }
     },
+    "/v1/admin/kyc/{userId}/personal-info": {
+      "patch": {
+        "description": "The one state where the client cannot correct their own details. `saveStep` lets them edit while not_started, in_progress or rejected and correctly locks submitted and under_review; APPROVED had no path at all, and the refusal on POST /kyc/reset told the client to contact support — who had neither the field nor a route. The only lever left was to REJECT the verification for a typo, which drops verificationLevel to 0 and shuts the money doors.\n\nRE-VALIDATED through the same rules as submission. A corrected value that is impossible, in the future or under 18 answers **409**, not 400: that is a fact about the RECORD, not about what was typed, and the operator has just found a different problem — a rejection rather than an edit. `details.kind` names which rule.\n\nAudited as `kyc.identity_correct` against the SUBMISSION, with the value on both sides.",
+        "operationId": "AdminComplianceController_correctKycIdentity",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectKycIdentityDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycSubmissionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Correct a date of birth or address on an APPROVED submission (CORE-18)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/kyc/{userId}/approve": {
       "patch": {
         "operationId": "AdminComplianceController_approveKyc",
@@ -15827,6 +15874,20 @@
           "status",
           "archivedAt"
         ]
+      },
+      "CorrectKycIdentityDto": {
+        "type": "object",
+        "properties": {
+          "dateOfBirth": {
+            "type": "string",
+            "example": "1985-04-12",
+            "description": "ISO date. RE-VALIDATED through the same rules as submission: an impossible, future or under-18 date is REFUSED with 409, not 400 — that is a fact about the record rather than about what was typed."
+          },
+          "address": {
+            "type": "string",
+            "example": "12 Rue Verdun, Beirut"
+          }
+        }
       },
       "RejectDto": {
         "type": "object",

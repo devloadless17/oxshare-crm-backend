@@ -63,6 +63,17 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'kyc.release', label: 'KYC handed back to the queue', group: 'Verification' },
   { action: 'kyc.submission.view', label: 'KYC submission opened', group: 'Verification' },
   { action: 'kyc.document.view', label: 'KYC document viewed', group: 'Verification' },
+  /*
+   * CORE-18. Its own action rather than folding into `kyc.approve`, because it
+   * is the one write that CHANGES WHAT THE CLIENT CLAIMED rather than deciding
+   * on it — and its row carries the value on BOTH sides, which is the whole
+   * reason somebody comes looking for it later.
+   */
+  {
+    action: 'kyc.identity_correct',
+    label: 'KYC identity details corrected',
+    group: 'Verification',
+  },
 
   /*
    * ── Money ────────────────────────────────────────────────────────────────

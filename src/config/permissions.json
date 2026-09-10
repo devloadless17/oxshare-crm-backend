@@ -94,6 +94,10 @@
         "label": "Claim, Approve & Reject Submissions"
       },
       {
+        "key": "kyc.identity.correct",
+        "label": "Correct Identity Details on an Approved Submission"
+      },
+      {
         "key": "kyc.create",
         "label": "Create Dynamic KYC Fields"
       },

@@ -215,6 +215,28 @@ export class ConflictError extends DomainError {
 }
 
 /**
+ * A correction to an APPROVED KYC submission was refused by the same rules that
+ * govern submission — the value is impossible, in the future, or under 18. → 409
+ *
+ * Its OWN code rather than a bare `ConflictError`, for the reason
+ * `TradingAccountNameTakenError` below has one: the caller has to branch on it.
+ * A 400 means "you typed it wrong" and belongs in a form error. THIS means the
+ * RECORD is wrong — an operator has just discovered that an approved client is
+ * underage or carries an impossible date of birth, which is a compliance event
+ * needing a different screen and a different follow-up. Collapsing the two hides
+ * the second inside the first.
+ *
+ * The rule that refused is in the MESSAGE rather than a details payload,
+ * because `AllExceptionsFilter` does not surface `DomainError.details` — only
+ * `code`, `message` and the pipe's own `fields`. Putting a machine-readable kind
+ * somewhere the filter drops it would be a contract that silently does not
+ * exist, which is the defect this codebase spent a day finding.
+ */
+export class KycCorrectionRefusedError extends DomainError {
+  readonly code = 'KYC_CORRECTION_REFUSED';
+}
+
+/**
  * This client already has a trading account by that name. → 409
  *
  * Its OWN code rather than a bare `ConflictError`, because the portal has to be

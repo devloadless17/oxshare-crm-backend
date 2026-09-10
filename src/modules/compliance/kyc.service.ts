@@ -16,6 +16,7 @@ import { findProfileProblem, type ProfileFieldRule } from './kyc-profile';
 import {
   AuthorizationError,
   ConflictError,
+  KycCorrectionRefusedError,
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain-errors';
@@ -612,6 +613,135 @@ export class KycService {
     return this.getByUserId(userId);
   }
 
+  /**
+   * CORRECT AN IDENTITY FIELD ON AN APPROVED SUBMISSION — the one state with no
+   * other way out.
+   *
+   * ## Why this route exists at all (CORE-18)
+   *
+   * `saveStep` above refuses `approved`, `submitted` and `under_review` and
+   * falls through for the rest, so a client can fix a typo while
+   * `not_started`, `in_progress` or `rejected`. Four of six states already had
+   * a path. APPROVED had none — and it is the state every real client ends in.
+   *
+   * The product NAMED a remedy that did not exist. `resetKyc` refused an
+   * approved submission with "Contact support if your details have changed",
+   * and support could not: `UpdateClientProfileDto` carries firstName,
+   * lastName, phone and country, and there is no admin route that resets a
+   * client's submission — the only `reset` on the admin side is
+   * `kyc-config/reset`, the step BUILDER. The one lever left was to REJECT the
+   * verification for a typo, which `test/kyc-gates-money.spec.ts` proves takes
+   * `verificationLevel` to 0 and shuts both money doors.
+   *
+   * That sentence is rewritten now and says what this route actually delivers —
+   * see `resetKyc` below, which carries the reasoning and the warning that the
+   * string is part of any change to the fields accepted here. Quoted in the
+   * past tense on purpose: a comment quoting a string it does not own goes
+   * stale the moment the string moves, which is the class this whole domain has
+   * been finding.
+   *
+   * ## APPROVED ONLY, and that narrowing is the point
+   *
+   * The other five states have a client-facing path already. An admin
+   * correction there would be a second way to do something the client can do
+   * themselves — with more privilege and less context about what they meant.
+   *
+   * ## ⚠️ THE CORRECTION IS RE-VALIDATED, and without that this is a BYPASS
+   *
+   * `findProfileProblem` refuses an under-18, impossible or future date of
+   * birth at submission. An unvalidated admin correction would let an operator
+   * write any date onto an APPROVED record — a compliance control with a hole
+   * in it on the side where it is least visible, and the hole works both ways:
+   * making an underage client look adult, or an adult look underage.
+   *
+   * The obvious objection answers itself. If the CORRECTED value genuinely
+   * fails the rule, the client should not be holding an approved verification —
+   * that is a rejection, not an edit, and the product already has that path. The
+   * refusal is not blocking a legitimate correction; it is telling the operator
+   * they have found a different problem.
+   *
+   * ## Which is why a failed re-validation is a CONFLICT, not a validation error
+   *
+   * A 400 means "you typed it wrong". This is "the record is wrong": the
+   * operator has just discovered that an approved client is underage or carries
+   * an impossible date of birth. Those need different screens and different
+   * follow-up, and collapsing them into one status code hides a compliance event
+   * inside a form error. `problem.kind` rides in the details so the caller can
+   * say WHICH.
+   *
+   * ## The values live in ONE place
+   *
+   * `users` has no `dateOfBirth` and no `address` column — the fields exist only
+   * in `kyc_submissions.personalInfo`. So there is no second row to keep in step
+   * and nothing here writes to `users`. Adding those columns to carry a copy was
+   * the first shape considered and rejected: it would have created the
+   * disagreement it was meant to prevent.
+   */
+  async correctIdentity(userId: string, patch: Record<string, unknown>) {
+    const submission = await this.kycStore.findByUserId(userId);
+    if (!submission) throw new NotFoundError('KYC submission not found.');
+
+    if (submission.status !== 'approved') {
+      throw new ValidationError(
+        `This correction applies to an APPROVED submission; this one is ${submission.status}. ` +
+          'In every other state the client can edit their own details.',
+      );
+    }
+
+    const current = (submission.personalInfo ?? {}) as unknown as Record<string, unknown>;
+    const before = Object.fromEntries(Object.keys(patch).map((k) => [k, current[k]]));
+    const merged = { ...current, ...patch };
+
+    /*
+     * ⚠️ VALIDATES WHAT CHANGED, NOT THE WHOLE RECORD — and the first version of
+     * this did the opposite, which my own test caught.
+     *
+     * Running `findProfileProblem` over the merged object also runs its
+     * COMPLETENESS branch against TODAY's config. So a client approved before a
+     * required field was added to the form has a record that is legitimately
+     * incomplete by current rules, and every correction on them fails with
+     * `missing_fields` — for a field this route cannot even accept. That is
+     * CORE-18 all over again: an operator who cannot fix a typo because of
+     * something unrelated, on the one state that already had no way out.
+     *
+     * Completeness was established at submission and is not what a correction
+     * re-opens. What must still hold is that the NEW VALUE is one the system
+     * would accept, so the rule set is narrowed to the corrected fields: the
+     * missing-fields branch is then vacuous by construction, and the date-of-
+     * birth rules fire exactly when a date of birth is what changed.
+     *
+     * Correcting an ADDRESS therefore does not re-check an untouched date of
+     * birth. That is deliberate — it is the same "unrelated field blocks the
+     * fix" trap from the other direction, and a record whose stored DOB is
+     * disqualifying is a rejection to make on purpose, not a side effect of
+     * someone fixing a street name.
+     */
+    const corrected = Object.keys(patch);
+    const subject = Object.fromEntries(corrected.map((k) => [k, merged[k]]));
+    const rules = (await this.profileRules()).filter((rule) => corrected.includes(rule.name));
+    const problem = findProfileProblem(subject, rules, new Date());
+    if (problem) {
+      throw new KycCorrectionRefusedError(
+        `The corrected details do not pass verification: ${problem.message} ` +
+          'This is a fact about the RECORD, not about what you typed — an approved ' +
+          'submission cannot hold these values, so this is a rejection rather than an edit.',
+        { kind: problem.kind, fields: problem.fields },
+      );
+    }
+
+    /*
+     * The cast mirrors `submitKyc`'s, and for the same reason: `PersonalInfo`
+     * declares named fields while the COLUMN is jsonb and also carries whatever
+     * a custom KYC field was named. Widening to what is actually stored is
+     * honest; narrowing to the interface would drop a configured field on every
+     * correction, silently.
+     */
+    const updated = await this.kycStore.update(userId, {
+      personalInfo: merged as unknown as KycSubmission['personalInfo'],
+    });
+    return { submission: updated, before, after: patch };
+  }
+
   // ─── Admin: reject ─────────────────────────────────────────────────────────
   async reject(userId: string, adminId: string, reason: string, rejectedFields: string[] = []) {
     const submission = await this.kycStore.findByUserId(userId);
@@ -719,8 +849,36 @@ export class KycService {
     if (!submission) return { message: 'KYC data reset successfully.' };
 
     if (submission.status === 'approved') {
+      /*
+       * ⚠️ THIS SENTENCE NAMES A REMEDY, SO IT MUST NAME ONE THAT EXISTS.
+       *
+       * It used to end "Contact support if your details have changed", and
+       * support could not: `UpdateClientProfileDto` carried firstName,
+       * lastName, phone and country, and no admin route reset a client's
+       * submission. The client was sent to a human who had neither the field
+       * nor the route, and the only lever left was to REJECT the verification —
+       * which `kyc-gates-money.spec.ts` proves drops verificationLevel to 0 and
+       * shuts both money doors, for a typo.
+       *
+       * `PATCH /admin/kyc/:userId/personal-info` closes that, for a date of
+       * birth or an address and NOTHING ELSE. So the sentence promises exactly
+       * that much and names the two cases a reader will actually be holding —
+       * "anything else" is accurate and makes them contact support to find out
+       * which side of the line they are on, which is the round trip this is
+       * here to remove.
+       *
+       * It does not say "rejected": that is the operator's mechanism, not the
+       * client's outcome, and it reads as a threat to somebody who has done
+       * nothing wrong. It does not name the permission either — that invites
+       * "then ask them to use it" at a desk where nobody holds the key.
+       *
+       * ⚠️ If that route's accepted fields ever change, THIS STRING IS PART OF
+       * THE CHANGE. A promise in user-facing copy outliving the thing it
+       * describes is how this line became wrong the first time.
+       */
       throw new AuthorizationError(
-        'An approved verification cannot be reset. Contact support if your details have changed.',
+        'An approved verification cannot be reset. Support can correct a date of birth or ' +
+          'an address on it. Anything else — a name, a document — needs a new verification.',
       );
     }
     if (submission.status === 'submitted' || submission.status === 'under_review') {

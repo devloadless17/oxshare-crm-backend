@@ -39,6 +39,7 @@ import {
   KycStepDto,
   RejectDto,
   RejectionReasonDto,
+  CorrectKycIdentityDto,
 } from './dto/requests/compliance.dto';
 import {
   KycAttemptDto,
@@ -269,6 +270,40 @@ export class AdminComplianceController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.releaseKyc(userId, req.admin);
+  }
+
+  @Patch('kyc/:userId/personal-info')
+  @AnnouncesChange('kyc')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.identity.correct')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Correct a date of birth or address on an APPROVED submission (CORE-18)',
+    description:
+      'The one state where the client cannot correct their own details. `saveStep` lets them ' +
+      'edit while not_started, in_progress or rejected and correctly locks submitted and ' +
+      'under_review; APPROVED had no path at all, and the refusal on POST /kyc/reset told the ' +
+      'client to contact support — who had neither the field nor a route. The only lever left ' +
+      'was to REJECT the verification for a typo, which drops verificationLevel to 0 and shuts ' +
+      'the money doors.\n\n' +
+      'RE-VALIDATED through the same rules as submission. A corrected value that is impossible, ' +
+      'in the future or under 18 answers **409**, not 400: that is a fact about the RECORD, not ' +
+      'about what was typed, and the operator has just found a different problem — a rejection ' +
+      'rather than an edit. `details.kind` names which rule.\n\n' +
+      'Audited as `kyc.identity_correct` against the SUBMISSION, with the value on both sides.',
+  })
+  @ApiOkResponse({ type: KycSubmissionDto })
+  @ScopedToClients(
+    'ClientVisibilityService.assertVisible before the submission is read — an out-of-scope ' +
+      'client 404s exactly as a missing one does.',
+  )
+  @Audited('kyc.identity_correct')
+  correctKycIdentity(
+    @Param('userId', UuidParam) userId: string,
+    @Body() dto: CorrectKycIdentityDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.compliance.correctKycIdentity(userId, dto, req.admin);
   }
 
   @Patch('kyc/:userId/approve')

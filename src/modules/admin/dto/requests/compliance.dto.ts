@@ -240,3 +240,41 @@ export class KycConfigDto {
   @Type(() => KycStepDto)
   steps: KycStepDto[];
 }
+
+/**
+ * Body of `PATCH /admin/kyc/:userId/personal-info` — CORE-18.
+ *
+ * DELIBERATELY TWO FIELDS. The gap this closes is specific: an APPROVED
+ * submission is the one state where a client cannot correct their own details,
+ * and a typo'd date of birth or address is what support is asked about. Every
+ * other personalInfo field either lives on the users row and has its own edit
+ * path (firstName, lastName, phone, country) or is not what CORE-18 is about.
+ *
+ * Widening this to arbitrary personalInfo keys would turn a targeted correction
+ * into a general rewrite of a compliance record. If a configured custom field
+ * needs the same treatment, that is a decision to make on purpose rather than
+ * one this DTO makes by accident.
+ *
+ * Both optional and AT LEAST ONE REQUIRED — an empty body would otherwise write
+ * an audit row for a correction that changed nothing, which is worse than
+ * useless on the log somebody reads to find out who changed what.
+ */
+export class CorrectKycIdentityDto {
+  @ApiPropertyOptional({
+    example: '1985-04-12',
+    description:
+      'ISO date. RE-VALIDATED through the same rules as submission: an impossible, ' +
+      'future or under-18 date is REFUSED with 409, not 400 — that is a fact about the ' +
+      'record rather than about what was typed.',
+  })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  dateOfBirth?: string;
+
+  @ApiPropertyOptional({ example: '12 Rue Verdun, Beirut' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  address?: string;
+}

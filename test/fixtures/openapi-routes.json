@@ -147,6 +147,7 @@
   "PATCH /v1/admin/ib/partners/{userId}/parent",
   "PATCH /v1/admin/kyc/{userId}/approve",
   "PATCH /v1/admin/kyc/{userId}/claim",
+  "PATCH /v1/admin/kyc/{userId}/personal-info",
   "PATCH /v1/admin/kyc/{userId}/reject",
   "PATCH /v1/admin/kyc/{userId}/release",
   "PATCH /v1/admin/leverages/{ratio}",
