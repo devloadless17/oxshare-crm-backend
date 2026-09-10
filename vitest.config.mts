@@ -201,8 +201,30 @@ export default defineConfig({
        * / 1839 tests: statements 74.64, branches 64.01, functions 71.05, lines
        * 76.31. Still a floor a point or so under the measurement, never a
        * target — and it may only ever go up.
+       *
+       * RE-BASED 11 Sep 2026, and the reason is worth more than the numbers.
+       * Measured on the run where 166 files / 2403 tests pass: statements 79.43,
+       * branches 68.57, functions 77.91, lines 81.18. The old floor had drifted
+       * 4.4 to 6.4 points under that — not because anybody lowered it, but
+       * because the suite grew and nobody lifted it.
+       *
+       * "No floor was lowered" is true and is not the same claim as "the floor
+       * still does its job". A floor far enough under the measurement stops
+       * catching the regressions it was written for: at 73 statements against a
+       * measured 79.4, a change could delete six points of coverage and pass.
+       * The portal was worse on the same night — its floor sat 10 points under,
+       * so a regression undoing a THIRD of its coverage would have gone green —
+       * and finding that is what sent this one to be measured rather than
+       * assumed.
+       *
+       * Set about a point and a half under the measurement rather than flush
+       * against it, deliberately. Eleven cases skip by environment (R2_LIVE_TEST
+       * among them), so a flush floor would fail on the machine where one of
+       * them runs — and a threshold that reddens for environment reasons is the
+       * same defect as a gate that blocks for them: people stop believing its
+       * refusals and route around it.
        */
-      thresholds: { lines: 75, functions: 70, branches: 62, statements: 73 },
+      thresholds: { lines: 80, functions: 76, branches: 67, statements: 78 },
     },
   },
 });
