@@ -32,8 +32,26 @@ name: CI
 # production: with deploys now manual there is no gate to catch it later, so the
 # green run on that exact SHA is the only evidence it was ever checked.
 on:
+  # `main` ONLY. A push to `production` is not built here, deliberately.
+  #
+  # Promotion used to run this suite THREE times on identical code: the push to
+  # main, the PR to production, and then the post-merge push to production. The
+  # third proves nothing the second did not — GitHub tests the MERGE RESULT on a
+  # pull_request, so by the time the merge commit exists it has already been
+  # verified under this exact workflow.
+  #
+  # Measured 10 Sep 2026: ~10 minutes per run, so ~10 minutes per promotion for
+  # no information. The account was at 1,803 of 2,000 included Actions minutes
+  # when this was cut.
+  #
+  # ⚠️ THE TRADE-OFF, STATED: a DIRECT push to `production` — bypassing a PR — now
+  # runs nothing. That is the one case this removes cover from. It is acceptable
+  # because production is reached by PR (a direct push is refused as a
+  # non-fast-forward anyway, since production carries merge commits main lacks),
+  # and because `workflow_dispatch` below can run this suite against any ref by
+  # hand if a direct push ever happens.
   push:
-    branches: [main, production]
+    branches: [main]
     paths-ignore:
       - '**.md'
       - 'docs/**'
