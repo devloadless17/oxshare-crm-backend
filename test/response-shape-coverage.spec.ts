@@ -135,7 +135,6 @@ const AUDITED_WITHOUT_A_SHAPE: readonly string[] = [
   'POST /admin/ib/accruals/:id/reverse',
   'POST /admin/kyc-config/reset',
   'POST /admin/kyc-config/steps',
-  'POST /admin/trading-accounts',
   'POST /admin/trading-accounts/:id/balance',
   'POST /admin/wallets',
   'PUT /admin/kyc-config',
@@ -208,6 +207,6 @@ describe('the response-shape census', () => {
     expect(
       AUDITED_WITHOUT_A_SHAPE.length,
       'this list may only shrink — a new entry means a route was exempted rather than typed',
-    ).toBeLessThanOrEqual(15);
+    ).toBeLessThanOrEqual(14);
   });
 });
