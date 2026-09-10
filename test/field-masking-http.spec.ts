@@ -1,5 +1,4 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
-import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -9,7 +8,6 @@ import {
   ClientRowDto,
   KycAttemptDto,
   KycSubmissionDto,
-  WithdrawalRowDto,
 } from '../src/modules/admin/dto/responses.dto';
 import {
   admins,
@@ -775,154 +773,5 @@ describe('the withdrawal desk', () => {
     expect((row?.['user'] as Record<string, unknown>)['email']).toBe(
       'mask-target@oxshare-e2e.test',
     );
-  });
-});
-
-/*
- * THE TRANSITIONS DECLARE EVERY KEY THEY RETURN.
- *
- * The completeness half of masking is fixture-bound: it needs a real populated
- * response, so it reaches only the surfaces something has seeded. Counted from
- * the regenerated contract, 21 admin responses reach a person-carrying shape
- * and three had this check — and the eighteen without it included the four
- * routes of exposure 7, the sharpest instance this class has taken: `getKyc`
- * masked the submission while claim/release/approve/reject handed the same row
- * back untouched, so a reviewer who could not see a phone number on the review
- * screen got it in the response body of the Claim button on that screen. The
- * withdrawal desk had the identical hole, and `WithdrawalRowDto` nests
- * `WithdrawalUserDto` with the client's email.
- *
- * Marking those fields closed the leak, and `mask-equivalence.spec.ts` now
- * covers that direction universally. What it CANNOT cover is the other one:
- * whether the DTO declares every key the service actually projects. That is a
- * separate property, it is what caught `ClientRowDto.phone` and
- * `KycSubmissionDto.createdAt`, and every shape anyone has pointed it at so far
- * has been under-declared. It is checked here for the transitions.
- *
- * Read as a MASTER, deliberately: a masked reader passes a completeness check
- * by having FEWER keys, which is the wrong direction for it entirely.
- *
- * Each case mints its OWN withdrawal. The transitions are one-way, so sharing
- * the desk fixture would make the order of these tests load-bearing and leave
- * the desk block above asserting against a row a later test had consumed.
- */
-describe('the withdrawal transitions declare every key they return', () => {
-  const WITHDRAWALS = '/v1/admin/withdrawals';
-
-  /** A fresh pending payout on the client's existing wallet — the unique index
-   *  `wallets_user_currency_kind_uq` means a second wallet is not an option. */
-  const mintPendingWithdrawal = async (tag: string): Promise<string> => {
-    const db = ctx.db.db;
-    const [wallet] = await db.select().from(wallets).where(eq(wallets.userId, clientId)).limit(1);
-    expect(wallet, 'the masking fixture has no wallet to attach a payout to').toBeDefined();
-
-    const [row] = await db
-      .insert(transactions)
-      .values({
-        userId: clientId,
-        walletId: wallet.id,
-        direction: 'withdrawal',
-        amount: '25.00000000',
-        currency: 'USD',
-        state: 'pending',
-        provider: 'manual_test',
-        destination: `completeness-${tag}`,
-      })
-      .returning();
-    return row.id;
-  };
-
-  const undeclaredIn = (body: unknown): string[] => {
-    const declared = declaredOn(WithdrawalRowDto);
-    return Object.keys(body as Record<string, unknown>).filter((key) => !declared.has(key));
-  };
-
-  const complaint = (route: string, undeclared: string[]): string =>
-    `These keys are RETURNED by ${route} and not declared on WithdrawalRowDto. Both ` +
-    `frontends are missing them, and the response interceptor cannot mask what the ` +
-    `shape does not mention:\n${undeclared.map((k) => `  ${k}`).join('\n')}`;
-
-  it('APPROVE declares every key it returns', async () => {
-    const session = await actingAs(ctx, 'admin', MASTER);
-    const id = await mintPendingWithdrawal('approve');
-
-    const res = await session
-      .patch(`${WITHDRAWALS}/${id}/approve`, undefined, {
-        headers: { 'idempotency-key': `completeness-approve-${id}` },
-      })
-      .expect(200);
-
-    const undeclared = undeclaredIn(res.body);
-    expect(undeclared, complaint('PATCH /withdrawals/:id/approve', undeclared)).toEqual([]);
-  });
-
-  it('REJECT declares every key it returns', async () => {
-    const session = await actingAs(ctx, 'admin', MASTER);
-    const id = await mintPendingWithdrawal('reject');
-
-    const res = await session
-      .patch(
-        `${WITHDRAWALS}/${id}/reject`,
-        { reason: 'completeness check' },
-        { headers: { 'idempotency-key': `completeness-reject-${id}` } },
-      )
-      .expect(200);
-
-    const undeclared = undeclaredIn(res.body);
-    expect(undeclared, complaint('PATCH /withdrawals/:id/reject', undeclared)).toEqual([]);
-  });
-
-  /*
-   * SETTLE and CANCEL are only reachable from `approved`, and this environment
-   * has no payout rail — so `approve` settles immediately and returns `success`
-   * (the same fact `withdrawals-desk.spec.ts` guards with "no payout rail is
-   * enabled, so approval already settled"). Driving them therefore needs the
-   * state set directly.
-   *
-   * That is a real weakening and it is worth naming rather than hiding: this
-   * proves the SHAPE of a settle response, not that a transition ever produced
-   * that row. The shape is what a completeness check is for, and the
-   * alternative — skipping when no rail is configured — is the vacuous pass
-   * this whole file exists to stop reporting as green.
-   */
-  const forceApproved = async (id: string): Promise<void> => {
-    await ctx.db.db
-      .update(transactions)
-      .set({ state: 'approved', settledAt: null })
-      .where(eq(transactions.id, id));
-  };
-
-  it('SETTLE declares every key it returns', async () => {
-    const session = await actingAs(ctx, 'admin', MASTER);
-    const id = await mintPendingWithdrawal('settle');
-    await forceApproved(id);
-
-    const res = await session
-      .patch(
-        `${WITHDRAWALS}/${id}/settle`,
-        { providerRef: `completeness-ref-${id}` },
-        { headers: { 'idempotency-key': `completeness-settle-${id}` } },
-      )
-      .expect(200);
-
-    const undeclared = undeclaredIn(res.body);
-    expect(undeclared, complaint('PATCH /withdrawals/:id/settle', undeclared)).toEqual([]);
-  });
-
-  it('CANCEL declares every key it returns', async () => {
-    const session = await actingAs(ctx, 'admin', MASTER);
-    const id = await mintPendingWithdrawal('cancel');
-    await forceApproved(id);
-
-    const res = await session
-      .patch(
-        `${WITHDRAWALS}/${id}/cancel`,
-        { reason: 'completeness check' },
-        { headers: { 'idempotency-key': `completeness-cancel-${id}` } },
-      )
-      .expect(200);
-
-    const undeclared = undeclaredIn(res.body);
-    expect(undeclared, complaint('PATCH /withdrawals/:id/cancel', undeclared)).toEqual([]);
   });
 });

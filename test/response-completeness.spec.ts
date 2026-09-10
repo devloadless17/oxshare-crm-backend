@@ -3,11 +3,20 @@ import 'reflect-metadata';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, kycSubmissions, roles, users, wallets } from '../src/database/schema';
+import { eq } from 'drizzle-orm';
+import {
+  admins,
+  kycSubmissions,
+  roles,
+  transactions,
+  users,
+  wallets,
+} from '../src/database/schema';
 import {
   KycListResponseDto,
   KycSubmissionDto,
   WalletListResponseDto,
+  WithdrawalRowDto,
 } from '../src/modules/admin/dto/responses.dto';
 
 /**
@@ -205,5 +214,128 @@ describe('every admin response declares the keys it returns', () => {
 
     const keys = undeclared(KycSubmissionDto, approved.body as Record<string, unknown>);
     expect(keys, report('KycSubmissionDto (approve response)', keys)).toEqual([]);
+  });
+});
+
+/*
+ * THE WITHDRAWAL TRANSITIONS.
+ *
+ * These declared `WithdrawalRowDto` and returned the transaction ROW — 24 keys
+ * against 18 declared, so both frontends typed the response as a desk row,
+ * `user` included, and would have read undefined from a field TypeScript
+ * promised. Not a masking leak: the transitions send no `user` object at all,
+ * so there was never a client field on them to hide. It is the other half, and
+ * the same one `phone` was — a response the shape did not admit to. The ten
+ * missing keys are declared now; these keep them declared.
+ */
+describe('the withdrawal transitions declare the keys they return', () => {
+  const WITHDRAWALS = '/v1/admin/withdrawals';
+
+  /** A fresh pending payout on the fixture's wallet. `wallets_user_currency_kind_uq`
+   *  means a second wallet is not an option, so every case shares this one. */
+  const mintPendingWithdrawal = async (tag: string): Promise<string> => {
+    const db = ctx.db.db;
+    const [wallet] = await db.select().from(wallets).where(eq(wallets.userId, clientId)).limit(1);
+    expect(wallet, 'the fixture has no wallet to attach a payout to').toBeDefined();
+
+    const [row] = await db
+      .insert(transactions)
+      .values({
+        userId: clientId,
+        walletId: wallet.id,
+        direction: 'withdrawal',
+        amount: '25.00000000',
+        currency: 'USD',
+        state: 'pending',
+        provider: 'manual_test',
+        destination: `completeness-${tag}`,
+      })
+      .returning();
+    return row.id;
+  };
+
+  /*
+   * SETTLE and CANCEL are only reachable from `approved`, and this environment
+   * has no payout rail — so `approve` settles immediately and returns
+   * `success`, the same fact `withdrawals-desk.spec.ts` guards with "no payout
+   * rail is enabled, so approval already settled". Driving them needs the state
+   * set directly.
+   *
+   * That is a real weakening, named rather than hidden: it proves the SHAPE of a
+   * settle response, not that a transition ever produced that row. The shape is
+   * what this file checks, and the alternative — skipping when no rail is
+   * configured — is the vacuous pass the suite exists to stop reporting green.
+   * A rail-backed path is what would let this comment be deleted; the review
+   * pool does not help, it seeds pending KYC rather than payouts.
+   */
+  const forceApproved = async (id: string): Promise<void> => {
+    await ctx.db.db
+      .update(transactions)
+      .set({ state: 'approved', settledAt: null })
+      .where(eq(transactions.id, id));
+  };
+
+  it('the APPROVE response', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const id = await mintPendingWithdrawal('approve');
+
+    const res = await session
+      .patch(`${WITHDRAWALS}/${id}/approve`, undefined, {
+        headers: { 'idempotency-key': `completeness-approve-${id}` },
+      })
+      .expect(200);
+
+    const keys = undeclared(WithdrawalRowDto, res.body as Record<string, unknown>);
+    expect(keys, report('WithdrawalRowDto (approve response)', keys)).toEqual([]);
+  });
+
+  it('the REJECT response', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const id = await mintPendingWithdrawal('reject');
+
+    const res = await session
+      .patch(
+        `${WITHDRAWALS}/${id}/reject`,
+        { reason: 'completeness check' },
+        { headers: { 'idempotency-key': `completeness-reject-${id}` } },
+      )
+      .expect(200);
+
+    const keys = undeclared(WithdrawalRowDto, res.body as Record<string, unknown>);
+    expect(keys, report('WithdrawalRowDto (reject response)', keys)).toEqual([]);
+  });
+
+  it('the SETTLE response', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const id = await mintPendingWithdrawal('settle');
+    await forceApproved(id);
+
+    const res = await session
+      .patch(
+        `${WITHDRAWALS}/${id}/settle`,
+        { providerRef: `completeness-ref-${id}` },
+        { headers: { 'idempotency-key': `completeness-settle-${id}` } },
+      )
+      .expect(200);
+
+    const keys = undeclared(WithdrawalRowDto, res.body as Record<string, unknown>);
+    expect(keys, report('WithdrawalRowDto (settle response)', keys)).toEqual([]);
+  });
+
+  it('the CANCEL response', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const id = await mintPendingWithdrawal('cancel');
+    await forceApproved(id);
+
+    const res = await session
+      .patch(
+        `${WITHDRAWALS}/${id}/cancel`,
+        { reason: 'completeness check' },
+        { headers: { 'idempotency-key': `completeness-cancel-${id}` } },
+      )
+      .expect(200);
+
+    const keys = undeclared(WithdrawalRowDto, res.body as Record<string, unknown>);
+    expect(keys, report('WithdrawalRowDto (cancel response)', keys)).toEqual([]);
   });
 });
