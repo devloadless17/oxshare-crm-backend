@@ -3,7 +3,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
 import 'reflect-metadata';
-import { ClientProfileDto, ClientRowDto } from '../src/modules/admin/dto/responses.dto';
+import {
+  ClientProfileDto,
+  ClientRowDto,
+  KycAttemptDto,
+  KycSubmissionDto,
+} from '../src/modules/admin/dto/responses.dto';
 import {
   admins,
   ibAccounts,
@@ -490,6 +495,23 @@ describe('a DTO that under-declares its response is a hole in shape-masking', ()
    * the first, where it can be observed rather than inferred: against a real
    * response, read as a MASTER so nothing has been masked away and every key
    * the endpoint can emit is present to be checked.
+   *
+   * ⚠️ ITS REACH, STATED PLAINLY, because the difference matters to whoever
+   * reads a green suite:
+   *
+   *   catalogue → mark   universal. `mask-equivalence.spec.ts` builds an object
+   *                      carrying every maskable path for every resource and
+   *                      requires the shape mask to remove all of them. No
+   *                      fixture, no HTTP, nothing skipped.
+   *   response → declared  FIXTURE-BOUND. It needs a populated response, so it
+   *                      covers the four surfaces below out of seventeen
+   *                      person-carrying shapes.
+   *
+   * The residual is exposure 9's exact shape: a returned field that IS client
+   * PII but has no catalogue key, so the universal check cannot see it —
+   * `credentialsSentTo` was precisely that, and it was found by hand. Extending
+   * this half means seeding rows for the remaining shapes, which is blocked on
+   * the same fixture economics as the rest of the suite.
    */
   const declaredOn = (dto: unknown): Set<string> => {
     const properties = Reflect.getMetadata(
@@ -516,6 +538,44 @@ describe('a DTO that under-declares its response is a hole in shape-masking', ()
       'These keys are RETURNED and not declared on ClientRowDto. Both frontends are ' +
         'missing them, and the response interceptor cannot mask what the shape does ' +
         `not mention:\n${undeclared.map((k) => `  ${k}`).join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('the KYC DETAIL declares every key it returns', async () => {
+    /*
+     * The submission is the richest client shape in the product, and the one
+     * whose history has already shipped unmasked once. Its `personalInfo` is a
+     * free-form map by design — the builder lets operators add fields — so the
+     * key check here is that everything AROUND that map is declared, since the
+     * map itself is covered by prefix rather than by property.
+     */
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`/v1/admin/kyc/${clientId}`).expect(200);
+
+    const declared = declaredOn(KycSubmissionDto);
+    const undeclared = Object.keys(res.body as Record<string, unknown>).filter(
+      (key) => !declared.has(key),
+    );
+    expect(
+      undeclared,
+      `Returned but not declared on KycSubmissionDto:\n${undeclared.map((k) => `  ${k}`).join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('the KYC HISTORY declares every key it returns', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`/v1/admin/kyc/${clientId}/history`).expect(200);
+
+    const rows = res.body as Record<string, unknown>[];
+    if (rows.length === 0) return; // nothing archived yet — covered by the detail above
+
+    const declared = declaredOn(KycAttemptDto);
+    const undeclared = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter(
+      (key) => !declared.has(key),
+    );
+    expect(
+      undeclared,
+      `Returned but not declared on KycAttemptDto:\n${undeclared.map((k) => `  ${k}`).join('\n')}`,
     ).toEqual([]);
   });
 

@@ -337,6 +337,20 @@ export class KycSubmissionDto {
   @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
   @ApiPropertyOptional({ type: [String] })
   maskedFields?: string[];
+  /*
+   * DECLARED because they are RETURNED. `GET /admin/kyc/:userId` has always
+   * carried the submission's own timestamps and this DTO never mentioned them,
+   * so both frontends' generated types were missing two fields the API emits —
+   * the same contract gap `ClientRowDto.phone` had, found the same way, by
+   * checking a real response against the shape that claims to describe it.
+   */
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional({ type: Date })
+  createdAt?: Date;
+
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional({ type: Date })
+  updatedAt?: Date;
 }
 
 /**
