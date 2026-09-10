@@ -26,6 +26,35 @@ const decimalLimit = (name: string) =>
 const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+
+    /**
+     * Relax the rate-limit COUNTER for an end-to-end run. Never in production.
+     *
+     * The browser suites drive real sign-ins, and the caps they meet are real —
+     * admin login 5/min, portal login 5/min, register 10/hour. Their answer has
+     * always been to WAIT the window out, which is correct for a suite proving
+     * the product behaves, and costs about 5.4 minutes of pure sleeping in a
+     * 20-minute CI job. It is also the single largest source of flakes this
+     * suite has: today alone, a rate limit was reported as "the NEW password
+     * does not sign in", as "accept answered 429", as a navigation timeout, and
+     * as a screen missing the words "already verified".
+     *
+     * So this swaps the COUNTER and leaves the GUARD wired — exactly what
+     * `test/http-setup.ts` already does for the unit suites, and for the same
+     * stated reason: a wiring mistake that stops ThrottlerGuard running must
+     * still fail, and it does, because the guard still resolves its per-route
+     * limits and builds its key on every request.
+     *
+     * WHAT THIS COSTS, stated rather than hidden: an E2E run no longer exercises
+     * the real limits. That is acceptable only because three backend suites do —
+     * `credential-route-throttling`, `bridge-webhook-throttling` and
+     * `redis-throttler-storage` — and because no E2E spec asserts 429 behaviour,
+     * which was checked rather than assumed before this was added.
+     */
+    RELAX_RATE_LIMITS: z
+      .enum(['1', 'true'])
+      .optional()
+      .describe('E2E only: permissive rate-limit counter. Refused in production.'),
     PORT: z.coerce.number().int().min(1).max(65535).default(3001),
     PORTAL_URL: z.string().url().default('http://localhost:3000'),
     ADMIN_URL: z.string().url().default('http://localhost:3002'),
@@ -665,6 +694,20 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
      * A warning here would be read once, at a deploy, by somebody who is not
      * thinking about backups.
      */
+    /*
+     * The rate limits ARE the control on credential stuffing and token guessing
+     * (§8.4). A production process that relaxed its own counter would be
+     * unprotected while every dashboard still showed a limiter attached.
+     */
+    if (env.RELAX_RATE_LIMITS) {
+      throw new Error(
+        'Refusing to start in production with RELAX_RATE_LIMITS set. It exists so an ' +
+          'end-to-end run does not spend minutes sleeping on login caps, and it makes the ' +
+          'rate-limit counter permissive — which in production removes the §8.4 control on ' +
+          'credential stuffing and token guessing while leaving a limiter apparently attached.',
+      );
+    }
+
     if (env.STORAGE_DRIVER === 'disk') {
       throw new Error(
         'Refusing to start in production with STORAGE_DRIVER=disk. The local filesystem driver is ' +
