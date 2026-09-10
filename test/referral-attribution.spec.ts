@@ -108,7 +108,9 @@ function registration(email: string, referralCode?: string) {
 
 beforeEach(async () => {
   sendVerificationEmail.mockClear();
-  await ctx.db.execute(sql`DELETE FROM ledger_entries`);
+  await ctx.db.execute(
+    sql`TRUNCATE ledger_entries, ib_accruals CASCADE` /* not DELETE: the ledger is append-only by trigger (§6.4). TRUNCATE resets a fixture table without firing row triggers, and no production path truncates. */,
+  );
   await ctx.db.execute(sql`DELETE FROM wallets`);
   // Children first: `users.referred_by_ib_user_id` is a restrict FK onto
   // ib_accounts, which is itself a restrict FK onto users.

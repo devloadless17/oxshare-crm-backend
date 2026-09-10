@@ -134,7 +134,9 @@ afterEach(async () => {
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
   /* Batches sit between the accruals and the wallets in FK order (0116). */
   await ctx.db.execute(sql`DELETE FROM ib_accrual_batches`);
-  await ctx.db.execute(sql`DELETE FROM ledger_entries`);
+  await ctx.db.execute(
+    sql`TRUNCATE ledger_entries, ib_accruals CASCADE` /* not DELETE: the ledger is append-only by trigger (§6.4). TRUNCATE resets a fixture table without firing row triggers, and no production path truncates. */,
+  );
   await ctx.db.execute(sql`DELETE FROM wallets`);
   /*
    * The SETTING outranks the environment, so a row left behind by one case

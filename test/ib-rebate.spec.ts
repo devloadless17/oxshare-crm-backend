@@ -199,7 +199,9 @@ beforeEach(async () => {
    * `ib_accrual_batches_wallet_id_fkey`.
    */
   await ctx.db.execute(sql`DELETE FROM ib_accrual_batches`);
-  await ctx.db.execute(sql`DELETE FROM ledger_entries`);
+  await ctx.db.execute(
+    sql`TRUNCATE ledger_entries, ib_accruals CASCADE` /* not DELETE: the ledger is append-only by trigger (§6.4). TRUNCATE resets a fixture table without firing row triggers, and no production path truncates. */,
+  );
   await ctx.db.execute(sql`DELETE FROM wallets`);
   /* The window is what stands between "earned" and "spendable"; these cases are
      about WHO is paid, so it is set to zero and confirmation runs immediately.
