@@ -62,16 +62,40 @@ function documentFilenames(submission: KycSubmission | undefined): string[] {
     .filter((p): p is string => typeof p === 'string' && p.length > 0)
     .map((p) => p.split('/').pop() as string);
 }
+import type { ClientScope } from '../../common/security/client-scope';
 import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 
 /**
- * How many referred clients the profile carries — one screen's worth. The
- * response says how many came (`referredShown`) so the UI can tell "all of
- * them" from "the newest 50"; the full book stays reachable through the
- * client list filtered by referrer.
+ * How many referred clients the profile carries — one screen's worth.
+ *
+ * ⚠️ THIS DOCBLOCK MADE TWO CLAIMS AND BOTH WERE FALSE UNTIL 11 Sep 2026. It
+ * said the response "says how many came (`referredShown`) so the UI can tell
+ * 'all of them' from 'the newest 50'", and that "the full book stays reachable
+ * through the client list filtered by referrer".
+ *
+ *   `referredShown` was `referredClients.length` and NOTHING READ IT — and it
+ *   could not have done the job anyway, because the cap 50 is published
+ *   nowhere in the contract, so `referredShown: 50` cannot be told from a
+ *   partner with exactly fifty. `referredTotal` is the missing half.
+ *
+ *   The referrer filter DID NOT EXIST. `findPage` took nine filters and none of
+ *   them was a referrer, so the "full book" was reachable nowhere in the admin
+ *   console: fifty names, no cap notice, and no route to the rest.
+ *
+ * Both are true now — `referredTotal` from SQL, and `?referredBy=` on the list.
+ * Recorded rather than quietly corrected, because a cap justified by an escape
+ * hatch that does not exist is a different thing from a cap.
  */
 const REFERRED_CLIENTS_SHOWN = 50;
+
+/**
+ * Shape-check only — whether such a client EXISTS is answered by the empty
+ * result, never by a different status code. A 404-style "no such partner" here
+ * would be an oracle over the client base, which is the same reason
+ * `client-scope.ts` returns 404 rather than 403 for an out-of-scope client.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * ADM-01 client directory and ADM-02 suspension.
@@ -119,6 +143,7 @@ export class AdminClientsService {
       emailVerified?: string;
       kycStatus?: string;
       tag?: string;
+      referredBy?: string;
       sort?: string;
       order?: string;
     },
@@ -186,6 +211,32 @@ export class AdminClientsService {
       }
     }
 
+    /*
+     * ⚠️ A MALFORMED referredBy is REFUSED, never ignored, and that is the
+     * whole reason it is validated here rather than passed through.
+     *
+     * These twenty-five query parameters are individual `@Query('name')`
+     * bindings rather than a DTO, so `forbidNonWhitelisted` has nothing to
+     * reflect on: an unrecognised KEY is silently dropped by Express and the
+     * caller gets the UNFILTERED list. Measured on the wire — `?directoin=` on
+     * the transactions desk returns the full 130 rows where the intended filter
+     * returns 12.
+     *
+     * That is a platform-wide shape (176 such bindings across twenty
+     * controllers) and not this change's to fix. What IS this change's job is
+     * not adding another one: a filter that silently does nothing is what would
+     * put "Showing only the clients introduced by this partner" over every
+     * client in the system. So a value that cannot be a user id fails loudly
+     * instead.
+     */
+    let referredBy: string | undefined;
+    if (query.referredBy !== undefined && query.referredBy !== '') {
+      if (!UUID_RE.test(query.referredBy)) {
+        throw new ValidationError('referredBy must be a client id.');
+      }
+      referredBy = query.referredBy;
+    }
+
     const { rows, total } = await this.users.findPage({
       page,
       limit,
@@ -210,6 +261,7 @@ export class AdminClientsService {
           : query.emailVerified === 'true',
       kycStatus: kycStatusFilter(query.kycStatus),
       tagSlug: query.tag,
+      referredBy,
       sort,
       order,
       // Row-level visibility, applied in the WHERE clause. An out-of-scope
@@ -291,11 +343,23 @@ export class AdminClientsService {
      * `referral_attributions` table was replaced by in 0032.
      */
     const canSeeNetwork = may('ib.view');
-    const [tags, kyc, referrer, referredClients, trading] = await Promise.all([
+    const [tags, kyc, referrer, referredClients, referredTotal, trading] = await Promise.all([
       this.tags.tagsForClient(clientId),
       may('kyc.view') || may('kyc.review') ? this.kyc.findByUserId(clientId) : undefined,
       canSeeNetwork ? this.referrerOf(client) : undefined,
-      canSeeNetwork ? this.referredClientsOf(clientId) : undefined,
+      canSeeNetwork ? this.referredClientsOf(clientId, actor.clientScope) : undefined,
+      /*
+       * The TOTAL, from SQL, under the same `ib.view` gate and the same scope.
+       *
+       * `referredShown` is `referredClients.length` — the size of what fitted —
+       * and on its own it cannot say "50 of 213" because the cap is published
+       * nowhere in the contract. `IbOverviewDto` already says this in capitals
+       * about its own capped array: "Read referredClientCount for how many
+       * there actually are — NEVER this array's length". The admin profile did
+       * the forbidden thing one module away, and `countReferredBy` — written
+       * for exactly this and used by the partner detail — went uncalled here.
+       */
+      canSeeNetwork ? this.users.countReferredBy(clientId, actor.clientScope) : undefined,
       /*
        * ABSENT without `trading.view`, an empty array with it — the same rule
        * the Network sections below follow, for the same reason. The card can
@@ -356,7 +420,7 @@ export class AdminClientsService {
        */
       ...(referrer ? { referrer } : {}),
       ...(referredClients !== undefined
-        ? { referredClients, referredShown: referredClients.length }
+        ? { referredClients, referredShown: referredClients.length, referredTotal }
         : {}),
     };
 
@@ -405,9 +469,16 @@ export class AdminClientsService {
     };
   }
 
-  /** The client's downline, shaped for `ProfileReferredClientDto`. */
-  private async referredClientsOf(clientId: string) {
-    const clients = await this.users.listReferredBy(clientId, REFERRED_CLIENTS_SHOWN);
+  /**
+   * The client's downline, shaped for `ProfileReferredClientDto`.
+   *
+   * SCOPED since 11 Sep 2026. Masking hides FIELDS by role; scope hides ROWS by
+   * territory, and this list is rows — each one a client. See the block above
+   * `countReferredBy` for why the previous "unscoped by design" was answered
+   * rather than merely overruled.
+   */
+  private async referredClientsOf(clientId: string, scope: ClientScope) {
+    const clients = await this.users.listReferredBy(clientId, REFERRED_CLIENTS_SHOWN, scope);
     return clients.map((referred) => ({
       clientUserId: referred.id,
       email: referred.email,

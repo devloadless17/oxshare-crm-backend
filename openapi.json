@@ -6030,6 +6030,15 @@
             }
           },
           {
+            "name": "referredBy",
+            "required": false,
+            "in": "query",
+            "description": "Clients introduced by this partner (users.referred_by_ib_user_id). Scoped like every other filter — a reader still only sees their own territory. A value that is not a client id is a 400, never a silently unfiltered list.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "sort",
             "required": false,
             "in": "query",
@@ -15242,7 +15251,7 @@
             ]
           },
           "referredClients": {
-            "description": "Capped — see referredShown. Absent without ib.view; empty when none.",
+            "description": "Newest first, and CAPPED at one screen — read `referredTotal` for how many there actually are, NEVER this array’s length, which is the count of what fitted. Absent without ib.view; empty when none — those are different facts. SCOPED to the reader’s territory, like every other client row.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ProfileReferredClientDto"
@@ -15250,7 +15259,11 @@
           },
           "referredShown": {
             "type": "number",
-            "description": "How many referredClients were returned; the list is capped for one screen."
+            "description": "How many referredClients were RETURNED — the size of what fitted on one screen. Useless alone and it was, until `referredTotal` landed: the cap is published nowhere, so `referredShown: 50` cannot be told from a partner with exactly fifty. The PAIR is what a screen needs — \"50 of 213\" — and neither half gets there without the other."
+          },
+          "referredTotal": {
+            "type": "number",
+            "description": "How many clients this client introduced IN TOTAL, counted in SQL and SCOPED to the reader’s territory. Distinct from `referredClients.length`, which is capped — a screen showing a total must read THIS. Present exactly when `referredClients` is, so \"may not see\" stays absent rather than zero.\n\n⚠️ It is the reader’s count, not the partner’s: a scoped admin sees how many of this partner’s clients fall inside their own territory, matching what GET /admin/clients?referredBy= returns for them. An unscoped total here would put \"50 of 213\" above a filtered list of 60."
           },
           "maskedFields": {
             "type": "array",

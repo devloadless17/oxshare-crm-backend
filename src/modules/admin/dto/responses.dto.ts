@@ -907,7 +907,11 @@ export class ClientProfileDto {
 
   @ApiPropertyOptional({
     type: [ProfileReferredClientDto],
-    description: 'Capped — see referredShown. Absent without ib.view; empty when none.',
+    description:
+      'Newest first, and CAPPED at one screen — read `referredTotal` for how many there ' +
+      'actually are, NEVER this array\u2019s length, which is the count of what fitted. ' +
+      'Absent without ib.view; empty when none — those are different facts. ' +
+      'SCOPED to the reader\u2019s territory, like every other client row.',
   })
   @NotClientField(
     'not a client-owned attribute \u2014 referredClients describes the record rather than the person',
@@ -915,12 +919,32 @@ export class ClientProfileDto {
   referredClients?: ProfileReferredClientDto[];
 
   @ApiPropertyOptional({
-    description: 'How many referredClients were returned; the list is capped for one screen.',
+    description:
+      'How many referredClients were RETURNED — the size of what fitted on one screen. ' +
+      'Useless alone and it was, until `referredTotal` landed: the cap is published nowhere, ' +
+      'so `referredShown: 50` cannot be told from a partner with exactly fifty. The PAIR is ' +
+      'what a screen needs — "50 of 213" — and neither half gets there without the other.',
   })
   @NotClientField(
     'a money, paging or configuration value on the RECORD, carrying no client attribute',
   )
   referredShown?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'How many clients this client introduced IN TOTAL, counted in SQL and SCOPED to the ' +
+      'reader\u2019s territory. Distinct from `referredClients.length`, which is capped — a ' +
+      'screen showing a total must read THIS. Present exactly when `referredClients` is, so ' +
+      '"may not see" stays absent rather than zero.\n\n' +
+      '⚠️ It is the reader\u2019s count, not the partner\u2019s: a scoped admin sees how many ' +
+      'of this partner\u2019s clients fall inside their own territory, matching what ' +
+      'GET /admin/clients?referredBy= returns for them. An unscoped total here would put ' +
+      '"50 of 213" above a filtered list of 60.',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  referredTotal?: number;
 
   @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
   @ApiProperty({ type: [String] })

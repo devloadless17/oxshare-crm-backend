@@ -221,42 +221,80 @@ export class UsersStore {
     return row ? toUser(row) : undefined;
   }
 
-  /**
-   * How many clients this partner introduced.
+  /*
+   * ⚠️ BOTH METHODS BELOW TAKE THE READER'S SCOPE, AND THAT REVERSES WHAT THEY
+   * SAID UNTIL 11 Sep 2026. The old text is quoted here rather than deleted,
+   * because it was ARGUED rather than forgotten and the argument deserves an
+   * answer:
    *
-   * A COUNT rather than a list: the partner profile shows the figure beside
-   * their earnings, and the clients themselves are already reachable through
-   * the client list filtered by referrer. Fetching rows to call `.length` on
-   * them would grow with a partner's book to render one number.
+   *   "Unscoped by design, like IbStore.findDirectPartners and for the same
+   *    reason — the subject has already been checked visible, and a count
+   *    filtered by the reader's own tags would under-report a partner's book
+   *    without saying so."
    *
-   * Unscoped by design, like `IbStore.findDirectPartners` and for the same
-   * reason — the subject has already been checked visible, and a count filtered
-   * by the reader's own tags would under-report a partner's book without
-   * saying so.
+   * The first clause is true about the PARTNER and says nothing about their
+   * CLIENTS. A scoped admin who may see partner P was never thereby entitled to
+   * P's referred clients: scope is row-level visibility over CLIENTS, and each
+   * of those rows is a client. Field masking does not cover this — masking
+   * hides FIELDS by role, scope hides ROWS by territory, and an unscoped
+   * downline hands over ids and names of up to fifty clients the reader is
+   * specifically denied. That is a larger oracle than the 403-versus-404
+   * distinction `client-scope.ts` refuses to give away.
+   *
+   * The second clause is a real worry with the wrong remedy. "It would
+   * under-report without saying so" argues for SAYING SO, not for over-
+   * reporting: `referredShown` and `referredTotal` now let the screen state
+   * exactly what it is showing and out of how many.
+   *
+   * `client-scope.ts` is the governing document and it names this case:
+   * "The predicate goes in the WHERE CLAUSE. Never fetch-then-filter... a new
+   * export endpoint, A COUNT, a join, a findById reached from somewhere
+   * unexpected". A count was on the list.
+   *
+   * THE DECIDING PRECEDENT is that the client LIST's own total is already
+   * scoped — `findPage` runs the same predicate over its count, and the
+   * territory e2e pins that a scoped reader's total counts only their own.
+   * Leaving these two unscoped made the Network tab disagree with the very
+   * screen it links into: "50 of 213" above a filtered list of 60. Consistency
+   * here is not tidiness, it is the difference between a screen a reader can
+   * believe and one that contradicts itself.
    */
-  async countReferredBy(ibUserId: string): Promise<number> {
+
+  /**
+   * How many clients this partner introduced THAT THIS READER MAY SEE.
+   *
+   * A COUNT rather than a list: the profile shows the figure beside the
+   * capped list, and fetching rows to call `.length` on them would grow with a
+   * partner's book to render one number. That is also why it must not be
+   * replaced by `referredClients.length` — see `IbOverviewDto`, which says so
+   * in capitals about its own capped array.
+   */
+  async countReferredBy(ibUserId: string, scope: ClientScope): Promise<number> {
+    const scoped = clientScopePredicate(scope, users.id);
+    const where = eq(users.referredByIbUserId, ibUserId);
     const [{ value }] = await this.db
       .select({ value: count() })
       .from(users)
-      .where(eq(users.referredByIbUserId, ibUserId));
+      .where(scoped ? and(where, scoped) : where);
     return value;
   }
 
   /**
-   * The clients this partner introduced, newest first — the LIST the count
-   * above deliberately avoids, for the one screen that shows the people
-   * rather than the figure: the admin client profile's Network tab.
+   * The clients this partner introduced, newest first, LIMITED TO WHAT THIS
+   * READER MAY SEE — for the one screen that shows the people rather than the
+   * figure: the admin client profile's Network tab.
    *
    * CAPPED by the caller, because a profile renders one screen of names and a
-   * partner's book grows without bound. Unscoped for `countReferredBy`'s
-   * reason: the subject was already checked visible, and silently filtering
-   * their downline by the reader's own tags would under-report it.
+   * partner's book grows without bound. The cap is what `referredShown`
+   * reports; `countReferredBy` above is what the reader is being shown OUT OF.
    */
-  async listReferredBy(ibUserId: string, limit: number): Promise<User[]> {
+  async listReferredBy(ibUserId: string, limit: number, scope: ClientScope): Promise<User[]> {
+    const scoped = clientScopePredicate(scope, users.id);
+    const where = eq(users.referredByIbUserId, ibUserId);
     const rows = await this.db
       .select(USER_COLUMNS)
       .from(users)
-      .where(eq(users.referredByIbUserId, ibUserId))
+      .where(scoped ? and(where, scoped) : where)
       .orderBy(desc(users.createdAt), asc(users.id))
       .limit(limit);
     return rows.map(toUser);
@@ -482,6 +520,20 @@ export class UsersStore {
     kycStatus?: string;
     /** ADM-14 label filter, by tag SLUG so a rename cannot break a saved link. */
     tagSlug?: string;
+    /**
+     * The partner who introduced them — `users.referred_by_ib_user_id`.
+     *
+     * This filter was DOCUMENTED before it existed: the profile's 50-client cap
+     * was justified by "the full book stays reachable through the client list
+     * filtered by referrer", and it was not. Fifty names, no cap notice, and no
+     * route to the rest anywhere in the console.
+     *
+     * It sits with the other filters rather than beside `listReferredBy`
+     * deliberately: this one is PAGED and SCOPED like every other client query,
+     * which is what makes it the answer to the cap rather than a second capped
+     * surface with its own rules.
+     */
+    referredBy?: string;
     /** R-2.5 server-side sort. Validated by `clientSortKey` before it gets here. */
     sort?: ClientSortKey;
     order?: 'asc' | 'desc';
@@ -552,6 +604,17 @@ export class UsersStore {
           WHERE ta.user_id = ${users.id} AND t.slug = ${filter.tagSlug}
         )`,
       );
+    }
+
+    /*
+     * The referrer filter — an equality on an indexed column, and it must stay
+     * ABOVE the scope predicate rather than replace it. A reader filtering by a
+     * partner they can see is still only entitled to clients in their own
+     * territory: without the line below this would be a scope bypass wearing a
+     * filter, which is the one way this feature could have made things worse.
+     */
+    if (filter.referredBy) {
+      conditions.push(eq(users.referredByIbUserId, filter.referredBy));
     }
 
     // The row-level visibility predicate. In the WHERE clause, never after the

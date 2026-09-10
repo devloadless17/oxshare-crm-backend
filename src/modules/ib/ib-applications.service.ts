@@ -1087,7 +1087,10 @@ export class IbApplicationsService {
     const [directPartners, earningsMap, referredCount, agencies, products] = await Promise.all([
       this.ib.findDirectPartners(userId),
       this.ib.earningsByPartner([userId]),
-      this.users.countReferredBy(userId),
+      // Scoped, like every other client read on this route: `assertVisible`
+      // above proves the PARTNER is visible and says nothing about their
+      // clients. See UsersStore.countReferredBy.
+      this.users.countReferredBy(userId, scope),
       account.agencyId ? this.catalogue.listAgencies() : Promise.resolve([]),
       account.agencyId ? this.catalogue.listProducts() : Promise.resolve([]),
     ]);

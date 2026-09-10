@@ -81,6 +81,14 @@ export class AdminClientsController {
     description: '`not_started` matches clients with no submission row at all.',
   })
   @ApiQuery({ name: 'tag', required: false, description: 'Tag SLUG, not id (ADM-14).' })
+  @ApiQuery({
+    name: 'referredBy',
+    required: false,
+    description:
+      'Clients introduced by this partner (users.referred_by_ib_user_id). Scoped like ' +
+      'every other filter — a reader still only sees their own territory. A value that is ' +
+      'not a client id is a 400, never a silently unfiltered list.',
+  })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients(
@@ -100,6 +108,7 @@ export class AdminClientsController {
     @Query('emailVerified') emailVerified?: string,
     @Query('kycStatus') kycStatus?: string,
     @Query('tag') tag?: string,
+    @Query('referredBy') referredBy?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
@@ -128,6 +137,11 @@ export class AdminClientsController {
         emailVerified,
         kycStatus,
         tag: searchQuery(tag, 'tag'),
+        // Validated in the SERVICE against a uuid shape: a malformed value is
+        // a 400, never a silently unfiltered list. See the note beside UUID_RE
+        // there — an ignored filter is what puts a "filtered by X" banner over
+        // every row in the system.
+        referredBy,
         // `sort`/`order` are validated in the service against the SORTABLE_COLUMNS
         // allowlist, which is where the column mapping lives. Validating here too
         // would put the allowlist in two places.
