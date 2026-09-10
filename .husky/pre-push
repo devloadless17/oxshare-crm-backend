@@ -1,0 +1,127 @@
+#!/usr/bin/env sh
+#
+# THE GATE THAT USED TO BE GITHUB ACTIONS.
+#
+# .github/workflows/ci.yml ran type-check, format:check, lint, the suite with
+# coverage, build and the openapi contract check on every push. The Actions
+# allowance for this account was spent on 10 Sep 2026, so that gate stopped
+# firing — and nothing local replaced it AT THE MOMENT IT FIRED. The remaining
+# checks are the Claude Stop hook and scripts/ci-local.sh run BY HAND, neither of
+# which happens on push.
+#
+# Observed the same evening in the portal: a commit landed with `tsc --noEmit`
+# failing and was caught only because somebody happened to run verify afterwards.
+# The system worked, but only because a person ran it.
+#
+# ## Why pre-PUSH and not pre-commit
+#
+# .husky/pre-commit is fast on purpose and argues for it: a commit gate that takes
+# minutes gets bypassed with --no-verify, and a bypassed gate is worse than an
+# honest CI failure. That reasoning is unchanged and this does not touch it.
+#
+# ## Why the FULL verify here, Testcontainers and all
+#
+# The admin and portal hooks run the same gate and finish in a couple of minutes.
+# This one takes about ten, because the suite starts a real Postgres. That was a
+# judgement, and the argument is that --no-verify pressure is about FREQUENCY:
+# committing happens dozens of times a day and must stay cheap, pushing this repo
+# is rare and deliberate. Ten minutes on a rare, high-stakes action is
+# proportionate.
+#
+# And a backend push that skipped the suite would be skipping the four
+# ARCHITECTURE §11 money acceptance tests — reconciliation, idempotency,
+# concurrency, two-level — which are the entire reason this repo has tests at all.
+# The one push where the skipped thing is the point is not a trade worth making
+# to save eight minutes.
+#
+# ## It delegates rather than restates
+#
+# scripts/ci-local.sh already mirrors ci.yml command-for-command. A second list of
+# steps here would be a second thing to keep in step — the drift this layer exists
+# to prevent.
+#
+# ## ⚠️ A MISSING PREREQUISITE AND A FAILING GATE MUST NOT SHARE AN EXIT CODE
+#
+# Two things below fail OPEN with a loud message rather than blocking: the gate
+# script being unreachable, and Docker being down. Neither says anything about the
+# code, and a hook that blocks every push for an environment reason LOOKS like a
+# working gate while being the fastest possible route to somebody adding
+# --no-verify permanently.
+#
+# That is not hypothetical. The sibling hooks were first written as `sh "$gate"`;
+# ci-local.sh is bash and uses `set -o pipefail`, which dash — /bin/sh on Debian
+# and Ubuntu — does not have, so it died on line 55 having checked NOTHING and
+# exited 2. It still blocked. It was found by running the hook against a
+# deliberately broken file, not by reading it. Hence `"$gate"` below, and hence
+# the Docker probe: this repo's suite cannot run without a daemon, and "cannot
+# run" is a different answer from "failed".
+#
+# Deliberate bypass is still `git push --no-verify`, which at least appears in the
+# shell history of whoever chose it.
+
+repo_root=$(git rev-parse --show-toplevel) || exit 0
+
+# TWO CANDIDATES, and the second is the one that survives a fresh machine.
+#
+# `crm/scripts/ci-local.sh` is the documented path and the one the README names,
+# but it is a SYMLINK in `crm/` — and `crm/` is not a git repo, so those symlinks
+# are version-controlled NOWHERE. They exist on whichever machine created them.
+# Clone the four repos plus docs onto a new box and `crm/scripts/` does not exist
+# at all: this hook takes its fail-open branch and the gate that replaced CI does
+# not run. Quietly, on every push, on every fresh checkout.
+#
+# That is this project's own rule broken by its newest gate — "a gate that exists
+# on one machine is not a gate" — and it is the untracked-script finding one
+# level further out: the SCRIPT is version-controlled now, the PATH TO IT was
+# not. The fail-open in front is still correct; failing open EVERY time is
+# indistinguishable from having no hook, which is worse than either branch.
+#
+# `docs/scripts/` is the real home and docs IS a cloned repo, so the second
+# candidate resolves with nothing having been symlinked by hand.
+for candidate in \
+  "$repo_root/../scripts/ci-local.sh" \
+  "$repo_root/../docs/scripts/ci-local.sh"
+do
+  if [ -e "$candidate" ]; then
+    gate="$candidate"
+    break
+  fi
+done
+gate="${gate:-$repo_root/../scripts/ci-local.sh}"
+
+# ⚠️ `-x`, NOT `-f`. A gate that is PRESENT but not EXECUTABLE is the same
+# missing-prerequisite case, and `-f` waves it through to the invocation below,
+# where it dies with "Permission denied" and exit 126 — which BLOCKS the push,
+# naming a line number in this hook and saying nothing about the code. Measured:
+# exit 126 with `chmod -x` on the gate, exit 0 with it restored.
+#
+# Reachable in the ordinary way. The scripts are committed 100755 and every repo
+# here has core.fileMode=true, so a clone is fine — but an archive extract, a
+# copy off a filesystem with no exec bit, or a checkout with core.fileMode=false
+# (the usual state on a Windows mount, and this project runs on WSL) all lose it.
+# Same rule as the Docker probe in the backend's hook: a missing PREREQUISITE and
+# a failing GATE must not share an exit code.
+if [ ! -x "$gate" ]; then
+  if [ -f "$gate" ]; then
+    echo "pre-push: $gate is present but NOT EXECUTABLE, so the gate cannot run." >&2
+    echo "pre-push: Fix with: chmod +x \"$gate\"" >&2
+  else
+    echo "pre-push: $gate not found — the local CI stand-in is not reachable from here." >&2
+  fi
+  echo "pre-push: PUSHING UNVERIFIED. Run scripts/ci-local.sh verify backend by hand." >&2
+  exit 0
+fi
+
+# The suite is Testcontainers. Without a daemon it does not fail — it cannot run.
+if ! docker info >/dev/null 2>&1; then
+  echo "pre-push: the Docker daemon is not reachable, so the Testcontainers suite" >&2
+  echo "pre-push: CANNOT RUN. That is not the same as the code being wrong, so this" >&2
+  echo "pre-push: is not blocking your push." >&2
+  echo "pre-push: PUSHING UNVERIFIED. Start Docker and run scripts/ci-local.sh verify backend." >&2
+  exit 0
+fi
+
+echo "pre-push: running the gate CI used to run (scripts/ci-local.sh verify backend)"
+echo "pre-push: this takes ~10 minutes — the suite starts a real Postgres, by design."
+echo "pre-push: it covers the four ARCHITECTURE §11 money acceptance tests."
+"$gate" verify backend
