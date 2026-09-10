@@ -385,7 +385,45 @@ export class KycConfigStore {
   }
 
   async setSteps(steps: KycStepConfig[]): Promise<KycStepConfig[]> {
-    const reindexed = steps.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
+    /*
+     * ⚠️ `id` IS ASSIGNED HERE WHEN THE CALLER OMITS IT, AND THAT IS NOT COSMETIC.
+     *
+     * `kyc_config_steps.id` is `text().primaryKey()` with NO database default,
+     * while `KycStepDto.id` is declared OPTIONAL and `stepNumber` is documented
+     * as "server-assigned ordering; ignored on create". So a caller adding a new
+     * step the way the DTO invites — slug, title, fields, no id — reached
+     * `toRow` with `id: undefined`, Drizzle wrote `default` for a column that
+     * has none, and the insert failed. The caller got a **500 INTERNAL_ERROR**
+     * with an opaque "an unexpected error occurred", on a request that was
+     * exactly what the published contract asked for.
+     *
+     * It stayed hidden because every caller that exists today happens to carry
+     * one: the builder does `steps = draft ?? query.data`, so its steps come
+     * from GET with their ids attached, and `addStep` mints its own. Found
+     * while writing the FR-CORE-15 case in `kyc-http.spec.ts`, which is the
+     * first caller to construct a step from nothing.
+     *
+     * Assigned rather than made required, because `id` is genuinely the
+     * server's to decide — the same reasoning that makes `stepNumber`
+     * server-assigned one line below. Derived from the SLUG, matching the
+     * schema's own comment ("human slugs like 'step-personal' from the
+     * builder"), and de-duplicated against ids already spoken for in this same
+     * payload: slugs are not unique-constrained, and two steps colliding on a
+     * generated id would reintroduce the failure this removes, more rarely and
+     * therefore worse.
+     */
+    const taken = new Set(steps.map((s) => s.id).filter((id): id is string => Boolean(id)));
+    const assignId = (s: KycStepConfig, idx: number): string => {
+      if (s.id) return s.id;
+      const base = `step-${s.slug || String(idx + 1)}`;
+      let candidate = base;
+      let n = 2;
+      while (taken.has(candidate)) candidate = `${base}-${n++}`;
+      taken.add(candidate);
+      return candidate;
+    };
+
+    const reindexed = steps.map((s, idx) => ({ ...s, id: assignId(s, idx), stepNumber: idx + 1 }));
     const db = this.db;
     await db.transaction(async (tx) => {
       await tx.delete(kycConfigSteps);

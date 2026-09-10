@@ -155,3 +155,132 @@ describe('the KYC config round trip', () => {
     await session.put('/v1/admin/kyc-config').send({ steps });
   });
 });
+
+describe('an empty configuration is refused, and refused BEFORE the delete', () => {
+  /*
+   * THE FOUR CLICKS THAT DELETE ONBOARDING FOR EVERY CLIENT.
+   *
+   * `KycConfigStore.setSteps` is a DELETE of every row followed by an INSERT of
+   * what it was handed. Given `[]` it performed the DELETE, inserted nothing,
+   * and answered 200 — the builder screen deleted its last step, saved, and
+   * reported success. Measured before the fix: config 4 steps → 0.
+   *
+   * What that costs is not a configuration screen looking empty. The wizard has
+   * no steps to render, so no client can submit; nothing arrives for a reviewer;
+   * and no client can reach a money screen again, because verification cannot be
+   * completed. It is silent — every existing approved client is unaffected, so
+   * the platform looks entirely normal until the next registration.
+   *
+   * ## The assertion that matters is the SECOND one
+   *
+   * A refusal that answers 400 after the DELETE has already run is not a
+   * refusal; it is the same outage with a worse status code. So this re-reads
+   * the config and requires the steps still to be there. `@ArrayNotEmpty` on the
+   * DTO is what makes that true — the pipe rejects the body before the service
+   * is entered at all, which is the only place the guarantee costs nothing to be
+   * sure about.
+   */
+  it('REFUSES `PUT { steps: [] }` and leaves the configuration intact', async () => {
+    const before = await session.get('/v1/admin/kyc-config');
+    expect(before.status).toBe(200);
+    const existing = (Array.isArray(before.body) ? before.body : before.body.steps) as unknown[];
+    // Non-vacuous: with no steps to lose, an unchanged config proves nothing.
+    expect(
+      existing.length,
+      'no steps configured — this case cannot prove anything',
+    ).toBeGreaterThan(0);
+
+    const wipe = await session.put('/v1/admin/kyc-config').send({ steps: [] });
+
+    expect(
+      wipe.status,
+      `saving an empty step list answered ${wipe.status}. A 200 here deletes ` +
+        'onboarding for every client: the wizard renders nothing, nobody can ' +
+        'submit, and no client can reach a money screen again.',
+    ).toBe(400);
+
+    const after = await session.get('/v1/admin/kyc-config');
+    const survived = (Array.isArray(after.body) ? after.body : after.body.steps) as unknown[];
+    expect(
+      survived.length,
+      'the save was refused with a 400 and the steps were deleted anyway — the ' +
+        'refusal is landing after setSteps has already run its DELETE',
+    ).toBe(existing.length);
+  });
+});
+
+describe('a step the caller did not name', () => {
+  /*
+   * A 500 WHERE THE CONTRACT PROMISED A SAVE.
+   *
+   * `KycStepDto.id` is declared OPTIONAL and `stepNumber` is documented as
+   * "server-assigned ordering; ignored on create", so a caller adding a step
+   * the way the published shape invites — slug, title, fields, no id — is doing
+   * exactly what the DTO asks. `kyc_config_steps.id` is a text primary key with
+   * no database default, so `toRow` handed Drizzle `undefined`, the INSERT wrote
+   * `default` for a column that has none, and the request answered **500
+   * INTERNAL_ERROR** with "an unexpected error occurred".
+   *
+   * It hid because every caller that exists today happens to carry an id: the
+   * builder round-trips what GET gave it, and `addStep` mints its own. The first
+   * caller to build a step from nothing was a test, which is the only reason it
+   * surfaced at all rather than waiting for the next client of this API.
+   *
+   * ## The second half is the collision, and it is why this is not one line
+   *
+   * Deriving the id from the slug is the obvious repair and it is not sufficient
+   * on its own: slugs carry no unique constraint, and a payload whose OTHER step
+   * already holds the id this one would generate reintroduces the same failed
+   * INSERT — more rarely, and therefore worse, because it would ship. So the
+   * assignment is de-duplicated against the ids already spoken for in the same
+   * request, and this case constructs that collision deliberately rather than
+   * trusting the reasoning.
+   */
+  it('assigns an id, and never one another step in the same payload already holds', async () => {
+    const before = await session.get('/v1/admin/kyc-config');
+    const original = (Array.isArray(before.body) ? before.body : before.body.steps) as unknown[];
+
+    const field = (id: string) => ({
+      id,
+      name: 'note',
+      label: 'Note',
+      type: 'text',
+      required: false,
+    });
+
+    /*
+     * The collision, built on purpose: the FIRST step explicitly claims
+     * `step-audit`, which is exactly what the second — slug `audit`, no id —
+     * would otherwise be given.
+     */
+    const write = await session.put('/v1/admin/kyc-config').send({
+      steps: [
+        { id: 'step-audit', slug: 'other', title: 'Other', enabled: true, fields: [field('f-a')] },
+        { slug: 'audit', title: 'Audit', enabled: true, fields: [field('f-b')] },
+      ],
+    });
+
+    expect(
+      write.status,
+      `a step with no id answered ${write.status}: ${JSON.stringify(write.body).slice(0, 200)}`,
+    ).toBe(200);
+
+    const after = await session.get('/v1/admin/kyc-config');
+    const saved = (Array.isArray(after.body) ? after.body : after.body.steps) as {
+      id: string;
+      slug: string;
+    }[];
+
+    expect(
+      saved.map((s) => s.slug),
+      'the save answered 200 and did not persist',
+    ).toEqual(['other', 'audit']);
+    const ids = saved.map((s) => s.id);
+    expect(ids[0], "the caller's own id was overwritten").toBe('step-audit');
+    expect(ids[1], 'the assigned id is empty').toBeTruthy();
+    expect(new Set(ids).size, 'two steps were saved under one id').toBe(2);
+
+    // Leave the config as it was found.
+    await session.put('/v1/admin/kyc-config').send({ steps: original });
+  });
+});

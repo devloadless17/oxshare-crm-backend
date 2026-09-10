@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayNotEmpty,
   IsArray,
   IsBoolean,
   IsIn,
@@ -197,8 +198,44 @@ export class KycStepDto {
  * makes that visible in the generated types.
  */
 export class KycConfigDto {
-  @ApiProperty({ type: [KycStepDto] })
+  /*
+   * ⚠️ `@ArrayNotEmpty` REFUSES AN EMPTY CONFIGURATION, AND IT HAS TO BE HERE.
+   *
+   * `KycConfigStore.setSteps` is a DELETE followed by an INSERT of whatever it
+   * was handed. Given `[]` it performs the DELETE and inserts nothing, answers
+   * 200, and every client's onboarding is gone — the wizard has no steps to
+   * render, no client can submit, and no reviewer has anything to review. Four
+   * confirmed deletions on the builder screen reach that state, and the last one
+   * arrives with a success toast.
+   *
+   * A guard INSIDE `setSteps` would sit after the destructive half or duplicate
+   * the decision beside it. The DTO refuses before the service is entered at
+   * all, which is the only place the refusal costs nothing to be sure about.
+   *
+   * ## This does NOT reinstate the mandatory-step rule that was retired
+   *
+   * That rule said WHICH steps may be deleted, and it refused deletions an
+   * operator legitimately wanted — which is why it went. This refuses only the
+   * deletion that leaves nothing behind. Zero steps is not a configuration
+   * somebody could want; it is the absence of one. Every other edit the
+   * builder can make is still accepted, including deleting any step the
+   * operator chooses, right down to the last one remaining.
+   *
+   * The admin builder disables the final Delete for the same reason, so an
+   * operator does not reach this refusal by ordinary use. The two are not
+   * substitutes: the screen is what means nobody meets a 400, and this is the
+   * guarantee — a 400 after four confirmed deletions tells an operator their
+   * work was rejected without telling them which deletion was the problem, and
+   * a screen alone protects nothing against curl, a stale tab, or the next
+   * client written against this API.
+   */
+  @ApiProperty({ type: [KycStepDto], minItems: 1 })
   @IsArray()
+  @ArrayNotEmpty({
+    message:
+      'A KYC configuration must keep at least one step. Saving an empty list ' +
+      'would remove onboarding for every client.',
+  })
   @ValidateNested({ each: true })
   @Type(() => KycStepDto)
   steps: KycStepDto[];

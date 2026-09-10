@@ -15908,7 +15908,14 @@
               "select",
               "file",
               "camera",
-              "checkbox"
+              "checkbox",
+              "doc:passport",
+              "doc:national_id",
+              "doc:driving_license",
+              "doc:residence_permit",
+              "doc:utility_bill",
+              "doc:bank_statement",
+              "doc:tenancy_agreement"
             ]
           },
           "required": {
@@ -15924,6 +15931,10 @@
           "hint": {
             "type": "string",
             "example": "As shown on your ID"
+          },
+          "document": {
+            "type": "object",
+            "description": "Hydrated from `type` on read. Accepted on write and ignored."
           }
         },
         "required": [
@@ -15980,6 +15991,7 @@
         "type": "object",
         "properties": {
           "steps": {
+            "minItems": 1,
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/KycStepDto"

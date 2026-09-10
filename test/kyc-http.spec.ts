@@ -321,24 +321,103 @@ describe('the step configurator is a different permission from reviewing', () =>
     expect(res.status).toBe(403);
   });
 
-  it('lets an admin with kyc.edit empty the flow entirely', async () => {
+  it('lets an admin with kyc.edit delete every step FR-CORE-15 mandated', async () => {
     /*
      * This asserted a 400: `personal`, `document`, `selfie` and `address` were
      * mandated by FR-CORE-15 and could not be removed by anyone.
      *
      * The owner retired that rule on 15 Aug 2026 — a KYC flow sold as
      * configurable that refuses to drop four of its steps is not configurable,
-     * and which documents a jurisdiction demands is the broker's decision. The
-     * empty config is the extreme case and the sharpest test of it: if any step
-     * were still secretly required, this call is what would reveal it.
+     * and which documents a jurisdiction demands is the broker's decision.
+     *
+     * ⚠️ THE PROBE CHANGED ON 10 Sep 2026, AND THE PROPERTY DID NOT.
+     *
+     * It used to send `{ steps: [] }`, on the reasoning that the empty config is
+     * the extreme case and therefore the sharpest test — if any step were still
+     * secretly required, an empty save is what would reveal it. `KycConfigDto`
+     * now carries `@ArrayNotEmpty`, so that call answers 400 and this case had
+     * to be rewritten or deleted.
+     *
+     * It is rewritten, because the empty config was the WEAKER probe of the two.
+     * A refusal of `[]` is consistent with every step being freely deletable —
+     * it says nothing about WHICH steps are required, only that a configuration
+     * must exist. What actually pins the owner's decision is a config holding
+     * ONE step that is none of the four: it deletes `personal`, `document`,
+     * `selfie` and `address` in a single save and is accepted. If any of them
+     * were still secretly mandated, THIS is the call that fails.
+     *
+     * ## Why the floor is not the retired rule wearing a new name
+     *
+     * The retired rule named four steps and refused to let them go. The floor
+     * names none: every step here is deletable, including all four, down to
+     * whichever one an operator chooses to keep. What it refuses is a save that
+     * leaves nothing behind — and zero steps is not a flow anybody configured,
+     * it is the absence of one. `KycConfigStore.setSteps` is a DELETE followed
+     * by an INSERT, so an empty save wiped onboarding for every client: the
+     * wizard renders nothing, nobody can submit, no reviewer receives anything,
+     * and no client can reach a money screen again. It answered 200 and looked
+     * entirely normal until the next registration.
+     *
+     * The old probe was also AMBIGUOUS, which is a reason to prefer this one
+     * independently of the floor: a reader meeting `[] → 200` cannot tell
+     * whether the system permits an empty configuration DELIBERATELY or merely
+     * fails to forbid it. This case cannot be misread that way — it asserts one
+     * property and names it.
+     *
+     * If the owner wants zero savable, this is one decorator out of
+     * `compliance.dto.ts`. What should NOT come back is a bare `{ steps: [] }` /
+     * 200 with no sentence saying which of those two it is asserting; that is
+     * the ambiguity above, and it is what let this stand as evidence for a
+     * decision it only half describes. The reasoning is in `compliance.dto.ts`
+     * beside the decorator, and the cost of the 200 is in
+     * `kyc-config-round-trip.spec.ts`.
      *
      * The PERMISSION split above is untouched and still the real control — a
      * reviewer gets 403, only `kyc.edit` gets this far. What replaced the block
      * is the audit trail; see test/kyc-config-rules.spec.ts.
      */
     const master = await actingAs(ctx, 'admin', ADMIN);
-    const res = await master.put('/v1/admin/kyc-config', { steps: [] });
-    expect(res.status).toBe(200);
+
+    const before = await master.get('/v1/admin/kyc-config');
+    const original = (Array.isArray(before.body) ? before.body : before.body.steps) as unknown[];
+
+    const onlyStep = {
+      slug: 'proof-of-funds',
+      title: 'Proof of Funds',
+      enabled: true,
+      fields: [
+        {
+          id: 'pof-1',
+          name: 'sourceOfWealth',
+          label: 'Source of wealth',
+          type: 'text',
+          required: true,
+        },
+      ],
+    };
+
+    const res = await master.put('/v1/admin/kyc-config', { steps: [onlyStep] });
+    expect(
+      res.status,
+      `dropping all four FR-CORE-15 steps answered ${res.status}: ` +
+        JSON.stringify(res.body).slice(0, 200),
+    ).toBe(200);
+
+    /*
+     * RE-READ. A 200 that did not persist would satisfy the line above while
+     * leaving the four steps in place, which is the outcome this case exists to
+     * refuse.
+     */
+    const after = await master.get('/v1/admin/kyc-config');
+    const slugs = (
+      (Array.isArray(after.body) ? after.body : after.body.steps) as { slug: string }[]
+    ).map((s) => s.slug);
+    expect(slugs, 'a mandated step survived a save that did not include it').toEqual([
+      'proof-of-funds',
+    ]);
+
+    // Leave the config as it was found — later cases in this file read it.
+    await master.put('/v1/admin/kyc-config', { steps: original });
   });
 });
 
