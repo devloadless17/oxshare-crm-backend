@@ -11,11 +11,47 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { RejectionContext } from '../../../../store/rejection-reasons.store';
+import type { KycDocumentType } from '../../../../store/kyc-config.store';
+import { DOCUMENT_CATALOGUE, documentFieldType } from '../../../../common/kyc/document-catalogue';
 
 // Request DTOs for the KYC review + step-configurator surface.
 // See the note in ./auth.dto.ts for why these moved out of the controller.
 
-const KYC_FIELD_TYPES = ['text', 'date', 'phone', 'select', 'file', 'camera', 'checkbox'] as const;
+const KYC_BASE_FIELD_TYPES = [
+  'text',
+  'date',
+  'phone',
+  'select',
+  'file',
+  'camera',
+  'checkbox',
+] as const;
+
+/**
+ * ⚠️ THE DOCUMENT TYPES BELONG HERE TOO, and their absence made the KYC step
+ * builder unable to save at all.
+ *
+ * `kyc-config.store.ts` defines a field type as "a base type, or `doc:<value>`
+ * for a document", and SEEDS exactly that — `doc:passport`, `doc:national_id`,
+ * `doc:driving_license`, `doc:utility_bill`. GET returns them. This list did not
+ * contain them, so a pure read-modify-write round trip — which is precisely what
+ * the builder performs, `steps = draft ?? query.data` with no transform — came
+ * back 400 VALIDATION_FAILED on every save.
+ *
+ * The screen reported success and nothing persisted. It was invisible because
+ * the jsdom page tests mock `api.put`, so the request shape was never checked
+ * against this DTO, and no browser spec clicked Save until one was written.
+ *
+ * DERIVED FROM THE CATALOGUE rather than hand-listed, which is what the response
+ * DTO has always done (`kyc-response.dto.ts`) and what the store's own docblock
+ * asks for: "the catalogue defines the document half, so a union here would have
+ * to be regenerated every time one is added". Computed, so adding a document
+ * cannot leave this behind again.
+ */
+const KYC_FIELD_TYPES = [
+  ...KYC_BASE_FIELD_TYPES,
+  ...DOCUMENT_CATALOGUE.map((doc) => documentFieldType(doc.value)),
+] as const;
 
 const REJECTION_CONTEXTS = ['kyc', 'withdrawal'] as const;
 
@@ -84,6 +120,26 @@ export class KycFieldDto {
   @IsString()
   @IsOptional()
   hint?: string;
+
+  /**
+   * ACCEPTED AND IGNORED. The GET hydrates every document field with
+   * `{ value, label, category, parts[] }`, resolved from `type` when serving and
+   * explicitly NOT persisted — the store says so: "the type is the only stored
+   * fact".
+   *
+   * Declared here so the global `whitelist` pipe does not answer "property
+   * document should not exist" to a client that sent back exactly what it was
+   * given. An API whose GET output its own PUT refuses is a trap for every
+   * consumer, not just the builder that found it.
+   *
+   * Not read by anything: `type` remains the single stored fact, so sending a
+   * `document` that disagrees with the type changes nothing.
+   */
+  @ApiPropertyOptional({
+    description: 'Hydrated from `type` on read. Accepted on write and ignored.',
+  })
+  @IsOptional()
+  document?: KycDocumentType;
 }
 
 export class KycStepDto {
