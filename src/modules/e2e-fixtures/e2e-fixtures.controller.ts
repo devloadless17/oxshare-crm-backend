@@ -1,7 +1,7 @@
 import { Controller, Post } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { getDb } from '../../database/db';
-import { reassertReviewPool } from '../../database/seed';
+import { createFreshE2eClient, reassertReviewPool } from '../../database/seed';
 
 /**
  * PUT THE E2E REVIEW POOL BACK TO PENDING. Development only.
@@ -84,5 +84,23 @@ export class E2eFixturesController {
   @Post('review-pool')
   async resetReviewPool(): Promise<{ reset: number }> {
     return { reset: await reassertReviewPool(getDb()) };
+  }
+
+  /*
+   * A BRAND-NEW client per call, for the specs that assert MONEY.
+   *
+   * A pooled fixture is reused, so it carries a wallet, a ledger and claimed
+   * idempotency keys from previous runs — which is correct for a KYC spec and
+   * wrong for one asserting an absolute balance. Seeding a fresh row costs no
+   * registration budget, so those specs get genuine freshness without spending
+   * the `POST /auth/register` cap the pool exists to protect.
+   *
+   * Same gating and the same argument as the reset above: development-only
+   * module, and the address is generated here rather than taken from the
+   * caller, so nothing a request says can name an existing client.
+   */
+  @Post('client')
+  async freshClient(): Promise<{ id: string; email: string; password: string }> {
+    return createFreshE2eClient(getDb());
   }
 }

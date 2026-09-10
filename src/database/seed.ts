@@ -1096,3 +1096,75 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
 
   return REVIEW_POOL.length;
 }
+
+/**
+ * A BRAND-NEW client with a pending KYC submission, unique to this call.
+ *
+ * The pool is the wrong fixture for a MONEY spec, and that distinction cost
+ * four failures to find. A pooled client is REUSED, so it accumulates a wallet,
+ * a ledger and claimed idempotency keys across runs — and the money specs assert
+ * absolute balances. `withdrawals-desk` credits 100 under a key derived from the
+ * client id, which is stable for a pooled client, so on every run after the
+ * first the credit is a correctly-deduped REPLAY: no money is added and the
+ * wallet still holds whatever the last run left. The spec then reads 90.00000000
+ * where it expected 100.00000000 and blames the credit.
+ *
+ * Their own docblocks already said so — "a fresh client, because money history
+ * is append-only: a seeded fixture would accumulate this run's rows into every
+ * later assertion" — which stopped being true when leasing replaced registering,
+ * silently, because nothing re-read the sentence.
+ *
+ * ## Why this is seeded rather than registered
+ *
+ * Registration is what the pool exists to avoid: `POST /auth/register` is capped
+ * at 10/hour per IP and the suite needs more fixtures than that. Seeding the row
+ * directly costs no budget at all, so freshness and the rate limit stop being a
+ * trade-off — which is why this is better than both "lease and live with the
+ * history" and "go back to registering".
+ *
+ * The KYC submission is left PENDING so a caller can approve it exactly as the
+ * pooled path does; the two return the same shape and are interchangeable apart
+ * from the history.
+ */
+export async function createFreshE2eClient(
+  db: ReturnType<typeof getDb>,
+): Promise<{ id: string; email: string; password: string }> {
+  const password = 'client123';
+  const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const email = `e2e-fresh-${stamp}@${E2E_POOL_DOMAIN}`;
+
+  const [client] = await db
+    .insert(users)
+    .values({
+      email,
+      passwordHash: await new PasswordService().hash(password),
+      firstName: 'Fresh',
+      lastName: stamp,
+      type: 'individual',
+      status: 'active',
+      emailVerified: true,
+      verificationLevel: 0,
+      country: 'Lebanon',
+    })
+    .returning();
+
+  await db.insert(kycSubmissions).values({
+    userId: client.id,
+    status: 'submitted',
+    submittedAt: new Date(),
+    personalInfo: {
+      firstName: 'Fresh',
+      lastName: stamp,
+      email,
+      phone: '+96170000901',
+      dateOfBirth: '1990-06-15',
+      nationality: 'Lebanon',
+      country: 'Lebanon',
+    },
+    document: { docType: 'passport', fileName: 'fresh-doc.png' },
+    selfie: { fileName: 'fresh-selfie.png' },
+    addressProof: { docType: 'utility_bill', fileName: 'fresh-address.png' },
+  });
+
+  return { id: client.id, email, password };
+}

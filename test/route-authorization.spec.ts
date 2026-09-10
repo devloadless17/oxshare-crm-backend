@@ -65,6 +65,8 @@ const PUBLIC_ROUTES: Record<string, string> = {
    * forward to `submitted`. It cannot name, read or alter a real client. The
    * moment it takes a parameter that stops being true, so it must not.
    */
+  'POST /e2e/fixtures/client':
+    'development-only fixture creation; the module is not imported in production, and the address is generated server-side',
   'POST /e2e/fixtures/review-pool':
     'development-only fixture reset; the module is not imported in production, and it takes no input',
   /*
