@@ -51,6 +51,25 @@ const HANDLER_AUTHENTICATED: Record<string, string> = {
 
 const PUBLIC_ROUTES: Record<string, string> = {
   /*
+   * DEVELOPMENT ONLY, and it is the MODULE that is gated rather than the route:
+   * `AppModule` imports `E2eFixturesModule` only when NODE_ENV !== 'production',
+   * so in production this route does not exist at all — there is nothing here to
+   * authenticate against.
+   *
+   * Unauthenticated on purpose. It runs from Playwright's globalSetup, before
+   * any storage state exists, and requiring a session would spend the admin
+   * login budget (5/min) on the step that exists to make runs cheap.
+   *
+   * It is safe to leave open because it takes NO INPUT — no id, no email, no
+   * filter — and only re-asserts a compiled-in list of `e2e-pool-*` fixtures
+   * forward to `submitted`. It cannot name, read or alter a real client. The
+   * moment it takes a parameter that stops being true, so it must not.
+   */
+  'POST /e2e/fixtures/client':
+    'development-only fixture creation; the module is not imported in production, and the address is generated server-side',
+  'POST /e2e/fixtures/review-pool':
+    'development-only fixture reset; the module is not imported in production, and it takes no input',
+  /*
    * Password reset — the caller is by definition someone who cannot sign in.
    *
    * Both are rate limited (R-3.5): forgot-password 3/hour, because it sends

@@ -52,6 +52,19 @@ interface ListBody {
   maskedFields: string[];
 }
 
+/**
+ * The keys a DTO declares to Swagger — the set the response interceptor can
+ * see, and therefore the only set it is able to mask. Hoisted to module scope
+ * because two blocks assert against it now, and one definition is the point.
+ */
+const declaredOn = (dto: unknown): Set<string> => {
+  const properties = Reflect.getMetadata(
+    'swagger/apiModelPropertiesArray',
+    (dto as { prototype: object }).prototype,
+  ) as string[] | undefined;
+  return new Set((properties ?? []).map((name) => name.replace(/^:/, '')));
+};
+
 beforeAll(async () => {
   ctx = await startHttpTestApp();
   const passwords = new PasswordService();
@@ -513,14 +526,6 @@ describe('a DTO that under-declares its response is a hole in shape-masking', ()
    * this half means seeding rows for the remaining shapes, which is blocked on
    * the same fixture economics as the rest of the suite.
    */
-  const declaredOn = (dto: unknown): Set<string> => {
-    const properties = Reflect.getMetadata(
-      'swagger/apiModelPropertiesArray',
-      (dto as { prototype: object }).prototype,
-    ) as string[] | undefined;
-    return new Set((properties ?? []).map((name) => name.replace(/^:/, '')));
-  };
-
   it('the client LIST declares every key it returns', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.get(`${CLIENTS}?q=mask-target`).expect(200);

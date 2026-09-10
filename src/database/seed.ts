@@ -768,6 +768,34 @@ export async function runSeeds(): Promise<void> {
   }
 
   /*
+   * ── The REVIEW POOL: one pending-KYC client per spec that needs one ──────
+   *
+   * SEEDED, for the reason the cohort above already states and this repo
+   * already learned: `POST /auth/register` is capped at 10 an hour per IP.
+   *
+   * `mintClientWithPendingKyc` was added after that note and registers a client
+   * at runtime, once per spec that needs a reviewable submission — ELEVEN of
+   * them across the admin suite. So the suite cannot finish a single run inside
+   * its own budget, let alone a second: the later mints answer 429, the helper
+   * skips, and a skipped Playwright test reports as PASSING. Eighteen tests
+   * vanished from one green run that way, including the entire payout rail.
+   *
+   * `verify-email` (10 per 15 minutes) is exhausted by the same path.
+   *
+   * ONE CLIENT PER LABEL, never a shared one. These fixtures are DECIDED by the
+   * specs that use them — claimed, approved, rejected — so two specs sharing a
+   * row would fail in an order that depends on which ran first, which is the
+   * trap the `suspend-target` note above already records.
+   *
+   * ⚠️ RE-ASSERTED on every boot, not `onConflictDoNothing`. That is the
+   * difference between this and alpha's submission, and it is deliberate: these
+   * rows exist to BE decided, so a run that approves one must find it pending
+   * again next time. Alpha's is left alone because no spec decides it and a
+   * human's decision there should stick.
+   */
+  await reassertReviewPool(db);
+
+  /*
    * Two tags the suite owns, prefixed so they read as suite-owned in the tag
    * picker and sort together away from an operator's real segments.
    *
@@ -960,4 +988,183 @@ export async function runSeeds(): Promise<void> {
   console.log(
     '🌱 Seeds applied (idempotent): master role/admin, demo client, rejection reasons, e2e cohort',
   );
+}
+
+/**
+ * The labels the admin suite leases a pending KYC submission by.
+ *
+ * Exported because a lease site that names a label NOT in here is a different
+ * mistake from one whose fixture was decided — "you need to add a label" rather
+ * than "a previous run consumed it" — and the helper cannot tell them apart
+ * without seeing the list.
+ */
+export const REVIEW_POOL_LABELS = [
+  'desk',
+  'needs-attention',
+  'claim',
+  'decided',
+  'rt',
+  'rt-in',
+  'auth',
+  'dbl',
+  'rej',
+  'ui',
+  'settle',
+] as const;
+
+export const E2E_POOL_DOMAIN = 'oxshare-e2e.test';
+
+/**
+ * Put every pooled fixture back to PENDING, UNCLAIMED and UNDECIDED.
+ *
+ * Extracted from `runSeeds` so it can run per E2E RUN rather than only per
+ * boot. The boot-only version was correct and insufficient: these rows exist to
+ * be decided, so one strict run consumes them and the next fails on fixtures a
+ * previous run approved. The remedy was "restart the backend", which is exactly
+ * the friction that teaches people to unset E2E_STRICT — and unsetting it turns
+ * every skip back into a silent pass, which is the failure the flag exists to
+ * prevent.
+ *
+ * ⚠️ It resets the WHOLE DECISION, not the column the queue filters on. A row
+ * put back to `submitted` while still carrying `reviewedBy` is pending AND
+ * claimed — a state no submission reaches on its own — and the claim specs
+ * assert on exactly that pair, so they would pass against a row they did not
+ * create and fail in ways that look like a claim bug.
+ *
+ * Scoped to `@oxshare-e2e.test` by construction: every address it touches is
+ * built from a label in `REVIEW_POOL_LABELS`, so it cannot reach a real client
+ * even if it were somehow invoked against a populated database.
+ */
+export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<number> {
+  const clientHash = await new PasswordService().hash('client123');
+  const E2E_DOMAIN = E2E_POOL_DOMAIN;
+  const REVIEW_POOL = REVIEW_POOL_LABELS;
+
+  for (const label of REVIEW_POOL) {
+    const email = `e2e-pool-${label}@${E2E_DOMAIN}`;
+    const [pooled] = await db
+      .insert(users)
+      .values({
+        email,
+        passwordHash: clientHash,
+        firstName: 'Pool',
+        lastName: label,
+        type: 'individual',
+        status: 'active',
+        emailVerified: true,
+        verificationLevel: 0,
+        country: 'Lebanon',
+      })
+      .onConflictDoUpdate({
+        target: users.email,
+        // Re-verified and re-activated: a spec that suspends one must not leave
+        // the next run unable to sign in as it.
+        set: { emailVerified: true, status: 'active' },
+      })
+      .returning();
+
+    await db
+      .insert(kycSubmissions)
+      .values({
+        userId: pooled.id,
+        status: 'submitted',
+        submittedAt: new Date(),
+        personalInfo: {
+          firstName: 'Pool',
+          lastName: label,
+          email,
+          phone: '+96170000900',
+          dateOfBirth: '1990-06-15',
+          nationality: 'Lebanon',
+          country: 'Lebanon',
+        },
+        document: { docType: 'passport', fileName: 'pool-doc.png' },
+        selfie: { fileName: 'pool-selfie.png' },
+        addressProof: { docType: 'utility_bill', fileName: 'pool-address.png' },
+      })
+      .onConflictDoUpdate({
+        target: kycSubmissions.userId,
+        set: {
+          status: 'submitted',
+          submittedAt: new Date(),
+          reviewedAt: null,
+          reviewedBy: null,
+          rejectionReason: null,
+        },
+      });
+  }
+
+  return REVIEW_POOL.length;
+}
+
+/**
+ * A BRAND-NEW client with a pending KYC submission, unique to this call.
+ *
+ * The pool is the wrong fixture for a MONEY spec, and that distinction cost
+ * four failures to find. A pooled client is REUSED, so it accumulates a wallet,
+ * a ledger and claimed idempotency keys across runs — and the money specs assert
+ * absolute balances. `withdrawals-desk` credits 100 under a key derived from the
+ * client id, which is stable for a pooled client, so on every run after the
+ * first the credit is a correctly-deduped REPLAY: no money is added and the
+ * wallet still holds whatever the last run left. The spec then reads 90.00000000
+ * where it expected 100.00000000 and blames the credit.
+ *
+ * Their own docblocks already said so — "a fresh client, because money history
+ * is append-only: a seeded fixture would accumulate this run's rows into every
+ * later assertion" — which stopped being true when leasing replaced registering,
+ * silently, because nothing re-read the sentence.
+ *
+ * ## Why this is seeded rather than registered
+ *
+ * Registration is what the pool exists to avoid: `POST /auth/register` is capped
+ * at 10/hour per IP and the suite needs more fixtures than that. Seeding the row
+ * directly costs no budget at all, so freshness and the rate limit stop being a
+ * trade-off — which is why this is better than both "lease and live with the
+ * history" and "go back to registering".
+ *
+ * The KYC submission is left PENDING so a caller can approve it exactly as the
+ * pooled path does; the two return the same shape and are interchangeable apart
+ * from the history.
+ */
+export async function createFreshE2eClient(
+  db: ReturnType<typeof getDb>,
+): Promise<{ id: string; email: string; password: string }> {
+  const password = 'client123';
+  const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const email = `e2e-fresh-${stamp}@${E2E_POOL_DOMAIN}`;
+
+  const [client] = await db
+    .insert(users)
+    .values({
+      email,
+      passwordHash: await new PasswordService().hash(password),
+      firstName: 'Fresh',
+      lastName: stamp,
+      type: 'individual',
+      status: 'active',
+      emailVerified: true,
+      verificationLevel: 0,
+      country: 'Lebanon',
+    })
+    .returning();
+
+  await db.insert(kycSubmissions).values({
+    userId: client.id,
+    status: 'submitted',
+    submittedAt: new Date(),
+    personalInfo: {
+      firstName: 'Fresh',
+      lastName: stamp,
+      email,
+      phone: '+96170000901',
+      dateOfBirth: '1990-06-15',
+      nationality: 'Lebanon',
+      country: 'Lebanon',
+    },
+    document: { docType: 'passport', fileName: 'fresh-doc.png' },
+    selfie: { fileName: 'fresh-selfie.png' },
+    addressProof: { docType: 'utility_bill', fileName: 'fresh-address.png' },
+  });
+
+  return { id: client.id, email, password };
 }

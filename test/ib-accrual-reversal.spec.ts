@@ -196,7 +196,9 @@ beforeEach(async () => {
   await ctx.db.execute(sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_rebate_shape`);
   /* Batches sit between the accruals and the wallets in FK order (0116). */
   await ctx.db.execute(sql`DELETE FROM ib_accrual_batches`);
-  await ctx.db.execute(sql`DELETE FROM ledger_entries`);
+  await ctx.db.execute(
+    sql`TRUNCATE ledger_entries, ib_accruals CASCADE` /* not DELETE: the ledger is append-only by trigger (§6.4). TRUNCATE resets a fixture table without firing row triggers, and no production path truncates. */,
+  );
   await ctx.db.execute(sql`DELETE FROM wallets`);
   /*
    * The maturation window cannot be switched OFF any more (0113): it is a

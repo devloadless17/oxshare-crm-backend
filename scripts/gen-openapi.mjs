@@ -12,7 +12,8 @@
  * remember to regenerate" into a diff someone reviews, and gives the frontend
  * pipelines something to check against without booting a database.
  */
-import { writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { NestFactory } from '@nestjs/core';
 import { SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from '../dist/app.module.js';
@@ -21,6 +22,60 @@ import { ErrorResponseDto } from '../dist/common/dto/error-response.dto.js';
 import { buildSwaggerConfig } from '../dist/common/swagger-config.js';
 
 const OUTPUT = 'openapi.json';
+
+/*
+ * ⚠️ THIS SCRIPT READS dist/, NOT src/ — so it can lie about a change it cannot see.
+ *
+ * The imports above come from `../dist/`, because the document is built by
+ * booting the compiled Nest app. `npm run gen:openapi` does `nest build` first,
+ * and CI builds before it checks, so both are honest. The bare
+ * `node scripts/gen-openapi.mjs --check` is not: run by hand against a stale
+ * dist/ it compares the committed document to one generated from OLD CODE and
+ * reports "up to date" while a DTO change sits invisible to it.
+ *
+ * Reproduced rather than theorised: ten fields added to a DTO, the check
+ * answered "up to date"; `npm run build`, the identical check answered "out of
+ * date". Same source, same document, opposite answers, dist/ the only variable.
+ *
+ * That is the same silent-staleness class as the migration watermark and the
+ * `nest --watch` note in CLAUDE.md, and it matters more than usual here: the
+ * shape-masking design depends on DTO declarations reaching the published
+ * contract, and this is the gate guarding that.
+ *
+ * So it REFUSES rather than guessing. Nothing is rebuilt automatically — a
+ * generator that silently rebuilds hides how long it really takes, and the
+ * remedy is one command the message names.
+ */
+function newestMtime(dir) {
+  let newest = 0;
+  const walk = (path) => {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+      const full = join(path, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else newest = Math.max(newest, statSync(full).mtimeMs);
+    }
+  };
+  if (existsSync(dir)) walk(dir);
+  return newest;
+}
+
+if (!existsSync('dist')) {
+  console.error('dist/ does not exist. This script reads the COMPILED app — run `npm run build`.');
+  process.exit(1);
+}
+
+const srcAt = newestMtime('src');
+const distAt = newestMtime('dist');
+if (srcAt > distAt) {
+  console.error(
+    'REFUSING: dist/ is older than src/, so this would describe code that is no longer there.\n' +
+      `  newest src/  ${new Date(srcAt).toISOString()}\n` +
+      `  newest dist/ ${new Date(distAt).toISOString()}\n` +
+      'Run `npm run build` first, or use `npm run gen:openapi`, which builds for you.',
+  );
+  process.exit(1);
+}
 
 // Boot secrets. The document is built from decorators, so nothing here reaches a
 // database or signs anything — but config validation refuses to start without

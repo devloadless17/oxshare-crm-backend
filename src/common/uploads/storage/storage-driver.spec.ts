@@ -206,6 +206,31 @@ afterAll(async () => {
 });
 
 // ── R2: opt-in only. Never in CI, never without R2_LIVE_TEST=1. ──────────────
+//
+// THE 11 SKIPS IN A DEFAULT RUN ARE THIS BLOCK, and they are declared rather
+// than forgotten. `npm test` reports "2385 passed | 11 skipped"; every one of
+// those eleven is the contract below, unrun because the live arm bills a real
+// Cloudflare account per execution.
+//
+// That is a deliberate trade with a real residual, worth stating plainly: the
+// contract passes against the two drivers production does NOT use (fake, disk)
+// and is skipped for the one it does. A fake cannot reproduce R2's own
+// behaviour — `responseChecksumValidation: 'WHEN_REQUIRED'` is load-bearing
+// because R2 returns a WHOLE-object checksum on a partial response, so without
+// it every ranged read fails, which is every multi-page PDF in the review
+// queue. Only this arm can catch that class.
+//
+// So it is opt-in, not abandoned, and it gets RUN rather than assumed:
+//
+//   VERIFIED 10 Sep 2026 — `R2_LIVE_TEST=1 npx vitest run` on this file with the
+//   R2_* block from `.env`: 33 passed, 0 skipped (11 fake + 11 disk + 11 live).
+//   Bucket `oxshare-crm-local`. Every key is written under the `__contract-test`
+//   prefix and deleted in `afterAll`, so a passing run leaves nothing behind.
+//
+// Re-run it after any aws-sdk upgrade, after touching `r2.ts`, and before
+// trusting the fake on a change that concerns ranges or checksums. Skipping
+// forever would make the eleven read as an oversight instead of a decision.
+// ─────────────────────────────────────────────────────────────────────────────
 const liveR2 =
   process.env.R2_LIVE_TEST === '1' &&
   Boolean(

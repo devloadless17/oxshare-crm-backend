@@ -189,7 +189,9 @@ beforeEach(async () => {
    */
   for (let attempt = 0; ; attempt += 1) {
     try {
-      await ctx.db.execute(sql`DELETE FROM ledger_entries`);
+      await ctx.db.execute(
+        sql`TRUNCATE ledger_entries, ib_accruals CASCADE` /* not DELETE: the ledger is append-only by trigger (§6.4). TRUNCATE resets a fixture table without firing row triggers, and no production path truncates. */,
+      );
       await ctx.db.execute(sql`DELETE FROM wallets`);
       await ctx.db.execute(sql`DELETE FROM users`);
       break;

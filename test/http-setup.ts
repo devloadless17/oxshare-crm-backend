@@ -61,6 +61,16 @@ export interface HttpTestContext {
 export interface HttpTestOptions {
   /** 'real' keeps the per-IP rate limiter in play. Default 'off' — see above. */
   throttling?: 'real' | 'off';
+  /**
+   * Providers to replace before `compile()`.
+   *
+   * For the routes that cross to a service we do not own — the MT5 bridge, the
+   * Rival rail. A spec asserting the SHAPE of our own response needs the real
+   * controller, service, DTO and interceptor to run; it does not need MT5 to be
+   * reachable. Stubbing the far end keeps such a route testable instead of
+   * skipped, and a skipped test reports as passing.
+   */
+  overrides?: { token: unknown; value: unknown }[];
 }
 
 export async function startHttpTestApp(options: HttpTestOptions = {}): Promise<HttpTestContext> {
@@ -81,6 +91,9 @@ export async function startHttpTestApp(options: HttpTestOptions = {}): Promise<H
           timeToBlockExpire: 0,
         }),
     });
+  }
+  for (const { token, value } of options.overrides ?? []) {
+    builder.overrideProvider(token).useValue(value);
   }
   const moduleRef = await builder.compile();
   // Same adapter as main.ts — the case-sensitive-routing setting is a security

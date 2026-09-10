@@ -21,7 +21,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "prepare": "husky",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage --reporter=default --reporter=json --outputFile.json=.vitest-result.json && node scripts/assert-suite-complete.mjs",
     "r2:verify": "node scripts/r2-verify.mjs",
     "r2:reconcile": "node scripts/r2-reconcile.mjs",
     "r2:e2e": "node scripts/r2-e2e.mjs",
@@ -57,8 +57,8 @@
     "express": "5.2.1",
     "helmet": "^8.3.0",
     "ioredis": "^5.4.2",
-    "multer": "^2.2.0",
-    "nodemailer": "^9.0.3",
+    "multer": "^2.3.0",
+    "nodemailer": "^9.1.1",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",
@@ -66,12 +66,13 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.3",
-    "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.52.0",
     "uuid": "^11.1.0",
+    "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.52.0",
     "zod": "^3.24.2"
   },
   "overrides": {
-    "js-yaml": "^5.2.3"
+    "js-yaml": "^5.2.3",
+    "multer": "^2.3.0"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",

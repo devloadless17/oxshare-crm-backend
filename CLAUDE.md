@@ -980,6 +980,24 @@ registry both ways. The live driver contract is `R2_LIVE_TEST=1 npx vitest run
 src/common/uploads/storage/storage-driver.spec.ts` — the same spec the fake and disk
 drivers run, which is what makes the fake trustworthy in CI.
 
+⚠️ **`docker compose down -v` INVALIDATES `r2:reconcile`'s premise, and the script
+will be right to scream.** Uploaded documents live in the R2 BUCKET; their registry
+rows live in `stored_objects`, which is in the volume. The bucket is not. So wiping
+the dev database leaves the registry empty and the bucket still holding every
+document any dev run ever uploaded — and `r2:reconcile`, which diffs both ways,
+reports every object as an orphan. That output is CORRECT and reads as a
+catastrophe.
+
+Two things follow. A zero in `stored_objects` after a reset is empty **by design,
+not by failure** — know which you are looking at before investigating. And those
+objects are now unreferenced forever and still billed: small at dev volumes, but it
+compounds across resets, so a reset has a storage cost rather than being free. If
+the bucket is ever to be pruned, the moment is immediately after a reset, when
+everything in it is orphaned by definition; later the decision stops being trivial
+because new uploads are interleaved with old orphans.
+
+The dev database was reset this way on 10 Sep 2026.
+
 ## Validation
 
 The global `ValidationPipe` (`whitelist`, `transform`) only validates where a **DTO class**

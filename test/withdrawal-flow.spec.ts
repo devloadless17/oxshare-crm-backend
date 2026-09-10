@@ -107,7 +107,9 @@ function request(userId: string, amount = '100') {
 beforeEach(async () => {
   await ctx.db.execute(sql`DELETE FROM transfers`);
   await ctx.db.execute(sql`DELETE FROM transactions`);
-  await ctx.db.execute(sql`DELETE FROM ledger_entries`);
+  await ctx.db.execute(
+    sql`TRUNCATE ledger_entries, ib_accruals CASCADE` /* not DELETE: the ledger is append-only by trigger (§6.4). TRUNCATE resets a fixture table without firing row triggers, and no production path truncates. */,
+  );
   await ctx.db.execute(sql`DELETE FROM wallets`);
   await ctx.db.execute(sql`UPDATE users SET referred_by_ib_user_id = NULL`);
   await ctx.db.execute(sql`DELETE FROM ib_accounts`);
