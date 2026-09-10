@@ -67,6 +67,20 @@ export class E2eFixturesController {
    * control: anyone who can reach a development API can already sign in with the
    * seeded master admin, whose password is in the repo.
    */
+  /*
+   * CALLERS MUST SEND AN ORIGIN. `CsrfGuard` validates Origin on every state
+   * change, session or not — deliberately, because the session-ESTABLISHING
+   * routes have no cookie yet and once had no origin check at all. `@NoCsrf`
+   * does NOT exempt that, by design, and this route does not ask it to.
+   *
+   * So globalSetup sends `Origin: <adminOrigin>` exactly as the browser would.
+   * A Node `fetch` sends none by default, and the resulting refusal reads as
+   * "failed anti-forgery validation" — a security finding rather than a missing
+   * header, which is worth knowing before debugging it as one.
+   *
+   * The anti-forgery TOKEN check needs a session, and this route has none, so
+   * no exemption is required beyond sending the header.
+   */
   @Post('review-pool')
   async resetReviewPool(): Promise<{ reset: number }> {
     return { reset: await reassertReviewPool(getDb()) };
