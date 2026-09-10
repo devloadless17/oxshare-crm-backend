@@ -42,12 +42,21 @@ export async function runSeeds(): Promise<void> {
   ]);
 
   /*
-   * There is no 'Master Admin' role any more, and no `isSystem` role at all.
+   * There is no 'Master Admin' role any more. `Administrator` below replaces it,
+   * and the difference is worth stating precisely, because the two look similar
+   * from a distance and failed in opposite directions.
    *
-   * It carried `['*']` and was hidden from the roles screen, which made "full
-   * access" a thing the console could neither show nor hand out. The
-   * `Administrator` role below replaces it: every key, listed explicitly, on an
-   * ordinary row somebody can read, rename, narrow and delete.
+   * `Master Admin` carried `['*']` and was HIDDEN from the roles screen and from
+   * every assignment control, which made "full access" a thing the console could
+   * neither show nor hand out. The wildcard also meant a permission added later
+   * was held retroactively by whoever carried it, with nobody having granted it.
+   *
+   * `Administrator` is a SYSTEM role — `isSystem: true` — but the flag now means
+   * only "the backend keeps this role level with `config/permissions.json`", and
+   * `permission-drift.ts` matches on it. It is listed, badged and assignable
+   * like any other role; what the API refuses is editing and deleting it. So
+   * full access is visible, grantable, and always complete, which is the whole
+   * of what `Master Admin` was reaching for and none of how it got there.
    */
 
   /*
@@ -86,18 +95,30 @@ export async function runSeeds(): Promise<void> {
          * `['*']` used to mean "everything", including every permission added
          * after the grant was made — so a key introduced later was held
          * retroactively by whoever carried it. Listing them means this role
-         * grants exactly what existed when it was seeded, and a new permission
-         * has to be ticked deliberately, like any other.
+         * grants exactly what existed when it was seeded.
          *
-         * An ORDINARY role: not `isSystem`, so it can be seen, assigned,
-         * renamed, narrowed and deleted like any role somebody creates. The one
-         * write the API refuses is the one that would leave nobody holding
-         * `roles.edit` or `admins.edit` — see assertNotLastManager.
+         * A SYSTEM role, and this is the flag `permission-drift.ts` matches on.
+         * It means one thing: the backend keeps this role's permissions level
+         * with `config/permissions.json` on every boot. So the explicit list
+         * above is a starting point rather than a ceiling — a key added to the
+         * catalog later lands here without a migration, which is what three
+         * hand-written backfills (0068, 0075, 0085) existed to do by hand.
+         *
+         * ⚠️ `isSystem` must be set HERE as well as in the migration that
+         * flipped the existing row. The migration repairs databases that already
+         * exist; this is the only thing a FRESH one runs, and without it a new
+         * install would seed an ordinary role that the top-up never finds —
+         * silently reintroducing the exact drift this closes.
+         *
+         * It is still visible and assignable in the console. What the API
+         * refuses is editing and deleting it, plus the write that would leave
+         * nobody holding `roles.edit` or `admins.edit` — see assertNotLastManager.
          */
         name: 'Administrator',
         description: 'Every permission in the catalog.',
         permissions: ALL_PERMISSIONS,
         maskedFields: [],
+        isSystem: true,
       },
       {
         name: 'Support Agent',

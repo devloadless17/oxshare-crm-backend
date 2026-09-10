@@ -81,9 +81,12 @@ describe('an Administrator role frozen at an older catalog', () => {
     // Guards the fixture itself: if `ledger.view` were ever removed from the
     // catalog, this file would otherwise assert nothing while still passing.
     expect(stale.length).toBe(CATALOG_KEYS.length - 1);
+    // `is_system` is what the boot check matches on now — it used to match the
+    // NAME. A fixture that omits the flag is a role the repair correctly ignores,
+    // which would make every case below pass by asserting nothing.
     await ctx.db.execute(sql`
-      INSERT INTO roles (name, description, permissions)
-      VALUES ('Administrator', 'frozen at an older catalog', ${JSON.stringify(stale)}::jsonb)
+      INSERT INTO roles (name, description, permissions, is_system)
+      VALUES ('Administrator', 'frozen at an older catalog', ${JSON.stringify(stale)}::jsonb, true)
     `);
   }
 
@@ -141,9 +144,9 @@ describe('an Administrator role frozen at an older catalog', () => {
     it('keeps a key the catalog does not define', async () => {
       const stale = CATALOG_KEYS.filter((key) => key !== STALE_KEY);
       await ctx.db.execute(sql`
-        INSERT INTO roles (name, description, permissions)
+        INSERT INTO roles (name, description, permissions, is_system)
         VALUES ('Administrator', 'hand-edited',
-                ${JSON.stringify([...stale, 'legacy.custom.key'])}::jsonb)
+                ${JSON.stringify([...stale, 'legacy.custom.key'])}::jsonb, true)
       `);
       const { logger } = capturingLogger();
 
@@ -170,8 +173,8 @@ describe('an Administrator role frozen at an older catalog', () => {
 
     it('says nothing when the role holds the whole catalog', async () => {
       await ctx.db.execute(sql`
-        INSERT INTO roles (name, description, permissions)
-        VALUES ('Administrator', 'current', ${JSON.stringify(CATALOG_KEYS)}::jsonb)
+        INSERT INTO roles (name, description, permissions, is_system)
+        VALUES ('Administrator', 'current', ${JSON.stringify(CATALOG_KEYS)}::jsonb, true)
       `);
       const { errors, warnings, logs, logger } = capturingLogger();
 
@@ -198,14 +201,16 @@ describe('an Administrator role frozen at an older catalog', () => {
       await ctx.db.execute(sql`DELETE FROM roles WHERE name LIKE 'Drift Bystander%'`);
       /*
        * THREE bystanders, and they exist because of how this test first failed
-       * to earn its place. With one, deleting the `WHERE name = 'Administrator'`
-       * filter from the query still left it passing: the read takes `limit(1)`,
-       * so a mutant that widens "whichever role comes back first" happened to
-       * pick Administrator anyway and the bystander was untouched by luck.
+       * to earn its place. With one, deleting the role filter from the query
+       * still left it passing: the read took `limit(1)`, so a mutant that
+       * widened "whichever role comes back first" happened to pick the top role
+       * anyway and the bystander was untouched by luck.
        *
        * Several rows plus a full before/after comparison removes the luck: any
-       * mutant that updates a role chosen by anything other than its NAME moves
-       * one of these, and the snapshot says which.
+       * mutant that updates a role chosen by anything other than `is_system`
+       * moves one of these, and the snapshot says which. The `limit(1)` is gone
+       * now — the repair loops over every system role — so dropping the filter
+       * would widen all three at once rather than one by chance.
        */
       for (const n of [1, 2, 3]) {
         await ctx.db.execute(sql`
@@ -223,15 +228,66 @@ describe('an Administrator role frozen at an older catalog', () => {
       await ctx.db.execute(sql`DELETE FROM roles WHERE name LIKE 'Drift Bystander%'`);
     });
 
-    it('says nothing when there is no Administrator role at all', async () => {
+    it('says nothing when there is no system role at all', async () => {
       const { errors, warnings, logger } = capturingLogger();
 
       await reportPermissionDrift(logger);
 
-      // A fresh database, or a deployment whose full-access role is named
-      // something else. Neither is drift.
+      // A fresh database whose seed is about to create one. Not drift.
       expect(errors).toEqual([]);
       expect(warnings).toEqual([]);
+    });
+
+    /*
+     * ⚠️ THE FLAG IS THE RULE — the pair below is the whole of this change, and
+     * each half fails differently if it regresses.
+     *
+     * The repair used to match `WHERE name = 'Administrator'`, a magic string
+     * against a row that said `is_system = false`. So the role was special in
+     * fact and ordinary in the data: renaming it in the console silently stopped
+     * the top-up, and the reasoning had to live in a comment because the schema
+     * did not record it.
+     */
+    it('IGNORES a role named Administrator that is not flagged', async () => {
+      // The exact row the old implementation would have widened. An operator who
+      // creates a narrow role and happens to call it this must not be handed
+      // every permission in the catalog by a name collision.
+      const stale = CATALOG_KEYS.filter((key) => key !== STALE_KEY);
+      await ctx.db.execute(sql`
+        INSERT INTO roles (name, description, permissions, is_system)
+        VALUES ('Administrator', 'ordinary despite the name',
+                ${JSON.stringify(stale)}::jsonb, false)
+      `);
+      const { logs, logger } = capturingLogger();
+
+      await reportPermissionDrift(logger);
+
+      expect(await heldKeys()).not.toContain(STALE_KEY);
+      expect(logs).toEqual([]);
+    });
+
+    it('REPAIRS a system role whatever it is called', async () => {
+      // The other half: the rule follows the flag, so renaming the top role can
+      // no longer switch the top-up off without anyone noticing.
+      await ctx.db.execute(sql`DELETE FROM roles WHERE name = 'Renamed Top Role'`);
+      const stale = CATALOG_KEYS.filter((key) => key !== STALE_KEY);
+      await ctx.db.execute(sql`
+        INSERT INTO roles (name, description, permissions, is_system)
+        VALUES ('Renamed Top Role', 'still the catalog''s',
+                ${JSON.stringify(stale)}::jsonb, true)
+      `);
+      const { logs, logger } = capturingLogger();
+
+      await reportPermissionDrift(logger);
+
+      const held = await ctx.db.execute<{ permissions: string[] }>(
+        sql`SELECT permissions FROM roles WHERE name = 'Renamed Top Role'`,
+      );
+      expect(held.rows[0]?.permissions).toContain(STALE_KEY);
+      // Named in the log, and named by ITS name rather than a hardcoded one.
+      expect(logs[0]).toContain('Renamed Top Role');
+
+      await ctx.db.execute(sql`DELETE FROM roles WHERE name = 'Renamed Top Role'`);
     });
   });
 

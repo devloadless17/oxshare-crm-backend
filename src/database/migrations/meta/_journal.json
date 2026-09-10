@@ -834,6 +834,13 @@
       "when": 1787101222030,
       "tag": "0118_adopt_orphaned_sub_partners",
       "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1787101222031,
+      "tag": "0119_administrator_is_a_system_role",
+      "breakpoints": true
     }
   ]
 }

@@ -43,10 +43,18 @@ import { roles } from './schema';
  * that justified stopping does not exist. A key the catalog defines belongs to
  * this role by definition of what the role is.
  *
- * That is a DECISION and it is recorded here because the code cannot derive it:
- * the row is `is_system = false`, and `seed.ts` still describes it as something
- * somebody "can read, rename, narrow and delete". It stays narrowable in the
- * mechanical sense and is no longer narrowable in the intended one.
+ * That decision USED to live only in this comment, because the code could not
+ * derive it: the match was `WHERE name = 'Administrator'` — a magic string —
+ * against a row that said `is_system = false`. The role was special in fact and
+ * ordinary in the data, so renaming it in the console silently stopped the
+ * top-up, and nothing in the schema said which role the rule was about.
+ *
+ * `is_system` now carries it. The flag means "the backend maintains this role's
+ * permissions against the catalog", the match is on the flag, and the magic
+ * string is gone. That also makes the row safe to SHOW and ASSIGN in the
+ * console — the admin UI used to hide and refuse to assign system roles, which
+ * is what made `Master Admin` unhandoutable and got it deleted. Editing and
+ * deleting are still refused; holding it was never the thing in question.
  *
  * The repair is deliberately narrow on three axes:
  *
@@ -85,16 +93,56 @@ import { roles } from './schema';
 export async function reportPermissionDrift(logger = new Logger('PermissionDrift')): Promise<void> {
   try {
     const db = getDb();
-    const [role] = await db
-      .select({ id: roles.id, permissions: roles.permissions })
+
+    /*
+     * Matched on `is_system`, NOT on the name.
+     *
+     * This used to read `WHERE name = 'Administrator'` — a magic string, against
+     * a row that said `is_system = false`. The role was therefore special in
+     * fact and ordinary in the data, and the note at the top of this file had to
+     * say so in prose "because the code cannot derive it". Two things followed:
+     * renaming the role in the console silently stopped the auto-update, and
+     * nothing in the schema recorded which role this rule was about.
+     *
+     * The flag now MEANS this rule. `is_system = true` reads as "the backend
+     * maintains this role's permissions against the catalog" — which is what an
+     * operator already assumes when they see the badge, and what makes the row
+     * safe to show and assign in the console rather than hide.
+     *
+     * Plural because the schema allows it. Nothing stops a second system role
+     * existing, and one that quietly missed the top-up would be the same silent
+     * gap this whole module exists to close.
+     */
+    const systemRoles = await db
+      .select({ id: roles.id, name: roles.name, permissions: roles.permissions })
       .from(roles)
-      .where(eq(roles.name, 'Administrator'))
-      .limit(1);
+      .where(eq(roles.isSystem, true));
 
-    // No row: a fresh database, or a deployment that names its full-access role
-    // something else. Neither is drift, and neither is this function's business.
-    if (!role) return;
+    // No rows: a fresh database whose seed is about to create one holding the
+    // whole catalog, or a deployment that runs without a system role at all.
+    // Neither is drift, and neither is this function's business.
+    if (systemRoles.length === 0) return;
 
+    for (const role of systemRoles) {
+      await grantCatalogTo(db, role, logger);
+    }
+  } catch (error) {
+    // Reporting must never be the reason the process does not start.
+    logger.warn(
+      `Could not check the system roles against the permission catalog: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/** Brings ONE system role up to the catalog. Adds only; never removes. */
+async function grantCatalogTo(
+  db: ReturnType<typeof getDb>,
+  role: { id: string; name: string; permissions: string[] | null },
+  logger: Logger,
+): Promise<void> {
+  {
     const held = role.permissions ?? [];
     const heldSet = new Set(held);
     const missing = CATALOG_KEYS.filter((key) => !heldSet.has(key)).sort();
@@ -120,18 +168,11 @@ export async function reportPermissionDrift(logger = new Logger('PermissionDrift
      * is a decision that needs an author and the author is this rule.
      */
     logger.log(
-      `Granted the "Administrator" role ${missing.length} permission ` +
+      `Granted the "${role.name}" role ${missing.length} permission ` +
         `${missing.length === 1 ? 'key' : 'keys'} that config/permissions.json defines and the ` +
         `role lacked: ${missing.join(', ')}. ` +
-        'It is the top-level role in the system, so the catalog is its definition — see the ' +
-        'note at the top of database/permission-drift.ts. Other roles are never touched.',
-    );
-  } catch (error) {
-    // Reporting must never be the reason the process does not start.
-    logger.warn(
-      `Could not check the Administrator role against the permission catalog: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+        'It is a SYSTEM role, so the catalog is its definition — see the note at the top of ' +
+        'database/permission-drift.ts. Roles that are not system roles are never touched.',
     );
   }
 }
