@@ -1909,7 +1909,7 @@
     },
     "/v1/ib/agencies": {
       "get": {
-        "description": "What an applicant chooses between, with the products each one carries spelled out by name. Disabled agencies are ABSENT rather than greyed out: nobody here can answer \"when does it reopen\", and offering a choice that will be refused is a poor way to learn it is closed.\n\nAn empty list means no programme is configured yet. The portal should let the client apply anyway — an agency is optional on the application, so a deployment that has not set them up still takes partners.",
+        "description": "What an applicant chooses between, with the products each one carries spelled out by name. Disabled agencies are ABSENT rather than greyed out: nobody here can answer \"when does it reopen\", and offering a choice that will be refused is a poor way to learn it is closed.\n\nAn empty list means no programme is open, and there is nothing to apply for — the portal says so instead of offering a button that can only be refused. An applicant introduced by a partner never consults this list at all: their programme is inherited, not chosen.",
         "operationId": "IbController_openAgencies",
         "parameters": [],
         "responses": {
@@ -2009,7 +2009,7 @@
     },
     "/v1/ib/apply": {
       "post": {
-        "description": "Requires a verified identity (KYC level 1). Refuses a second application while one is still awaiting review, and refuses outright if the client is already a partner. `agencyId` names the programme applied for and must be one GET /ib/agencies returned.",
+        "description": "Requires a verified identity (KYC level 1). Refuses a second application while one is still awaiting review, and refuses outright if the client is already a partner. `agencyId` names the programme applied for and must be one GET /ib/agencies returned — OMITTED by an applicant introduced by a partner, whose programme is inherited from the introducer and cannot be chosen.",
         "operationId": "IbController_apply",
         "parameters": [],
         "requestBody": {
@@ -4132,8 +4132,15 @@
           }
         },
         "responses": {
-          "201": {
-            "description": ""
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedMt5AccountDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -11600,7 +11607,7 @@
           "agencyId": {
             "type": "string",
             "format": "uuid",
-            "description": "Which agency the applicant wants to be appointed under. Required — it decides what they may sell, and there is no \"any\" option."
+            "description": "Which agency the applicant wants to be appointed under. Required for an applicant who chooses; omitted when they were introduced by a partner — the programme is inherited from the introducer and anything sent here is ignored."
           },
           "motivation": {
             "type": "string",
@@ -11611,10 +11618,7 @@
             "type": "string",
             "maxLength": 2048
           }
-        },
-        "required": [
-          "agencyId"
-        ]
+        }
       },
       "ApproveIbApplicationDto": {
         "type": "object",
@@ -11622,7 +11626,7 @@
           "parentIbUserId": {
             "type": "string",
             "nullable": true,
-            "description": "The partner who introduced them. Omitted or null means they deal direct."
+            "description": "The parent to nest the new partner under. OMITTED means \"the reviewer did not say\" — the introducer recorded at registration becomes the parent, which is the ordinary case. An explicit NULL roots them: they deal with the broker directly at level 1, whoever introduced them."
           },
           "agencyId": {
             "type": "string",
@@ -13477,6 +13481,50 @@
           "environment"
         ]
       },
+      "CreatedMt5AccountDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "login": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "leverage": {
+            "type": "number"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ]
+          },
+          "credentialsSentTo": {
+            "type": "string"
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "login",
+          "group",
+          "currency",
+          "leverage",
+          "environment"
+        ]
+      },
       "Mt5BalanceDto": {
         "type": "object",
         "properties": {
@@ -14900,6 +14948,10 @@
             ],
             "description": "The verification TIER the account has reached (0 or 1), which gates what the client may do. Not a synonym for `kycStatus`: a rejected submission leaves the level at 0, and the reason lives in the status."
           },
+          "phone": {
+            "type": "string",
+            "nullable": true
+          },
           "country": {
             "type": "string"
           },
@@ -15639,6 +15691,14 @@
             "items": {
               "type": "string"
             }
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
           }
         },
         "required": [
