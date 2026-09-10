@@ -3,8 +3,10 @@ import { PasswordService } from '../common/security/password.service';
 import {
   adminClientTagScopes,
   admins,
+  agencies,
   clientTagAssignments,
   clientTags,
+  ibAccounts,
   kycConfigSteps,
   kycSubmissions,
   rejectionReasons,
@@ -446,6 +448,139 @@ export async function runSeeds(): Promise<void> {
         addressProof: { docType: 'utility_bill' },
       })
       .onConflictDoNothing({ target: kycSubmissions.userId });
+  }
+
+  /*
+   * ── Partner-programme fixtures, for the portal e2e suite ──────────────────
+   *
+   * A two-rung chain the suite can stand clients under without driving a
+   * partner application through approval on every run:
+   *
+   *   e2e-partner-l1@  level 1, root — code E2EPARTL1. Carries the agency, so
+   *                    an applicant introduced by them INHERITS it and the
+   *                    apply panel's "selected for you" card renders.
+   *   e2e-partner-l2@  level 2 under l1 — code E2EPARTL2. The deepest enabled
+   *                    rung on the committed ladder, so a client registered
+   *                    under THIS code is chain_full and must be locked out of
+   *                    the programme everywhere the portal offers it.
+   *   e2e-partner-applicant@  verified + KYC 1, introduced by l1, no
+   *                    application — drives the inherited-agency apply flow.
+   *                    The spec keeps it repeatable by having the admin REJECT
+   *                    what it submits (rejected → "Apply again" is a loop;
+   *                    approval is deliberately irreversible and would make
+   *                    run two a different world).
+   *   e2e-partner-fresh@      same shape — the one identity the spec DOES
+   *                    approve, once, to prove approval nests a recruited
+   *                    partner beneath their introducer; later runs assert the
+   *                    standing outcome instead.
+   *
+   * The ACCOUNTS are seeded rather than approved into existence because there
+   * is deliberately no demote operation — a fixture that becomes a partner on
+   * run one is a different world on run two. The live approve path is what
+   * `e2e-partner-fresh@` exists for.
+   */
+  await db
+    .insert(agencies)
+    .values({ name: 'E2E Agency', enabled: true })
+    .onConflictDoNothing({ target: agencies.name });
+  // Re-asserted enabled every boot, like `e2e-suspend@`'s active flag: a
+  // crashed run (or a curious operator) must not leave the fixture closed and
+  // every later apply refusing "not open for applications".
+  await db.update(agencies).set({ enabled: true }).where(eq(agencies.name, 'E2E Agency'));
+  const [e2eAgency] = await db
+    .select({ id: agencies.id })
+    .from(agencies)
+    .where(eq(agencies.name, 'E2E Agency'))
+    .limit(1);
+
+  const partnerFixtures = [
+    {
+      email: 'e2e-partner-l1@oxshare.com',
+      firstName: 'Petra',
+      lastName: 'Upline',
+      phone: '+971500000005',
+    },
+    {
+      email: 'e2e-partner-l2@oxshare.com',
+      firstName: 'Selim',
+      lastName: 'Downline',
+      phone: '+971500000006',
+    },
+    {
+      email: 'e2e-partner-applicant@oxshare.com',
+      firstName: 'Aida',
+      lastName: 'Applicant',
+      phone: '+971500000007',
+    },
+    {
+      email: 'e2e-partner-fresh@oxshare.com',
+      firstName: 'Nadim',
+      lastName: 'Nested',
+      phone: '+971500000008',
+    },
+  ] as const;
+  for (const fixture of partnerFixtures) {
+    await db
+      .insert(users)
+      .values({
+        ...fixture,
+        passwordHash: clientHash,
+        type: 'individual',
+        status: 'active',
+        emailVerified: true,
+        verificationLevel: 1,
+        country: 'United Arab Emirates',
+      })
+      .onConflictDoNothing({ target: users.email });
+  }
+  const fixtureRows = await db
+    .select({ id: users.id, email: users.email })
+    .from(users)
+    .where(
+      inArray(
+        users.email,
+        partnerFixtures.map((f) => f.email),
+      ),
+    );
+  const fixtureId = (email: string) => fixtureRows.find((r) => r.email === email)?.id;
+  const partnerL1 = fixtureId('e2e-partner-l1@oxshare.com');
+  const partnerL2 = fixtureId('e2e-partner-l2@oxshare.com');
+
+  if (partnerL1 && partnerL2 && e2eAgency) {
+    await db
+      .insert(ibAccounts)
+      .values({
+        userId: partnerL1,
+        level: 1,
+        referralCode: 'E2EPARTL1',
+        agencyId: e2eAgency.id,
+        active: true,
+      })
+      .onConflictDoNothing({ target: ibAccounts.userId });
+    await db
+      .insert(ibAccounts)
+      .values({
+        userId: partnerL2,
+        level: 2,
+        parentIbUserId: partnerL1,
+        referralCode: 'E2EPARTL2',
+        agencyId: e2eAgency.id,
+        active: true,
+      })
+      .onConflictDoNothing({ target: ibAccounts.userId });
+    /*
+     * Attribution AFTER the l1 account exists (the column's FK points at
+     * ib_accounts), and re-asserted every boot so rows inserted by an older
+     * seed pick it up. The applicant and fresh identities sit under L1 — one
+     * rung of room — while l2's own introducer is l1, matching the account.
+     */
+    const introduced = fixtureRows
+      .filter((r) => r.email !== 'e2e-partner-l1@oxshare.com')
+      .map((r) => r.id);
+    await db
+      .update(users)
+      .set({ referredByIbUserId: partnerL1 })
+      .where(inArray(users.id, introduced));
   }
 
   const kycReasons = [
