@@ -60,6 +60,38 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
     blockDuration: number,
     throttlerName: string,
   ): Promise<ThrottlerStorageRecord> {
+    /*
+     * RELAX_RATE_LIMITS — the COUNTER goes permissive, the GUARD stays wired.
+     *
+     * Set only by the end-to-end CI jobs; `env.validation.ts` REFUSES to boot
+     * with it in production, because these limits ARE the §8.4 control on
+     * credential stuffing and token guessing.
+     *
+     * Done HERE rather than on the ThrottlerModule's limit, and that distinction
+     * is the whole reason this works: routes that matter carry their own
+     * `@Throttle({ default: { ttl, limit } })` — register is 10/hour, login
+     * 5/min — and a per-route override REPLACES the module's figure. Raising the
+     * module default would have relaxed nothing a browser suite actually meets.
+     * The storage is consulted on every route whatever its limit says.
+     *
+     * WHY AT ALL: the browser suites met the real caps and waited them out, at
+     * ~5.4 minutes of sleeping in a 20-minute CI job — and produced the largest
+     * class of flakes this project has. In one day a rate limit was reported as
+     * "the NEW password does not sign in", as "accept answered 429", as a
+     * navigation timeout, and as a screen missing the words "already verified".
+     * One defect wearing four costumes.
+     *
+     * WHAT IT COSTS: an E2E run no longer exercises the real limits. That is
+     * acceptable only because `credential-route-throttling`,
+     * `bridge-webhook-throttling` and `redis-throttler-storage` do, and because
+     * no E2E spec asserts 429 behaviour — checked before this was added, not
+     * assumed.
+     *
+     * `permit()` is reused deliberately: this is the SAME record the fail-open
+     * path returns, so there is one definition of "allowed" in this file.
+     */
+    if (process.env['RELAX_RATE_LIMITS']) return this.permit(ttl);
+
     if (!this.redis) return this.permit(ttl);
 
     const hitKey = `throttle:${throttlerName}:${key}`;
