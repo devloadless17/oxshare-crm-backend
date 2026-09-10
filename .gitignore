@@ -78,3 +78,4 @@ Thumbs.db
 # Claude Code: the shared harness (.claude/settings.json + hooks) IS committed,
 # so the same gates run on every machine. Personal overrides are not.
 .claude/settings.local.json
+.vitest-result.json

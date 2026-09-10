@@ -21,7 +21,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "prepare": "husky",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage --reporter=default --reporter=json --outputFile.json=.vitest-result.json && node scripts/assert-suite-complete.mjs",
     "r2:verify": "node scripts/r2-verify.mjs",
     "r2:reconcile": "node scripts/r2-reconcile.mjs",
     "r2:e2e": "node scripts/r2-e2e.mjs",
