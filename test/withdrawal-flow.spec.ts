@@ -553,3 +553,79 @@ describe('a ZERO amount is refused at the door, not by the ledger', () => {
     await expect(request(userId, '0.00000001')).rejects.not.toThrow(/must be positive/i);
   });
 });
+
+describe('two operators at the same withdrawal, at the same moment', () => {
+  /**
+   * CLASS 6 — the two-operator race, on the money path where it costs most.
+   *
+   * There is already a SEQUENTIAL double-approve case above, and it is not the
+   * same test. A sequential second call fails against a check-then-act
+   * implementation too, because the first call has finished writing by the time
+   * the second reads. **It is the CONCURRENT pair that distinguishes a
+   * conditional `UPDATE ... WHERE state = 'pending'` from a read-then-write**,
+   * and nothing in this repo drove one at the desk.
+   *
+   * The guard was correct — `transition()` is a single conditional UPDATE with a
+   * rowcount check, exactly what ARCHITECTURE §6 rule 3 requires. It was simply
+   * never attempted, which is the same shape as the append-only ledger that was
+   * silently unprotected for a month while a test named for it passed.
+   *
+   * What a failure here would mean in the product: two reviewers click Approve
+   * within the same instant and the client is PAID TWICE, or the ledger records
+   * one payout and the rail is asked for two.
+   */
+  it('pays exactly ONCE — one approval wins and the other is refused', async () => {
+    const userId = await makeFundedClient('race-approve@oxshare.test', '1000');
+    const row = await request(userId, '100');
+    const balanceAfterRequest = await balanceOf(userId);
+    const ledgerAfterRequest = await ledgerCount(userId);
+
+    const results = await Promise.allSettled([
+      transactions.approve(row.id, ADMIN, BY_PAYOUT_RAIL),
+      transactions.approve(row.id, ADMIN, BY_PAYOUT_RAIL),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+
+    expect(fulfilled, 'exactly one approval must win').toHaveLength(1);
+    expect(rejected, 'the loser must be REFUSED, not silently ignored').toHaveLength(1);
+
+    /*
+     * And the refusal must name the state rather than being any error at all —
+     * a deadlock or a constraint violation would also produce one rejection,
+     * and would not mean the guard worked.
+     */
+    const reason = (rejected[0]).reason as Error;
+    expect(reason.message).toMatch(/pending/i);
+
+    /*
+     * The money, which is the actual claim. Approving via the rail moves the
+     * transaction on without a second debit — the funds were already held at
+     * request time — so what must be true is that the SECOND approval added
+     * nothing: no extra ledger row, and the balance where one approval leaves it.
+     */
+    expect(await ledgerCount(userId), 'a refused approval must write no ledger row').toBe(
+      ledgerAfterRequest,
+    );
+    expect(await balanceOf(userId)).toBe(balanceAfterRequest);
+  });
+
+  it('an approve and a reject racing each other also settle to ONE outcome', async () => {
+    /*
+     * The nastier pair: two DIFFERENT transitions from the same state. If both
+     * landed, the row would be approved and rejected at once — and the reject
+     * path refunds, so the client would keep the money AND be paid.
+     */
+    const userId = await makeFundedClient('race-mixed@oxshare.test', '1000');
+    const row = await request(userId, '100');
+
+    const results = await Promise.allSettled([
+      transactions.approve(row.id, ADMIN, BY_PAYOUT_RAIL),
+      transactions.reject(row.id, ADMIN, 'Suspected fraud'),
+    ]);
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+  });
+});
