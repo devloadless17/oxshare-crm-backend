@@ -4,6 +4,11 @@ import { sql } from 'drizzle-orm';
 import { TransfersService } from '../src/modules/payments/transfers.service';
 import { TransferExecutor } from '../src/modules/payments/transfer-executor.service';
 import type { Mt5BridgeClient } from '../src/modules/trading/mt5/mt5-bridge.client';
+import {
+  ExternalServiceError,
+  PaymentIndeterminateError,
+  ValidationError as DomainValidationError,
+} from '../src/common/errors/domain-errors';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { auditStubAs } from './audit-stub';
@@ -704,5 +709,109 @@ describe('the resume precondition: one transfer, one idempotency key', () => {
     // And the consequence, stated in money rather than in keys: the bridge
     // recognised the second call as the same movement, so MT5 moved once.
     expect(movesMade(), 'MT5 was asked to move money more than once').toBe(1);
+  });
+});
+
+/**
+ * WHEN MT5 DOES NOT ANSWER, WHO DECIDES WHETHER THE CLIENT KEEPS THEIR HOLD.
+ *
+ * `TransferExecutor` splits every bridge failure two ways, and the split moves
+ * money: an INDETERMINATE outcome leaves the transfer pending with the hold
+ * intact, while a DEFINITE REFUSAL fails it and returns the funds. Its own note
+ * states the stake — *"a hold released against money that moved is a client
+ * holding the same funds twice, and nothing in the system will notice."*
+ *
+ * That decision was made by a REGEX OVER THE ERROR MESSAGE
+ * (`/\b400\b|validation|invalid|malformed/i`), and it had no test. Measured
+ * against the strings this system actually produces, it was wrong BOTH ways:
+ *
+ *   "MT5 bridge unreachable …: Invalid response body"  -> matched /invalid/
+ *      -> FAILED the transfer and RELEASED the hold, on an outcome that is by
+ *         definition unknown. The catastrophic direction.
+ *   our own ValidationError, raised BEFORE the request left this process
+ *      -> matched nothing -> held pending for ever, and since 0123 retried
+ *         hourly for ever. The one case that is provably safe to fail.
+ *
+ * `Mt5BridgeClient` already throws `PaymentIndeterminateError` for a timeout —
+ * a precise, typed statement that the outcome is unknown — and the classifier
+ * threw the type away to guess from its prose.
+ */
+describe('an unanswered MT5 call: who keeps the hold', () => {
+  function bridgeThrowing(error: Error) {
+    return {
+      isConfigured: true,
+      getAccount: () => Promise.resolve({ balance: '0.00000000' }),
+      balance: () => Promise.reject(error),
+    } as unknown as Mt5BridgeClient;
+  }
+
+  async function attempt(error: Error, email: string) {
+    const userId = await makeClient(email);
+    const accountId = await makeAccount(userId);
+    await ctx.db.execute(sql`UPDATE trading_accounts SET login = 5000002 WHERE id = ${accountId}`);
+    const transfer = await transfers.request({
+      userId,
+      tradingAccountId: accountId,
+      direction: 'wallet_to_account',
+      amount: '250',
+      currency: 'USD',
+    });
+    await new TransferExecutor(ctx.db, transfers, bridgeThrowing(error)).execute(transfer.id);
+    const after = await transfers.findById(transfer.id);
+    return { state: after.state, wallet: await walletOf(userId) };
+  }
+
+  it('HOLDS when the bridge says the outcome is unknown', async () => {
+    const { state, wallet } = await attempt(
+      new PaymentIndeterminateError('MT5 bridge timed out after 5000ms on POST /balance.'),
+      'indeterminate@test.local',
+    );
+    expect(state).toBe('pending');
+    // The money stays reserved. Releasing it here is the double-spend.
+    expect(wallet.onHold).toBe('250.00000000');
+    expect(wallet.balance).toBe('1000.00000000');
+  });
+
+  it('HOLDS when the bridge was unreachable and the text happens to say "Invalid"', async () => {
+    /*
+     * THE CASE THE REGEX GOT BACKWARDS. "Invalid response body" is undici
+     * failing to read an answer — which means we do not know whether MT5 acted,
+     * not that it refused. Under the defect this released the hold.
+     */
+    const { state, wallet } = await attempt(
+      new ExternalServiceError('MT5 bridge unreachable for POST /balance: Invalid response body'),
+      'unreadable@test.local',
+    );
+    expect(state, 'a transfer was FAILED on an outcome nobody knows').toBe('pending');
+    expect(wallet.onHold, 'the hold was released against money MT5 may have moved').toBe(
+      '250.00000000',
+    );
+  });
+
+  it('FAILS on our own pre-flight refusal, where MT5 was never called', async () => {
+    /*
+     * The other direction. This one IS safe to fail — and was the one being
+     * held for ever, because the word "validation" is in the class NAME and not
+     * in the message the regex read.
+     */
+    const { state, wallet } = await attempt(
+      new DomainValidationError('An MT5 balance operation requires an idempotency key.'),
+      'preflight@test.local',
+    );
+    expect(state, 'a provably-unsent request was left pending for ever').toBe('failed');
+    // Returned in full: nothing moved, so nothing is reserved.
+    expect(wallet.onHold).toBe('0.00000000');
+    expect(wallet.balance).toBe('1000.00000000');
+  });
+
+  it('still FAILS on a genuine bridge 400', async () => {
+    // The regex path that was always right, kept as the fallback and pinned so
+    // narrowing the classifier to types alone cannot silently drop it.
+    const { state, wallet } = await attempt(
+      new ExternalServiceError('MT5 bridge returned 400 for POST /balance'),
+      'four-hundred@test.local',
+    );
+    expect(state).toBe('failed');
+    expect(wallet.onHold).toBe('0.00000000');
   });
 });

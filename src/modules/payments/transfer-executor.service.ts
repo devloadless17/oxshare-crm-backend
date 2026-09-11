@@ -5,7 +5,7 @@ import type { Db } from '../../database/db';
 import { tradingAccounts } from '../../database/schema';
 import { TransfersService } from './transfers.service';
 import { Mt5BridgeClient } from '../trading/mt5/mt5-bridge.client';
-import { ValidationError } from '../../common/errors/domain-errors';
+import { PaymentIndeterminateError, ValidationError } from '../../common/errors/domain-errors';
 
 /**
  * Carries a pending transfer across to MT5, then settles or fails it.
@@ -130,7 +130,7 @@ export class TransferExecutor {
        * moving money again.
        */
       const message = error instanceof Error ? error.message : String(error);
-      if (isIndeterminate(message)) {
+      if (isIndeterminate(error, message)) {
         this.logger.error(
           `Transfer ${transferId} is INDETERMINATE on MT5 (${message}). Left pending — retry ` +
             'is safe, the idempotency key is the transfer id',
@@ -213,7 +213,36 @@ export class TransferExecutor {
  * operator can finish; a hold released against money that moved is a client
  * holding the same funds twice, and nothing in the system will notice.
  */
-function isIndeterminate(message: string): boolean {
+function isIndeterminate(error: unknown, message: string): boolean {
+  /*
+   * ⚠️ THE TYPE FIRST. This used to read the MESSAGE only, and it was wrong in
+   * BOTH directions — measured against the strings this system actually
+   * produces, not reasoned about:
+   *
+   *   ExternalServiceError wrapping undici's "Invalid response body"
+   *     -> matched /invalid/ -> DEFINITE REFUSAL -> transfer FAILED, hold
+   *        RELEASED. But the bridge was unreachable or its answer unreadable,
+   *        which is the definition of not knowing: MT5 may well have posted the
+   *        deal. That is the client holding the same funds twice, which the
+   *        note below calls the thing nothing in the system will notice.
+   *
+   *   our own ValidationError ("An MT5 balance operation requires an
+   *   idempotency key")
+   *     -> matched nothing -> INDETERMINATE -> left pending for ever, now
+   *        retried hourly by the 0123 backoff. MT5 was provably never called:
+   *        this is the one case that is safe to fail, and it was the one being
+   *        held.
+   *
+   * The regex was trying to recover a fact the system already states precisely.
+   * `Mt5BridgeClient` throws `PaymentIndeterminateError` on a timeout, with a
+   * message that says the outcome is UNKNOWN — and this function threw that
+   * type away and re-derived a worse answer from its prose. A classifier that
+   * reads an error's TEXT when its TYPE is in scope is guessing at something it
+   * was told.
+   */
+  if (error instanceof PaymentIndeterminateError) return true;
+  // Ours, raised before the request left this process — MT5 cannot have acted.
+  if (error instanceof ValidationError) return false;
   return !isDefiniteRefusal(message);
 }
 
@@ -230,5 +259,28 @@ function isIndeterminate(message: string): boolean {
  * it needs the same evidence: that MT5 cannot have moved the money.
  */
 function isDefiniteRefusal(message: string): boolean {
-  return /\b400\b|validation|invalid|malformed/i.test(message);
+  /*
+   * A STATUS, NOT VOCABULARY. This was
+   * `/\b400\b|validation|invalid|malformed/i`, and the three words were an
+   * attempt to recognise the same thing the 400 already states — the bridge
+   * rejecting a request before it called MT5.
+   *
+   * They over-matched, and on this path over-matching RELEASES A CLIENT'S HOLD.
+   * undici reports an unreadable answer as "Invalid response body", which the
+   * executor wraps as `ExternalServiceError('MT5 bridge unreachable …')`: the
+   * bridge could not be reached or could not be read, so whether MT5 posted the
+   * deal is precisely what we do not know. `/invalid/` classified that as
+   * proof it had refused.
+   *
+   * The words also did not do the job they were added for: our own
+   * `ValidationError` carries the word "validation" in its CLASS NAME and not
+   * in its message, so the case they were meant to catch was never caught by
+   * them. It is handled by type above, where it can be stated exactly.
+   *
+   * What remains is the one signal that means what it says. Adding anything
+   * back here is a decision to release a client's hold on the strength of it,
+   * and it needs the same evidence the note above demands: that MT5 cannot have
+   * moved the money.
+   */
+  return /\b400\b/.test(message);
 }
