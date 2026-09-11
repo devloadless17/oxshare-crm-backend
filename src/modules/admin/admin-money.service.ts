@@ -876,7 +876,33 @@ export class AdminMoneyService {
       cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
     });
   }
-  // ─── The Financial page: every money movement, platform-wide ──────────────
+  /*
+   * ─── The Financial page: every money movement THE CRM RECORDS ─────────────
+   *
+   * ⚠️ This said "every money movement, platform-wide" and that was FALSE, in a
+   * way that matters on the one screen an operator reconciles from.
+   *
+   * It reads `transactions`, which is the CRM's own record. A DEALER
+   * ADJUSTMENT — `POST /admin/trading-accounts/:id/balance`, the "Adjust
+   * balance" dialog on the trading-accounts screen — deliberately writes no
+   * row there: it moves money on MT5 with no wallet leg and no ledger entry,
+   * which is the right shape for a correction or a bonus and is exactly why it
+   * must NOT be forced into this table. A `transactions` row with no ledger
+   * entry behind it would not break the `sum(ledger) == balance` invariant;
+   * it would make that invariant MEANINGLESS, which is worse.
+   *
+   * So the movement is real, it is audited (`trading.deposit` / `trading.with-
+   * draw`, direction-aware), and it is absent here by design. What was wrong
+   * was this sentence claiming otherwise — an operator reading "every money
+   * movement, platform-wide" has no reason to look anywhere else.
+   *
+   * Where those movements ARE visible: `/audit-log` for the operator act, and
+   * `GET /trading/balance-movements` for the client's own view of the same
+   * thing, which exists because the money moved on their account and the CRM
+   * had no client-facing record of it at all.
+   *
+   * Found by the owner, by hand, on the client's transactions page.
+   */
 
   async listTransactions(
     /*

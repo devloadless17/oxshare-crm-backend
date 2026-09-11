@@ -472,3 +472,76 @@ export class AccountWatchDto {
   })
   ttlSeconds!: number | null;
 }
+
+/**
+ * One movement of money on an MT5 account with no position behind it.
+ *
+ * Deposits, withdrawals, credits, corrections, bonuses — the set `deal-codes.ts`
+ * describes as "money moving on the account with no position behind it", and
+ * which it already said the client should be able to see, because a dealer can
+ * move an MT5 balance directly and the CRM has no record of it anywhere else.
+ */
+export class BalanceMovementDto {
+  @ApiProperty({ description: "MT5's own deal ticket, quotable to support." })
+  ticket: string;
+
+  @ApiProperty({ format: 'uuid', description: 'The trading account it happened on.' })
+  accountId: string;
+
+  @ApiProperty({ description: 'The MT5 login, as it appears in MetaTrader.' })
+  login: string;
+
+  @ApiProperty({ description: "MT5's numeric action code." })
+  action: number;
+
+  @ApiProperty({
+    description:
+      'A readable name for the action. An unknown code renders as `action <n>` ' +
+      'rather than as a guess, so a client can quote it.',
+  })
+  actionLabel: string;
+
+  @ApiProperty({
+    type: 'string',
+    example: '-250.00000000',
+    description:
+      'The amount, SIGNED — negative is money leaving the account. A string, like every ' +
+      'other amount on this surface (§6.1): it is never a JS number.',
+  })
+  amount: string;
+
+  @ApiProperty({
+    nullable: true,
+    description: "The dealer's reason, shown in the MT5 deal comment. Null when none was given.",
+  })
+  comment: string | null;
+
+  @ApiProperty({ format: 'date-time' })
+  dealtAt: Date;
+}
+
+/**
+ * A client's balance movements across ALL their MT5 accounts, over one window.
+ *
+ * Deliberately carries NO statistics. The Activity card that computed win rate
+ * and realised P/L was removed on purpose (`1cfd673`); this restores only the
+ * money movements the CRM has no other record of.
+ */
+export class BalanceMovementPageDto {
+  @ApiProperty({ format: 'date-time', description: 'Start of the window, inclusive.' })
+  from: Date;
+
+  @ApiProperty({ format: 'date-time', description: 'End of the window, inclusive.' })
+  to: Date;
+
+  @ApiProperty({ type: [BalanceMovementDto], description: 'Newest first, across every account.' })
+  items: BalanceMovementDto[];
+
+  @ApiProperty({
+    description:
+      'TRUE when the window held more movements than one response carries, so the list is the ' +
+      'most recent 500 rather than all of them. A capped list that does not say it is capped ' +
+      'is a number the reader will trust — this product has shipped that twice.',
+  })
+  truncated: boolean;
+}

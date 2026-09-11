@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, asc, desc, eq, gte, isNotNull, isNull, lt, lte, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
@@ -23,7 +23,12 @@ import {
 } from '../../common/errors/domain-errors';
 import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
 import { Mt5AccountSyncService } from './mt5/mt5-account-sync.service';
-import { dealActionLabel, isRealisedTrade } from './mt5/deal-codes';
+import {
+  dealActionLabel,
+  isCancelledAction,
+  isRealisedTrade,
+  isTradeAction,
+} from './mt5/deal-codes';
 import { positionSideLabel } from './mt5/position-side';
 import type { TradingAccountDto } from './dto/trading-account.dto';
 import type { PositionDto } from './dto/position.dto';
@@ -788,7 +793,8 @@ export class TradingService {
        * node over the whole window AND turns one unparseable ticket into a 500
        * on every client's account page. It is settled in Node instead, below.
        */
-      .orderBy(desc(mt5Deals.dealtAt));
+      .orderBy(desc(mt5Deals.dealtAt))
+      .limit(MOVEMENT_LIMIT + 1);
 
     const items: AccountDealDto[] = rows
       .map((row) => ({
@@ -821,6 +827,140 @@ export class TradingService {
 
     return { from, to, stats: computeStats(items), deals: items };
   }
+
+  /**
+   * EVERY MOVEMENT OF MONEY ON THIS CLIENT'S MT5 ACCOUNTS THAT HAS NO POSITION
+   * BEHIND IT — deposits, withdrawals, credits, corrections, bonuses.
+   *
+   * ## Why this read has to exist
+   *
+   * `deal-codes.ts` already stated the requirement, before this method did:
+   * that set "is not the same list as the CRM's transfers, because **a dealer
+   * can move an MT5 balance directly and the client should see that** rather
+   * than a gap between two numbers they can both read."
+   *
+   * A dealer adjustment (`POST /admin/trading-accounts/:id/balance`) is
+   * deliberately one-sided: it moves money on MT5 with no wallet leg and no
+   * ledger entry, which is right for corrections and bonuses and is why it must
+   * NOT be written into `transactions`. The consequence nobody had followed
+   * through is that every CRM money screen reads `transactions`, so an admin
+   * could credit — or DEBIT — a client's trading account and the client's own
+   * history showed nothing at all.
+   *
+   * The data was never missing. `mt5_deals` stores every deal the bridge
+   * ingests, unfiltered — `isTradeAction` excludes balance deals from
+   * COMMISSION, never from storage — and the only screen that read them was
+   * removed in `1cfd673` along with the trade statistics it was built for.
+   *
+   * ## Balance movements ONLY, and that narrowness is the point
+   *
+   * Restoring the whole Activity card would bring back win rate, realised P/L
+   * and volume, which were removed on purpose. A fix that quietly undoes a
+   * deliberate decision is worse than the gap it closes. So: not a trade, not a
+   * cancellation — expressed with the same two predicates the engine uses, so a
+   * new MT5 action code cannot silently become a balance movement here while
+   * meaning something else there.
+   *
+   * ## Across every account, because the client's question is not per-account
+   *
+   * `historyMine` answers "what happened on THIS account". A client looking at
+   * their transaction history is asking "where did my money go", which does not
+   * stop at an account boundary. Accounts with no MT5 login yet are skipped
+   * rather than erroring: an account MetaTrader has not issued a login for
+   * cannot have deals, and that is an ordinary state rather than a fault.
+   */
+  async balanceMovementsMine(
+    userId: string,
+    query: AccountHistoryQueryDto = {},
+  ): Promise<{ from: Date; to: Date; items: BalanceMovementRow[]; truncated: boolean }> {
+    const { from, to } = resolveMovementWindow(query);
+
+    const accounts = await this.db
+      .select({ id: tradingAccounts.id, login: tradingAccounts.login })
+      .from(tradingAccounts)
+      .where(and(eq(tradingAccounts.userId, userId), isNotNull(tradingAccounts.login)));
+
+    if (accounts.length === 0) return { from, to, items: [], truncated: false };
+
+    const byLogin = new Map(accounts.map((a) => [a.login as string, a.id]));
+
+    const rows = await this.db
+      .select({
+        ticket: mt5Deals.mt5DealId,
+        login: mt5Deals.login,
+        action: mt5Deals.action,
+        profit: mt5Deals.profit,
+        comment: mt5Deals.comment,
+        dealtAt: mt5Deals.dealtAt,
+      })
+      .from(mt5Deals)
+      .where(
+        and(
+          inArray(mt5Deals.login, [...byLogin.keys()]),
+          gte(mt5Deals.dealtAt, from),
+          lte(mt5Deals.dealtAt, to),
+        ),
+      )
+      .orderBy(desc(mt5Deals.dealtAt));
+
+    /*
+     * Filtered HERE rather than in SQL, deliberately. The two predicates are the
+     * single definition of what counts as a trade in this system, and a hand-
+     * written `action NOT IN (...)` beside them is a second definition that
+     * cannot be kept in step — the exact drift `isCancelledAction`'s own
+     * docblock warns about for new action codes.
+     *
+     * Safe because the window is bounded and scoped to one client's logins.
+     */
+    /*
+     * Bounded by ROWS, and the count is reported rather than silently applied.
+     *
+     * This project has shipped the other thing twice — a partner's client count
+     * that was the length of what fitted, and a referred list capped at fifty
+     * with nothing saying so. A list that is cut and does not say it is cut is
+     * a number the reader will trust.
+     *
+     * `LIMIT n + 1` is how we know: one row past the cap proves there is more
+     * without a second COUNT query, and it is dropped before the caller sees it.
+     */
+    const movements = rows.filter((r) => !isTradeAction(r.action) && !isCancelledAction(r.action));
+    const truncated = movements.length > MOVEMENT_LIMIT;
+
+    return {
+      from,
+      to,
+      truncated,
+      items: movements.slice(0, MOVEMENT_LIMIT).map((r) => ({
+        ticket: String(r.ticket),
+        accountId: byLogin.get(r.login) as string,
+        login: r.login,
+        action: r.action,
+        actionLabel: dealActionLabel(r.action),
+        /*
+         * `profit` IS the amount for a balance deal — MT5 carries the money
+         * there when there is no position. A string, like every other amount
+         * that crosses this boundary (§6.1), and signed: a debit is negative
+         * and the screen must be able to say so rather than showing a bare
+         * figure a client cannot tell the direction of.
+         */
+        amount: r.profit,
+        comment: r.comment,
+        dealtAt: r.dealtAt,
+      })),
+    };
+  }
+}
+
+/** One money movement on an MT5 account with no position behind it. */
+export interface BalanceMovementRow {
+  ticket: string;
+  accountId: string;
+  login: string;
+  action: number;
+  actionLabel: string;
+  amount: string;
+  comment: string | null;
+  dealtAt: Date;
 }
 
 /** MT5's numeric position side, named. An unknown code is reported raw. */
@@ -877,6 +1017,42 @@ function resolveWindow(query: AccountHistoryQueryDto): { from: Date; to: Date } 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 /** 31 whole days, plus the part-day the inclusive end adds. */
 const MAX_WINDOW_MS = 32 * 24 * 60 * 60 * 1000;
+
+/** The most balance movements one response carries. See `balanceMovementsMine`. */
+const MOVEMENT_LIMIT = 500;
+
+/**
+ * The window for BALANCE MOVEMENTS — the same shape as `resolveWindow`, and
+ * deliberately WITHOUT its 31-day cap.
+ *
+ * Sharing the semantics is the point: `startOfDay` / `endOfDay`, closed at both
+ * ends, so a client asking for "the 10th" gets their own 10th on this list
+ * exactly as they do on the account history. Two money lists in one product
+ * that mean different things by "from" is a divergence noticed at the worst
+ * possible moment.
+ *
+ * ⚠️ But the CAP does not transfer, and copying it because it sits next to the
+ * semantics would have been the mistake. Its own message argues from trade
+ * volume — *"a whole one is more than a single response can carry for an
+ * actively traded account"* — and this list EXCLUDES trades. Dealer
+ * adjustments are rare by nature: a client asking for a year of them might get
+ * three rows, and a 31-day cap would make them ask twelve times to find that
+ * out.
+ *
+ * What genuinely cannot be returned whole is a large number of ROWS, so that is
+ * what `MOVEMENT_LIMIT` bounds — the thing that is actually unbounded rather
+ * than a proxy for it. Raised by `crm-92` reviewing the design.
+ */
+function resolveMovementWindow(query: AccountHistoryQueryDto): { from: Date; to: Date } {
+  const to = query.to ? endOfDay(query.to) : endOfDay(todayIso());
+  const from = query.from ? startOfDay(query.from) : new Date(to.getTime() - THIRTY_DAYS_MS);
+
+  if (from.getTime() > to.getTime()) {
+    throw new ValidationError('The start of the range must not be after its end.');
+  }
+
+  return { from, to };
+}
 
 /**
  * `YYYY-MM-DD` to a LOCAL day boundary.

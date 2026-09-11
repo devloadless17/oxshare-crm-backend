@@ -29,6 +29,7 @@ import {
   AccountPositionDto,
   AccountSnapshotDto,
   AccountWatchDto,
+  BalanceMovementPageDto,
 } from './dto/account-detail.dto';
 import { OpenOwnAccountDto } from './dto/open-account.dto';
 import { RenameOwnAccountDto } from './dto/rename-account.dto';
@@ -563,5 +564,49 @@ export class TradingController {
     @Query() query: AccountHistoryQueryDto,
   ) {
     return this.trading.historyMine(req.user.id, id, query);
+  }
+
+  /**
+   * Money that moved on this client's MT5 accounts with no position behind it.
+   *
+   * ## The gap this closes
+   *
+   * A dealer adjustment — `POST /admin/trading-accounts/:id/balance` — moves
+   * money on MT5 with no wallet leg and no ledger entry, deliberately, because
+   * it is a correction or a bonus rather than a client funding an account.
+   * Every CRM money screen reads `transactions`, so that movement appeared on
+   * NONE of them: an admin could credit or DEBIT a client's trading account and
+   * the client's own transaction history showed nothing.
+   *
+   * `deal-codes.ts` had already written down that this must be visible. The
+   * data was always stored; the last screen that read it went in `1cfd673`.
+   *
+   * ## Not a parameter, from the session
+   *
+   * The client id comes from the SESSION and is never a query parameter — the
+   * same rule `GET /payments/transactions` carries, and for the same reason: a
+   * `userId` here would be an oracle for anybody else's money.
+   */
+  @Get('balance-movements')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Money moved on the client's MT5 accounts with no trade behind it",
+    description:
+      'Deposits, withdrawals, credits, corrections and bonuses across EVERY account the ' +
+      'client holds — the movements MT5 records and the CRM ledger does not, because a ' +
+      'dealer adjustment has no wallet leg by design.\n\n' +
+      'Balance movements ONLY: trades and dealer cancellations are excluded, using the same ' +
+      'two predicates the commission engine uses, so a new MT5 action code cannot mean one ' +
+      'thing here and another there. It carries NO trade statistics — win rate and realised ' +
+      'P/L were removed from the portal deliberately and this does not bring them back.\n\n' +
+      'Served from the ingested `mt5_deals` table, so it keeps working while the bridge is ' +
+      'down, and a movement from the last few minutes may not have arrived yet. Amounts are ' +
+      'SIGNED strings — negative is money leaving. The window defaults to 30 days, is capped ' +
+      'at 31, and is inclusive at both ends, exactly as `/accounts/:id/history` is: two money ' +
+      'lists in one product must not mean different things by "from".',
+  })
+  @ApiOkResponse({ type: BalanceMovementPageDto })
+  myBalanceMovements(@Req() req: Request & { user: User }, @Query() query: AccountHistoryQueryDto) {
+    return this.trading.balanceMovementsMine(req.user.id, query);
   }
 }
