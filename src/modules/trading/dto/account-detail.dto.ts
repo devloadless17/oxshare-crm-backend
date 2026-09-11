@@ -511,8 +511,13 @@ export class BalanceMovementDto {
   amount: string;
 
   @ApiProperty({
+    type: 'string',
     nullable: true,
-    description: "The dealer's reason, shown in the MT5 deal comment. Null when none was given.",
+    description:
+      "The dealer's reason, shown in the MT5 deal comment. Null when none was given. " +
+      '⚠️ `type` is explicit BECAUSE of `nullable`: a nullable property with no declared type ' +
+      'generates as `Record<string, never>` in the frontend, which is not a string and not ' +
+      'null — the typecheck caught it here rather than a screen rendering an object.',
   })
   comment: string | null;
 

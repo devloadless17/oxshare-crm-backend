@@ -13558,9 +13558,9 @@
             "description": "The amount, SIGNED — negative is money leaving the account. A string, like every other amount on this surface (§6.1): it is never a JS number."
           },
           "comment": {
-            "type": "object",
+            "type": "string",
             "nullable": true,
-            "description": "The dealer's reason, shown in the MT5 deal comment. Null when none was given."
+            "description": "The dealer's reason, shown in the MT5 deal comment. Null when none was given. ⚠️ `type` is explicit BECAUSE of `nullable`: a nullable property with no declared type generates as `Record<string, never>` in the frontend, which is not a string and not null — the typecheck caught it here rather than a screen rendering an object."
           },
           "dealtAt": {
             "format": "date-time",
