@@ -53,6 +53,14 @@ const DEALS_PER_ACCOUNT = 20;
 const TRANSFERS = 600;
 const ACCRUALS = 400;
 
+/**
+ * How recent a deal must be to be left UNPROCESSED.
+ *
+ * Shorter than the 48-hour window `hasAgedBacklog()` uses, so an unprocessed
+ * fixture can never BE an aged backlog no matter when the script is run.
+ */
+const RECENT_MS = 24 * 60 * 60 * 1000;
+
 const url = process.env.DATABASE_URL;
 if (!url) {
   console.error('DATABASE_URL is not set. Refusing to guess at a database.');
@@ -129,6 +137,7 @@ async function main() {
         const n = a * DEALS_PER_ACCOUNT + d;
         const isBalance = d % 5 === 0;
         const base = params.length;
+        const dealtAt = new Date(Date.now() - n * 60 * 60 * 1000);
         params.push(
           `vol-${n}`,
           `vol-${a}`,
@@ -138,16 +147,35 @@ async function main() {
           isBalance ? '0.00000000' : '1.00000000',
           isBalance ? '0.00000000' : '1.08500000',
           isBalance ? (d % 10 === 0 ? '-25.00000000' : '50.00000000') : '12.34000000',
-          new Date(Date.now() - n * 60 * 60 * 1000),
+          dealtAt,
+          // Unprocessed ONLY inside the 48h window the backlog check uses.
+          dealtAt.getTime() > Date.now() - RECENT_MS ? null : new Date(),
         );
+        /*
+         * ⚠️ HISTORICAL DEALS ARE MARKED COMMISSION-PROCESSED. This is the
+         * whole reason the tuple carries a twelfth column.
+         *
+         * `hasAgedBacklog()` is true when unprocessed TRADE deals older than 48
+         * hours exist and `IB_ACCRUAL_START` is unset — and in that state
+         * `accruePending` pays nothing and ALERTS ON EVERY RUN, never throttled,
+         * by this repo's own design. Seeding 3,162 aged trades put the
+         * commission engine into that permanent holding state, which is exactly
+         * the always-firing alarm we refused to create with a stuck transfer,
+         * in a second place nobody looked. Found by crm-92 on the live data.
+         *
+         * So: anything older than the recent window is a fixture for LISTS and
+         * READS, not engine input, and says so by carrying a processed
+         * timestamp. The recent tail below stays unprocessed so accrual is
+         * still exercised — without ever constituting a BACKLOG.
+         */
         values.push(
-          `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},'0','0',$${base + 9},'sweep')`,
+          `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},'0','0',$${base + 9},'sweep',$${base + 10})`,
         );
       }
       await db.query(
         `INSERT INTO mt5_deals
            (mt5_deal_id, login, symbol, action, entry, volume, price, profit,
-            commission, swap, dealt_at, source)
+            commission, swap, dealt_at, source, commission_processed_at)
          VALUES ${values.join(',')}
          ON CONFLICT (mt5_deal_id) DO NOTHING`,
         params,
