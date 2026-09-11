@@ -23,6 +23,7 @@
     "prepare": "husky",
     "test:coverage": "vitest run --coverage --reporter=default --reporter=json --outputFile.json=.vitest-result.json && node scripts/assert-suite-complete.mjs",
     "r2:verify": "node scripts/r2-verify.mjs",
+    "seed:volume": "node scripts/seed-volume.mjs",
     "r2:reconcile": "node scripts/r2-reconcile.mjs",
     "r2:e2e": "node scripts/r2-e2e.mjs",
     "r2:e2e:assets": "node scripts/r2-e2e-assets.mjs",
