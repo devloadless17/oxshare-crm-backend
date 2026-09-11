@@ -61,6 +61,36 @@
 
 repo_root=$(git rev-parse --show-toplevel) || exit 0
 
+# ── ⚠️ OPT-IN. THIS DOES NOTHING UNLESS OXSHARE_PREPUSH_VERIFY IS SET ────────
+#
+# It ran for EVERYBODY until 11 Sep 2026, and that was wrong. A push is a normal
+# thing a colleague does several times a day, and this gate made every one of
+# them wait — minutes in the frontends, about TEN in the backend, where the suite
+# starts a real Postgres. It printed three lines, went silent for the whole
+# Testcontainers step, and from outside was indistinguishable from a hang.
+#
+# That is the failure this hook was written to prevent, in the dimension nobody
+# tested: not "does it refuse correctly" but "what does it look like while it
+# works". A gate people wait on and cannot read is one they route around, and the
+# route around is `--no-verify` permanently rather than once.
+#
+# The owner keeps it and carries the cost on purpose — they are the one who
+# answers for CI being green. Everybody else pushes at the speed of a push.
+#
+#   export OXSHARE_PREPUSH_VERIFY=1     # in your shell profile, to opt IN
+#
+# Deliberately an ENV VAR rather than a committed flag: a file would either be in
+# the repo (and therefore on every machine, which is what we are undoing) or
+# gitignored (and therefore a gate that exists on one machine, which this project
+# has a rule about). A variable is honestly per-developer and says so.
+#
+# This is NOT a weakening of the gate. `scripts/ci-local.sh verify <repo>` is the
+# same command, runs the same eight checks, and is one line to type before a
+# push. What changed is who pays for it by default.
+if [ -z "${OXSHARE_PREPUSH_VERIFY:-}" ]; then
+  exit 0
+fi
+
 # TWO CANDIDATES, and the second is the one that survives a fresh machine.
 #
 # `crm/scripts/ci-local.sh` is the documented path and the one the README names,
@@ -112,12 +142,47 @@ if [ ! -x "$gate" ]; then
   exit 0
 fi
 
-# The suite is Testcontainers. Without a daemon it does not fail — it cannot run.
+# ⚠️ TWO PREREQUISITES, AND THE FIRST ONE ALONE WAS NOT ENOUGH.
+#
+# This probed only `docker info` — the DAEMON — and that is an adjacent question
+# to the one that matters. The gate's `migrate` step needs the project's
+# POSTGRES CONTAINER, and a running daemon with no container passes a daemon
+# probe and then dies on `CREATE SCHEMA IF NOT EXISTS "drizzle"`.
+#
+# That is not theoretical. It happened on 11 Sep 2026: the owner pushed, the
+# daemon was up, the container was not, and the gate REFUSED THE PUSH over
+# infrastructure that had nothing to do with the commits — with an error about
+# schema creation, which names neither the cause nor the fix.
+#
+# So it is worse than looking like a hang. It can refuse for a reason the pusher
+# cannot act on and has not been told, which is precisely the "a gate that lies
+# gets routed around permanently" failure this hook's own header argues against.
+#
+# The probe now asks the question the suite actually asks: is the database
+# REACHABLE. `pg_isready` if it is on PATH, otherwise a TCP open against the
+# configured port — because a probe that needs a tool nobody has is a third way
+# to fail for an unrelated reason.
+db_unreachable() {
+  if command -v pg_isready >/dev/null 2>&1; then
+    ! pg_isready -q -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}" 2>/dev/null
+  else
+    ! (exec 3<>"/dev/tcp/${PGHOST:-localhost}/${PGPORT:-5432}") 2>/dev/null
+  fi
+}
+
 if ! docker info >/dev/null 2>&1; then
   echo "pre-push: the Docker daemon is not reachable, so the Testcontainers suite" >&2
-  echo "pre-push: CANNOT RUN. That is not the same as the code being wrong, so this" >&2
-  echo "pre-push: is not blocking your push." >&2
-  echo "pre-push: PUSHING UNVERIFIED. Start Docker and run scripts/ci-local.sh verify backend." >&2
+  echo "pre-push: CANNOT RUN. That is not the same as the code being wrong." >&2
+  echo "pre-push: PUSHING UNVERIFIED. Start Docker, then scripts/ci-local.sh verify backend." >&2
+  exit 0
+fi
+
+if db_unreachable; then
+  echo "pre-push: Docker is up but NO POSTGRES is listening on ${PGHOST:-localhost}:${PGPORT:-5432}," >&2
+  echo "pre-push: so the gate's migrate step cannot run. That is infrastructure, not your code." >&2
+  echo "pre-push: PUSHING UNVERIFIED. Start it and re-verify:" >&2
+  echo "pre-push:   cd oxshare-crm-backend && docker compose up -d" >&2
+  echo "pre-push:   scripts/ci-local.sh verify backend" >&2
   exit 0
 fi
 
