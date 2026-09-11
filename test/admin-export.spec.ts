@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -11,6 +12,7 @@ import { PasswordService } from '../src/common/security/password.service';
 import {
   adminClientTagScopes,
   admins,
+  auditLog,
   clientTagAssignments,
   clientTags,
   kycSubmissions,
@@ -507,6 +509,73 @@ describe('an export requires the SAME permission as its list', () => {
     const res = await session.get('/v1/admin/audit-log/export');
     expect(res.status).toBe(200);
     expect(res.text).toContain('Action');
+  });
+
+  it('audit log: exports EVERY row, not the first page of them', async () => {
+    /*
+     * ⚠️ THE CASE THE TWO ABOVE COULD NOT CATCH, and the defect it caught was
+     * live: `GET /admin/audit-log/export` returned 100 rows out of 1,600.
+     *
+     * `streamCsv` reads in batches of EXPORT_BATCH_SIZE (1,000) and stops when a
+     * batch comes back SHORT, because a short batch means the end of the data.
+     * `AuditLogStore.findAll` ran its limit through `pageSize()`, which clamps to
+     * MAX_PAGE_SIZE (100) — correct for a LIST, where it bounds what one screen
+     * can ask the database for. So the export asked for 1,000, was handed 100,
+     * read that as the end, and finished at six per cent of the trail.
+     *
+     * AND THE TRUNCATION NOTICE COULD NOT FIRE. `streamCsv` writes
+     * EXPORT_TRUNCATED_NOTICE into the file past MAX_EXPORT_ROWS (200,000) — a
+     * real guard, correctly written, made unreachable by a clamp that ended the
+     * stream 199,900 rows early. The file did not merely truncate; it truncated
+     * and said nothing, which is the difference between a limit and a lie. On
+     * the forensic record, and on the one table an auditor actually exports.
+     *
+     * The two cases above assert a 403, a 200 and the word "Action" in the body.
+     * Both pass identically at 100 rows and at 1,600. THE ROW COUNT IS THE
+     * PROPERTY, and nothing was asserting it.
+     */
+    const db = ctx.db.db;
+    const ROWS = 150; // deliberately above MAX_PAGE_SIZE (100)
+    const [master] = await db.select().from(admins).where(eq(admins.email, MASTER.email));
+    const masterId = master.id;
+    const ACTION = 'export.completeness_probe';
+
+    await db.insert(auditLog).values(
+      Array.from({ length: ROWS }, (_, i) => ({
+        // `actor_id` and `actor_email` are NOT NULL — the trail always names who.
+        actorId: masterId,
+        actorEmail: `probe-${i}@oxshare.com`,
+        action: ACTION,
+        subjectType: 'admin',
+        subjectId: masterId,
+      })),
+    );
+
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(`/v1/admin/audit-log/export?action=${ACTION}`);
+    expect(res.status).toBe(200);
+
+    // Data rows only: drop the header and any trailing blank line.
+    const dataRows = res.text
+      .split(/\r?\n/)
+      .slice(1)
+      .filter((line) => line.trim().length > 0);
+
+    expect(
+      dataRows.length,
+      `the export returned ${dataRows.length} of ${ROWS} rows. A page-size clamp on the ` +
+        'export batch makes streamCsv read a short batch as end-of-data, so the file stops ' +
+        'early — and the truncation notice never fires, because it is keyed on a limit the ' +
+        'stream never reaches. An audit export that silently omits rows is worse than one ' +
+        'that refuses.',
+    ).toBe(ROWS);
+
+    // Non-vacuous: the filter must still bite, or "every row" is trivially true
+    // of an export that ignores its filter and returns the whole table.
+    expect(
+      dataRows.every((line) => line.includes(ACTION)),
+      'the export returned rows outside the requested action — it is not filtering',
+    ).toBe(true);
   });
 
   it('an unauthenticated caller gets 401, not a file', async () => {

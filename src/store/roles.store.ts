@@ -13,6 +13,33 @@ import { orderTerms, type SortOrder } from '../common/sorting';
  * than sorts — a caller wanting the system roles first is filtering, not
  * sorting, and the screen already does that in the client.
  */
+/**
+ * ⚠️ A KEY HERE IS A PROMISE OF AN INDEX, NOT JUST OF A COLUMN.
+ *
+ * The roles screen marks `description` sortable and this map does not carry it.
+ * That looks like a gap and is not one, which is worth recording because it was
+ * briefly "fixed" on 11 Sep 2026 and the fix was withdrawn the same day.
+ *
+ * `GET /admin/roles` is UNPAGINATED — it returns every role as an array — so
+ * the screen holds the whole dataset and sorts it in the browser, sending no
+ * `sort` at all. Nothing reaches this map asking for `description`, so the 400
+ * an unrecognised key would produce (R-2.5 refuses rather than silently falling
+ * back) is unreachable.
+ *
+ * Adding the key anyway is not free, and `admin-sort-indexes.spec.ts` is what
+ * says so: its contract is "every sortable column is indexed, and the allowlist
+ * may not exceed them", checked by asking the PLANNER, so the key obliges a
+ * b-tree on a nullable `text` column of a table holding a handful of rows. That
+ * is a permanent entry in the schema bought for a hypothetical.
+ *
+ * The trap the screen's docblock warns about — "should this endpoint ever
+ * paginate, these headers must gain a server-side handler in the same commit or
+ * they become a lie" — is therefore already held shut by machinery rather than
+ * by this list being pre-populated: whoever paginates roles adds the key, and
+ * that spec fails until the index exists in the same commit. Which is exactly
+ * the outcome the instruction asks for, arrived at by a failing test rather
+ * than by trusting somebody to have read a comment.
+ */
 export const ROLE_SORT_COLUMNS = {
   name: roles.name,
   createdAt: roles.createdAt,

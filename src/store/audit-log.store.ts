@@ -1,6 +1,11 @@
 import { and, asc, count, desc, eq, isNull, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
 import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
-import { buildCursorPage, pageSize, type CursorPosition } from '../common/pagination';
+import {
+  DEFAULT_PAGE_SIZE,
+  buildCursorPage,
+  pageSize,
+  type CursorPosition,
+} from '../common/pagination';
 import type { SortOrder } from '../common/sorting';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -171,10 +176,42 @@ export class AuditLogStore {
        * caller is unrestricted, same convention as every other store.
        */
       scope?: ClientScope;
+      /**
+       * ⚠️ EXPORTS ONLY. Take `limit` literally instead of clamping it to
+       * `MAX_PAGE_SIZE`.
+       *
+       * `pageSize()` clamps to 100, which is right for a LIST — it bounds what
+       * one screen can ask the database for. It was wrong for the EXPORT, and
+       * silently:
+       *
+       *   `streamCsv` asks for EXPORT_BATCH_SIZE (1,000) rows a batch and stops
+       *   when a batch comes back SHORT, because a short batch means the end of
+       *   the data. The clamp handed it 100. So the loop read 100 rows, saw
+       *   100 < 1,000, concluded it had reached the end, and finished.
+       *
+       * Measured 11 Sep 2026: 1,600 rows in `audit_log`, 100 in the CSV — six
+       * per cent of the forensic record, on the one table whose entire value is
+       * completeness and the one an auditor actually exports.
+       *
+       * AND THE TRUNCATION NOTICE COULD NOT FIRE. `streamCsv` writes
+       * `EXPORT_TRUNCATED_NOTICE` into the file when it passes
+       * `MAX_EXPORT_ROWS` (200,000) — a real guard, correctly written, that this
+       * clamp made unreachable by ending the stream 199,900 rows early. So the
+       * file did not merely truncate, it truncated and said nothing, which is
+       * the difference between a limit and a lie.
+       *
+       * A flag rather than a second query: duplicating the WHERE clause into an
+       * `exportBatch` would give the list and the export two predicates that can
+       * drift, and an export that quietly filters differently from the screen it
+       * came from is worse than one that stops early.
+       */
+      unclampedLimit?: boolean;
     } = {},
   ) {
     const page = Math.max(1, filter.page ?? 1);
-    const limit = pageSize(filter.limit);
+    const limit = filter.unclampedLimit
+      ? Math.max(1, filter.limit ?? DEFAULT_PAGE_SIZE)
+      : pageSize(filter.limit);
 
     const sortKey: AuditSortKey = filter.sort ?? DEFAULT_AUDIT_SORT;
     const direction = filter.order ?? 'desc';

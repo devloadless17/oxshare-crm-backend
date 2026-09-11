@@ -653,6 +653,62 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
     );
   });
 
+  it('gives a SILENT scoped inviter their OWN territory, never an unrestricted one', async () => {
+    /*
+     * The other half of the laundering above, and the half that was open.
+     *
+     * `[]` from a scoped inviter is refused by name. ABSENT was not: the
+     * `admins.scope` gate and `assertScopable` are both conditioned on
+     * `scopedTagIds !== undefined`, so omitting the field entirely skipped both
+     * and stored `undefined` — and an invite carrying no territory produces an
+     * admin with NO scope rows, which this system defines as UNRESTRICTED.
+     *
+     * So a scoped sub-admin holding `admins.create` could mint a colleague who
+     * saw EVERY client, by leaving a field out. `[]` and absent are two
+     * spellings of "I chose no territory" and they had opposite security
+     * outcomes — and the admin console sends the UNSAFE one: invite-admin-modal
+     * spreads `...(scopedTagIds.length > 0 ? { scopedTagIds } : {})`, so
+     * picking no tags omits the key rather than sending an empty array.
+     *
+     * Refusing would be defensible, but the DEFAULT bends to the subset rule
+     * instead, exactly as the intake grant's does two lines below it in the
+     * service: a silent scoped inviter hands on the territory they hold.
+     */
+    const h = build();
+    const scopedInviter = {
+      ...MASTER,
+      // Holds `kyc.review` so `assertGrantable` passes and this test reaches
+      // the scope logic it is actually about. Notably does NOT hold
+      // `admins.scope`: the inheritance below is the system's default, not a
+      // visibility choice the actor is making.
+      permissions: ['admins.create', 'kyc.review'],
+      clientScope: { unrestricted: false, tagIds: ['tag-1', 'tag-2'], includesUntriaged: false },
+      seesUntriaged: false,
+    };
+    await h.service.createInvite(
+      'silent@oxshare.com',
+      'Silent',
+      scopedInviter,
+      undefined,
+      ['kyc.review'],
+      // No mask, NO TERRITORY, no intake grant — every visibility field absent.
+    );
+    expect(h.invites.create).toHaveBeenCalledWith(
+      expect.objectContaining({ scopedTagIds: ['tag-1', 'tag-2'] }),
+    );
+  });
+
+  it('leaves a silent UNRESTRICTED inviter unrestricted — the default is not a cap', async () => {
+    // The guard above must not turn "no territory" into a territory for an
+    // actor entitled to grant sight of everything; that would quietly stop
+    // master admins from being able to invite another one.
+    const h = build();
+    await h.service.createInvite('open@oxshare.com', 'Open', MASTER, undefined, ['kyc.review']);
+    expect(h.invites.create).toHaveBeenCalledWith(
+      expect.objectContaining({ scopedTagIds: undefined }),
+    );
+  });
+
   it('stores the full visibility choice for the acceptance to carry', async () => {
     const h = build();
     await h.service.createInvite(

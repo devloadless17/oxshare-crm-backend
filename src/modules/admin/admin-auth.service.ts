@@ -386,6 +386,40 @@ export class AdminAuthService {
     if (maskedFields !== undefined) this.rbac.assertMaskAllowed(actor, maskedFields);
     if (scopedTagIds !== undefined) await this.rbac.assertScopable(actor, scopedTagIds);
     /*
+     * A SILENT scoped inviter hands on their OWN territory.
+     *
+     * Both guards above are conditioned on `scopedTagIds !== undefined`, so
+     * omitting the field entirely skipped the `admins.scope` gate AND
+     * `assertScopable` — and an invite carrying no territory produces an admin
+     * with NO scope rows, which this system defines as UNRESTRICTED. A scoped
+     * sub-admin holding `admins.create` could therefore mint a colleague who
+     * saw EVERY client, by leaving a field out.
+     *
+     * `[]` was already refused by name (see the normalisation note above), and
+     * that is what made this so easy to miss: the two spellings of "I chose no
+     * territory" had OPPOSITE security outcomes. The console sends the unsafe
+     * one — `invite-admin-modal.tsx` spreads
+     * `...(scopedTagIds.length > 0 ? { scopedTagIds } : {})`, so an operator
+     * who picks no tags omits the key rather than sending an empty array.
+     *
+     * Refusing would be defensible; inheriting is chosen to match the intake
+     * grant immediately below, whose default bends to the subset rule in the
+     * same way rather than around it. Like that one it needs no `admins.scope`:
+     * it is the system declining to widen sight, not the actor choosing to.
+     * An UNRESTRICTED actor's silence still means unrestricted — capping them
+     * would stop a master admin inviting another one.
+     *
+     * This cannot re-open the hole by inheriting an EMPTY list, which would
+     * mean unrestricted again: `scopeOf` (common/security/client-scope.ts) is
+     * the only producer of a `ClientScope` in the codebase and returns
+     * `UNRESTRICTED` for an empty tag list, so `unrestricted: false` guarantees
+     * at least one tag. If a second construction site ever appears, that
+     * invariant is what this line rests on.
+     */
+    if (scopedTagIds === undefined && !actor.clientScope.unrestricted) {
+      scopedTagIds = [...actor.clientScope.tagIds];
+    }
+    /*
      * The intake grant defaults to TRUE (0058) — restriction is the explicit
      * act — EXCEPT when the inviter cannot grant it: a scoped actor without
      * the grant themselves must not hand out sight of the pool implicitly
@@ -419,10 +453,34 @@ export class AdminAuthService {
 
     const inviteUrl = `${this.config.get('ADMIN_URL', 'http://localhost:3002')}/invite/accept?token=${token}`;
     void this.email.sendAdminInviteEmail(email, name, inviteUrl);
+    /*
+     * The VISIBILITY grant is recorded beside the permission grant, because
+     * this is the PRIMARY door it is chosen at. The DTO above explains why
+     * territory and masking are settable here rather than after acceptance,
+     * and that reasoning has a consequence for the audit trail: an invite is
+     * the most common place an administrator's sight of the client base is
+     * decided, and the edit path is the rare one.
+     *
+     * `admin.update` has recorded all three since the scoping work, with a
+     * comment naming the question they answer — "who could see which clients
+     * in March" is not derivable from a permission diff. This row did not. So
+     * that question was answerable for an administrator whose territory had
+     * been EDITED, and unanswerable for one who simply arrived holding it,
+     * which is the common case and the silent one.
+     *
+     * Recorded UNCONDITIONALLY, unlike `admin.update`, and the difference is
+     * the point rather than an inconsistency: there an absent key means "not
+     * touched"; here it means a decision was taken by DEFAULT. `scopedTagIds:
+     * null` is therefore not missing data — it is UNRESTRICTED, every client
+     * in the system, which is the single most important thing this row says.
+     */
     this.audit.record(invitedBy, 'admin.invite', 'admin_invite', invite.id, {
       email,
       roleId,
       permissions: grantedPermissions,
+      maskedFields: maskedFields ?? null,
+      scopedTagIds: scopedTagIds ?? null,
+      seesUntriaged: resolvedSeesUntriaged,
     });
 
     // The token is a bearer credential that creates an admin account. It goes
@@ -538,6 +596,22 @@ export class AdminAuthService {
       invitedBy: invite.invitedBy,
       roleId: invite.roleId,
       permissions: admin.permissions,
+      /*
+       * "…and with what" — this docblock's own question, which a permission
+       * list only half answers. The other half is what they can SEE.
+       *
+       * Repeated here rather than left on `admin.invite` because the two rows
+       * are keyed differently: this one is keyed on the ADMIN, which is where
+       * a compliance query about one administrator starts, while the invite
+       * row is keyed on the invite and reachable only by joining through an
+       * email address. `null` means UNRESTRICTED for the scope and "inherits
+       * the role's mask" for the mask — the same conventions the columns
+       * carry, stated here because an auditor reading this row has no reason
+       * to know them.
+       */
+      maskedFields: admin.maskedFields ?? null,
+      scopedTagIds: invite.scopedTagIds ?? null,
+      seesUntriaged: admin.seesUntriaged,
     });
 
     /*

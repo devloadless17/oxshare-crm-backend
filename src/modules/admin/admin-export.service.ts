@@ -577,6 +577,14 @@ export class AdminExportService {
     const { items } = await this.auditLog.findAll({
       page: Math.floor(offset / limit) + 1,
       limit,
+      /*
+       * Take the batch size literally. Without this the store clamps to
+       * MAX_PAGE_SIZE (100), `streamCsv` reads a short batch as the end of the
+       * data, and the export stops at 100 of however many rows exist — with no
+       * truncation notice, because the notice only fires past MAX_EXPORT_ROWS.
+       * Measured before the fix: 100 rows exported out of 1,600.
+       */
+      unclampedLimit: true,
       action: query.action,
       subjectType: query.subjectType,
       // D-54: the export follows the same scope as the list — an export is not

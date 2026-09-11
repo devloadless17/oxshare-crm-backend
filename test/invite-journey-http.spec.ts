@@ -9,8 +9,15 @@ import {
   type HttpTestContext,
 } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { adminInvites, admins, roles } from '../src/database/schema';
-import { eq } from 'drizzle-orm';
+import {
+  adminClientTagScopes,
+  adminInvites,
+  admins,
+  auditLog,
+  clientTags,
+  roles,
+} from '../src/database/schema';
+import { and, eq } from 'drizzle-orm';
 
 /**
  * The whole invite journey, over HTTP: invite with a role → accept → log in
@@ -397,5 +404,222 @@ describe('outstanding invites are visible and cancellable', () => {
 
     // The account exists now; revoking would change nothing and imply it had.
     await master.del(`/v1/admin/invites/${row.id}`).expect(400);
+  });
+});
+
+/**
+ * An invite decides what the new administrator may SEE, and the audit trail
+ * only recorded what they may DO.
+ *
+ * ── The gap this closes ────────────────────────────────────────────────────
+ *
+ * `InviteDto` carries `maskedFields`, `scopedTagIds` and `seesUntriaged`, and
+ * its own comment explains why they are settable at INVITE time rather than
+ * after acceptance: an empty scope means unrestricted, so configuring
+ * territory later leaves a window — between the invitee clicking the emailed
+ * link and somebody remembering to restrict them — in which they see every
+ * client in the system. Closing that window made the invite the PRIMARY place
+ * an administrator's sight of the client base is chosen.
+ *
+ * `admin.update` records all three, with a comment naming the question they
+ * answer: "who could see which clients in March" is not derivable from a
+ * permission diff, and it is exactly what a compliance review asks after an
+ * incident. `admin.invite` and `admin.invite_accept` recorded `{ email,
+ * roleId, permissions }` and nothing else — so that question was answerable
+ * for an administrator whose territory had been EDITED, and unanswerable for
+ * one who simply arrived holding it. The common path was the silent one.
+ *
+ * ── Why the second case is the one that matters ────────────────────────────
+ *
+ * Asserting the fields are recorded when they are SET would pass against a
+ * payload that spreads them conditionally, and conditional spreading is the
+ * existing idiom on `admin.update` — where it is correct, because there an
+ * absent key means "not touched". At this door an absent key would mean
+ * UNRESTRICTED, which is the most consequential grant there is and the one a
+ * reader would never notice was missing. So the second case pins that
+ * `scopedTagIds` is present and NULL rather than absent.
+ */
+describe('an invite records the VISIBILITY it grants, not only the permissions', () => {
+  /*
+   * `AdminAuditService.record` is deliberately fire-and-forget — an audit-write
+   * failure must not fail the admin action — so the row lands shortly AFTER the
+   * response. Polled rather than slept: the common case costs one query, and a
+   * genuine non-recorder still fails, a second later.
+   */
+  async function waitForRow(action: string, subjectId: string, timeoutMs = 3000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const [row] = await ctx.db.db
+        .select()
+        .from(auditLog)
+        .where(and(eq(auditLog.action, action), eq(auditLog.subjectId, subjectId)));
+      if (row || Date.now() >= deadline) return row;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+
+  async function inviteIdFor(master: Awaited<ReturnType<typeof actingAs>>, email: string) {
+    const list = await master.get('/v1/admin/invites').expect(200);
+    const row = (list.body as Array<{ id: string; email: string }>).find((r) => r.email === email);
+    if (!row) throw new Error(`no outstanding invite for ${email}`);
+    return row.id;
+  }
+
+  it('carries the mask, the territory and the intake grant onto BOTH audit rows', async () => {
+    const [tag] = await ctx.db.db
+      .insert(clientTags)
+      .values({ slug: 'journey-territory', label: 'Journey Territory' })
+      .returning();
+
+    const email = 'journey-visibility@oxshare.com';
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const res = await master.post('/v1/admin/invite', {
+      email,
+      name: 'Journey Visibility',
+      roleId: reviewerRoleId,
+      maskedFields: ['client.phone'],
+      scopedTagIds: [tag.id],
+      seesUntriaged: false,
+    });
+    // Asserted rather than assumed: a 400 here (an unmaskable key, an unknown
+    // tag) would otherwise leave the audit assertions below testing nothing.
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+
+    const inviteRow = await waitForRow('admin.invite', await inviteIdFor(master, email));
+    expect(inviteRow, 'no admin.invite audit row was written').toBeDefined();
+    const invited = inviteRow.details as Record<string, unknown>;
+    expect(invited.maskedFields).toEqual(['client.phone']);
+    expect(invited.scopedTagIds).toEqual([tag.id]);
+    expect(invited.seesUntriaged).toBe(false);
+
+    // The invite row is keyed on the INVITE. A compliance query about one
+    // administrator starts from the admin, so the same facts have to be
+    // reachable from the row keyed on them.
+    const url = (res.body as { inviteUrl?: string }).inviteUrl;
+    if (!url) throw new Error('no inviteUrl echoed — this spec relies on the non-production echo');
+    await acceptInvite(new URL(url).searchParams.get('token')!, NEW_ADMIN_PASSWORD).expect(200);
+
+    const [created] = await ctx.db.db.select().from(admins).where(eq(admins.email, email));
+    const acceptRow = await waitForRow('admin.invite_accept', created.id);
+    expect(acceptRow, 'no admin.invite_accept audit row was written').toBeDefined();
+    const accepted = acceptRow.details as Record<string, unknown>;
+    expect(accepted.maskedFields).toEqual(['client.phone']);
+    expect(accepted.scopedTagIds).toEqual([tag.id]);
+    expect(accepted.seesUntriaged).toBe(false);
+  });
+
+  it('records an UNRESTRICTED territory as an explicit null, not as an absent key', async () => {
+    const email = 'journey-unrestricted@oxshare.com';
+    const { master } = await invite(email, 'Journey Unrestricted', reviewerRoleId);
+
+    const row = await waitForRow('admin.invite', await inviteIdFor(master, email));
+    expect(row, 'no admin.invite audit row was written').toBeDefined();
+    const details = row.details as Record<string, unknown>;
+
+    /*
+     * `toHaveProperty` rather than a null comparison, because `details.x` is
+     * `undefined` both when the key is absent and when it is null — so
+     * `toBeNull()` alone would pass against the conditional spread this case
+     * exists to refuse. An invitee nobody scoped can see EVERY client, and the
+     * record has to say so out loud.
+     */
+    expect(details).toHaveProperty('scopedTagIds');
+    expect(details.scopedTagIds).toBeNull();
+    expect(details).toHaveProperty('maskedFields');
+    // The intake grant is not null-able: it resolves to a boolean either way,
+    // and an unrestricted inviter grants it by default (0058).
+    expect(details.seesUntriaged).toBe(true);
+  });
+});
+
+/**
+ * A SCOPED INVITER CANNOT PRODUCE AN UNRESTRICTED ADMINISTRATOR.
+ *
+ * `test/invite-lifecycle.spec.ts` proves the INVITE ROW carries the inherited
+ * territory. That is half the property, and it is the half that cannot hurt
+ * anybody: what matters is whether the ADMIN who accepts it ends up able to see
+ * every client. Those are joined by `acceptInvite`'s
+ * `if (invite.scopedTagIds?.length)` — so a fix that populated the invite and a
+ * carry that dropped it would leave both halves green and the escalation live.
+ *
+ * This walks the whole thing over HTTP and then reads
+ * `admin_client_tag_scopes` directly, because the absence of rows there IS the
+ * vulnerability: an empty scope means UNRESTRICTED, so "no rows" and "sees
+ * everything" are the same sentence.
+ *
+ * ── The defect ─────────────────────────────────────────────────────────────
+ *
+ * `createInvite` gated BOTH the `admins.scope` check and `assertScopable` on
+ * `scopedTagIds !== undefined`. An explicit `[]` was refused by name; omitting
+ * the key skipped both guards. So a scoped sub-admin holding `admins.create`
+ * could mint a colleague who saw every client in the system by leaving a field
+ * out — and `invite-admin-modal.tsx` sends exactly that spelling, spreading the
+ * key only when non-empty. Two spellings of "I chose no territory", opposite
+ * security outcomes.
+ */
+describe('a scoped inviter cannot create an admin who sees more than they do', () => {
+  it('carries the inviter’s OWN territory through to the accepted account', async () => {
+    const [tag] = await ctx.db.db
+      .insert(clientTags)
+      .values({ slug: 'journey-inherit', label: 'Journey Inherit' })
+      .returning();
+
+    const passwords = new PasswordService();
+    const INVITER = { email: 'journey-scoped-inviter@oxshare.com', password: 'inviter-pass-123' };
+    const [inviter] = await ctx.db.db
+      .insert(admins)
+      .values({
+        email: INVITER.email,
+        passwordHash: await passwords.hash(INVITER.password),
+        name: 'Journey Scoped Inviter',
+        role: 'sub_admin',
+        // `admins.create` to invite at all, `kyc.review` so the grant itself is
+        // within their gift — without it this dies at `assertGrantable` and
+        // never reaches the scope logic under test. Deliberately NOT holding
+        // `admins.scope`: the inheritance is the system declining to widen
+        // sight, not this actor choosing a visibility.
+        permissions: ['admins.create', 'kyc.review'],
+        status: 'active',
+      })
+      .returning();
+    await ctx.db.db
+      .insert(adminClientTagScopes)
+      .values({ adminId: inviter.id, tagId: tag.id, createdBy: inviter.id });
+
+    const scoped = await actingAs(ctx, 'admin', INVITER);
+    const email = 'journey-inherited@oxshare.com';
+    // NO scopedTagIds, no mask, no intake grant — the silent invite, which is
+    // what the console sends when an operator picks no tags.
+    const res = await scoped.post('/v1/admin/invite', {
+      email,
+      name: 'Journey Inherited',
+      permissions: ['kyc.review'],
+    });
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+
+    const url = (res.body as { inviteUrl?: string }).inviteUrl;
+    if (!url) throw new Error('no inviteUrl echoed — this spec relies on the non-production echo');
+    await acceptInvite(new URL(url).searchParams.get('token')!, NEW_ADMIN_PASSWORD).expect(200);
+
+    const [created] = await ctx.db.db.select().from(admins).where(eq(admins.email, email));
+    expect(created, 'the invite did not produce an administrator').toBeDefined();
+
+    const scopeRows = await ctx.db.db
+      .select()
+      .from(adminClientTagScopes)
+      .where(eq(adminClientTagScopes.adminId, created.id));
+
+    /*
+     * THE ASSERTION THE WHOLE FILE IS FOR. No rows here does not mean "no
+     * access" — it means UNRESTRICTED, every client in the system. Under the
+     * defect this array was empty and the new admin outranked the person who
+     * invited them.
+     */
+    expect(
+      scopeRows.length,
+      'the new admin has NO scope rows, which means UNRESTRICTED — they see every ' +
+        'client, including those outside the territory of the admin who invited them',
+    ).toBeGreaterThan(0);
+    expect(scopeRows.map((r) => r.tagId)).toEqual([tag.id]);
   });
 });
