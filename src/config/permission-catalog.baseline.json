@@ -52,6 +52,7 @@
     "audit.view",
     "clients.edit",
     "clients.email",
+    "clients.referrer.set",
     "clients.suspend",
     "clients.tag",
     "clients.view",

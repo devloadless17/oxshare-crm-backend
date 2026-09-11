@@ -31,6 +31,30 @@ import {
 // bridge and the commission engine.
 
 export const userTypeEnum = pgEnum('user_type', ['individual', 'referral', 'partner']);
+/**
+ * ⚠️ `pending` IS UNREACHABLE, AND WAS BEFORE THIS NOTE EXISTED.
+ *
+ * Verified 11 Sep 2026: registration writes `active`, `setClientStatus` is typed
+ * `'active' | 'suspended'`, and no migration ever backfilled it. There is no way
+ * into this state and no way out of it. One seeded fixture held it — which is
+ * how it looked populated in dev and empty in production.
+ *
+ * The consequence was operator-facing and quiet: the client list offered a
+ * "Pending" filter that could never have members, and an empty result reads as
+ * "no clients are pending" rather than "no client can be pending". The filter
+ * option is removed.
+ *
+ * The VALUE stays. Postgres cannot drop an enum value under a live table, and
+ * keeping it costs nothing — while removing it would be a risky migration for
+ * tidiness. If a real pending state is ever wanted (registration writes it,
+ * verification promotes to active), the transitions are what need building and
+ * this value is already here.
+ *
+ * Note the DTO's own sentence — "'pending' here means the account itself is not
+ * yet active, and says nothing about documents" — has to work hard to say what
+ * it MEANS and still cannot say what PUTS a client there. That gap is what
+ * identified it.
+ */
 export const userStatusEnum = pgEnum('user_status', ['active', 'pending', 'suspended']);
 export const kycStatusEnum = pgEnum('kyc_status', [
   'not_started',

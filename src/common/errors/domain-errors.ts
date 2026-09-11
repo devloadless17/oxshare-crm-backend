@@ -237,6 +237,50 @@ export class KycCorrectionRefusedError extends DomainError {
 }
 
 /**
+ * Repairing a client's referral attribution, refused. THREE CODES, NOT ONE. → 400
+ *
+ * They need three different sentences and one status makes the screen guess:
+ *
+ *   UNKNOWN   the code matches no partner — a typo the operator can fix
+ *   SELF      it is this client's own code — a mistake they should see named
+ *   INACTIVE  the code was RIGHT and that partner is suspended, which is a
+ *             decision somebody else made and a different conversation
+ *
+ * The third is the one that earns the split. "Check the spelling" and "the
+ * client was telling the truth, the partner is suspended" send an operator to
+ * different places, and a single 400 sends them to the first.
+ */
+export class ReferralCodeUnknownError extends DomainError {
+  readonly code = 'REFERRAL_CODE_UNKNOWN';
+}
+
+/** The code names the client themselves — `resolveChain` would walk a self-edge. */
+export class ReferralSelfError extends DomainError {
+  readonly code = 'REFERRAL_SELF';
+}
+
+/** The code resolves, and that partner is suspended. The code was not the problem. */
+export class ReferralPartnerInactiveError extends DomainError {
+  readonly code = 'REFERRAL_PARTNER_INACTIVE';
+}
+
+/**
+ * The client ALREADY has a referrer. → 409
+ *
+ * ⚠️ THIS IS THE A→B REFUSAL AND IT IS THE POINT OF THE ROUTE.
+ *
+ * `docs/` forbids a "change my IB" flow and is right: re-pointing attribution
+ * moves a partner's client, and their future commissions, to somebody else.
+ * Filling NULL→A takes nothing from anybody — the client WAS referred and the
+ * attribution was lost by our own defect. The refusal lives in the service
+ * rather than in a screen so the route cannot become a change-my-IB flow by
+ * somebody relaxing a rendering condition six months from now.
+ */
+export class ReferrerAlreadySetError extends DomainError {
+  readonly code = 'REFERRER_ALREADY_SET';
+}
+
+/**
  * This client already has a trading account by that name. → 409
  *
  * Its OWN code rather than a bare `ConflictError`, because the portal has to be

@@ -19,6 +19,7 @@ import { exportFormat, streamCsv } from '../../common/export/export-response';
 import {
   ChangeClientEmailDto,
   ClientStatusDto,
+  SetClientReferrerDto,
   UpdateClientProfileDto,
 } from './dto/requests/clients.dto';
 import { ClientAccountDto, ClientListResponseDto, ClientProfileDto } from './dto/responses.dto';
@@ -340,6 +341,41 @@ export class AdminClientsController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.clients.changeClientEmail(id, dto.email, req.admin);
+  }
+
+  @Patch('clients/:id/referrer')
+  @AnnouncesChange('clients')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('clients.referrer.set')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Record the partner who introduced a client, when none is recorded',
+    description:
+      'Attribution is captured in ONE place — `?ref=` on the registration screen — and both ' +
+      'portal auth cross-links dropped it, so a client who followed a partner link, clicked ' +
+      '"Sign in", then "Create an account" registered attributed to nobody. Permanently: ' +
+      '`referred_by_ib_user_id` was written at registration and nowhere else.\n\n' +
+      '⚠️ **NULL to A only.** A client who already has a referrer answers **409 ' +
+      'REFERRER_ALREADY_SET**. Re-pointing attribution would move a partner\u2019s client and ' +
+      'their future commissions to somebody else, which `docs/` forbids — and the refusal is ' +
+      'in the service rather than in a screen so this route cannot become that flow later.\n\n' +
+      'Takes the CODE the client reports, never a partner id: looking a partner up means ' +
+      'picking one off a list, which is the shape of choosing who gets paid.\n\n' +
+      'Three distinct refusals, because they need three sentences — ' +
+      '`REFERRAL_CODE_UNKNOWN` (a typo), `REFERRAL_SELF` (the client\u2019s own code), and ' +
+      '`REFERRAL_PARTNER_INACTIVE` (the code was RIGHT; that partner is suspended).\n\n' +
+      'Does NOT backdate: commission reads attribution at accrual time, so this pays on deals ' +
+      'not yet accrued and restates nothing already credited.',
+  })
+  @ApiOkResponse({ type: ClientAccountDto })
+  @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
+  @Audited('client.referrer_set')
+  setClientReferrer(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: SetClientReferrerDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.clients.setClientReferrer(id, dto.referralCode, req.admin);
   }
 
   @Patch('clients/:id/status')

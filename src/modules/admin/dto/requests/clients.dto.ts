@@ -1,5 +1,14 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsIn, IsOptional, IsString, Length, Matches, MaxLength } from 'class-validator';
+import {
+  IsEmail,
+  IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 import { Transform } from 'class-transformer';
 
 // Request DTO for the client list actions.
@@ -96,4 +105,29 @@ export class ChangeClientEmailDto {
   @IsEmail({}, { message: 'A valid email address is required.' })
   @MaxLength(255)
   email: string;
+}
+
+/**
+ * Body of `PATCH /admin/clients/:id/referrer`.
+ *
+ * ⚠️ A REFERRAL CODE, NEVER A PARTNER ID, and the input type is what keeps this
+ * route from being a different power.
+ *
+ * Support is holding what the CLIENT told them — "I used PARTNER01". An id
+ * forces the operator to look a partner up, and looking up means picking one
+ * off a list, which is the shape of CHOOSING WHO GETS PAID. Resolving a code the
+ * client supplied REPAIRS an attribution that existed; picking from a list
+ * CREATES one. Those are different powers wearing the same HTTP verb.
+ */
+export class SetClientReferrerDto {
+  @ApiProperty({
+    example: 'PARTNER01',
+    description:
+      'The partner\u2019s referral code, as the client reports it. Case-insensitive and ' +
+      'trimmed, exactly as registration resolves it. Refused with distinct codes when it ' +
+      'matches no partner, names the client themselves, or names a suspended partner.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  referralCode: string;
 }

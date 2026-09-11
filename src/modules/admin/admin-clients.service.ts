@@ -2,7 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { UsersStore, clientSortKey, clientSortOrder, type User } from '../../store/users.store';
 import { IbStore } from '../../store/ib.store';
 import { ClientTagsStore } from '../../store/client-tags.store';
-import { ClientNotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import {
+  ClientNotFoundError,
+  ReferralCodeUnknownError,
+  ReferralPartnerInactiveError,
+  ReferralSelfError,
+  ReferrerAlreadySetError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
 import { buildCursorPage, decodeCursor, pageSize } from '../../common/pagination';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
@@ -741,6 +748,99 @@ export class AdminClientsService {
       ...view,
       maskedFields: maskedFieldsFor('client', actor.fieldMask),
     };
+  }
+
+  /**
+   * Record the partner who introduced a client, WHEN NONE IS RECORDED.
+   *
+   * ## The defect this exists for
+   *
+   * Attribution is captured in exactly one place — `?ref=` on the registration
+   * screen — and both of the portal's auth cross-links dropped it. A client
+   * followed a partner's link, saw "Referred by PARTNER01", clicked Sign in,
+   * found they had no account, clicked Create an account, and registered
+   * attributed to NOBODY. The banner vanished and nothing recorded that a
+   * partner had just lost a client.
+   *
+   * The links carry `ref` now. This is for the clients already lost, because
+   * `referred_by_ib_user_id` was written at registration and nowhere else: no
+   * update route, no service method, no admin path. Permanent, silently.
+   *
+   * ## ⚠️ NULL → A ONLY. A → B IS REFUSED HERE, NOT IN A SCREEN
+   *
+   * `docs/` forbids a change-my-IB flow and is right — re-pointing attribution
+   * moves a partner's client and their future commissions to somebody else.
+   * Filling an EMPTY attribution takes nothing from anybody: the client was
+   * referred, we lost it, and the loss was our defect.
+   *
+   * The refusal is in this method rather than in a rendering condition, because
+   * "only show the control when `referrer` is absent" is a decision somebody
+   * relaxes in six months without knowing they have built the thing the docs
+   * forbid.
+   *
+   * ## What it pays, which is the first question support will ask
+   *
+   * `commission.service.ts` reads `users.referred_by_ib_user_id` AT ACCRUAL
+   * TIME, per deal. So this pays the partner on deals not yet accrued and
+   * touches nothing already credited — an accrual carries its earner. It does
+   * not backdate and it cannot restate anything somebody has been paid.
+   *
+   * ## Three refusals, three codes
+   *
+   * They need three sentences: a typo the operator can fix, a mistake they
+   * should see named, and "the code was RIGHT and that partner is suspended",
+   * which is somebody else's decision and a different conversation.
+   */
+  async setClientReferrer(userId: string, referralCode: string, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'clients.referrer.set', 'record a referring partner');
+    // Scoped first: an out-of-scope client 404s exactly as a missing one, so
+    // nothing about the response says they exist.
+    const client = await this.users.findForAdmin(userId, actor.clientScope);
+    if (!client) throw new ClientNotFoundError();
+
+    if (client.referredByIbUserId) {
+      throw new ReferrerAlreadySetError(
+        'This client already has a referring partner. Attribution is recorded once and is ' +
+          'not re-pointed — changing it would move their future commissions to somebody else.',
+      );
+    }
+
+    // Trimmed and upper-cased exactly as registration resolves it, so a code
+    // that worked on a link works here.
+    const code = referralCode.trim().toUpperCase();
+    const account = await this.ib.findAccountByReferralCode(code);
+    if (!account) {
+      throw new ReferralCodeUnknownError(`No partner holds the referral code ${code}.`);
+    }
+    if (account.userId === userId) {
+      throw new ReferralSelfError(
+        'That is this client\u2019s own referral code. A client cannot introduce themselves, ' +
+          'and the commission chain would walk a self-edge.',
+      );
+    }
+    if (!account.active) {
+      throw new ReferralPartnerInactiveError(
+        `The code ${code} is correct and that partner is SUSPENDED, so attribution cannot be ` +
+          'recorded to them. This is not a problem with the code the client gave you.',
+      );
+    }
+
+    const updated = (await this.users.update(userId, { referredByIbUserId: account.userId }))!;
+
+    /*
+     * `before` is always null here — that is what the 409 above guarantees — and
+     * it is recorded anyway. An audit row that omits the prior value on the
+     * grounds that it is known cannot be read back as evidence of what it was,
+     * and "it was empty" is the whole justification for this write being
+     * allowed at all.
+     */
+    this.audit.record(actor.id, 'client.referrer_set', 'user', userId, {
+      before: null,
+      after: account.userId,
+      referralCode: code,
+    });
+
+    return updated;
   }
 
   async setClientStatus(userId: string, status: 'active' | 'suspended', actor: AuthenticatedAdmin) {

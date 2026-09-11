@@ -136,6 +136,7 @@
   "PATCH /v1/admin/auth/me",
   "PATCH /v1/admin/clients/{id}",
   "PATCH /v1/admin/clients/{id}/email",
+  "PATCH /v1/admin/clients/{id}/referrer",
   "PATCH /v1/admin/clients/{id}/status",
   "PATCH /v1/admin/currencies/{code}",
   "PATCH /v1/admin/external-links/{id}",

@@ -52,6 +52,11 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'client.profile_update', label: 'Client profile edited', group: 'Clients' },
   { action: 'client.email_change', label: 'Client sign-in email changed', group: 'Clients' },
   { action: 'client.suspend', label: 'Client suspended', group: 'Clients' },
+  {
+    action: 'client.referrer_set',
+    label: 'Referring partner recorded',
+    group: 'Clients',
+  },
   { action: 'client.activate', label: 'Client reactivated', group: 'Clients' },
   { action: 'client_tag.assign', label: 'Tag added to client', group: 'Clients' },
   { action: 'client_tag.unassign', label: 'Tag removed from client', group: 'Clients' },

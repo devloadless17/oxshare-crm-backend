@@ -6383,6 +6383,53 @@
         ]
       }
     },
+    "/v1/admin/clients/{id}/referrer": {
+      "patch": {
+        "description": "Attribution is captured in ONE place — `?ref=` on the registration screen — and both portal auth cross-links dropped it, so a client who followed a partner link, clicked \"Sign in\", then \"Create an account\" registered attributed to nobody. Permanently: `referred_by_ib_user_id` was written at registration and nowhere else.\n\n⚠️ **NULL to A only.** A client who already has a referrer answers **409 REFERRER_ALREADY_SET**. Re-pointing attribution would move a partner’s client and their future commissions to somebody else, which `docs/` forbids — and the refusal is in the service rather than in a screen so this route cannot become that flow later.\n\nTakes the CODE the client reports, never a partner id: looking a partner up means picking one off a list, which is the shape of choosing who gets paid.\n\nThree distinct refusals, because they need three sentences — `REFERRAL_CODE_UNKNOWN` (a typo), `REFERRAL_SELF` (the client’s own code), and `REFERRAL_PARTNER_INACTIVE` (the code was RIGHT; that partner is suspended).\n\nDoes NOT backdate: commission reads attribution at accrual time, so this pays on deals not yet accrued and restates nothing already credited.",
+        "operationId": "AdminClientsController_setClientReferrer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetClientReferrerDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Record the partner who introduced a client, when none is recorded",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/clients/{id}/status": {
       "patch": {
         "operationId": "AdminClientsController_setClientStatus",
@@ -15437,6 +15484,19 @@
         },
         "required": [
           "email"
+        ]
+      },
+      "SetClientReferrerDto": {
+        "type": "object",
+        "properties": {
+          "referralCode": {
+            "type": "string",
+            "example": "PARTNER01",
+            "description": "The partner’s referral code, as the client reports it. Case-insensitive and trimmed, exactly as registration resolves it. Refused with distinct codes when it matches no partner, names the client themselves, or names a suspended partner."
+          }
+        },
+        "required": [
+          "referralCode"
         ]
       },
       "ClientStatusDto": {

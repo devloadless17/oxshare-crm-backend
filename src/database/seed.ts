@@ -744,7 +744,20 @@ export async function runSeeds(): Promise<void> {
       firstName: 'Delta',
       lastName: 'Dunn',
       type: 'individual',
-      status: 'pending',
+      /*
+       * ⚠️ SUSPENDED, AND IT WAS `pending` UNTIL 11 Sep 2026 — a state NO code
+       * path can produce or exit. Registration writes `active`,
+       * `setClientStatus` is typed `'active' | 'suspended'`, and no migration
+       * ever backfilled it, so delta was stuck there permanently and was the
+       * only row in the product holding it.
+       *
+       * THE SWAP IS NOT COSMETIC. The cohort's comment above claims
+       * "3 types x 3 statuses" coverage, and there was not ONE suspended
+       * fixture — so `?status=suspended` had never had a match, and a spec
+       * asserting that filter worked would have passed vacuously. Two REACHABLE
+       * statuses with a match each is what the comment always claimed.
+       */
+      status: 'suspended',
       level: 0,
       country: 'Lebanon',
     },

@@ -16,6 +16,10 @@
         "label": "Change Client Sign-in Email"
       },
       {
+        "key": "clients.referrer.set",
+        "label": "Record a Missing Referring Partner"
+      },
+      {
         "key": "clients.suspend",
         "label": "Suspend / Restore Client Access"
       },
