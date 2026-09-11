@@ -616,7 +616,18 @@ export class TransactionsService {
     const { code: currency, decimals } = await this.currencies.assertUsableDetail(params.currency);
 
     const amount = toDecimal(params.amount);
-    if (!amount.isPositive()) throw new ValidationError('Withdrawal amount must be positive.');
+    /*
+     * `lessThanOrEqualTo(0)`, NOT `!isPositive()`.
+     *
+     * decimal.js reads the SIGN, and it gives ZERO a sign of 1 — so
+     * `!amount.isPositive()` is FALSE for "0" and "0.00000000", and this guard
+     * never fired for the one input it most obviously exists to reject. The
+     * request then ran on to the ledger, which refused it with
+     * "A ledger entry must move a non-zero amount" — a sentence naming a table
+     * the client has never heard of, instead of the amount they typed.
+     */
+    if (amount.lessThanOrEqualTo(0))
+      throw new ValidationError('Withdrawal amount must be positive.');
 
     /*
      * Absolute bounds — PLATFORM-CONVENTIONS R-5.1.
@@ -2453,7 +2464,10 @@ export class TransactionsService {
     destinationTradingAccountId?: string;
   }) {
     const amount = toDecimal(params.amount);
-    if (!amount.isPositive()) throw new ValidationError('Deposit amount must be positive.');
+    // `lessThanOrEqualTo(0)`, NOT `!isPositive()` — see the withdrawal guard
+    // above: decimal.js gives ZERO a sign of 1, so the obvious spelling is a
+    // no-op for zero and the refusal arrives from the ledger instead.
+    if (amount.lessThanOrEqualTo(0)) throw new ValidationError('Deposit amount must be positive.');
 
     /*
      * The METHOD decides the currency, and is checked before it.

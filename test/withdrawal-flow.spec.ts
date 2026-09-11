@@ -493,3 +493,63 @@ describe('limits', () => {
     await expect(request(userId, '10')).rejects.toThrow(/24-hour/i);
   });
 });
+
+describe('a ZERO amount is refused at the door, not by the ledger', () => {
+  /**
+   * The guard read `if (!amount.isPositive()) throw` and never fired for zero.
+   *
+   * decimal.js reads the SIGN and gives ZERO a sign of 1, so `isPositive()` is
+   * TRUE for "0" and "0.00000000". The request ran past its own validation and
+   * was stopped at the very end by the ledger — *"A ledger entry must move a
+   * non-zero amount"* — a sentence naming a table the client never heard of,
+   * arriving after everything the method did first.
+   *
+   * The end state was always safe, which is why it survived: the money never
+   * moved. What was wrong is WHERE the refusal came from and what it said.
+   *
+   * This repo had already diagnosed the trap and written it down three times —
+   * `ib-wallet.service.ts:137`, `commission.ts:627`, `commission.ts:761` — and
+   * the idiom stayed live in the payments guards regardless, because **a
+   * comment beside a fix does not travel: the next reader copies the code.**
+   *
+   * Both spellings of zero are driven. "0.00000000" is the one the API actually
+   * receives, since money crosses every boundary here as a fixed-scale string,
+   * and a guard that handles "0" and not "0.00000000" would look correct in
+   * every test written by hand.
+   */
+  for (const zero of ['0', '0.00', '0.00000000']) {
+    it(`refuses ${zero} naming the AMOUNT, not the ledger`, async () => {
+      const userId = await makeFundedClient(`zero-${zero}@oxshare.test`, '500');
+
+      await expect(request(userId, zero)).rejects.toThrow(/amount must be positive/i);
+      // The control: it must not be the ledger's sentence. Without this the
+      // test passes against the OLD code, which also threw — just from the
+      // wrong place, with the wrong words, after doing the work.
+      await expect(request(userId, zero)).rejects.not.toThrow(/ledger/i);
+      expect(await ledgerCount(userId), 'a refused request must write nothing').toBe(1);
+    });
+  }
+
+  it('still refuses a NEGATIVE, which the old spelling did catch', async () => {
+    const userId = await makeFundedClient('zero-neg@oxshare.test', '500');
+    await expect(request(userId, '-10')).rejects.toThrow(/amount must be positive/i);
+  });
+
+  it('does not use the POSITIVITY guard to reject a small-but-positive amount', async () => {
+    /*
+     * The off-by-one control, and it has to be stated carefully.
+     *
+     * `0.00000001` IS refused — by the R-5.1 minimum, which is a different and
+     * entirely correct refusal. So asserting `resolves` here would be wrong and
+     * asserting `rejects` would pass against a positivity guard that had eaten
+     * every small amount. What must be true is that the refusal is NOT the
+     * positivity one: a positive amount, however small, has to get past the
+     * door this section is about and be judged on its size instead.
+     *
+     * Distinguishing two refusals that both throw is the same discipline the
+     * zero cases above need, one step further on.
+     */
+    const userId = await makeFundedClient('zero-tiny@oxshare.test', '500');
+    await expect(request(userId, '0.00000001')).rejects.not.toThrow(/must be positive/i);
+  });
+});
