@@ -2,6 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { Logger } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { TransfersService } from '../src/modules/payments/transfers.service';
+import { TransferExecutor } from '../src/modules/payments/transfer-executor.service';
+import type { Mt5BridgeClient } from '../src/modules/trading/mt5/mt5-bridge.client';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { auditStubAs } from './audit-stub';
@@ -563,5 +565,144 @@ describe('the transfer mirror respects read times', () => {
     expect(Math.abs(new Date(rows[0].balance_synced_at).getTime() - readAt.getTime())).toBeLessThan(
       1000,
     );
+  });
+});
+
+/**
+ * THE PRECONDITION THE RESUME PATH RESTS ON, AND NOTHING TESTED IT.
+ *
+ * `transfer-resume.scheduler.ts` re-runs `TransferExecutor.execute` on
+ * transfers left PENDING — a bridge restart, a lost response — every minute,
+ * for ever, until one succeeds. Its class note states the precondition in terms
+ * that leave no doubt:
+ *
+ *   "The idempotency key is the TRANSFER ID, not a fresh UUID per attempt. That
+ *    is the whole reason a retry is allowed … Retrying without that stable key
+ *    would be the single worst thing this file could do. It is not a detail of
+ *    the implementation; it is the precondition."
+ *
+ * It is correct today — `idempotencyKey: transfer.id`, one line, with a comment
+ * pointing at that note. **And no test attempted it.** The resume scheduler has
+ * NO spec at all, and `execute` was reached by nothing here: this file covered
+ * `TransfersService.request`/`settle` and never the executor that drives them.
+ *
+ * So a refactor to `uuidv4()` — which reads like an improvement, since a fresh
+ * key per call is what idempotency keys usually are — would pass every test in
+ * this repository while making the retry loop move a client's money on MT5
+ * once per minute until somebody noticed. The CRM leg would stay correct
+ * (`settle` refuses a non-pending transfer), which is what makes it so quiet:
+ * the wallet reads right and the trading account drifts.
+ *
+ * This is the same shape as the append-only trigger that was absent for a month
+ * behind a test that only INSERTed and counted, and as `@Audited` decorators
+ * with no interceptor: a guarantee written down, believed, and unattempted.
+ */
+describe('a zero transfer is refused by the AMOUNT, not by the ledger', () => {
+  /*
+   * `!amount.isPositive()` never fired for zero: decimal.js reads the SIGN and
+   * gives zero a sign of 1, so `new Decimal(0).isPositive()` is TRUE. The guard
+   * read perfectly and was a no-op for the one input it exists to reject.
+   *
+   * The end state was never wrong — `WalletService.post` refuses a zero
+   * movement — so this is a wrong-error-LATE defect rather than a wrong-money
+   * one. What it cost is WHERE the refusal comes from: the ledger, naming a
+   * concept the client never typed, instead of the amount they did.
+   * `ib-wallet.service.ts` records the same thing happening to it.
+   */
+  it('refuses 0 at the door, naming the amount', async () => {
+    const userId = await makeClient('zero-transfer@test.local');
+    const accountId = await makeAccount(userId);
+    await expect(
+      transfers.request({
+        userId,
+        tradingAccountId: accountId,
+        direction: 'wallet_to_account',
+        amount: '0',
+        currency: 'USD',
+      }),
+    ).rejects.toThrow(/Transfer amount must be positive/);
+  });
+
+  it('refuses a NEGATIVE transfer too, which the same guard did catch', async () => {
+    const userId = await makeClient('neg-transfer@test.local');
+    const accountId = await makeAccount(userId);
+    await expect(
+      transfers.request({
+        userId,
+        tradingAccountId: accountId,
+        direction: 'wallet_to_account',
+        amount: '-50',
+        currency: 'USD',
+      }),
+    ).rejects.toThrow(/Transfer amount must be positive/);
+  });
+});
+
+describe('the resume precondition: one transfer, one idempotency key', () => {
+  /** Records what the bridge was asked, and replays a key it has already seen. */
+  function recordingBridge() {
+    const seen = new Map<string, string>();
+    const keys: string[] = [];
+    let moves = 0;
+    const bridge = {
+      isConfigured: true,
+      // The read-back `execute` does after moving the money, so `settle` can
+      // write MT5's own figure rather than the CRM's arithmetic (0081).
+      getAccount: () => Promise.resolve({ balance: '250.00000000' }),
+      balance: (input: { idempotencyKey: string }) => {
+        keys.push(input.idempotencyKey);
+        const already = seen.get(input.idempotencyKey);
+        if (already) return Promise.resolve({ dealId: already, replayed: true });
+        // A key the bridge has not seen is a NEW movement of real money.
+        moves += 1;
+        const dealId = `deal-${seen.size + 1}`;
+        seen.set(input.idempotencyKey, dealId);
+        return Promise.resolve({ dealId, replayed: false });
+      },
+    };
+    return { bridge, keys, movesMade: () => moves };
+  }
+
+  it('passes the SAME key on a retry, so a resumed transfer moves money once', async () => {
+    const { bridge, keys, movesMade } = recordingBridge();
+    const executor = new TransferExecutor(ctx.db, transfers, bridge as unknown as Mt5BridgeClient);
+
+    const userId = await makeClient('resume-key@test.local');
+    const accountId = await makeAccount(userId);
+    /*
+     * An MT5 LOGIN, which `makeAccount` does not set — and the executor FAILS a
+     * transfer whose account has none, before it ever reaches the bridge. That
+     * is correct behaviour (holding a client's funds against an account that
+     * cannot receive them is worse than returning them), and it is also why
+     * every account in this file has been invisible to the executor: the helper
+     * was written for `TransfersService`, which never looks at the login.
+     */
+    await ctx.db.execute(sql`UPDATE trading_accounts SET login = 5000001 WHERE id = ${accountId}`);
+    const transfer = await transfers.request({
+      userId,
+      tradingAccountId: accountId,
+      direction: 'wallet_to_account',
+      amount: '250',
+      currency: 'USD',
+    });
+
+    // Twice, exactly as the scheduler does when the first attempt is left
+    // pending — the second is a RESUME, not a new instruction.
+    await executor.execute(transfer.id);
+    await executor.execute(transfer.id);
+
+    /*
+     * THE ASSERTION THE WHOLE BLOCK EXISTS FOR. Not "it was called twice" —
+     * that is true either way — but that both calls named the SAME movement.
+     */
+    expect(keys.length, 'the executor did not reach the bridge').toBeGreaterThanOrEqual(1);
+    expect(new Set(keys).size, `two different keys: ${keys.join(', ')}`).toBe(1);
+    expect(keys[0], 'the key must be the TRANSFER ID, which is what makes it stable').toBe(
+      transfer.id,
+    );
+
+    // And the consequence, stated in money rather than in keys: the bridge
+    // recognised the second call as the same movement, so MT5 moved once.
+    expect(movesMade(), 'MT5 was asked to move money more than once').toBe(1);
   });
 });

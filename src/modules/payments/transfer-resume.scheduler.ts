@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { and, eq, lt } from 'drizzle-orm';
+import { and, count, eq, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { transfers } from '../../database/schema';
@@ -104,7 +104,25 @@ export class TransferResumeScheduler {
       const stuck = await this.db
         .select({ id: transfers.id, createdAt: transfers.createdAt })
         .from(transfers)
-        .where(and(eq(transfers.state, 'pending'), lt(transfers.createdAt, cutoff)))
+        .where(
+          and(
+            eq(transfers.state, 'pending'),
+            lt(transfers.createdAt, cutoff),
+            /*
+             * The backoff gate (0123). A row that has failed recently is held
+             * out of the BATCH rather than skipped inside the loop — which is
+             * the whole point: skipping it in the loop still lets it occupy one
+             * of the ten slots, so the starvation would be unchanged.
+             *
+             * `IS NULL OR <= now()` and not just `<= now()`: a transfer that has
+             * never been attempted has no `resume_after`, and a bare comparison
+             * against NULL is NULL, which is not TRUE — so every first attempt
+             * would be filtered out and the scheduler would resume nothing at
+             * all. That is the trap 0092's own header records hitting.
+             */
+            or(isNull(transfers.resumeAfter), lte(transfers.resumeAfter, new Date())),
+          ),
+        )
         /*
          * Oldest first: a client who has been waiting longest is served first,
          * and a permanently stuck row cannot starve the queue because the batch
@@ -133,11 +151,30 @@ export class TransferResumeScheduler {
           const result = await this.executor.execute(row.id);
           if (result?.state === 'settled') settled += 1;
         } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
           this.logger.error(
-            `Transfer ${row.id} could not be resumed: ` +
-              `${error instanceof Error ? error.message : String(error)}. ` +
-              'It stays pending and will be tried again.',
+            `Transfer ${row.id} could not be resumed: ${reason}. ` +
+              'It stays pending and will be tried again, on a widening backoff.',
           );
+          /*
+           * `resume_attempts + 1` computed IN SQL rather than from the row we
+           * read: two instances may have attempted this transfer between our
+           * SELECT and now, and the backoff should reflect what actually
+           * happened to it rather than what this process last saw. 0092 makes
+           * the same choice for the same reason.
+           *
+           * STILL PENDING. This records that an attempt failed and when to try
+           * again; it does not decide the transfer's fate, because nothing
+           * automatic may — see the column note in schema.ts.
+           */
+          await this.db
+            .update(transfers)
+            .set({
+              resumeAttempts: sql`${transfers.resumeAttempts} + 1`,
+              resumeAfter: sql`now() + (least(power(2, least(${transfers.resumeAttempts}, ${RETRY_EXPONENT_CEILING}))::int, ${RETRY_CAP_MINUTES}) || ' minutes')::interval`,
+              resumeLastError: reason.slice(0, 500),
+            })
+            .where(eq(transfers.id, row.id));
         }
       }
 
@@ -159,18 +196,52 @@ export class TransferResumeScheduler {
        * now told to come.
        */
       const stale = stuck.filter((row) => Date.now() - row.createdAt.getTime() > STALE_MS);
+      /*
+       * ── THE COUNT IS A BACKLOG, NOT A BATCH TALLY ────────────────────────
+       *
+       * `stale` is filtered out of `stuck`, and `stuck` is capped at BATCH (10)
+       * and drained OLDEST FIRST. So the number that used to reach the page was
+       * never "how many transfers are stuck" — it was "how many of the ten
+       * oldest are stuck", which saturates at ten and stops moving exactly when
+       * things are getting worse.
+       *
+       * That matters because of how this loop behaves under a persistent
+       * failure: ten transfers that cannot be resumed keep their place at the
+       * front every minute, so newer pending transfers are never even examined
+       * — and therefore never counted, however long they wait. An operator
+       * reading "10 transfers pending" while fifty are is under-reacting to a
+       * number the system gave them.
+       *
+       * This codebase has met that distinction before and written it down: the
+       * commission engine returns `orphaned` and `deferred` as BACKLOGS rather
+       * than batch tallies, for the same reason and in nearly the same words.
+       * It also solved the starvation half with `commission_retry_after`, a
+       * per-row backoff that moves a failing row off the front of the queue.
+       * `transfers` has no such column — see the note below.
+       */
+      const [{ backlog } = { backlog: 0 }] = await this.db
+        .select({ backlog: count() })
+        .from(transfers)
+        .where(
+          and(
+            eq(transfers.state, 'pending'),
+            lt(transfers.createdAt, new Date(Date.now() - STALE_MS)),
+          ),
+        );
       if (stale.length > 0) {
         raiseAlert(
           this.logger,
           ALERT_KINDS.TRANSFER_STUCK,
           'page',
-          `${stale.length} transfer(s) have been pending for over ${STALE_MS / 60_000} minutes ` +
+          `${backlog} transfer(s) have been pending for over ${STALE_MS / 60_000} minutes ` +
             'and are not clearing on their own. No money has moved — the wallet is debited only ' +
             'once MT5 confirms — but a client is watching a spinner. The usual cause is the MT5 ' +
             `bridge having lost its session; check GET /admin/live on it. Transfers: ${stale
               .map((row) => row.id)
               .join(', ')}`,
-          { count: stale.length, oldestId: stale[0]?.id },
+          // `count` is the whole backlog; `inThisBatch` is what this run could
+          // actually look at. When they diverge, the queue is not draining.
+          { count: backlog, inThisBatch: stale.length, oldestId: stale[0]?.id },
         );
       }
     } catch (error) {
@@ -188,6 +259,16 @@ export class TransferResumeScheduler {
 }
 
 /** Long enough that the creating request has finished its own attempt. */
+/*
+ * The backoff ceiling, matching 0092 exactly: a minute, two, four … capped at
+ * an hour, then hourly for ever. It never gives up — abandoning a stuck
+ * transfer would strand a client's money on a decision nobody made — but a
+ * permanently-stuck row costs ONE slot an hour instead of one slot for ever.
+ */
+const RETRY_CAP_MINUTES = 60;
+/** Bounds the exponent so `power(2, n)` cannot overflow on an ancient row. */
+const RETRY_EXPONENT_CEILING = 20;
+
 const GRACE_MS = 30_000;
 
 /**

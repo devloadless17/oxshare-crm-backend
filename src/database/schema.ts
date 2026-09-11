@@ -2827,6 +2827,30 @@ export const transfers = pgTable(
     /** Why it was refused. Null unless `state = 'failed'`. */
     failureReason: text('failure_reason'),
     settledAt: timestamp('settled_at', { withTimezone: true }),
+    /*
+     * ── THE RESUME BACKOFF (0123) ──────────────────────────────────────────
+     *
+     * `TransferResumeScheduler` drains pending transfers OLDEST FIRST with a
+     * LIMIT. Without a backoff a transfer that can never be resumed keeps its
+     * place at the head of that queue for ever, and newer pending transfers are
+     * never examined at all — not slowly, never. Ten such rows starve the rail.
+     *
+     * The commission engine met the identical shape and calls it "the worst
+     * shape a money job can have" (0092): correct, silent, and worse the busier
+     * the platform is. These three columns are that mechanism, copied rather
+     * than reinvented — a minute, two, four, up to an hour, then hourly for
+     * ever.
+     *
+     * ⚠️ THE BACKOFF NEVER FAILS A TRANSFER, and that distinction is the whole
+     * design. Age is not evidence that money did not move: a transfer pending
+     * since yesterday may have credited MT5 on its first attempt and lost only
+     * the response, so auto-failing it would release the hold and hand the
+     * client their money twice. This changes HOW OFTEN a stuck row is retried
+     * and nothing else. A person still decides its end state.
+     */
+    resumeAttempts: integer('resume_attempts').notNull().default(0),
+    resumeAfter: timestamp('resume_after', { withTimezone: true }),
+    resumeLastError: text('resume_last_error'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

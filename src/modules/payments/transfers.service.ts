@@ -90,7 +90,31 @@ export class TransfersService {
     currency: string;
   }) {
     const amount = toDecimal(params.amount);
-    if (!amount.isPositive()) throw new ValidationError('Transfer amount must be positive.');
+    /*
+     * `lessThanOrEqualTo(0)`, NOT `!isPositive()`.
+     *
+     * decimal.js reads the SIGN and gives ZERO a sign of 1, so
+     * `new Decimal(0).isPositive()` is TRUE and this guard never fired for '0'.
+     * It read perfectly and was a no-op for the one input it most obviously
+     * exists to reject. Measured: isPositive() is true for `0` and `0.00000000`
+     * and false for `-0`.
+     *
+     * The end state was never wrong — `WalletService.post` refuses a zero
+     * movement outright — so this is a wrong-error-LATE defect, not a
+     * wrong-money one. What it cost is WHERE the refusal comes from. Before the
+     * Domain 5 sweep a zero transfer fell all the way to the ledger; after it,
+     * it surfaced as `'Hold amount must be positive.'` — a message naming a
+     * HOLD, which is a concept the client never typed and cannot act on. The
+     * amount they entered is the thing to name.
+     *
+     * `ib-wallet.service.ts` and `commission.ts` documented this trap three
+     * times between them while it stayed live in six other guards, because a
+     * comment beside one fix does not travel — the next reader copies the code.
+     * The lint rule on `modules/wallet/**` is the part that does travel, and it
+     * should be WIDENED to cover this directory once its last violation
+     * (`transactions.service.ts`) is fixed.
+     */
+    if (amount.lessThanOrEqualTo(0)) throw new ValidationError('Transfer amount must be positive.');
 
     // Refuses an unknown or DISABLED currency. This is the runtime half of what
     // the old `'USD' | 'USDT'` union checked at compile time — see

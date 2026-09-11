@@ -118,14 +118,22 @@ export default tseslint.config(
      * how it was reintroduced into `release` on 11 Sep while the person doing
      * it had read those three comments an hour earlier.
      *
-     * SCOPED TO `modules/wallet/**` AND `config/money-limits.ts` FOR NOW, not
-     * because the rule is narrower than the problem but because three more
-     * violations live in `modules/payments/**`, which another session owns this
-     * hour. Widen the `files` list to the full money path once those are fixed
-     * — same shrink-only ratchet as `max-lines` and `--max-warnings`. Do not
-     * narrow it.
+     * WIDENED TO `modules/payments/**` on 11 Sep, once its three violations
+     * were fixed — `transactions.service.ts` (deposit and withdrawal) and
+     * `transfers.service.ts` (transfer). The list was deliberately narrow for a
+     * few hours rather than shipping with inline `eslint-disable` comments at
+     * the violation sites: a disable is a thing people stop seeing within a
+     * week, whereas a `files` list that visibly omits a directory is a question
+     * anybody opening this config will ask.
+     *
+     * Same shrink-only ratchet as `max-lines` and `--max-warnings`: WIDEN this
+     * as each remaining money path is cleaned. Never narrow it.
      */
-    files: ['src/modules/wallet/**/*.ts', 'src/config/money-limits.ts'],
+    files: [
+      'src/modules/wallet/**/*.ts',
+      'src/modules/payments/**/*.ts',
+      'src/config/money-limits.ts',
+    ],
     ignores: ['**/*.spec.ts'],
     rules: {
       'no-restricted-syntax': [
