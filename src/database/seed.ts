@@ -10,10 +10,12 @@ import {
   kycConfigSteps,
   kycSubmissions,
   mt5Deals,
+  transfers,
   rejectionReasons,
   roles,
   tradingAccounts,
   users,
+  wallets,
 } from './schema';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { DEFAULT_KYC_STEPS } from '../store/kyc-config.store';
@@ -1270,13 +1272,29 @@ export async function createFreshE2eClient(
  * populated database it touches one seeded identity and nothing else — the same
  * containment `reassertReviewPool` relies on.
  *
- * ## What is deliberately NOT here
+ * ## ⚠️ TERMINAL transfers only — never a PENDING one, and the reason is sharp
  *
- * Transfers and IB accruals. A seeded PENDING transfer is picked up by
- * `transfer-resume.scheduler.ts` on its next tick, every minute, for ever
- * against a simulated bridge — real `resume_attempts` churn and real log noise
- * in a stack somebody is using. That is a decision for whoever owns the
- * scheduler, not a side effect to introduce quietly from here.
+ * A seeded stuck transfer would not merely make log noise. `TransferResume-
+ * Scheduler` raises `ALERT_KINDS.TRANSFER_STUCK` at severity **`page`** once a
+ * pending transfer passes `TRANSFER_STALE_MS`, and the alarm counts the BACKLOG
+ * rather than the batch — so the 0123 backoff, which bounds how often a row is
+ * RETRIED, does not bound how often it is RAISED.
+ *
+ * A permanently-unresumable fixture would therefore page on every tick, in
+ * every dev environment, from fifteen minutes after first boot, for ever. **An
+ * alarm that is always firing is an alarm nobody reads, and it would take the
+ * real ones with it** — the same failure as a flag that is always true, which
+ * this codebase has already deleted once.
+ *
+ * So the stuck path is NOT a fixture. It belongs in `test/transfer-resume.spec.ts`,
+ * which creates its own stuck rows, proves the starvation fix behaviourally, and
+ * disappears with the container. **A fixture that never settles is a permanent
+ * incident; a spec that creates one is a test.**
+ *
+ * Settled and failed rows give the soak what it actually needs from transfers:
+ * something to list, page, sort and reconcile against.
+ *
+ * Ruled by the session that owns the scheduler rather than decided here.
  */
 async function seedTradingFixtures(db: ReturnType<typeof getDb>): Promise<void> {
   const [client] = await db
@@ -1407,6 +1425,76 @@ async function seedTradingFixtures(db: ReturnType<typeof getDb>): Promise<void> 
       // timestamp cannot be shown to work.
       dealtAt: new Date(Date.now() - DEALS.indexOf(deal) * 36 * 60 * 60 * 1000),
       source: 'sweep',
+    });
+  }
+
+  /*
+   * Transfers in TERMINAL states only — see the note above. One settled and one
+   * failed, in both directions, so a list, a filter and a state badge all have
+   * something real to render.
+   *
+   * Keyed on the wallet+account+amount triple rather than an id, since the id is
+   * generated: re-running must not add a second copy.
+   */
+  const [wallet] = await db
+    .select({ id: wallets.id, currency: wallets.currency })
+    .from(wallets)
+    .where(eq(wallets.userId, client.id))
+    .limit(1);
+
+  const [liveAccount] = await db
+    .select({ id: tradingAccounts.id })
+    .from(tradingAccounts)
+    .where(eq(tradingAccounts.login, '5000001'))
+    .limit(1);
+
+  if (!wallet || !liveAccount) return;
+
+  const TRANSFERS = [
+    {
+      direction: 'wallet_to_account' as const,
+      amount: '250.00000000',
+      state: 'settled' as const,
+      failureReason: null,
+    },
+    {
+      direction: 'account_to_wallet' as const,
+      amount: '100.00000000',
+      state: 'settled' as const,
+      failureReason: null,
+    },
+    {
+      direction: 'wallet_to_account' as const,
+      amount: '75.00000000',
+      state: 'failed' as const,
+      failureReason: 'MT5 refused the deposit: insufficient margin',
+    },
+  ];
+
+  for (const transfer of TRANSFERS) {
+    const [existing] = await db
+      .select({ id: transfers.id })
+      .from(transfers)
+      .where(
+        and(
+          eq(transfers.tradingAccountId, liveAccount.id),
+          eq(transfers.amount, transfer.amount),
+          eq(transfers.direction, transfer.direction),
+        ),
+      )
+      .limit(1);
+    if (existing) continue;
+
+    await db.insert(transfers).values({
+      userId: client.id,
+      walletId: wallet.id,
+      tradingAccountId: liveAccount.id,
+      direction: transfer.direction,
+      amount: transfer.amount,
+      currency: wallet.currency,
+      state: transfer.state,
+      failureReason: transfer.failureReason,
+      settledAt: transfer.state === 'settled' ? new Date() : null,
     });
   }
 }

@@ -596,7 +596,7 @@ describe('two operators at the same withdrawal, at the same moment', () => {
      * a deadlock or a constraint violation would also produce one rejection,
      * and would not mean the guard worked.
      */
-    const reason = (rejected[0]).reason as Error;
+    const reason = rejected[0].reason as Error;
     expect(reason.message).toMatch(/pending/i);
 
     /*
