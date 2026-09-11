@@ -100,6 +100,34 @@ async function main() {
     }
     const userId = owners[0].id;
 
+    /*
+     * ⚠️ ACCOUNTS ARE SPREAD ACROSS CLIENTS, and the first version of this
+     * script put all two hundred on ONE.
+     *
+     * That concentration is not a shape the product produces, and it quietly
+     * destroyed most of what the volume was for: pages that are all one owner
+     * never cross a scope boundary, "this client's accounts" returns 200 or 0
+     * and never 3, a tag-scoped admin sees all-or-nothing rather than a slice,
+     * and the partner tree is a line rather than a tree. **A fixture can have
+     * the right ROW COUNT and the wrong DISTRIBUTION, and only the second one
+     * makes a soak mean anything.** Found by crm-92, whose commission step asked
+     * for fifty clients to attribute and was told there was one.
+     *
+     * ONE deliberately fat client is kept — the e2e client kicks off with a
+     * long tail — because the unbounded `/dashboard` payload is a real
+     * observation and it needs a fixture somebody can point at. The rest are
+     * 2-5 accounts each, which is what the product actually makes.
+     */
+    const { rows: spread } = await db.query(
+      `SELECT id FROM users
+        WHERE id <> $1 AND status = 'active'
+        ORDER BY created_at
+        LIMIT 60`,
+      [userId],
+    );
+    const ownerPool = [userId, ...spread.map((r) => r.id)];
+    console.log(`spreading accounts across ${ownerPool.length} clients`);
+
     const { rows: wallets } = await db.query(
       `SELECT id, currency FROM wallets WHERE user_id = $1 LIMIT 1`,
       [userId],
@@ -114,6 +142,13 @@ async function main() {
     // `vol-` logins, so volume rows are greppable and can never collide with
     // the five-digit logins `seed.ts` writes.
     for (let i = 0; i < ACCOUNTS; i += 1) {
+      /*
+       * The first 40 stay on the e2e client — the deliberately fat one, so the
+       * unbounded-dashboard case remains observable. The rest round-robin over
+       * the pool, which lands 2-5 accounts on each.
+       */
+      const owner = i < 40 ? userId : ownerPool[i % ownerPool.length];
+
       await db.query(
         /*
          * Casts are explicit because `$2` appears in BOTH the SELECT list and
@@ -123,7 +158,7 @@ async function main() {
         `INSERT INTO trading_accounts (user_id, login, environment, currency, balance, status, name)
          SELECT $1::uuid, $2::varchar, 'live', 'USD', $3::numeric, 'active', $4::varchar
          WHERE NOT EXISTS (SELECT 1 FROM trading_accounts WHERE login = $2::varchar)`,
-        [userId, `vol-${i}`, `${1000 + i}.00000000`, `Volume ${i}`],
+        [owner, `vol-${i}`, `${1000 + i}.00000000`, `Volume ${i}`],
       );
     }
 
@@ -184,8 +219,25 @@ async function main() {
 
     // ── transfers ───────────────────────────────────────────────────────────
     // TERMINAL ONLY. See the warning at the top of this file.
+    /*
+     * ⚠️ The account's OWN owner and their OWN wallet — not the e2e client's.
+     *
+     * Before the accounts were spread, every one belonged to the same client
+     * and a single `userId`/`walletId` pair was correct for all of them. It is
+     * not any more: a transfer joining client A's wallet to client B's trading
+     * account is data the product cannot produce, and a soak built on it would
+     * be measuring a shape that never occurs.
+     *
+     * Only accounts whose owner HAS a wallet are eligible, which is why the
+     * join is inner rather than a lookup per row.
+     */
     const { rows: accts } = await db.query(
-      `SELECT id FROM trading_accounts WHERE login LIKE 'vol-%' ORDER BY login LIMIT $1`,
+      `SELECT ta.id, ta.user_id, w.id AS wallet_id, w.currency
+         FROM trading_accounts ta
+         JOIN wallets w ON w.user_id = ta.user_id
+        WHERE ta.login LIKE 'vol-%'
+        ORDER BY ta.login
+        LIMIT $1`,
       [TRANSFERS],
     );
     for (let i = 0; i < Math.min(TRANSFERS, accts.length); i += 1) {
@@ -201,17 +253,83 @@ async function main() {
             WHERE trading_account_id = $3::uuid AND amount = $5::numeric
          )`,
         [
-          userId,
-          wallets[0].id,
+          accts[i].user_id,
+          accts[i].wallet_id,
           accts[i].id,
           i % 2 === 0 ? 'wallet_to_account' : 'account_to_wallet',
           `${10 + i}.00000000`,
-          wallets[0].currency,
+          accts[i].currency,
           settled ? 'settled' : 'failed',
           settled ? null : 'MT5 refused the transfer: insufficient margin',
           settled ? new Date() : null,
         ],
       );
+    }
+
+    /*
+     * ── THE COMMISSION SURFACE: ATTRIBUTION AND A LADDER THAT PAYS ─────────
+     *
+     * Measured before writing this: 200 volume clients, ZERO with a referrer,
+     * and both enabled rungs paying 0.00 per lot. So the commission engine
+     * would examine the recent deals, resolve an EMPTY chain for every one of
+     * them, and correctly accrue nothing — for ever. `ib_accruals` stays 0 and
+     * the whole partner surface is unexercisable, while looking populated.
+     *
+     * ⚠️ THIS SEEDS THE INPUTS, NOT THE OUTPUT. It would be far easier to
+     * INSERT rows into `ib_accruals` directly, and it would prove nothing: a
+     * fabricated accrual exercises no chain resolution, no rate lookup, no
+     * plausibility check and no idempotency constraint. Attributing clients and
+     * configuring rungs makes the ENGINE produce them, through
+     * `resolveChain` -> `calculate` -> `ib_accruals`, which is the thing a soak
+     * is for. Seeding the output would be the fixture equivalent of asserting
+     * on a value the test itself wrote.
+     *
+     * ⚠️ AND IT MOVES REAL MONEY, EVENTUALLY. An accrual is pending until the
+     * hourly `confirmPending` credits the partner's commission wallet. That is
+     * the intended behaviour and the reason this lives in the OPT-IN volume
+     * script rather than the boot seed: nobody should have partner money
+     * credited as a side effect of starting the app.
+     *
+     * The rung update is CONDITIONAL on the term still being zero, so it can
+     * never overwrite rates a real operator has set. Migration 0112 seeds them
+     * enabled-but-zero on purpose — "a visible 'not configured yet'" — and this
+     * fills that in for a soak without ever touching a configured ladder.
+     */
+    const { rowCount: rungsPriced } = await db.query(
+      `UPDATE ib_levels
+          SET commission_mode = 'per_lot', commission_amount_per_lot = $1,
+              rebate_mode = 'per_lot', rebate_amount_per_lot = $2
+        WHERE enabled
+          AND coalesce(commission_amount_per_lot, 0) = 0
+          AND coalesce(commission_rate, 0) = 0`,
+      ['2.50000000', '0.50000000'],
+    );
+
+    /*
+     * A QUARTER of the volume clients get a referrer, not all of them. A soak
+     * needs both sides: chains that resolve AND clients who are owed to nobody,
+     * because "every client has a partner" is a shape production never has and
+     * would hide an attribution bug that only shows on the unattributed path.
+     */
+    const { rows: rootPartner } = await db.query(
+      `SELECT user_id FROM ib_accounts WHERE parent_ib_user_id IS NULL AND active LIMIT 1`,
+    );
+    let attributed = 0;
+    if (rootPartner.length > 0) {
+      const { rowCount } = await db.query(
+        `UPDATE users SET referred_by_ib_user_id = $1
+          WHERE referred_by_ib_user_id IS NULL
+            AND id IN (
+              SELECT u.id FROM users u
+                JOIN trading_accounts ta ON ta.user_id = u.id
+               WHERE ta.login LIKE 'vol-%'
+               GROUP BY u.id
+               ORDER BY u.id
+               LIMIT $2
+            )`,
+        [rootPartner[0].user_id, Math.floor(ACCOUNTS / 4)],
+      );
+      attributed = rowCount ?? 0;
     }
 
     const after = await counts(db);
@@ -221,8 +339,15 @@ async function main() {
       Object.fromEntries(Object.keys(after).map((k) => [k, Number(after[k]) - Number(before[k])])),
     );
     console.log(
-      `\nNOTE: ib_accruals left at ${after.accruals}. They hang off the commission engine's own\n` +
-        'shapes and belong with whoever owns it — this script does not invent partner money.',
+      `\ncommission: ${rungsPriced} rung(s) priced (only ones still at zero), ` +
+        `${attributed} client(s) attributed to a partner.`,
+    );
+    console.log(
+      `ib_accruals is ${after.accruals} and that is CORRECT right now — the engine\n` +
+        'produces them on its next tick from the recent unprocessed deals. This script seeds\n' +
+        'the INPUTS (attribution + rates) and never inserts an accrual: a fabricated one\n' +
+        'exercises no chain resolution, no rate lookup and no idempotency constraint.\n' +
+        'NOTE: a pending accrual is credited to a partner wallet by the hourly confirm job.',
     );
   } finally {
     db.release();
