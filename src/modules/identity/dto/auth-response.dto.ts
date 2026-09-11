@@ -113,20 +113,31 @@ export class RegistrationResponseDto {
   })
   message: string;
 
-  /**
-   * OPTIONAL, and that is the point.
+  /*
+   * ⚠️ THERE IS NO `userId` HERE, AND ITS ABSENCE IS THE WHOLE POINT.
    *
-   * Registration answers identically whether or not an account already exists,
-   * so that it is not a membership oracle (auth.service.ts). When one does, no
-   * account is created and there is no id to return — returning the EXISTING
-   * user's id would hand back the exact fact the generic message hides.
+   * This response carried an optional `userId` until 11 Sep 2026, with a
+   * docblock explaining that it was omitted when an account already existed
+   * "which this endpoint deliberately does not disclose".
+   *
+   * It disclosed it. Everything around the omission was right — the same 201,
+   * the same message, an email to the real holder, no throw — and the PRESENCE
+   * OF THE KEY was the oracle. POST an address, read one field, learn whether
+   * it holds an account. Measured on the wire: identical status, identical
+   * message, `userId` present for a new address and absent for `client@…`.
+   *
+   * The field is GONE rather than faked. Nothing read it — one docblock in the
+   * portal's `lib/api/auth.ts` described the shape and no caller touched it —
+   * and a fabricated id would be a lie in a response body that somebody
+   * eventually trusts. With the field removed the two bodies are byte-identical
+   * and there is no value to keep in step.
+   *
+   * `auth-registration-oracle.spec.ts` asserts the two responses are IDENTICAL
+   * rather than that this key is absent: "no userId for an existing address"
+   * would pass against a response that later grew a `createdAt` or a
+   * `verified: false`. The property is INDISTINGUISHABILITY, not the absence of
+   * one field.
    */
-  @ApiPropertyOptional({
-    description:
-      'The new user id. Absent when no account was created — including when one already existed, ' +
-      'which this endpoint deliberately does not disclose. No session exists until the email is verified.',
-  })
-  userId?: string;
 }
 
 /**

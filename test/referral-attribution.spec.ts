@@ -79,21 +79,34 @@ async function makePartner(email: string, code: string, active = true): Promise<
 }
 
 /**
- * Register, and hand back the new client's id.
+ * Register, and hand back the new client's id — LOOKED UP, not returned.
  *
- * `register()` answers a union — it returns `{ message }` with no id when the
- * address is already taken, which is the membership-oracle defence its own
- * docblock describes. Every case here uses a fresh address, so an absent id
- * means the test set up something it did not intend; failing loudly here beats
- * a non-null assertion that would turn that into a confusing `undefined`
- * comparison further down.
+ * ⚠️ THIS USED TO READ `result.userId`, AND THAT FIELD WAS THE MEMBERSHIP
+ * ORACLE. `register()` answered `{ message, userId }` for a fresh address and
+ * `{ message }` for a taken one — same status, same sentence, and the presence
+ * of one key telling an attacker whether an address holds an account. The field
+ * is gone (see `RegistrationResponseDto`), so the two responses are now
+ * identical and there is nothing here to read.
+ *
+ * Worth recording rather than quietly rewriting: the field was NOT unused. This
+ * helper consumed it, and consumed it precisely to detect "the address was
+ * already taken" — the exact condition it leaked. A defence with one internal
+ * consumer that depends on the leak is how a leak survives review.
+ *
+ * Looking the row up by email is also a STRONGER control than the old check: it
+ * proves the account exists in the database rather than trusting what the
+ * endpoint said about it.
  */
 async function registerClient(email: string, referralCode?: string): Promise<string> {
-  const result = await auth.register(registration(email, referralCode));
-  if (!('userId' in result)) {
-    throw new Error(`Expected a new account for ${email}, got the already-registered answer.`);
+  await auth.register(registration(email, referralCode));
+  const created = await users.findByEmail(email);
+  if (!created) {
+    throw new Error(
+      `Expected a new account for ${email}; none exists, so the address was already ` +
+        'taken or registration failed. The response cannot tell you which, by design.',
+    );
   }
-  return result.userId;
+  return created.id;
 }
 
 function registration(email: string, referralCode?: string) {

@@ -185,9 +185,14 @@ export class AuthService {
       await this.email.sendAccountExistsEmail(existing.email);
       this.logger.log(`Registration attempted for an existing address: ${existing.email}`);
       /*
-       * No `userId`, because there is no new account and returning the existing
-       * one's id would hand back the very fact this is hiding. The portal reads
-       * `.message` only — see RegistrationResponseDto.
+       * IDENTICAL to the success return below — same object, no extra key.
+       *
+       * This used to return `generic` while the success path returned
+       * `{ ...generic, userId }`, and that difference WAS the membership oracle
+       * every other line here exists to prevent: same status, same message, and
+       * one field present or absent depending on whether the address is taken.
+       * `userId` is gone from the response entirely; see
+       * `RegistrationResponseDto` for why it was dropped rather than faked.
        */
       return generic;
     }
@@ -281,7 +286,12 @@ export class AuthService {
     await this.email.sendVerificationEmail(user.email, verificationToken);
     this.logger.log(`Verification email dispatched to ${user.email}`);
 
-    return { ...generic, userId: user.id };
+    /*
+     * `generic`, unchanged and unextended. Anything added here — an id, a
+     * timestamp, a flag — re-creates the oracle by being present on one path
+     * and not the other. The two returns must stay the SAME OBJECT SHAPE.
+     */
+    return generic;
   }
 
   /**
