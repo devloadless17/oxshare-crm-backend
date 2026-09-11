@@ -9,8 +9,10 @@ import {
   ibAccounts,
   kycConfigSteps,
   kycSubmissions,
+  mt5Deals,
   rejectionReasons,
   roles,
+  tradingAccounts,
   users,
 } from './schema';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
@@ -832,6 +834,8 @@ export async function runSeeds(): Promise<void> {
    */
   await reassertReviewPool(db);
 
+  await seedTradingFixtures(db);
+
   /*
    * Two tags the suite owns, prefixed so they read as suite-owned in the tag
    * picker and sort together away from an operator's real segments.
@@ -1227,4 +1231,182 @@ export async function createFreshE2eClient(
   });
 
   return { id: client.id, email, password };
+}
+
+/**
+ * THE TRADING SURFACE — the fixtures without which four whole tables are empty.
+ *
+ * ## Why this exists
+ *
+ * Measured on this dev database while closing Domain 6:
+ *
+ *     users 253 · wallets 364 · ledger_entries 392 · transactions 375
+ *     trading_accounts 0 · mt5_deals 0 · transfers 0 · ib_accruals 0
+ *
+ * Four zeroes, and they are the entire trading and partner surface. The
+ * consequence was not theoretical:
+ *
+ *  - **Domain 6's §14 legs could not be walked at all.** Every rail path needs
+ *    an MT5 account, so criterion 5 was recorded as NOT CLAIMED — an
+ *    environmental gap rather than unfinished work, but a gap.
+ *  - **A resume-path defect hid behind it.** `makeAccount` in the transfer specs
+ *    set no MT5 login, because nothing in this database ever had one — and the
+ *    executor fails a transfer whose account has none, so every account in that
+ *    file was invisible to the executor and the path was untested rather than
+ *    under-tested.
+ *  - **Domain 7 is a cross-domain SOAK**, and a soak that cannot produce the
+ *    conditions it is soaking for measures the fixtures rather than the product.
+ *    It would pass, and the pass would mean nothing.
+ *
+ * ## Idempotent, and keyed on values that identify the row
+ *
+ * Seeds re-run on every boot. Each insert is guarded by the natural key the
+ * table already enforces — the MT5 login for an account, the deal ticket for a
+ * deal — so a restart adds nothing and a wiped database is rebuilt exactly.
+ *
+ * ## Attached to the E2E CLIENT, never to a real one
+ *
+ * Every row here hangs off `e2e@oxshare.com`. If this ever runs against a
+ * populated database it touches one seeded identity and nothing else — the same
+ * containment `reassertReviewPool` relies on.
+ *
+ * ## What is deliberately NOT here
+ *
+ * Transfers and IB accruals. A seeded PENDING transfer is picked up by
+ * `transfer-resume.scheduler.ts` on its next tick, every minute, for ever
+ * against a simulated bridge — real `resume_attempts` churn and real log noise
+ * in a stack somebody is using. That is a decision for whoever owns the
+ * scheduler, not a side effect to introduce quietly from here.
+ */
+async function seedTradingFixtures(db: ReturnType<typeof getDb>): Promise<void> {
+  const [client] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, 'e2e@oxshare.com'))
+    .limit(1);
+
+  // No e2e client means an install that has not reached that seed yet. Nothing
+  // to hang fixtures off, and inventing an owner would be worse than skipping.
+  if (!client) return;
+
+  /*
+   * Two accounts, LIVE and DEMO, because several behaviours differ by
+   * environment — a demo account may be topped up by its owner and a live one
+   * may not, and a fixture set with only one of them cannot show that.
+   *
+   * The logins are real-shaped numeric strings: `trading_accounts.login` is what
+   * `mt5_deals.login` joins on, and the executor refuses an account without one.
+   */
+  const ACCOUNTS = [
+    { login: '5000001', environment: 'live' as const, balance: '2500.00000000' },
+    { login: '5000002', environment: 'demo' as const, balance: '10000.00000000' },
+  ];
+
+  for (const account of ACCOUNTS) {
+    const [existing] = await db
+      .select({ id: tradingAccounts.id })
+      .from(tradingAccounts)
+      .where(eq(tradingAccounts.login, account.login))
+      .limit(1);
+    if (existing) continue;
+
+    await db.insert(tradingAccounts).values({
+      userId: client.id,
+      login: account.login,
+      environment: account.environment,
+      currency: 'USD',
+      balance: account.balance,
+      status: 'active',
+      mt5Group: 'demo\\standard',
+      leverage: 100,
+      name: `E2E ${account.environment}`,
+    });
+  }
+
+  /*
+   * Deals of BOTH kinds, which is the point rather than a detail.
+   *
+   * A TRADE (action 0/1) is what the commission engine accrues on. A BALANCE
+   * deal (action 2) is money moved on the account with no position behind it —
+   * a dealer credit or correction — and it is what
+   * `GET /trading/balance-movements` exists to show a client, because it has no
+   * wallet leg and no ledger entry anywhere in the CRM.
+   *
+   * Seeding only trades would leave that read returning `[]` for ever, which is
+   * exactly the empty pass Domain 6 refused to accept as evidence.
+   *
+   * The balance deals are signed in BOTH directions: a credit and a debit. A
+   * debit is the case with no other client-visible record in the product, and a
+   * screen that renders amounts unsigned would show it as a credit.
+   */
+  const DEALS = [
+    {
+      ticket: '900001',
+      login: '5000001',
+      action: 0,
+      entry: 1,
+      profit: '125.40000000',
+      comment: null,
+    },
+    {
+      ticket: '900002',
+      login: '5000001',
+      action: 1,
+      entry: 1,
+      profit: '-38.20000000',
+      comment: null,
+    },
+    {
+      ticket: '900003',
+      login: '5000001',
+      action: 2,
+      entry: 0,
+      profit: '500.00000000',
+      comment: 'Welcome bonus',
+    },
+    {
+      ticket: '900004',
+      login: '5000001',
+      action: 2,
+      entry: 0,
+      profit: '-75.00000000',
+      comment: 'Correction',
+    },
+    {
+      ticket: '900005',
+      login: '5000002',
+      action: 2,
+      entry: 0,
+      profit: '10000.00000000',
+      comment: 'Demo funding',
+    },
+  ];
+
+  for (const deal of DEALS) {
+    const [existing] = await db
+      .select({ id: mt5Deals.id })
+      .from(mt5Deals)
+      .where(eq(mt5Deals.mt5DealId, deal.ticket))
+      .limit(1);
+    if (existing) continue;
+
+    await db.insert(mt5Deals).values({
+      mt5DealId: deal.ticket,
+      login: deal.login,
+      symbol: deal.action === 2 ? 'BALANCE' : 'EURUSD',
+      action: deal.action,
+      entry: deal.entry,
+      volume: deal.action === 2 ? '0.00000000' : '1.00000000',
+      price: deal.action === 2 ? '0.00000000' : '1.08500000',
+      profit: deal.profit,
+      commission: '0.00000000',
+      swap: '0.00000000',
+      comment: deal.comment,
+      // Spread across recent days so a 30-day window contains them and a
+      // narrower one does not — a window filter with every row on one
+      // timestamp cannot be shown to work.
+      dealtAt: new Date(Date.now() - DEALS.indexOf(deal) * 36 * 60 * 60 * 1000),
+      source: 'sweep',
+    });
+  }
 }
