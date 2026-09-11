@@ -26,8 +26,12 @@ export function money(value: MoneyInput): string {
   return toDecimal(value).toFixed(MONEY_SCALE);
 }
 
+/**
+ * `lessThan(0)`, not `isNegative()`: decimal.js reads the sign, so `-0` reports
+ * as negative while being no money at all. A zero amount is not a debit.
+ */
 export function isNegative(value: MoneyInput): boolean {
-  return toDecimal(value).isNegative();
+  return toDecimal(value).lessThan(0);
 }
 
 export function sum(values: MoneyInput[]): string {

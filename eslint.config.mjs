@@ -102,6 +102,45 @@ export default tseslint.config(
   },
 
   {
+    /*
+     * ── decimal.js reads the SIGN, so `isPositive()` is TRUE for ZERO ───────
+     *
+     * `new Decimal(0).isPositive()` is true and `new Decimal('-0').isNegative()`
+     * is true, because both read the sign field rather than comparing a value.
+     * So `if (!amount.isPositive()) throw` — which reads exactly like "reject
+     * anything that is not greater than zero" — NEVER FIRES FOR ZERO.
+     *
+     * This repo learned that in the IB module and wrote it down three times
+     * (`ib-wallet.service.ts`, `commission.ts` twice), and the identical idiom
+     * stayed live in five other money guards, including `WalletService.hold`.
+     * A comment beside one fix does not travel; a rule does. It propagates by
+     * IMITATION — the next reader copies the line that looks right, which is
+     * how it was reintroduced into `release` on 11 Sep while the person doing
+     * it had read those three comments an hour earlier.
+     *
+     * SCOPED TO `modules/wallet/**` AND `config/money-limits.ts` FOR NOW, not
+     * because the rule is narrower than the problem but because three more
+     * violations live in `modules/payments/**`, which another session owns this
+     * hour. Widen the `files` list to the full money path once those are fixed
+     * — same shrink-only ratchet as `max-lines` and `--max-warnings`. Do not
+     * narrow it.
+     */
+    files: ['src/modules/wallet/**/*.ts', 'src/config/money-limits.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "CallExpression[callee.property.name='isPositive'], CallExpression[callee.property.name='isNegative']",
+          message:
+            'decimal.js reads the SIGN: isPositive() is TRUE for zero and isNegative() is TRUE for -0, so these never fire on the boundary they look like they guard. Compare explicitly: greaterThan(0), lessThan(0), lessThanOrEqualTo(0).',
+        },
+      ],
+    },
+  },
+
+  {
     // ── The money path declares its dependencies ────────────────────────────
     // These four services used to call the module-level getDb() singleton from
     // inside each method. They now take the db by constructor injection, which

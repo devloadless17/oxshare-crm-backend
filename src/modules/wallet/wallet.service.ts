@@ -102,8 +102,6 @@ export interface PostParams {
   /** What caused this movement, e.g. 'transaction' / 'deal' / 'payout'. */
   referenceType: string;
   referenceId: string;
-  /** Debits normally cannot overdraw; corrections may (compensating entries). */
-  allowOverdraft?: boolean;
 }
 
 /**
@@ -193,7 +191,32 @@ export class WalletService {
 
     // 2. Compute the new balance with decimal.js — never bare arithmetic.
     const newBalance = toDecimal(wallet.balance).plus(amount);
-    if (newBalance.isNegative() && !params.allowOverdraft) {
+    /*
+     * THE DATABASE OWNS THIS RULE — this check only reports it in time.
+     *
+     * `PostParams` carried an `allowOverdraft?: boolean` until 11 Sep 2026,
+     * honoured right here: it skipped this refusal, and it read exactly like
+     * the supported way to permit a negative balance. Its docblock even named
+     * a use — "corrections may (compensating entries)".
+     *
+     * It could never work. `wallets_balance_non_negative` is a CHECK CONSTRAINT
+     * (`CHECK (balance >= 0)`), unconditional and on every row, so the UPDATE at
+     * the end of this method is refused by Postgres whatever the flag said. The
+     * flag therefore did not grant an overdraft — it replaced this clean, mapped
+     * `MoneyRuleError` with a raw `DrizzleQueryError`, turning a 4xx into a 500
+     * on the money path, and only at the moment somebody most needed a legible
+     * answer. Measured before removal, not assumed.
+     *
+     * Two callers already knew and said so in comments beside themselves
+     * (`ib-wallet.service.ts`, `commission.service.ts`: "the database would
+     * reject the row"). The knowledge sat next to the call sites while the
+     * parameter sat in the signature inviting the next caller to try it.
+     *
+     * A negative wallet is a debt this CRM can neither collect nor display, so
+     * there is no overdraft to grant. A correction is a compensating ENTRY,
+     * which is an ordinary credit and needs no escape hatch.
+     */
+    if (newBalance.lessThan(0)) {
       throw new MoneyRuleError(
         `Insufficient balance: ${money(wallet.balance)} ${currency} cannot absorb ${money(amount)}.`,
       );
@@ -284,7 +307,18 @@ export class WalletService {
    */
   async hold(userId: string, currency: Currency, amount: MoneyInput, executor?: Executor) {
     const value = toDecimal(amount);
-    if (!value.isPositive()) throw new ValidationError('Hold amount must be positive.');
+    /*
+     * `lessThanOrEqualTo(0)`, NOT `!isPositive()` — this guard read correctly
+     * and admitted zero until 11 Sep 2026. decimal.js gives ZERO a sign of 1, so
+     * `new Decimal(0).isPositive()` is TRUE and `!isPositive()` never fired for
+     * '0'. Measured: `isPositive()` is true for `0` and `0.00000000`, and false
+     * for `-0`, because it reads the SIGN rather than the value.
+     *
+     * `ib-wallet.service.ts` and `commission.ts` had already learned this and
+     * written it down three times between them. The idiom survived here because
+     * it propagates by imitation — a reader copies the line that looks right.
+     */
+    if (value.lessThanOrEqualTo(0)) throw new ValidationError('Hold amount must be positive.');
     if (executor) return this.holdWithin(executor, userId, currency, value);
     return this.db.transaction((tx) => this.holdWithin(tx, userId, currency, value));
   }
@@ -309,9 +343,36 @@ export class WalletService {
     }
   }
 
-  /** Release a hold — on rejection, or after the matching debit is posted. */
+  /**
+   * Release a hold — on rejection, or after the matching debit is posted.
+   *
+   * ⚠️ THE POSITIVE CHECK IS LOAD-BEARING, AND IT WAS MISSING UNTIL 11 Sep 2026.
+   *
+   * This is the mirror of `hold`, which has always opened with the same guard.
+   * `release` had none, and its arithmetic is `on_hold - value` — so a NEGATIVE
+   * release INCREASED the hold.
+   *
+   * It did not crash. `wallets_hold_within_balance` (`on_hold <= balance`)
+   * accepts the result whenever the increase stays inside the balance, so the
+   * wallet ended up with MORE money frozen and every screen reported success.
+   * Measured on a 100.00 balance with 50.00 held: `release(-50)` resolved
+   * normally and left `on_hold = 100.00000000` — the client's ENTIRE balance
+   * frozen, available zero, by a method called "release". That is worse than an
+   * error, because nothing anywhere says it happened.
+   *
+   * It is an easy call to get wrong rather than a theoretical one: in
+   * `transfers.service.ts` the line immediately after `release(..., amount)` is
+   * `post({ amount: amount.negated() })`. The negated value sits one line below,
+   * waiting to be passed to the wrong one of the pair.
+   *
+   * ZERO is refused too, matching `hold` exactly rather than diverging from it:
+   * releasing nothing is a caller that has computed the wrong amount, and the
+   * two halves of one pairing should not disagree about what a valid amount is.
+   */
   async release(userId: string, currency: Currency, amount: MoneyInput, executor?: Executor) {
     const value = toDecimal(amount);
+    // `lessThanOrEqualTo(0)`, for the decimal.js reason documented on `hold`.
+    if (value.lessThanOrEqualTo(0)) throw new ValidationError('Release amount must be positive.');
     if (executor) return this.releaseWithin(executor, userId, currency, value);
     return this.db.transaction((tx) => this.releaseWithin(tx, userId, currency, value));
   }
@@ -324,7 +385,7 @@ export class WalletService {
       const remaining = toDecimal(wallet.onHold).minus(value);
       const [updated] = await tx
         .update(wallets)
-        .set({ onHold: money(remaining.isNegative() ? '0' : remaining) })
+        .set({ onHold: money(remaining.lessThan(0) ? '0' : remaining) })
         .where(eq(wallets.id, wallet.id))
         .returning();
       return updated;

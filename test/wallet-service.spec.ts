@@ -6,6 +6,7 @@ import { WalletProvisioningService } from '../src/modules/wallet/wallet-provisio
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { auditStubAs } from './audit-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { MoneyRuleError, ValidationError } from '../src/common/errors/domain-errors';
 
 /**
  * The ledger write — ARCHITECTURE §6.2, which calls the bug it prevents "the
@@ -315,6 +316,31 @@ describe('concurrency — §6.2, the lost update', () => {
        GROUP BY w.balance
     `);
     expect(rows[0].ledger_sum).toBe(rows[0].balance);
+
+    /*
+     * THE FLOOR, so the invariant above cannot be satisfied by an empty ledger.
+     *
+     * `sum(ledger) == balance` is true of a wallet nothing ever credited, and
+     * it stays true if HALF these credits vanish — four rows summing to fifty
+     * against a balance of fifty balances perfectly. So the invariant catches a
+     * LOST UPDATE (the balance lags the rows it was computed from) and cannot
+     * catch a credit that never happened at all.
+     *
+     * Probed rather than assumed: running this case with ZERO credits does fail
+     * today — but on a string mismatch, `'0'` against `'0.00000000'`, which is
+     * an accident of Postgres formatting rather than a guard. An accident is
+     * not a test. These two lines make the refusal deliberate, and they are the
+     * same shape as the lesson `money-schema-constraints.spec.ts` is named for
+     * in the root CLAUDE.md: a case that only counts what it inserted cannot
+     * see the thing it exists to prevent.
+     */
+    expect(rows[0].balance, 'the credits did not all land').toBe('100.00000000');
+    const { rows: counted } = await ctx.db.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM ledger_entries le
+        JOIN wallets w ON w.id = le.wallet_id
+       WHERE w.user_id = ${userId}
+    `);
+    expect(counted[0].n, 'fewer ledger rows than credits posted').toBe(8);
   });
 
   it('opens exactly one wallet when two callers race to create it', async () => {
@@ -583,3 +609,124 @@ async function currenciesOf(userId: string): Promise<string[]> {
   );
   return rows.map((r) => r.currency);
 }
+
+/**
+ * A WALLET CANNOT GO NEGATIVE, AND NO CALLER CAN ASK ITS WAY OUT OF THAT.
+ *
+ * ── Why this is phrased as "no caller can ask" ─────────────────────────────
+ *
+ * `PostParams` carried an `allowOverdraft?: boolean`, honoured by `post`: it
+ * skipped the `MoneyRuleError` raised when a debit takes the balance below
+ * zero. It reads exactly like the supported way to permit a negative balance.
+ *
+ * It could never work. `wallets_balance_non_negative` is a CHECK CONSTRAINT
+ * (`CHECK (balance >= 0)`), unconditional and on every row, so the UPDATE at
+ * the end of `post` is refused by Postgres whatever the flag said. The flag did
+ * not grant an overdraft; it replaced a clean, mapped domain refusal with a raw
+ * constraint violation — a 500 where there had been a 4xx, on the money path.
+ *
+ * Two services already recorded that it could not help them —
+ * `ib-wallet.service.ts` ("`allowOverdraft` is NOT set on the debit") and
+ * `commission.service.ts` ("the database would reject the row") — so the
+ * knowledge existed in comments beside the callers while the parameter sat in
+ * the signature inviting the next one to try it.
+ *
+ * The assertion is written against the PROPERTY rather than the parameter, so
+ * it keeps its meaning now that the parameter is gone: whatever a caller
+ * passes, a debit larger than the balance is refused as a money rule. The extra
+ * key is cast through because the type no longer admits it — which is the
+ * point. This test would have failed the day the flag was added.
+ */
+describe('the non-negative balance rule (§6.1) is the database’s, not the caller’s', () => {
+  it('refuses an overdraft as a MONEY RULE even when the caller asks for one', async () => {
+    const userId = await makeUser(`overdraft-${Date.now()}@oxshare.com`);
+    await wallets.post({
+      userId,
+      currency: 'USD',
+      amount: '100.00000000',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: `seed-${Date.now()}`,
+    });
+
+    await expect(
+      wallets.post({
+        userId,
+        currency: 'USD',
+        amount: '-150.00000000',
+        entryType: 'withdrawal',
+        referenceType: 'test',
+        referenceId: `overdraft-${Date.now()}`,
+        // The escape hatch that used to exist. Passed deliberately: the promise
+        // this test makes is that asking changes nothing.
+        allowOverdraft: true,
+      } as Parameters<typeof wallets.post>[0]),
+    ).rejects.toThrow(MoneyRuleError);
+
+    // And the balance is untouched — a refused debit must not half-apply.
+    const { rows } = await ctx.db.execute<{ balance: string }>(
+      sql`SELECT balance FROM wallets WHERE user_id = ${userId} AND currency = 'USD'`,
+    );
+    expect(rows[0].balance).toBe('100.00000000');
+  });
+});
+
+/**
+ * `release` IS THE MIRROR OF `hold`, AND ONLY ONE OF THEM CHECKED ITS INPUT.
+ *
+ * `hold` opens with `if (!value.isPositive()) throw` — so a caller cannot hold a
+ * negative amount. `release` had no such guard, and its arithmetic is
+ * `on_hold - value`: a NEGATIVE release therefore INCREASES the hold.
+ *
+ * That is not a crash. `wallets_hold_within_balance` (`on_hold <= balance`)
+ * happily accepts the result whenever the increase stays inside the balance, so
+ * the wallet ends up with MORE money frozen and no error anywhere. A client's
+ * funds become unavailable and every screen reports success. Worse than the
+ * 500 the overdraft flag produced, because nothing at all says it happened.
+ *
+ * It is an easy call to get wrong rather than a theoretical one: in
+ * `transfers.service.ts` the line immediately AFTER a `release(...amount)` is a
+ * `post({ amount: amount.negated() })`. The negated amount is right there,
+ * one line down, for the sibling call.
+ *
+ * `release` already carried the comment *"Never let on_hold go negative,
+ * whatever the caller asks for"* — so hostile input was considered, and guarded
+ * in exactly one of the two directions it can arrive from.
+ */
+describe('release refuses the input that would FREEZE funds instead of releasing them', () => {
+  it('refuses a negative release, and leaves the hold exactly as it was', async () => {
+    const userId = await makeUser(`release-guard-${Date.now()}@oxshare.com`);
+    await wallets.post({
+      userId,
+      currency: 'USD',
+      amount: '100.00000000',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: `rel-seed-${Date.now()}`,
+    });
+    await wallets.hold(userId, 'USD', '50.00000000');
+
+    await expect(wallets.release(userId, 'USD', '-50.00000000')).rejects.toThrow(ValidationError);
+
+    const { rows } = await ctx.db.execute<{ on_hold: string; balance: string }>(
+      sql`SELECT on_hold, balance FROM wallets WHERE user_id = ${userId} AND currency = 'USD'`,
+    );
+    // Under the defect this read 100.00000000 — the entire balance frozen by a
+    // call whose name is "release".
+    expect(rows[0].on_hold).toBe('50.00000000');
+    expect(rows[0].balance).toBe('100.00000000');
+  });
+
+  it('still refuses a ZERO release, matching hold rather than diverging from it', async () => {
+    const userId = await makeUser(`release-zero-${Date.now()}@oxshare.com`);
+    await wallets.post({
+      userId,
+      currency: 'USD',
+      amount: '10.00000000',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: `rel-zero-${Date.now()}`,
+    });
+    await expect(wallets.release(userId, 'USD', '0')).rejects.toThrow(ValidationError);
+  });
+});

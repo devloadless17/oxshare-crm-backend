@@ -38,7 +38,21 @@ export class MoneyLimits {
     // boot in env.validation.ts.
     try {
       const value = new Decimal(raw ?? fallback);
-      return value.isFinite() && value.isPositive() ? value : new Decimal(fallback);
+      /*
+       * `greaterThan(0)`, NOT `isPositive()`. decimal.js reads the SIGN, and
+       * gives ZERO a sign of 1 — so `new Decimal(0).isPositive()` is TRUE and a
+       * configured `0` was taken as a valid limit rather than falling back,
+       * which is precisely the "silently becomes no limit" this method's own
+       * comment says must not happen (and, on a MAX, the reverse: nothing
+       * allowed at all).
+       *
+       * Not reachable today — `decimalLimit` in `env.validation.ts` refuses a
+       * non-positive value at BOOT with a real `> 0` test, so this is the second
+       * line of a defence whose first line already holds. Corrected anyway: the
+       * two guards disagreeing about zero is how the next reader copies the
+       * wrong one, which is exactly how this idiom reached four money paths.
+       */
+      return value.isFinite() && value.greaterThan(0) ? value : new Decimal(fallback);
     } catch {
       return new Decimal(fallback);
     }
