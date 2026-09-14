@@ -29,11 +29,15 @@ import {
  */
 
 const ADMIN_SECRET = 'test-only-admin-secret-never-used-outside-vitest';
+const PORTAL_SECRET = 'test-only-access-secret-never-used-outside-vitest';
 const PORTAL = 'http://localhost:3000';
 const ADMIN = 'http://localhost:3002';
 
 const ENV: Record<string, string> = {
   ADMIN_JWT_SECRET: ADMIN_SECRET,
+  // So the guard can verify a PORTAL session too: a portal-surface case then
+  // proves the token check ran, rather than passing for want of a session.
+  JWT_ACCESS_SECRET: PORTAL_SECRET,
   PORTAL_URL: PORTAL,
   ADMIN_URL: ADMIN,
 };
@@ -158,6 +162,52 @@ describe('a machine credential is not a cookie', () => {
 
   it('still refuses the same write when the header is absent', () => {
     expect(() => guard().canActivate(contextFor({ headers: {} }))).toThrow(ForbiddenException);
+  });
+
+  /*
+   * ...but ONLY on the admin surface, because only the admin surface reads a key.
+   *
+   * The waiver used to run on every path. `AdminAuthenticator` is the one thing
+   * that verifies a key; the portal's `JwtStrategy` never looks at the header
+   * and authenticates the COOKIE. So on a portal route any string in
+   * `X-Api-Key` beside a client session skipped the Origin check and the token
+   * check both, and the write reached its handler — reproduced against a running
+   * API on 14 Sep 2026 as a 400 from validation where a 403 belonged.
+   *
+   * No browser could send that header cross-site (CORS allows it to nobody),
+   * which is why it was never exploitable. It is closed here all the same: a
+   * control whose safety lives in an unrelated allow-list is one edit to that
+   * list from gone.
+   */
+  const portalWrite = (headers: Record<string, string>, cookies: Record<string, string> = {}) =>
+    contextFor({
+      path: served('/auth/change-password'),
+      originalUrl: served('/auth/change-password'),
+      cookies,
+      headers,
+    });
+
+  it('does not waive the Origin check on the PORTAL, where nothing verifies a key', () => {
+    expect(() => guard().canActivate(portalWrite({ 'x-api-key': 'junk' }))).toThrow(
+      ForbiddenException,
+    );
+    expect(() =>
+      guard().canActivate(portalWrite({ authorization: 'Bearer oxs_live_junk' })),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('does not waive the anti-forgery TOKEN beside a real portal session', () => {
+    // The right Origin, a verifiable client session, a junk key — and no token.
+    // Refusing this proves the token check ran, not merely the origin check.
+    const session = jwt.sign(
+      { sub: 'client-1', typ: 'access' },
+      { secret: PORTAL_SECRET, audience: TOKEN_AUDIENCE.portal, issuer: TOKEN_ISSUER },
+    );
+    const ctx = portalWrite(
+      { origin: PORTAL, 'x-api-key': 'junk' },
+      { [sessionCookieNames.clientAccess()]: session },
+    );
+    expect(() => guard().canActivate(ctx)).toThrow(ForbiddenException);
   });
 });
 

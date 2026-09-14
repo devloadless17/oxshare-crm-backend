@@ -96,7 +96,8 @@ export class CsrfGuard implements CanActivate {
     if (!STATE_CHANGING.has(req.method)) return true;
 
     /*
-     * A MACHINE credential is outside this guard's threat model.
+     * A MACHINE credential is outside this guard's threat model — on the ADMIN
+     * surface, the only place anything verifies one.
      *
      * CSRF is the forgery of a request the browser attaches cookies to. A
      * request presenting `X-Api-Key` (or a prefixed bearer) is authenticated by
@@ -110,8 +111,22 @@ export class CsrfGuard implements CanActivate {
      * anti-forgery validation", and a feature documented as able to carry
      * `withdrawals.settle` was read-only in practice — with an error that
      * pointed nowhere near the cause.
+     *
+     * `isAdminSurface` is what makes the first paragraph TRUE. The waiver used
+     * to run on every path, and the portal's `JwtStrategy` never reads a key —
+     * it authenticates the COOKIE. So on a portal route any string in
+     * `X-Api-Key` beside a client session skipped the Origin check and the token
+     * check both: reproduced against a running API on 14 Sep 2026, a junk key
+     * took a client write to validation (400) where this guard owed a 403. No
+     * browser could send that header cross-site, so it was never exploitable —
+     * but a control whose safety lives in the CORS allow-list is one edit to
+     * that list from gone. `route-authorization.spec.ts` keeps every
+     * admin-guarded write on the path this recognises.
      */
-    if (readApiKeyHeader(req as { headers?: Record<string, string | string[] | undefined> })) {
+    if (
+      isAdminSurface(req.path) &&
+      readApiKeyHeader(req as { headers?: Record<string, string | string[] | undefined> })
+    ) {
       return true;
     }
 

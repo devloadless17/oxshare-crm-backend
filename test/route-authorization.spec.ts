@@ -9,6 +9,7 @@ import { RequestMethod } from '@nestjs/common';
 import { AppModule } from '../src/app.module';
 import { ANY_ADMIN_KEY, PERMISSIONS_KEY } from '../src/modules/admin/guards/admin.guard';
 import { NO_CSRF_KEY } from '../src/common/security/csrf.guard';
+import { isAdminSurface } from '../src/common/api-prefix';
 
 /**
  * Every route declares how it is protected — PLATFORM-CONVENTIONS R-4.2.
@@ -547,6 +548,41 @@ describe('R-4.2 every route declares how it is protected', () => {
         'so the permission is not enforced:\n' +
         declaredButUnread.map((s) => `  ${s}`).join('\n') +
         '\n\nUse @UseGuards(PermissionsGuard).',
+    ).toEqual([]);
+  });
+
+  it('keeps every admin-guarded WRITE on the admin surface', () => {
+    /*
+     * Three controls decide "is this the admin surface" from the PATH, all
+     * through `isAdminSurface`: CsrfGuard's choice of session cookie and
+     * anti-forgery token, CsrfGuard's API-key waiver (a key is only ever
+     * verified there), and RBAC-08's network allowlist. A write that
+     * authenticates an ADMINISTRATOR but is served outside `/admin` falls out of
+     * all three at once, with nothing failing: its admin cookie's token is never
+     * compared, a genuine key is refused, and the allowlist never looks.
+     *
+     * Only writes, because only writes are forged. Admin READS served outside
+     * `/admin` (under `/uploads`) are out of scope here; the KYC one asks the
+     * allowlist question itself.
+     */
+    const adminGuarded = routes().filter(
+      (r) =>
+        /^(POST|PUT|PATCH|DELETE) /.test(r.signature) &&
+        (r.guards.includes('AdminGuard') || r.guards.includes('PermissionsGuard')),
+    );
+    // Not vacuous: a rename that hid every route from this filter must fail.
+    expect(adminGuarded.length).toBeGreaterThan(0);
+
+    const offSurface = adminGuarded
+      .filter((r) => !isAdminSurface(r.signature.slice(r.signature.indexOf(' ') + 1)))
+      .map((r) => `${r.signature}  [guards: ${r.guards.join(', ')}]`);
+
+    expect(
+      offSurface,
+      'These writes authenticate an administrator outside /admin, where CsrfGuard and ' +
+        'the IP allowlist do not recognise the admin surface:\n' +
+        offSurface.map((s) => `  ${s}`).join('\n') +
+        '\n\nServe the route from an /admin controller.',
     ).toEqual([]);
   });
 

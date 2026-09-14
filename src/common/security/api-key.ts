@@ -60,10 +60,12 @@ export function hashApiKey(plaintext: string): string {
  * answer: `AdminAuthenticator` (which authenticates the key) and `CsrfGuard`
  * (which must not demand an anti-forgery token of a caller that holds no
  * cookie). A header credential cannot be attached by a cross-site form, so a
- * request presenting one is outside the CSRF threat model entirely — and the
- * authenticator prefers the key UNCONDITIONALLY when one is present, so a
- * forged key sent beside a real cookie ends in a 401 on the key, never in a
- * cookie-authenticated write that skipped the token check.
+ * request presenting one is outside the CSRF threat model — ON THE ADMIN
+ * SURFACE, where the authenticator prefers the key UNCONDITIONALLY, so a forged
+ * key sent beside a real cookie ends in a 401 on the key, never in a
+ * cookie-authenticated write that skipped the token check. Nothing on the
+ * portal reads a key, so `CsrfGuard` waives nothing there; until 14 Sep 2026 it
+ * did, and a junk header beside a client cookie skipped both of its checks.
  *
  * `headers` is defaulted rather than assumed: this runs FIRST on every admin
  * request, ahead of the cookie path, and a hand-built request object in a unit

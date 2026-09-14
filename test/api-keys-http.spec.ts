@@ -411,3 +411,59 @@ describe('revoking', () => {
     await session.del('/v1/admin/api-keys/11111111-2222-3333-4444-555555555555').expect(404);
   });
 });
+
+describe('the anti-forgery waiver is exactly as wide as the admin surface', () => {
+  /*
+   * CsrfGuard skips its Origin and token checks for a request carrying a key,
+   * because the admin surface authenticates the KEY rather than a cookie and a
+   * cross-site page cannot set that header. The portal authenticates only the
+   * COOKIE, so the waiver applying there was a hole: any string in `X-API-Key`
+   * beside a client session reached the handler with neither check — observed
+   * against a running API on 14 Sep 2026 as a 400 from validation where the
+   * guard should have answered 403. Both halves are pinned over HTTP, so the fix
+   * can neither regress nor pass by breaking integrations.
+   *
+   * Every body below is invalid on purpose: were a guard ever to wave one
+   * through again, validation stops it and nothing is written.
+   */
+  const CLIENT = { email: 'apikey-client@oxshare-e2e.test', password: 'client-password-123' };
+
+  beforeAll(async () => {
+    // A client who can really SIGN IN — verified, with a genuine password hash.
+    await ctx.db.db.insert(users).values({
+      email: CLIENT.email,
+      passwordHash: await new PasswordService().hash(CLIENT.password),
+      firstName: 'Portal',
+      lastName: 'Client',
+      emailVerified: true,
+    });
+  });
+
+  it('keeps both checks on a PORTAL write that carries a key header', async () => {
+    const client = await actingAs(ctx, 'portal', CLIENT);
+
+    const keyHeaders: Record<string, string>[] = [
+      { 'X-API-Key': 'oxs_live_not-a-real-key' },
+      { Authorization: 'Bearer oxs_live_not-a-real-key' },
+    ];
+    for (const header of keyHeaders) {
+      const res = await client
+        .post('/v1/auth/change-password', {}, { origin: null, omitCsrf: true, headers: header })
+        .expect(403);
+      expect(res.body.message).toContain('anti-forgery');
+    }
+  });
+
+  it('still waives them for a real key writing on the ADMIN surface', async () => {
+    const { plaintext } = await issueKey({ name: 'Writer', permissions: ['apikeys.create'] });
+
+    // No Origin, no cookie, no token: the key alone clears the guard chain, and
+    // the empty body is refused by validation rather than by any guard.
+    const res = await anonymous(ctx)
+      .post('/v1/admin/api-keys')
+      .set('X-API-Key', plaintext)
+      .send({})
+      .expect(400);
+    expect(res.body.code).toBe('VALIDATION_FAILED');
+  });
+});
