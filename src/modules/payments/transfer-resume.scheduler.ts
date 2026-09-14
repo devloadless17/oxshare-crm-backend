@@ -149,7 +149,43 @@ export class TransferResumeScheduler {
          */
         try {
           const result = await this.executor.execute(row.id);
-          if (result?.state === 'settled') settled += 1;
+          if (result?.state === 'settled') {
+            settled += 1;
+          } else if (result?.state === 'pending') {
+            /*
+             * ⚠️ STILL PENDING, AND IT DID NOT THROW — the branch the backoff
+             * used to miss entirely, and the one the most reachable stuck
+             * transfer actually takes.
+             *
+             * `TransferExecutor` treats an INDETERMINATE outcome as a normal
+             * return rather than an error, and it is right to: the inline
+             * `POST /payments/transfers` caller must answer "submitted, being
+             * processed", not fail the client's request over an outcome nobody
+             * knows yet. But that means the `catch` below never runs, so
+             * `resume_attempts` stayed 0 and `resume_after` stayed NULL for ever
+             * — and a row whose `resume_after` is NULL passes the batch filter
+             * on every single pass.
+             *
+             * That is EXACTLY the starvation the column note in `schema.ts`
+             * describes: oldest-first plus a LIMIT plus a row that is always
+             * eligible means newer transfers are never examined. Ten of them
+             * starve the rail. The mechanism existed and the commonest case
+             * walked around it.
+             *
+             * It is not hypothetical. The bridge claims an idempotency key
+             * BEFORE calling MT5 and answers 409 for ever once a key is
+             * interrupted mid-operation — deliberately, so nobody double-pays.
+             * Such a transfer is indeterminate on every future attempt, so
+             * without this it is retried every minute until a human intervenes.
+             *
+             * Backing off changes HOW OFTEN, and nothing else. The transfer
+             * stays pending, the hold stays held, and only a person may end it.
+             */
+            await this.backOff(
+              row.id,
+              'MT5 did not confirm the movement and the outcome is not yet known.',
+            );
+          }
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
           this.logger.error(
@@ -167,14 +203,7 @@ export class TransferResumeScheduler {
            * again; it does not decide the transfer's fate, because nothing
            * automatic may — see the column note in schema.ts.
            */
-          await this.db
-            .update(transfers)
-            .set({
-              resumeAttempts: sql`${transfers.resumeAttempts} + 1`,
-              resumeAfter: sql`now() + (least(power(2, least(${transfers.resumeAttempts}, ${RETRY_EXPONENT_CEILING}))::int, ${RETRY_CAP_MINUTES}) || ' minutes')::interval`,
-              resumeLastError: reason.slice(0, 500),
-            })
-            .where(eq(transfers.id, row.id));
+          await this.backOff(row.id, reason);
         }
       }
 
@@ -255,6 +284,35 @@ export class TransferResumeScheduler {
         `Transfer resume run failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+
+  /**
+   * Widen the retry interval for one transfer, and record why.
+   *
+   * Extracted so the two ways an attempt can fail to settle share it. They are
+   * genuinely different events — one THREW, one returned still-pending — and
+   * they had genuinely different consequences until this was factored out: the
+   * throwing path backed off, and the returning path did not back off at all.
+   * One mechanism, reached from both, is what stops that drifting apart again.
+   *
+   * `resume_attempts + 1` is computed IN SQL rather than from the row we read:
+   * two instances may have attempted this transfer between our SELECT and now,
+   * and the backoff should reflect what actually happened to it rather than
+   * what this process last saw. 0092 makes the same choice for the same reason.
+   *
+   * ⚠️ STILL PENDING. This records that an attempt did not settle and when to
+   * try again. It does not decide the transfer's fate, because nothing
+   * automatic may — see the column note in `schema.ts`.
+   */
+  private async backOff(transferId: string, reason: string): Promise<void> {
+    await this.db
+      .update(transfers)
+      .set({
+        resumeAttempts: sql`${transfers.resumeAttempts} + 1`,
+        resumeAfter: sql`now() + (least(power(2, least(${transfers.resumeAttempts}, ${RETRY_EXPONENT_CEILING}))::int, ${RETRY_CAP_MINUTES}) || ' minutes')::interval`,
+        resumeLastError: reason.slice(0, 500),
+      })
+      .where(eq(transfers.id, transferId));
   }
 }
 

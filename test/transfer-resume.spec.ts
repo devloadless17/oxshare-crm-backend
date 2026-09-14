@@ -181,10 +181,102 @@ describe('the resume backoff (0123) — a stuck transfer leaves the front of the
     expect(state[0].state).toBe('pending');
   });
 
+  it('backs off a transfer that RETURNS still-pending, not only one that throws', async () => {
+    /*
+     * ⚠️ THE PATH THE BACKOFF MISSED FOR ITS WHOLE LIFE, found by walking a
+     * transfer by hand against the running stack rather than by reading.
+     *
+     * `TransferExecutor` does NOT throw on an indeterminate outcome — it logs
+     * and RETURNS the still-pending row, deliberately, because the inline
+     * `POST /payments/transfers` caller must answer "submitted, being
+     * processed" rather than failing a client's request over an outcome nobody
+     * knows yet. So the scheduler's `catch` never ran, and `resume_attempts`
+     * stayed 0 with `resume_after` NULL — for ever.
+     *
+     * A row whose `resume_after` is NULL passes the batch filter on EVERY pass.
+     * Oldest-first plus a LIMIT plus always-eligible is exactly the starvation
+     * the column note in `schema.ts` describes, reintroduced through the branch
+     * that does not throw.
+     *
+     * It is not hypothetical. The MT5 bridge claims an idempotency key BEFORE
+     * calling MT5 and then answers 409 for that key for ever once it is
+     * interrupted mid-operation — on purpose, so nobody double-pays. Such a
+     * transfer is indeterminate on every future attempt. Measured on a real one
+     * before this fix: 8 bridge calls, 3 resume cycles, `resume_attempts` = 0.
+     *
+     * ⚠️ WHY THE SUITE DID NOT CATCH IT, which is the part worth keeping. The
+     * three backoff cases above assert on a mock that REJECTS, and the
+     * starvation case uses the resolving default but only asserts WHICH row was
+     * executed. The two halves were each tested on the path the other did not
+     * take, so both passed and the gap between them was invisible.
+     */
+    await seedStuck(1);
+    // The default mock RESOLVES with a still-pending transfer — no throw.
+    const { sched } = scheduler();
+
+    await sched.resume();
+
+    const { rows } = await ctx.db.execute<{
+      resume_attempts: number;
+      resume_last_error: string | null;
+      future: boolean;
+      state: string;
+    }>(sql`
+      SELECT resume_attempts, resume_last_error, (resume_after > now()) AS future, state
+        FROM transfers LIMIT 1
+    `);
+    expect(rows[0].resume_attempts, 'a non-settling attempt was not counted').toBe(1);
+    expect(rows[0].future, 'the row was not backed off and still owns the queue').toBe(true);
+    expect(rows[0].resume_last_error).toContain('not yet known');
+    // STILL PENDING, and that is the whole design. The backoff decides how
+    // often a stuck row is retried and never what becomes of it: auto-failing a
+    // transfer MT5 may already have applied would hand the client their money
+    // twice.
+    expect(rows[0].state).toBe('pending');
+  });
+
+  it('does NOT back off a transfer that settled', async () => {
+    /*
+     * The control for the case above, and it is the one that stops the fix
+     * being written as "always back off". A settled transfer leaves the pending
+     * set entirely; writing a retry schedule onto it would be harmless today
+     * and misleading for ever after — `resume_last_error` on a row that
+     * succeeded is a lie a future reader has no way to check.
+     */
+    await seedStuck(1);
+    const { sched } = scheduler(vi.fn().mockResolvedValue({ state: 'settled' }));
+
+    await sched.resume();
+
+    const { rows } = await ctx.db.execute<{
+      resume_attempts: number;
+      resume_last_error: string | null;
+    }>(sql`SELECT resume_attempts, resume_last_error FROM transfers LIMIT 1`);
+    expect(rows[0].resume_attempts).toBe(0);
+    expect(rows[0].resume_last_error).toBeNull();
+  });
+
   it('holds a backed-off row OUT of the batch, so a newer transfer is reached', async () => {
     await seedStuck(1, 120); // the old, stuck one
     await ctx.db.execute(sql`UPDATE transfers SET resume_after = now() + interval '30 minutes'`);
-    await seedStuck(1, 60); // a NEWER pending transfer behind it
+    /*
+     * ⚠️ CAPTURED BEFORE THE RUN, and it has to be.
+     *
+     * This used to find the newer row AFTERWARDS with
+     * `WHERE resume_after IS NULL` — identifying its subject by the absence of
+     * a column the run itself now writes. That was only ever true because a
+     * transfer returning still-pending was not backed off, which is the defect
+     * the case above this one exists for: fixing it turned this assertion into
+     * `rows[0]` on an empty set.
+     *
+     * The id is the identity. A property that the behaviour under test is
+     * allowed to change is not.
+     */
+    const newerUserId = await seedStuck(1, 60); // a NEWER pending transfer behind it
+    const { rows: newer } = await ctx.db.execute<{ id: string }>(
+      sql`SELECT id FROM transfers WHERE user_id = ${newerUserId}`,
+    );
+    const newerId = newer[0].id;
 
     const { sched, execute } = scheduler();
     await sched.resume();
@@ -195,10 +287,7 @@ describe('the resume backoff (0123) — a stuck transfer leaves the front of the
      * — the starvation, in one assertion.
      */
     expect(execute).toHaveBeenCalledTimes(1);
-    const { rows } = await ctx.db.execute<{ id: string }>(
-      sql`SELECT id FROM transfers WHERE resume_after IS NULL`,
-    );
-    expect(execute).toHaveBeenCalledWith(rows[0].id);
+    expect(execute).toHaveBeenCalledWith(newerId);
   });
 
   it('STILL resumes a transfer that has never been attempted (resume_after IS NULL)', async () => {
