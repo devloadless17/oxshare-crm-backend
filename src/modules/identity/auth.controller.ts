@@ -94,6 +94,14 @@ export class AuthController {
    * Throttled: the token is single-use and unguessable, but nothing else here
    * bounds how fast someone can try to guess one.
    */
+  @NoCsrf(
+    'The emailed token is the whole credential, not the session: a forger would ' +
+      'need the token, and with it could call this directly with no cookies at all. ' +
+      'Requiring the session-bound token instead refused a real client — one whose ' +
+      'browser was still signed in to ANOTHER account, opening the link cold in ' +
+      'production, where the token lives only in JS memory and nothing had put it ' +
+      'there yet. Origin validation still runs, and this sets no cookies.',
+  )
   @Post('verify-email')
   @Throttle({ default: { ttl: 900_000, limit: 10 } })
   @HttpCode(HttpStatus.OK)

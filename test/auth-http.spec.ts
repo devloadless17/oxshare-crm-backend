@@ -280,6 +280,53 @@ describe('CSRF, on the assembled stack', () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
     await session.get(ADMIN_ME).expect(200);
   });
+
+  /*
+   * A real client was refused "failed anti-forgery validation" on the link in
+   * their verification email, while everybody else's worked.
+   *
+   * What set them apart: their browser was still SIGNED IN to another portal
+   * account. The guard only demands the session-bound token when a session
+   * cookie is present, and in production that token lives only in JS memory
+   * (the cookie is `__Host-` on the API host). A link opened cold has nothing
+   * in memory, and the verify screen posts on mount — so the one person holding
+   * a session was the one person refused. Localhost reads the cookie directly,
+   * which is why it never reproduced there.
+   *
+   * The emailed token is the credential, so the route is `@NoCsrf`. Three
+   * assertions, because the exemption alone would prove nothing (see the note
+   * at the top of this block):
+   */
+  describe('verify-email, from a browser signed in to another account', () => {
+    const VERIFY = '/v1/auth/verify-email';
+    const UNKNOWN_TOKEN = { token: '00000000-0000-4000-8000-000000000000' };
+
+    it('reaches the handler without an anti-forgery token', async () => {
+      const session = await actingAs(ctx, 'portal', CLIENT);
+      const res = await session.post(VERIFY, UNKNOWN_TOKEN, { omitCsrf: true });
+      // 400 is the token being unknown — the handler answered. 403 is the guard.
+      expect(res.status).not.toBe(403);
+    });
+
+    it('is not a session that simply skips the guard — a protected write still needs the token', async () => {
+      // The positive control. Without it, the assertion above would also pass
+      // if `omitCsrf` sent nothing, or if this session were not live at all.
+      const session = await actingAs(ctx, 'portal', CLIENT);
+      await session
+        .post(
+          '/v1/auth/change-password',
+          { currentPassword: 'x', newPassword: 'y' },
+          { omitCsrf: true },
+        )
+        .expect(403);
+    });
+
+    it('still refuses the same post from an origin we do not serve', async () => {
+      // What makes the exemption safe: @NoCsrf waives the token, never the origin.
+      const session = await actingAs(ctx, 'portal', CLIENT);
+      await session.post(VERIFY, UNKNOWN_TOKEN, { origin: 'https://evil-oxshare.com' }).expect(403);
+    });
+  });
 });
 
 describe('the two surfaces are separate sessions (R-3.1)', () => {
