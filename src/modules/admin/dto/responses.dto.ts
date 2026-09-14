@@ -2105,19 +2105,54 @@ export class IssuedApiKeyDto {
  * float here could render a real 0.00000001 drift as a clean 0 — reporting
  * "balanced" for the exact condition this screen exists to catch.
  */
-@NoClientFields(
-  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
-)
+/**
+ * ⚠️ THIS NOW CARRIES CLIENT IDENTITY, and it did not until 14 Sep 2026.
+ *
+ * The reconciliation report named clients by uuid alone — on the one screen
+ * whose entire job is to say that a SPECIFIC client's money does not add up.
+ * An operator reading it had to resolve the id by hand before they could act.
+ *
+ * Masked on the admin path by `FieldMaskInterceptor`, like every other shape
+ * here. Note the mask is independent of client SCOPE: this route already
+ * refuses a territory-scoped actor outright, because a reconciliation over part
+ * of the ledger cannot answer whether the ledger balances — but an unscoped
+ * administrator may still hold a field mask, and it applies.
+ */
 export class WalletDiscrepancyDto {
-  @ApiProperty() walletId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  walletId: string;
+
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({
     example: '4f7kq2nm8xcb',
     description: 'The wallet’s human-friendly number — display only; `walletId` is the key.',
   })
   walletNumber: string;
-  @ApiProperty() userId: string;
-  @ApiProperty() currency: string;
 
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  userId: string;
+
+  /* Nullable for the LEFT join's reason — see the service. A discrepancy must
+     not disappear because the client row did. */
+  @ClientField('client.firstName')
+  @ApiProperty({ type: 'string', nullable: true })
+  userFirstName: string | null;
+
+  @ClientField('client.lastName')
+  @ApiProperty({ type: 'string', nullable: true })
+  userLastName: string | null;
+
+  @ClientField('client.email')
+  @ApiProperty({ type: 'string', nullable: true })
+  userEmail: string | null;
+
+  @NotClientField('a figure about a wallet, not an attribute of the person it belongs to')
+  @ApiProperty()
+  currency: string;
+
+  @NotClientField('a figure about a wallet, not an attribute of the person it belongs to')
   @ApiProperty({
     type: 'string',
     example: '150.00000000',
@@ -2125,6 +2160,7 @@ export class WalletDiscrepancyDto {
   })
   balance: string;
 
+  @NotClientField('a figure about a wallet, not an attribute of the person it belongs to')
   @ApiProperty({
     type: 'string',
     example: '149.00000000',
@@ -2132,6 +2168,7 @@ export class WalletDiscrepancyDto {
   })
   ledgerSum: string;
 
+  @NotClientField('a figure about a wallet, not an attribute of the person it belongs to')
   @ApiProperty({
     type: 'string',
     example: '1.00000000',
@@ -2149,16 +2186,25 @@ export class WalletDiscrepancyDto {
  * frontends generated `unknown` for it and any screen showing the report had to
  * hand-write the shape — which is how a field gets renamed on one side only.
  */
-@NoClientFields(
-  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
-)
+/*
+ * No class-level exemption here any more, and its absence is required rather
+ * than an oversight: this references `WalletDiscrepancyDto`, which now carries
+ * client identity, and GUARD 1 of `client-field-coverage.spec.ts` refuses an
+ * exempt class that reaches one holding client fields. The report's OWN fields
+ * are platform-wide integrity figures and say so individually.
+ */
 export class ReconciliationReportDto {
+  @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({ description: 'When this run completed (ISO 8601).' })
   checkedAt: string;
 
+  @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({ description: 'How many wallets were compared against their ledgers.' })
   walletsChecked: number;
 
+  @NotClientField(
+    'the sample of mismatched wallets; whose data each row holds is declared on WalletDiscrepancyDto itself',
+  )
   @ApiProperty({
     type: [WalletDiscrepancyDto],
     description:
@@ -2168,6 +2214,7 @@ export class ReconciliationReportDto {
   })
   walletDiscrepancies: WalletDiscrepancyDto[];
 
+  @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({
     description:
       'How many wallets disagree in total, independent of the capped sample above. Counted in ' +
@@ -2175,6 +2222,7 @@ export class ReconciliationReportDto {
   })
   discrepancyCount: number;
 
+  @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({
     description:
       'The SUM OF ABSOLUTE differences across every mismatched wallet — the size of the problem. ' +
@@ -2184,6 +2232,7 @@ export class ReconciliationReportDto {
   })
   totalDifference: string;
 
+  @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({
     description:
       'True when nothing is wrong. Read this rather than testing the array length — it is the ' +

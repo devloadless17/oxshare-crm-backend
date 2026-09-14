@@ -524,3 +524,65 @@ describe('the CSV export', () => {
     expect(res.status).toBe(400);
   });
 });
+
+/**
+ * SEARCHING BY WHAT THE SCREEN SHOWS.
+ *
+ * This list offered one client filter — `userId`, a uuid — while every row
+ * displays a NAME and an EMAIL and no id at all. An operator looking straight
+ * at a client could not filter to them without leaving for `/clients`, copying
+ * the id and coming back. The placeholder said "Paste a client ID" out loud.
+ *
+ * The second case is the one that matters more than the feature: a filter must
+ * not become a way around client scope. A scoped admin searching for somebody
+ * else's client must find NOTHING — and the assertion is written against that
+ * client's own name, so a leak shows up as their row appearing rather than as a
+ * count that happens to look wrong.
+ */
+describe('the wallets list can be searched by the owner', () => {
+  it('finds a client by EMAIL, which is what the rows display', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get('/v1/admin/wallets?q=wallets-mine@oxshare-e2e.test').expect(200);
+    const items = (res.body as { items: Array<{ user: { email: string } }> }).items;
+
+    expect(items.length, 'the search found nothing at all').toBeGreaterThan(0);
+    expect(items.every((w) => w.user.email === 'wallets-mine@oxshare-e2e.test')).toBe(true);
+  });
+
+  it('finds a client by NAME, case-insensitively', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get('/v1/admin/wallets?q=mine cli').expect(200);
+    const items = (res.body as { items: Array<{ user: { email: string } }> }).items;
+
+    // 'mine cli' spans firstName and lastName — it only matches because the
+    // expression searches the CONCATENATION, which is also what makes the
+    // pg_trgm index usable. Three separate ILIKEs would miss this.
+    expect(items.length, 'an infix search across first+last name found nothing').toBeGreaterThan(0);
+    expect(items[0].user.email).toBe('wallets-mine@oxshare-e2e.test');
+  });
+
+  it('CANNOT be used to reach a client outside the actor’s territory', async () => {
+    const session = await actingAs(ctx, 'admin', SCOPED);
+    const res = await session
+      .get('/v1/admin/wallets?q=wallets-theirs@oxshare-e2e.test')
+      .expect(200);
+    const items = (res.body as { items: Array<{ user: { email: string } }> }).items;
+
+    expect(
+      items.map((w) => w.user.email),
+      'the search reached a client outside the actor’s scope',
+    ).not.toContain('wallets-theirs@oxshare-e2e.test');
+    expect(items).toHaveLength(0);
+  });
+
+  it('still finds the actor’s OWN client, so the scope test is not vacuous', async () => {
+    // Without this, the case above passes against a search that is simply
+    // broken and returns nothing for everybody.
+    const session = await actingAs(ctx, 'admin', SCOPED);
+    const res = await session.get('/v1/admin/wallets?q=wallets-mine@oxshare-e2e.test').expect(200);
+    const items = (res.body as { items: Array<{ user: { email: string } }> }).items;
+
+    expect(items.length).toBeGreaterThan(0);
+    expect(items[0].user.email).toBe('wallets-mine@oxshare-e2e.test');
+  });
+});

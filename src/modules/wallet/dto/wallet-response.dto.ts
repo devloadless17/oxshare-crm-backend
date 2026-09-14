@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { NoClientFields } from '../../../common/security/client-field.decorator';
+import { ClientField, NotClientField } from '../../../common/security/client-field.decorator';
 
 // Response DTOs for the client-facing wallet endpoints.
 //
@@ -102,31 +102,85 @@ export class WalletDto {
  * direction. It was briefly declared in both places, which is a silent schema
  * collision: Swagger keys by class name and one definition overwrites the other.
  */
-@NoClientFields(
-  'a wallet and its balances, addressed by id; the person who owns it is not projected here',
-)
+/**
+ * ⚠️ THIS NOW CARRIES CLIENT IDENTITY, AND IT DID NOT UNTIL 14 Sep 2026.
+ *
+ * It was `@NoClientFields('… the person who owns it is not projected here')`,
+ * which was an accurate description and a bad outcome: ADM-13 rendered
+ * `r.userId` — a raw uuid in monospace — in its column headed "Client", on the
+ * screen an operator opens precisely to ask WHOSE MONEY THIS IS. Its siblings
+ * `/wallets` and `/trading-accounts` have shown a named Owner all along, so the
+ * ledger was inconsistent with them rather than deliberately anonymous.
+ *
+ * The identity is masked on the ADMIN path and untouched on the PORTAL one, by
+ * `FieldMaskInterceptor`, which keys on `req.admin` rather than on the route.
+ * That asymmetry is deliberate and is the case its own docblock calls exposure
+ * 8: the same shape must be masked for an administrator whose role hides a
+ * field, and left alone for a client reading their own ledger, where an
+ * administrator's mask has no standing.
+ */
 export class LedgerEntryDto {
-  @ApiProperty() id: string;
-  @ApiProperty() walletId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
+
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  walletId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({
     example: '4f7kq2nm8xcb',
     description: 'The wallet’s human-friendly number — display only; `walletId` is the key.',
   })
   walletNumber: string;
-  @ApiProperty() userId: string;
+
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  userId: string;
+  /*
+   * Nullable, and the LEFT join behind them is the reason. `ledger_entries` is
+   * append-only: an entry whose client row has since gone must still appear,
+   * because a reconciliation that silently drops rows is worse than one naming
+   * an id it cannot resolve. So the screen falls back to the uuid rather than
+   * the row vanishing.
+   */
+  @ClientField('client.firstName')
+  @ApiProperty({ type: 'string', nullable: true })
+  userFirstName: string | null;
+
+  @ClientField('client.lastName')
+  @ApiProperty({ type: 'string', nullable: true })
+  userLastName: string | null;
+
+  @ClientField('client.email')
+  @ApiProperty({ type: 'string', nullable: true })
+  userEmail: string | null;
+
+  @NotClientField('a movement of money, not an attribute of the person it belongs to')
   @ApiProperty({ description: 'Signed monetary value as a string' })
   amount: string;
+  @NotClientField('a movement of money, not an attribute of the person it belongs to')
   @ApiProperty({ description: 'Running balance after this entry, as a string' })
   balanceAfter: string;
+  @NotClientField('a movement of money, not an attribute of the person it belongs to')
   @ApiProperty({
     enum: ['deposit', 'withdrawal', 'commission', 'rebate', 'payout', 'adjustment'],
   })
   entryType: string;
-  @ApiProperty() referenceType: string;
-  @ApiProperty() referenceId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  referenceType: string;
+
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  referenceId: string;
+  @NotClientField('a movement of money, not an attribute of the person it belongs to')
   @ApiProperty({ description: 'A currency code — see WalletDto.', example: 'USD' })
   currency: string;
-  @ApiProperty() createdAt: Date;
+
+  @NotClientField('when the movement happened, not who it belongs to')
+  @ApiProperty()
+  createdAt: Date;
 }
 
 /**
@@ -134,11 +188,19 @@ export class LedgerEntryDto {
  * `GET /wallet` which returns a bare array. The portal hand-wrote the client
  * ledger call as returning a bare array, which this makes impossible.
  */
-@NoClientFields(
-  'a wallet and its balances, addressed by id; the person who owns it is not projected here',
-)
+/*
+ * No `@NoClientFields` here any more, and its absence is required rather than
+ * an omission: this wraps `LedgerEntryDto`, which now carries client identity,
+ * and GUARD 1 of `client-field-coverage.spec.ts` refuses an exempt class that
+ * references one holding client fields. Keeping the old exemption would have
+ * been a false statement the census exists to catch.
+ */
 export class LedgerListResponseDto {
-  @ApiProperty({ type: [LedgerEntryDto] }) items: LedgerEntryDto[];
+  @NotClientField(
+    'the page of movements; whose data each row holds is declared on LedgerEntryDto itself',
+  )
+  @ApiProperty({ type: [LedgerEntryDto] })
+  items: LedgerEntryDto[];
   /**
    * Pass back as `?cursor=` for the next page; `null` on the last (R-2.4).
    *
@@ -147,10 +209,30 @@ export class LedgerListResponseDto {
    * reconciliation, where a silently skipped entry means balancing against the
    * wrong set of rows.
    */
+  @NotClientField('a paging control, not an attribute of any person')
   @ApiProperty({ type: String, nullable: true })
   nextCursor: string | null;
 
-  @ApiProperty({ description: 'Total matching entries, ignoring pagination.' }) total: number;
-  @ApiProperty() page: number;
-  @ApiProperty() limit: number;
+  @NotClientField('a paging control, not an attribute of any person')
+  @ApiProperty({ description: 'Total matching entries, ignoring pagination.' })
+  total: number;
+
+  @NotClientField('a paging control, not an attribute of any person')
+  @ApiProperty()
+  page: number;
+
+  @NotClientField('a paging control, not an attribute of any person')
+  @ApiProperty()
+  limit: number;
+
+  /*
+   * Which client columns THIS reader's role hides. A statement ABOUT the mask,
+   * not masked data — so it survives `FieldMaskInterceptor` and is what lets
+   * the screen say once, above the table, that a column is hidden by policy
+   * rather than empty. Optional because the PORTAL shares this shape and has no
+   * administrator mask to report.
+   */
+  @NotClientField('names which fields are hidden; it holds no client data itself')
+  @ApiProperty({ type: [String], required: false })
+  maskedFields?: string[];
 }

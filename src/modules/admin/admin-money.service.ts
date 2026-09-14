@@ -1314,7 +1314,19 @@ export class AdminMoneyService {
      * is exactly what the HTTP test caught.
      */
     assertActorCan(actor, 'ledger.view', 'view the ledger');
-    return this.wallets.listEntries({
+    /*
+     * `maskedFields` rides along so the screen can say ONCE, above the table,
+     * which columns this reader's role hides — the convention `/clients`
+     * settled on, and for its stated reason: a redaction chip in every row of a
+     * fifty-row page spends horizontal space communicating one fact.
+     *
+     * It is a statement ABOUT the mask rather than masked data, which is why it
+     * survives `FieldMaskInterceptor` untouched. Without it a masked operator
+     * sees a uuid where a name should be and cannot tell "your role hides this"
+     * from "this client has no name" — the exact confusion the KYC review
+     * screen shipped until Sep 2026.
+     */
+    const page = await this.wallets.listEntries({
       // The ADM-13 ledger is the screen used FOR reconciliation, so the
       // predicate goes into the query rather than filtering afterwards.
       scope: actor.clientScope,
@@ -1327,6 +1339,7 @@ export class AdminMoneyService {
       limit: parseInt(query.limit ?? '50', 10) || 50,
       cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
     });
+    return { ...page, maskedFields: maskedFieldsFor('client', actor.fieldMask) };
   }
   /*
    * ─── The Financial page: every money movement THE CRM RECORDS ─────────────

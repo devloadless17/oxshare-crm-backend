@@ -165,6 +165,14 @@ export class AdminHoldingsController {
    */
   @ApiQuery({ name: 'userId', required: false, description: 'Wallets of one client.' })
   @ApiQuery({ name: 'currency', required: false, description: 'Exact match on the wallet code.' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description:
+      'Search the OWNER by email or name — the identifiers this screen actually displays. ' +
+      'Before this existed the only client filter was `userId`, a uuid shown nowhere on the ' +
+      'page, so an operator had to fetch it from /clients first.',
+  })
   @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
@@ -183,6 +191,7 @@ export class AdminHoldingsController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('userId') userId?: string,
     @Query('currency') currency?: string,
+    @Query('q') q?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
@@ -194,6 +203,7 @@ export class AdminHoldingsController {
       {
         userId,
         currency,
+        q,
         page,
         limit,
         cursor,

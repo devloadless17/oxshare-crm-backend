@@ -189,3 +189,105 @@ describe('what the ledger returns', () => {
     }
   });
 });
+
+/**
+ * WHOSE MONEY IS THIS — on the screen that exists to ask.
+ *
+ * ADM-13 rendered `r.userId`, a raw uuid in monospace, in a column headed
+ * "Client". Its siblings `/wallets` and `/trading-accounts` have shown a named
+ * Owner all along, so the ledger was inconsistent with them rather than
+ * deliberately anonymous — and the API was the reason it could not be fixed in
+ * the frontend: `LedgerEntryDto` carried `userId` and nothing else, and was
+ * marked `@NoClientFields('… the person who owns it is not projected here')`.
+ * That marking was an accurate description of a bad outcome.
+ *
+ * Both halves are asserted here, because either alone would be a defect. The
+ * identity has to ARRIVE, and it has to be MASKED for an actor whose role hides
+ * it — a ledger that names every client to a reader denied those fields is the
+ * RBAC-03 leak this project has closed three times on other surfaces.
+ */
+describe('the ledger says WHOSE money each row is', () => {
+  async function seedEntry(email: string, first: string, last: string, ref: string) {
+    const [client] = await ctx.db.db
+      .insert(users)
+      .values({ email, passwordHash: 'x', firstName: first, lastName: last })
+      .returning();
+    const [wallet] = await ctx.db.db
+      .insert(wallets)
+      .values({ userId: client.id, currency: 'USD', balance: '25' })
+      .returning();
+    await ctx.db.db.insert(ledgerEntries).values({
+      walletId: wallet.id,
+      amount: '25',
+      balanceAfter: '25',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: ref,
+    });
+    return client.id;
+  }
+
+  it('names the client, so an operator need not resolve a uuid by hand', async () => {
+    const userId = await seedEntry('ledger-named@test.local', 'Nadia', 'Haddad', 'ledger-named');
+    const session = await actingAs(ctx, 'admin', FULL);
+
+    const res = await session.get(`/v1/admin/ledger?userId=${userId}`).expect(200);
+    const row = (res.body as { items: Array<Record<string, unknown>> }).items.find(
+      (r) => r.referenceId === 'ledger-named',
+    );
+
+    expect(row, 'the seeded entry did not come back').toBeDefined();
+    expect(row!.userFirstName).toBe('Nadia');
+    expect(row!.userLastName).toBe('Haddad');
+    expect(row!.userEmail).toBe('ledger-named@test.local');
+    // The uuid stays — it is the key the screen filters on. What changed is
+    // that it is no longer the ONLY thing identifying the person.
+    expect(row!.userId).toBe(userId);
+  });
+
+  it('MASKS the identity for a role configured to hide it', async () => {
+    const userId = await seedEntry('ledger-masked@test.local', 'Omar', 'Khoury', 'ledger-masked');
+
+    const [maskedRole] = await ctx.db.db
+      .insert(roles)
+      .values({
+        name: `Ledger Masked ${Date.now()}`,
+        permissions: ALL_PERMISSIONS,
+        maskedFields: ['client.email', 'client.firstName', 'client.lastName'],
+      })
+      .returning();
+    const MASKED = {
+      email: `ledger-masked-${Date.now()}@oxshare.com`,
+      password: 'admin-password-123',
+    };
+    await ctx.db.db.insert(admins).values({
+      email: MASKED.email,
+      passwordHash: await new PasswordService().hash(MASKED.password),
+      name: 'Ledger Masked Reader',
+      role: 'sub_admin',
+      roleId: maskedRole.id,
+      permissions: ALL_PERMISSIONS,
+      status: 'active',
+    });
+
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get(`/v1/admin/ledger?userId=${userId}`).expect(200);
+    const row = (res.body as { items: Array<Record<string, unknown>> }).items.find(
+      (r) => r.referenceId === 'ledger-masked',
+    );
+
+    expect(row, 'the seeded entry did not come back for the masked reader').toBeDefined();
+    /*
+     * ABSENT, not blanked. `maskByShape` removes the key, which is what lets a
+     * screen tell "your role hides this" from "this client has no email" — the
+     * distinction the KYC review screen got wrong until Sep 2026.
+     */
+    expect(row!.userEmail, 'a masked reader was served the client email').toBeUndefined();
+    expect(row!.userFirstName).toBeUndefined();
+    expect(row!.userLastName).toBeUndefined();
+    // The money and the key are NOT client fields and must survive the mask —
+    // a reconciliation screen that hides its own amounts is useless.
+    expect(row!.amount).toBe('25.00000000');
+    expect(row!.userId).toBe(userId);
+  });
+});

@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { ledgerEntries, wallets } from '../../database/schema';
+import { ledgerEntries, users, wallets } from '../../database/schema';
 import { money } from './money';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 
@@ -11,6 +11,9 @@ export interface WalletDiscrepancy {
   /** The human handle an operator quotes; `walletId` is what queries key on. */
   walletNumber: string;
   userId: string;
+  userFirstName: string | null;
+  userLastName: string | null;
+  userEmail: string | null;
   currency: string;
   balance: string;
   ledgerSum: string;
@@ -140,6 +143,9 @@ export class ReconciliationService {
       id: string;
       wallet_number: string;
       user_id: string;
+      user_first_name: string | null;
+      user_last_name: string | null;
+      user_email: string | null;
       currency: string;
       balance: string;
       ledger_sum: string;
@@ -148,13 +154,23 @@ export class ReconciliationService {
       SELECT w.id,
              w.wallet_number,
              w.user_id,
+             -- WHO the wallet belongs to. This report named clients by uuid
+             -- alone, on the one screen whose entire job is to say a specific
+             -- client's money does not add up. A LEFT join because the ledger
+             -- is append-only: a wallet whose client row has gone must still be
+             -- reported, or the discrepancy disappears with the person.
+             u.first_name                                      AS user_first_name,
+             u.last_name                                       AS user_last_name,
+             u.email                                           AS user_email,
              w.currency,
              w.balance::text                                   AS balance,
              COALESCE(SUM(le.amount), 0)::text                 AS ledger_sum,
              (w.balance - COALESCE(SUM(le.amount), 0))::text   AS difference
         FROM ${wallets} w
         LEFT JOIN ${ledgerEntries} le ON le.wallet_id = w.id
-       GROUP BY w.id, w.wallet_number, w.user_id, w.currency, w.balance
+        LEFT JOIN ${users} u ON u.id = w.user_id
+       GROUP BY w.id, w.wallet_number, w.user_id, u.first_name, u.last_name,
+                u.email, w.currency, w.balance
       HAVING w.balance <> COALESCE(SUM(le.amount), 0)
        -- Worst first, and CAPPED at SAMPLE_LIMIT. Without the limit this
        -- materialised every mismatched wallet: thirty thousand rows through the
@@ -174,6 +190,9 @@ export class ReconciliationService {
       walletId: row.id,
       walletNumber: row.wallet_number,
       userId: row.user_id,
+      userFirstName: row.user_first_name,
+      userLastName: row.user_last_name,
+      userEmail: row.user_email,
       currency: row.currency,
       balance: money(row.balance),
       ledgerSum: money(row.ledger_sum),

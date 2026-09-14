@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, desc, eq, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { escapeLike } from '../../store/users.store';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
@@ -190,6 +191,7 @@ export class AdminHoldingsService {
     query: {
       userId?: string;
       currency?: string;
+      q?: string;
       page?: string;
       limit?: string;
       cursor?: string;
@@ -229,6 +231,7 @@ export class AdminHoldingsService {
     const page = await this.walletPage({
       userId: query.userId,
       currency: query.currency,
+      q: query.q,
       page: Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1),
       limit: pageSize(query.limit),
       cursor,
@@ -248,10 +251,34 @@ export class AdminHoldingsService {
   private walletConditions(filter: {
     userId?: string;
     currency?: string;
+    q?: string;
     scope?: ClientScope;
   }): SQL[] {
     const conditions: SQL[] = [];
     if (filter.userId) conditions.push(eq(wallets.userId, filter.userId));
+    /*
+     * SEARCH BY THE THING THE SCREEN SHOWS.
+     *
+     * This list offered exactly one client filter — `userId`, a uuid — while
+     * every row displays a NAME and an EMAIL and no id at all. So an operator
+     * looking straight at a client could not filter to them: they had to leave
+     * for `/clients`, copy the id, and come back. A filter you can only use by
+     * visiting another screen first is not a filter, and the placeholder said
+     * "Paste a client ID" out loud.
+     *
+     * ⚠️ THE EXPRESSION IS CHARACTER-FOR-CHARACTER THE ONE `users.store.ts`
+     * SEARCHES ON, and that is not stylistic. A leading wildcard cannot use a
+     * b-tree, so this is served by the pg_trgm GIN index — which Postgres uses
+     * ONLY when the query expression matches what the index was built on. Write
+     * it as three ILIKEs, or reorder the concatenation, and it silently becomes
+     * a sequential scan over every wallet on every keystroke: the "unindexed
+     * filters" failure ARCHITECTURE §5 names, at ~219,000 clients.
+     */
+    if (filter.q?.trim()) {
+      conditions.push(
+        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
+      );
+    }
     /*
      * `currency` is an exact match on the wallet's own code rather than an enum
      * check: `currencies` is an operator-managed TABLE, not a Postgres enum, so
@@ -271,6 +298,7 @@ export class AdminHoldingsService {
 
   private async walletPage(filter: {
     userId?: string;
+    q?: string;
     currency?: string;
     page: number;
     limit: number;

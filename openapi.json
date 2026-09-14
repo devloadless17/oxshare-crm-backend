@@ -8773,6 +8773,15 @@
             }
           },
           {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Search the OWNER by email or name — the identifiers this screen actually displays. Before this existed the only client filter was `userId`, a uuid shown nowhere on the page, so an operator had to fetch it from /clients first.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "page",
             "required": false,
             "in": "query",
@@ -12842,6 +12851,18 @@
           "userId": {
             "type": "string"
           },
+          "userFirstName": {
+            "type": "string",
+            "nullable": true
+          },
+          "userLastName": {
+            "type": "string",
+            "nullable": true
+          },
+          "userEmail": {
+            "type": "string",
+            "nullable": true
+          },
           "amount": {
             "type": "string",
             "description": "Signed monetary value as a string"
@@ -12882,6 +12903,9 @@
           "walletId",
           "walletNumber",
           "userId",
+          "userFirstName",
+          "userLastName",
+          "userEmail",
           "amount",
           "balanceAfter",
           "entryType",
@@ -12913,6 +12937,12 @@
           },
           "limit": {
             "type": "number"
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -17103,6 +17133,18 @@
           "userId": {
             "type": "string"
           },
+          "userFirstName": {
+            "type": "string",
+            "nullable": true
+          },
+          "userLastName": {
+            "type": "string",
+            "nullable": true
+          },
+          "userEmail": {
+            "type": "string",
+            "nullable": true
+          },
           "currency": {
             "type": "string"
           },
@@ -17126,6 +17168,9 @@
           "walletId",
           "walletNumber",
           "userId",
+          "userFirstName",
+          "userLastName",
+          "userEmail",
           "currency",
           "balance",
           "ledgerSum",

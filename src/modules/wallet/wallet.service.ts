@@ -6,6 +6,7 @@ import {
   ledgerEntries,
   transactions,
   transfers,
+  users,
   walletKindEnum,
   wallets,
 } from '../../database/schema';
@@ -543,9 +544,33 @@ export class WalletService {
         createdAt: ledgerEntries.createdAt,
         currency: wallets.currency,
         userId: wallets.userId,
+        /*
+         * WHO THE ROW BELONGS TO, in words.
+         *
+         * The ledger carried `userId` alone, so ADM-13 rendered a raw uuid in
+         * its "Client" column — on the screen an operator opens precisely to
+         * ask *whose money is this*. Its sibling screens (`/wallets`,
+         * `/trading-accounts`) have shown a named Owner all along, so this was
+         * an inconsistency rather than a decision.
+         *
+         * A LEFT join, not an inner one: `wallets.user_id` has no FK to a
+         * deleted user in every historical row, and the ledger is append-only —
+         * an entry whose client row has gone must still appear, because a
+         * reconciliation that silently drops rows is worse than one naming an
+         * id. The DTO's fields are nullable for the same reason.
+         *
+         * The identity is MASKED automatically: `FieldMaskInterceptor` reads
+         * the route's declared response type and strips every `@ClientField` an
+         * actor's mask hides. That is why these come back as plain columns and
+         * nothing here calls a mask — the shape carries the rule.
+         */
+        userFirstName: users.firstName,
+        userLastName: users.lastName,
+        userEmail: users.email,
       })
       .from(ledgerEntries)
       .innerJoin(wallets, eq(ledgerEntries.walletId, wallets.id))
+      .leftJoin(users, eq(users.id, wallets.userId))
       .where(where)
       .orderBy(desc(ledgerEntries.createdAt), desc(ledgerEntries.id))
       .limit(limit + 1)
