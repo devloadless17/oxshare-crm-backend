@@ -111,6 +111,11 @@ export class AuthController {
     return this.auth.verifyEmail(dto.token);
   }
 
+  @NoCsrf(
+    'Public and throttled, and the address is supplied in the body, not taken ' +
+      'from a session. Demanding the session-bound token refused a signed-in ' +
+      'browser for no protection. Origin validation still runs.',
+  )
   @Post('resend-verification')
   // §8.4's pattern: a mail-bomb vector without a per-user limit.
   @Throttle({ default: { ttl: 900_000, limit: 3 } })
@@ -122,9 +127,9 @@ export class AuthController {
   }
 
   @NoCsrf(
-    'Establishing a session cannot be a forgery of one: there is nothing yet to ' +
-      'protect. Requiring a token here also creates a lockout — an expired or ' +
-      'absent token would make it impossible to log in and obtain a fresh one.',
+    'Asked by someone who cannot sign in, so there is no session this could be a ' +
+      'forgery of. It answers identically whether or not the account exists, and ' +
+      'is throttled. Origin validation still runs.',
   )
   /*
    * Password reset — FR-CORE-09 · R-3.5.
@@ -147,6 +152,11 @@ export class AuthController {
     return this.auth.requestPasswordReset(dto.email);
   }
 
+  @NoCsrf(
+    'The emailed reset token is the whole credential, exactly as on verify-email ' +
+      'and the admin password-reset/complete route. A browser holding another ' +
+      'account session was refused, on a link opened cold. Origin validation still runs.',
+  )
   @Post('reset-password')
   // 5 per 15 minutes. The token is 122 bits of randomness so guessing it is not
   // the threat; what this bounds is an attacker grinding the unauthenticated
@@ -161,6 +171,13 @@ export class AuthController {
     return this.auth.resetPassword(dto.token, dto.newPassword);
   }
 
+  @NoCsrf(
+    'Establishing a session cannot be a forgery of one. Admin login has always ' +
+      'carried this exemption and the portal lost it: a client whose browser still ' +
+      'held another account session was refused a 403 on sign-in, a lockout with no ' +
+      'way out but clearing cookies. Origin validation still runs, which is what ' +
+      'defends against login CSRF.',
+  )
   @Post('login')
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)

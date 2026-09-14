@@ -297,16 +297,32 @@ describe('CSRF, on the assembled stack', () => {
    * assertions, because the exemption alone would prove nothing (see the note
    * at the top of this block):
    */
-  describe('verify-email, from a browser signed in to another account', () => {
+  describe('public writes, from a browser signed in to another account', () => {
     const VERIFY = '/v1/auth/verify-email';
     const UNKNOWN_TOKEN = { token: '00000000-0000-4000-8000-000000000000' };
 
-    it('reaches the handler without an anti-forgery token', async () => {
-      const session = await actingAs(ctx, 'portal', CLIENT);
-      const res = await session.post(VERIFY, UNKNOWN_TOKEN, { omitCsrf: true });
-      // 400 is the token being unknown — the handler answered. 403 is the guard.
-      expect(res.status).not.toBe(403);
-    });
+    /*
+     * Every public portal write reachable from a page or an emailed link. The
+     * matrix run against the live API refused FOUR of them this way, not one:
+     * verify-email was the one a client reported, and resend-verification,
+     * reset-password and login had the identical defect behind it. Bodies are
+     * deliberately invalid — guards run before validation, so anything other
+     * than 403 means the guard let it through and the handler answered.
+     */
+    const PUBLIC_WRITES: Array<[string, Record<string, string>]> = [
+      [VERIFY, UNKNOWN_TOKEN],
+      ['/v1/auth/resend-verification', { email: 'nobody-csrf@oxshare.com' }],
+      ['/v1/auth/reset-password', { token: 'not-a-token', password: 'Xx1!xxxxxxxx' }],
+      ['/v1/auth/login', { email: 'nobody-csrf@oxshare.com', password: 'wrong-password-1' }],
+    ];
+
+    for (const [path, body] of PUBLIC_WRITES) {
+      it(`${path} reaches the handler without an anti-forgery token`, async () => {
+        const session = await actingAs(ctx, 'portal', CLIENT);
+        const res = await session.post(path, body, { omitCsrf: true });
+        expect(res.status).not.toBe(403);
+      });
+    }
 
     it('is not a session that simply skips the guard — a protected write still needs the token', async () => {
       // The positive control. Without it, the assertion above would also pass

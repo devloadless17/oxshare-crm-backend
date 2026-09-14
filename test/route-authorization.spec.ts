@@ -601,6 +601,43 @@ describe('R-4.2 every route declares how it is protected', () => {
       );
     }
   });
+
+  /*
+   * THE OTHER DIRECTION, and the one that was missing.
+   *
+   * The test above refuses an exemption that is too WIDE. Nothing refused one
+   * that was missing — and four portal routes had lost theirs: verify-email,
+   * resend-verification, reset-password and login. A real client reported the
+   * first: "failed anti-forgery validation" on the link in their email.
+   *
+   * Why a public write MUST be exempt: it is called by browsers that may hold a
+   * session for some OTHER account. CsrfGuard only demands the session-bound
+   * token when a session cookie is present, and in production that token lives
+   * only in JS memory — so a link opened cold carries the cookie and not the
+   * token, and the one visitor holding a stale session is the one refused.
+   * Localhost reads the cookie directly, so no local run could ever see it.
+   * Origin validation still applies to an exempt route; only the token is waived.
+   */
+  it('exempts every public write from the session-bound token', () => {
+    const NOT_A_BROWSER_WRITE: Record<string, string> = {
+      'POST /payments/rival/webhook':
+        'Server-to-server: Rival calls it with an HMAC signature and carries no session cookie, so the token check never applies.',
+      'POST /e2e/fixtures/client':
+        'Development-only module, called by the Playwright harness, never by a browser page.',
+      'POST /e2e/fixtures/review-pool':
+        'Development-only module, called by the Playwright harness, never by a browser page.',
+    };
+    const missing = Object.keys(PUBLIC_ROUTES)
+      .filter((signature) => /^(POST|PUT|PATCH|DELETE) /.test(signature))
+      .filter((signature) => !(signature in NOT_A_BROWSER_WRITE))
+      .filter((signature) => !reflectorHasNoCsrf(signature));
+    expect(
+      missing,
+      `These public writes demand a session-bound anti-forgery token, which refuses any ` +
+        `browser still holding another account's session:\n  ${missing.join('\n  ')}\n\n` +
+        `Add @NoCsrf with the reason, or list the route in NOT_A_BROWSER_WRITE.`,
+    ).toEqual([]);
+  });
 });
 
 /** Whether a route carries @NoCsrf, looked up the same way the guard does. */
