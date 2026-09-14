@@ -47,6 +47,15 @@ export default defineConfig({
      */
     env: {
       NODE_ENV: 'test',
+      /*
+       * The suite ASSERTS on the e2e fixtures, so it must seed them whatever a
+       * developer's `.env` says. `SEED_E2E_FIXTURES=false` is a legitimate
+       * local setting — it keeps a hand-testing database free of two hundred
+       * fixtures — and it leaked in here and failed seed-consistency.spec
+       * ("the e2e cohort was not seeded"), while CI, having no .env, passed.
+       * Same divergence as the secrets below, from the other side.
+       */
+      SEED_E2E_FIXTURES: 'true',
       ADMIN_JWT_SECRET: 'test-only-admin-secret-never-used-outside-vitest',
       /*
        * All FOUR signing secrets, and all four distinct.
