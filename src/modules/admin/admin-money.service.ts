@@ -1,4 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { and, eq } from 'drizzle-orm';
+import { DRIZZLE_DB } from '../../database/database.module';
+import type { Db } from '../../database/db';
+import { clientScopePredicate } from '../../common/security/client-scope';
+import { TransferExecutor } from '../payments/transfer-executor.service';
 import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
 import {
   NOTIFICATION_DISPATCH,
@@ -25,7 +30,7 @@ import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
 import { decodeCursor } from '../../common/pagination';
 import { enumQuery } from '../../common/query-params';
-import { ledgerEntryTypeEnum } from '../../database/schema';
+import { ledgerEntryTypeEnum, tradingAccounts } from '../../database/schema';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { RivalWithdrawalsService } from '../payments/rival/rival-withdrawals.service';
@@ -73,6 +78,19 @@ export class AdminMoneyService {
     private readonly rivalWithdrawals: RivalWithdrawalsService,
     /** Reviewer names for the desk. Same append-last rule as above. */
     private readonly admins: AdminsStore,
+    /*
+     * The MT5 leg of `fundTradingAccount`. The SAME executor the client's own
+     * transfer endpoint uses, so the ordering (MT5 first, ledger second) and the
+     * idempotency key (the transfer id) are shared rather than reimplemented.
+     * Appended LAST — the positional-construction rule above.
+     */
+    private readonly transferExecutor: TransferExecutor,
+    /*
+     * For `fundTradingAccount` alone, which must read the target account's
+     * OWNER and CURRENCY before it can credit the matching wallet. Appended
+     * LAST for the same reason as every parameter above it.
+     */
+    @Inject(DRIZZLE_DB) private readonly db: Db,
   ) {}
 
   /**
@@ -210,6 +228,256 @@ export class AdminMoneyService {
     });
 
     return { transaction: result.transaction, replayed: false as const };
+  }
+
+  /**
+   * Put money onto a client's TRADING ACCOUNT by hand.
+   *
+   * ## Two movements, because two movements is what happens
+   *
+   * Money cannot appear on a trading account from nowhere: this platform's
+   * ledger is the wallet, and MT5 is funded FROM it. So this is a wallet credit
+   * followed by a real transfer, and the client's history shows both rows — a
+   * DEPOSIT into the wallet and a TRANSFER out of it.
+   *
+   * This is the same composition `TransactionsService.chainTransferToAccount`
+   * already performs for a client deposit routed at an account, and it is
+   * deliberately reused rather than re-derived. The alternative that was
+   * rejected: one row implying money went somewhere it never was, against a
+   * wallet the ledger says was never involved.
+   *
+   * ## ⚠️ This is NOT `Mt5AccountsService.adjustBalance`, and must not become it
+   *
+   * `adjustBalance` is a DEALER operation: it moves the MT5 balance with no
+   * wallet leg and no ledger entry at all. That is the correct shape for a
+   * correction, a bonus or manual settlement — money the broker is giving or
+   * taking that is not a client deposit — and the WRONG shape for funding an
+   * account, which is what this method is for.
+   *
+   * Both exist because they are different acts with different accounting
+   * consequences. Collapsing them would mean either a bonus minting a
+   * client-visible deposit, or a funding leaving the ledger unable to explain
+   * where the money came from. The console offers them as separate controls and
+   * says which is which.
+   *
+   * ## BOTH permissions, not either
+   *
+   * `wallets.credit` because step one mints balance from nothing — the most
+   * sensitive money action here, split out so it cannot be reached through any
+   * other key. `trading.deposit` because step two puts it on a live trading
+   * account. An operator holding one but not the other can do neither half of
+   * this, which is the point: the capability is the composition, and it is
+   * strictly more than either key grants alone.
+   *
+   * ## The client's own transfer preconditions are ENFORCED, not bypassed
+   *
+   * `TransfersService.request` refuses an unverified client, a demo account, a
+   * suspended account and a currency mismatch. None of those are relaxed for an
+   * operator, and the KYC gate is the one worth being explicit about: a client
+   * who is not verified to level 1 should not have a funded live account at all,
+   * so an admin route around that check would manufacture exactly the account
+   * state the gate exists to prevent.
+   *
+   * The refusals therefore arrive BEFORE any money moves — see the ordering note
+   * on the pre-flight below, which is what makes that true.
+   */
+  async fundTradingAccount(
+    params: { tradingAccountId: string; amount: string; reason: string },
+    reference: string,
+    actor: AuthenticatedAdmin,
+  ) {
+    assertActorCan(actor, 'wallets.credit', 'credit a client wallet');
+    assertActorCan(actor, 'trading.deposit', 'fund a client trading account');
+
+    const reasonText = params.reason.trim();
+    if (!reasonText) {
+      throw new ValidationError('A reason is required when funding a trading account by hand.');
+    }
+
+    /*
+     * SCOPE JOINS THE WHERE, so a scoped admin cannot fund an account whose
+     * client is outside their territory — and an out-of-scope account answers
+     * not-found rather than forbidden (D-45), so this cannot enumerate accounts
+     * belonging to clients the actor cannot see.
+     *
+     * The OWNER and CURRENCY come from this row and are not accepted from the
+     * caller. See `FundTradingAccountDto` on why taking either would let them
+     * disagree with the account.
+     */
+    const [account] = await this.db
+      .select({
+        id: tradingAccounts.id,
+        userId: tradingAccounts.userId,
+        currency: tradingAccounts.currency,
+        login: tradingAccounts.login,
+        environment: tradingAccounts.environment,
+        status: tradingAccounts.status,
+      })
+      .from(tradingAccounts)
+      .where(
+        and(
+          eq(tradingAccounts.id, params.tradingAccountId),
+          clientScopePredicate(actor.clientScope, tradingAccounts.userId),
+        ),
+      )
+      .limit(1);
+
+    if (!account) throw new NotFoundError('Trading account not found.');
+
+    const user = await this.users.findById(account.userId);
+    if (!user) throw new NotFoundError('Client not found.');
+
+    /*
+     * ── PRE-FLIGHT, and the ordering here is the whole point ────────────────
+     *
+     * `transfers.request` is the authority on every one of these rules and runs
+     * them again below. They are checked HERE FIRST because the credit commits
+     * before the transfer is requested, and it must: the transfer debits the
+     * wallet, so the balance has to be durable before anything can take money
+     * out of it (the same rule `chainTransferToAccount` records).
+     *
+     * That ordering means a transfer refused on a precondition would leave the
+     * credit standing — money minted into a wallet the operator never intended
+     * to fund, needing a compensating entry to undo. For a CLIENT deposit that
+     * outcome is acceptable and documented: their money legitimately arrived and
+     * sitting in the wallet is safe. Here nothing arrived, so refusing before
+     * the credit is strictly better, and these checks are what make the common
+     * refusals happen while nothing has moved.
+     *
+     * They are a pre-flight and NOT the authority — duplicated deliberately, the
+     * same shape as the overdraw check in `request`. If the two ever disagree,
+     * `request` wins, because it is the one both paths share.
+     */
+    if (account.environment !== 'live') {
+      throw new ValidationError(
+        'Only live trading accounts can be funded this way. A demo account trades practice ' +
+          'money and is not linked to a wallet — top it up with a balance adjustment instead.',
+      );
+    }
+    if (account.status !== 'active') {
+      throw new ValidationError(`That trading account is ${account.status} and takes no money.`);
+    }
+    if (user.verificationLevel < 1) {
+      throw new ValidationError(
+        'That client is not verified to KYC level 1, so money cannot be moved into their ' +
+          'trading account. Verify them first.',
+      );
+    }
+
+    /*
+     * ── LEG ONE: the deposit ────────────────────────────────────────────────
+     *
+     * `creditWallet` is called rather than `creditDeposit` directly, so this
+     * inherits the whole audited credit path: the reason check, the audit row,
+     * the client's email and the bell notification. Re-implementing it to skip
+     * the email would mean money arriving in a client's wallet silently, which
+     * is the failure `creditWallet` exists to close.
+     *
+     * The currency is the ACCOUNT's. A wallet in any other currency could not
+     * fund it — transfers do not convert.
+     *
+     * Idempotent on the caller's key all the way to
+     * `UNIQUE(provider, provider_ref)`, so a double-submitted form converges on
+     * one credit. A REPLAY returns `replayed: true` and sends no second email.
+     */
+    const credit = await this.creditWallet(
+      {
+        userId: account.userId,
+        amount: params.amount,
+        currency: account.currency,
+        reason: reasonText,
+      },
+      reference,
+      actor,
+    );
+
+    /*
+     * ── LEG TWO: the transfer ───────────────────────────────────────────────
+     *
+     * AFTER the credit has committed, never inside it — the transfer debits the
+     * wallet, and chaining it into the credit's own transaction would take money
+     * out of a balance that does not exist yet if the outer commit then failed.
+     *
+     * A FAILED TRANSFER DOES NOT UNWIND THE CREDIT, and that is deliberate. By
+     * this point the money is legitimately in the client's wallet: leaving it
+     * there is visible, reconcilable and safe — the operator or the client can
+     * transfer it from there. Unwinding a settled deposit to punish a failed
+     * onward leg would turn a recoverable state into a lost one, and it is the
+     * same call `chainTransferToAccount` makes for the same reason.
+     *
+     * So the error is reported to the CALLER rather than swallowed: unlike the
+     * client-deposit path, an operator is standing in front of this and needs to
+     * know the money stopped at the wallet. `transfer` comes back null with
+     * `transferError` saying why.
+     */
+    let transfer: Awaited<ReturnType<TransferExecutor['execute']>> | null = null;
+    let transferError: string | null = null;
+
+    try {
+      const pending = await this.transfers.request({
+        userId: account.userId,
+        tradingAccountId: account.id,
+        direction: 'wallet_to_account',
+        amount: params.amount,
+        currency: account.currency,
+      });
+
+      /*
+       * Executed inline rather than left pending, so the common case finishes
+       * while the operator is still looking at the screen. `execute` is
+       * idempotent on the transfer id, so a retry cannot move the money twice —
+       * and when MT5 is unreachable it leaves the transfer PENDING for the
+       * resume scheduler rather than failing it.
+       */
+      transfer = (await this.transferExecutor.execute(pending.id)) ?? null;
+
+      this.logger.log(
+        `Admin ${actor.email} funded trading account ${account.login ?? account.id} with ` +
+          `${params.amount} ${account.currency}: credit ${credit.transaction.id}, ` +
+          `transfer ${pending.id} (${transfer?.state ?? 'unknown'})`,
+      );
+    } catch (error) {
+      transferError = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Admin ${actor.email} credited ${params.amount} ${account.currency} to client ` +
+          `${account.userId} but the onward transfer to trading account ${account.id} could ` +
+          `not be made: ${transferError}. The money is in the wallet and can be transferred ` +
+          'from there.',
+      );
+    }
+
+    /*
+     * Audited as its own act, on top of the `wallet.credit` entry `creditWallet`
+     * already wrote.
+     *
+     * Two entries for two movements is the correct record here rather than
+     * noise: the credit entry explains money appearing in a wallet, and this one
+     * explains why it did — an operator funding a specific trading account. A
+     * reviewer reading the credit alone would see a bare goodwill payment.
+     *
+     * Skipped on a REPLAY, the same rule `creditWallet` follows: the funding did
+     * not happen twice, so it must not be logged twice.
+     */
+    if (!credit.replayed) {
+      this.audit.record(actor.id, 'trading.deposit', 'trading_account', account.id, {
+        userId: account.userId,
+        login: account.login,
+        amount: credit.transaction.amount,
+        currency: account.currency,
+        transactionId: credit.transaction.id,
+        transferId: transfer?.id ?? null,
+        transferState: transfer?.state ?? null,
+        transferError,
+        reason: reasonText,
+      });
+    }
+
+    return {
+      transaction: credit.transaction,
+      replayed: credit.replayed,
+      transfer,
+      transferError,
+    };
   }
 
   /**

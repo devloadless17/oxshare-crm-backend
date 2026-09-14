@@ -195,6 +195,7 @@
   "POST /v1/admin/tags",
   "POST /v1/admin/trading-accounts",
   "POST /v1/admin/trading-accounts/{id}/balance",
+  "POST /v1/admin/trading-accounts/{id}/fund",
   "POST /v1/admin/transfers/{id}/abandon",
   "POST /v1/admin/users/{id}/password-reset",
   "POST /v1/admin/wallets",

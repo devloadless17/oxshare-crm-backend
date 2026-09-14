@@ -16,6 +16,7 @@ import {
   ForbiddenException,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -48,6 +49,7 @@ import { AdminAuditService } from './admin-audit.service';
 import { exportFormat, streamCsv } from '../../common/export/export-response';
 import {
   CreditWalletDto,
+  FundTradingAccountDto,
   OpenWalletDto,
   SettleWithdrawalDto,
   AbandonTransferDto,
@@ -285,6 +287,82 @@ export class AdminMoneyController {
      */
     const reference = req.header(IDEMPOTENCY_HEADER) ?? '';
     return this.money.creditWallet(dto, reference, req.admin);
+  }
+
+  /**
+   * Put money onto a client's TRADING ACCOUNT by hand.
+   *
+   * ## Two transactions, because two things happen
+   *
+   * A wallet CREDIT followed by a TRANSFER to the account, which is how money
+   * actually reaches MT5 in this system — the wallet is the ledger and accounts
+   * are funded from it. The client's own history therefore shows both rows, and
+   * the ledger can explain where the money came from.
+   *
+   * ## ⚠️ NOT `POST /admin/trading-accounts/:id/balance`
+   *
+   * That route is a DEALER adjustment: it moves the MT5 balance alone, with no
+   * wallet leg and no ledger entry, which is right for a correction or a bonus
+   * and wrong for funding. The two are separate routes because they are separate
+   * acts with different accounting consequences — see the service method.
+   *
+   * ## Requires BOTH `wallets.credit` and `trading.deposit`
+   *
+   * The decorator can only name one, so it carries `wallets.credit` as the
+   * FLOOR — the more sensitive of the two, since step one mints balance — and
+   * the service asserts both. An operator holding only one of them can do
+   * neither half of this.
+   *
+   * ## The idempotency key becomes the provider reference
+   *
+   * Exactly as on the credit route above: the header reaches the service and is
+   * stored as `provider_ref` under `UNIQUE(provider, provider_ref)`, so a
+   * double-submitted form converges on ONE funding in the database rather than
+   * relying on the replay cache.
+   */
+  @Post('trading-accounts/:id/fund')
+  @AnnouncesChange('wallets')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended funding, reused only when retrying that same one. It is ' +
+      'also stored as the transaction `provider_ref`, so a replay collides on ' +
+      'UNIQUE(provider, provider_ref) and credits once (R-5.2).',
+  })
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('wallets.credit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Fund a client's trading account by hand",
+    description:
+      'Writes TWO movements: a successful DEPOSIT transaction crediting the wallet, then a ' +
+      'TRANSFER of the same amount to the trading account — both visible in the client history, ' +
+      "the ledger and the financial views. The currency is the account's and is not accepted " +
+      'from the caller. Enforces the same preconditions as a client transfer (KYC level 1, live ' +
+      'and active account). Requires wallets.credit AND trading.deposit. For a dealer ' +
+      'correction or bonus with no wallet leg, use POST /admin/trading-accounts/:id/balance.',
+  })
+  @ApiCreatedResponse({ type: TransactionDto })
+  @ScopedToClients(
+    'The account is read with the actor client scope joined into the WHERE, so an ' +
+      'out-of-scope account is a 404 before any money moves.',
+  )
+  @Audited('trading.deposit')
+  fundTradingAccount(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FundTradingAccountDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    // The CALLER's statement of intent, for the reason given on the credit
+    // route above. `@Idempotent()` has already refused a request without it.
+    const reference = req.header(IDEMPOTENCY_HEADER) ?? '';
+    return this.money.fundTradingAccount(
+      { tradingAccountId: id, amount: dto.amount, reason: dto.reason },
+      reference,
+      req.admin,
+    );
   }
 
   /**

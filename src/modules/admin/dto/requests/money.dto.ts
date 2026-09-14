@@ -125,6 +125,51 @@ export class CreditWalletDto {
 }
 
 /**
+ * Money an operator puts onto a client's TRADING ACCOUNT by hand.
+ *
+ * ## No `currency`, unlike `CreditWalletDto` above
+ *
+ * The account is denominated in one, and the wallet leg has to match it —
+ * transfers do not convert (there is no FX rate source anywhere in this
+ * system). Taking a currency from the caller would let a request name an
+ * account in one and a wallet in another, and the only two ways to resolve that
+ * are inventing a rate or moving the number across unchanged and calling
+ * 100 USD "100 USDT". So the account decides, and the caller cannot disagree.
+ *
+ * ## No `userId` either
+ *
+ * The account id implies its owner. Accepting both would let them disagree, and
+ * the reconciliation for "funded the right account for the wrong client" is a
+ * conversation rather than an edit.
+ */
+export class FundTradingAccountDto {
+  /**
+   * A positive decimal string, at most eight places — §6.1, and the same
+   * pattern `CreditWalletDto` applies for the same reason: `@IsNumberString`
+   * alone accepts `'-500'`, which would turn a deposit into a debit through a
+   * route with no refusal path for one.
+   */
+  @ApiProperty({ type: 'string', example: '250.00000000' })
+  @IsNumberString()
+  @Matches(/^\d{1,20}(\.\d{1,8})?$/, {
+    message: 'amount must be a positive decimal string with at most 8 decimal places',
+  })
+  amount: string;
+
+  /**
+   * WHY, and it is required — the same rule as a wallet credit.
+   *
+   * This mints balance from nothing before moving it on, so "why is there an
+   * extra $500 on this account" has to be answerable from the record six months
+   * later. It goes on the audit entry and into the client's credit email.
+   */
+  @ApiProperty({ example: 'Funding the 4 August wire that arrived off-rail.', maxLength: 500 })
+  @IsString()
+  @Length(3, 500)
+  reason: string;
+}
+
+/**
  * Open a wallet for a client in a currency they do not hold one in.
  *
  * No amount: this creates an empty container. Funding it is `CreditWalletDto`

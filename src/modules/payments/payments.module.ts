@@ -104,6 +104,20 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
    */
   // `RivalWithdrawalsService` is exported for AdminModule: the approve hook
   // and the desk's cancel/retry actions live behind admin routes.
-  exports: [TransactionsService, TransfersService, PaymentMethodsService, RivalWithdrawalsService],
+  /*
+   * `TransferExecutor` is exported for `AdminMoneyService.fundTradingAccount`,
+   * which funds a client's trading account by hand as a wallet credit followed
+   * by a real transfer. It needs the SAME executor the client's own transfer
+   * endpoint uses — MT5 first, ledger second, idempotent on the transfer id —
+   * rather than a second implementation of that ordering. AdminModule imports
+   * this module, so the arrow runs one way and there is no cycle.
+   */
+  exports: [
+    TransactionsService,
+    TransfersService,
+    TransferExecutor,
+    PaymentMethodsService,
+    RivalWithdrawalsService,
+  ],
 })
 export class PaymentsModule {}
