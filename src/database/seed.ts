@@ -34,6 +34,35 @@ const ALL_PERMISSIONS: string[] = Object.values(
   permissionsCatalog as Record<string, { permissions: { key: string }[] }>,
 ).flatMap((module) => module.permissions.map((entry) => entry.key));
 
+/**
+ * Whether to seed the END-TO-END FIXTURES — roughly a dozen `e2e-*` accounts,
+ * the `@oxshare-e2e.test` client cohort, their tags and their purpose-made
+ * roles. On by default, because the Playwright suites in both frontends sign in
+ * as those identities and a silent absence would fail them somewhere far from
+ * the cause.
+ *
+ * `SEED_E2E_FIXTURES=false` turns them off, and the reason it exists is a
+ * developer's own database: a person eyeballing the client list to check
+ * scoping, masking or a tag filter cannot do it over two hundred fixtures that
+ * reappear on every boot. Wiping the tables does not help — this file puts them
+ * straight back.
+ *
+ * It does NOT gate `admin@oxshare.com` or `client@oxshare.com`. Those are the
+ * demo accounts a developer signs in as; they are the point of seeding at all.
+ */
+function seedE2eFixtures(): boolean {
+  /*
+   * Read INSIDE the function, never at module scope.
+   *
+   * A module-level `const` is evaluated when this file is first imported, which
+   * is while main.ts is building its import graph — BEFORE `ConfigModule` runs
+   * dotenv and puts `.env` into `process.env`. So it read `undefined`, took the
+   * default, and seeded the fixtures however the variable was set. That cost a
+   * restart to notice and would have read as "the flag does not work".
+   */
+  return process.env.SEED_E2E_FIXTURES !== 'false';
+}
+
 export async function runSeeds(): Promise<void> {
   const db = getDb();
 
@@ -208,35 +237,37 @@ export async function runSeeds(): Promise<void> {
     })
     .onConflictDoNothing({ target: admins.email });
 
-  /*
-   * The admin the END-TO-END SUITE owns, for the same reason the e2e client
-   * below exists: a test fixture must not share an identity with a person.
-   *
-   * `admin@oxshare.com` is the account a developer is signed into while working,
-   * and the admin suite signs in, refreshes and rotates tokens on every run.
-   * Sharing it means two parties rotating one refresh family — which is exactly
-   * what reuse detection punishes — and test logins eating a rate limit a human
-   * is also trying to use.
-   *
-   * Master-level on purpose: the suite walks the whole console, and a fixture
-   * that 403s halfway would test the fixture rather than the app. Permission
-   * SPLITS are asserted against purpose-made roles inside the specs instead.
-   *
-   * Same protection as the rest of this file — `runSeeds()` is called from
-   * main.ts only when NODE_ENV is not production, so this cannot reach a live
-   * deployment.
-   */
-  await db
-    .insert(admins)
-    .values({
-      email: 'e2e-admin@oxshare.com',
-      passwordHash: adminHash,
-      name: 'E2E Admin',
-      // `role` is left at its default: the column is dead after migration 0044 and
-      // nothing reads it. Access comes from the Administrator role assigned below.
-      permissions: ALL_PERMISSIONS,
-    })
-    .onConflictDoNothing({ target: admins.email });
+  if (seedE2eFixtures()) {
+    /*
+     * The admin the END-TO-END SUITE owns, for the same reason the e2e client
+     * below exists: a test fixture must not share an identity with a person.
+     *
+     * `admin@oxshare.com` is the account a developer is signed into while working,
+     * and the admin suite signs in, refreshes and rotates tokens on every run.
+     * Sharing it means two parties rotating one refresh family — which is exactly
+     * what reuse detection punishes — and test logins eating a rate limit a human
+     * is also trying to use.
+     *
+     * Master-level on purpose: the suite walks the whole console, and a fixture
+     * that 403s halfway would test the fixture rather than the app. Permission
+     * SPLITS are asserted against purpose-made roles inside the specs instead.
+     *
+     * Same protection as the rest of this file — `runSeeds()` is called from
+     * main.ts only when NODE_ENV is not production, so this cannot reach a live
+     * deployment.
+     */
+    await db
+      .insert(admins)
+      .values({
+        email: 'e2e-admin@oxshare.com',
+        passwordHash: adminHash,
+        name: 'E2E Admin',
+        // `role` is left at its default: the column is dead after migration 0044 and
+        // nothing reads it. Access comes from the Administrator role assigned below.
+        permissions: ALL_PERMISSIONS,
+      })
+      .onConflictDoNothing({ target: admins.email });
+  }
 
   /*
    * The attach the two comments above promise — made HERE, because it used to
@@ -283,308 +314,310 @@ export async function runSeeds(): Promise<void> {
     })
     .onConflictDoNothing({ target: users.email });
 
-  /*
-   * A client the END-TO-END SUITE owns, so it never shares one with a person.
-   *
-   * The e2e specs used `client@oxshare.com` — the account a developer is
-   * typically signed in as while working. Two consequences, both observed:
-   * repeated test logins burned the 5-per-minute login limit and answered a
-   * developer's own sign-in with 429, and two parties rotating refresh tokens
-   * for one identity is exactly the shape reuse detection is built to punish.
-   *
-   * Same password as the demo client on purpose — this is a fixture, not a
-   * secret, and `runSeeds()` is called from main.ts only when NODE_ENV is not
-   * production, so neither account can reach a live deployment.
-   */
-  await db
-    .insert(users)
-    .values({
-      email: 'e2e@oxshare.com',
-      passwordHash: clientHash,
-      firstName: 'Eve',
-      lastName: 'Endtoend',
-      type: 'individual',
-      status: 'active',
-      emailVerified: true,
-      // Level 1, so the suite can exercise the verified states — the sidebar
-      // badge, the terminal KYC screen — without first driving an admin
-      // approval through the UI on every run.
-      verificationLevel: 1,
-      country: 'United Arab Emirates',
-      phone: '+971500000000',
-    })
-    .onConflictDoNothing({ target: users.email });
-
-  /*
-   * A second e2e client, VERIFIED but with no KYC submission at all.
-   *
-   * The approved one above cannot exercise the onboarding wizard — there is
-   * nothing left for it to do — and a spec that submitted would leave the
-   * fixture in `submitted`, where `resetKyc` refuses, so the second run would
-   * find a different world than the first. A separate never-submitted client is
-   * what makes the wizard spec repeatable: it stops short of submitting, so the
-   * row stays `in_progress`, which `saveStep` accepts indefinitely.
-   */
-  await db
-    .insert(users)
-    .values({
-      email: 'e2e-kyc@oxshare.com',
-      passwordHash: clientHash,
-      firstName: 'Kaya',
-      lastName: 'Onboarding',
-      type: 'individual',
-      status: 'active',
-      emailVerified: true,
-      verificationLevel: 0,
-      country: 'United Arab Emirates',
-      phone: '+971500000001',
-    })
-    .onConflictDoNothing({ target: users.email });
-
-  /*
-   * A THIRD e2e client, whose only job is to be signed out.
-   *
-   * `logout` revokes EVERY family for a user, not just the one presenting a
-   * token (R-3.3 — signing out on one device must not leave the others live).
-   * That is correct, and it means a spec that drives a real sign-out on a shared
-   * fixture destroys the cached session every LATER spec replays. The symptom is
-   * a run where one logout test fails and eleven unrelated ones fail after it,
-   * each looking like its own auth bug.
-   *
-   * The portal's own suite hit exactly that, which is why the logout spec was
-   * `fixme`d rather than fixed for a while. So logout gets an identity nobody
-   * else signs in as — the same reasoning behind the admin suite's
-   * `e2e-suspend-target`, and behind `e2e@oxshare.com` not being a person's
-   * account.
-   *
-   * Approved and verified, so it can reach every private page before ending its
-   * session there.
-   */
-  await db
-    .insert(users)
-    .values({
-      email: 'e2e-logout@oxshare.com',
-      passwordHash: clientHash,
-      firstName: 'Leo',
-      lastName: 'Signout',
-      type: 'individual',
-      status: 'active',
-      emailVerified: true,
-      verificationLevel: 1,
-      country: 'United Arab Emirates',
-      phone: '+971500000002',
-    })
-    .onConflictDoNothing({ target: users.email });
-
-  /*
-   * And an APPROVED submission for it, so `/kyc` reaches the terminal screen
-   * directly rather than bouncing through a step on the way.
-   *
-   * Carries no document paths deliberately. A path pointing at a file the seed
-   * does not create is how the demo client ended up 404ing three documents for
-   * days — the row claimed evidence that had never existed on disk. An absent
-   * document is honest; a dangling reference is a lie the review screen repeats.
-   */
-  /*
-   * Two more portal identities, each for ONE destructive journey:
-   *  - `e2e-reuse@`   — the reuse-detection spec deliberately replays a spent
-   *                     refresh token, which revokes the whole family.
-   *  - `e2e-suspend@` — the admin suite suspends it to prove a live portal
-   *                     session dies on its next navigation; reactivated by
-   *                     the spec, and re-asserted active here every boot so a
-   *                     crashed run cannot leave it locked.
-   */
-  for (const extra of [
-    {
-      email: 'e2e-reuse@oxshare.com',
-      firstName: 'Rea',
-      lastName: 'Replay',
-      phone: '+971500000003',
-    },
-    {
-      email: 'e2e-suspend@oxshare.com',
-      firstName: 'Sue',
-      lastName: 'Spended',
-      phone: '+971500000004',
-    },
-  ]) {
-    await db
-      .insert(users)
-      .values({
-        ...extra,
-        passwordHash: clientHash,
-        type: 'individual',
-        status: 'active',
-        emailVerified: true,
-        verificationLevel: 1,
-        country: 'United Arab Emirates',
-      })
-      .onConflictDoNothing({ target: users.email });
-  }
-  await db
-    .update(users)
-    .set({ status: 'active' })
-    .where(eq(users.email, 'e2e-suspend@oxshare.com'));
-
-  const [e2eClient] = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.email, 'e2e@oxshare.com'))
-    .limit(1);
-
-  if (e2eClient) {
-    await db
-      .insert(kycSubmissions)
-      .values({
-        userId: e2eClient.id,
-        status: 'approved',
-        submittedAt: new Date(),
-        reviewedAt: new Date(),
-        personalInfo: {
-          firstName: 'Eve',
-          lastName: 'Endtoend',
-          dateOfBirth: '1990-01-01',
-          nationality: 'Lebanon',
-          country: 'United Arab Emirates',
-          phone: '+971500000000',
-        },
-        document: { docType: 'passport' },
-        addressProof: { docType: 'utility_bill' },
-      })
-      .onConflictDoNothing({ target: kycSubmissions.userId });
-  }
-
-  /*
-   * ── Partner-programme fixtures, for the portal e2e suite ──────────────────
-   *
-   * A two-rung chain the suite can stand clients under without driving a
-   * partner application through approval on every run:
-   *
-   *   e2e-partner-l1@  level 1, root — code E2EPARTL1. Carries the agency, so
-   *                    an applicant introduced by them INHERITS it and the
-   *                    apply panel's "selected for you" card renders.
-   *   e2e-partner-l2@  level 2 under l1 — code E2EPARTL2. The deepest enabled
-   *                    rung on the committed ladder, so a client registered
-   *                    under THIS code is chain_full and must be locked out of
-   *                    the programme everywhere the portal offers it.
-   *   e2e-partner-applicant@  verified + KYC 1, introduced by l1, no
-   *                    application — drives the inherited-agency apply flow.
-   *                    The spec keeps it repeatable by having the admin REJECT
-   *                    what it submits (rejected → "Apply again" is a loop;
-   *                    approval is deliberately irreversible and would make
-   *                    run two a different world).
-   *   e2e-partner-fresh@      same shape — the one identity the spec DOES
-   *                    approve, once, to prove approval nests a recruited
-   *                    partner beneath their introducer; later runs assert the
-   *                    standing outcome instead.
-   *
-   * The ACCOUNTS are seeded rather than approved into existence because there
-   * is deliberately no demote operation — a fixture that becomes a partner on
-   * run one is a different world on run two. The live approve path is what
-   * `e2e-partner-fresh@` exists for.
-   */
-  await db
-    .insert(agencies)
-    .values({ name: 'E2E Agency', enabled: true })
-    .onConflictDoNothing({ target: agencies.name });
-  // Re-asserted enabled every boot, like `e2e-suspend@`'s active flag: a
-  // crashed run (or a curious operator) must not leave the fixture closed and
-  // every later apply refusing "not open for applications".
-  await db.update(agencies).set({ enabled: true }).where(eq(agencies.name, 'E2E Agency'));
-  const [e2eAgency] = await db
-    .select({ id: agencies.id })
-    .from(agencies)
-    .where(eq(agencies.name, 'E2E Agency'))
-    .limit(1);
-
-  const partnerFixtures = [
-    {
-      email: 'e2e-partner-l1@oxshare.com',
-      firstName: 'Petra',
-      lastName: 'Upline',
-      phone: '+971500000005',
-    },
-    {
-      email: 'e2e-partner-l2@oxshare.com',
-      firstName: 'Selim',
-      lastName: 'Downline',
-      phone: '+971500000006',
-    },
-    {
-      email: 'e2e-partner-applicant@oxshare.com',
-      firstName: 'Aida',
-      lastName: 'Applicant',
-      phone: '+971500000007',
-    },
-    {
-      email: 'e2e-partner-fresh@oxshare.com',
-      firstName: 'Nadim',
-      lastName: 'Nested',
-      phone: '+971500000008',
-    },
-  ] as const;
-  for (const fixture of partnerFixtures) {
-    await db
-      .insert(users)
-      .values({
-        ...fixture,
-        passwordHash: clientHash,
-        type: 'individual',
-        status: 'active',
-        emailVerified: true,
-        verificationLevel: 1,
-        country: 'United Arab Emirates',
-      })
-      .onConflictDoNothing({ target: users.email });
-  }
-  const fixtureRows = await db
-    .select({ id: users.id, email: users.email })
-    .from(users)
-    .where(
-      inArray(
-        users.email,
-        partnerFixtures.map((f) => f.email),
-      ),
-    );
-  const fixtureId = (email: string) => fixtureRows.find((r) => r.email === email)?.id;
-  const partnerL1 = fixtureId('e2e-partner-l1@oxshare.com');
-  const partnerL2 = fixtureId('e2e-partner-l2@oxshare.com');
-
-  if (partnerL1 && partnerL2 && e2eAgency) {
-    await db
-      .insert(ibAccounts)
-      .values({
-        userId: partnerL1,
-        level: 1,
-        referralCode: 'E2EPARTL1',
-        agencyId: e2eAgency.id,
-        active: true,
-      })
-      .onConflictDoNothing({ target: ibAccounts.userId });
-    await db
-      .insert(ibAccounts)
-      .values({
-        userId: partnerL2,
-        level: 2,
-        parentIbUserId: partnerL1,
-        referralCode: 'E2EPARTL2',
-        agencyId: e2eAgency.id,
-        active: true,
-      })
-      .onConflictDoNothing({ target: ibAccounts.userId });
+  if (seedE2eFixtures()) {
     /*
-     * Attribution AFTER the l1 account exists (the column's FK points at
-     * ib_accounts), and re-asserted every boot so rows inserted by an older
-     * seed pick it up. The applicant and fresh identities sit under L1 — one
-     * rung of room — while l2's own introducer is l1, matching the account.
+     * A client the END-TO-END SUITE owns, so it never shares one with a person.
+     *
+     * The e2e specs used `client@oxshare.com` — the account a developer is
+     * typically signed in as while working. Two consequences, both observed:
+     * repeated test logins burned the 5-per-minute login limit and answered a
+     * developer's own sign-in with 429, and two parties rotating refresh tokens
+     * for one identity is exactly the shape reuse detection is built to punish.
+     *
+     * Same password as the demo client on purpose — this is a fixture, not a
+     * secret, and `runSeeds()` is called from main.ts only when NODE_ENV is not
+     * production, so neither account can reach a live deployment.
      */
-    const introduced = fixtureRows
-      .filter((r) => r.email !== 'e2e-partner-l1@oxshare.com')
-      .map((r) => r.id);
+    await db
+      .insert(users)
+      .values({
+        email: 'e2e@oxshare.com',
+        passwordHash: clientHash,
+        firstName: 'Eve',
+        lastName: 'Endtoend',
+        type: 'individual',
+        status: 'active',
+        emailVerified: true,
+        // Level 1, so the suite can exercise the verified states — the sidebar
+        // badge, the terminal KYC screen — without first driving an admin
+        // approval through the UI on every run.
+        verificationLevel: 1,
+        country: 'United Arab Emirates',
+        phone: '+971500000000',
+      })
+      .onConflictDoNothing({ target: users.email });
+
+    /*
+     * A second e2e client, VERIFIED but with no KYC submission at all.
+     *
+     * The approved one above cannot exercise the onboarding wizard — there is
+     * nothing left for it to do — and a spec that submitted would leave the
+     * fixture in `submitted`, where `resetKyc` refuses, so the second run would
+     * find a different world than the first. A separate never-submitted client is
+     * what makes the wizard spec repeatable: it stops short of submitting, so the
+     * row stays `in_progress`, which `saveStep` accepts indefinitely.
+     */
+    await db
+      .insert(users)
+      .values({
+        email: 'e2e-kyc@oxshare.com',
+        passwordHash: clientHash,
+        firstName: 'Kaya',
+        lastName: 'Onboarding',
+        type: 'individual',
+        status: 'active',
+        emailVerified: true,
+        verificationLevel: 0,
+        country: 'United Arab Emirates',
+        phone: '+971500000001',
+      })
+      .onConflictDoNothing({ target: users.email });
+
+    /*
+     * A THIRD e2e client, whose only job is to be signed out.
+     *
+     * `logout` revokes EVERY family for a user, not just the one presenting a
+     * token (R-3.3 — signing out on one device must not leave the others live).
+     * That is correct, and it means a spec that drives a real sign-out on a shared
+     * fixture destroys the cached session every LATER spec replays. The symptom is
+     * a run where one logout test fails and eleven unrelated ones fail after it,
+     * each looking like its own auth bug.
+     *
+     * The portal's own suite hit exactly that, which is why the logout spec was
+     * `fixme`d rather than fixed for a while. So logout gets an identity nobody
+     * else signs in as — the same reasoning behind the admin suite's
+     * `e2e-suspend-target`, and behind `e2e@oxshare.com` not being a person's
+     * account.
+     *
+     * Approved and verified, so it can reach every private page before ending its
+     * session there.
+     */
+    await db
+      .insert(users)
+      .values({
+        email: 'e2e-logout@oxshare.com',
+        passwordHash: clientHash,
+        firstName: 'Leo',
+        lastName: 'Signout',
+        type: 'individual',
+        status: 'active',
+        emailVerified: true,
+        verificationLevel: 1,
+        country: 'United Arab Emirates',
+        phone: '+971500000002',
+      })
+      .onConflictDoNothing({ target: users.email });
+
+    /*
+     * And an APPROVED submission for it, so `/kyc` reaches the terminal screen
+     * directly rather than bouncing through a step on the way.
+     *
+     * Carries no document paths deliberately. A path pointing at a file the seed
+     * does not create is how the demo client ended up 404ing three documents for
+     * days — the row claimed evidence that had never existed on disk. An absent
+     * document is honest; a dangling reference is a lie the review screen repeats.
+     */
+    /*
+     * Two more portal identities, each for ONE destructive journey:
+     *  - `e2e-reuse@`   — the reuse-detection spec deliberately replays a spent
+     *                     refresh token, which revokes the whole family.
+     *  - `e2e-suspend@` — the admin suite suspends it to prove a live portal
+     *                     session dies on its next navigation; reactivated by
+     *                     the spec, and re-asserted active here every boot so a
+     *                     crashed run cannot leave it locked.
+     */
+    for (const extra of [
+      {
+        email: 'e2e-reuse@oxshare.com',
+        firstName: 'Rea',
+        lastName: 'Replay',
+        phone: '+971500000003',
+      },
+      {
+        email: 'e2e-suspend@oxshare.com',
+        firstName: 'Sue',
+        lastName: 'Spended',
+        phone: '+971500000004',
+      },
+    ]) {
+      await db
+        .insert(users)
+        .values({
+          ...extra,
+          passwordHash: clientHash,
+          type: 'individual',
+          status: 'active',
+          emailVerified: true,
+          verificationLevel: 1,
+          country: 'United Arab Emirates',
+        })
+        .onConflictDoNothing({ target: users.email });
+    }
     await db
       .update(users)
-      .set({ referredByIbUserId: partnerL1 })
-      .where(inArray(users.id, introduced));
+      .set({ status: 'active' })
+      .where(eq(users.email, 'e2e-suspend@oxshare.com'));
+
+    const [e2eClient] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, 'e2e@oxshare.com'))
+      .limit(1);
+
+    if (e2eClient) {
+      await db
+        .insert(kycSubmissions)
+        .values({
+          userId: e2eClient.id,
+          status: 'approved',
+          submittedAt: new Date(),
+          reviewedAt: new Date(),
+          personalInfo: {
+            firstName: 'Eve',
+            lastName: 'Endtoend',
+            dateOfBirth: '1990-01-01',
+            nationality: 'Lebanon',
+            country: 'United Arab Emirates',
+            phone: '+971500000000',
+          },
+          document: { docType: 'passport' },
+          addressProof: { docType: 'utility_bill' },
+        })
+        .onConflictDoNothing({ target: kycSubmissions.userId });
+    }
+
+    /*
+     * ── Partner-programme fixtures, for the portal e2e suite ──────────────────
+     *
+     * A two-rung chain the suite can stand clients under without driving a
+     * partner application through approval on every run:
+     *
+     *   e2e-partner-l1@  level 1, root — code E2EPARTL1. Carries the agency, so
+     *                    an applicant introduced by them INHERITS it and the
+     *                    apply panel's "selected for you" card renders.
+     *   e2e-partner-l2@  level 2 under l1 — code E2EPARTL2. The deepest enabled
+     *                    rung on the committed ladder, so a client registered
+     *                    under THIS code is chain_full and must be locked out of
+     *                    the programme everywhere the portal offers it.
+     *   e2e-partner-applicant@  verified + KYC 1, introduced by l1, no
+     *                    application — drives the inherited-agency apply flow.
+     *                    The spec keeps it repeatable by having the admin REJECT
+     *                    what it submits (rejected → "Apply again" is a loop;
+     *                    approval is deliberately irreversible and would make
+     *                    run two a different world).
+     *   e2e-partner-fresh@      same shape — the one identity the spec DOES
+     *                    approve, once, to prove approval nests a recruited
+     *                    partner beneath their introducer; later runs assert the
+     *                    standing outcome instead.
+     *
+     * The ACCOUNTS are seeded rather than approved into existence because there
+     * is deliberately no demote operation — a fixture that becomes a partner on
+     * run one is a different world on run two. The live approve path is what
+     * `e2e-partner-fresh@` exists for.
+     */
+    await db
+      .insert(agencies)
+      .values({ name: 'E2E Agency', enabled: true })
+      .onConflictDoNothing({ target: agencies.name });
+    // Re-asserted enabled every boot, like `e2e-suspend@`'s active flag: a
+    // crashed run (or a curious operator) must not leave the fixture closed and
+    // every later apply refusing "not open for applications".
+    await db.update(agencies).set({ enabled: true }).where(eq(agencies.name, 'E2E Agency'));
+    const [e2eAgency] = await db
+      .select({ id: agencies.id })
+      .from(agencies)
+      .where(eq(agencies.name, 'E2E Agency'))
+      .limit(1);
+
+    const partnerFixtures = [
+      {
+        email: 'e2e-partner-l1@oxshare.com',
+        firstName: 'Petra',
+        lastName: 'Upline',
+        phone: '+971500000005',
+      },
+      {
+        email: 'e2e-partner-l2@oxshare.com',
+        firstName: 'Selim',
+        lastName: 'Downline',
+        phone: '+971500000006',
+      },
+      {
+        email: 'e2e-partner-applicant@oxshare.com',
+        firstName: 'Aida',
+        lastName: 'Applicant',
+        phone: '+971500000007',
+      },
+      {
+        email: 'e2e-partner-fresh@oxshare.com',
+        firstName: 'Nadim',
+        lastName: 'Nested',
+        phone: '+971500000008',
+      },
+    ] as const;
+    for (const fixture of partnerFixtures) {
+      await db
+        .insert(users)
+        .values({
+          ...fixture,
+          passwordHash: clientHash,
+          type: 'individual',
+          status: 'active',
+          emailVerified: true,
+          verificationLevel: 1,
+          country: 'United Arab Emirates',
+        })
+        .onConflictDoNothing({ target: users.email });
+    }
+    const fixtureRows = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(
+        inArray(
+          users.email,
+          partnerFixtures.map((f) => f.email),
+        ),
+      );
+    const fixtureId = (email: string) => fixtureRows.find((r) => r.email === email)?.id;
+    const partnerL1 = fixtureId('e2e-partner-l1@oxshare.com');
+    const partnerL2 = fixtureId('e2e-partner-l2@oxshare.com');
+
+    if (partnerL1 && partnerL2 && e2eAgency) {
+      await db
+        .insert(ibAccounts)
+        .values({
+          userId: partnerL1,
+          level: 1,
+          referralCode: 'E2EPARTL1',
+          agencyId: e2eAgency.id,
+          active: true,
+        })
+        .onConflictDoNothing({ target: ibAccounts.userId });
+      await db
+        .insert(ibAccounts)
+        .values({
+          userId: partnerL2,
+          level: 2,
+          parentIbUserId: partnerL1,
+          referralCode: 'E2EPARTL2',
+          agencyId: e2eAgency.id,
+          active: true,
+        })
+        .onConflictDoNothing({ target: ibAccounts.userId });
+      /*
+       * Attribution AFTER the l1 account exists (the column's FK points at
+       * ib_accounts), and re-asserted every boot so rows inserted by an older
+       * seed pick it up. The applicant and fresh identities sit under L1 — one
+       * rung of room — while l2's own introducer is l1, matching the account.
+       */
+      const introduced = fixtureRows
+        .filter((r) => r.email !== 'e2e-partner-l1@oxshare.com')
+        .map((r) => r.id);
+      await db
+        .update(users)
+        .set({ referredByIbUserId: partnerL1 })
+        .where(inArray(users.id, introduced));
+    }
   }
 
   const kycReasons = [
@@ -664,372 +697,376 @@ export async function runSeeds(): Promise<void> {
   // The `withdrawal_otp` security switch is no longer seeded: the OTP was
   // removed (D-67) and so was the screen that toggled it.
 
-  /*
-   * ── The ADMIN end-to-end cohort ─────────────────────────────────────────
-   *
-   * A fixed, deterministic set of clients on the `@oxshare-e2e.test` domain,
-   * for the Playwright suite in `oxshare-crm-admin`.
-   *
-   * SEEDED, NOT CREATED AT RUNTIME, and that is forced rather than chosen:
-   * `POST /auth/register` is capped at 10 per hour per IP and there is no admin
-   * endpoint that creates a client at all, so a suite that minted its own
-   * fixtures would rate-limit itself on the second run.
-   *
-   * The DOMAIN is the mechanism that makes a shared development database
-   * workable. Every list assertion first types `oxshare-e2e.test` into the
-   * search box, so it is about a set the suite owns entirely — a developer who
-   * registers forty clients tomorrow cannot break a single assertion. Nothing
-   * is ever deleted: half these tables refuse it, and a
-   * `DELETE ... WHERE email LIKE` on a shared database is one typo away from
-   * destroying somebody's afternoon.
-   *
-   * The SHAPE is chosen so every filter has both a match and a non-match:
-   * 3 types x 3 statuses x 2 levels x 3 countries. A filter that silently
-   * ignores its parameter — which is exactly what `?country=` did before this
-   * work — then produces a COUNT CHANGE the spec can catch, rather than a
-   * vacuous pass. The names run alpha..zulu so a sort assertion is "first is
-   * Alpha, last is Zulu", decidable without knowing the total.
-   */
-  const E2E_DOMAIN = 'oxshare-e2e.test';
-  const e2eClients = [
-    {
-      local: 'alpha',
-      firstName: 'Alpha',
-      lastName: 'Aardvark',
-      type: 'individual',
-      status: 'active',
-      /*
-       * ⚠️ LEVEL 0, AND IT WAS 1 UNTIL 11 Sep 2026. Alpha is the only client in
-       * this cohort carrying a KYC SUBMISSION (below, left `submitted` so the
-       * review queue has a row nobody decides). Level 1 has exactly ONE source
-       * in this product — approval — and alpha has never been approved:
-       * `GET /admin/kyc/:id/history` returns zero attempts for them.
-       *
-       * So the fixture encoded a client who is money-verified while their KYC
-       * sits unreviewed. `transactions.service.ts` refuses withdrawals on
-       * `verificationLevel < 1`, so seeded alpha could withdraw with their
-       * submission still in the queue — which is the exact defect
-       * `kyc.service.ts` records fixing: "the status said no while the money
-       * path said yes", reproduced deliberately in fixture data.
-       *
-       * THE FILTER COVERAGE THIS COHORT EXISTS FOR IS UNAFFECTED. The shape
-       * above requires two levels with a match each; charlie and zulu are both
-       * level 1 and carry no submission, so `?level=1` keeps two matches and
-       * nothing can disagree about them — a row that does not exist cannot
-       * contradict one that does.
-       *
-       * `seed-consistency.spec.ts` pins the invariant so the next fixture
-       * cannot drift back: no client may hold level >= 1 while carrying an
-       * UNDECIDED submission.
-       */
-      level: 0,
-      country: 'Lebanon',
-    },
-    {
-      local: 'bravo',
-      firstName: 'Bravo',
-      lastName: 'Baker',
-      type: 'referral',
-      status: 'active',
-      level: 0,
-      country: 'United Arab Emirates',
-    },
-    {
-      local: 'charlie',
-      firstName: 'Charlie',
-      lastName: 'Croft',
-      type: 'partner',
-      status: 'active',
-      level: 1,
-      country: 'Cyprus',
-    },
-    {
-      local: 'delta',
-      firstName: 'Delta',
-      lastName: 'Dunn',
-      type: 'individual',
-      /*
-       * ⚠️ SUSPENDED, AND IT WAS `pending` UNTIL 11 Sep 2026 — a state NO code
-       * path can produce or exit. Registration writes `active`,
-       * `setClientStatus` is typed `'active' | 'suspended'`, and no migration
-       * ever backfilled it, so delta was stuck there permanently and was the
-       * only row in the product holding it.
-       *
-       * THE SWAP IS NOT COSMETIC. The cohort's comment above claims
-       * "3 types x 3 statuses" coverage, and there was not ONE suspended
-       * fixture — so `?status=suspended` had never had a match, and a spec
-       * asserting that filter worked would have passed vacuously. Two REACHABLE
-       * statuses with a match each is what the comment always claimed.
-       */
-      status: 'suspended',
-      level: 0,
-      country: 'Lebanon',
-    },
-    {
-      local: 'zulu',
-      firstName: 'Zulu',
-      lastName: 'Zimmer',
-      type: 'individual',
-      status: 'active',
-      level: 1,
-      country: 'United Arab Emirates',
-    },
+  if (seedE2eFixtures()) {
     /*
-     * The ONLY row any spec writes to. Suspension is destructive and its own
-     * spec toggles it, so it must not be a client another assertion reads —
-     * a shared mutable fixture is how a suite starts failing in an order that
-     * depends on which test ran first.
+     * ── The ADMIN end-to-end cohort ─────────────────────────────────────────
+     *
+     * A fixed, deterministic set of clients on the `@oxshare-e2e.test` domain,
+     * for the Playwright suite in `oxshare-crm-admin`.
+     *
+     * SEEDED, NOT CREATED AT RUNTIME, and that is forced rather than chosen:
+     * `POST /auth/register` is capped at 10 per hour per IP and there is no admin
+     * endpoint that creates a client at all, so a suite that minted its own
+     * fixtures would rate-limit itself on the second run.
+     *
+     * The DOMAIN is the mechanism that makes a shared development database
+     * workable. Every list assertion first types `oxshare-e2e.test` into the
+     * search box, so it is about a set the suite owns entirely — a developer who
+     * registers forty clients tomorrow cannot break a single assertion. Nothing
+     * is ever deleted: half these tables refuse it, and a
+     * `DELETE ... WHERE email LIKE` on a shared database is one typo away from
+     * destroying somebody's afternoon.
+     *
+     * The SHAPE is chosen so every filter has both a match and a non-match:
+     * 3 types x 3 statuses x 2 levels x 3 countries. A filter that silently
+     * ignores its parameter — which is exactly what `?country=` did before this
+     * work — then produces a COUNT CHANGE the spec can catch, rather than a
+     * vacuous pass. The names run alpha..zulu so a sort assertion is "first is
+     * Alpha, last is Zulu", decidable without knowing the total.
      */
-    {
-      local: 'suspend-target',
-      firstName: 'Sierra',
-      lastName: 'Target',
-      type: 'individual',
-      status: 'active',
-      level: 0,
-      country: 'Cyprus',
-    },
-  ] as const;
+    const E2E_DOMAIN = 'oxshare-e2e.test';
+    const e2eClients = [
+      {
+        local: 'alpha',
+        firstName: 'Alpha',
+        lastName: 'Aardvark',
+        type: 'individual',
+        status: 'active',
+        /*
+         * ⚠️ LEVEL 0, AND IT WAS 1 UNTIL 11 Sep 2026. Alpha is the only client in
+         * this cohort carrying a KYC SUBMISSION (below, left `submitted` so the
+         * review queue has a row nobody decides). Level 1 has exactly ONE source
+         * in this product — approval — and alpha has never been approved:
+         * `GET /admin/kyc/:id/history` returns zero attempts for them.
+         *
+         * So the fixture encoded a client who is money-verified while their KYC
+         * sits unreviewed. `transactions.service.ts` refuses withdrawals on
+         * `verificationLevel < 1`, so seeded alpha could withdraw with their
+         * submission still in the queue — which is the exact defect
+         * `kyc.service.ts` records fixing: "the status said no while the money
+         * path said yes", reproduced deliberately in fixture data.
+         *
+         * THE FILTER COVERAGE THIS COHORT EXISTS FOR IS UNAFFECTED. The shape
+         * above requires two levels with a match each; charlie and zulu are both
+         * level 1 and carry no submission, so `?level=1` keeps two matches and
+         * nothing can disagree about them — a row that does not exist cannot
+         * contradict one that does.
+         *
+         * `seed-consistency.spec.ts` pins the invariant so the next fixture
+         * cannot drift back: no client may hold level >= 1 while carrying an
+         * UNDECIDED submission.
+         */
+        level: 0,
+        country: 'Lebanon',
+      },
+      {
+        local: 'bravo',
+        firstName: 'Bravo',
+        lastName: 'Baker',
+        type: 'referral',
+        status: 'active',
+        level: 0,
+        country: 'United Arab Emirates',
+      },
+      {
+        local: 'charlie',
+        firstName: 'Charlie',
+        lastName: 'Croft',
+        type: 'partner',
+        status: 'active',
+        level: 1,
+        country: 'Cyprus',
+      },
+      {
+        local: 'delta',
+        firstName: 'Delta',
+        lastName: 'Dunn',
+        type: 'individual',
+        /*
+         * ⚠️ SUSPENDED, AND IT WAS `pending` UNTIL 11 Sep 2026 — a state NO code
+         * path can produce or exit. Registration writes `active`,
+         * `setClientStatus` is typed `'active' | 'suspended'`, and no migration
+         * ever backfilled it, so delta was stuck there permanently and was the
+         * only row in the product holding it.
+         *
+         * THE SWAP IS NOT COSMETIC. The cohort's comment above claims
+         * "3 types x 3 statuses" coverage, and there was not ONE suspended
+         * fixture — so `?status=suspended` had never had a match, and a spec
+         * asserting that filter worked would have passed vacuously. Two REACHABLE
+         * statuses with a match each is what the comment always claimed.
+         */
+        status: 'suspended',
+        level: 0,
+        country: 'Lebanon',
+      },
+      {
+        local: 'zulu',
+        firstName: 'Zulu',
+        lastName: 'Zimmer',
+        type: 'individual',
+        status: 'active',
+        level: 1,
+        country: 'United Arab Emirates',
+      },
+      /*
+       * The ONLY row any spec writes to. Suspension is destructive and its own
+       * spec toggles it, so it must not be a client another assertion reads —
+       * a shared mutable fixture is how a suite starts failing in an order that
+       * depends on which test ran first.
+       */
+      {
+        local: 'suspend-target',
+        firstName: 'Sierra',
+        lastName: 'Target',
+        type: 'individual',
+        status: 'active',
+        level: 0,
+        country: 'Cyprus',
+      },
+    ] as const;
 
-  for (const client of e2eClients) {
-    await db
-      .insert(users)
-      .values({
-        email: `${client.local}@${E2E_DOMAIN}`,
-        passwordHash: clientHash,
-        firstName: client.firstName,
-        lastName: client.lastName,
-        type: client.type,
-        status: client.status,
-        emailVerified: true,
-        verificationLevel: client.level,
-        country: client.country,
-      })
-      .onConflictDoNothing({ target: users.email });
-  }
+    for (const client of e2eClients) {
+      await db
+        .insert(users)
+        .values({
+          email: `${client.local}@${E2E_DOMAIN}`,
+          passwordHash: clientHash,
+          firstName: client.firstName,
+          lastName: client.lastName,
+          type: client.type,
+          status: client.status,
+          emailVerified: true,
+          verificationLevel: client.level,
+          country: client.country,
+        })
+        .onConflictDoNothing({ target: users.email });
+    }
 
-  /*
-   * ── The REVIEW POOL: one pending-KYC client per spec that needs one ──────
-   *
-   * SEEDED, for the reason the cohort above already states and this repo
-   * already learned: `POST /auth/register` is capped at 10 an hour per IP.
-   *
-   * `mintClientWithPendingKyc` was added after that note and registers a client
-   * at runtime, once per spec that needs a reviewable submission — ELEVEN of
-   * them across the admin suite. So the suite cannot finish a single run inside
-   * its own budget, let alone a second: the later mints answer 429, the helper
-   * skips, and a skipped Playwright test reports as PASSING. Eighteen tests
-   * vanished from one green run that way, including the entire payout rail.
-   *
-   * `verify-email` (10 per 15 minutes) is exhausted by the same path.
-   *
-   * ONE CLIENT PER LABEL, never a shared one. These fixtures are DECIDED by the
-   * specs that use them — claimed, approved, rejected — so two specs sharing a
-   * row would fail in an order that depends on which ran first, which is the
-   * trap the `suspend-target` note above already records.
-   *
-   * ⚠️ RE-ASSERTED on every boot, not `onConflictDoNothing`. That is the
-   * difference between this and alpha's submission, and it is deliberate: these
-   * rows exist to BE decided, so a run that approves one must find it pending
-   * again next time. Alpha's is left alone because no spec decides it and a
-   * human's decision there should stick.
-   */
-  await reassertReviewPool(db);
-
-  await seedTradingFixtures(db);
-
-  /*
-   * Two tags the suite owns, prefixed so they read as suite-owned in the tag
-   * picker and sort together away from an operator's real segments.
-   *
-   * `alpha` is assigned to one client and `beta` to none, which is what lets a
-   * scoping spec prove BOTH directions: a scoped admin sees the tagged client
-   * and does not see the untagged one.
-   */
-  const [e2eTagAlpha] = await db
-    .insert(clientTags)
-    .values({ slug: 'e2e-alpha', label: 'E2E Alpha', color: '#0369a1' })
-    .onConflictDoNothing({ target: clientTags.slug })
-    .returning();
-
-  await db
-    .insert(clientTags)
-    .values({ slug: 'e2e-beta', label: 'E2E Beta', color: '#b45309' })
-    .onConflictDoNothing({ target: clientTags.slug });
-
-  const alphaTagId =
-    e2eTagAlpha?.id ??
-    (await db.select().from(clientTags).where(eq(clientTags.slug, 'e2e-alpha')).limit(1))[0]?.id;
-
-  const [alphaClient] = await db
-    .select()
-    .from(users)
-    .where(eq(users.email, `alpha@${E2E_DOMAIN}`))
-    .limit(1);
-
-  if (alphaTagId && alphaClient) {
-    await db
-      .insert(clientTagAssignments)
-      .values({ userId: alphaClient.id, tagId: alphaTagId })
-      // The composite primary key IS the idempotency constraint (§6.3), so a
-      // reboot re-running the seeds is a no-op rather than a duplicate-key error.
-      .onConflictDoNothing();
     /*
-     * A SUBMITTED (undecided) KYC row for alpha, carrying the person's email
-     * and phone under `personalInfo.*` — the fixture the masking specs read
-     * through the review screen (`kyc.user.*` and `kyc.personalInfo.*` must
-     * both be absent for a masked reviewer). Never decided by any spec:
-     * approval is terminal, and `onConflictDoNothing` keeps a human decision.
+     * ── The REVIEW POOL: one pending-KYC client per spec that needs one ──────
+     *
+     * SEEDED, for the reason the cohort above already states and this repo
+     * already learned: `POST /auth/register` is capped at 10 an hour per IP.
+     *
+     * `mintClientWithPendingKyc` was added after that note and registers a client
+     * at runtime, once per spec that needs a reviewable submission — ELEVEN of
+     * them across the admin suite. So the suite cannot finish a single run inside
+     * its own budget, let alone a second: the later mints answer 429, the helper
+     * skips, and a skipped Playwright test reports as PASSING. Eighteen tests
+     * vanished from one green run that way, including the entire payout rail.
+     *
+     * `verify-email` (10 per 15 minutes) is exhausted by the same path.
+     *
+     * ONE CLIENT PER LABEL, never a shared one. These fixtures are DECIDED by the
+     * specs that use them — claimed, approved, rejected — so two specs sharing a
+     * row would fail in an order that depends on which ran first, which is the
+     * trap the `suspend-target` note above already records.
+     *
+     * ⚠️ RE-ASSERTED on every boot, not `onConflictDoNothing`. That is the
+     * difference between this and alpha's submission, and it is deliberate: these
+     * rows exist to BE decided, so a run that approves one must find it pending
+     * again next time. Alpha's is left alone because no spec decides it and a
+     * human's decision there should stick.
      */
-    await db
-      .insert(kycSubmissions)
-      .values({
-        userId: alphaClient.id,
-        status: 'submitted',
-        submittedAt: new Date(),
-        personalInfo: {
-          firstName: 'Alpha',
-          lastName: 'Aardvark',
-          email: `alpha@${E2E_DOMAIN}`,
-          phone: '+96170000001',
-          dateOfBirth: '1991-01-01',
-          nationality: 'Lebanon',
-          country: 'Lebanon',
-        },
-        document: { docType: 'passport' },
-        addressProof: { docType: 'utility_bill' },
-      })
-      .onConflictDoNothing({ target: kycSubmissions.userId });
-  }
+    await reassertReviewPool(db);
 
-  /*
-   * ── The RESTRICTED end-to-end admin ─────────────────────────────────────
-   *
-   * The identity that makes FR-RBAC-03 assertable at all. Gating cannot be
-   * proved from the master's session — a spec that tried would pass while
-   * demonstrating nothing.
-   *
-   * SEEDED rather than created through the invite flow, and that is forced:
-   * there is no `DELETE /admin/users`, so an accepted invite is a PERMANENT
-   * administrator row. A suite that accepted one per run would add an account
-   * to the directory every time anybody ran it, and after a fortnight the
-   * screen under test would be mostly test data.
-   *
-   * Its grant set is chosen so one identity can prove every branch:
-   *
-   *   /dashboard    ✅ any admin — proves the fixture is a working admin
-   *   /clients      ✅ users.view — a positive case, so gating is not just "deny"
-   *   /kyc          ✅ kyc.review — a second positive, different module
-   *   /roles        ❌ roles.view — a denial
-   *   /settings     ❌ roles.manage — a denial on a manage-level key
-   *   /kyc/builder  ❌ kyc.edit — a NESTED route whose parent is allowed
-   *   /audit-log    ❌ masterOnly — which no grant can satisfy
-   *
-   * And free, without a second fixture: `users.view` WITHOUT `users.suspend`
-   * means the client list renders no Actions column and PATCH .../status 403s —
-   * per-action gating inside a permitted route, which is a stronger statement
-   * than per-route gating.
-   *
-   * The role also carries a MASK and the admin a SCOPE, so the two RBAC-03
-   * dimensions are exercised by the same identity.
-   */
-  /*
-   * A READ-ONLY compliance reviewer: `kyc.view` + `clients.view`, no
-   * `kyc.review`. Exists so the suite can prove the review screen draws no
-   * decision control for somebody who may not decide, and that the API
-   * refuses them. Unscoped and unmasked — one variable at a time.
-   */
-  const [kycViewerRole] = await db
-    .insert(roles)
-    .values({
-      name: 'E2E KYC Viewer',
-      description: 'Fixture for the admin end-to-end suite. Not for human use.',
-      permissions: ['kyc.view', 'clients.view'],
-      maskedFields: [],
-    })
-    .onConflictDoNothing({ target: roles.name })
-    .returning();
-  const kycViewerRoleId =
-    kycViewerRole?.id ??
-    (await db.select().from(roles).where(eq(roles.name, 'E2E KYC Viewer')).limit(1))[0]?.id;
-  if (kycViewerRoleId) {
-    await db
-      .insert(admins)
-      .values({
-        email: 'e2e-kyc-viewer@oxshare.com',
-        passwordHash: adminHash,
-        name: 'E2E KYC Viewer',
-        role: 'sub_admin',
-        roleId: kycViewerRoleId,
-        permissions: ['kyc.view', 'clients.view'],
-      })
-      .onConflictDoNothing({ target: admins.email });
-  }
+    await seedTradingFixtures(db);
 
-  const [e2eRestrictedRole] = await db
-    .insert(roles)
-    .values({
-      name: 'E2E Restricted',
-      description: 'Fixture for the admin end-to-end suite. Not for human use.',
-      permissions: ['clients.view', 'kyc.review', 'tags.view'],
-      // Hidden from this identity, so a masking spec has something to assert
-      // is absent from the response BODY, not merely from the screen.
-      maskedFields: ['client.email'],
-    })
-    .onConflictDoNothing({ target: roles.name })
-    .returning();
-
-  const restrictedRoleId =
-    e2eRestrictedRole?.id ??
-    (await db.select().from(roles).where(eq(roles.name, 'E2E Restricted')).limit(1))[0]?.id;
-
-  if (restrictedRoleId) {
-    const [restrictedAdmin] = await db
-      .insert(admins)
-      .values({
-        email: 'e2e-restricted@oxshare.com',
-        passwordHash: adminHash,
-        name: 'E2E Restricted',
-        role: 'sub_admin',
-        roleId: restrictedRoleId,
-        permissions: ['clients.view'],
-      })
-      .onConflictDoNothing({ target: admins.email })
+    /*
+     * Two tags the suite owns, prefixed so they read as suite-owned in the tag
+     * picker and sort together away from an operator's real segments.
+     *
+     * `alpha` is assigned to one client and `beta` to none, which is what lets a
+     * scoping spec prove BOTH directions: a scoped admin sees the tagged client
+     * and does not see the untagged one.
+     */
+    const [e2eTagAlpha] = await db
+      .insert(clientTags)
+      .values({ slug: 'e2e-alpha', label: 'E2E Alpha', color: '#0369a1' })
+      .onConflictDoNothing({ target: clientTags.slug })
       .returning();
 
-    const restrictedId =
-      restrictedAdmin?.id ??
-      (
-        await db
-          .select()
-          .from(admins)
-          .where(eq(admins.email, 'e2e-restricted@oxshare.com'))
-          .limit(1)
-      )[0]?.id;
+    await db
+      .insert(clientTags)
+      .values({ slug: 'e2e-beta', label: 'E2E Beta', color: '#b45309' })
+      .onConflictDoNothing({ target: clientTags.slug });
 
-    // Scoped to the alpha tag only, so exactly one seeded client is visible and
-    // the rest are not — both directions provable from one fixture.
-    if (restrictedId && alphaTagId) {
+    const alphaTagId =
+      e2eTagAlpha?.id ??
+      (await db.select().from(clientTags).where(eq(clientTags.slug, 'e2e-alpha')).limit(1))[0]?.id;
+
+    const [alphaClient] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, `alpha@${E2E_DOMAIN}`))
+      .limit(1);
+
+    if (alphaTagId && alphaClient) {
       await db
-        .insert(adminClientTagScopes)
-        .values({ adminId: restrictedId, tagId: alphaTagId, createdBy: restrictedId })
+        .insert(clientTagAssignments)
+        .values({ userId: alphaClient.id, tagId: alphaTagId })
+        // The composite primary key IS the idempotency constraint (§6.3), so a
+        // reboot re-running the seeds is a no-op rather than a duplicate-key error.
         .onConflictDoNothing();
       /*
-       * The intake grant is TRUE BY DEFAULT (migration 0058) — restriction is
-       * the explicit act. This fixture IS the explicit act: its purpose is to
-       * prove both directions of visibility, so it must NOT see the untagged
-       * pool. Re-asserted every boot, because the e2e suite depends on it the
-       * way it depends on the alpha scope above.
+       * A SUBMITTED (undecided) KYC row for alpha, carrying the person's email
+       * and phone under `personalInfo.*` — the fixture the masking specs read
+       * through the review screen (`kyc.user.*` and `kyc.personalInfo.*` must
+       * both be absent for a masked reviewer). Never decided by any spec:
+       * approval is terminal, and `onConflictDoNothing` keeps a human decision.
        */
       await db
-        .update(admins)
-        .set({ seesUntriaged: false })
-        .where(eq(admins.email, 'e2e-restricted@oxshare.com'));
+        .insert(kycSubmissions)
+        .values({
+          userId: alphaClient.id,
+          status: 'submitted',
+          submittedAt: new Date(),
+          personalInfo: {
+            firstName: 'Alpha',
+            lastName: 'Aardvark',
+            email: `alpha@${E2E_DOMAIN}`,
+            phone: '+96170000001',
+            dateOfBirth: '1991-01-01',
+            nationality: 'Lebanon',
+            country: 'Lebanon',
+          },
+          document: { docType: 'passport' },
+          addressProof: { docType: 'utility_bill' },
+        })
+        .onConflictDoNothing({ target: kycSubmissions.userId });
+    }
+
+    /*
+     * ── The RESTRICTED end-to-end admin ─────────────────────────────────────
+     *
+     * The identity that makes FR-RBAC-03 assertable at all. Gating cannot be
+     * proved from the master's session — a spec that tried would pass while
+     * demonstrating nothing.
+     *
+     * SEEDED rather than created through the invite flow, and that is forced:
+     * there is no `DELETE /admin/users`, so an accepted invite is a PERMANENT
+     * administrator row. A suite that accepted one per run would add an account
+     * to the directory every time anybody ran it, and after a fortnight the
+     * screen under test would be mostly test data.
+     *
+     * Its grant set is chosen so one identity can prove every branch:
+     *
+     *   /dashboard    ✅ any admin — proves the fixture is a working admin
+     *   /clients      ✅ users.view — a positive case, so gating is not just "deny"
+     *   /kyc          ✅ kyc.review — a second positive, different module
+     *   /roles        ❌ roles.view — a denial
+     *   /settings     ❌ roles.manage — a denial on a manage-level key
+     *   /kyc/builder  ❌ kyc.edit — a NESTED route whose parent is allowed
+     *   /audit-log    ❌ masterOnly — which no grant can satisfy
+     *
+     * And free, without a second fixture: `users.view` WITHOUT `users.suspend`
+     * means the client list renders no Actions column and PATCH .../status 403s —
+     * per-action gating inside a permitted route, which is a stronger statement
+     * than per-route gating.
+     *
+     * The role also carries a MASK and the admin a SCOPE, so the two RBAC-03
+     * dimensions are exercised by the same identity.
+     */
+    /*
+     * A READ-ONLY compliance reviewer: `kyc.view` + `clients.view`, no
+     * `kyc.review`. Exists so the suite can prove the review screen draws no
+     * decision control for somebody who may not decide, and that the API
+     * refuses them. Unscoped and unmasked — one variable at a time.
+     */
+    const [kycViewerRole] = await db
+      .insert(roles)
+      .values({
+        name: 'E2E KYC Viewer',
+        description: 'Fixture for the admin end-to-end suite. Not for human use.',
+        permissions: ['kyc.view', 'clients.view'],
+        maskedFields: [],
+      })
+      .onConflictDoNothing({ target: roles.name })
+      .returning();
+    const kycViewerRoleId =
+      kycViewerRole?.id ??
+      (await db.select().from(roles).where(eq(roles.name, 'E2E KYC Viewer')).limit(1))[0]?.id;
+    if (kycViewerRoleId) {
+      await db
+        .insert(admins)
+        .values({
+          email: 'e2e-kyc-viewer@oxshare.com',
+          passwordHash: adminHash,
+          name: 'E2E KYC Viewer',
+          role: 'sub_admin',
+          roleId: kycViewerRoleId,
+          permissions: ['kyc.view', 'clients.view'],
+        })
+        .onConflictDoNothing({ target: admins.email });
+    }
+
+    const [e2eRestrictedRole] = await db
+      .insert(roles)
+      .values({
+        name: 'E2E Restricted',
+        description: 'Fixture for the admin end-to-end suite. Not for human use.',
+        permissions: ['clients.view', 'kyc.review', 'tags.view'],
+        // Hidden from this identity, so a masking spec has something to assert
+        // is absent from the response BODY, not merely from the screen.
+        maskedFields: ['client.email'],
+      })
+      .onConflictDoNothing({ target: roles.name })
+      .returning();
+
+    const restrictedRoleId =
+      e2eRestrictedRole?.id ??
+      (await db.select().from(roles).where(eq(roles.name, 'E2E Restricted')).limit(1))[0]?.id;
+
+    if (restrictedRoleId) {
+      const [restrictedAdmin] = await db
+        .insert(admins)
+        .values({
+          email: 'e2e-restricted@oxshare.com',
+          passwordHash: adminHash,
+          name: 'E2E Restricted',
+          role: 'sub_admin',
+          roleId: restrictedRoleId,
+          permissions: ['clients.view'],
+        })
+        .onConflictDoNothing({ target: admins.email })
+        .returning();
+
+      const restrictedId =
+        restrictedAdmin?.id ??
+        (
+          await db
+            .select()
+            .from(admins)
+            .where(eq(admins.email, 'e2e-restricted@oxshare.com'))
+            .limit(1)
+        )[0]?.id;
+
+      // Scoped to the alpha tag only, so exactly one seeded client is visible and
+      // the rest are not — both directions provable from one fixture.
+      if (restrictedId && alphaTagId) {
+        await db
+          .insert(adminClientTagScopes)
+          .values({ adminId: restrictedId, tagId: alphaTagId, createdBy: restrictedId })
+          .onConflictDoNothing();
+        /*
+         * The intake grant is TRUE BY DEFAULT (migration 0058) — restriction is
+         * the explicit act. This fixture IS the explicit act: its purpose is to
+         * prove both directions of visibility, so it must NOT see the untagged
+         * pool. Re-asserted every boot, because the e2e suite depends on it the
+         * way it depends on the alpha scope above.
+         */
+        await db
+          .update(admins)
+          .set({ seesUntriaged: false })
+          .where(eq(admins.email, 'e2e-restricted@oxshare.com'));
+      }
     }
   }
 
   console.log(
-    '🌱 Seeds applied (idempotent): master role/admin, demo client, rejection reasons, e2e cohort',
+    `🌱 Seeds applied (idempotent): master role/admin, demo client, rejection reasons${
+      seedE2eFixtures() ? ', e2e cohort' : ' — e2e fixtures SKIPPED (SEED_E2E_FIXTURES=false)'
+    }`,
   );
 }
 

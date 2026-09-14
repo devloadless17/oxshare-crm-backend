@@ -27,6 +27,19 @@ const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
+    /*
+     * Seed the end-to-end FIXTURES (`e2e-*` accounts, the @oxshare-e2e.test
+     * client cohort, their tags and roles). Default `true`, because both
+     * frontends' Playwright suites sign in as those identities.
+     *
+     * Declared HERE rather than read straight off `process.env`, and that is not
+     * a style point: `ConfigModule` parses `.env` into an object, validates it,
+     * and assigns only the VALIDATED keys to `process.env` — so a variable
+     * missing from this schema is silently dropped and reads as undefined
+     * however it is set in the file.
+     */
+    SEED_E2E_FIXTURES: z.enum(['true', 'false']).default('true'),
+
     /**
      * Relax the rate-limit COUNTER for an end-to-end run. Never in production.
      *
