@@ -167,6 +167,22 @@ export class FundTradingAccountDto {
   @IsString()
   @Length(3, 500)
   reason: string;
+
+  /**
+   * WHICH WAY, and the amount above stays unsigned.
+   *
+   * The same rule the removed `Mt5BalanceDto` applied, for the same reason: an amount and
+   * a direction that can disagree is a withdrawal that becomes a deposit,
+   * silently, in the one place that is least recoverable. The sign is derived
+   * from this field, once, in the service.
+   *
+   * `deposit` credits the wallet and transfers to the account; `withdraw`
+   * transfers off the account into the wallet. It is NOT a payout — no money
+   * leaves the platform on either one.
+   */
+  @ApiProperty({ enum: ['deposit', 'withdraw'], example: 'deposit' })
+  @IsIn(['deposit', 'withdraw'])
+  direction: 'deposit' | 'withdraw';
 }
 
 /**

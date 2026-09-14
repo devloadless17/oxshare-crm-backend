@@ -290,28 +290,33 @@ export class AdminMoneyController {
   }
 
   /**
-   * Put money onto a client's TRADING ACCOUNT by hand.
+   * Move money on a client's TRADING ACCOUNT by hand, either direction.
    *
-   * ## Two transactions, because two things happen
+   * ## Always recorded, which is the point of it
    *
-   * A wallet CREDIT followed by a TRANSFER to the account, which is how money
-   * actually reaches MT5 in this system — the wallet is the ledger and accounts
-   * are funded from it. The client's own history therefore shows both rows, and
-   * the ledger can explain where the money came from.
+   * A deposit is a wallet CREDIT followed by a TRANSFER to the account; a
+   * withdrawal is a TRANSFER off the account into the wallet. Both leave a
+   * ledger entry and appear in the client's own history, because that is how
+   * money actually moves in this system — the wallet is the ledger and accounts
+   * are funded from it.
    *
-   * ## ⚠️ NOT `POST /admin/trading-accounts/:id/balance`
+   * ## ⚠️ THIS REPLACED `POST /admin/trading-accounts/:id/balance`
    *
-   * That route is a DEALER adjustment: it moves the MT5 balance alone, with no
-   * wallet leg and no ledger entry, which is right for a correction or a bonus
-   * and wrong for funding. The two are separate routes because they are separate
-   * acts with different accounting consequences — see the service method.
+   * That route moved the MT5 balance alone, with no wallet leg and no ledger
+   * entry, and it is GONE. Offering both left the console with two controls that
+   * moved money on the same account and differed only in whether anything was
+   * written down — the unrecorded one got picked by mistake, and what it moved
+   * could not be explained afterwards from the ledger.
    *
-   * ## Requires BOTH `wallets.credit` and `trading.deposit`
+   * A withdrawal here is NOT a payout: the money lands in the client's wallet,
+   * not in their bank. Paying out is the reviewed withdrawal desk.
    *
-   * The decorator can only name one, so it carries `wallets.credit` as the
-   * FLOOR — the more sensitive of the two, since step one mints balance — and
-   * the service asserts both. An operator holding only one of them can do
-   * neither half of this.
+   * ## Permissions follow the DIRECTION
+   *
+   * The decorator can only name a fixed key, so it carries `trading.view` as
+   * the FLOOR and the service asserts the real gate: a deposit needs
+   * `wallets.credit` AND `trading.deposit` because it mints balance before
+   * moving it, a withdrawal needs `trading.withdraw` because it mints nothing.
    *
    * ## The idempotency key becomes the provider reference
    *
@@ -332,17 +337,29 @@ export class AdminMoneyController {
       'UNIQUE(provider, provider_ref) and credits once (R-5.2).',
   })
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('wallets.credit')
+  /*
+   * The FLOOR, not the real gate — `trading.view` stops an admin with no
+   * trading access at all reaching the handler, and the service asserts the
+   * direction-specific keys.
+   *
+   * This was `wallets.credit`, which was wrong the moment withdraw arrived: a
+   * withdraw-only operator mints nothing and must not need the key that governs
+   * minting, but the decorator would have denied them at the door.
+   */
+  @RequirePermissions('trading.view')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: "Fund a client's trading account by hand",
+    summary: "Move money on a client's trading account by hand",
     description:
-      'Writes TWO movements: a successful DEPOSIT transaction crediting the wallet, then a ' +
-      'TRANSFER of the same amount to the trading account — both visible in the client history, ' +
-      "the ledger and the financial views. The currency is the account's and is not accepted " +
-      'from the caller. Enforces the same preconditions as a client transfer (KYC level 1, live ' +
-      'and active account). Requires wallets.credit AND trading.deposit. For a dealer ' +
-      'correction or bonus with no wallet leg, use POST /admin/trading-accounts/:id/balance.',
+      'ALWAYS RECORDED, in both directions. A deposit writes a successful DEPOSIT transaction ' +
+      'crediting the wallet, then a TRANSFER of the same amount to the trading account. A ' +
+      'withdrawal writes a TRANSFER off the account into the wallet — it is NOT a payout and ' +
+      'no money leaves the platform. Both are visible in the client history, the ledger and ' +
+      "the financial views. The currency is the account's and is not accepted from the caller. " +
+      'Enforces the same preconditions as a client transfer: KYC level 1, live and active ' +
+      'account (DEMO accounts are refused both ways — practice money has no wallet). A ' +
+      'deposit requires wallets.credit AND trading.deposit; a withdrawal requires ' +
+      'trading.withdraw.',
   })
   @ApiCreatedResponse({ type: TransactionDto })
   @ScopedToClients(
@@ -359,7 +376,12 @@ export class AdminMoneyController {
     // route above. `@Idempotent()` has already refused a request without it.
     const reference = req.header(IDEMPOTENCY_HEADER) ?? '';
     return this.money.fundTradingAccount(
-      { tradingAccountId: id, amount: dto.amount, reason: dto.reason },
+      {
+        tradingAccountId: id,
+        amount: dto.amount,
+        reason: dto.reason,
+        direction: dto.direction,
+      },
       reference,
       req.admin,
     );

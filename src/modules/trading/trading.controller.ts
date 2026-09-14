@@ -569,17 +569,29 @@ export class TradingController {
   /**
    * Money that moved on this client's MT5 accounts with no position behind it.
    *
-   * ## The gap this closes
+   * ## The gap this closed, and what it is for NOW
    *
-   * A dealer adjustment — `POST /admin/trading-accounts/:id/balance` — moves
-   * money on MT5 with no wallet leg and no ledger entry, deliberately, because
-   * it is a correction or a bonus rather than a client funding an account.
-   * Every CRM money screen reads `transactions`, so that movement appeared on
-   * NONE of them: an admin could credit or DEBIT a client's trading account and
-   * the client's own transaction history showed nothing.
+   * It was built for the DEALER ADJUSTMENT, which moved money on MT5 with no
+   * wallet leg and no ledger entry: every CRM money screen reads
+   * `transactions`, so that movement appeared on none of them and an admin
+   * could credit — or DEBIT — a client's trading account with the client's own
+   * history showing nothing.
    *
-   * `deal-codes.ts` had already written down that this must be visible. The
-   * data was always stored; the last screen that read it went in `1cfd673`.
+   * ⚠️ THAT ROUTE IS GONE. Console money movements now go through
+   * `POST /admin/trading-accounts/:id/fund`, which posts a wallet leg and a
+   * ledger entry both ways, so the hole this was reporting on no longer exists.
+   *
+   * This endpoint STAYS, for the reason `deal-codes.ts` gave before either of
+   * them existed: `mt5_deals` holds every balance operation the bridge ingests,
+   * including ones the CRM did not originate — a swap correction MT5 booked
+   * itself, or a movement made directly in the broker terminal. Those are still
+   * real money on a client's account with no `transactions` row, and this is
+   * still the only place they can be read.
+   *
+   * What changed is that it is now a RECONCILIATION read rather than the
+   * client's missing statement. The portal panel that rendered it was removed:
+   * it could not tell a CRM transfer from a terminal adjustment and double-
+   * showed the former under a heading claiming the wallet was untouched.
    *
    * ## Not a parameter, from the session
    *

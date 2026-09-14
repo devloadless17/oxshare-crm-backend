@@ -246,19 +246,26 @@ export class AdminMoneyService {
    * rejected: one row implying money went somewhere it never was, against a
    * wallet the ledger says was never involved.
    *
-   * ## ⚠️ This is NOT `Mt5AccountsService.adjustBalance`, and must not become it
+   * ## ⚠️ THIS REPLACED the MT5 dealer adjustment, which is gone
    *
-   * `adjustBalance` is a DEALER operation: it moves the MT5 balance with no
-   * wallet leg and no ledger entry at all. That is the correct shape for a
-   * correction, a bonus or manual settlement — money the broker is giving or
-   * taking that is not a client deposit — and the WRONG shape for funding an
-   * account, which is what this method is for.
+   * `Mt5AccountsService.adjustBalance` moved the MT5 balance with no wallet leg
+   * and no ledger entry, and for a while the console offered both. That was the
+   * wrong shape for an operator: two menu items that both move money on the
+   * same account, differing only in whether anything is written down. The
+   * unrecorded one was picked by mistake, and the money it moved could not be
+   * explained afterwards by anybody reading the ledger.
    *
-   * Both exist because they are different acts with different accounting
-   * consequences. Collapsing them would mean either a bonus minting a
-   * client-visible deposit, or a funding leaving the ledger unable to explain
-   * where the money came from. The console offers them as separate controls and
-   * says which is which.
+   * So there is now ONE control and it always records. A bonus or a goodwill
+   * credit arrives as a real deposit on the client's statement, which is the
+   * more honest answer anyway: the client can see money they were given.
+   *
+   * ## BOTH DIRECTIONS, and they are NOT mirror images
+   *
+   * `deposit` credits the wallet and transfers to the account. `withdraw`
+   * transfers off the account and the wallet keeps the money. The ORDER differs
+   * because the risk differs — see the two legs below. Sharing one method is
+   * deliberate: the direction is one field, and two near-identical methods is
+   * how the sign ends up wrong in one of them.
    *
    * ## BOTH permissions, not either
    *
@@ -282,16 +289,39 @@ export class AdminMoneyService {
    * on the pre-flight below, which is what makes that true.
    */
   async fundTradingAccount(
-    params: { tradingAccountId: string; amount: string; reason: string },
+    params: {
+      tradingAccountId: string;
+      amount: string;
+      reason: string;
+      direction: 'deposit' | 'withdraw';
+    },
     reference: string,
     actor: AuthenticatedAdmin,
   ) {
-    assertActorCan(actor, 'wallets.credit', 'credit a client wallet');
-    assertActorCan(actor, 'trading.deposit', 'fund a client trading account');
+    const isDeposit = params.direction === 'deposit';
+
+    /*
+     * The permission follows the DIRECTION, and only a deposit needs
+     * `wallets.credit`.
+     *
+     * A deposit mints balance into a wallet before moving it, so it needs the
+     * key that governs minting AND the one that governs putting money on an
+     * account. A withdrawal mints nothing — it moves money the client already
+     * has off their account — so requiring `wallets.credit` for it would mean
+     * granting the power to create money in order to take some away.
+     */
+    if (isDeposit) {
+      assertActorCan(actor, 'wallets.credit', 'credit a client wallet');
+      assertActorCan(actor, 'trading.deposit', 'fund a client trading account');
+    } else {
+      assertActorCan(actor, 'trading.withdraw', 'debit a client trading account');
+    }
 
     const reasonText = params.reason.trim();
     if (!reasonText) {
-      throw new ValidationError('A reason is required when funding a trading account by hand.');
+      throw new ValidationError(
+        `A reason is required when ${isDeposit ? 'funding' : 'debiting'} a trading account by hand.`,
+      );
     }
 
     /*
@@ -348,19 +378,56 @@ export class AdminMoneyService {
      * same shape as the overdraw check in `request`. If the two ever disagree,
      * `request` wins, because it is the one both paths share.
      */
+    /*
+     * DEMO ACCOUNTS ARE REFUSED IN BOTH DIRECTIONS, and there is no longer any
+     * console path that moves their balance.
+     *
+     * A demo account trades practice money against no wallet and no ledger, so
+     * there is nothing to record a movement against — depositing would mean
+     * inventing a practice-money wallet that mixes with real balances, and
+     * withdrawing would mean taking real money out of a fiction. A client tops
+     * up their OWN demo account through `fundOwnDemoAccount`, which is where
+     * that behaviour belongs.
+     */
     if (account.environment !== 'live') {
       throw new ValidationError(
-        'Only live trading accounts can be funded this way. A demo account trades practice ' +
-          'money and is not linked to a wallet — top it up with a balance adjustment instead.',
+        'Only live trading accounts hold real money. A demo account trades practice funds ' +
+          'against no wallet, so there is nothing to move or record.',
       );
     }
     if (account.status !== 'active') {
-      throw new ValidationError(`That trading account is ${account.status} and takes no money.`);
+      throw new ValidationError(
+        `That trading account is ${account.status} and cannot be used to move money.`,
+      );
     }
     if (user.verificationLevel < 1) {
       throw new ValidationError(
-        'That client is not verified to KYC level 1, so money cannot be moved into their ' +
+        'That client is not verified to KYC level 1, so money cannot be moved on their ' +
           'trading account. Verify them first.',
+      );
+    }
+
+    /*
+     * ── WITHDRAW TAKES THE OTHER ORDER, and the asymmetry is the safe one ───
+     *
+     * A deposit mints into the wallet and then moves it out, so the wallet leg
+     * comes first (below). A withdrawal moves money OFF the account and the
+     * wallet is where it lands — `transfers.request` places no hold on the
+     * account side and `settle` credits the wallet only after MT5 has confirmed
+     * its own debit, so there is exactly one leg here and nothing to unwind.
+     *
+     * That also means the overdraw check is `transfers.request`'s to make: it
+     * refuses an amount larger than the account's mirrored balance less
+     * anything already in flight, with a sentence naming the real figure. This
+     * method must not second-guess it against the same mirror.
+     *
+     * Returning early keeps the deposit path below unchanged rather than
+     * threading a direction through every leg of it.
+     */
+    if (!isDeposit) {
+      return await this.debitTradingAccount(
+        { account, amount: params.amount, reason: reasonText },
+        actor,
       );
     }
 
@@ -477,6 +544,123 @@ export class AdminMoneyService {
       replayed: credit.replayed,
       transfer,
       transferError,
+    };
+  }
+
+  /**
+   * Take money OFF a client's trading account, by hand — the withdraw half of
+   * `fundTradingAccount`.
+   *
+   * ## ONE leg, not two, and that is why it is separate
+   *
+   * A deposit needs a wallet credit before it has anything to transfer. A
+   * withdrawal does not: `account_to_wallet` moves the money off MT5 and
+   * `TransfersService.settle` credits the wallet as its own second half, inside
+   * the same database transaction. So there is one call here and no ordering
+   * hazard — nothing is minted, nothing is held, and there is no half-done
+   * state where money sits somewhere the operator did not intend.
+   *
+   * That is the whole reason the two directions do not share a body. Forcing
+   * them together would mean a deposit-shaped "credit then transfer" pipeline
+   * with the credit skipped by an `if`, which reads as an omission rather than
+   * as the correct shape for this direction.
+   *
+   * ## The money lands in the WALLET, and the copy must say so
+   *
+   * This is not a payout: no money leaves the platform, and nothing is sent to
+   * a bank. It moves from the trading account to the client's wallet, where the
+   * client can withdraw it through the normal reviewed path or transfer it
+   * back. An operator who reads "withdraw" as "paid out" has told a client the
+   * wrong thing, so the caller receives the transfer and names the destination.
+   *
+   * ## The transfer IS the record
+   *
+   * It appears in the client's own movement list as a deposit against their
+   * wallet — the unified query in `TransactionsService` renders an
+   * `account_to_wallet` transfer that way, because that is what it does to the
+   * wallet the list is about — and both legs are in the ledger under
+   * `entryType: 'transfer'`. No transaction row is written on top of it: a
+   * `withdrawal` row would claim money left the platform, which would overstate
+   * the withdrawal totals in every report that sums by direction.
+   *
+   * ## NOT idempotent on the caller's key, and this is stated rather than fixed
+   *
+   * The deposit direction converges on `UNIQUE(provider, provider_ref)` through
+   * the transaction row it writes. There is no such row here, so the protection
+   * against a double-click is the executor's idempotency on the transfer id
+   * plus the console disabling its button in flight — the same protection the
+   * client's own transfer endpoint relies on. Two deliberate debits of the same
+   * size are two legitimate operations and must not be collapsed.
+   */
+  private async debitTradingAccount(
+    params: {
+      account: { id: string; userId: string; currency: string; login: string | null };
+      amount: string;
+      reason: string;
+    },
+    actor: AuthenticatedAdmin,
+  ) {
+    const { account } = params;
+
+    /*
+     * `request` is the authority here and does the work this method must not
+     * duplicate: it refuses an overdraw against the account's mirrored balance
+     * less anything already in flight, and names the real figure when it does.
+     *
+     * NOT wrapped in a try/catch that swallows. Unlike the deposit direction —
+     * where a refusal after the credit has committed leaves money in a wallet
+     * and the operator has to be told rather than shown an error — nothing has
+     * moved at this point, so a refusal is simply a refusal and the operator
+     * should see it as one.
+     */
+    const pending = await this.transfers.request({
+      userId: account.userId,
+      tradingAccountId: account.id,
+      direction: 'account_to_wallet',
+      amount: params.amount,
+      currency: account.currency,
+    });
+
+    /*
+     * Executed inline so the common case finishes while the operator is still
+     * looking at the screen. Idempotent on the transfer id, so a retry cannot
+     * move the money twice — and when MT5 is unreachable the transfer is left
+     * PENDING for the resume scheduler rather than failed, because the debit may
+     * well have landed with only the response lost.
+     */
+    const transfer = (await this.transferExecutor.execute(pending.id)) ?? null;
+
+    this.audit.record(actor.id, 'trading.withdraw', 'trading_account', account.id, {
+      userId: account.userId,
+      login: account.login,
+      amount: params.amount,
+      currency: account.currency,
+      transferId: pending.id,
+      transferState: transfer?.state ?? null,
+      reason: params.reason,
+    });
+
+    this.logger.log(
+      `Admin ${actor.email} debited ${params.amount} ${account.currency} from trading account ` +
+        `${account.login ?? account.id} to the client wallet: transfer ${pending.id} ` +
+        `(${transfer?.state ?? 'unknown'})`,
+    );
+
+    /*
+     * SHAPED LIKE THE DEPOSIT'S RETURN so one caller can render both.
+     *
+     * `transaction` is null because no transaction row is written — see the note
+     * above on why a `withdrawal` row would be a lie. `transferError` is null
+     * because a failure in this direction throws rather than returning: there is
+     * no half-done state to report.
+     */
+    return {
+      transaction: null,
+      replayed: false as const,
+      transfer,
+      transferError: null,
+      /** Where the money went. The console says "wallet", not "paid out". */
+      destination: 'wallet' as const,
     };
   }
 
@@ -1150,19 +1334,23 @@ export class AdminMoneyService {
    * ⚠️ This said "every money movement, platform-wide" and that was FALSE, in a
    * way that matters on the one screen an operator reconciles from.
    *
-   * It reads `transactions`, which is the CRM's own record. A DEALER
-   * ADJUSTMENT — `POST /admin/trading-accounts/:id/balance`, the "Adjust
-   * balance" dialog on the trading-accounts screen — deliberately writes no
-   * row there: it moves money on MT5 with no wallet leg and no ledger entry,
-   * which is the right shape for a correction or a bonus and is exactly why it
-   * must NOT be forced into this table. A `transactions` row with no ledger
-   * entry behind it would not break the `sum(ledger) == balance` invariant;
-   * it would make that invariant MEANINGLESS, which is worse.
+   * It reads `transactions`, which is the CRM's own record. The DEALER
+   * ADJUSTMENT used to be the hole in that: the "Adjust balance" dialog moved
+   * money on MT5 with no wallet leg and no ledger entry, so it wrote no row
+   * here and this page could not see it.
    *
-   * So the movement is real, it is audited (`trading.deposit` / `trading.with-
-   * draw`, direction-aware), and it is absent here by design. What was wrong
-   * was this sentence claiming otherwise — an operator reading "every money
-   * movement, platform-wide" has no reason to look anywhere else.
+   * ⚠️ THAT DIALOG AND ITS ROUTE ARE GONE, and the hole is closed for anything
+   * the console does. `fundTradingAccount` above posts a wallet leg and a
+   * ledger entry in both directions, so an operator moving money on a trading
+   * account now appears on this page like every other movement.
+   *
+   * The heading is still not "platform-wide", and the remaining gap is worth
+   * naming precisely: MT5 can book a balance operation the CRM never
+   * originated — a swap correction, or a movement made directly in the broker
+   * terminal. Those have no `transactions` row, and forcing one would not break
+   * the `sum(ledger) == balance` invariant so much as make it MEANINGLESS,
+   * which is worse. `GET /trading/balance-movements` reads `mt5_deals` and is
+   * where they can be seen.
    *
    * Where those movements ARE visible: `/audit-log` for the operator act, and
    * `GET /trading/balance-movements` for the client's own view of the same

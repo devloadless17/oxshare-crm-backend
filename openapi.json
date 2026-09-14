@@ -4330,46 +4330,6 @@
         ]
       }
     },
-    "/v1/admin/trading-accounts/{id}/balance": {
-      "post": {
-        "description": "A DEALER operation with no wallet leg — for corrections, bonuses and manual settlement. Funding an account from a client wallet is a transfer (POST /transfers), which holds and posts both sides. Requires trading.deposit or trading.withdraw depending on direction.",
-        "operationId": "Mt5AccountsController_balance",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Mt5BalanceDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Credit or debit a trading account directly on MT5",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
     "/v1/admin/trading-accounts/{id}/live": {
       "get": {
         "operationId": "Mt5AccountsController_live",
@@ -8699,6 +8659,62 @@
           }
         ],
         "summary": "Add funds to a client's wallet by hand",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/{id}/fund": {
+      "post": {
+        "description": "ALWAYS RECORDED, in both directions. A deposit writes a successful DEPOSIT transaction crediting the wallet, then a TRANSFER of the same amount to the trading account. A withdrawal writes a TRANSFER off the account into the wallet — it is NOT a payout and no money leaves the platform. Both are visible in the client history, the ledger and the financial views. The currency is the account's and is not accepted from the caller. Enforces the same preconditions as a client transfer: KYC level 1, live and active account (DEMO accounts are refused both ways — practice money has no wallet). A deposit requires wallets.credit AND trading.deposit; a withdrawal requires trading.withdraw.",
+        "operationId": "AdminMoneyController_fundTradingAccount",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended funding, reused only when retrying that same one. It is also stored as the transaction `provider_ref`, so a replay collides on UNIQUE(provider, provider_ref) and credits once (R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FundTradingAccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Move money on a client's trading account by hand",
         "tags": [
           "admin"
         ]
@@ -13761,33 +13777,6 @@
           "environment"
         ]
       },
-      "Mt5BalanceDto": {
-        "type": "object",
-        "properties": {
-          "amount": {
-            "type": "string",
-            "example": "250.00",
-            "description": "Positive decimal. Direction carries the sign."
-          },
-          "direction": {
-            "type": "string",
-            "enum": [
-              "deposit",
-              "withdraw"
-            ]
-          },
-          "comment": {
-            "type": "string",
-            "maxLength": 128,
-            "example": "Goodwill credit, ticket #4412"
-          }
-        },
-        "required": [
-          "amount",
-          "direction",
-          "comment"
-        ]
-      },
       "KycDocumentPartDto": {
         "type": "object",
         "properties": {
@@ -17028,6 +17017,33 @@
           "amount",
           "currency",
           "reason"
+        ]
+      },
+      "FundTradingAccountDto": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "250.00000000"
+          },
+          "reason": {
+            "type": "string",
+            "example": "Funding the 4 August wire that arrived off-rail.",
+            "maxLength": 500
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdraw"
+            ],
+            "example": "deposit"
+          }
+        },
+        "required": [
+          "amount",
+          "reason",
+          "direction"
         ]
       },
       "OpenWalletDto": {

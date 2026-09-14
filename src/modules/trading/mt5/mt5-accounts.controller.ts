@@ -3,7 +3,7 @@ import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swa
 import { Request } from 'express';
 import { ParseUUIDPipe } from '@nestjs/common';
 import { Mt5AccountsService } from './mt5-accounts.service';
-import { CreateMt5AccountDto, Mt5BalanceDto, CreatedMt5AccountDto } from './dto/mt5-account.dto';
+import { CreateMt5AccountDto, CreatedMt5AccountDto } from './dto/mt5-account.dto';
 import {
   PermissionsGuard,
   RequirePermissions,
@@ -90,47 +90,38 @@ export class Mt5AccountsController {
     );
   }
 
-  /**
-   * Credit or debit a trading account on MT5.
+  /*
+   * `POST trading-accounts/:id/balance` USED TO BE HERE, and its removal is the
+   * point of `AdminMoneyService.fundTradingAccount`.
    *
-   * ## One route, two permissions
+   * It was a DEALER operation: it moved the MT5 balance with no wallet leg and
+   * no ledger entry, for corrections, bonuses and manual settlement. The
+   * reasoning was sound in isolation — money the broker gives or takes is not a
+   * client deposit — and it survived a long time on that argument.
    *
-   * `direction` decides which of `trading.deposit` and `trading.withdraw` is
-   * required, and the service checks it — not this decorator, which can only
-   * name a fixed key. `@RequirePermissions('trading.view')` here is the FLOOR:
-   * it stops an admin with no trading access at all reaching the handler, and
-   * the real gate is `assertActorCan` inside.
+   * WHAT KILLED IT WAS THE CONSOLE, not the accounting. The trading-accounts
+   * page ended up with two row actions that both moved money on the same MT5
+   * account and differed only in whether anything was written down. An operator
+   * choosing between "Adjust balance on MT5" and "Add funds" is not making an
+   * accounting decision, and the owner's verdict was blunt: they are the same
+   * act, so there should be one control, and it should be the one that records.
    *
-   * Splitting into two routes would let the decorator carry it, and was
-   * rejected: the two operations differ by a sign on one field, and two nearly
-   * identical handlers is how the sign ends up wrong in one of them.
+   * The cost of the wrong pick was asymmetric and invisible. Money moved through
+   * this route appeared in NO client statement, NO ledger entry and NO financial
+   * report — a debit especially, which took money off a client's account with no
+   * record anywhere in the CRM. The portal grew a whole panel to surface these,
+   * and that panel then double-showed real transfers under a heading claiming
+   * the wallet was untouched. Two defects, both descended from this route
+   * existing.
+   *
+   * So every console money movement is now recorded: a bonus arrives as a real
+   * deposit on the client's statement, which is the more honest answer anyway.
+   * `POST /admin/trading-accounts/:id/fund` carries both directions.
+   *
+   * Nothing else called this. `fundOwnDemoAccount` below is the CLIENT's own
+   * demo top-up and is untouched — it is the reason demo accounts need no
+   * operator balance control at all.
    */
-  @Post('trading-accounts/:id/balance')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions('trading.view')
-  @ApiCookieAuth()
-  @ApiOperation({
-    summary: 'Credit or debit a trading account directly on MT5',
-    description:
-      'A DEALER operation with no wallet leg — for corrections, bonuses and manual settlement. ' +
-      'Funding an account from a client wallet is a transfer (POST /transfers), which holds and ' +
-      'posts both sides. Requires trading.deposit or trading.withdraw depending on direction.',
-  })
-  @ScopedToClients(
-    'Moves money on one client trading account. A scoped admin must not fund accounts outside ' +
-      'their territory.',
-  )
-  @Audited('trading.deposit')
-  balance(
-    @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: Mt5BalanceDto,
-  ) {
-    return this.accounts.adjustBalance(
-      { accountId: id, amount: dto.amount, direction: dto.direction, comment: dto.comment },
-      req.admin,
-    );
-  }
 
   /*
    * `POST trading-accounts/live-balances` USED TO BE HERE, and its removal is

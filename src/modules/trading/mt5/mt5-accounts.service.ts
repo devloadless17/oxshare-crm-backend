@@ -1007,154 +1007,35 @@ export class Mt5AccountsService {
     };
   }
 
-  /**
-   * Credit or debit a trading account on MT5.
+  /*
+   * `adjustBalance` USED TO BE HERE — the DEALER credit/debit, removed with its
+   * route (see `mt5-accounts.controller.ts` for the full reasoning).
    *
-   * ## This does NOT touch a wallet
+   * It moved the MT5 balance with no wallet leg and no ledger entry. That is a
+   * coherent operation in accounting terms and it is still the only honest way
+   * to describe money the broker gives or takes outside a client deposit — but
+   * it gave the console a second money control that recorded nothing, and an
+   * operator picking it by mistake moved money that no statement, ledger or
+   * report could afterwards explain.
    *
-   * It is a dealer operation: money appears on, or leaves, the MT5 account with
-   * no corresponding movement in the CRM ledger. That is the right shape for
-   * corrections, bonuses and manual settlement, and the WRONG shape for a
-   * client funding their account — that is a transfer, has two legs, and lives
-   * in `TransfersService`.
+   * Every console money movement is recorded now.
+   * `AdminMoneyService.fundTradingAccount` carries both directions as a wallet
+   * credit plus a transfer, or a transfer plus a wallet credit.
    *
-   * Because it is one-sided it is gated on its own permissions, separately in
-   * each direction: crediting is giving away the broker's money and debiting is
-   * taking a client's.
+   * ## What this deliberately does NOT restore
+   *
+   * If a genuine unrecorded dealer operation is ever needed again — a swap
+   * correction MT5 itself booked, say — it must not come back as a console
+   * button beside the funding control. That adjacency is what broke: two
+   * controls, same visible effect, one silent. It would need to be its own
+   * surface, its own permission, and a name that could not be mistaken for
+   * funding.
+   *
+   * `fundOwnDemoAccount` above is the CLIENT's own demo top-up and is untouched.
+   * It is also why no operator control is needed for demo balances: practice
+   * money has no wallet and no ledger to record a movement against, so the
+   * funding path refuses demo accounts in both directions.
    */
-  async adjustBalance(
-    input: {
-      accountId: string;
-      amount: string;
-      direction: 'deposit' | 'withdraw';
-      comment: string;
-    },
-    actor: AuthenticatedAdmin,
-  ) {
-    assertActorCan(
-      actor,
-      input.direction === 'deposit' ? 'trading.deposit' : 'trading.withdraw',
-      `${input.direction} on a trading account`,
-    );
-
-    // Scope on the OWNING client, BEFORE the bridge: a scoped admin cannot move
-    // money on an account whose client is outside their territory — the
-    // predicate joins the WHERE, so an out-of-scope account is a 404, never a
-    // 403 (D-45), and the refusal does not depend on MT5 being reachable.
-    const [account] = await this.db
-      .select()
-      .from(tradingAccounts)
-      .where(
-        and(
-          eq(tradingAccounts.id, input.accountId),
-          clientScopePredicate(actor.clientScope, tradingAccounts.userId),
-        ),
-      )
-      .limit(1);
-
-    if (!account) throw new NotFoundError('Trading account not found.');
-    this.assertBridge();
-    if (!account.login) {
-      throw new ValidationError('That account has no MT5 login, so it cannot be funded.');
-    }
-    if (account.status !== 'active') {
-      throw new ValidationError(`That account is ${account.status} and takes no money.`);
-    }
-
-    /*
-     * The SIGN is applied here, once, from the direction — the caller sends a
-     * positive amount and says which way.
-     *
-     * The bridge deliberately does not reinterpret signs, so if this were left
-     * to the caller a withdrawal sent as a positive number would be a silent
-     * deposit. Requiring a positive amount and deriving the sign makes that
-     * mistake unrepresentable rather than merely unlikely.
-     */
-    if (!/^\d+(\.\d{1,8})?$/.test(input.amount) || Number.parseFloat(input.amount) === 0) {
-      throw new ValidationError('Amount must be a positive decimal.');
-    }
-    const signed = input.direction === 'withdraw' ? `-${input.amount}` : input.amount;
-
-    /*
-     * A fresh key per attempt, and that is correct here.
-     *
-     * The bridge's idempotency store exists so that ITS OWN retry of a timed-out
-     * call does not credit twice. It is not a guard against an operator clicking
-     * twice — two clicks are two intended operations as far as this layer can
-     * tell, and inventing a key from the amount would silently swallow a genuine
-     * second deposit of the same size.
-     */
-    const idempotencyKey = randomUUID();
-
-    const result = await this.bridge.balance({
-      login: account.login,
-      amount: signed,
-      type: 'balance',
-      comment: input.comment,
-      idempotencyKey,
-    });
-
-    /*
-     * Refresh from MT5 rather than adding locally: the client may have been
-     * trading while this ran, and our arithmetic would overwrite the truth with
-     * a stale guess.
-     *
-     * Written through `Mt5AccountSyncService` rather than with an UPDATE here,
-     * and that is not tidying. This used to set `balance` alone, leaving
-     * `balance_synced_at` untouched — so the freshest figure in the system
-     * carried no read time, and the sweep's staleness guard could not tell it
-     * from a value MT5 had never confirmed. The next delivered snapshot
-     * overwrote it unconditionally, including one read BEFORE this deposit
-     * landed, which is a client watching their money arrive and then vanish.
-     *
-     * `readAt` is stamped here rather than taken from the bridge because the
-     * direct `getAccount` response carries no read time — only the PUSHED
-     * snapshot does. The ordering this feeds is against sweep rounds, which are
-     * minutes apart, so a local stamp is close enough to be useful.
-     *
-     * AFTER the call, not before. Stamped before, the timestamp understates the
-     * read by the whole round trip to MT5, and understating is the dangerous
-     * direction: `ingestSnapshot` applies any snapshot read later than the one
-     * we hold, so an older sweep read can carry a newer stamp than this one and
-     * overwrite the post-transfer figure. That is a client watching their money
-     * arrive and then vanish — the exact failure the paragraph above describes,
-     * reintroduced through the clock rather than the column.
-     *
-     * What this does NOT fix: the pushed snapshot's `readAt` comes from the
-     * BRIDGE's clock and this one from ours, so the guard still compares two
-     * clocks. Closing that means the bridge reporting its read time on the
-     * direct response too, which is a change on the other side of the wire.
-     */
-    const snapshot = await this.bridge.getAccount(account.login).catch(() => null);
-    const readAt = new Date();
-    if (snapshot) {
-      await this.accountSync.recordFromOperation(account.login, snapshot.balance, readAt);
-    }
-
-    this.audit.record(
-      actor.id,
-      input.direction === 'deposit' ? 'trading.deposit' : 'trading.withdraw',
-      'trading_account',
-      account.id,
-      {
-        login: account.login,
-        amount: input.amount,
-        dealId: String(result.dealId),
-        replayed: result.replayed,
-        comment: input.comment,
-      },
-    );
-
-    this.logger.log(
-      `${input.direction} ${input.amount} on MT5 ${account.login} by ${actor.email} -> deal ${result.dealId}`,
-    );
-
-    return {
-      dealId: String(result.dealId),
-      replayed: result.replayed,
-      balance: snapshot?.balance ?? null,
-    };
-  }
 
   /**
    * What MT5 says about this account RIGHT NOW.

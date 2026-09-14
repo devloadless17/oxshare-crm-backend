@@ -135,7 +135,6 @@ const AUDITED_WITHOUT_A_SHAPE: readonly string[] = [
   'POST /admin/ib/accruals/:id/reverse',
   'POST /admin/kyc-config/reset',
   'POST /admin/kyc-config/steps',
-  'POST /admin/trading-accounts/:id/balance',
   'POST /admin/wallets',
   'PUT /admin/kyc-config',
   'PUT /admin/kyc-config/steps/:id',

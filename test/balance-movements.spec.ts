@@ -11,12 +11,19 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  *
  * ## The defect this closes, and why it was invisible
  *
- * A dealer adjustment (`POST /admin/trading-accounts/:id/balance`) moves money
- * on MT5 with no wallet leg and no ledger entry, deliberately: it is a
- * correction or a bonus, not a client funding an account. Every CRM money
- * screen reads `transactions`, so that movement appeared on NONE of them — an
- * admin could credit or DEBIT a client's trading account and the client's own
- * transaction history showed nothing at all. Found by hand, by the owner.
+ * The dealer adjustment (`POST /admin/trading-accounts/:id/balance`) moved
+ * money on MT5 with no wallet leg and no ledger entry: a correction or a bonus,
+ * not a client funding an account. Every CRM money screen reads
+ * `transactions`, so that movement appeared on NONE of them — an admin could
+ * credit or DEBIT a client's trading account and the client's own transaction
+ * history showed nothing at all. Found by hand, by the owner.
+ *
+ * ⚠️ THAT ROUTE IS GONE. Console movements go through
+ * `POST /admin/trading-accounts/:id/fund`, which records both directions. This
+ * endpoint now covers what remains: balance operations MT5 booked itself — a
+ * swap correction, or a movement made directly in the broker terminal — which
+ * have no `transactions` row and never will. The cases below are unaffected;
+ * they seed `mt5_deals` directly and never called the removed route.
  *
  * The data was never missing. `deal-codes.ts` had already written down that the
  * client should see these, and `mt5_deals` stores every deal the bridge

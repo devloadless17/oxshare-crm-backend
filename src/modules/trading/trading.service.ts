@@ -839,13 +839,22 @@ export class TradingService {
    * can move an MT5 balance directly and the client should see that** rather
    * than a gap between two numbers they can both read."
    *
-   * A dealer adjustment (`POST /admin/trading-accounts/:id/balance`) is
-   * deliberately one-sided: it moves money on MT5 with no wallet leg and no
-   * ledger entry, which is right for corrections and bonuses and is why it must
-   * NOT be written into `transactions`. The consequence nobody had followed
-   * through is that every CRM money screen reads `transactions`, so an admin
-   * could credit — or DEBIT — a client's trading account and the client's own
-   * history showed nothing at all.
+   * The dealer adjustment this was built for (`POST
+   * /admin/trading-accounts/:id/balance`) was deliberately one-sided: it moved
+   * money on MT5 with no wallet leg and no ledger entry, so it was never
+   * written into `transactions` — and because every CRM money screen reads
+   * that table, an admin could credit or DEBIT a client's trading account with
+   * the client's own history showing nothing at all.
+   *
+   * ⚠️ THAT ROUTE IS GONE. `POST /admin/trading-accounts/:id/fund` replaced it
+   * and records both directions, so a CRM-originated movement now has a
+   * `transactions` row and a ledger entry like everything else.
+   *
+   * This read still matters, and for the ORIGINAL reason rather than that one:
+   * `mt5_deals` also holds balance operations the CRM never originated — a swap
+   * correction MT5 booked itself, or a movement made in the broker terminal
+   * directly. Those have no `transactions` row and never will, so this remains
+   * the only place they can be seen.
    *
    * The data was never missing. `mt5_deals` stores every deal the bridge
    * ingests, unfiltered — `isTradeAction` excludes balance deals from

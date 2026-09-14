@@ -11,7 +11,6 @@ import {
   IsOptional,
   IsString,
   IsUUID,
-  Matches,
   Max,
   MaxLength,
   Min,
@@ -61,42 +60,20 @@ export class CreateMt5AccountDto {
   leverage?: number;
 }
 
-/**
- * Credit or debit a trading account directly on MT5.
+/*
+ * `Mt5BalanceDto` USED TO BE HERE, with the dealer balance route it fed.
  *
- * This is a DEALER operation with no wallet leg — see
- * `Mt5AccountsService.adjustBalance`. Funding an account from a client's wallet
- * is a transfer and goes through `POST /transfers`.
+ * Its one good idea outlived it and is worth keeping in sight: the amount was
+ * UNSIGNED and a separate `direction` field carried the sign, because a signed
+ * amount plus a direction is two sources of truth that can disagree silently —
+ * `-100` with `deposit` either credits or debits depending on which the code
+ * trusts. `FundTradingAccountDto` follows the same rule for the same reason.
+ *
+ * The DTO also required a `comment` for MT5's own deal record, which was the
+ * only explanation an auditor reading the broker's terminal would ever see.
+ * The replacement requires a `reason` instead, and it reaches further: the
+ * audit entry, the ledger and the email telling the client their wallet moved.
  */
-export class Mt5BalanceDto {
-  /**
-   * POSITIVE, always. The direction below carries the sign.
-   *
-   * A signed amount plus a direction is two sources of truth that can disagree,
-   * and the disagreement is silent: `-100` with `deposit` would either credit or
-   * debit depending on which the code trusted.
-   */
-  @ApiProperty({ example: '250.00', description: 'Positive decimal. Direction carries the sign.' })
-  @IsString()
-  @Matches(/^\d+(\.\d{1,8})?$/, {
-    message: 'amount must be a positive decimal with up to 8 places',
-  })
-  amount: string;
-
-  @ApiProperty({ enum: ['deposit', 'withdraw'] })
-  @IsIn(['deposit', 'withdraw'])
-  direction: 'deposit' | 'withdraw';
-
-  /**
-   * Shown in MT5's own deal comment, so it is the only explanation an auditor
-   * reading the broker's terminal will ever see. Required for that reason.
-   */
-  @ApiProperty({ maxLength: 128, example: 'Goodwill credit, ticket #4412' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(128)
-  comment: string;
-}
 
 /**
  * What opening an account returns, ONCE.
