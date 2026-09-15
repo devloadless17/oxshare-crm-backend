@@ -254,6 +254,77 @@ describe('KYC upload — size is bounded before anything is written', () => {
     }
   });
 
+  /**
+   * ── A REAL PDF CAN STILL BE A HOSTILE ONE ─────────────────────────────────
+   *
+   * Every check above asks "is this the type it claims to be", and that is the
+   * question that stops the HTML-as-PNG case. It has nothing to say about a file
+   * that genuinely IS a PDF, because a PDF is a document format with an
+   * execution model: it can carry JavaScript, launch a program, or embed another
+   * file entirely.
+   *
+   * The browser side is already covered — `uploads.controller.ts` serves these
+   * `default-src 'none'; sandbox` with `nosniff`. The exposure is the step
+   * after: a reviewer opens client documents all day, and the ordinary way to
+   * read a scan properly is to save it and open it in a desktop reader, where
+   * none of our headers apply. The person most exposed by the KYC queue is the
+   * one who has to open everything in it.
+   */
+  it('refuses a real PDF that carries JavaScript, and stores nothing', async () => {
+    const recorded = newRecorded();
+    const app = await makeApp(recorded);
+    const storedBefore = recorded.stored();
+
+    try {
+      const hostile = Buffer.from(
+        '%PDF-1.4\n1 0 obj<</S/JavaScript/JS(app.alert\\(1\\))>>endobj\n%%EOF\n',
+        'latin1',
+      );
+      const res = await request(httpServer(app))
+        .post('/kyc/upload')
+        .field('field', 'doc_front')
+        .attach('file', hostile, { filename: 'passport.pdf', contentType: 'application/pdf' });
+
+      expect(res.status).toBe(400);
+      // The message has to name the FIX, not the defect: whoever sent this is
+      // overwhelmingly likely to be a client whose exporter added something, and
+      // "re-scan it" is the only sentence they can act on.
+      expect(JSON.stringify(res.body)).toMatch(/scan or a photo/i);
+      expect(recorded.stored()).toBe(storedBefore);
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * The half that decides whether the check above can ship.
+   *
+   * A false rejection here is a client who cannot finish onboarding, holding a
+   * document that is completely fine — and the control gets switched off the
+   * first week that happens. `/OpenAction` is how a PDF asks to open at a given
+   * zoom, which real scanners and "Print to PDF" drivers emit, so it is
+   * deliberately NOT on the marker list.
+   */
+  it('accepts an ordinary PDF, including one that sets its own initial view', async () => {
+    const recorded = newRecorded();
+    const app = await makeApp(recorded);
+
+    try {
+      const ordinary = Buffer.from(
+        '%PDF-1.4\n1 0 obj<</Type/Catalog/OpenAction[0 /Fit]/Pages 2 0 R>>endobj\n%%EOF\n',
+        'latin1',
+      );
+      const res = await request(httpServer(app))
+        .post('/kyc/upload')
+        .field('field', 'doc_front')
+        .attach('file', ordinary, { filename: 'passport.pdf', contentType: 'application/pdf' });
+
+      expect(res.status).toBeLessThan(400);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('refuses a disallowed content type', async () => {
     const recorded = newRecorded();
     const app = await makeApp(recorded);

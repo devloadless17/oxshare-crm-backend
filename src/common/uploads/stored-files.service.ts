@@ -6,6 +6,12 @@ import {
   type StorageProvider,
   type UploaderKind,
 } from '../../store/stored-objects.store';
+import { ALERT_KINDS, raiseAlert } from '../logging/alerts';
+import {
+  ACTIVE_CONTENT_REJECTION,
+  describeActiveFeatures,
+  findActivePdfFeatures,
+} from './active-content';
 import { SIGNATURE_BYTES, signatureMatchesDeclared, sniffMimeType } from './file-signature';
 import { objectKey } from './storage/storage-key';
 import {
@@ -83,6 +89,14 @@ export interface FileBucket {
    */
   cacheControl?: string;
   /**
+   * Refuse a PDF that carries a script, an embedded file or a launch action.
+   *
+   * KYC only. The other buckets take images, which have no execution model, and
+   * the logo bucket's SVG is handled by the CSP it is served under rather than
+   * by content inspection — see the note on `PAYMENT_LOGO_BUCKET`.
+   */
+  rejectActiveContent?: boolean;
+  /**
    * Does an object here belong to a client, for quota purposes?
    *
    * False for payment-method logos — a brand mark is uploaded by an administrator
@@ -143,6 +157,9 @@ export const AVATAR_BUCKET: FileBucket = {
  */
 export const KYC_BUCKET: FileBucket = {
   dir: 'kyc',
+  // The only bucket that accepts a format with an execution model, so the only
+  // one that has to look inside. See `active-content.ts`.
+  rejectActiveContent: true,
   maxBytes: 10 * 1024 * 1024,
   allowedMimeTypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf'],
   extensions: {
@@ -309,6 +326,51 @@ export class StoredFilesService {
       throw new ValidationError(
         `The file content does not match its declared type. ${bucket.rejectionMessage}`,
       );
+    }
+
+    /*
+     * The type is right. Is the CONTENT hostile?
+     *
+     * Everything above answers "is this the kind of file it claims to be", which
+     * is the check that stops an HTML document arriving as `passport.pdf`. It
+     * has nothing to say about a file that is a real PDF and is also a dropper.
+     *
+     * This runs on the whole buffer AFTER the size ceiling, never before: the
+     * scan is linear in the file, so doing it first would let a 200MB body cost
+     * a scan before the limit refused it.
+     *
+     * See `active-content.ts` for what the scan does and does not cover — it
+     * catches the ordinary hostile PDF and says plainly that it is not a
+     * sanitiser.
+     */
+    if (bucket.rejectActiveContent && actual === 'application/pdf') {
+      const features = findActivePdfFeatures(buffer);
+      if (features.length > 0) {
+        /*
+         * Alert BEFORE throwing. The throw unwinds to the exception filter and
+         * the request ends as an ordinary 400, so this is the only place the
+         * event is visible — and "a document with a script in it was offered to
+         * the KYC queue" is a thing a person should get to see.
+         *
+         * `notify`, not `page`: the upload was refused, so nothing is stored and
+         * nothing is running. Context carries the markers and the uploader, and
+         * deliberately not the filename — that is client-supplied text on a path
+         * that logs.
+         */
+        raiseAlert(
+          this.logger,
+          ALERT_KINDS.UPLOAD_ACTIVE_CONTENT,
+          'notify',
+          `A KYC upload was refused: the PDF carries ${describeActiveFeatures(features)}.`,
+          {
+            features: features.join(','),
+            uploaderKind: uploader.kind,
+            uploaderId: uploader.id,
+            bytes: buffer.length,
+          },
+        );
+        throw new ValidationError(ACTIVE_CONTENT_REJECTION);
+      }
     }
 
     const owner = bucket.countsTowardOwnerQuota

@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { etagFor, matchesEtag, parseRange } from './http-range';
 import type {
   StorageDriver,
@@ -39,8 +39,26 @@ export class DiskStorageDriver implements StorageDriver {
     private readonly logger: StorageLogger = { warn: () => {} },
   ) {}
 
+  /**
+   * `<root>/<key>`, and never one byte outside `<root>`.
+   *
+   * Every key this driver is given comes from `objectKey()`, which `basename`s
+   * each component and refuses `..`, `.` and the empty string — so by the time a
+   * key arrives here it cannot traverse, and this assertion has never fired.
+   *
+   * It is here because that is an argument about a DIFFERENT file. Containment
+   * is this driver's own guarantee: it is the thing that turns a key into a
+   * filesystem path, and a guarantee that holds only while every caller keeps
+   * its side of a bargain is one refactor away from not holding. The check costs
+   * one `resolve` per read and states the invariant where it actually matters.
+   */
   private pathFor(key: string): string {
-    return join(this.root, ...key.split('/'));
+    const full = resolve(join(this.root, ...key.split('/')));
+    const root = resolve(this.root);
+    if (full !== root && !full.startsWith(root + sep)) {
+      throw new Error(`Refusing a storage key that escapes the upload root: ${key}`);
+    }
+    return full;
   }
 
   async put(key: string, body: Buffer, _options: StoragePutOptions): Promise<void> {
