@@ -89,6 +89,11 @@ export interface VerifyEmailResult {
 
 @Injectable()
 export class AuthService {
+  /** Address → when its "account exists" notice was last sent. See `shouldSendAccountExists`. */
+  private readonly accountExistsSentAt = new Map<string, number>();
+
+  private static readonly ACCOUNT_EXISTS_WINDOW_MS = 60 * 60_000;
+
   private readonly logger = new Logger(AuthService.name);
 
   constructor(
@@ -172,9 +177,84 @@ export class AuthService {
    * address they already own no longer gets an immediate "you already have an
    * account" on screen. They get it by email, one round trip later.
    */
+  /**
+   * At most one "you already have an account" email per address per hour.
+   *
+   * ## What this bounds that the route throttle does not
+   *
+   * `@Throttle` on the register route caps ten attempts per hour per IP. That
+   * bounds the CALLER and says nothing about the VICTIM: ten addresses behind
+   * ten proxies is ten times the mail to the same mailbox, and there is no
+   * shortage of either. So the per-IP limit protects the endpoint while leaving
+   * a named person mailable by anyone who knows they bank here.
+   *
+   * Keyed on the address, so the ceiling follows the person being written to
+   * rather than whoever is doing the writing. It is also the answer to the
+   * ordinary case, which is not an attack at all: somebody who has forgotten
+   * their account and submits the form four times gets one email, not four.
+   *
+   * ## Why in memory, and why that is honest rather than lazy
+   *
+   * This is a single-instance deployment and a missed dedupe sends one extra
+   * email — the failure is a duplicate message, not a lost one. Redis is
+   * available and deliberately not used: it would put a network call that can
+   * fail in front of the ONE signal the legitimate account holder receives, to
+   * economise on a message they are entitled to. If this ever runs multi-
+   * instance, move it to Redis and accept that cost; until then the Map is the
+   * smaller risk.
+   *
+   * Lowercased because addresses are matched case-insensitively everywhere else,
+   * and a dedupe that treats Ann@x.test and ann@x.test as different people is
+   * not a dedupe.
+   */
+  private shouldSendAccountExists(email: string): boolean {
+    const key = email.trim().toLowerCase();
+    const now = Date.now();
+    const last = this.accountExistsSentAt.get(key);
+    if (last !== undefined && now - last < AuthService.ACCOUNT_EXISTS_WINDOW_MS) return false;
+
+    /*
+     * Swept on write rather than on a timer: the map only grows when somebody
+     * registers against an address that already exists, which is rare, and a
+     * sweep here costs nothing while an interval would keep a handle alive for
+     * the life of the process.
+     */
+    if (this.accountExistsSentAt.size > 1_000) {
+      for (const [k, at] of this.accountExistsSentAt) {
+        if (now - at >= AuthService.ACCOUNT_EXISTS_WINDOW_MS) this.accountExistsSentAt.delete(k);
+      }
+    }
+
+    this.accountExistsSentAt.set(key, now);
+    return true;
+  }
+
   async register(dto: RegisterDto) {
+    /*
+     * ── THE MESSAGE IS TRUE IN BOTH BRANCHES, AND THAT IS THE POINT ──────────
+     *
+     * It used to read "Registration successful. Please check your email to
+     * verify your account." — which is a promise the OTHER branch cannot keep.
+     * Someone who already had an account was told registration had succeeded and
+     * to go and verify, then received an email saying they already had one and
+     * nothing had been created. The screen and the mailbox contradicted each
+     * other, and the person in the middle reasonably reads that as a broken
+     * product rather than a privacy feature.
+     *
+     * Naming BOTH outcomes fixes that without giving anything away. An attacker
+     * reading this sentence learns exactly what they knew before — that one of
+     * two things happened — because the text enumerates both and commits to
+     * neither. The legitimate owner, meanwhile, is no longer ambushed: whichever
+     * email arrives, they were told to expect it.
+     *
+     * This is the cheap half of the trade this method makes. The expensive half
+     * — that a user who forgot their account waits one round trip to find out —
+     * is unavoidable while the response stays identical, and is documented above.
+     */
     const generic = {
-      message: 'Registration successful. Please check your email to verify your account.',
+      message:
+        'Check your email. If this address is new, follow the link to verify it — and if you ' +
+        'already have an account, we have sent you a sign-in link instead.',
     };
 
     const existing = await this.users.findByEmail(dto.email);
@@ -182,7 +262,11 @@ export class AuthService {
       // Awaited, not fire-and-forget: this is the ONLY signal the legitimate
       // owner gets, and losing it silently would turn a privacy improvement into
       // a support ticket nobody can diagnose.
-      await this.email.sendAccountExistsEmail(existing.email);
+      //
+      // ...but at most once an hour per address. See `shouldSendAccountExists`.
+      if (this.shouldSendAccountExists(existing.email)) {
+        await this.email.sendAccountExistsEmail(existing.email);
+      }
       this.logger.log(`Registration attempted for an existing address: ${existing.email}`);
       /*
        * IDENTICAL to the success return below — same object, no extra key.

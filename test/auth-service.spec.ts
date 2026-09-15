@@ -196,6 +196,49 @@ describe('register', () => {
     expect(h.email.sendAccountExistsEmail).toHaveBeenCalledWith('client@oxshare.com');
   });
 
+  it('sends that email at most once an hour per ADDRESS, however many attempts', async () => {
+    /*
+     * The route throttle caps ten attempts per hour per IP, which bounds the
+     * CALLER and not the VICTIM: ten proxies is ten times the mail to the same
+     * mailbox. Keyed on the address instead, so the ceiling follows the person
+     * being written to.
+     *
+     * The ordinary case is not an attack at all — somebody who has forgotten
+     * their account and submits the form four times should get one email.
+     */
+    const h = build({ user: makeUser() });
+
+    for (let i = 0; i < 4; i += 1) await h.service.register(dto);
+
+    expect(h.email.sendAccountExistsEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('still answers identically on every one of those attempts', async () => {
+    // The dedupe must not become an oracle of its own: a caller who noticed the
+    // second attempt behaving differently would have learned the address exists.
+    const h = build({ user: makeUser() });
+
+    const first = await h.service.register(dto);
+    const second = await h.service.register(dto);
+
+    expect(second).toEqual(first);
+  });
+
+  it('does not let one address suppress another', async () => {
+    // The stub answers every lookup with the same user, so the second address has
+    // to be given its own — otherwise this asserts that one address suppresses
+    // ITSELF, which is the previous test.
+    const h = build({ user: makeUser() });
+    h.users.findByEmail
+      .mockResolvedValueOnce(makeUser())
+      .mockResolvedValueOnce(makeUser({ email: 'someone.else@oxshare.com' }));
+
+    await h.service.register(dto);
+    await h.service.register({ ...dto, email: 'someone.else@oxshare.com' });
+
+    expect(h.email.sendAccountExistsEmail).toHaveBeenCalledTimes(2);
+  });
+
   it('lowercases the email, so one address cannot become two accounts', async () => {
     const h = build();
     await h.service.register(dto);
