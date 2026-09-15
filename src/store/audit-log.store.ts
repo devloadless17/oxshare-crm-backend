@@ -255,13 +255,20 @@ export class AuditLogStore {
     if (filter.subjectId) conditions.push(eq(auditLog.subjectId, filter.subjectId));
     if (filter.q?.trim()) {
       /*
-       * ⚠️ The expression must match 0124's index character for character, or
-       * Postgres will not use it and the search degrades to a sequential scan
-       * over the largest table in the system — silently, with slowness as the
-       * only symptom.
+       * ⚠️ THE `::text` IS LOAD-BEARING, and leaving it out is how 0124 shipped
+       * an index nothing could use.
+       *
+       * `ILIKE` is `~~*`, defined on `text`, so Postgres rewrites a varchar
+       * expression here to `(...)::text`. An expression index matches on the
+       * expression TREE, so an index built without the cast is a different tree
+       * and is never chosen — the index exists, `\d` lists it, and every search
+       * is a sequential scan over the append-only table guaranteed to become the
+       * largest in the system. 0125 rebuilt the index with the cast; this is the
+       * other half, and `test/search-at-scale.spec.ts` asks the planner whether
+       * the two still agree.
        */
       conditions.push(
-        sql`(coalesce(${auditLog.actorEmail}, '')) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
+        sql`(coalesce(${auditLog.actorEmail}, '')::text) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
       );
     }
     if (filter.scope && !filter.scope.unrestricted) {

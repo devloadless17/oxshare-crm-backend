@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { and, count, desc, eq, sql } from 'drizzle-orm';
+import { and, count, desc, eq, isNotNull, sql } from 'drizzle-orm';
 import { getDb } from '../../database/db';
 import {
   ledgerEntries,
@@ -521,10 +521,28 @@ export class WalletService {
      * ⚠️ The expression is character-for-character the one `users.store.ts`
      * searches on, and must stay that way: a leading wildcard cannot use a
      * b-tree, so this is served by the pg_trgm GIN index, and Postgres uses that
-     * index ONLY when the query matches what it was built on. The `users` join
-     * this needs is the same LEFT join the Client column added.
+     * index ONLY when the query matches what it was built on.
+     *
+     * ⚠️⚠️ `isNotNull(users.id)` IS NOT REDUNDANT, and leaving it out cost the
+     * index. This join is LEFT — an entry whose client row has gone must still
+     * appear, because `ledger_entries` is append-only and a reconciliation that
+     * silently drops rows is worse than one naming an id it cannot resolve.
+     *
+     * Postgres will convert a LEFT join to an INNER one, and so start from the
+     * trigram index on `users`, only when it can PROVE the filter rejects a
+     * NULL-extended row. The expression above is `coalesce`d, so for a missing
+     * client it evaluates to `'  '` — a real string, not NULL — and the proof
+     * fails. The plan then hash-joins every user in the table and filters
+     * afterwards: measured on 20,000 clients, 40,065 buffers and a full pass,
+     * against five matching rows.
+     *
+     * This says the thing the coalesce hid. A search by name cannot match an
+     * entry with no client anyway, so it changes no result — it only tells the
+     * planner what is already true. `test/search-at-scale.spec.ts` is what
+     * caught it and is what will catch its removal.
      */
     if (filter.q?.trim()) {
+      conditions.push(isNotNull(users.id));
       conditions.push(
         sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
       );
