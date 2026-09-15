@@ -147,7 +147,13 @@ export class CreatePaymentMethodDto {
   sortOrder?: number;
 
   @ApiPropertyOptional({
-    default: false,
+    /*
+     * No `default:` here, deliberately. A default makes openapi-typescript
+     * generate the property as REQUIRED — which is why `enabled` and `sortOrder`
+     * are required in the generated create body despite being optional on the
+     * wire — and every existing caller that omits it stops compiling. The column
+     * default (false) is where the default belongs.
+     */
     description:
       'OFFLINE: the client pays outside the platform and must attach a receipt. Such a deposit ' +
       'is filed through POST /payments/deposits/offline and settles when an operator approves ' +
@@ -187,7 +193,13 @@ export class UpdatePaymentMethodDto {
   @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) sortOrder?: number;
 
   @ApiPropertyOptional({
-    default: false,
+    /*
+     * No `default:` here, deliberately. A default makes openapi-typescript
+     * generate the property as REQUIRED — which is why `enabled` and `sortOrder`
+     * are required in the generated create body despite being optional on the
+     * wire — and every existing caller that omits it stops compiling. The column
+     * default (false) is where the default belongs.
+     */
     description:
       'OFFLINE: the client pays outside the platform and must attach a receipt. Such a deposit ' +
       'is filed through POST /payments/deposits/offline and settles when an operator approves ' +
