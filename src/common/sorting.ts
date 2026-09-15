@@ -11,12 +11,19 @@ import { ValidationError } from './errors/domain-errors';
  * sentence naming the allowlist" is six chances for one of them to be written as
  * a silent fallback instead.
  *
- * So the pattern lives here once and each store declares only its own map.
- * `CLIENT_SORT_COLUMNS` deliberately keeps its own bespoke validator: its
- * message names *clients* specifically and its default is `createdAt` where
- * several of these default to something else, and rewriting a working,
- * well-commented allowlist to save four lines would be churn on the one list
- * that already had this right.
+ * So the pattern lives here once and each store declares only its own map,
+ * `CLIENT_SORT_COLUMNS` included.
+ *
+ * ⚠️ This paragraph used to say the opposite — that `CLIENT_SORT_COLUMNS`
+ * "deliberately keeps its own bespoke validator" because it "already had this
+ * right", and that rewriting it would be churn. That was wrong, and the cost of
+ * being wrong in a comment is that nobody re-reads the code it vouches for. The
+ * copy gated on `value in allowed`, which walks the prototype chain, so
+ * `?sort=constructor` passed a closed allowlist and 500'd the client list and
+ * the CSV export. `hasOwnProperty` below is the difference, and the copy is now
+ * a two-line delegation (`users.store.ts`). The lesson is the general one: a
+ * duplicated guard is not "the same check twice", it is one check and one
+ * unreviewed imitation of it.
  *
  * ── WHY AN ALLOWLIST AND NOT A COLUMN NAME FROM THE QUERY STRING ────────────
  *

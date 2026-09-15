@@ -11,6 +11,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import type { CursorPosition } from '../common/pagination';
+import { sortKey, sortOrder } from '../common/sorting';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
@@ -26,7 +27,6 @@ import {
   UNRESTRICTED,
   type ClientScope,
 } from '../common/security/client-scope';
-import { ValidationError } from '../common/errors/domain-errors';
 
 /**
  * The columns the client list may be ordered by — R-2.5's explicit allowlist.
@@ -128,19 +128,38 @@ export const DEFAULT_CLIENT_SORT: ClientSortKey = 'createdAt';
  * 400, never a silent fallback — a silently ignored sort is a lie the UI
  * tells." The admin clicks a header, the rows do not change, and there is
  * nothing anywhere to explain why.
+ *
+ * ## ⚠️ THIS DELEGATES NOW, AND THE HAND-WRITTEN VERSION IS WHY
+ *
+ * This was a bespoke copy of `sortKey`, kept deliberately — `common/sorting.ts`
+ * still says so, calling this "the one list that already had this right". It
+ * did not. The copy gated on `value in CLIENT_SORT_COLUMNS`, and `in` walks the
+ * PROTOTYPE CHAIN: `'constructor' in {}` is `true`, and so are `__proto__`,
+ * `toString`, `valueOf` and `hasOwnProperty`. So five strings passed a check
+ * whose entire job is to be a closed allowlist, and `CLIENT_SORT_COLUMNS[key]`
+ * then handed a function — `Object`, not a column — to drizzle as an ORDER BY
+ * term.
+ *
+ * It was not SQL injection: drizzle binds an unknown value as a PARAMETER, not
+ * an identifier, so the damage stopped at an unhandled 500. Nor was it reachable
+ * anonymously — `AdminGuard` runs first, so a caller needs a real admin session
+ * to reach the sort validator at all. What it WAS is a validator bypass on
+ * `GET /admin/clients` and the client CSV export, from a string the weakest
+ * admin account could send.
+ *
+ * `sortKey` in `common/sorting.ts` had it right all along
+ * (`Object.prototype.hasOwnProperty.call`), which is the argument for deleting a
+ * duplicate rather than patching it: the bug existed only in the copy, and only
+ * because it was a copy. The two bespoke behaviours that justified keeping it —
+ * a message naming *clients* and a default of `createdAt` — are both parameters
+ * of the shared helper.
  */
 export function clientSortKey(value: string | undefined): ClientSortKey {
-  if (value === undefined || value === '') return DEFAULT_CLIENT_SORT;
-  if (value in CLIENT_SORT_COLUMNS) return value as ClientSortKey;
-  throw new ValidationError(
-    `Cannot sort clients by "${value}". Allowed: ${Object.keys(CLIENT_SORT_COLUMNS).join(', ')}.`,
-  );
+  return sortKey(value, CLIENT_SORT_COLUMNS, DEFAULT_CLIENT_SORT, 'clients');
 }
 
 export function clientSortOrder(value: string | undefined): 'asc' | 'desc' {
-  if (value === undefined || value === '') return 'desc';
-  if (value === 'asc' || value === 'desc') return value;
-  throw new ValidationError(`Cannot order by "${value}". Allowed: asc, desc.`);
+  return sortOrder(value, 'desc');
 }
 
 export interface User {

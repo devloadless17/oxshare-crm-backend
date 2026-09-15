@@ -240,6 +240,57 @@ describe('the withdrawal queue sorts by amount, in the database, as NUMERIC', ()
     expect(JSON.stringify(res.body)).toContain('asc');
   });
 
+  /**
+   * ── THE PROTOTYPE CHAIN IS PART OF EVERY OBJECT, AND `in` WALKS IT ─────────
+   *
+   * `clientSortKey` gated on `value in CLIENT_SORT_COLUMNS`, which is true for
+   * `constructor`, `__proto__`, `toString`, `valueOf` and `hasOwnProperty` on
+   * ANY object literal. So five strings passed a check whose only job is to be a
+   * closed allowlist, and the map lookup then handed drizzle a FUNCTION where a
+   * column belonged.
+   *
+   * It was never SQL injection — drizzle binds an unrecognised value as a
+   * parameter, not as an identifier — and it is not reachable anonymously
+   * either: `AdminGuard` runs first, so a caller needs a real admin session to
+   * get as far as the sort validator at all. What it was is an unhandled 500 on
+   * the client list and the CSV export, from a string anyone holding the
+   * weakest admin account could send.
+   *
+   * Both halves of that are worth stating. Overstating the reach is how a small
+   * bug gets fixed in a panic and a big one gets argued about; understating it
+   * is how "only an admin can trigger it" becomes a reason not to fix a
+   * validator that does not validate.
+   *
+   * Asserting 400-not-500 is the point. A 500 would still "refuse" the request,
+   * which is exactly why this went unnoticed — the difference between a refusal
+   * and a crash is invisible from the outside unless a test looks at the number.
+   */
+  it.each([['constructor'], ['__proto__'], ['toString'], ['valueOf'], ['hasOwnProperty']])(
+    'REFUSES the inherited property %s as a sort key — 400, never a 500',
+    async (key) => {
+      const session = await actingAs(ctx, 'admin', MASTER);
+      const res = await session.get(`/v1/admin/clients?sort=${key}`);
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toContain('createdAt');
+    },
+  );
+
+  it('still sorts clients by a real key', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get('/v1/admin/clients?sort=createdAt&order=asc');
+
+    expect(res.status).toBe(200);
+  });
+
+  /** The export reaches the same validator by a different route, so it gets its own case. */
+  it('REFUSES an inherited sort key on the CSV export too', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get('/v1/admin/clients/export?sort=constructor');
+
+    expect(res.status).toBe(400);
+  });
+
   it('leaves the DEFAULT ordering unchanged when no sort is given', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.get('/v1/admin/withdrawals?limit=100');
