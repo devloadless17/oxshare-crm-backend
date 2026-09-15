@@ -73,7 +73,8 @@
   },
   "overrides": {
     "js-yaml": "^5.2.3",
-    "multer": "^2.3.0"
+    "multer": "^2.3.0",
+    "qs": "^6.16.0"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",
