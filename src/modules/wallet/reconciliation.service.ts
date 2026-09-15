@@ -261,9 +261,25 @@ export class ReconciliationService {
    */
   private report(report: ReconciliationReport): void {
     if (report.balanced) {
+      /*
+       * Says only what was actually checked.
+       *
+       * This line used to end "...and every confirmed accrual has been
+       * credited", which was true when an accrual check ran beside the balance
+       * comparison. That check moved out with the commission engine and nothing
+       * verifies it here any more, so the sentence had become a claim about work
+       * this job no longer does.
+       *
+       * It matters more than an ordinary stale comment because of WHERE it is
+       * read. This is the one line in the system that tells an operator the
+       * money adds up, and an operator who has read "every confirmed accrual has
+       * been credited" has been told a partner's unpaid commission would have
+       * shown up here. It would not. UNPAID_CONFIRMED_ACCRUAL is a separate
+       * alert with a separate owner.
+       */
       this.logger.log(
         `Reconciliation OK — ${report.walletsChecked} wallet(s) balance to the cent against ` +
-          'their ledgers, and every confirmed accrual has been credited.',
+          'their ledgers. (Wallet balances only: unpaid accruals are checked separately.)',
       );
       return;
     }
