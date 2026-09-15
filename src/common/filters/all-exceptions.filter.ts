@@ -108,6 +108,24 @@ const PG_FK_VIOLATION = '23503'; // foreign_key_violation
 const PG_INVALID_TEXT = '22P02'; // invalid_text_representation — e.g. a non-UUID id
 
 /**
+ * body-parser's "too large", by its own marker rather than by message text.
+ *
+ * `type: 'entity.too.large'` is the stable identifier body-parser sets; the
+ * human message is not, and matching on prose is how this breaks on an upgrade
+ * nobody connects to it. `statusCode` is checked as a fallback for any other
+ * middleware that raises the same condition the same way.
+ */
+function isPayloadTooLarge(exception: unknown): boolean {
+  if (typeof exception !== 'object' || exception === null) return false;
+  const e = exception as { type?: unknown; status?: unknown; statusCode?: unknown };
+  return (
+    e.type === 'entity.too.large' ||
+    e.status === HttpStatus.PAYLOAD_TOO_LARGE ||
+    e.statusCode === HttpStatus.PAYLOAD_TOO_LARGE
+  );
+}
+
+/**
  * Finds the Postgres error code, wherever the driver stack has buried it.
  *
  * This USED to read `exception.code` directly, and that stopped working the day
@@ -199,6 +217,39 @@ export class AllExceptionsFilter implements ExceptionFilter {
         status: HttpStatus.BAD_REQUEST,
         message: exception.message,
         code: exception.code,
+      };
+    }
+
+    /*
+     * 1b. An oversized request body — body-parser, before any route ran.
+     *
+     * ## Why this needs its own branch
+     *
+     * The LIMIT itself was always there (Express's 100kb default), so memory was
+     * never at risk. What was wrong was the answer: body-parser throws a plain
+     * `Error` carrying `type: 'entity.too.large'` and `status: 413`, not an
+     * `HttpException` — so it fell through to the "anything else" branch and
+     * came back as a 500.
+     *
+     * Two things follow from that, and the second is the reason this is a
+     * security fix and not a tidy-up:
+     *
+     *   1. A 500 tells the caller "our fault, try again", when it is the
+     *      caller's fault and retrying makes it worse.
+     *   2. Every 5xx logs a FULL STACK TRACE (see `catch` above). So anyone
+     *      could write unbounded stack traces into the log by POSTing large
+     *      bodies in a loop — on a host with no documented log rotation, that
+     *      fills a disk, and long before it does it buries every real alert in
+     *      noise. An attacker does not need to get IN to hurt a system; making
+     *      its operators unable to see is enough.
+     *
+     * Answered as 413 with no stack, which is both true and quiet.
+     */
+    if (isPayloadTooLarge(exception)) {
+      return {
+        status: HttpStatus.PAYLOAD_TOO_LARGE,
+        message: 'That request body is too large.',
+        code: 'PAYLOAD_TOO_LARGE',
       };
     }
 

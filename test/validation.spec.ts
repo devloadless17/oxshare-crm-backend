@@ -130,6 +130,42 @@ const post = (path: string) =>
 /** The pipe answers before the guard for these bodies; 401/403 means the guard won. */
 const REJECTED = [400, 401, 403];
 
+/**
+ * An oversized request body — the limit was fine, the ANSWER was not.
+ *
+ * Express caps JSON bodies at 100kb by default, so memory was never at risk.
+ * But body-parser signals the refusal with a plain `Error` carrying
+ * `type: 'entity.too.large'`, not an `HttpException`, so it fell through every
+ * branch of `AllExceptionsFilter` and came back as a 500.
+ *
+ * That is a security bug, not a cosmetic one, and the reason is the logging: the
+ * filter writes a FULL STACK TRACE for every 5xx. So anyone could write
+ * unbounded stack traces into the log by POSTing large bodies in a loop — on a
+ * host with no log rotation that fills a disk, and long before it does it buries
+ * every real alert underneath it. Making an operator unable to SEE is a cheaper
+ * attack than breaking anything.
+ */
+describe('an oversized body is refused as 413, quietly', () => {
+  it('answers 413 PAYLOAD_TOO_LARGE rather than 500', async () => {
+    const res = await post('/admin/auth/login')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ email: 'a@b.c', password: 'x'.repeat(2_000_000) }));
+
+    expect(res.status).toBe(413);
+    expect((res.body as { code?: string }).code).toBe('PAYLOAD_TOO_LARGE');
+    // Never the internal detail, and never an invitation to retry the same body.
+    expect(JSON.stringify(res.body)).not.toMatch(/entity\.too\.large|stack|at Object/i);
+  });
+
+  it('still accepts an ordinary body', async () => {
+    const res = await post('/admin/auth/login').send({
+      email: 'a@b.c',
+      password: 'wrong-password',
+    });
+    expect(res.status).not.toBe(413);
+  });
+});
+
 describe('global ValidationPipe — unknown properties', () => {
   it('rejects an unknown property instead of silently dropping it', async () => {
     const res = await post('/admin/auth/login').send({
