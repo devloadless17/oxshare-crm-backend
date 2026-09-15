@@ -91,6 +91,34 @@ export const ALERT_KINDS = {
    * until a human reconciles the two dashboards.
    */
   PAYMENT_STATE_MISMATCH: 'payments.state_mismatch',
+  /**
+   * Somebody uploaded a PDF carrying active content to the KYC queue.
+   *
+   * The file was REFUSED, so nothing is on disk and nothing is at risk. The
+   * alert exists because of what it says about the uploader: an identity
+   * document has no reason to contain a script or an embedded file, so this is
+   * either a client whose exporter did something odd — worth knowing, because
+   * they cannot finish onboarding until somebody tells them what to do — or
+   * somebody testing what the upload endpoint accepts.
+   */
+  UPLOAD_ACTIVE_CONTENT: 'uploads.active_content',
+  /**
+   * A promise rejected with nobody listening. The process KEEPS RUNNING.
+   *
+   * Always a defect rather than an attack in itself, but it is raised at `page`
+   * because the alternative is invisibility: the fire-and-forget calls that can
+   * land here are notifications and emails, so nothing a user does looks wrong
+   * afterwards, and the only symptom is work that silently did not happen.
+   */
+  UNHANDLED_REJECTION: 'process.unhandled_rejection',
+  /**
+   * A synchronous throw reached the top. The process is EXITING.
+   *
+   * With a restart policy in front, this is otherwise completely silent — the
+   * API returns in seconds and the only evidence is a gap. An input that
+   * reliably triggers it is a denial of service that reports itself as uptime.
+   */
+  UNCAUGHT_EXCEPTION: 'process.uncaught_exception',
 } as const;
 
 export type AlertKind = (typeof ALERT_KINDS)[keyof typeof ALERT_KINDS];
@@ -139,6 +167,72 @@ export function raiseAlert(
   // not be happening, and a `page` buried at warn level is one filter mistake
   // away from silence.
   logger.error(payload);
+
+  /*
+   * ...and then out of the process, to anything that has registered.
+   *
+   * Everything above writes to a log DRAIN, which is a real delivery mechanism
+   * only if something is reading it. On this deployment nothing was: the API
+   * runs on a Windows box with no log shipper, so `RECONCILIATION_MISMATCH` —
+   * the ledger and a balance disagreeing about how much money exists — reached
+   * a console nobody had open.
+   *
+   * Sinks run AFTER the log line and can never prevent it. That order is the
+   * contract: the log is the record, a sink is a courtesy, and a mail server
+   * being down must not be able to erase the only trace of a money alert.
+   */
+  for (const sink of sinks) {
+    try {
+      sink(payload);
+    } catch {
+      /*
+       * A sink that throws is swallowed, deliberately and silently.
+       *
+       * `raiseAlert` is called from inside money paths — the reconciliation job,
+       * the refresh-token check, the upload validator. Every one of them is
+       * doing something more important than telling somebody about it, and a
+       * failing mail transport must never become the reason a wallet write
+       * unwinds.
+       *
+       * Not re-raised as an alert either: a sink that fails on every alert would
+       * then raise an alert per alert, and the first reconciliation mismatch
+       * would become an infinite loop.
+       */
+    }
+  }
+}
+
+/**
+ * Somewhere an alert should also go — email, a pager, a webhook.
+ *
+ * Receives the payload AFTER it has been logged. Must not throw (it is caught
+ * anyway), must not block, and must never call `raiseAlert` itself.
+ */
+export type AlertSink = (payload: AlertPayload) => void;
+
+const sinks: AlertSink[] = [];
+
+/**
+ * Register a destination for alerts.
+ *
+ * A module-level registry rather than Nest DI, and that is the whole reason this
+ * shipped as a small change: `raiseAlert` has SIXTEEN call sites, several of
+ * them in pure functions and static contexts that have no injector. Threading a
+ * service through all of them would have meant touching the commission engine
+ * and the reconciliation job to deliver an email — a refactor of the money path
+ * in service of a notification, which is the wrong way round.
+ *
+ * Idempotent on the same function reference, so a module that initialises twice
+ * (a test app rebuilt per suite) does not double-send.
+ */
+export function registerAlertSink(sink: AlertSink): void {
+  if (!sinks.includes(sink)) sinks.push(sink);
+}
+
+/** Remove a sink — used by tests, and by a module shutting down. */
+export function unregisterAlertSink(sink: AlertSink): void {
+  const at = sinks.indexOf(sink);
+  if (at >= 0) sinks.splice(at, 1);
 }
 
 /**
@@ -200,5 +294,17 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.PAYMENT_STATE_MISMATCH]: {
     severity: 'page',
     rule: 'Any occurrence. Client money is sitting on the wrong side of the Rival boundary — PAID there against a failed row here, or a reversal of settled funds — and nothing will move it until a human reconciles the two dashboards.',
+  },
+  [ALERT_KINDS.UPLOAD_ACTIVE_CONTENT]: {
+    severity: 'notify',
+    rule: 'Any occurrence. NOTIFY rather than page, and the distinction is the whole point of the two levels: the upload was refused at the door, so nothing is stored, nothing is running and nobody is losing money — there is no 3am action. What there IS is a person, either a client stuck on onboarding with a document they think is fine, or somebody probing the endpoint; both are answered in working hours. If it repeats from one account, read it as probing rather than as a bad exporter.',
+  },
+  [ALERT_KINDS.UNHANDLED_REJECTION]: {
+    severity: 'page',
+    rule: 'Any occurrence. The process survives, so nothing looks broken from outside — which is exactly why it pages: the work that was dropped was a notification, an email or an audit row, and none of those announce their own absence. Repeats mean a live defect on a hot path; a single one still names a promise nobody was awaiting.',
+  },
+  [ALERT_KINDS.UNCAUGHT_EXCEPTION]: {
+    severity: 'page',
+    rule: 'Any occurrence. The process is exiting and the restart policy will bring it back within seconds, which is precisely the problem: without this alert a repeatable crash reads as uptime. If it repeats, treat the triggering request as an active denial of service and find the input before tuning anything.',
   },
 };

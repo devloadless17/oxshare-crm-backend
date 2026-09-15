@@ -208,9 +208,21 @@ describe('when Redis is unavailable — FAILS OPEN, deliberately', () => {
     const record = await degraded.increment('ip:1.2.3.4', TTL, LIMIT, BLOCK, 'default');
 
     expect(record.isBlocked).toBe(false);
-    // Loud is what makes failing open acceptable rather than merely convenient.
-    expect(errors).toHaveBeenCalledTimes(1);
-    expect(String(errors.mock.calls[0][0])).toMatch(/DEGRADED/);
+    /*
+     * Loud is what makes failing open acceptable rather than merely convenient —
+     * and "loud" now means TWO writes, not one: `raiseAlert` emits the structured
+     * alert payload (which the email sink reads) and the prose line follows it.
+     *
+     * The count is asserted rather than left open because the point of the next
+     * test is that a sustained outage does not write per request. Two-per-window
+     * is the shape; two-per-request would be the bug.
+     */
+    expect(errors).toHaveBeenCalledTimes(2);
+    const written = errors.mock.calls.map((call) => JSON.stringify(call[0])).join(' ');
+    expect(written).toMatch(/DEGRADED/);
+    // The structured half is what actually reaches a human now.
+    expect(written).toMatch(/security\.control_disabled/);
+    expect(written).toMatch(/"severity":"page"/);
     errors.mockRestore();
   });
 
@@ -228,7 +240,18 @@ describe('when Redis is unavailable — FAILS OPEN, deliberately', () => {
       await degraded.increment('ip:1.2.3.4', TTL, LIMIT, BLOCK, 'default');
     }
 
-    expect(errors).toHaveBeenCalledTimes(1);
+    /*
+     * Fifty failed requests, ONE report — two log writes for the single alert
+     * (structured payload + prose), not a hundred.
+     *
+     * This matters more now than when it was only a log line. The alert is
+     * `page` severity, so it leaves the process as an email; without the
+     * 60-second gate a Redis outage on the login path would mail the ops address
+     * once per request. The alert channel dedupes per kind for 15 minutes as a
+     * second line, but a control should not rely on a downstream consumer to
+     * stop it shouting.
+     */
+    expect(errors).toHaveBeenCalledTimes(2);
     errors.mockRestore();
   });
 });

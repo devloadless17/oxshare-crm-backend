@@ -8,6 +8,7 @@ import { VALIDATION_PIPE_OPTIONS } from './common/validation.config';
 import { buildSwaggerConfig } from './common/swagger-config';
 import { applyApiPrefix, createHttpAdapter } from './common/api-prefix';
 import { Logger } from '@nestjs/common';
+import { ALERT_KINDS, raiseAlert } from './common/logging/alerts';
 import { JsonLogger } from './common/logging/json.logger';
 import { RealtimeIoAdapter, type RealtimeEngine } from './common/realtime/realtime-io.adapter';
 import { trustedProxyHops } from './common/security/client-ip';
@@ -268,5 +269,60 @@ async function bootstrap() {
   const socketPort = realtimeAdapter.engineInUse === 'uws' ? realtimePort : port;
   console.log(`⚡ Realtime socket on    http://localhost:${socketPort}/realtime`);
 }
+
+/**
+ * The two ways a Node process dies without anybody deciding it should.
+ *
+ * ## Why this is a SECURITY control and not an ergonomics one
+ *
+ * Neither handler is here to hide bugs. They are here because the failure they
+ * cover is SILENT: a process that exits and is restarted by `restart:
+ * unless-stopped` leaves no trace anywhere a person looks. The API comes back,
+ * the health check goes green, and the only evidence is a gap in a log nobody
+ * ships. An attacker who finds an input that reliably kills the process has a
+ * denial of service that reports itself as uptime.
+ *
+ * The exposure is real rather than theoretical: there are ~40 deliberate
+ * fire-and-forget calls in this codebase (`void this.notifications.notify(…)`,
+ * `void this.email.send…`). Every one of them is correct — their callees catch
+ * internally — but that is a promise made forty times by forty different
+ * methods, and `void` silences the linter without silencing the runtime.
+ *
+ * ## The two are handled DIFFERENTLY, on purpose
+ *
+ * `unhandledRejection` → alert and CARRY ON. Every fire-and-forget site in this
+ * system is a notification, an email or an audit row. Money paths are awaited
+ * inside their transaction and cannot land here. Killing a money API because an
+ * email bounced is a worse outcome than the bounce.
+ *
+ * `uncaughtException` → alert, then EXIT. A synchronous throw that reached the
+ * top means the stack unwound through code that expected to finish; the process
+ * state is genuinely unknown, and continuing risks acting on half-applied work.
+ * Exiting hands the problem to the restart policy, which is the one component
+ * designed for it. The alert is what turns a silent restart into a known event.
+ */
+process.on('unhandledRejection', (reason) => {
+  raiseAlert(
+    new Logger('Process'),
+    ALERT_KINDS.UNHANDLED_REJECTION,
+    'page',
+    `An unhandled promise rejection reached the top of the process: ${
+      reason instanceof Error ? reason.message : String(reason)
+    }`,
+    { stack: reason instanceof Error ? (reason.stack ?? '').slice(0, 500) : 'none' },
+  );
+});
+
+process.on('uncaughtException', (error) => {
+  raiseAlert(
+    new Logger('Process'),
+    ALERT_KINDS.UNCAUGHT_EXCEPTION,
+    'page',
+    `Uncaught exception — the process is exiting: ${error.message}`,
+    { stack: (error.stack ?? '').slice(0, 500) },
+  );
+  // Give the alert sinks a moment to flush before the exit takes them with it.
+  setTimeout(() => process.exit(1), 250).unref();
+});
 
 void bootstrap();

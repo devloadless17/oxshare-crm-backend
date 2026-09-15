@@ -15,6 +15,7 @@ import {
   tradingAccountPasswordReset,
   withdrawalDecision,
   passwordReset,
+  opsAlert,
   smtpTest,
   verifyEmail,
   type RenderedEmail,
@@ -445,6 +446,26 @@ export class EmailService {
    * one to mail. The withdrawal DECISION emails below are unaffected: a client
    * is still told when a payout is approved or refused.
    */
+
+  /**
+   * An operational alert to the ops address. Never to a client.
+   *
+   * Uses the same `send` as everything else, which swallows and logs a transport
+   * failure rather than throwing — load-bearing here more than anywhere: the
+   * caller is a sink running inside `raiseAlert`, which is itself called from
+   * the reconciliation job and the money paths. A mail server being down must
+   * not become the reason one of those unwinds.
+   */
+  async sendOpsAlertEmail(
+    to: string,
+    kind: string,
+    severity: 'page' | 'notify',
+    summary: string,
+    context: Record<string, string | number> | undefined,
+    environment: string,
+  ): Promise<void> {
+    await this.send(to, 'ops alert email', opsAlert(kind, severity, summary, context, environment));
+  }
 
   async sendAdminInviteEmail(email: string, name: string, inviteUrl: string): Promise<void> {
     this.logLink('admin invite link', email, inviteUrl);

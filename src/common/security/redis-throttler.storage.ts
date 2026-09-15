@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { ThrottlerStorage } from '@nestjs/throttler';
 import type { ThrottlerStorageRecord } from '@nestjs/throttler/dist/throttler-storage-record.interface';
+import { ALERT_KINDS, raiseAlert } from '../logging/alerts';
 import { OTP_REDIS, type OtpRedis } from './replay-nonce.store';
 
 /**
@@ -205,10 +206,43 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
     );
   }
 
+  /**
+   * ## This raises a PAGE, and the reason is the direction of the failure
+   *
+   * The storage above fails OPEN: if Redis cannot be reached, requests are
+   * permitted rather than refused. That is the right trade — failing closed
+   * turns a Redis blip into a total outage, a denial of service we would have
+   * inflicted on ourselves — but it means the degraded state is INVISIBLE from
+   * the outside. Nothing gets slower, nothing errors, and every brute-force
+   * ceiling on the platform is simply gone until somebody notices.
+   *
+   * "Until somebody notices" was doing a lot of work here: this wrote one line
+   * to a log with no shipper and no reader. So the one control whose failure is
+   * silent by design was also the one that told nobody.
+   *
+   * `page`, not `notify`: this is a security control that is off RIGHT NOW in
+   * production, and the fix (restart Redis) is immediate and mechanical. The
+   * 60-second gate below and the alert channel's own 15-minute per-kind dedupe
+   * mean a sustained outage sends one email, not a flood.
+   *
+   * What still holds while this is raised, and is worth knowing before being
+   * alarmed: per-account login lockout lives in POSTGRES, so guessing one
+   * account's password is still stopped. What is gone is the per-IP and
+   * per-route ceiling — spraying many accounts, and hammering expensive
+   * endpoints.
+   */
   private warnOnce(error: unknown): void {
     const now = Date.now();
     if (now - this.lastWarnedAt < 60_000) return;
     this.lastWarnedAt = now;
+    raiseAlert(
+      this.logger,
+      ALERT_KINDS.SECURITY_CONTROL_DISABLED,
+      'page',
+      'Rate limiting is DEGRADED: Redis is unreachable, so per-IP and per-route limits are ' +
+        'not being applied. Per-account login lockout still holds (it is in Postgres).',
+      { control: 'rate-limiting', cause: error instanceof Error ? error.message : String(error) },
+    );
     this.logger.error(
       'Rate limiting is DEGRADED: the Redis counter is unreachable, so requests are being ' +
         'permitted without one. Per-account login lockout still applies (it is in Postgres). ' +

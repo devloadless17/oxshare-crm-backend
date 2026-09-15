@@ -52,3 +52,4 @@ export { withdrawalDecision } from './withdrawal-decision';
 export { adminInvite } from './admin-invite';
 export { adminPasswordReset } from './admin-password-reset';
 export { smtpTest } from './smtp-test';
+export { opsAlert } from './ops-alert';
