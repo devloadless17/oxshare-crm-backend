@@ -148,6 +148,25 @@ function pgErrorCode(exception: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * "Too many attempts, try again in N" — in the units a person thinks in.
+ *
+ * Falls back to a wait-free sentence when the header is missing or unparseable,
+ * rather than printing "try again in NaN seconds". A throttle response with no
+ * Retry-After is still a throttle response, and the user can still act on it.
+ */
+export function rateLimitMessage(retryAfter: number | string | string[] | undefined): string {
+  const seconds = Number(Array.isArray(retryAfter) ? retryAfter[0] : retryAfter);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return 'Too many attempts. Please wait a moment and try again.';
+  }
+  if (seconds < 60) {
+    return `Too many attempts. Please try again in ${Math.ceil(seconds)} seconds.`;
+  }
+  const minutes = Math.ceil(seconds / 60);
+  return `Too many attempts. Please try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+}
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger('ExceptionFilter');
@@ -158,7 +177,31 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const request = http.getRequest<Request & { id?: string }>();
     const requestId = request.id ?? 'unknown';
 
-    const { status, message, code, fields } = this.classify(exception);
+    const classified = this.classify(exception);
+    const { status, code, fields } = classified;
+    /*
+     * ── A RATE LIMIT IS THE ONE ERROR ORDINARY USERS ACTUALLY SEE ───────────
+     *
+     * `ThrottlerException: Too Many Requests` is what @nestjs/throttler puts in
+     * `exception.message`, and it went straight to the screen — a client trying
+     * to sign in read a Java-ish class name in a red box on the login form. It is
+     * not a leak (it names no internals) but it is the most-seen error in the
+     * product wearing the least human words in it, and "world class" is mostly
+     * this: the ordinary path being written for the person on it.
+     *
+     * The wait is not invented. ThrottlerGuard has already set `Retry-After` on
+     * this very response before throwing, so the number is authoritative rather
+     * than a guess — which matters, because a wrong number is worse than none:
+     * somebody told "try in 30 seconds" who is refused again at 31 concludes the
+     * product is broken, not busy.
+     *
+     * Told in SECONDS under a minute and in minutes above it. "Wait 900 seconds"
+     * is a number a person has to do arithmetic on while annoyed.
+     */
+    const message =
+      status === HttpStatus.TOO_MANY_REQUESTS
+        ? rateLimitMessage(response.getHeader('Retry-After'))
+        : classified.message;
     /*
      * Sensitive query VALUES redacted, parameter names kept — R-6.3. The
      * verify-email and password-reset links both carry a single-use token in the
