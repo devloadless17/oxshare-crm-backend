@@ -98,6 +98,35 @@ export class MoneyLimits {
     return this.decimal('DEPOSIT_MAX', '250000');
   }
 
+  /**
+   * The most an administrator may credit or fund in one action.
+   *
+   * ## Why a MINTING path needs a ceiling more than a spending one does
+   *
+   * Every other limit here bounds money that already exists — a withdrawal moves
+   * a balance out, a deposit declares an inbound transfer that a human then
+   * confirms. `POST /admin/wallets/credit` and the trading-account fund path are
+   * different in kind: they are the only routes that create balance from
+   * nothing, with no provider, no bank statement and no second party.
+   *
+   * Their DTO accepts `^\d{1,20}(\.\d{1,8})?$` — up to a hundred quintillion —
+   * and nothing downstream consulted a maximum. So the whole protection against
+   * a mistyped zero was the operator noticing, and the ledger is append-only:
+   * the correction is a compensating entry somebody has to write, after a client
+   * has seen the balance.
+   *
+   * Set BELOW the deposit ceiling (250,000) on purpose. A large inbound
+   * declaration is a compliance question answered with the money in view; a
+   * large hand-credit is a number somebody typed. The two should not share a
+   * bound just because both are "money arriving".
+   *
+   * Not a permission — that already exists and is deliberately its own key. This
+   * is the bound that holds when the person IS authorised and is simply wrong.
+   */
+  maxAdminCredit(): Decimal {
+    return this.decimal('ADMIN_CREDIT_MAX', '50000');
+  }
+
   /*
    * ── The two below have NO CALLER today ──────────────────────────────────
    *

@@ -1,5 +1,10 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Post, Req, UseGuards, UseInterceptors } from '@nestjs/common';
+import { ApiCookieAuth, ApiHeader, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  IDEMPOTENCY_HEADER,
+  Idempotent,
+  IdempotencyInterceptor,
+} from '../../common/security/idempotency.interceptor';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
@@ -28,6 +33,7 @@ import { ProductsStore } from '../../store/products.store';
 @ApiTags('ib')
 @Controller('ib')
 @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
+@UseInterceptors(IdempotencyInterceptor)
 export class IbController {
   constructor(
     private readonly applications: IbApplicationsService,
@@ -170,6 +176,32 @@ export class IbController {
 
   @Post('wallet/transfer')
   @ApiCookieAuth()
+  /*
+   * R-5.2. The last money-moving route in the system without it.
+   *
+   * Both legs commit in one transaction, so a transfer cannot half-happen — but
+   * nothing stopped the SAME transfer happening twice. A double-clicked "Move to
+   * wallet", or a retry after a response is lost in transit, moved the
+   * commission again, and both ledger rows are correct and permanent: the ledger
+   * is append-only, so the correction is a compensating entry a human has to
+   * write.
+   *
+   * The portal has been sending the header all along
+   * (`oxshare-crm-client/src/lib/api/partner.ts`, key from
+   * `newIdempotencyKey()`), so this activates a protection that was already
+   * being paid for on the wire. That is also why it cannot break a caller: a
+   * client that omits the header is the one being protected from itself.
+   */
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended transfer, reused only when retrying that same one. Without ' +
+      'it a double-clicked button moves the commission twice, and because the ledger is ' +
+      'append-only the second movement is undone by a compensating entry rather than deleted ' +
+      '(R-5.2).',
+  })
   @ApiOperation({
     summary: 'Move commission earnings into the main wallet',
     description:

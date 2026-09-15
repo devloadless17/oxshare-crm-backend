@@ -25,6 +25,8 @@ import { WalletService } from '../wallet/wallet.service';
 import { AdminsStore } from '../../store/admins.store';
 import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
+import Decimal from 'decimal.js';
+import { MoneyLimits } from '../../config/money-limits';
 import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
@@ -91,7 +93,43 @@ export class AdminMoneyService {
      * LAST for the same reason as every parameter above it.
      */
     @Inject(DRIZZLE_DB) private readonly db: Db,
+    /**
+     * The ceiling on a hand-credit. Appended LAST, like every parameter above
+     * it — this class is constructed positionally in the unit suites.
+     */
+    private readonly limits: MoneyLimits,
   ) {}
+
+  /**
+   * The bound that holds when the operator is authorised and simply wrong.
+   *
+   * Both callers mint balance from nothing, and their DTO accepts twenty digits
+   * (`money.dto.ts`), so an extra keystroke created a number no permission check
+   * would question. The ledger is append-only, so the correction is a
+   * compensating entry a human writes AFTER a client has seen the balance.
+   *
+   * In the SERVICE, not the DTO, deliberately and per this repo's convention:
+   * the DTO validates SHAPE — this is a policy value that comes from config and
+   * changes without a deploy, which a decorator cannot express.
+   *
+   * REFUSES, never clamps. `money-limits.ts` gives the reasoning at length: a
+   * clamped amount is a wrong number that looks deliberate and is
+   * indistinguishable in the ledger from a correct one.
+   */
+  private assertWithinAdminCeiling(
+    amount: string,
+    currency: string,
+    action: 'credit' | 'fund',
+  ): void {
+    const max = this.limits.maxAdminCredit();
+    if (new Decimal(amount).greaterThan(max)) {
+      throw new ValidationError(
+        `The most that can be ${action === 'credit' ? 'credited' : 'funded'} in one action is ` +
+          `${max.toString()} ${currency}. Raise ADMIN_CREDIT_MAX if this is genuinely intended, ` +
+          'or split it — a hand-credit is not reversible, only compensable.',
+      );
+    }
+  }
 
   /**
    * Put money into a client's wallet, by hand.
@@ -150,6 +188,8 @@ export class AdminMoneyService {
     if (!reasonText) {
       throw new ValidationError('A reason is required when crediting a wallet by hand.');
     }
+
+    this.assertWithinAdminCeiling(params.amount, params.currency, 'credit');
 
     /*
      * SCOPE FIRST, so an admin restricted to a subset of clients cannot credit
@@ -405,6 +445,15 @@ export class AdminMoneyService {
         'That client is not verified to KYC level 1, so money cannot be moved on their ' +
           'trading account. Verify them first.',
       );
+    }
+
+    /*
+     * The DEPOSIT direction mints, so it takes the ceiling. A withdraw moves
+     * money that already exists off the account and is bounded by the balance
+     * itself — a cap there would refuse a legitimate full-account withdrawal.
+     */
+    if (isDeposit) {
+      this.assertWithinAdminCeiling(params.amount, account.currency, 'fund');
     }
 
     /*

@@ -588,22 +588,40 @@ describe('§14 J3 — step 5: confirming after the settlement window', () => {
 });
 
 describe('§14 J3 — step 6: the partner requests and receives a payout', () => {
-  it('moves earnings into the wallet they can withdraw from', async () => {
+  it('moves earnings into the wallet they can withdraw from, ONCE per key', async () => {
     const partner = await actingAs(ctx, 'portal', PARTNER);
     const overview = await partner.get('/v1/ib/overview');
     expect(overview.status).toBe(200);
 
-    const res = await partner.post(
-      '/v1/ib/wallet/transfer',
-      { amount: '3.00', currency: 'USD' },
-      idem(),
-    );
+    /*
+     * Posted TWICE with the SAME key — R-5.2, and the reason this route now
+     * carries `@Idempotent()`.
+     *
+     * Both legs of a transfer commit in one transaction, so it cannot
+     * half-happen. What nothing stopped was the same transfer happening twice: a
+     * double-clicked "Move to wallet", or a client retrying after a response was
+     * lost in transit. Both ledger rows would be correct and permanent — the
+     * ledger is append-only, so undoing one is a compensating entry a human
+     * writes, against a partner who has already seen the balance.
+     *
+     * Asserted on the BALANCE, not on the status code. An interceptor that
+     * answers 200 twice while letting both writes through satisfies every status
+     * assertion, and is precisely the defect worth catching.
+     */
+    const key = idem();
+    const body = { amount: '3.00', currency: 'USD' };
+
+    const res = await partner.post('/v1/ib/wallet/transfer', body, key);
     expect(res.status, JSON.stringify(res.body)).toBeLessThan(400);
+
+    const replay = await partner.post('/v1/ib/wallet/transfer', body, key);
+    expect(replay.status, JSON.stringify(replay.body)).toBeLessThan(400);
 
     const { rows } = await ctx.db.db.execute<{ balance: string }>(sql`
       SELECT balance FROM wallets
       WHERE user_id = ${partnerId} AND currency = 'USD' AND kind = 'main'
     `);
+    // THREE, not six: the replay was absorbed.
     expect(Number(rows[0].balance)).toBeCloseTo(3, 8);
   });
 
