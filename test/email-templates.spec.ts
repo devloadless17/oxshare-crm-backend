@@ -8,7 +8,10 @@ import {
   partnerDecision,
   passwordReset,
   smtpTest,
+  tradingAccountOpened,
+  tradingAccountPasswordReset,
   verifyEmail,
+  walletCredit,
   withdrawalDecision,
 } from '../src/modules/email/templates';
 
@@ -91,5 +94,63 @@ describe('every email shares one design', () => {
     const m = kycDecision('<script>x</script>', 'approved', 'https://p.test');
     expect(m.html).not.toContain('<script>');
     expect(m.html).toContain('&lt;script&gt;');
+  });
+
+  /**
+   * ── ESCAPED ONCE. NOT TWICE. ───────────────────────────────────────────────
+   *
+   * `p()` escapes its own argument, so `p(esc(name))` escapes twice and the
+   * second pass turns the first pass's output into literal text: a client called
+   * `O'Brien` was greeted as `O&#39;Brien` in five money emails — wallet credit,
+   * deposit outcome, withdrawal decision and both trading-account mails — until
+   * 15 Sep 2026.
+   *
+   * It is worth a test rather than a comment because of how it reads in review.
+   * `esc()` at a call site looks like the careful choice, and in the very same
+   * files it IS: the values interpolated into raw `<strong>` markup need it. The
+   * distinction is the HELPER, not the value — `p()` and `fine()` escape,
+   * `pRich()` and `panel()` do not — and nothing about `p(esc(x))` looks wrong
+   * enough to catch on a read.
+   *
+   * The assertion is on the entity, not on the apostrophe: `&#39;` in the output
+   * is correct, `&amp;#39;` is the double-escape, and only the second renders as
+   * visible punctuation in a mail client.
+   */
+  it.each([
+    ['kycDecision', (n: string) => kycDecision(n, 'approved', 'https://p.test')],
+    ['partnerDecision', (n: string) => partnerDecision(n, 'approved', 'https://p.test', {})],
+    ['walletCredit', (n: string) => walletCredit(n, '10.00', 'USD', 'Bonus', 'https://p.test')],
+    [
+      'depositOutcome',
+      (n: string) => depositOutcome(n, 'succeeded', '250.00', 'USD', 'https://p.test'),
+    ],
+    [
+      'withdrawalDecision',
+      (n: string) => withdrawalDecision(n, 'approved', '100.00', 'USD', 'https://p.test'),
+    ],
+    [
+      'tradingAccountOpened',
+      (n: string) =>
+        tradingAccountOpened(n, '5001', 'live', 'USD', 100, 'a', 'b', 'https://p.test'),
+    ],
+    [
+      'tradingAccountPasswordReset',
+      (n: string) => tradingAccountPasswordReset(n, '5001', 'live', 'a', 'b', 'https://p.test'),
+    ],
+    ['adminInvite', (n: string) => adminInvite(n, 'https://a.test/i?t=T')],
+    ['adminPasswordReset', (n: string) => adminPasswordReset(n, 'https://a.test/r', 'Boss', 30)],
+  ])('%s escapes the name exactly ONCE', (_name, render) => {
+    const html = render("O'Brien").html;
+    // `&#39;` is a correctly escaped apostrophe. `&amp;#39;` is that entity
+    // escaped a SECOND time, which a mail client renders as the literal text
+    // `&#39;` — the client sees punctuation soup where their own name should be.
+    expect(html).toContain('&#39;');
+    expect(html).not.toContain('&amp;#39;');
+  });
+
+  it('escapes a name exactly once even when it contains markup', () => {
+    const html = walletCredit('<b>Ann</b>', '10.00', 'USD', 'Bonus', 'https://p.test').html;
+    expect(html).toContain('&lt;b&gt;Ann&lt;/b&gt;');
+    expect(html).not.toContain('&amp;lt;');
   });
 });

@@ -54,7 +54,7 @@ export function depositOutcome(
     html: card(`        <h2 style="color: ${succeeded ? '#047857' : '#b42318'}; margin-top: 0;">
           ${succeeded ? 'Your deposit has been credited' : 'Your deposit did not complete'}
         </h2>
-${p(`Hello ${esc(firstName) || 'Valued Client'},`)}
+${p(`Hello ${firstName || 'Valued Client'},`)}
 ${body}
 ${button(portalUrl, 'Go to Portal')}`),
   };

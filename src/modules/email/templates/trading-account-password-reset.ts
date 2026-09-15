@@ -43,7 +43,7 @@ export function tradingAccountPasswordReset(
     html: card(`        <h2 style="color: #047857; margin-top: 0;">
           Your trading account passwords have been reset
         </h2>
-${p(`Hello ${esc(firstName) || 'Valued Client'},`)}
+${p(`Hello ${firstName || 'Valued Client'},`)}
 ${p(
   `The passwords for your ${esc(kind)} trading account have been reset at your request. ` +
     'Your previous passwords no longer work.',

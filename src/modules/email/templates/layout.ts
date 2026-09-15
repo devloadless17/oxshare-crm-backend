@@ -168,7 +168,20 @@ export function button(href: string, label: string): string {
         </div>`;
 }
 
-/** A paragraph of ordinary body text. Escaped. */
+/**
+ * A paragraph of ordinary body text. **Escaped — do not pre-escape.**
+ *
+ * `p(esc(name))` escapes twice, and the second pass turns the first pass's own
+ * output into literal text: a client called `O'Brien` was greeted as
+ * `O&#39;Brien` in five money emails (wallet credit, deposit outcome,
+ * withdrawal decision, and both trading-account mails) until 15 Sep 2026.
+ *
+ * It survived because it reads like the careful option. `esc()` at a call site
+ * is the right instinct everywhere the value lands in raw markup — `pRich`,
+ * `panel`, a hand-written `<strong>` — and those uses in the very same files
+ * are correct. The distinction is the helper, not the value: `p()` and `fine()`
+ * escape their argument, `pRich()` and `panel()` do not.
+ */
 export function p(text: string): string {
   return `        <p>${esc(text)}</p>`;
 }

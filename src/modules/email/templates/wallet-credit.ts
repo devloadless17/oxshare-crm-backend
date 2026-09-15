@@ -53,7 +53,7 @@ export function walletCredit(
     html: card(`        <h2 style="color: #047857; margin-top: 0;">
           Funds have been added to your wallet
         </h2>
-${p(`Hello ${esc(firstName) || 'Valued Client'},`)}
+${p(`Hello ${firstName || 'Valued Client'},`)}
 ${pRich(`<strong>${money}</strong> has been credited to your OxShare wallet by our team.`)}
 ${panel(`<strong>Reason:</strong> ${esc(reason)}`)}
 ${p('The funds are available now. You can see the credit on your transactions page alongside your other activity.')}

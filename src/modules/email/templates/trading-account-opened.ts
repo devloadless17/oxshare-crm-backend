@@ -44,7 +44,7 @@ export function tradingAccountOpened(
     html: card(`        <h2 style="color: #047857; margin-top: 0;">
           Your ${esc(kind)} trading account is ready
         </h2>
-${p(`Hello ${esc(firstName) || 'Valued Client'},`)}
+${p(`Hello ${firstName || 'Valued Client'},`)}
 ${p(
   environment === 'live'
     ? 'Your live trading account has been opened. It holds real money once you fund it.'

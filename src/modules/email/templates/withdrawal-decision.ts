@@ -99,7 +99,7 @@ export function withdrawalDecision(
     html: card(`        <h2 style="color: ${headingColor}; margin-top: 0;">
           ${heading}
         </h2>
-${p(`Hello ${esc(firstName) || 'Valued Client'},`)}
+${p(`Hello ${firstName || 'Valued Client'},`)}
 ${body}
 ${button(portalUrl, 'Go to Portal')}`),
   };
