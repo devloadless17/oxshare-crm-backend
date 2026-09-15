@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ValidationError } from '../../common/errors/domain-errors';
+import { assertPublicOutboundHost } from '../../common/security/outbound-host';
 import { sealSecret } from '../../common/security/secret-box';
 import { AppSettingsStore } from '../../store/app-settings.store';
 import { AdminAuditService } from '../admin/admin-audit.service';
@@ -91,6 +92,30 @@ export class RivalSettingsService {
         'The Rival base URL must be https:// (or http://localhost for development). Every ' +
           'payment and payout this system makes goes to it.',
       );
+    }
+    /*
+     * ...and it must be somewhere on the PUBLIC INTERNET.
+     *
+     * The scheme check above says nothing about the host, so
+     * `https://169.254.169.254/latest/meta-data/` satisfied it — the cloud
+     * metadata endpoint, reachable only from this instance. So did
+     * `https://10.0.0.5:6379`, which is the Redis this system firewalls off
+     * from the internet precisely so that only this host can reach it.
+     *
+     * The sentence above already names the stake: every payment and payout goes
+     * to this URL, along with the Bearer key sent beside it. That makes the
+     * setting the most valuable thing an attacker holding an admin session can
+     * write, and until now the only thing between them and an exfiltration
+     * endpoint was eight characters of scheme.
+     *
+     * See `outbound-host.ts` for what this does and does not cover — it is a
+     * configuration-time gate, and it says so rather than implying more.
+     */
+    if (baseUrl !== null) {
+      await assertPublicOutboundHost(baseUrl, {
+        subject: 'The Rival base URL',
+        allowLoopback: this.config.get<string>('NODE_ENV') !== 'production',
+      });
     }
     if (dto.enabled && baseUrl === null) {
       throw new ValidationError('Rival cannot be enabled without a base URL.');

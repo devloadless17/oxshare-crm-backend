@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { assertPublicOutboundHost } from '../../common/security/outbound-host';
 import { sealSecret } from '../../common/security/secret-box';
 import { AppSettingsStore } from '../../store/app-settings.store';
 import { AdminsStore } from '../../store/admins.store';
@@ -94,6 +95,29 @@ export class SettingsService {
   async setSmtp(dto: UpdateSmtpSettingsDto, actor: Actor): Promise<SmtpSettingsDto> {
     const adminId = actor.id;
     const previous = await this.getSmtp();
+
+    /*
+     * The mail host has to be on the public internet.
+     *
+     * `host` was validated for LENGTH and nothing else, so this field accepted
+     * `10.0.0.5`, `127.0.0.1` and `169.254.169.254` — an outbound connect to any
+     * address on this server's own network, chosen from a web form.
+     *
+     * What makes it worth a guard rather than a note is what travels over that
+     * connection. Repointing the host does not break mail; it DELIVERS it, to
+     * whoever is listening. Every verification link, every password reset, and
+     * the admin invite — which `email.service.ts` calls "the most dangerous
+     * credential the system sends" — go to the host named here. A silent
+     * redirect is worth more to an attacker than an outage, and nothing about
+     * the screen afterwards would look wrong.
+     *
+     * Loopback stays allowed outside production: Mailpit on `localhost:1025` is
+     * how every developer reads the mail this system sends.
+     */
+    await assertPublicOutboundHost(dto.host, {
+      subject: 'The SMTP host',
+      allowLoopback: this.config.get<string>('NODE_ENV') !== 'production',
+    });
     /*
      * The three-state password, resolved once here:
      *

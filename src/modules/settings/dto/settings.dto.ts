@@ -132,10 +132,26 @@ export class UpdateSmtpSettingsDto {
   @MaxLength(500)
   password?: string | null;
 
+  /**
+   * The `From:` header, verbatim.
+   *
+   * NOT `@IsEmail`: the field is deliberately the full RFC-5322 form with a
+   * display name (`"OxShare" <no-reply@oxshare.com>`), which `@IsEmail` rejects.
+   *
+   * It is, however, the one value in this system that becomes a mail HEADER
+   * with operator-supplied content, and a header ends at a newline. A CR or LF
+   * here is how a single `From:` becomes `From:` plus a `Bcc:` of someone
+   * else's choosing — header injection, the oldest trick against a mail form.
+   * nodemailer encodes address headers and would very likely stop it anyway;
+   * this refuses it one layer earlier, where the rule can be read.
+   */
   @ApiProperty({ example: '"OxShare" <no-reply@oxshare.com>', maxLength: 320 })
   @IsString()
   @MinLength(1)
   @MaxLength(320)
+  @Matches(/^[^\r\n]+$/, {
+    message: 'The from address may not contain line breaks.',
+  })
   fromAddress: string;
 
   @ApiProperty({ example: false })
