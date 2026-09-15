@@ -747,6 +747,20 @@ export class UsersStore {
      * every client carries one of the six values and never a null.
      */
     const columns = {
+      /*
+       * THE SORT VALUE AS TEXT, for the cursor and for nothing else.
+       *
+       * `node-postgres` returns a `timestamptz` as a JS Date, which holds
+       * milliseconds while the column holds microseconds — so a cursor minted
+       * from the Date is truncated DOWN and the seek then excludes every row
+       * sharing the boundary row's millisecond. Measured before this: a list
+       * whose rows were written by one bulk INSERT paged to page two and
+       * returned NOTHING, which reads as the end of the list.
+       *
+       * `buildCursorPage` prefers this field and strips it before the row
+       * becomes a response, so it never reaches a DTO.
+       */
+      cursorValue: sql<string>`${sortColumn}::text`,
       id: users.id,
       email: users.email,
       firstName: users.firstName,

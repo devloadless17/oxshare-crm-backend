@@ -381,6 +381,9 @@ export class AdminHoldingsService {
 
     const rows = await db
       .select({
+        // The raw sort value for the cursor — see `buildCursorPage`. Stripped
+        // before the row becomes a response.
+        cursorValue: sql<string>`${sortColumn}::text`,
         id: wallets.id,
         walletNumber: wallets.walletNumber,
         // Selected as the strings the columns hold. No cast, no aggregate, no
@@ -712,6 +715,8 @@ export class AdminHoldingsService {
 
     const rows = await db
       .select({
+        // The raw sort value for the cursor — see `buildCursorPage`.
+        cursorValue: sql<string>`${sortColumn}::text`,
         id: tradingAccounts.id,
         login: tradingAccounts.login,
         mt5Group: tradingAccounts.mt5Group,

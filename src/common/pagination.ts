@@ -209,15 +209,51 @@ export function buildCursorPage<T extends { id: string; createdAt: Date | string
   const last = items[items.length - 1];
 
   return {
-    items,
+    // `cursorValue` is a SEEK artefact, never part of the response shape —
+    // `response-completeness.spec.ts` refuses a key the DTO does not declare,
+    // and it would be right to.
+    items: items.map((row) => stripCursorValue(row)),
     nextCursor:
       hasMore && last
         ? encodeCursor({
             sort,
-            value: cursorValueOf((last as Record<string, unknown>)[sort]),
+            value: cursorValueOf(
+              /*
+               * ⚠️ THE RAW STRING FIRST, and the paragraph above is why it has
+               * to exist at all.
+               *
+               * `node-postgres` hands back a `timestamptz` as a JS Date, which
+               * holds MILLISECONDS while the column holds MICROSECONDS. A cursor
+               * minted from `Date.toISOString()` is therefore truncated DOWN, and
+               * the row comparison `(created_at, id) < (value, id)` then excludes
+               * the boundary row AND every row sharing its millisecond.
+               *
+               * Measured before this fix: a page of 200 rows written by one bulk
+               * INSERT — so all sharing a microsecond — paged to the SECOND page
+               * and got back ZERO rows and `nextCursor: null`. The reader is told
+               * the list has ended. On the audit log, which writes many rows a
+               * second under load and whose whole value is completeness, that is
+               * a gap in a record people believe.
+               *
+               * So each paging query now selects the sort value AS TEXT beside
+               * the row, and `cursorValueOf` passes a string through verbatim.
+               * `::timestamptz` on the way back in restores it exactly. The
+               * fallback keeps a caller that has not been updated working at
+               * millisecond precision rather than not at all.
+               */
+              (last as Record<string, unknown>)['cursorValue'] ??
+                (last as Record<string, unknown>)[sort],
+            ),
             id: last.id,
           })
         : null,
     ...(total === undefined ? {} : { total }),
   };
+}
+
+/** Drop the seek artefact before the row becomes a response. */
+function stripCursorValue<T>(row: T): T {
+  if (!row || typeof row !== 'object' || !('cursorValue' in row)) return row;
+  const { cursorValue: _cursorValue, ...rest } = row as Record<string, unknown>;
+  return rest as T;
 }

@@ -1,4 +1,16 @@
-import { and, asc, count, desc, eq, isNull, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  getTableColumns,
+  isNull,
+  or,
+  sql,
+  SQL,
+  type SQLWrapper,
+} from 'drizzle-orm';
 import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
 import {
   DEFAULT_PAGE_SIZE,
@@ -324,7 +336,17 @@ export class AuditLogStore {
     const orderBy = direction === 'asc' ? asc : desc;
 
     const rows = await db
-      .select()
+      /*
+       * The whole row PLUS the sort value as text, for the cursor.
+       *
+       * This table matters most for that fix: it is append-only, it is written
+       * many times a second under load, and two rows sharing a millisecond is
+       * the ordinary case rather than the exotic one. A cursor truncated to
+       * milliseconds skips every row at the page boundary that shares it — a
+       * GAP in the one record whose entire value is completeness, and which is
+       * believed precisely because it is supposed to be complete.
+       */
+      .select({ ...getTableColumns(auditLog), cursorValue: sql<string>`${sortColumn}::text` })
       .from(auditLog)
       .where(where)
       .orderBy(orderBy(sortColumn), orderBy(auditLog.id))
