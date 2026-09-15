@@ -59,9 +59,14 @@ const MASTER = { email: 'volume-master@oxshare.com', password: 'admin-password-1
 const RARE = 'Zephyrine';
 const RARE_EMAIL = 'volume-rare@oxshare-e2e.test';
 
+/** One client with years of history, for the portal's own screens. */
+const HEAVY = { email: 'volume-heavy@oxshare-e2e.test', password: 'ClientPass123!' };
+const HEAVY_ROWS = Number(process.env['VOLUME_HEAVY_ROWS'] ?? 50_000);
+
 let ctx: HttpTestContext;
 let admin: Session;
 let rareUserId: string;
+let heavyUserId: string;
 let rareWalletNumber: string;
 const RARE_LOGIN = '70000001';
 
@@ -180,6 +185,37 @@ beforeAll(async () => {
   for (const table of ['users', 'wallets', 'ledger_entries', 'trading_accounts', 'audit_log']) {
     await db.execute(sql.raw(`ANALYZE ${table}`));
   }
+
+  /*
+   * ONE CLIENT WITH A LARGE PERSONAL HISTORY — the portal's version of this
+   * question, which is a different question.
+   *
+   * The console reads PLATFORM-WIDE tables, so its risk scales with the
+   * business. A client's own screens read only their own rows: their wallet,
+   * their ledger, their transactions, keyed on the session's user id and never
+   * on a parameter. Platform size does not reach them. What CAN reach them is
+   * one person with years of trading, so that is what is seeded — 50,000
+   * movements against a single wallet.
+   */
+  const { rows: heavyRows } = await db.execute<{ id: string }>(sql`
+    INSERT INTO users (email, password_hash, first_name, last_name, email_verified)
+    VALUES (${HEAVY.email}, ${await passwords.hash(HEAVY.password)}, 'Heavy', 'Trader', true)
+    RETURNING id
+  `);
+  heavyUserId = heavyRows[0].id;
+
+  const { rows: heavyWallet } = await db.execute<{ id: string }>(sql`
+    INSERT INTO wallets (user_id, currency, kind, balance)
+    VALUES (${heavyUserId}, 'USD', 'main', '0') RETURNING id
+  `);
+  await db.execute(sql`
+    INSERT INTO ledger_entries
+      (wallet_id, entry_type, amount, balance_after, reference_type, reference_id, created_at)
+    SELECT ${heavyWallet[0].id}, 'adjustment', '0', '0', 'manual', gen_random_uuid()::text,
+           now() - (i || ' seconds')::interval
+    FROM generate_series(1, ${HEAVY_ROWS}) AS i
+  `);
+  await db.execute(sql`ANALYZE ledger_entries`);
 
   admin = await actingAs(ctx, 'admin', MASTER);
 }, 1_800_000);
@@ -410,6 +446,74 @@ describe('the audit log — the table that only grows', () => {
       expect(items(res.body).length).toBe(5);
     });
     expect(ms).toBeLessThan(CEILING_MS);
+  });
+});
+
+describe('a CLIENT with years of history opens their own screens', () => {
+  /*
+   * The portal is not a smaller console. Its lists are scoped to the session's
+   * own user by construction — the client's id comes from the session and is
+   * never a parameter, which `payments.controller.ts` calls out as "an oracle
+   * for anybody else's money" if it were — so the platform's size never reaches
+   * them. The bound that matters here is ONE person's own activity.
+   */
+  it('their wallet answers immediately, whatever the platform holds', async () => {
+    const client = await actingAs(ctx, 'portal', HEAVY);
+    const ms = await timed('portal — wallet', async () => {
+      const res = await client.get('/v1/wallet');
+      expect(res.status).toBe(200);
+    });
+    expect(ms).toBeLessThan(CEILING_MS);
+  });
+
+  it(`their own ledger pages through ${HEAVY_ROWS.toLocaleString()} movements`, async () => {
+    const client = await actingAs(ctx, 'portal', HEAVY);
+    const ms = await timed('portal — own ledger', async () => {
+      const res = await client.get('/v1/wallet/ledger?limit=25');
+      expect(res.status).toBe(200);
+      expect((res.body as { items: unknown[] }).items.length).toBe(25);
+    });
+    expect(ms).toBeLessThan(CEILING_MS);
+  });
+
+  it('and a DEEP page of their own history costs the same as the first', async () => {
+    /*
+     * A client scrolling back through years is the realistic deep read here,
+     * and it is a keyset seek — so it is an index descent at any depth rather
+     * than an OFFSET that reads everything it skips.
+     */
+    const client = await actingAs(ctx, 'portal', HEAVY);
+    const first = await client.get('/v1/wallet/ledger?limit=25');
+    const cursor = (first.body as { nextCursor?: string }).nextCursor;
+    expect(cursor, 'the client ledger served no cursor').toBeTruthy();
+
+    const deep = await timed('portal — deep ledger page', async () => {
+      const res = await client.get(
+        `/v1/wallet/ledger?limit=25&cursor=${encodeURIComponent(cursor!)}`,
+      );
+      expect(res.status).toBe(200);
+      expect((res.body as { items: unknown[] }).items.length).toBe(25);
+    });
+    expect(deep).toBeLessThan(CEILING_MS);
+  });
+
+  it('their ledger contains THEIR rows and nobody else’s', async () => {
+    /*
+     * The same boundary the console has, from the other side: a client's list
+     * is keyed on the session. Worth asserting beside the timings, because a
+     * fast list of the wrong rows is the worse failure.
+     */
+    const { rows } = await ctx.db.db.execute<{ n: string }>(sql`
+      SELECT count(*) AS n FROM ledger_entries le
+      JOIN wallets w ON w.id = le.wallet_id
+      WHERE w.user_id = ${heavyUserId}
+    `);
+    expect(Number(rows[0].n)).toBe(HEAVY_ROWS);
+
+    const client = await actingAs(ctx, 'portal', HEAVY);
+    const res = await client.get('/v1/wallet/ledger?limit=100');
+    expect(res.status).toBe(200);
+    expect((res.body as { items: unknown[] }).items.length).toBe(100);
   });
 });
 

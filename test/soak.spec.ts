@@ -343,6 +343,28 @@ describe(`sustained mixed load for ${SOAK_SECONDS}s`, () => {
     expect(operations, 'the load generator did almost no work').toBeGreaterThan(2_000);
   }, 600_000);
 
+  it('leaves a record of what it actually did', () => {
+    /*
+     * `process.stdout.write`, not `console.log`: vitest intercepts `console`
+     * inside tests and hooks and swallows it on a passing run, so the numbers a
+     * soak exists to produce were invisible unless something failed. A green
+     * endurance run that reports nothing is indistinguishable from one that did
+     * nothing.
+     */
+    const p50 = percentile(latencies, 0.5);
+    const p95 = percentile(latencies, 0.95);
+    const p99 = percentile(latencies, 0.99);
+    const perSecond = operations / SOAK_SECONDS;
+    process.stdout.write(
+      `\nSOAK — ${SOAK_SECONDS}s, ${WORKERS} workers\n` +
+        `  money writes            ${operations.toLocaleString().padStart(9)}\n` +
+        `  per second              ${perSecond.toFixed(0).padStart(9)}\n` +
+        `  p50 / p95 / p99         ${p50.toFixed(1)} / ${p95.toFixed(1)} / ${p99.toFixed(1)} ms\n` +
+        `  failures                ${String(errors.length).padStart(9)}\n\n`,
+    );
+    expect(operations).toBeGreaterThan(0);
+  });
+
   it('does not get slower as it goes — no leak, no lock held across a loop', () => {
     /*
      * The ONLY timing claim in this file, and the bound is deliberately loose.
