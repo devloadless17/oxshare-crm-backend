@@ -217,7 +217,7 @@ export function buildCursorPage<T extends { id: string; createdAt: Date | string
       hasMore && last
         ? encodeCursor({
             sort,
-            value: cursorValueOf(
+            value: fullPrecisionValue(
               /*
                * ⚠️ THE RAW STRING FIRST, and the paragraph above is why it has
                * to exist at all.
@@ -241,14 +241,57 @@ export function buildCursorPage<T extends { id: string; createdAt: Date | string
                * fallback keeps a caller that has not been updated working at
                * millisecond precision rather than not at all.
                */
-              (last as Record<string, unknown>)['cursorValue'] ??
-                (last as Record<string, unknown>)[sort],
+              (last as Record<string, unknown>)['cursorValue'],
+              (last as Record<string, unknown>)[sort],
+              sort,
             ),
             id: last.id,
           })
         : null,
     ...(total === undefined ? {} : { total }),
   };
+}
+
+/**
+ * The sort value, REFUSING a truncated one rather than minting it.
+ *
+ * ## Why this throws instead of coping
+ *
+ * `node-postgres` returns a `timestamptz` as a JS `Date`, which holds
+ * milliseconds; the column holds microseconds. A cursor minted from the Date is
+ * therefore truncated DOWN, and the next page's `< boundary` seek excludes the
+ * boundary row and every row sharing its millisecond. Nothing errors. The
+ * reader is simply shown fewer rows, or none at all, and told the list ended.
+ *
+ * That defect sat in SEVEN of the eight call sites, under a module header that
+ * described it exactly — and fixing four of them looked precisely like fixing
+ * all of them. A source-text census could not tell them apart either: the
+ * clients list supplies its raw value from `users.store.ts`, two files away
+ * from the call.
+ *
+ * So the check lives where the information is. If the row carries no
+ * `cursorValue` and the sort value is a Date, the cursor CANNOT be correct, and
+ * this says so at the call site instead of shipping a page that quietly skips
+ * rows. A silent no-op is worse than a failure — the rule this repo already
+ * applies to invalidation keys, to unrecognised sorts and to the ledger's
+ * append-only trigger.
+ *
+ * The fix at a call site is one line: select the sort column as text beside the
+ * row, named `cursorValue`. `buildCursorPage` strips it before the row becomes
+ * a response.
+ */
+function fullPrecisionValue(raw: unknown, sortValue: unknown, sort: string): string {
+  if (raw !== undefined && raw !== null) return cursorValueOf(raw);
+
+  if (sortValue instanceof Date) {
+    throw new Error(
+      `Cannot mint a keyset cursor for '${sort}' from a Date: it holds milliseconds and the ` +
+        'column holds microseconds, so the next page would skip every row sharing the ' +
+        "boundary row's millisecond. Select the sort column as text beside the row " +
+        '(`cursorValue: sql<string>`${sortColumn}::text``) — see pagination.ts.',
+    );
+  }
+  return cursorValueOf(sortValue);
 }
 
 /** Drop the seek artefact before the row becomes a response. */

@@ -1,4 +1,4 @@
-import { and, count, desc, eq, isNull, sql, SQL } from 'drizzle-orm';
+import { and, count, desc, eq, getTableColumns, isNull, sql, SQL } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import {
   buildCursorPage,
@@ -153,7 +153,15 @@ export class NotificationsStore {
     }
 
     const rows = await this.db
-      .select()
+      // The whole row PLUS the sort value as text, for the cursor — see
+      // `buildCursorPage`. A Date is millisecond-precision and the column is
+      // microsecond, so a cursor minted from it skips the rows sharing the
+      // boundary millisecond. A bell that drops notifications when several
+      // arrive together is the visible form of that here.
+      .select({
+        ...getTableColumns(notifications),
+        cursorValue: sql<string>`${notifications.createdAt}::text`,
+      })
       .from(notifications)
       .where(and(...conditions))
       // Both keys in the same direction — what lets the composite index serve
@@ -161,7 +169,19 @@ export class NotificationsStore {
       .orderBy(desc(notifications.createdAt), desc(notifications.id))
       .limit(limit + 1);
 
-    return buildCursorPage(rows.map(toNotification), limit);
+    /*
+     * `cursorValue` is carried THROUGH the mapper, not dropped by it.
+     *
+     * `toNotification` builds the API shape, which has no business holding a
+     * seek artefact — so mapping first discarded the one field the cursor needs
+     * and `buildCursorPage` fell back to the Date. It refuses that now, loudly,
+     * which is how this was found. The artefact is re-attached here and
+     * `buildCursorPage` strips it before the row becomes a response.
+     */
+    return buildCursorPage(
+      rows.map((row) => ({ ...toNotification(row), cursorValue: row.cursorValue })),
+      limit,
+    );
   }
 
   /** The badge number. Served by the partial unread index. */

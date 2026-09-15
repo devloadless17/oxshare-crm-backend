@@ -257,17 +257,46 @@ describe('R-2.4 cursor encoding', () => {
     expect(decoded).toEqual({ sort: 'email', value: 'alpha@example.com', id: 'a' });
   });
 
-  it('encodes a Date sort value as ISO-8601, not as a locale string', () => {
-    // `String(date)` is second-resolution and locale-dependent, so it does not
-    // round-trip through `timestamptz` — the seek would land on the wrong row
-    // whenever two rows share a second (R-2.7).
+  it('REFUSES a Date sort value rather than encoding a truncated one', () => {
+    /*
+     * ## This case used to assert the opposite, and the opposite was wrong
+     *
+     * It pinned `Date.toISOString()` — millisecond precision — as the encoding,
+     * on the reasoning that it beats `String(date)`, which is second-resolution
+     * and locale-dependent. That reasoning is right and the conclusion was
+     * still one step short: the COLUMN is `timestamptz`, which holds
+     * MICROSECONDS. A millisecond value is truncated DOWN, so the next page's
+     * `(created_at, id) < (value, id)` seek excludes the boundary row and every
+     * row sharing its millisecond.
+     *
+     * Measured in production-shaped fixtures: 200 clients written by one
+     * INSERT paged to page two and returned ZERO rows with `nextCursor: null`
+     * — the list reporting that it had ended. The audit log walked 25 of 120,
+     * and so did the ledger and the withdrawal desk.
+     *
+     * The module header warned about exactly this and every call site handed it
+     * a Date anyway, because that is what the driver returns. So the contract
+     * changed: a caller supplies the sort value as TEXT beside the row
+     * (`cursorValue`), and a Date is now a loud failure at the call site rather
+     * than a page that quietly skips rows.
+     */
     const rows = [
       { id: 'a', createdAt: new Date('2026-01-01T10:00:00.123Z') },
       { id: 'b', createdAt: new Date('2026-01-02T10:00:00.000Z') },
     ];
+    expect(() => buildCursorPage(rows, 1)).toThrow(/milliseconds/i);
+  });
+
+  it('encodes the RAW timestamptz literal, microseconds intact', () => {
+    // What a caller supplies now. The value round-trips through `::timestamptz`
+    // losslessly, which is the whole point of naming an exact position.
+    const rows = [
+      { id: 'a', createdAt: new Date(), cursorValue: '2026-01-01 10:00:00.123456+00' },
+      { id: 'b', createdAt: new Date(), cursorValue: '2026-01-02 10:00:00.000001+00' },
+    ];
     const page = buildCursorPage(rows, 1);
 
-    expect(decodeCursor(page.nextCursor as string).value).toBe('2026-01-01T10:00:00.123Z');
+    expect(decodeCursor(page.nextCursor as string).value).toBe('2026-01-01 10:00:00.123456+00');
   });
 
   it('clamps the page size so one caller cannot ask for the whole table', () => {

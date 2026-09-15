@@ -979,6 +979,9 @@ export class TransactionsService {
 
     const rows = await db
       .select({
+        // The sort value at full precision, for the cursor — see the note at
+        // `buildCursorPage` below. Stripped before the row becomes a response.
+        cursorValue: sql<string>`${sortColumn}::text`,
         id: transactions.id,
         amount: transactions.amount,
         currency: transactions.currency,
@@ -1098,6 +1101,16 @@ export class TransactionsService {
      * matches nothing: the list would simply end after one page.
      */
     const paged = buildCursorPage(
+      /*
+       * `cursorValue` carries the sort value at FULL PRECISION, and it is not
+       * optional on this list.
+       *
+       * A JS Date holds milliseconds and the column holds microseconds, so a
+       * cursor minted from `requestedAt` skips every row sharing the boundary
+       * row's millisecond. Withdrawals submitted together — a batch payout, a
+       * provider callback storm — share one, and a desk paging its own queue
+       * would simply not see them.
+       */
       rows.map((r) => ({ ...r, createdAt: r.requestedAt })),
       limit,
       total,

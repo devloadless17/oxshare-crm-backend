@@ -570,6 +570,19 @@ export class WalletService {
 
     const rows = await db
       .select({
+        /*
+         * The raw sort value for the cursor, as TEXT — see `buildCursorPage`.
+         *
+         * The driver hands a `timestamptz` back as a JS Date, which holds
+         * milliseconds while the column holds microseconds, so a cursor minted
+         * from the Date skips every row sharing the boundary row's millisecond.
+         * On a LEDGER that is the reconciliation screen quietly missing
+         * movements — this list orders by `created_at` only, and ledger rows
+         * written inside one transaction share it exactly.
+         *
+         * Stripped before the row becomes a response.
+         */
+        cursorValue: sql<string>`${ledgerEntries.createdAt}::text`,
         id: ledgerEntries.id,
         walletId: ledgerEntries.walletId,
         walletNumber: wallets.walletNumber,
