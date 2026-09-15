@@ -243,6 +243,9 @@ function toMovementRow(row: AdminCombinedRow) {
     rivalExternalId: row.rival_external_id,
     destination: row.destination,
     rejectionReason: row.rejection_reason,
+    // The receipt on an offline deposit, so the desk can show the image beside
+    // the row it is deciding on. Null on every other movement.
+    proofFilename: row.proof_filename,
     createdAt: instantOf(row.created_at),
     settledAt: instantOrNull(row.settled_at),
   };

@@ -255,6 +255,16 @@ export class TransactionDto {
   rivalExternalId?: string | null;
 
   @ApiPropertyOptional({ type: String, nullable: true }) destination?: string | null;
+  /*
+   * The client's own RECEIPT for an offline deposit — the bare stored filename.
+   *
+   * On the list so a client can see which image they sent, without a second
+   * request per row. It is a NAME, not a URL: the URL is built by the app
+   * (`uploads/deposit-proofs/<file>`), and the bytes are still served only
+   * through the authenticated route that checks ownership and audits the read.
+   * Null on every other movement.
+   */
+  @ApiPropertyOptional({ type: String, nullable: true }) proofFilename?: string | null;
   @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;
   @ApiPropertyOptional({ type: String, nullable: true }) reviewedBy?: string | null;
   @ApiPropertyOptional({ type: Date, nullable: true }) reviewedAt?: Date | null;

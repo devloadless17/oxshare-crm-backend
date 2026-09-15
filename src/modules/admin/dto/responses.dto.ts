@@ -1603,6 +1603,19 @@ export class AdminTransactionRowDto {
   })
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   tradingAccountId?: string | null;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'The RECEIPT on an offline deposit — the stored filename, served from ' +
+      'GET /v1/uploads/deposit-proofs/<file>. Null on every other movement. On the list so the ' +
+      'deposit desk can show the image beside the row it decides on, rather than fetching one ' +
+      'per row.',
+  })
+  @NotClientField(
+    'a file the CLIENT uploaded about a payment, addressing the record rather than describing the person',
+  )
+  proofFilename?: string | null;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   walletId: string;
