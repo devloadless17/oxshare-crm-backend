@@ -1297,6 +1297,7 @@ export class AdminMoneyService {
     query: {
       userId?: string;
       walletId?: string;
+      q?: string;
       entryType?: string;
       page?: string;
       limit?: string;
@@ -1332,6 +1333,7 @@ export class AdminMoneyService {
       scope: actor.clientScope,
       userId: query.userId,
       walletId: query.walletId,
+      q: query.q,
       // Checked, not cast — the same `as` that made `?state=` a 500 on the
       // withdrawals list. Missed on this call site when the rest were fixed.
       entryType: enumQuery(query.entryType, ledgerEntryTypeEnum.enumValues, 'entryType'),

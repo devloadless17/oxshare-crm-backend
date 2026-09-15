@@ -559,7 +559,13 @@ export class AdminExportService {
    * of who acted on which clients to a sub-admin.
    */
   async auditBatch(
-    query: { action?: string; subjectType?: string },
+    query: {
+      action?: string;
+      subjectType?: string;
+      actorId?: string;
+      subjectId?: string;
+      q?: string;
+    },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -587,6 +593,16 @@ export class AdminExportService {
       unclampedLimit: true,
       action: query.action,
       subjectType: query.subjectType,
+      /*
+       * EVERY filter the screen has, or the export is a different query wearing
+       * the same name. An investigator who narrows to one administrator and
+       * then exports must get that administrator's rows — an export that
+       * quietly widened back to the whole table would be handed on as evidence
+       * of something it does not show.
+       */
+      actorId: query.actorId,
+      subjectId: query.subjectId,
+      q: query.q,
       // D-54: the export follows the same scope as the list — an export is not
       // a lesser act, and it would otherwise be the way around the filter.
       scope: actor.clientScope,

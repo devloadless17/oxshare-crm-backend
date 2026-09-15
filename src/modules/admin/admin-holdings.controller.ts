@@ -290,6 +290,13 @@ export class AdminHoldingsController {
   })
   @ApiOkResponse({ type: TradingAccountListResponseDto })
   @ApiQuery({ name: 'userId', required: false, description: 'Accounts of one client.' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description:
+      'Search the OWNER by email or name — the identifiers the Owner column displays. The only ' +
+      'client filter used to be `userId`, a uuid shown nowhere on the page.',
+  })
   @ApiQuery({ name: 'environment', required: false, enum: tradingEnvironmentEnum.enumValues })
   @ApiQuery({ name: 'status', required: false, enum: tradingAccountStatusEnum.enumValues })
   @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
@@ -309,6 +316,7 @@ export class AdminHoldingsController {
   listTradingAccounts(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('userId') userId?: string,
+    @Query('q') q?: string,
     @Query('environment') environment?: string,
     @Query('status') status?: string,
     @Query('page') page?: string,
@@ -321,6 +329,7 @@ export class AdminHoldingsController {
     return this.holdings.listTradingAccounts(
       {
         userId,
+        q,
         // Both are Postgres enum columns compared behind a cast in the service,
         // so an unrecognised value surfaced as a 500 carrying a database error
         // rather than the 400 R-2.5 asks for. Validated in the service, which is

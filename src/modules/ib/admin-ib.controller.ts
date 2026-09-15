@@ -281,6 +281,15 @@ export class AdminIbController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'ibUserId', required: false, description: 'Restrict to one partner.' })
   @ApiQuery({ name: 'clientUserId', required: false, description: 'Restrict to one client.' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description:
+      "Free text over the PARTNER's email and name — the identifiers the list displays. " +
+      "It deliberately does not search the client on the row: an out-of-scope client's " +
+      'identity is masked, and a filter that matched it would answer "does this person exist ' +
+      'in another territory" from the row count.',
+  })
   @ApiQuery({ name: 'status', required: false, enum: ibAccrualStatusEnum.enumValues })
   @ApiQuery({
     name: 'kind',
@@ -299,6 +308,7 @@ export class AdminIbController {
     @Query('limit') limit?: string,
     @Query('ibUserId') ibUserId?: string,
     @Query('clientUserId') clientUserId?: string,
+    @Query('q') q?: string,
     @Query('status') status?: string,
     @Query('kind') kind?: string,
     @Query('sort') sort?: string,
@@ -310,6 +320,7 @@ export class AdminIbController {
         limit: parsePositive(limit),
         ibUserId,
         clientUserId,
+        q,
         // Validated against the column's own enum, so an unrecognised value is
         // a 400 rather than a filter that silently matches nothing.
         status: enumQuery(status, ibAccrualStatusEnum.enumValues, 'status'),

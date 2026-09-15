@@ -2993,6 +2993,15 @@ export const auditLog = pgTable(
     // highest-volume row type here.
     index('audit_log_subject_type_idx').on(t.subjectType),
     index('audit_log_actor_idx').on(t.actorId),
+    /*
+     * The two INVESTIGATION reads — 0124. An incident starts from a person, not
+     * from a category: "what did this administrator do" and "what has been done
+     * to this client". `subject_id` is composite with `created_at DESC` because
+     * one subject is read newest first; the actor's email is searched with a
+     * leading wildcard, which no b-tree can serve, so it carries a pg_trgm GIN
+     * index declared in the migration (Drizzle has no expression-index form).
+     */
+    index('audit_log_subject_id_created_at_idx').on(t.subjectId, t.createdAt.desc()),
   ],
 );
 

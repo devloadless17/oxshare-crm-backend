@@ -417,3 +417,67 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
     expect(everything.some((r) => r.subjectId === outScope.id)).toBe(true);
   });
 });
+
+/**
+ * THE ROUTE has the investigation filters, not only the store.
+ *
+ * `AuditLogStore.findAll` accepted `actorId` from the day it was written, and
+ * no route ever passed it — so the filter existed, worked, and was unreachable
+ * from the product. That is a defect no store-level test can see: every case in
+ * `audit-log-investigation.spec.ts` passes against a controller that drops the
+ * parameter on the floor. These go over HTTP for exactly that reason.
+ */
+describe('the action log can be investigated over the wire', () => {
+  it('narrows to everything done to ONE subject', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    await session.patch(`/v1/admin/clients/${clientId}/status`, { status: 'suspended' });
+    await waitForRow(
+      session,
+      '/v1/admin/audit-log?action=client.suspend',
+      (r) => r.subjectId === clientId,
+    );
+
+    const res = await session.get(`/v1/admin/audit-log?subjectId=${clientId}&limit=100`);
+    expect(res.status).toBe(200);
+    const items = rows(res.body);
+    expect(items.length).toBeGreaterThan(0);
+    // Every row, not merely the first: a parameter the controller ignores
+    // returns a list that HAPPENS to start with the subject's newest row.
+    expect(items.every((r) => r.subjectId === clientId)).toBe(true);
+  });
+
+  it('narrows to one ADMINISTRATOR by part of their email', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    await session.patch(`/v1/admin/clients/${clientId}/status`, { status: 'active' });
+    await waitForRow(
+      session,
+      '/v1/admin/audit-log?action=client.reactivate',
+      (r) => r.subjectId === clientId,
+    );
+
+    const res = await session.get('/v1/admin/audit-log?q=audit-http-master&limit=100');
+    expect(res.status).toBe(200);
+    const items = rows(res.body);
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.every((r) => r.actorEmail === MASTER.email)).toBe(true);
+  });
+
+  it('answers with nothing rather than everything when the actor does not exist', async () => {
+    // The shape that reads as a working filter: an ignored parameter returns
+    // the whole log, and the investigator concludes this administrator did all
+    // of it.
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get('/v1/admin/audit-log?q=nobody-by-this-address&limit=100');
+    expect(res.status).toBe(200);
+    expect(rows(res.body).length).toBe(0);
+  });
+
+  it('answers with nothing for a subject that has no trail', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get(
+      '/v1/admin/audit-log?subjectId=00000000-0000-4000-8000-000000000000&limit=100',
+    );
+    expect(res.status).toBe(200);
+    expect(rows(res.body).length).toBe(0);
+  });
+});

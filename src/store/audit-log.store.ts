@@ -12,6 +12,7 @@ import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { auditLog } from '../database/schema';
 import { currentClientIp } from '../common/logging/request-context';
+import { escapeLike } from './users.store';
 
 /**
  * Subject types whose `subjectId` is itself a CLIENT's user id — the rows that
@@ -165,6 +166,36 @@ export class AuditLogStore {
       action?: string;
       subjectType?: string;
       actorId?: string;
+      /**
+       * WHAT WAS DONE TO THIS ONE THING — a client id, an admin id, a
+       * withdrawal id. The column is a VARCHAR carrying whatever the subject's
+       * key is, so this is an exact match rather than a uuid parse: a row whose
+       * subject is a provider reference is as investigable as one whose subject
+       * is a client.
+       *
+       * The screen reaches this from a client profile, so an operator arrives
+       * at "everything that has happened to this person" rather than typing an
+       * id — but the filter takes the id, because the id is what the row keys
+       * on and the trail must not depend on a name still existing.
+       */
+      subjectId?: string;
+      /**
+       * WHO DID IT, by the email the row carries.
+       *
+       * `actor_email` is denormalised onto the row on purpose — a deleted
+       * admin's trail still names them — so searching it needs no join and
+       * cannot be defeated by the admin being gone, which is exactly when the
+       * question gets asked. Served by the pg_trgm GIN index from 0124; a
+       * leading wildcard over an append-only table is otherwise a sequential
+       * scan that gets slower every day.
+       *
+       * ⚠️ It searches the ACTOR only, never `details`. The details blob holds
+       * arbitrary before/after values including client PII, and a free-text
+       * match over it would let a reader with `audit.view` but a narrow client
+       * scope confirm a client's existence from a row count — the same
+       * existence probe the scope predicate below exists to prevent.
+       */
+      q?: string;
       /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
       sort?: AuditSortKey;
       order?: SortOrder;
@@ -221,6 +252,18 @@ export class AuditLogStore {
     if (filter.action) conditions.push(eq(auditLog.action, filter.action));
     if (filter.subjectType) conditions.push(eq(auditLog.subjectType, filter.subjectType));
     if (filter.actorId) conditions.push(eq(auditLog.actorId, filter.actorId));
+    if (filter.subjectId) conditions.push(eq(auditLog.subjectId, filter.subjectId));
+    if (filter.q?.trim()) {
+      /*
+       * ⚠️ The expression must match 0124's index character for character, or
+       * Postgres will not use it and the search degrades to a sequential scan
+       * over the largest table in the system — silently, with slowness as the
+       * only symptom.
+       */
+      conditions.push(
+        sql`(coalesce(${auditLog.actorEmail}, '')) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
+      );
+    }
     if (filter.scope && !filter.scope.unrestricted) {
       /*
        * Keep a row if it names no client, or if that client is inside the

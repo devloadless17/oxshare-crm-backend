@@ -118,6 +118,9 @@ export class AdminAuditService {
       cursor?: string;
       action?: string;
       subjectType?: string;
+      actorId?: string;
+      subjectId?: string;
+      q?: string;
       sort?: string;
       order?: string;
     },
@@ -173,6 +176,15 @@ export class AdminAuditService {
       cursor: query.cursor ? decodeCursor(query.cursor, sort) : undefined,
       action: query.action,
       subjectType: query.subjectType,
+      /*
+       * The two INVESTIGATION filters. `actorId` was accepted by the store from
+       * the day it was written and exposed by no route, so the filter existed
+       * and was unreachable — the kind of gap that reads as a missing feature
+       * and is actually a missing parameter.
+       */
+      actorId: query.actorId,
+      subjectId: query.subjectId,
+      q: query.q,
       sort,
       order,
     });

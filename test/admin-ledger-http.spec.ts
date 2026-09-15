@@ -291,3 +291,56 @@ describe('the ledger says WHOSE money each row is', () => {
     expect(row!.userId).toBe(userId);
   });
 });
+
+/**
+ * FINDING A ROW BY THE NAME THE COLUMN NOW SHOWS.
+ *
+ * The Client column was given a name and an email, and the filter was left
+ * accepting only `userId` — a uuid the page never prints. Half the screen spoke
+ * in names and the other half in ids, which is the same defect the wallets desk
+ * had and is the reason this one was missed on the first pass.
+ */
+describe('the ledger can be searched by the client', () => {
+  it('finds entries by the owner’s email', async () => {
+    const [client] = await ctx.db.db
+      .insert(users)
+      .values({
+        email: 'ledger-search@test.local',
+        passwordHash: 'x',
+        firstName: 'Search',
+        lastName: 'Target',
+      })
+      .returning();
+    const [wallet] = await ctx.db.db
+      .insert(wallets)
+      .values({ userId: client.id, currency: 'USD', balance: '40' })
+      .returning();
+    await ctx.db.db.insert(ledgerEntries).values({
+      walletId: wallet.id,
+      amount: '40',
+      balanceAfter: '40',
+      entryType: 'deposit',
+      referenceType: 'test',
+      referenceId: 'ledger-search',
+    });
+
+    const session = await actingAs(ctx, 'admin', FULL);
+    const res = await session.get('/v1/admin/ledger?q=ledger-search@test.local').expect(200);
+    const items = (res.body as { items: Array<Record<string, unknown>> }).items;
+
+    expect(items.length, 'the search found nothing at all').toBeGreaterThan(0);
+    expect(items.every((r) => r.userId === client.id)).toBe(true);
+  });
+
+  it('finds entries by NAME across first and last, which only the concatenation matches', async () => {
+    const session = await actingAs(ctx, 'admin', FULL);
+    const res = await session.get('/v1/admin/ledger?q=search tar').expect(200);
+    const items = (res.body as { items: Array<Record<string, unknown>> }).items;
+
+    // 'search tar' spans firstName and lastName. It matches only because the
+    // expression searches the CONCATENATION — which is also what keeps the
+    // pg_trgm index usable. Three separate ILIKEs would miss it.
+    expect(items.length, 'an infix search across first+last name found nothing').toBeGreaterThan(0);
+    expect(items[0].userEmail).toBe('ledger-search@test.local');
+  });
+});

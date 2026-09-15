@@ -668,3 +668,48 @@ describe('scope: the write and live routes refuse an out-of-scope client (13 Aug
     expect(body(res).items.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+/**
+ * The Owner column shows a name and an email; the only client filter was
+ * `userId`, a uuid the page never prints. Same defect as the wallets desk, and
+ * missed there on the first pass — which is why the scope case below matters as
+ * much as the search: a new filter must not become a way around client scope.
+ */
+describe('the trading-accounts desk can be searched by the owner', () => {
+  it('finds an account by the owner’s email', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session
+      .get('/v1/admin/trading-accounts?q=ta-mine@oxshare-e2e.test')
+      .expect(200);
+    const items = (res.body as { items: Array<{ user: { email: string } }> }).items;
+
+    expect(items.length, 'the search found nothing at all').toBeGreaterThan(0);
+    expect(items.every((a) => a.user.email === 'ta-mine@oxshare-e2e.test')).toBe(true);
+  });
+
+  it('CANNOT reach an account outside the actor’s territory', async () => {
+    const session = await actingAs(ctx, 'admin', SCOPED);
+    const res = await session
+      .get('/v1/admin/trading-accounts?q=ta-theirs@oxshare-e2e.test')
+      .expect(200);
+    const items = (res.body as { items: Array<{ user: { email: string } }> }).items;
+
+    expect(
+      items.map((a) => a.user.email),
+      'the search reached a client outside the actor’s scope',
+    ).not.toContain('ta-theirs@oxshare-e2e.test');
+  });
+
+  it('still finds the actor’s OWN client, so the scope case is not vacuous', async () => {
+    // Without this, the case above passes against a search that is simply
+    // broken and returns nothing for anybody.
+    const session = await actingAs(ctx, 'admin', SCOPED);
+    const res = await session
+      .get('/v1/admin/trading-accounts?q=ta-mine@oxshare-e2e.test')
+      .expect(200);
+    const items = (res.body as { items: Array<{ user: { email: string } }> }).items;
+
+    expect(items.length).toBeGreaterThan(0);
+    expect(items[0].user.email).toBe('ta-mine@oxshare-e2e.test');
+  });
+});

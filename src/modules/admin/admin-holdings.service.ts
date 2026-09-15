@@ -507,6 +507,7 @@ export class AdminHoldingsService {
       userId?: string;
       environment?: string;
       status?: string;
+      q?: string;
       page?: string;
       limit?: string;
       cursor?: string;
@@ -544,6 +545,7 @@ export class AdminHoldingsService {
      */
     const page = await this.tradingAccountPage({
       userId: query.userId,
+      q: query.q,
       // Checked against the schema's own enum, never cast. `?environment=nonsense`
       // compared against a Postgres enum column surfaces as a 500 carrying a
       // database error; R-2.5 wants a 400 naming what IS allowed.
@@ -568,10 +570,26 @@ export class AdminHoldingsService {
     userId?: string;
     environment?: string;
     status?: string;
+    q?: string;
     scope?: ClientScope;
   }): SQL[] {
     const conditions: SQL[] = [];
     if (filter.userId) conditions.push(eq(tradingAccounts.userId, filter.userId));
+    /*
+     * The owner, by what the screen shows — see `walletConditions` for the full
+     * reasoning and for why this expression must stay character-for-character
+     * identical to the one `users.store.ts` uses (pg_trgm GIN, or a sequential
+     * scan on every keystroke).
+     *
+     * This desk had the same defect as the wallets one and was missed on the
+     * first pass: the column displays a named Owner and the only client filter
+     * was a uuid the page never prints.
+     */
+    if (filter.q?.trim()) {
+      conditions.push(
+        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
+      );
+    }
     if (filter.environment) {
       conditions.push(eq(tradingAccounts.environment, filter.environment as 'live'));
     }
@@ -587,6 +605,7 @@ export class AdminHoldingsService {
 
   private async tradingAccountPage(filter: {
     userId?: string;
+    q?: string;
     environment?: string;
     status?: string;
     page: number;

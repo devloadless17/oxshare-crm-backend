@@ -11,6 +11,7 @@ import {
   wallets,
 } from '../../database/schema';
 import { available, money, MoneyInput, toDecimal } from './money';
+import { escapeLike } from '../../store/users.store';
 import {
   ConflictError,
   MoneyRuleError,
@@ -487,6 +488,7 @@ export class WalletService {
   async listEntries(filter: {
     walletId?: string;
     userId?: string;
+    q?: string;
     entryType?: LedgerEntryType;
     /** Row-level visibility. Admin callers pass the actor's; defaults to open. */
     scope?: ClientScope;
@@ -510,6 +512,23 @@ export class WalletService {
     if (filter.walletId) conditions.push(eq(ledgerEntries.walletId, filter.walletId));
     if (filter.entryType) conditions.push(eq(ledgerEntries.entryType, filter.entryType));
     if (filter.userId) conditions.push(eq(wallets.userId, filter.userId));
+    /*
+     * The owner, by what the screen now SHOWS. This list gained a named Client
+     * column and kept a uuid-only filter, so half the screen spoke in names and
+     * the other half in ids — the same defect as the wallets desk, left behind
+     * on the first pass.
+     *
+     * ⚠️ The expression is character-for-character the one `users.store.ts`
+     * searches on, and must stay that way: a leading wildcard cannot use a
+     * b-tree, so this is served by the pg_trgm GIN index, and Postgres uses that
+     * index ONLY when the query matches what it was built on. The `users` join
+     * this needs is the same LEFT join the Client column added.
+     */
+    if (filter.q?.trim()) {
+      conditions.push(
+        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
+      );
+    }
 
     // In the WHERE clause. The ADM-13 ledger is the screen used FOR
     // reconciliation, so a row silently excluded after the fact would be worse
@@ -576,10 +595,19 @@ export class WalletService {
       .limit(limit + 1)
       .offset(usingCursor ? 0 : (page - 1) * limit);
 
+    /*
+     * The SAME joins as the rows query above, `users` included. The count runs
+     * the same WHERE — so once that WHERE could reference `users` (the client
+     * search), a count without the join was a 500 on every filtered page. It
+     * failed loudly and immediately, which is the good version of this mistake;
+     * the bad version is a count over a DIFFERENT row set than the page, which
+     * reports a total nobody can page to.
+     */
     const [{ value: total }] = await db
       .select({ value: sql<number>`count(*)::int` })
       .from(ledgerEntries)
       .innerJoin(wallets, eq(ledgerEntries.walletId, wallets.id))
+      .leftJoin(users, eq(users.id, wallets.userId))
       .where(where);
 
     return { ...buildCursorPage(rows, limit, total), page, limit };

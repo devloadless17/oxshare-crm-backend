@@ -699,11 +699,19 @@ export class AdminMoneyController {
   @ApiOperation({
     summary: 'Append-only ledger, filterable for reconciliation',
   })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description:
+      'Search the client by email or name — the identifiers the Client column shows. Scope ' +
+      'still applies: this cannot reach a client outside the actor’s territory.',
+  })
   @ApiOkResponse({ type: LedgerListResponseDto })
   @ScopedToClients('WalletService.listEntries applies the predicate to wallets.user_id.')
   listLedger(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('userId') userId?: string,
+    @Query('q') q?: string,
     @Query('walletId') walletId?: string,
     @Query('entryType') entryType?: string,
     @Query('page') page?: string,
@@ -713,6 +721,7 @@ export class AdminMoneyController {
     return this.money.listLedger(
       {
         userId,
+        q,
         walletId,
         entryType,
         page,

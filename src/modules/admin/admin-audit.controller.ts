@@ -95,6 +95,27 @@ export class AdminAuditController {
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
   @ApiQuery({ name: 'action', required: false })
   @ApiQuery({ name: 'subjectType', required: false })
+  @ApiQuery({
+    name: 'actorId',
+    required: false,
+    description: 'WHO did it — one administrator, by id.',
+  })
+  @ApiQuery({
+    name: 'subjectId',
+    required: false,
+    description:
+      'WHAT it was done to — one client, admin, withdrawal or other subject, by id. This is ' +
+      'the "everything that has happened to this person" read a client profile links to.',
+  })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description:
+      "Free text over the ACTOR's email, which is denormalised onto every row so a deleted " +
+      "administrator's trail still names them. It deliberately does not search `details`: " +
+      'that blob holds client PII, and matching inside it would let a narrow-scoped reader ' +
+      'confirm a client exists from a row count.',
+  })
   @ScopedToClients(
     'AuditLogStore.findAll applies clientScopePredicate to rows whose subject is a CLIENT ' +
       '(subject_type user / kyc_submission, via auditBatch → scope) — D-54, resolved. ' +
@@ -107,6 +128,9 @@ export class AdminAuditController {
     @Query('format') format?: string,
     @Query('action') action?: string,
     @Query('subjectType') subjectType?: string,
+    @Query('actorId') actorId?: string,
+    @Query('subjectId') subjectId?: string,
+    @Query('q') q?: string,
   ) {
     const chosen = exportFormat(format);
     // Bounded to the column width exactly as the list route does: a term longer
@@ -115,6 +139,9 @@ export class AdminAuditController {
     const query = {
       action: searchQuery(action, 'action'),
       subjectType: searchQuery(subjectType, 'subjectType'),
+      actorId,
+      subjectId,
+      q: searchQuery(q, 'q'),
     };
 
     this.audit.record(req.admin.id, 'export.audit_log', 'audit_log', req.admin.id, {
@@ -151,6 +178,27 @@ export class AdminAuditController {
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
   @ApiQuery({ name: 'action', required: false })
   @ApiQuery({ name: 'subjectType', required: false })
+  @ApiQuery({
+    name: 'actorId',
+    required: false,
+    description: 'WHO did it — one administrator, by id.',
+  })
+  @ApiQuery({
+    name: 'subjectId',
+    required: false,
+    description:
+      'WHAT it was done to — one client, admin, withdrawal or other subject, by id. This is ' +
+      'the "everything that has happened to this person" read a client profile links to.',
+  })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description:
+      "Free text over the ACTOR's email, which is denormalised onto every row so a deleted " +
+      "administrator's trail still names them. It deliberately does not search `details`: " +
+      'that blob holds client PII, and matching inside it would let a narrow-scoped reader ' +
+      'confirm a client exists from a row count.',
+  })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(AUDIT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   listAuditLog(
@@ -160,6 +208,9 @@ export class AdminAuditController {
     @Query('cursor') cursor?: string,
     @Query('action') action?: string,
     @Query('subjectType') subjectType?: string,
+    @Query('actorId') actorId?: string,
+    @Query('subjectId') subjectId?: string,
+    @Query('q') q?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
@@ -175,6 +226,13 @@ export class AdminAuditController {
       cursor,
       action: searchQuery(action, 'action'),
       subjectType: searchQuery(subjectType, 'subjectType'),
+      actorId,
+      subjectId,
+      /*
+       * Bounded the same way: `actor_email` is varchar(255), so a term longer
+       * than the column cannot match a row and only buys the database a scan.
+       */
+      q: searchQuery(q, 'q'),
       // Validated in the service against AUDIT_SORT_COLUMNS — the one place the
       // column mapping lives.
       sort,

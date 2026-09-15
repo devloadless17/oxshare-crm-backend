@@ -29,6 +29,7 @@ import {
   UNRESTRICTED,
   type ClientScope,
 } from '../common/security/client-scope';
+import { escapeLike } from './users.store';
 
 export type IbApplicationStatus = (typeof ibApplications.status.enumValues)[number];
 
@@ -513,6 +514,18 @@ export class IbStore {
     scope?: ClientScope;
     ibUserId?: string;
     clientUserId?: string;
+    /**
+     * Free text over the PARTNER's email and name — never the client's.
+     *
+     * The row names two people and only one of them is safely searchable. Rows
+     * are scoped on `ib_user_id`, and an out-of-scope client's identity is
+     * MASKED in the mapper below; a filter that matched on the client's email
+     * would answer "does a client with this address exist in some other
+     * territory" from the row count alone, which is the existence probe the
+     * masking is there to prevent. So the search reads the partner, which is
+     * the column the scope is already decided on.
+     */
+    q?: string;
     status?: string;
     /** `commission` or `rebate`. Absent returns BOTH — see the route. */
     kind?: string;
@@ -536,6 +549,14 @@ export class IbStore {
      */
     const scope = filter.scope ?? UNRESTRICTED;
     const visible = clientScopePredicate(scope, ibAccruals.ibUserId);
+
+    /*
+     * Aliased, because both joins land on `users`. Without distinct aliases the
+     * second join is a duplicate table reference and the query is ambiguous.
+     */
+    const partner = aliasedTable(users, 'partner_user');
+    const client = aliasedTable(users, 'client_user');
+
     const where = and(
       visible,
       ...(filter.ibUserId ? [eq(ibAccruals.ibUserId, filter.ibUserId)] : []),
@@ -544,18 +565,30 @@ export class IbStore {
       /* Validated against the column's own enum at the edge, so an
          unrecognised value is a 400 rather than a filter matching nothing. */
       ...(filter.kind ? [eq(ibAccruals.kind, filter.kind as 'commission')] : []),
+      /*
+       * The partner, by what the SCREEN shows. This list displayed a named
+       * Partner column and offered exactly one way to narrow to one —
+       * `ibUserId`, a uuid printed nowhere on the page — so an operator looking
+       * straight at a partner's rows could not filter to them without leaving
+       * for another screen to copy an id.
+       *
+       * ⚠️ CHARACTER-FOR-CHARACTER the expression `users.store.ts` searches on.
+       * A leading wildcard cannot use a b-tree, so this is served by the
+       * pg_trgm GIN index, and Postgres uses that index ONLY when the query
+       * expression matches the one it was built on. Splitting it into three
+       * ILIKEs or reordering the concatenation silently turns it into a
+       * sequential scan over the accrual ledger on every keystroke.
+       */
+      ...(filter.q?.trim()
+        ? [
+            sql`(coalesce(${partner.email}, '') || ' ' || coalesce(${partner.firstName}, '') || ' ' || coalesce(${partner.lastName}, '')) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
+          ]
+        : []),
     );
 
     const sortKey: IbAccrualSortKey = filter.sort ?? DEFAULT_IB_ACCRUAL_SORT;
     const direction = filter.order ?? 'desc';
     const sortColumn: SQLWrapper = IB_ACCRUAL_SORT_COLUMNS[sortKey];
-
-    /*
-     * Aliased, because both joins land on `users`. Without distinct aliases the
-     * second join is a duplicate table reference and the query is ambiguous.
-     */
-    const partner = aliasedTable(users, 'partner_user');
-    const client = aliasedTable(users, 'client_user');
 
     // True when the client on the row is inside the reader's territory. An
     // unrestricted reader has no predicate, so every row is in scope.
@@ -622,9 +655,18 @@ export class IbStore {
           },
     );
 
+    /*
+     * The partner join is REQUIRED here, not decorative: `where` can now name
+     * `partner_user` columns, and a count query that does not join the alias
+     * fails at the database with "missing FROM-clause entry" — a 500 on the
+     * first keystroke in the search box, which is exactly how the same omission
+     * presented on the ledger. The join cannot change the count: `ib_user_id`
+     * is NOT NULL with a foreign key.
+     */
     const [{ value: total }] = await this.db
       .select({ value: count() })
       .from(ibAccruals)
+      .innerJoin(partner, eq(partner.id, ibAccruals.ibUserId))
       .where(where);
 
     /*
@@ -643,6 +685,7 @@ export class IbStore {
         amount: sql<string>`coalesce(sum(${ibAccruals.amount}), 0)::text`,
       })
       .from(ibAccruals)
+      .innerJoin(partner, eq(partner.id, ibAccruals.ibUserId))
       .where(where)
       .groupBy(ibAccruals.status);
 

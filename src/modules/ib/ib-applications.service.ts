@@ -1195,6 +1195,8 @@ export class IbApplicationsService {
       order?: string;
       ibUserId?: string;
       clientUserId?: string;
+      /** Free text over the PARTNER's email and name — see the store. */
+      q?: string;
       status?: string;
       kind?: string;
     },
@@ -1208,6 +1210,7 @@ export class IbApplicationsService {
       scope,
       ibUserId: filter.ibUserId,
       clientUserId: filter.clientUserId,
+      q: filter.q,
       status: filter.status,
       kind: filter.kind,
       sort: sortKey(filter.sort, IB_ACCRUAL_SORT_COLUMNS, DEFAULT_IB_ACCRUAL_SORT, 'accruals'),

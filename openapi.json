@@ -2319,6 +2319,15 @@
             }
           },
           {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Free text over the PARTNER's email and name — the identifiers the list displays. It deliberately does not search the client on the row: an out-of-scope client's identity is masked, and a filter that matched it would answer \"does this person exist in another territory\" from the row count.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "status",
             "required": false,
             "in": "query",
@@ -4211,6 +4220,15 @@
             "required": false,
             "in": "query",
             "description": "Accounts of one client.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Search the OWNER by email or name — the identifiers the Owner column displays. The only client filter used to be `userId`, a uuid shown nowhere on the page.",
             "schema": {
               "type": "string"
             }
@@ -8133,6 +8151,33 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "actorId",
+            "required": false,
+            "in": "query",
+            "description": "WHO did it — one administrator, by id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subjectId",
+            "required": false,
+            "in": "query",
+            "description": "WHAT it was done to — one client, admin, withdrawal or other subject, by id. This is the \"everything that has happened to this person\" read a client profile links to.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Free text over the ACTOR's email, which is denormalised onto every row so a deleted administrator's trail still names them. It deliberately does not search `details`: that blob holds client PII, and matching inside it would let a narrow-scoped reader confirm a client exists from a row count.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -8200,6 +8245,33 @@
             "name": "subjectType",
             "required": false,
             "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actorId",
+            "required": false,
+            "in": "query",
+            "description": "WHO did it — one administrator, by id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subjectId",
+            "required": false,
+            "in": "query",
+            "description": "WHAT it was done to — one client, admin, withdrawal or other subject, by id. This is the \"everything that has happened to this person\" read a client profile links to.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Free text over the ACTOR's email, which is denormalised onto every row so a deleted administrator's trail still names them. It deliberately does not search `details`: that blob holds client PII, and matching inside it would let a narrow-scoped reader confirm a client exists from a row count.",
             "schema": {
               "type": "string"
             }
@@ -9193,6 +9265,15 @@
             "name": "userId",
             "required": true,
             "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Search the client by email or name — the identifiers the Client column shows. Scope still applies: this cannot reach a client outside the actor’s territory.",
             "schema": {
               "type": "string"
             }
