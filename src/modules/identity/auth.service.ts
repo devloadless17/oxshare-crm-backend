@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { lockoutMessage } from '../../common/security/lockout-message';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
@@ -692,9 +693,7 @@ export class AuthService {
     // than an argon2 hash.
     const lockedFor = await this.loginAttempts.lockedFor('portal', dto.email);
     if (lockedFor !== null) {
-      throw new AuthenticationError(
-        `Too many failed sign-in attempts. Try again in ${Math.ceil(lockedFor / 60_000)} minute(s).`,
-      );
+      throw new AuthenticationError(lockoutMessage(lockedFor));
     }
 
     const user = await this.users.findByEmail(dto.email);

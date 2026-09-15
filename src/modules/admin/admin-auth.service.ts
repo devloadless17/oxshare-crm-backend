@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { lockoutMessage } from '../../common/security/lockout-message';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
@@ -114,9 +115,7 @@ export class AdminAuthService {
      */
     const lockedFor = await this.loginAttempts.lockedFor('admin', email);
     if (lockedFor !== null) {
-      throw new AuthenticationError(
-        `Too many failed sign-in attempts. Try again in ${Math.ceil(lockedFor / 60_000)} minute(s).`,
-      );
+      throw new AuthenticationError(lockoutMessage(lockedFor));
     }
 
     const admin = await this.admins.findByEmail(email);
