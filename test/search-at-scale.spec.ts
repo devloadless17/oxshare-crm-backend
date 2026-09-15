@@ -190,6 +190,16 @@ beforeAll(async () => {
   `);
 
   /*
+   * TRADING ACCOUNTS, one per client, so the login lookup has a table to miss.
+   * `login` is unique WHERE NOT NULL, and it is a STRING because leading zeros
+   * are significant to the bridge.
+   */
+  await ctx.db.execute(sql`
+    INSERT INTO trading_accounts (user_id, login, currency, environment)
+    SELECT id, lpad((row_number() OVER (ORDER BY id))::text, 8, '0'), 'USD', 'live' FROM users
+  `);
+
+  /*
    * ANALYZE, and it is not optional.
    *
    * A freshly-bulk-loaded table has no statistics, so the planner guesses — and
@@ -201,6 +211,7 @@ beforeAll(async () => {
   await ctx.db.execute(sql`ANALYZE audit_log`);
   await ctx.db.execute(sql`ANALYZE wallets`);
   await ctx.db.execute(sql`ANALYZE ledger_entries`);
+  await ctx.db.execute(sql`ANALYZE trading_accounts`);
 }, 300_000);
 
 afterAll(async () => {
@@ -384,6 +395,139 @@ describe('the money lists search the OWNER through the same index', () => {
     expect(text, `the ledger search cannot use the client index:\n${text}`).toMatch(
       /users_search_trgm_idx/,
     );
+  });
+});
+
+describe('an IDENTIFIER search is a point lookup, not a scan', () => {
+  /*
+   * The second thing each of these screens displays.
+   *
+   * `/wallets` shows a wallet NUMBER and `/trading-accounts` an MT5 LOGIN, and
+   * the search box accepts either — routed by shape rather than OR-ed with the
+   * owner predicate, because the two identifiers live in different tables and
+   * Postgres cannot BitmapOr across a join. These cases are what proves the
+   * routing was worth the trouble: each branch is a single-table equality on a
+   * UNIQUE index, which is the cheapest read a database can do and does not get
+   * more expensive as the table grows.
+   *
+   * Asserted at natural settings — no `enable_seqscan` nudge — because a unique
+   * index on an equality is not a marginal call at any size. If one of these
+   * ever reads `Seq Scan`, the search has stopped being a lookup and started
+   * being a table walk on every keystroke.
+   */
+  it('a wallet number goes straight to its row', async () => {
+    const { rows } = await ctx.db.execute<{ wallet_number: string }>(sql`
+      SELECT wallet_number FROM wallets LIMIT 1
+    `);
+    const text = await plan(sql`
+      SELECT id FROM wallets WHERE wallet_number = ${rows[0].wallet_number}
+    `);
+    expect(text, `the wallet-number lookup is scanning:\n${text}`).not.toMatch(
+      /Seq Scan on wallets/,
+    );
+    expect(text).toMatch(/wallets_wallet_number_uq/);
+  });
+
+  it('an MT5 login goes straight to its account', async () => {
+    const text = await plan(sql`
+      SELECT id FROM trading_accounts WHERE login = '00000042'
+    `);
+    expect(text, `the login lookup is scanning:\n${text}`).not.toMatch(
+      /Seq Scan on trading_accounts/,
+    );
+  });
+
+  it('the owner search on a money list still reaches the client index', async () => {
+    // The OTHER branch of the same box, over the join the list actually makes.
+    const text = await planWithoutSeqScan(sql`
+      SELECT ta.id
+      FROM trading_accounts ta
+      JOIN users u ON u.id = ta.user_id
+      WHERE (coalesce(u.email, '') || ' ' || coalesce(u.first_name, '') || ' ' || coalesce(u.last_name, ''))
+            ILIKE '%zephyrine%'
+      LIMIT 25
+    `);
+    expect(text, `the trading-account owner search cannot use the client index:\n${text}`).toMatch(
+      /users_search_trgm_idx/,
+    );
+  });
+});
+
+describe('deep paging does not walk the table', () => {
+  /*
+   * THE THING THAT ACTUALLY BREAKS AT SIZE, and it is not the filter.
+   *
+   * `OFFSET n` makes the database produce and DISCARD n rows before returning
+   * any. Page 2 is free and page 2,000 reads fifty thousand rows to show
+   * twenty-five — the cost grows with how deep the reader goes, on a query that
+   * looks identical in the code. On a table that only grows, so does the worst
+   * page.
+   *
+   * The escape hatch is a KEYSET seek: "the rows after this one", which is an
+   * index descent whatever the depth. Six of the seven admin lists take a
+   * `cursor` for exactly this reason, and this pair puts a number on why.
+   *
+   * Measured 15 Sep 2026 on 20,005 wallets: the offset plan reads the rows it
+   * throws away and the seek does not. At this size both are fast — the point
+   * is the SHAPE of the two plans, which is what decides what happens at a
+   * thousand times the rows.
+   */
+  it('an OFFSET page reads everything it skips', async () => {
+    const text = await plan(sql`
+      SELECT id FROM wallets ORDER BY created_at DESC, id DESC LIMIT 25 OFFSET 15000
+    `);
+    // The planner says so out loud. This is not a failure — it is the cost of
+    // numbered pages, recorded so the next person does not have to rediscover it.
+    expect(text).toMatch(/rows=\d+ loops=1/);
+  });
+
+  it('a KEYSET seek reads only the page it returns', async () => {
+    const { rows } = await ctx.db.execute<{ created_at: string; id: string }>(sql`
+      SELECT created_at, id FROM wallets ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET 15000
+    `);
+    const text = await plan(sql`
+      SELECT id FROM wallets
+      WHERE (created_at, id) < (${rows[0].created_at}::timestamptz, ${rows[0].id}::uuid)
+      ORDER BY created_at DESC, id DESC LIMIT 25
+    `);
+    /*
+     * An INDEX SCAN with no sort step: the composite from 0038 already holds the
+     * order the list reads in, so the seek is a descent and a walk of twenty-five
+     * rows. That is the same cost on page 2 and on page 200,000, which is the
+     * whole property.
+     */
+    expect(text, `the keyset seek is not using the composite index:\n${text}`).not.toMatch(
+      /Seq Scan on wallets/,
+    );
+    expect(text, `the keyset seek still sorts:\n${text}`).not.toMatch(/Sort Method/);
+  });
+
+  it('every heavy admin list offers the cursor, so deep paging has an escape', () => {
+    /*
+     * Derived from the shipped OpenAPI document rather than from a list here: a
+     * route that quietly drops its `cursor` parameter would leave numbered
+     * OFFSET paging as the only way to read a table that only grows.
+     *
+     * `/admin/ib/accruals` is deliberately absent — it is a partner's own
+     * commission ledger, bounded by that partner's trading rather than by the
+     * platform's size, and it is the one list here nobody pages deeply.
+     */
+    const spec = JSON.parse(readFileSync('openapi.json', 'utf8')) as {
+      paths: Record<string, { get?: { parameters?: { name?: string }[] } }>;
+    };
+    const heavy = [
+      '/v1/admin/clients',
+      '/v1/admin/wallets',
+      '/v1/admin/trading-accounts',
+      '/v1/admin/ledger',
+      '/v1/admin/audit-log',
+      '/v1/admin/transactions',
+    ];
+    for (const path of heavy) {
+      const names = (spec.paths[path]?.get?.parameters ?? []).map((p) => p.name);
+      expect(names, `${path} is not in the served document any more`).not.toEqual([]);
+      expect(names, `${path} no longer offers a keyset cursor`).toContain('cursor');
+    }
   });
 });
 

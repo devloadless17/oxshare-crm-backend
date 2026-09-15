@@ -133,6 +133,27 @@ export const TRADING_ACCOUNT_SORT_COLUMNS = {
 
 export type TradingAccountSortKey = keyof typeof TRADING_ACCOUNT_SORT_COLUMNS;
 
+/**
+ * A wallet number, exactly as `wallets_wallet_number_format` defines it.
+ *
+ * Twelve characters from an alphabet with i, l, o and u removed so nothing can
+ * be misread as a digit. Kept in step with the CHECK constraint BY HAND — there
+ * is no way to derive one from the other — and `admin-holdings-search.spec.ts`
+ * asserts a generated number matches this, so a change to the constraint that
+ * is not made here turns that red rather than silently routing every number to
+ * the name search.
+ */
+const WALLET_NUMBER = /^[0-9a-hjkmnp-tv-z]{12}$/i;
+
+/**
+ * An MT5 login: all digits, and compared as a STRING.
+ *
+ * Bounded at both ends so a long digit string cannot be mistaken for one, and
+ * so a single digit does not route a plausible name fragment away from the
+ * person search.
+ */
+const MT5_LOGIN = /^\d{3,20}$/;
+
 export const DEFAULT_TRADING_ACCOUNT_SORT: TradingAccountSortKey = 'createdAt';
 
 /** The one sort key whose column is nullable, so the query must pin its nulls. */
@@ -275,9 +296,43 @@ export class AdminHoldingsService {
      * filters" failure ARCHITECTURE §5 names, at ~219,000 clients.
      */
     if (filter.q?.trim()) {
-      conditions.push(
-        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
-      );
+      const term = filter.q.trim();
+      /*
+       * ── ONE BOX, TWO KINDS OF THING, ROUTED BY SHAPE ──────────────────────
+       *
+       * This screen displays TWO identifiers per row — the owner, in words, and
+       * the WALLET NUMBER — and an operator must be able to search for either.
+       * The number is what arrives in a support ticket; the name is what the
+       * reader has in front of them. A box that matched only one of them is the
+       * same defect that started this: an identifier on screen you cannot
+       * filter by.
+       *
+       * ⚠️ ROUTED BY SHAPE RATHER THAN OR-ed, and that is a performance
+       * decision, not a style one. The two identifiers live in DIFFERENT TABLES
+       * — `users` and `wallets` — and Postgres cannot BitmapOr across a join. An
+       * `OR` spanning both would therefore defeat the index on BOTH branches and
+       * hash-join every client on every keystroke, which is precisely the
+       * failure `test/search-at-scale.spec.ts` exists to catch.
+       *
+       * A wallet number is twelve characters from a fixed alphabet
+       * (`wallets_wallet_number_format`, which excludes i/l/o/u so nothing reads
+       * as a digit), so the shape is unambiguous: nothing a person is called
+       * matches it. The term is routed to ONE single-table predicate, and both
+       * branches are served by an index — `wallets_wallet_number_uq` here, the
+       * pg_trgm expression index there.
+       *
+       * EXACT, not a substring. A partial of a twelve-character random
+       * identifier is ambiguous with a name by construction, and a trigram index
+       * over it would be answering a question nobody asks: these numbers are
+       * pasted from a ticket or a statement, never typed from memory.
+       */
+      if (WALLET_NUMBER.test(term)) {
+        conditions.push(eq(wallets.walletNumber, term.toLowerCase()));
+      } else {
+        conditions.push(
+          sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(term)}%`}`,
+        );
+      }
     }
     /*
      * `currency` is an exact match on the wallet's own code rather than an enum
@@ -586,9 +641,24 @@ export class AdminHoldingsService {
      * was a uuid the page never prints.
      */
     if (filter.q?.trim()) {
-      conditions.push(
-        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
-      );
+      const term = filter.q.trim();
+      /*
+       * The same one-box-two-things rule as `walletConditions`, with the MT5
+       * LOGIN as this screen's identifier — see there for why it is routed by
+       * shape rather than OR-ed across the join.
+       *
+       * A login is all digits and a person is not, so the shape decides. Leading
+       * zeros are significant to the bridge, which is why `login` is a string
+       * and is compared as one: `00012345` and `12345` are different accounts,
+       * and parsing the term as a number would silently merge them.
+       */
+      if (MT5_LOGIN.test(term)) {
+        conditions.push(eq(tradingAccounts.login, term));
+      } else {
+        conditions.push(
+          sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(term)}%`}`,
+        );
+      }
     }
     if (filter.environment) {
       conditions.push(eq(tradingAccounts.environment, filter.environment as 'live'));

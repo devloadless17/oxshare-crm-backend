@@ -1973,7 +1973,17 @@
       "post": {
         "description": "Same currency, same owner, both legs in one transaction — it commits whole or does not happen. There is no pending state to poll: unlike a wallet ⇄ trading-account transfer, nothing here crosses into a server this platform does not own.\n\nRefuses a suspended partner, an amount above the available commission balance, and a currency the partner holds no commission wallet in — each with its own message, because \"you have nothing to move\" and \"you have no such wallet\" send a partner to different places.\n\nBoth legs are written to the ledger as `transfer`, NOT `commission`, so lifetime earnings are unchanged by moving money that was already earned.",
         "operationId": "IbController_transferCommission",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended transfer, reused only when retrying that same one. Without it a double-clicked button moves the commission twice, and because the ledger is append-only the second movement is undone by a compensating entry rather than deleted (R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
