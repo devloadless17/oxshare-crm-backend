@@ -288,3 +288,29 @@ export class ProgramActiveDto {
   @IsBoolean()
   active: boolean;
 }
+
+/**
+ * Refusing an offline deposit.
+ *
+ * The same two optional fields as `WithdrawalRejectDto`, as its own class so the
+ * API documentation does not show a withdrawal type on a deposit route. The
+ * "at least one of them" rule lives in the service, exactly as it does for
+ * withdrawals — it is a rule about the pair, which class-validator cannot state
+ * on either field alone.
+ */
+export class DepositRejectDto {
+  @ApiPropertyOptional({
+    description: 'Free-text note, used alone or appended to the configured reason.',
+    maxLength: 500,
+  })
+  @IsString()
+  @IsOptional()
+  reason?: string;
+
+  @ApiPropertyOptional({
+    description: 'A configured rejection reason from the `deposit` context.',
+  })
+  @IsUUID()
+  @IsOptional()
+  reasonId?: string;
+}

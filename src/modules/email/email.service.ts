@@ -301,14 +301,16 @@ export class EmailService {
   async sendDepositOutcomeEmail(
     email: string,
     firstName: string,
-    outcome: 'succeeded' | 'failed',
+    outcome: 'succeeded' | 'failed' | 'rejected',
     amount: string,
     currency: string,
+    /** The desk's reason, for `rejected` only. */
+    reason?: string,
   ): Promise<void> {
     await this.send(
       email,
       `deposit ${outcome} email`,
-      depositOutcome(firstName, outcome, amount, currency, this.portalUrl()),
+      depositOutcome(firstName, outcome, amount, currency, this.portalUrl(), reason),
     );
   }
 

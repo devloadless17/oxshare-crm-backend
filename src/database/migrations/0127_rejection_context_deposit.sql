@@ -1,0 +1,14 @@
+-- `deposit` joins the rejection-reason contexts, so the desk can refuse an
+-- offline deposit with a configured reason instead of free text every time.
+--
+-- ⚠️ ALONE IN THIS FILE, DELIBERATELY. A new enum value cannot be USED in the
+-- same transaction that adds it, and the migration runner wraps each file in
+-- one. Seeding the default deposit reasons here would fail with "unsafe use of
+-- new value" — so they are seeded by `seed.ts`, which runs afterwards on its own
+-- connection. Anything that INSERTs a row with context 'deposit' must land in a
+-- later migration or in the seed, never here.
+--
+-- `IF NOT EXISTS` so a re-run is a no-op; unlike a column, an enum value cannot
+-- be dropped without rewriting the type, which is why `rejection_context` still
+-- carries labels the money rebuild left behind.
+ALTER TYPE "rejection_context" ADD VALUE IF NOT EXISTS 'deposit';

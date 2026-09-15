@@ -95,6 +95,16 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * label here is one an operator cannot filter for, and "no results" reads as
    * "it never happened".
    */
+  /*
+   * OFFLINE DEPOSITS — money the client paid outside the platform, credited by
+   * a person who looked at a receipt. `deposit.approve` is the row that answers
+   * "who put this money in the client's wallet, and on what evidence"; the
+   * receipt itself is `deposit.proof.view`, which is a PII read (a bank account,
+   * a name, an amount) and is audited for the same reason a KYC document read is.
+   */
+  { action: 'deposit.approve', label: 'Deposit approved & wallet credited', group: 'Compliance' },
+  { action: 'deposit.reject', label: 'Deposit rejected', group: 'Compliance' },
+  { action: 'deposit.proof.view', label: 'Deposit receipt opened', group: 'Compliance' },
   { action: 'withdrawal.approve', label: 'Withdrawal approved', group: 'Compliance' },
   { action: 'withdrawal.reject', label: 'Withdrawal rejected', group: 'Compliance' },
   /* Settlement is the step that actually releases the money — a separate

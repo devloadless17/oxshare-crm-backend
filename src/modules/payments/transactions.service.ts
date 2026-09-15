@@ -99,6 +99,7 @@ interface CombinedRow {
   provider_ref: string | null;
   destination: string | null;
   destination_trading_account_id: string | null;
+  proof_filename: string | null;
   rejection_reason: string | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
@@ -1370,6 +1371,7 @@ export class TransactionsService {
           NULL::varchar,                          -- provider_ref
           NULL::text,                             -- destination
           NULL::uuid,                             -- destination_trading_account_id
+          NULL::varchar,                          -- proof_filename
           NULL::text,                             -- rejection_reason: it cannot fail
           NULL::uuid,                             -- reviewed_by
           NULL::timestamptz,                      -- reviewed_at
@@ -1458,6 +1460,7 @@ export class TransactionsService {
           t.provider_ref,
           t.destination,
           t.destination_trading_account_id,
+          t.proof_filename,
           t.rejection_reason,
           t.reviewed_by,
           t.reviewed_at,
@@ -1509,6 +1512,7 @@ export class TransactionsService {
           NULL::varchar,                          -- provider_ref
           NULL::text,                             -- destination
           NULL::uuid,                             -- destination_trading_account_id
+          NULL::varchar,                          -- proof_filename
           /*
            * The transfer's failure reason lands in rejection_reason: both
            * answer "why did this not happen", and giving them one column means a
@@ -1580,6 +1584,7 @@ export class TransactionsService {
           NULL::varchar,                          -- provider_ref
           NULL::text,                             -- destination
           NULL::uuid,                             -- destination_trading_account_id
+          NULL::varchar,                          -- proof_filename
           NULL::text,                             -- rejection_reason: it cannot fail
           NULL::uuid,                             -- reviewed_by
           NULL::timestamptz,                      -- reviewed_at
@@ -1743,6 +1748,7 @@ export class TransactionsService {
         providerRef: row.provider_ref,
         destination: row.destination,
         destinationTradingAccountId: row.destination_trading_account_id,
+        proofFilename: row.proof_filename,
         rejectionReason: row.rejection_reason,
         reviewedBy: row.reviewed_by,
         reviewedAt: instantOrNull(row.reviewed_at),
@@ -2475,6 +2481,16 @@ export class TransactionsService {
     method: string;
     /** Set when the client chose to fund a trading account rather than the wallet. */
     destinationTradingAccountId?: string;
+    /*
+     * The receipt for an OFFLINE deposit — the stored `<uuid>.jpg`, already
+     * written to DEPOSIT_PROOF_BUCKET by the caller.
+     *
+     * Passed in rather than uploaded here because this service does not touch
+     * files: the controller writes the object, then hands over a name. The two
+     * are tied together by the caller's rollback — if this method throws, the
+     * object it just wrote is removed.
+     */
+    proofFilename?: string;
   }) {
     const amount = toDecimal(params.amount);
     // `lessThanOrEqualTo(0)`, NOT `!isPositive()` — see the withdrawal guard
@@ -2524,6 +2540,44 @@ export class TransactionsService {
      * with no bank account.
      */
     const isGateway = this.gateways.isImplemented(paymentMethod.key);
+
+    /*
+     * ── OFFLINE METHODS: the receipt is not optional ────────────────────────
+     *
+     * `requires_proof` is the method saying "the client pays outside this
+     * system, so the only evidence anybody will ever have is the image". The
+     * check lives HERE, not in a DTO, because it is a property of the method
+     * the client chose and DTO validation cannot see the row.
+     *
+     * Both directions are refused, and each closes a real door:
+     *
+     *   proof missing on an offline method — the JSON route has no file field
+     *   at all, so this is what stops a client bypassing the multipart door and
+     *   filing a declaration with nothing attached. Without it the desk gets a
+     *   queue of rows it cannot act on.
+     *
+     *   proof present on a method that did not ask for one — a gateway deposit
+     *   is settled by the provider's webhook, so an attached image is evidence
+     *   of nothing and would sit beside a payment this platform never handled.
+     *
+     * A method configured as BOTH a gateway and requires_proof is a
+     * contradiction, and it is refused rather than resolved: guessing which half
+     * the operator meant is how money ends up on a rail nobody chose.
+     */
+    if (paymentMethod.requiresProof && isGateway) {
+      throw new ValidationError(
+        `Payment method "${paymentMethod.key}" is configured to need a receipt and is also a ` +
+          'hosted gateway. Those cannot both be true — fix the method before taking deposits on it.',
+      );
+    }
+    if (paymentMethod.requiresProof && !params.proofFilename) {
+      throw new ValidationError(
+        'This payment method needs a picture of your transfer receipt. Please attach one.',
+      );
+    }
+    if (!paymentMethod.requiresProof && params.proofFilename) {
+      throw new ValidationError(`Payment method "${paymentMethod.key}" does not take a receipt.`);
+    }
 
     // Per-method bounds AND the platform's own, because neither is derivable
     // from the other — a provider may refuse under $20 while the platform's
@@ -2658,6 +2712,8 @@ export class TransactionsService {
          */
         provider: isGateway ? paymentMethod.key : `manual_${paymentMethod.key}`,
         providerRef: reference,
+        // The receipt, or null on every method that does not ask for one.
+        proofFilename: params.proofFilename ?? null,
       })
       .returning();
 
@@ -2776,9 +2832,16 @@ export class TransactionsService {
      * Ring the bells of whoever will have to ACTION this — manual methods only.
      *
      * A manual declaration ("I sent a bank transfer, reference X") settles by an
-     * admin checking the bank and crediting the wallet: there is no deposit
-     * approval route, so `POST /admin/wallets/credit` is the action and
-     * `wallets.credit` is the permission that can take it. Until somebody looks,
+     * admin looking at the receipt and approving it — `PATCH
+     * /admin/deposits/:id/approve`, gated on `deposits.approve`, which is the
+     * permission this rings.
+     *
+     * It rang `wallets.credit` until the offline deposit desk existed, because
+     * there was no deposit approval route at all and the only way to settle one
+     * was to type the amount into `POST /admin/wallets/credit` — which minted a
+     * SECOND, unrelated row and left the client's declaration pending for ever.
+     * Ringing the old key now would page the people who can mint arbitrary
+     * credit rather than the people who work this queue. Until somebody looks,
      * the client's money is sitting in a real bank account against a row nobody
      * has been told about — which is exactly the case that used to be found only
      * when the client chased it.
@@ -2796,7 +2859,7 @@ export class TransactionsService {
      */
     if (!isGateway) {
       void this.notifications.notifyAdminsWithPermission(
-        'wallets.credit',
+        'deposits.approve',
         {
           kind: 'admin.deposit.submitted',
           params: {
@@ -2931,6 +2994,215 @@ export class TransactionsService {
       .limit(1);
     if (!tx || tx.userId !== ownerId) throw new NotFoundError('No deposit matches that reference.');
     return { state: tx.state };
+  }
+
+  /**
+   * APPROVE an offline deposit: the client says they sent money, an operator has
+   * seen the receipt, and this is the credit.
+   *
+   * ## It is `settleGatewayDeposit` with a person where the webhook was
+   *
+   * Identical write, same order, same guarantees — the only difference is what
+   * authorises it. A gateway deposit is settled by the provider confirming the
+   * payment; an offline deposit is settled by somebody looking at an image and
+   * their own bank statement. Everything after that decision is the same money
+   * movement, which is why this method mirrors that one rather than inventing a
+   * second way to credit a wallet.
+   *
+   * ## What makes a double-click safe — three layers, and the middle one carries it
+   *
+   *   1. `@Idempotent()` on the route: a replayed HTTP request never reaches here.
+   *   2. The §8.7 conditional transition. The loser of a race throws, and because
+   *      the throw happens INSIDE this transaction its own `wallets.post` is
+   *      rolled back with it. This is the layer that actually stops a second
+   *      credit.
+   *   3. `ledger_entries_wallet_reference_uq` on (wallet, 'transaction', id).
+   *      Even if two credits somehow committed, the second returns the existing
+   *      entry and the balance does not move.
+   *
+   * ## Credit first, then transition
+   *
+   * The order `settleGatewayDeposit` uses. Correctness is identical either way
+   * inside one transaction, so the reason is serialisation: `post` takes
+   * `SELECT … FOR UPDATE` on the wallet, and taking it first means two approvals
+   * for one client queue on the wallet in a consistent order rather than
+   * deadlocking against each other.
+   */
+  async approveDeposit(id: string, adminId: string, withinTx?: WithinTransaction) {
+    const tx = await this.getById(id);
+    if (tx.direction !== 'deposit') {
+      throw new ValidationError('That transaction is not a deposit.');
+    }
+    /*
+     * ⚠️ A GATEWAY DEPOSIT MAY NEVER BE CREDITED BY HAND.
+     *
+     * Its money arrives through the provider and is confirmed by the webhook. An
+     * operator approving one here would credit a client for a payment the
+     * platform has no confirmation of — and the webhook would then settle it
+     * again, which the ledger constraint absorbs silently, leaving a credited
+     * deposit nobody can trace to a payment.
+     *
+     * `manual_` is the prefix `requestDeposit` writes for every non-gateway
+     * method, and UNIQUE(provider, provider_ref) is scoped on that column, so it
+     * is the reliable marker rather than a guess from the method key.
+     */
+    if (!tx.provider.startsWith('manual_')) {
+      throw new MoneyRuleError(
+        'That deposit settles from the payment provider, not by hand. Nothing was credited.',
+      );
+    }
+
+    const row = await this.db.transaction(async (dbTx) => {
+      await this.wallets.post(
+        {
+          userId: tx.userId,
+          currency: tx.currency,
+          amount: tx.amount,
+          entryType: 'deposit',
+          referenceType: LEDGER_REFERENCE.transaction,
+          // NO suffix: this IS the deposit, not a compensation for one. The
+          // reference is what ties the ledger entry to the row an operator
+          // approved, and what makes a second credit impossible.
+          referenceId: tx.id,
+        },
+        dbTx,
+      );
+
+      const now = new Date();
+      const updated = await this.transition(
+        id,
+        'pending',
+        /*
+         * `settledAt` is set here, unlike an approved WITHDRAWAL, and the
+         * difference is real rather than an oversight: a withdrawal waits for a
+         * payout rail to move the money, so approval and settlement are two
+         * events. Here the operator confirming IS the settlement — no second
+         * event is coming, and the money is in the wallet the moment this
+         * commits.
+         */
+        { state: 'success', reviewedBy: adminId, reviewedAt: now, settledAt: now },
+        dbTx,
+      );
+      if (!updated) {
+        const current = await this.getById(id);
+        throw new MoneyRuleError(
+          `Only a pending deposit can be approved; this one is ${current.state}.`,
+        );
+      }
+
+      /*
+       * The client is told in the SAME transaction as the credit, so money can
+       * never be credited with the client untold (FR-CORE-07). `deposit.succeeded`
+       * is the kind the portal already renders — an offline deposit reaching the
+       * wallet is the same fact as a Whish one, and the client does not care that
+       * an operator was involved.
+       */
+      await this.notifications.notify(
+        {
+          recipient: { kind: 'client', id: tx.userId },
+          kind: 'deposit.succeeded',
+          params: { transactionId: tx.id, amount: tx.amount, currency: tx.currency },
+          dedupeKey: `deposit.succeeded:${tx.id}`,
+        },
+        dbTx,
+      );
+
+      // The admin audit row, written by the caller inside this transaction (R-6.5):
+      // if it cannot be written, the money does not move.
+      await withinTx?.(dbTx, updated);
+      return updated;
+    });
+
+    void this.sendDepositOutcomeEmail(tx.userId, 'succeeded', tx.amount, tx.currency);
+
+    /*
+     * A deposit aimed at a trading account becomes TWO movements, and this is the
+     * second — the same call `settleGatewayDeposit` makes, so both deposit paths
+     * end in the same place. POST-COMMIT and reached only by the winner of the
+     * conditional transition above, which is what stops one deposit chaining two
+     * transfers. It keeps its own catch: an MT5 outage must not fail an approval
+     * whose ledger entry is already committed.
+     */
+    await this.chainTransferToAccount(tx);
+    return row;
+  }
+
+  /**
+   * REJECT an offline deposit — the receipt does not match, is unreadable, or
+   * the money never arrived.
+   *
+   * ## ⚠️ THERE IS NO REFUND HERE, AND THAT IS NOT AN OMISSION
+   *
+   * The symmetry with `reject` for a withdrawal is a trap, because the two mean
+   * opposite things. A withdrawal is DEBITED when the client asks, so refusing
+   * it must post a compensating credit or the client is permanently short —
+   * `rejected` is terminal.
+   *
+   * A deposit debits nothing. `requestDeposit` writes no ledger entry at all: it
+   * records a claim that money is coming. So there is nothing to give back, and
+   * posting a credit here would CREATE money the platform never received — a
+   * refused deposit would become a free balance, which is the one outcome this
+   * whole approval step exists to prevent.
+   *
+   * What the client is owed instead is an EXPLANATION, and possibly their money
+   * back from wherever they actually sent it — which is support's job, not the
+   * ledger's. The notification, the email and the admin copy all say so.
+   *
+   * `settledAt` stays null: nothing settled.
+   */
+  async rejectDeposit(id: string, adminId: string, reason: string, withinTx?: WithinTransaction) {
+    const tx = await this.getById(id);
+    if (tx.direction !== 'deposit') {
+      throw new ValidationError('That transaction is not a deposit.');
+    }
+    if (!tx.provider.startsWith('manual_')) {
+      throw new MoneyRuleError(
+        'That deposit settles from the payment provider, so it cannot be rejected by hand.',
+      );
+    }
+
+    const row = await this.db.transaction(async (dbTx) => {
+      const rejected = await this.transition(
+        id,
+        'pending',
+        { state: 'rejected', rejectionReason: reason, reviewedBy: adminId, reviewedAt: new Date() },
+        dbTx,
+      );
+      if (!rejected) {
+        const current = await this.getById(id);
+        throw new MoneyRuleError(
+          `Only a pending deposit can be rejected; this one is ${current.state}.`,
+        );
+      }
+
+      await this.notifications.notify(
+        {
+          recipient: { kind: 'client', id: tx.userId },
+          kind: 'deposit.rejected',
+          // The REASON travels with it. A client told only that their deposit was
+          // refused, after they have already sent money, has nothing to act on.
+          params: {
+            transactionId: tx.id,
+            amount: tx.amount,
+            currency: tx.currency,
+            reason,
+          },
+          dedupeKey: `deposit.rejected:${tx.id}`,
+        },
+        dbTx,
+      );
+
+      await withinTx?.(dbTx, rejected);
+      return rejected;
+    });
+
+    /*
+     * POST-COMMIT, like every decision mail. Inside the transaction it would go
+     * out before the rejection was durable — and a client told their deposit was
+     * refused by a transaction that then rolled back is worse than a late email.
+     */
+    void this.sendDepositOutcomeEmail(tx.userId, 'rejected', tx.amount, tx.currency, reason);
+    return row;
   }
 
   async settleGatewayDeposit(
@@ -3299,9 +3571,10 @@ export class TransactionsService {
    */
   private async sendDepositOutcomeEmail(
     userId: string,
-    outcome: 'succeeded' | 'failed',
+    outcome: 'succeeded' | 'failed' | 'rejected',
     amount: string,
     currency: string,
+    reason?: string,
   ): Promise<void> {
     try {
       const [user] = await this.db.select().from(users).where(eq(users.id, userId)).limit(1);
@@ -3312,6 +3585,7 @@ export class TransactionsService {
         outcome,
         amount,
         currency,
+        reason,
       );
     } catch (error) {
       this.logger.warn(

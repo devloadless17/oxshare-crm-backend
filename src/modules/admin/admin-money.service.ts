@@ -36,6 +36,9 @@ import { ledgerEntryTypeEnum, tradingAccounts } from '../../database/schema';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { RivalWithdrawalsService } from '../payments/rival/rival-withdrawals.service';
+import { DEPOSIT_PROOF_BUCKET } from '../../common/uploads/stored-files.service';
+import { storedPath } from '../../common/uploads/storage/storage-key';
+import { DepositDecisionDto } from './dto/responses.dto';
 import type { ClientScope } from '../../common/security/client-scope';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 
@@ -1334,6 +1337,136 @@ export class AdminMoneyService {
    * changing the error every existing caller sees for a reason that has nothing
    * to do with them.
    */
+  /**
+   * APPROVE an offline deposit — the receipt checks out, credit the wallet.
+   *
+   * The service-side `assertActorCan` is not belt-and-braces over the guard
+   * (R-4.3): the guard runs on HTTP only, and this method is the seam a job or a
+   * script would call.
+   *
+   * `deposits.approve`, never `wallets.credit`. The two powers differ in blast
+   * radius — this one credits an amount the CLIENT declared against a reference
+   * that reconciles to a bank line; `wallets.credit` types any figure into any
+   * wallet. A deposit clerk needs the first and must not be handed the second.
+   */
+  async approveDeposit(id: string, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'deposits.approve', 'approve a deposit and credit the client');
+    await this.assertDepositVisible(id, actor.clientScope);
+
+    const row = await this.transactions.approveDeposit(id, actor.id, async (tx, approved) => {
+      /*
+       * Inside the transaction (R-6.5): if the audit row cannot be written, the
+       * money does not move. "Who credited this client, and on what evidence" is
+       * the question this row exists to answer, so a credit without it is worse
+       * than a failed approval an operator can retry.
+       */
+      await this.audit.recordWithin(tx, actor.id, 'deposit.approve', 'transaction', id, {
+        amount: approved.amount,
+        currency: approved.currency,
+        method: approved.methodKey,
+        reference: approved.providerRef,
+        // Whether anybody actually had evidence in front of them. A proofless
+        // approval is legitimate — an operator can see the bank statement — but
+        // it is the thing a reviewer will want to find later.
+        hadReceipt: approved.proofFilename !== null,
+      });
+    });
+    return this.toDepositDecision(row);
+  }
+
+  /**
+   * REJECT an offline deposit.
+   *
+   * `deposits.reject` is a SEPARATE key from `deposits.approve`, on R-5.4's
+   * reasoning: refusing a declaration moves no money, crediting one does, so an
+   * operator can be trusted with the first and not the second.
+   *
+   * ⚠️ Nothing is refunded and nothing is released — see
+   * `TransactionsService.rejectDeposit`. A deposit debits nothing when it is
+   * filed, so there is no money here to give back.
+   */
+  async rejectDeposit(id: string, actor: AuthenticatedAdmin, reason?: string, reasonId?: string) {
+    assertActorCan(actor, 'deposits.reject', 'reject a deposit');
+    await this.assertDepositVisible(id, actor.clientScope);
+
+    // FR-ADM-03, identical to the withdrawal desk: the reason comes from the
+    // configurable list, and free text is an optional note beside it.
+    let effectiveReason = reason?.trim();
+    if (reasonId) {
+      const configured = await this.rejectionReasons.findById(reasonId);
+      if (!configured) throw new NotFoundError('Rejection reason not found.');
+      effectiveReason = effectiveReason
+        ? `${configured.label} — ${effectiveReason}`
+        : configured.label;
+    }
+    if (!effectiveReason) {
+      throw new ValidationError('A rejection reason (reasonId or reason text) is required.');
+    }
+
+    const row = await this.transactions.rejectDeposit(
+      id,
+      actor.id,
+      effectiveReason,
+      async (tx, rejected) => {
+        await this.audit.recordWithin(tx, actor.id, 'deposit.reject', 'transaction', id, {
+          amount: rejected.amount,
+          currency: rejected.currency,
+          reason: effectiveReason,
+        });
+      },
+    );
+    return this.toDepositDecision(row);
+  }
+
+  /**
+   * The decided row, as the console reads it.
+   *
+   * `proofPath` is built here rather than stored: the column holds the bare
+   * filename and `storedPath` is the one place that knows the `uploads/<dir>/`
+   * shape both frontends' URL builders consume. Storing the path as well would
+   * be a second spelling of one fact, free to drift from the bucket.
+   */
+  private toDepositDecision(row: {
+    id: string;
+    userId: string;
+    amount: string;
+    currency: string;
+    state: string;
+    methodKey: string | null;
+    providerRef: string | null;
+    proofFilename: string | null;
+    rejectionReason: string | null;
+    reviewedAt: Date | null;
+    settledAt: Date | null;
+  }): DepositDecisionDto {
+    return {
+      id: row.id,
+      userId: row.userId,
+      amount: row.amount,
+      currency: row.currency,
+      state: row.state,
+      methodKey: row.methodKey,
+      providerRef: row.providerRef,
+      proofPath: row.proofFilename ? storedPath(DEPOSIT_PROOF_BUCKET.dir, row.proofFilename) : null,
+      rejectionReason: row.rejectionReason,
+      reviewedAt: row.reviewedAt,
+      settledAt: row.settledAt,
+    };
+  }
+
+  /**
+   * The deposit equivalent of `assertWithdrawalVisible`, and 404 rather than 403
+   * for the same reason: telling a scoped admin that a row exists but is not
+   * theirs is itself a disclosure.
+   */
+  private async assertDepositVisible(id: string, scope: ClientScope): Promise<void> {
+    if (scope.unrestricted) return;
+
+    const owner = await this.transactions.ownerOf(id);
+    if (!owner) throw new NotFoundError('Deposit not found.');
+    await this.visibility.assertVisible(owner, scope);
+  }
+
   private async assertWithdrawalVisible(id: string, scope: ClientScope): Promise<void> {
     if (scope.unrestricted) return;
 

@@ -27,6 +27,7 @@ import { RolesStore } from '../../store/roles.store';
 import { KycStore } from '../../store/kyc.store';
 import { UsersStore } from '../../store/users.store';
 import { AuditLogStore } from '../../store/audit-log.store';
+import { DepositProofsStore } from '../../store/deposit-proofs.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
 import { AdminIpAllowlistStore } from '../../store/admin-ip-allowlist.store';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
@@ -37,6 +38,7 @@ import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { AdminGuard } from '../admin/guards/admin.guard';
 import {
   AVATAR_BUCKET,
+  DEPOSIT_PROOF_BUCKET,
   KYC_BUCKET,
   PAYMENT_LOGO_BUCKET,
   StoredFilesService,
@@ -54,6 +56,30 @@ import {
 /** Who a request resolved to, and therefore what gets recorded about the read. */
 type Reader =
   { kind: 'admin'; id: string; email: string } | { kind: 'client'; id: string; email: string };
+
+/**
+ * WHO may read a file in a given bucket — the four questions that differ between
+ * one protected bucket and the next.
+ *
+ * Everything ABOVE this in `authorize` is identical for every bucket and is the
+ * part that has historically been wrong: the token-kind check, the suspension
+ * and revoked-family checks, the password-change cutoff, the RBAC-08 allowlist,
+ * and the exact list of exceptions that may propagate rather than fall through.
+ * A second copy of that for deposit receipts would be a second place for those
+ * to drift; a policy object keeps one copy and varies only the decision.
+ */
+interface ReadPolicy {
+  /** Which permission keys let an admin read here. */
+  mayRead(permissions: string[]): boolean;
+  /** Refuse a scoped admin who cannot see the owning client. Throws 404, never 403. */
+  assertInScope(admin: Admin, fileName: string): Promise<void>;
+  /** Does this client own this file? */
+  clientOwns(userId: string, fileName: string): Promise<boolean>;
+  /** The R-6.6 audit row this read writes. */
+  audit: { action: string; subjectType: string };
+  adminForbidden: string;
+  clientForbidden: string;
+}
 
 // KYC documents are PII (ARCHITECTURE §8.5): never served anonymously.
 // Same URL shape the static server used, so existing document URLs keep working:
@@ -84,6 +110,7 @@ export class UploadsController {
     private readonly scopes: AdminClientScopesStore,
     private readonly ipAllowlist: AdminIpAllowlistStore,
     private readonly refreshTokens: RefreshTokensService,
+    private readonly depositProofs: DepositProofsStore,
   ) {}
 
   /**
@@ -309,6 +336,57 @@ export class UploadsController {
     });
   }
 
+  /**
+   * Serve a deposit RECEIPT to the client who filed it or to a deposit reviewer.
+   *
+   * Same shape as the KYC document route above, and deliberately so — the
+   * differences are the bucket, the permissions, the ownership question and the
+   * audit action, which are exactly the four things `ReadPolicy` carries.
+   *
+   * No `@UseGuards`: this route serves TWO principals, and which one is acting is
+   * only knowable after the token resolves. `authorize` does it by hand, applying
+   * every check the ordinary guards would — including the RBAC-08 allowlist,
+   * which `IpAllowlistGuard` never sees here because `/uploads` is outside
+   * `/admin`, and a receipt names a bank account.
+   */
+  @Get('deposit-proofs/:file')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Serve a deposit receipt to its owner or a deposits reviewer',
+  })
+  @ScopedToClients(
+    "The filename is resolved to its deposit and that deposit's owner in one scoped query; a miss is 404 and writes no audit row.",
+  )
+  async serveDepositProof(@Param('file') file: string, @Req() req: Request, @Res() res: Response) {
+    const name = basename(file); // neutralize any traversal attempt
+    const policy = this.depositProofPolicy();
+    const reader = await this.authorize(req, name, policy);
+
+    const contentType = this.files.contentType(DEPOSIT_PROOF_BUCKET, name);
+    if (!contentType) throw new NotFoundException('Receipt not found.');
+
+    // `Range` forwarded so a multi-page PDF advice paints its first page without
+    // the whole transfer; `If-None-Match` deliberately not, because the response
+    // is `no-store` below and a revalidation path answers the opposite question.
+    const found = await this.files.read(DEPOSIT_PROOF_BUCKET, name, { range: req.headers.range });
+    if (!found) throw new NotFoundException('Receipt not found.');
+
+    // Before any byte, and awaited: a failure to record is a failure to serve.
+    // A receipt is PII of the same order as a KYC document — it carries a bank
+    // account, a name and an amount.
+    await this.recordRead(reader, name, policy.audit);
+
+    streamObject(res, found, {
+      contentType,
+      // `no-store` for the KYC reason: a reviewer works through a queue of these,
+      // and a browser's own freshness heuristics would leave a pile of other
+      // people's bank details in a cache directory that outlives the session.
+      cacheControl: 'no-store, private',
+      contentSecurityPolicy: "default-src 'none'; sandbox",
+      contentDisposition: inlineDisposition(name),
+    });
+  }
+
   @Get('kyc/:file')
   @ApiCookieAuth()
   @ApiOperation({
@@ -320,7 +398,7 @@ export class UploadsController {
   async serveKycFile(@Param('file') file: string, @Req() req: Request, @Res() res: Response) {
     const name = basename(file); // neutralize any traversal attempt
 
-    const reader = await this.authorize(req, name);
+    const reader = await this.authorize(req, name, this.kycPolicy());
 
     /*
      * The type comes from the STORED extension, which records what the magic bytes
@@ -358,7 +436,7 @@ export class UploadsController {
     // Still before any byte reaches the wire, and still after the object is known
     // to exist — so a read of a document that is not there writes no row claiming
     // it was viewed.
-    await this.recordRead(reader, name);
+    await this.recordRead(reader, name, this.kycPolicy().audit);
 
     streamObject(res, found, {
       contentType,
@@ -388,7 +466,11 @@ export class UploadsController {
    * (kyc.controller.ts) and carries nothing about the person, so the audit trail
    * identifies the document without copying identity data into a second table.
    */
-  private async recordRead(reader: Reader, fileName: string): Promise<void> {
+  private async recordRead(
+    reader: Reader,
+    fileName: string,
+    audit: { action: string; subjectType: string },
+  ): Promise<void> {
     try {
       await this.auditLog.record({
         actorId: reader.id,
@@ -404,8 +486,8 @@ export class UploadsController {
          * and it meant a new kind of reader would have needed a third action
          * name. `actor_kind` is where that belongs.
          */
-        action: 'kyc.document.view',
-        subjectType: 'kyc_document',
+        action: audit.action,
+        subjectType: audit.subjectType,
         subjectId: fileName,
       });
     } catch (error) {
@@ -434,7 +516,7 @@ export class UploadsController {
    * KIND of thing" is a permission check, and "may they read THIS file" is an
    * ownership check, and only the second one consults the submission.
    */
-  private async authorize(req: Request, fileName: string): Promise<Reader> {
+  private async authorize(req: Request, fileName: string, policy: ReadPolicy): Promise<Reader> {
     const cookies = req.cookies as Record<string, string | undefined> | undefined;
 
     const adminToken = readSessionCookie(cookies, COOKIE_BASES.adminAccess);
@@ -544,8 +626,7 @@ export class UploadsController {
            */
           // No wildcard branch: full access is a real list of real keys now
           // (admin.guard.ts), and this was the last reader of `'*'`.
-          const mayRead =
-            normalized.includes('kyc.documents.view') || normalized.includes('kyc.review');
+          const mayRead = policy.mayRead(normalized);
           if (mayRead) {
             /*
              * CLIENT SCOPE, on a route that takes a FILENAME rather than a
@@ -561,12 +642,10 @@ export class UploadsController {
              * before the R-6.6 audit row, so a refused read leaves no trace
              * claiming it happened.
              */
-            await this.assertDocumentInScope(admin, fileName);
+            await policy.assertInScope(admin, fileName);
             return { kind: 'admin', id: admin.id, email: admin.email };
           }
-          throw new ForbiddenException(
-            'The kyc.documents.view or kyc.review permission is required to view documents.',
-          );
+          throw new ForbiddenException(policy.adminForbidden);
         }
       } catch (e) {
         /*
@@ -624,7 +703,7 @@ export class UploadsController {
         if (payload.fam && (await this.refreshTokens.familyIsRevoked('portal', payload.fam))) {
           throw new UnauthorizedException('That session has been signed out. Please log in again.');
         }
-        if (await this.submissionReferencesFile(payload.sub, fileName)) {
+        if (await policy.clientOwns(payload.sub, fileName)) {
           /*
            * The CLIENT branch checks `emailVerified`; the admin branch above
            * cannot and must not — an admin has no such column, and testing it
@@ -647,7 +726,7 @@ export class UploadsController {
           }
           return { kind: 'client', id: payload.sub, email: owner?.email ?? 'unknown' };
         }
-        throw new ForbiddenException('You can only access your own documents.');
+        throw new ForbiddenException(policy.clientForbidden);
       } catch (e) {
         /*
          * `EmailNotVerifiedError` propagates alongside `ForbiddenException`, for
@@ -718,6 +797,70 @@ export class UploadsController {
    * exactly: distinguishing them would tell a scoped admin which filenames are
    * real, which is the enumeration this route is most exposed to.
    */
+  /**
+   * KYC documents — the policy this route has always applied, now stated.
+   *
+   * `kyc.review` implies the read deliberately: a reviewer who could not open
+   * the documents could not review anything, and requiring both keys would have
+   * broken every existing reviewer on deploy.
+   */
+  private kycPolicy(): ReadPolicy {
+    return {
+      mayRead: (permissions) =>
+        permissions.includes('kyc.documents.view') || permissions.includes('kyc.review'),
+      assertInScope: (admin, fileName) => this.assertDocumentInScope(admin, fileName),
+      clientOwns: (userId, fileName) => this.submissionReferencesFile(userId, fileName),
+      audit: { action: 'kyc.document.view', subjectType: 'kyc_document' },
+      adminForbidden:
+        'The kyc.documents.view or kyc.review permission is required to view documents.',
+      clientForbidden: 'You can only access your own documents.',
+    };
+  }
+
+  /**
+   * Deposit receipts — a client's proof that they paid from outside the system.
+   *
+   * `deposits.approve` implies the read for the KYC reason above: approving a
+   * deposit without being able to see the receipt is approving blind. The
+   * separate `deposits.proofs.view` exists for the reviewer who checks the bank
+   * statement without holding the power to credit.
+   *
+   * NOT readable by a `kyc.*` holder, and that is the point of a second policy:
+   * a receipt names a bank account and an amount, and the people who verify
+   * identity are not necessarily the people who handle money.
+   */
+  private depositProofPolicy(): ReadPolicy {
+    return {
+      mayRead: (permissions) =>
+        permissions.includes('deposits.proofs.view') || permissions.includes('deposits.approve'),
+      assertInScope: (admin, fileName) => this.assertProofInScope(admin, fileName),
+      clientOwns: async (userId, fileName) =>
+        (await this.depositProofs.ownerOfProof(fileName)) === userId,
+      audit: { action: 'deposit.proof.view', subjectType: 'deposit_proof' },
+      adminForbidden:
+        'The deposits.proofs.view or deposits.approve permission is required to view receipts.',
+      clientForbidden: 'You can only access your own receipts.',
+    };
+  }
+
+  /**
+   * The deposit-receipt twin of `assertDocumentInScope`, and 404 for the same
+   * reason: telling a scoped admin that a filename is real but not theirs is
+   * itself a disclosure.
+   *
+   * The owner comes from the DEPOSIT, not from `stored_objects.owner_user_id` —
+   * the authority on whose receipt this is, is whose deposit it belongs to.
+   */
+  private async assertProofInScope(admin: Admin, fileName: string): Promise<void> {
+    const scope = await this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false);
+    if (scope.unrestricted) return;
+
+    const owner = await this.depositProofs.ownerOfProof(fileName);
+    if (!owner) throw new NotFoundException('Receipt not found.');
+    const client = await this.users.findForAdmin(owner, scope);
+    if (!client) throw new NotFoundException('Receipt not found.');
+  }
+
   private async assertDocumentInScope(admin: Admin, fileName: string): Promise<void> {
     // The admin's own intake grant (D-60), not a default — an intake-granted
     // reviewer must reach an untagged client's DOCUMENTS, not just the

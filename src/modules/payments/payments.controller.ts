@@ -1,13 +1,18 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
   HttpCode,
   HttpStatus,
+  MaxFileSizeValidator,
   Param,
+  ParseFilePipe,
   Post,
   Query,
   Req,
+  UploadedFile,
+  UseFilters,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
@@ -18,12 +23,17 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiTags,
+  ApiConsumes,
+  ApiBody,
 } from '@nestjs/swagger';
 import {
   IDEMPOTENCY_HEADER,
   Idempotent,
   IdempotencyInterceptor,
 } from '../../common/security/idempotency.interceptor';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
@@ -37,6 +47,12 @@ import { TransfersService } from './transfers.service';
 import { TransferExecutor } from './transfer-executor.service';
 import { PaymentMethodsService } from './payment-methods.service';
 import { PaymentMethodDto } from './dto/payment-method.dto';
+import {
+  DEPOSIT_PROOF_BUCKET,
+  StoredFilesService,
+} from '../../common/uploads/stored-files.service';
+import { MAX_UPLOAD_BYTES } from '../compliance/upload-limits';
+import { UploadSizeFilter } from '../compliance/upload-size.filter';
 import { RequestTransferDto, TransferDto } from './dto/transfer.dto';
 
 /*
@@ -70,6 +86,9 @@ export class PaymentsController {
      */
     private readonly transfers: TransfersService,
     private readonly transferExecutor: TransferExecutor,
+    /* The receipt an offline deposit carries. `UploadsModule` is @Global(), so
+       this needs no module import. */
+    private readonly files: StoredFilesService,
   ) {}
 
   /**
@@ -198,6 +217,122 @@ export class PaymentsController {
       method: dto.method,
       destinationTradingAccountId: dto.destinationTradingAccountId,
     });
+  }
+
+  /**
+   * An OFFLINE deposit: the client paid outside this system and this is the
+   * receipt, filed together with the declaration in one request.
+   *
+   * ## Why the file and the declaration arrive together
+   *
+   * The alternative — create the row, then upload against it — has a state in
+   * the middle where the deposit exists with no evidence. A client whose upload
+   * fails there has already filed a claim they cannot support, and the desk gets
+   * a queue item it can only reject. One request means the row and its proof are
+   * created together or not at all.
+   *
+   * The cost is that a rejected upload takes the declaration with it, which is
+   * the right way round: nothing is lost except a form the client still has in
+   * front of them.
+   *
+   * ## Multipart, and what that does to idempotency
+   *
+   * `@Idempotent()` still applies and still keys on the header. Multer puts the
+   * TEXT fields on `req.body` and the file on `req.file`, so the interceptor's
+   * request hash never sees the image — which is what makes hashing safe here.
+   * A double-clicked button replays the first answer instead of filing a second
+   * declaration for one transfer, which is the whole point (R-5.2).
+   *
+   * The multer `limits` are the real ceiling: they abort the stream mid-flight,
+   * which is the only thing that stops a multi-gigabyte body, and `files: 1`
+   * stops N parts arriving under one field name. `ParseFilePipe` is the second
+   * check, and `StoredFilesService.write` sniffs the magic bytes — the declared
+   * content type is never believed.
+   */
+  @Post('deposits/offline')
+  @UseGuards(KycVerifiedGuard)
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended deposit, reused only when retrying that same one. Without ' +
+      'it a double-clicked button files two declarations for one transfer.',
+  })
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @UseFilters(UploadSizeFilter)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file', 'amount', 'currency', 'method'],
+      properties: {
+        file: { type: 'string', format: 'binary', description: 'A photo or PDF of the transfer.' },
+        amount: { type: 'string', example: '250.00' },
+        currency: { type: 'string', example: 'USD' },
+        method: { type: 'string', example: 'offline' },
+        destinationTradingAccountId: { type: 'string', format: 'uuid' },
+      },
+    },
+  })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Declare a deposit paid outside the platform, with the receipt attached',
+    description:
+      'Creates a PENDING deposit carrying the uploaded receipt. No balance changes until an ' +
+      'operator approves it. Only methods configured as needing a receipt are accepted here.',
+  })
+  @ApiCreatedResponse({ type: DepositRequestDto })
+  async requestOfflineDeposit(
+    @Body() dto: RequestDepositDto,
+    @Req() req: Request & { user: User },
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [new MaxFileSizeValidator({ maxSize: MAX_UPLOAD_BYTES })],
+      }),
+    )
+    file: Express.Multer.File,
+  ) {
+    if (!file?.buffer?.length) throw new BadRequestException('No receipt was uploaded.');
+
+    /*
+     * The owner is the SESSION, never a body field (R-4.4) — the same rule the
+     * KYC upload follows, and the entire distance between "my receipt" and
+     * "anyone's receipt".
+     */
+    const stored = await this.files.write(
+      DEPOSIT_PROOF_BUCKET,
+      file.buffer,
+      file.mimetype,
+      { id: req.user.id, kind: 'client', ownerUserId: req.user.id },
+      file.originalname,
+    );
+
+    try {
+      return await this.transactions.requestDeposit({
+        userId: req.user.id,
+        amount: dto.amount,
+        currency: dto.currency,
+        method: dto.method,
+        destinationTradingAccountId: dto.destinationTradingAccountId,
+        proofFilename: stored.filename,
+      });
+    } catch (error) {
+      /*
+       * Take the bytes back. An object no row references is unservable,
+       * unreviewable and a retention problem — the same rollback
+       * `kyc.controller.ts` performs when `attachFile` fails. `remove` never
+       * throws, so the client still receives the real refusal.
+       */
+      await this.files.remove(DEPOSIT_PROOF_BUCKET, stored.filename);
+      throw error;
+    }
   }
 
   /**

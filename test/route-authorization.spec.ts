@@ -48,6 +48,12 @@ const HANDLER_AUTHENTICATED: Record<string, string> = {
     'Serves a KYC document to a kyc.review admin OR to the client who owns it — two different ' +
     'identities on one route, so the check is inside the handler and is an OWNERSHIP check, not ' +
     'just a role one (R-4.4). Worth converting to a guard.',
+  'GET /uploads/deposit-proofs/:file':
+    'Serves a deposit receipt to a deposits reviewer OR to the client who filed it — the same ' +
+    "two-identity shape as the KYC route above, and it shares that route's authorizer so the " +
+    'session checks (suspension, revoked family, password cutoff, RBAC-08) are one copy, not two. ' +
+    'What differs is the policy: the permissions, the scope lookup, the ownership question and ' +
+    'the audit action.',
 };
 
 const PUBLIC_ROUTES: Record<string, string> = {
@@ -436,6 +442,9 @@ describe('R-4.2 every route declares how it is protected', () => {
       'Authenticates INSIDE the handler because it serves two identities. The CLIENT branch ' +
       'checks emailVerified there; a controller guard would test the column on an ADMIN, who ' +
       'has none, and lock every reviewer out of every document.',
+    'GET /uploads/deposit-proofs/:file':
+      'Same two-identity shape as the KYC document route, and the same reason: the client branch ' +
+      'checks emailVerified inside the handler, where which principal is acting is finally known.',
   };
   for (const [route, reason] of IDENTITY_EXEMPTIONS) {
     const [method, path] = route.split(' ');

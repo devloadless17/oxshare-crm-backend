@@ -54,7 +54,10 @@ const KYC_FIELD_TYPES = [
   ...DOCUMENT_CATALOGUE.map((doc) => documentFieldType(doc.value)),
 ] as const;
 
-const REJECTION_CONTEXTS = ['kyc', 'withdrawal'] as const;
+// `deposit` joins them with the offline deposit desk: a refused receipt needs a
+// reason a client can act on, and typing it freehand every time is how a queue
+// ends up with twelve spellings of "the image is unreadable".
+const REJECTION_CONTEXTS = ['kyc', 'withdrawal', 'deposit'] as const;
 
 export class RejectDto {
   @ApiPropertyOptional({ description: 'Free-text reason, when not using a configured reasonId.' })

@@ -300,6 +300,7 @@ export class PaymentMethodsService {
         logoUrl: dto.logoUrl ?? null,
         enabled: dto.enabled ?? true,
         sortOrder: dto.sortOrder ?? 0,
+        requiresProof: dto.requiresProof ?? false,
         updatedBy: adminId,
       })
       .returning();
@@ -334,6 +335,7 @@ export class PaymentMethodsService {
         ...(dto.logoUrl !== undefined ? { logoUrl: dto.logoUrl } : {}),
         ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+        ...(dto.requiresProof !== undefined ? { requiresProof: dto.requiresProof } : {}),
         updatedBy: adminId,
         updatedAt: new Date(),
       })

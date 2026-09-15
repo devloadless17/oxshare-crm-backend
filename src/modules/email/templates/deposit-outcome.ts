@@ -19,12 +19,15 @@ import { displayMoney } from '../../../common/money-display';
  */
 export function depositOutcome(
   firstName: string,
-  outcome: 'succeeded' | 'failed',
+  outcome: 'succeeded' | 'failed' | 'rejected',
   amount: string,
   currency: string,
   portalUrl: string,
+  /** The desk's reason. Only ever set for `rejected`. */
+  reason?: string,
 ): RenderedEmail {
   const succeeded = outcome === 'succeeded';
+  const rejected = outcome === 'rejected';
   // Formatted for a reader, escaped because it is composed into markup — see
   // `displayMoney`. This read "100.00000000 USD" where the portal says "$100.00".
   const money = esc(displayMoney(amount, currency));
@@ -34,25 +37,68 @@ export function depositOutcome(
    * not. `p()` escapes its input, so passing markup to it printed the tags
    * literally — the same bug the withdrawal template had, in both branches here.
    */
-  const body = succeeded
-    ? pRich(
-        `Your deposit of <strong>${money}</strong> has been confirmed and credited to your wallet. ` +
-          `The funds are available now.`,
-      )
-    : [
-        pRich(
-          `Your deposit of <strong>${money}</strong> could not be completed and no funds were taken by OxShare.`,
-        ),
-        p(
-          `You can start a new deposit from the portal whenever you are ready. If you believe you ` +
-            `were charged, contact support with the date and amount and we will trace it.`,
-        ),
-      ].join('\n');
+  /*
+   * ── WHY `rejected` CANNOT REUSE THE `failed` COPY ───────────────────────
+   *
+   * `failed` says "no funds were taken by OxShare", which is true of a gateway
+   * deposit: the payment never completed, so nothing left the client's account.
+   *
+   * An OFFLINE deposit is the opposite case. The client transferred money
+   * somewhere in the world and uploaded a receipt; the desk is refusing the
+   * DECLARATION — usually because the receipt is unreadable, does not match, or
+   * names an amount that never arrived. Telling that client "no funds were
+   * taken" would be the platform denying a payment it may well be holding.
+   *
+   * So this branch states what was refused, quotes the desk's reason, and tells
+   * a client who did send the money what to do about it. It deliberately does
+   * NOT promise a refund: nothing was ever debited here, so there is nothing to
+   * give back — the money, if it arrived, is a matter for support.
+   */
+  const rejectedBody = [
+    pRich(
+      `Your deposit of <strong>${money}</strong> was not accepted, so nothing has been added to ` +
+        `your wallet.`,
+    ),
+    reason ? p(`Reason: ${reason}`) : '',
+    p(
+      `If you have already sent this transfer, reply to this email or contact support with your ` +
+        `payment receipt and we will look into it. You can also start a new deposit from the portal.`,
+    ),
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const body = rejected
+    ? rejectedBody
+    : succeeded
+      ? pRich(
+          `Your deposit of <strong>${money}</strong> has been confirmed and credited to your wallet. ` +
+            `The funds are available now.`,
+        )
+      : [
+          pRich(
+            `Your deposit of <strong>${money}</strong> could not be completed and no funds were taken by OxShare.`,
+          ),
+          p(
+            `You can start a new deposit from the portal whenever you are ready. If you believe you ` +
+              `were charged, contact support with the date and amount and we will trace it.`,
+          ),
+        ].join('\n');
 
   return {
-    subject: succeeded ? 'Deposit Confirmed — OxShare' : 'Deposit Failed — OxShare',
+    subject: rejected
+      ? 'Deposit Not Accepted — OxShare'
+      : succeeded
+        ? 'Deposit Confirmed — OxShare'
+        : 'Deposit Failed — OxShare',
     html: card(`        <h2 style="color: ${succeeded ? '#047857' : '#b42318'}; margin-top: 0;">
-          ${succeeded ? 'Your deposit has been credited' : 'Your deposit did not complete'}
+          ${
+            succeeded
+              ? 'Your deposit has been credited'
+              : rejected
+                ? 'Your deposit was not accepted'
+                : 'Your deposit did not complete'
+          }
         </h2>
 ${p(`Hello ${firstName || 'Valued Client'},`)}
 ${body}

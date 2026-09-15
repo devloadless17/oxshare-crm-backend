@@ -53,6 +53,7 @@ import {
   OpenWalletDto,
   SettleWithdrawalDto,
   AbandonTransferDto,
+  DepositRejectDto,
   WithdrawalRejectDto,
 } from './dto/requests/money.dto';
 import {
@@ -60,6 +61,7 @@ import {
   ReconciliationReportDto,
   StuckTransfersDto,
   WithdrawalListResponseDto,
+  DepositDecisionDto,
   WithdrawalRowDto,
 } from './dto/responses.dto';
 import {
@@ -526,6 +528,91 @@ export class AdminMoneyController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.money.rejectWithdrawal(id, req.admin, dto.reason, dto.reasonId);
+  }
+
+  /*
+   * ── THE OFFLINE DEPOSIT DESK ──────────────────────────────────────────────
+   *
+   * A client paid outside the platform — OMT, a bank transfer, cash — declared
+   * it, and attached a receipt. These two routes are the only way that
+   * declaration ever settles.
+   *
+   * Before them a manual deposit could be filed and never confirmed: the only
+   * money-in action here was `POST /admin/wallets/credit`, which mints a
+   * SEPARATE `manual_admin` row and leaves the client's own declaration pending
+   * for ever. That is still the right tool for a goodwill adjustment and the
+   * wrong one for this.
+   *
+   * `deposits.*` rather than `wallets.credit`, because the powers differ in
+   * blast radius: approving credits an amount the CLIENT declared against a
+   * reference that reconciles to a bank line, while `wallets.credit` types any
+   * figure into any wallet.
+   *
+   * `@AnnouncesChange('wallets')` and not a new resource name: `RESOURCES` is a
+   * closed list, and the admin console already maps `wallets` onto exactly what
+   * a credited deposit changes — wallets, transactions, ledger, stats. A new
+   * name would refresh nothing until the frontend learned it.
+   */
+  @Patch('deposits/:id/approve')
+  @AnnouncesChange('wallets')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended action, reused only when retrying that same one. The ' +
+      'conditional transition makes a replayed CAUSE a no-op; this makes a replayed REQUEST ' +
+      'one too (R-5.2).',
+  })
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('deposits.approve')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Approve an offline deposit and credit the client wallet',
+    description:
+      'Moves the deposit from pending to success and posts the ledger credit in one ' +
+      'transaction. If the client chose a trading account, the money is chained on to it ' +
+      'exactly as a gateway deposit would be. Approving twice credits once.',
+  })
+  @ApiOkResponse({ type: DepositDecisionDto })
+  @ScopedToClients('Predicate joins the state-machine UPDATE ... WHERE id = ? AND state = ?.')
+  @Audited('deposit.approve')
+  approveDeposit(
+    @Param('id', UuidParam) id: string,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.money.approveDeposit(id, req.admin);
+  }
+
+  @Patch('deposits/:id/reject')
+  @AnnouncesChange('wallets')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description: 'A unique value per intended action, reused only when retrying that same one.',
+  })
+  @UseGuards(PermissionsGuard)
+  // A SEPARATE key from approve, on R-5.4's reasoning: refusing a declaration
+  // moves no money, crediting one does.
+  @RequirePermissions('deposits.reject')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Reject an offline deposit, with a reason the client is told',
+    description:
+      'Moves the deposit to rejected and emails the client the reason. NOTHING IS REFUNDED, ' +
+      'because nothing was ever debited: a deposit posts no ledger entry when it is filed. A ' +
+      'client who really did send the money needs support, not a reversal.',
+  })
+  @ApiOkResponse({ type: DepositDecisionDto })
+  @ScopedToClients('Predicate joins the state-machine UPDATE.')
+  @Audited('deposit.reject')
+  rejectDeposit(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: DepositRejectDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.money.rejectDeposit(id, req.admin, dto.reason, dto.reasonId);
   }
 
   @Patch('withdrawals/:id/settle')

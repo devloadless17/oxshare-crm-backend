@@ -671,9 +671,31 @@ export async function runSeeds(): Promise<void> {
     'Does not meet the eligibility criteria for this programme',
   ].map((label) => ({ context: 'partner' as const, label }));
 
+  /*
+   * OFFLINE DEPOSITS. Every one of these describes something the desk can see in
+   * the receipt or the bank statement, because that is all a deposit reviewer
+   * has — they are refusing a CLAIM about money, not a document's quality.
+   *
+   * None of them promises a refund, deliberately: nothing was debited, so there
+   * is nothing to give back. A client who really did send the money needs
+   * support, and the email says so.
+   *
+   * Seeded here rather than in migration 0127, which adds the enum value: a new
+   * enum value cannot be USED in the transaction that adds it, and the runner
+   * wraps each migration file in one. The seed runs afterwards on its own
+   * connection.
+   */
+  const depositReasons = [
+    'The receipt is unreadable — please send a clearer photo',
+    'The amount on the receipt does not match the amount requested',
+    'No payment matching this receipt has reached our account',
+    'The receipt is for a different transfer we have already credited',
+    'The receipt does not show who sent the payment',
+  ].map((label) => ({ context: 'deposit' as const, label }));
+
   await db
     .insert(rejectionReasons)
-    .values([...kycReasons, ...withdrawalReasons, ...partnerReasons])
+    .values([...kycReasons, ...withdrawalReasons, ...partnerReasons, ...depositReasons])
     .onConflictDoNothing();
 
   // Default KYC onboarding steps — only when the config table is empty, so a

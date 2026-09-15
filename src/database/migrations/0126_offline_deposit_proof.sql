@@ -1,0 +1,40 @@
+-- Offline deposits: a receipt on the transaction, and the flag that marks a
+-- method as needing one.
+--
+-- ── What an offline deposit IS ─────────────────────────────────────────────
+--
+-- The same deposit the platform already files. `requestDeposit` has always
+-- written a `pending` row for a non-gateway method — provider `manual_<key>`,
+-- an OX- reference, the destination validated, the platform limits applied —
+-- and nothing has ever been able to move that row off `pending`. These two
+-- columns are the missing halves: the EVIDENCE a client attaches, and the
+-- CONFIGURATION that says a method wants one.
+--
+-- `proof_filename` is the bare `<uuid>.jpg` in `DEPOSIT_PROOF_BUCKET`, mirroring
+-- how `users.avatar_filename` stores a name rather than a path. The object's
+-- size, checksum, sniffed type and uploader already live in `stored_objects`;
+-- this column is the link and nothing more.
+--
+-- One proof, written with the row, never replaced — so a column rather than a
+-- table. If a receipt is wrong the deposit is REJECTED and the client files a
+-- new one, which keeps both attempts on the record instead of overwriting the
+-- first with the second.
+--
+-- Nullable, and it must stay nullable: every gateway deposit and every
+-- withdrawal has no proof, and a deposit somebody files for a client who paid
+-- by hand can still be approved by an operator who has seen the money arrive.
+-- The proof is evidence, not authority.
+ALTER TABLE "transactions" ADD COLUMN IF NOT EXISTS "proof_filename" varchar(255);
+--> statement-breakpoint
+
+-- `requires_proof` is what keeps this feature from being a special case.
+--
+-- Migration 0043 dropped `payment_methods.kind` because the flow is decided by
+-- what the server answers with, and a screen branching on a method KEY has to be
+-- edited every time a method is added. This is the same rule pointed the other
+-- way: the portal renders a receipt control, and the JSON deposit route refuses
+-- the method, because the ROW says so — not because somebody hardcoded 'offline'.
+--
+-- DEFAULT false, so `whish` and every future gateway are untouched by this
+-- statement and by every read that follows it.
+ALTER TABLE "payment_methods" ADD COLUMN IF NOT EXISTS "requires_proof" boolean NOT NULL DEFAULT false;

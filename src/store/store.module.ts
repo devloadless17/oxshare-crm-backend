@@ -5,6 +5,7 @@ import { ApiKeysStore } from './api-keys.store';
 import { AppSettingsStore } from './app-settings.store';
 import { ProductsStore } from './products.store';
 import { ClientTagsStore } from './client-tags.store';
+import { DepositProofsStore } from './deposit-proofs.store';
 import { AdminsStore, InvitesStore } from './admins.store';
 import { AuditLogStore } from './audit-log.store';
 import { IbStore } from './ib.store';
@@ -28,6 +29,7 @@ const STORES = [
   AppSettingsStore,
   ProductsStore,
   ClientTagsStore,
+  DepositProofsStore,
   InvitesStore,
   AuditLogStore,
   IbStore,

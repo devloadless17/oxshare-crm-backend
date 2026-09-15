@@ -115,6 +115,12 @@ export interface FileBucket {
  * rejection re-uploads one or two, so 50MB is roughly twelve documents at the
  * maximum size. Nobody legitimate reaches it.
  *
+ * ⚠️ That arithmetic now covers TWO surfaces. Deposit receipts count against the
+ * same allowance (DEPOSIT_PROOF_BUCKET), so a client who deposits by receipt
+ * every week spends this budget on receipts and then cannot upload a KYC
+ * document. Twelve documents is no longer the honest figure; if anyone reports
+ * being refused an upload, this shared ceiling is the first thing to look at.
+ *
  * It exists because the failure mode CHANGED with object storage. On local disk an
  * unbounded uploader filled a volume, which sets off an alarm. On R2 it is a silent
  * bill — the 10/min throttle still permits ~6GB per client per hour, and nothing
@@ -157,8 +163,9 @@ export const AVATAR_BUCKET: FileBucket = {
  */
 export const KYC_BUCKET: FileBucket = {
   dir: 'kyc',
-  // The only bucket that accepts a format with an execution model, so the only
-  // one that has to look inside. See `active-content.ts`.
+  // Accepts a format with an execution model, so it has to look inside. See
+  // `active-content.ts`. No longer the ONLY such bucket — DEPOSIT_PROOF_BUCKET
+  // takes PDF too, and the flag travels with the format, not with the folder.
   rejectActiveContent: true,
   maxBytes: 10 * 1024 * 1024,
   allowedMimeTypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf'],
@@ -188,6 +195,59 @@ export const KYC_BUCKET: FileBucket = {
     'photo, or choose it from Photos so it is converted to JPG.',
   // Deliberately none: an identity document is served `no-store` and must not
   // settle into a disk cache. See uploads.controller.ts.
+  countsTowardOwnerQuota: true,
+};
+
+/**
+ * Deposit receipts: JPEG, PNG, WebP or PDF, up to 10MB.
+ *
+ * The photo a client takes of a transfer they made OUTSIDE the system — an OMT
+ * slip, a bank app screenshot, a wire advice — attached to the deposit they are
+ * declaring. It is the only thing an operator has to go on before crediting real
+ * money, so the rules here are the identity-document rules, not the logo rules.
+ *
+ * Every choice below is KYC_BUCKET's, and each one is repeated rather than
+ * shared because the reason is its own:
+ *
+ *   PDF, because banks issue advices as PDF and refusing it refuses the best
+ *   evidence a client can offer.
+ *
+ *   `rejectActiveContent`, and here the argument is STRONGER than for a
+ *   passport: a "transfer confirmation" is the single most plausible hostile
+ *   PDF in this product — a document a stranger sends you claiming to be money,
+ *   which an operator is motivated to open.
+ *
+ *   No `cacheControl`, so it is served `no-store` like a KYC document. A receipt
+ *   names a bank account, a person and an amount; a reviewer's browser must not
+ *   leave a pile of other people's bank details in a disk cache that outlives
+ *   the session.
+ *
+ *   `countsTowardOwnerQuota`, because the 10/min throttle alone still permits
+ *   gigabytes per client per hour, billed silently.
+ *
+ * The 10MB literal is duplicated from KYC_BUCKET rather than imported: `common/`
+ * may not import from `modules/**` (the layering lint), which is why that bucket
+ * carries a literal too. Both mirror `modules/compliance/upload-limits.ts`.
+ */
+export const DEPOSIT_PROOF_BUCKET: FileBucket = {
+  dir: 'deposit-proofs',
+  rejectActiveContent: true,
+  maxBytes: 10 * 1024 * 1024,
+  allowedMimeTypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf'],
+  extensions: {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'application/pdf': '.pdf',
+  },
+  // The same iPhone/HEIC fix KYC_BUCKET names, for the same reason: most of these
+  // arrive from a phone camera, and "that is not a valid image" tells a client
+  // nothing they can act on.
+  rejectionMessage:
+    'Only JPG, PNG, WEBP images and PDF files are accepted as a receipt. ' +
+    'If you are on an iPhone, set Settings → Camera → Formats to "Most Compatible" and retake the ' +
+    'photo, or choose it from Photos so it is converted to JPG.',
   countsTowardOwnerQuota: true,
 };
 

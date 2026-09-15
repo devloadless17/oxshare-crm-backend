@@ -2480,3 +2480,84 @@ export class StuckTransfersDto {
   })
   thresholdMinutes: number;
 }
+
+/**
+ * What a deposit DECISION answers with — the row as it now stands.
+ *
+ * Deliberately carries NO client attribute: not an email, not a name, not a
+ * country. A decision response is about the record the operator just acted on,
+ * and the queue they came from already carries the client. That keeps this DTO
+ * outside RBAC-03 masking entirely rather than relying on every field being
+ * marked correctly — the approve-response masking bug the withdrawal desk had is
+ * one this shape cannot reproduce.
+ */
+export class DepositDecisionDto {
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
+
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ description: 'The client this deposit belongs to.' })
+  userId: string;
+
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({
+    description: 'Monetary value — always a string, never a number',
+    example: '250.00000000',
+  })
+  amount: string;
+
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ example: 'USD' })
+  currency: string;
+
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ enum: ['pending', 'approved', 'success', 'failure', 'rejected'] })
+  state: string;
+
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiPropertyOptional({ description: 'The deposit method the client chose.', nullable: true })
+  methodKey: string | null;
+
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiPropertyOptional({ description: 'The OX- reference quoted on the transfer.', nullable: true })
+  providerRef: string | null;
+
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiPropertyOptional({
+    description:
+      'The stored receipt, as `uploads/deposit-proofs/<file>`. Null when the deposit carried none.',
+    nullable: true,
+  })
+  proofPath: string | null;
+
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiPropertyOptional({ nullable: true })
+  rejectionReason: string | null;
+
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiPropertyOptional({ nullable: true, type: String, format: 'date-time' })
+  reviewedAt: Date | null;
+
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiPropertyOptional({ nullable: true, type: String, format: 'date-time' })
+  settledAt: Date | null;
+}

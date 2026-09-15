@@ -51,7 +51,11 @@ const PRUNE = process.argv.includes('--prune');
 const GRACE_MS = 60 * 60 * 1000;
 
 /** The buckets, matching `FileBucket.dir` in stored-files.service.ts. */
-const PREFIXES = ['kyc/', 'avatars/', 'payment-logos/'];
+// Every bucket StoredFilesService writes. A MISSING prefix here is dangerous in
+// one direction only, and it is the bad one: objects under it are never listed,
+// so they are never matched against the registry, and `--prune` reads them as
+// litter. Add the prefix in the same change as the bucket.
+const PREFIXES = ['kyc/', 'avatars/', 'payment-logos/', 'deposit-proofs/'];
 
 const REQUIRED = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET'];
 const missing = REQUIRED.filter((k) => !process.env[k]);

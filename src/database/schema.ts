@@ -71,7 +71,15 @@ export const adminRoleEnum = pgEnum('admin_role', ['master_admin', 'sub_admin'])
  * and dropping a value from a PG enum means rewriting the type. It comes back
  * with the money rebuild.
  */
-export const rejectionContextEnum = pgEnum('rejection_context', ['kyc', 'withdrawal', 'partner']);
+export const rejectionContextEnum = pgEnum('rejection_context', [
+  'kyc',
+  'withdrawal',
+  'partner',
+  // Offline deposits: a receipt that does not match, is unreadable, or names an
+  // amount the desk never received. Added in 0127, alone in its file — a new
+  // enum value cannot be USED in the transaction that adds it.
+  'deposit',
+]);
 
 // ── users (ARCHITECTURE §5; indexes per "Required indexes") ──────────────────
 export const users = pgTable(
@@ -1958,6 +1966,22 @@ export const paymentMethods = pgTable(
      * reports the platform-wide floor and ceiling on every method, which is what
      * makes the limits identical across them, and `requestDeposit` enforces it.
      */
+    /*
+     * OFFLINE: the client pays outside the system and uploads a receipt.
+     *
+     * The flag, not a hardcoded key, is what makes an offline method ordinary
+     * configuration — `deposits.ts` in the portal states the rule after `kind`
+     * was dropped in 0043: a screen that branches on a method KEY needs editing
+     * every time a method is added. Adding OMT beside a bank transfer is a row
+     * in this table.
+     *
+     * Three things read it: the portal shows the receipt control, the JSON
+     * `POST /payments/deposits` REFUSES the method (so no proofless row can be
+     * filed through the gateway door), and the multipart offline route requires
+     * it. A gateway method with this flag set would be refused on both doors,
+     * which is the correct answer to a contradictory configuration.
+     */
+    requiresProof: boolean('requires_proof').notNull().default(false),
     enabled: boolean('enabled').notNull().default(true),
     sortOrder: integer('sort_order').notNull().default(0),
     updatedBy: uuid('updated_by'),
@@ -2739,6 +2763,23 @@ export const transactions = pgTable(
       () => tradingAccounts.id,
       { onDelete: 'restrict' },
     ),
+    /*
+     * The client's RECEIPT for an offline deposit — the bare `<uuid>.jpg`,
+     * stored in `DEPOSIT_PROOF_BUCKET` and served from
+     * `GET /v1/uploads/deposit-proofs/<file>`.
+     *
+     * A column rather than a table because exactly one proof exists and it is
+     * written WITH the row: an offline method cannot be filed without it, and
+     * there is no replace. Everything else about the object — size, sha256,
+     * sniffed type, uploader — is already one row away in `stored_objects`, and
+     * copying it here would be two answers to one question.
+     *
+     * NULL on every gateway deposit and every withdrawal. It is the evidence an
+     * operator approves against; it is not what authorises the credit, which is
+     * why a proofless row can still be settled by somebody who has seen the
+     * money arrive.
+     */
+    proofFilename: varchar('proof_filename', { length: 255 }),
     rejectionReason: text('rejection_reason'),
     /** The admin who decided. No FK — same reasoning as `audit_log.actor_id`. */
     reviewedBy: uuid('reviewed_by'),

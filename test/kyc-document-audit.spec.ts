@@ -182,6 +182,12 @@ function makeController(options: {
     // every case here except the two network ones runs in.
     ipAllowlist as never,
     refreshTokens as never,
+    /*
+     * The deposit-receipt owner lookup. Null for every case in this file: these
+     * are KYC documents, and a receipt store that answered about them would be
+     * the bucket confusion `DepositProofsStore` exists to prevent.
+     */
+    { ownerOfProof: () => Promise.resolve(null) } as never,
   );
 
   return { controller, recorded };

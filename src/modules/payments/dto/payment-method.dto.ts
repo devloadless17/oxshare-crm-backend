@@ -76,6 +76,14 @@ export class PaymentMethodDto {
   maxAmount: string;
   @ApiProperty() enabled: boolean;
   @ApiProperty() sortOrder: number;
+
+  @ApiProperty({
+    description:
+      'The client must attach a receipt: this method is paid outside the platform and an ' +
+      'operator approves it by hand. The portal reads this to decide whether to ask for one, ' +
+      'rather than branching on the method key.',
+  })
+  requiresProof: boolean;
 }
 
 export class CreatePaymentMethodDto {
@@ -137,6 +145,17 @@ export class CreatePaymentMethodDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'OFFLINE: the client pays outside the platform and must attach a receipt. Such a deposit ' +
+      'is filed through POST /payments/deposits/offline and settles when an operator approves ' +
+      'it — the JSON deposit route refuses the method. Cannot be combined with a gateway key.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  requiresProof?: boolean;
 }
 
 /**
@@ -166,6 +185,17 @@ export class UpdatePaymentMethodDto {
 
   @ApiPropertyOptional() @IsOptional() @IsBoolean() enabled?: boolean;
   @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) sortOrder?: number;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'OFFLINE: the client pays outside the platform and must attach a receipt. Such a deposit ' +
+      'is filed through POST /payments/deposits/offline and settles when an operator approves ' +
+      'it — the JSON deposit route refuses the method. Cannot be combined with a gateway key.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  requiresProof?: boolean;
 }
 
 /**

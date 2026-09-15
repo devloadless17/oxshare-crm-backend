@@ -159,6 +159,28 @@
       }
     ]
   },
+  "deposits": {
+    "moduleName": "Offline Deposits",
+    "description": "Reviewing deposits a client paid OUTSIDE the platform — OMT, a bank transfer, cash — and credited on the strength of a receipt they uploaded. Separate from wallets.credit on purpose: approving here is BOUNDED (the amount is the client's own declaration against a reference that reconciles to a bank line), while wallets.credit types any amount into any wallet. A deposit clerk needs the first and must not be handed the second. Approve and reject are separate keys for the R-5.4 reason: refusing a declaration moves no money, crediting one does.",
+    "permissions": [
+      {
+        "key": "deposits.view",
+        "label": "View Offline Deposit Requests"
+      },
+      {
+        "key": "deposits.proofs.view",
+        "label": "Open a Deposit Payment Receipt"
+      },
+      {
+        "key": "deposits.approve",
+        "label": "Approve a Deposit & Credit the Wallet"
+      },
+      {
+        "key": "deposits.reject",
+        "label": "Reject a Deposit"
+      }
+    ]
+  },
   "transactions": {
     "moduleName": "Financial Transactions",
     "description": "The platform-wide money-movement list: every deposit, withdrawal and internal transfer, across every client, with the client named on each row. Its own key rather than `withdrawals.view` for the reason the ledger got `ledger.view`: granting payout review must not also hand over every client deposit and every partner transfer on the platform. Its own key rather than `ledger.view` because the two screens answer different questions — the ledger is the append-only accounting record under Audit & Reconciliation, while this list shows lifecycle states, client identity and payment rails, and coupling them would mean granting either screen always grants both.",

@@ -883,6 +883,27 @@
       "when": 1789139297733,
       "tag": "0125_audit_actor_search_index_was_unusable",
       "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1789139297734,
+      "tag": "0126_offline_deposit_proof",
+      "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1789139297735,
+      "tag": "0127_rejection_context_deposit",
+      "breakpoints": true
+    },
+    {
+      "idx": 129,
+      "version": "7",
+      "when": 1789139297736,
+      "tag": "0128_grant_deposits_desk",
+      "breakpoints": true
     }
   ]
 }
