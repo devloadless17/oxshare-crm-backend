@@ -60,9 +60,16 @@ export function depositOutcome(
         `your wallet.`,
     ),
     reason ? p(`Reason: ${reason}`) : '',
+    /*
+     * "Contact support", never "reply to this email". The shared layout signs
+     * every message off with "Please do not reply to it", and the From address
+     * is a no-reply — so an invitation to reply sends the client's receipt
+     * nowhere, at the one moment they are most likely to act on it: they have
+     * sent real money and just been refused.
+     */
     p(
-      `If you have already sent this transfer, reply to this email or contact support with your ` +
-        `payment receipt and we will look into it. You can also start a new deposit from the portal.`,
+      `If you have already sent this transfer, contact support with your payment receipt and we ` +
+        `will look into it. You can also start a new deposit from the portal.`,
     ),
   ]
     .filter(Boolean)
