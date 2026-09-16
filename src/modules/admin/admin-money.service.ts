@@ -53,6 +53,45 @@ import type { AuthenticatedAdmin } from './guards/admin.guard';
  * Commission plans used to live here too and went with the engine — see the
  * note at the foot of the class.
  */
+/**
+ * A withdrawal row as the console reads it, with the deposit-only columns off.
+ *
+ * ## The leak this closes
+ *
+ * `TransactionsService.transition` ends in a bare `.returning()` — every column
+ * of `transactions` — and each handler below spreads that whole row into its
+ * response. So a column added to the table for ONE flow silently joins the
+ * OTHER flow's public contract. `proof_filename` went on for offline deposits
+ * and immediately started riding out on every withdrawal approval, rejection,
+ * settlement, cancellation and Rival resubmission, as a field that is null by
+ * construction.
+ *
+ * `test/response-completeness.spec.ts` is what caught it, on the reasoning that
+ * matters most here: the response interceptor CANNOT MASK WHAT THE SHAPE DOES
+ * NOT MENTION. An undeclared key is not merely undocumented — it is outside the
+ * machinery that decides what a scoped reviewer is allowed to see.
+ *
+ * ## Why strip rather than declare
+ *
+ * Declaring `proofFilename` on `WithdrawalRowDto` would also have made the gate
+ * pass, and it would have been a lie: a withdrawal has no receipt. It would
+ * publish a permanently-null field into both frontends' generated types, where
+ * it reads as something a screen could reasonably try to render.
+ *
+ * Destructured by NAME rather than deleted from a copy, so the next deposit-only
+ * column is an edit here rather than a silent leak.
+ */
+function withdrawalResponse<T extends { proofFilename?: unknown }>(
+  row: T,
+  actor: AuthenticatedAdmin,
+) {
+  const { proofFilename: _proofIsDepositOnly, ...withdrawalFields } = row;
+  return {
+    ...withdrawalFields,
+    maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
+  };
+}
+
 @Injectable()
 export class AdminMoneyService {
   private readonly logger = new Logger(AdminMoneyService.name);
@@ -1011,10 +1050,7 @@ export class AdminMoneyService {
      * actually mask — `WithdrawalRowDto` nests `WithdrawalUserDto`, which
      * carries the email.
      */
-    return {
-      ...row,
-      maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
-    };
+    return withdrawalResponse(row, actor);
   }
 
   /**
@@ -1137,10 +1173,7 @@ export class AdminMoneyService {
      * actually mask — `WithdrawalRowDto` nests `WithdrawalUserDto`, which
      * carries the email.
      */
-    return {
-      ...row,
-      maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
-    };
+    return withdrawalResponse(row, actor);
   }
 
   /**
@@ -1156,7 +1189,17 @@ export class AdminMoneyService {
       retriedBy: 'admin',
     });
     await this.rivalWithdrawals.submitApproved(id);
-    return this.transactions.getById(id);
+    /*
+     * Through the same seam as its four siblings, which it was not: this one
+     * returned the raw `transactions` row, so it shipped `proofFilename` and
+     * omitted `maskedFields` while the other four transitions did the opposite.
+     * Five routes sharing one `WithdrawalRowDto` were returning two shapes.
+     *
+     * No masking gap hid behind it — `getById` selects from `transactions`
+     * alone and joins no user — but a DTO that describes only four of its five
+     * routes is one somebody will trust about the fifth.
+     */
+    return withdrawalResponse(await this.transactions.getById(id), actor);
   }
   async rejectWithdrawal(
     id: string,
@@ -1219,10 +1262,7 @@ export class AdminMoneyService {
      * actually mask — `WithdrawalRowDto` nests `WithdrawalUserDto`, which
      * carries the email.
      */
-    return {
-      ...row,
-      maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
-    };
+    return withdrawalResponse(row, actor);
   }
   async settleWithdrawal(id: string, actor: AuthenticatedAdmin, providerRef: string) {
     /*
@@ -1277,10 +1317,7 @@ export class AdminMoneyService {
      * actually mask — `WithdrawalRowDto` nests `WithdrawalUserDto`, which
      * carries the email.
      */
-    return {
-      ...row,
-      maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
-    };
+    return withdrawalResponse(row, actor);
   }
 
   /**
