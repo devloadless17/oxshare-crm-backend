@@ -367,7 +367,18 @@ export class AdminComplianceService {
     await this.visibility.assertVisible(userId, actor.clientScope);
     // Read BEFORE the release, or the id it names has already been cleared.
     const before = await this.kycService.getByUserId(userId).catch(() => null);
-    const result = await this.kycService.release(userId);
+    /*
+     * `kyc.claim.override` is what lets a reviewer hand back a submission a
+     * COLLEAGUE is holding. Without it they may only release their own claim —
+     * the same rule approve and reject already enforce, which this route used
+     * to leave open (a claim could be removed by anyone, so the lock the other
+     * two enforce could be taken off its hinges).
+     */
+    const result = await this.kycService.release(
+      userId,
+      actor.id,
+      actor.permissions.includes('kyc.claim.override'),
+    );
     this.audit.record(actor.id, 'kyc.release', 'kyc_submission', userId, {
       status: result.status,
       // Who was holding it — the question anyone reading this row will ask.

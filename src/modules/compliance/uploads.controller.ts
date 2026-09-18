@@ -25,6 +25,7 @@ import { EmailNotVerifiedError } from '../../common/errors/domain-errors';
 import { AdminsStore, type Admin } from '../../store/admins.store';
 import { RolesStore } from '../../store/roles.store';
 import { KycStore } from '../../store/kyc.store';
+import { isStoredFile } from './step-slugs';
 import { UsersStore } from '../../store/users.store';
 import { AuditLogStore } from '../../store/audit-log.store';
 import { DepositProofsStore } from '../../store/deposit-proofs.store';
@@ -915,6 +916,21 @@ export class UploadsController {
       sub.selfie?.filePath,
       sub.addressProof?.filePath,
       sub.addressProof?.page2FilePath,
+      /*
+       * A CUSTOM STEP'S DOCUMENTS COUNT TOO.
+       *
+       * A step the broker added stores its uploads under its own slug in
+       * `step_data`, not in the four columns above. Leaving them out would mean
+       * the upload succeeds and the file is then unopenable by anyone — the
+       * owner included — because this is the check that answers "is this
+       * client's document". A 404 on a passport the client just uploaded is
+       * indistinguishable from losing it.
+       */
+      ...Object.values(sub.stepData ?? {}).flatMap((answers) =>
+        Object.values(answers)
+          .filter(isStoredFile)
+          .map((f) => f.filePath),
+      ),
     ];
     if (paths.some((p) => p && basename(p) === fileName)) return true;
 

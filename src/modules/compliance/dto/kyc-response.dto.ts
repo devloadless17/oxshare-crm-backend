@@ -211,7 +211,7 @@ export class KycStatusDto {
     additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
     description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
   })
-  stepData?: Record<string, Record<string, string>>;
+  stepData?: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
 
   @ApiPropertyOptional({ description: 'Set when status is rejected.' }) rejectionReason?: string;
 

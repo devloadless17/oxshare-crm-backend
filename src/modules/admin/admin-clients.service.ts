@@ -360,38 +360,48 @@ export class AdminClientsService {
      * `referral_attributions` table was replaced by in 0032.
      */
     const canSeeNetwork = may('ib.view');
-    const [tags, kyc, referrer, referredClients, referredTotal, trading] = await Promise.all([
-      this.tags.tagsForClient(clientId),
-      may('kyc.view') || may('kyc.review') ? this.kyc.findByUserId(clientId) : undefined,
-      canSeeNetwork ? this.referrerOf(client, actor.clientScope) : undefined,
-      canSeeNetwork ? this.referredClientsOf(clientId, actor.clientScope) : undefined,
-      /*
-       * The TOTAL, from SQL, under the same `ib.view` gate and the same scope.
-       *
-       * `referredShown` is `referredClients.length` — the size of what fitted —
-       * and on its own it cannot say "50 of 213" because the cap is published
-       * nowhere in the contract. `IbOverviewDto` already says this in capitals
-       * about its own capped array: "Read referredClientCount for how many
-       * there actually are — NEVER this array's length". The admin profile did
-       * the forbidden thing one module away, and `countReferredBy` — written
-       * for exactly this and used by the partner detail — went uncalled here.
-       */
-      canSeeNetwork ? this.users.countReferredBy(clientId, actor.clientScope) : undefined,
-      /*
-       * ABSENT without `trading.view`, an empty array with it — the same rule
-       * the Network sections below follow, for the same reason. The card can
-       * then say "hidden by your permissions" rather than "no accounts", which
-       * are opposite facts about a client who may hold three.
-       *
-       * This section was DECLARED on the response and populated by nothing, so
-       * every profile reported no trading accounts — the same wrong answer the
-       * portal's own accounts page once gave, on the console this time, and to
-       * the reader most likely to act on it.
-       */
-      may('trading.view')
-        ? this.holdings.accountsForProfile(clientId, actor.clientScope)
-        : undefined,
-    ]);
+    const [tags, kyc, referrer, referredClients, referredTotal, referredOutsideScope, trading] =
+      await Promise.all([
+        this.tags.tagsForClient(clientId),
+        may('kyc.view') || may('kyc.review') ? this.kyc.findByUserId(clientId) : undefined,
+        canSeeNetwork ? this.referrerOf(client, actor.clientScope) : undefined,
+        canSeeNetwork ? this.referredClientsOf(clientId, actor.clientScope) : undefined,
+        /*
+         * The TOTAL, from SQL, under the same `ib.view` gate and the same scope.
+         *
+         * `referredShown` is `referredClients.length` — the size of what fitted —
+         * and on its own it cannot say "50 of 213" because the cap is published
+         * nowhere in the contract. `IbOverviewDto` already says this in capitals
+         * about its own capped array: "Read referredClientCount for how many
+         * there actually are — NEVER this array's length". The admin profile did
+         * the forbidden thing one module away, and `countReferredBy` — written
+         * for exactly this and used by the partner detail — went uncalled here.
+         */
+        canSeeNetwork ? this.users.countReferredBy(clientId, actor.clientScope) : undefined,
+        /*
+         * And how many this reader may NOT see — so an empty Network tab can say
+         * "outside your territory" rather than "introduced nobody". Those are
+         * opposite facts about a partner, and the scoped total alone cannot tell
+         * them apart. A count, never a name: see `countReferredOutsideScope`.
+         */
+        canSeeNetwork
+          ? this.users.countReferredOutsideScope(clientId, actor.clientScope)
+          : undefined,
+        /*
+         * ABSENT without `trading.view`, an empty array with it — the same rule
+         * the Network sections below follow, for the same reason. The card can
+         * then say "hidden by your permissions" rather than "no accounts", which
+         * are opposite facts about a client who may hold three.
+         *
+         * This section was DECLARED on the response and populated by nothing, so
+         * every profile reported no trading accounts — the same wrong answer the
+         * portal's own accounts page once gave, on the console this time, and to
+         * the reader most likely to act on it.
+         */
+        may('trading.view')
+          ? this.holdings.accountsForProfile(clientId, actor.clientScope)
+          : undefined,
+      ]);
 
     const profile = {
       id: client.id,
@@ -439,7 +449,12 @@ export class AdminClientsService {
        */
       ...(referrer ? { referrer } : {}),
       ...(referredClients !== undefined
-        ? { referredClients, referredShown: referredClients.length, referredTotal }
+        ? {
+            referredClients,
+            referredShown: referredClients.length,
+            referredTotal,
+            referredOutsideScope,
+          }
         : {}),
     };
 

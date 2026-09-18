@@ -28,12 +28,19 @@ import {
  * (reassigned, off shift, or moved out of that territory by an administrator)
  * left work that looked taken, by nobody in particular, for ever.
  *
- * The rule these cases pin: **you may release what you could decide.** A claim
- * has never been a lock — `approve` and `reject` both accept an `under_review`
- * row from any reviewer with the permission and the scope, deliberately, so one
- * person's absence cannot strand a client's verification. Making release
- * stricter than decide would leave "stuck" as the outcome of an ordinary
- * handover while leaving the stronger action wide open.
+ * The rule these cases pin: **you may release what you could decide.** That
+ * sentence is unchanged; what it means moved, because `approve` and `reject`
+ * gained a claim guard and this route did not follow. They now refuse a
+ * submission another reviewer holds, so "release what you could decide" stopped
+ * meaning "anyone may release" on the day they changed — and for a while a
+ * claim the other two enforced could be removed by anybody, which took the lock
+ * off its hinges rather than leaving it advisory.
+ *
+ * So: a reviewer may always hand back their OWN claim, and handing back a
+ * colleague's needs `kyc.claim.override`. The override is not ceremony. Because
+ * approve and reject are holder-only, release is the ONLY way back to the
+ * queue, and locking it without an escape would turn a reviewer who leaves mid
+ * claim into a client who can never be verified.
  */
 
 const MASTER = { email: 'claim-master@oxshare.com', password: 'admin-password-123' };
@@ -185,17 +192,39 @@ describe('handing a claim back', () => {
     expect(row.reviewedBy).toBeNull();
   });
 
-  it("lets ANOTHER reviewer hand back a colleague's claim", async () => {
+  it("REFUSES another reviewer handing back a colleague's claim", async () => {
     /*
-     * The rule, stated: you may release what you could decide. Omar can
-     * already approve or reject this row; refusing him the lesser action would
-     * make a colleague's absence the one thing nobody can resolve.
+     * The reported defect. Omar cannot approve or reject this row — the claim
+     * guard refuses him — but he could hand it back, which drops the claim and
+     * lets the next person decide the identity Sara was midway through
+     * verifying. A guard the neighbouring route can undo is not a guard.
      */
     const reviewer = await actingAs(ctx, 'admin', REVIEWER);
     const other = await actingAs(ctx, 'admin', OTHER_REVIEWER);
     await claim(reviewer);
 
-    expect((await release(other)).status).toBe(200);
+    const res = await release(other);
+    expect(res.status, 'a colleague released a claim they do not hold').toBe(409);
+    expect(
+      (res.body as { message: string }).message,
+      'the refusal must name the holder, or it cannot be acted on',
+    ).toMatch(/reviewing this submission/i);
+    expect((await statusRow()).reviewedBy, 'the claim was dropped anyway').toBe(reviewerId);
+  });
+
+  it('lets an overriding reviewer take back a claim nobody is coming back to', async () => {
+    /*
+     * The escape hatch, and why it must exist: approve and reject are already
+     * holder-only, so without this a reviewer who claims a submission and then
+     * leaves strands that client's verification for ever. `kyc.claim.override`
+     * is a SEPARATE permission so that taking a colleague's work is something a
+     * role is granted, never something `kyc.review` does by accident.
+     */
+    const reviewer = await actingAs(ctx, 'admin', REVIEWER);
+    const master = await actingAs(ctx, 'admin', MASTER);
+    await claim(reviewer);
+
+    expect((await release(master)).status).toBe(200);
     expect((await statusRow()).reviewedBy).toBeNull();
   });
 
@@ -249,10 +278,16 @@ describe('handing a claim back', () => {
      * saw `under_review`; only one row can match.
      */
     const reviewer = await actingAs(ctx, 'admin', REVIEWER);
-    const other = await actingAs(ctx, 'admin', OTHER_REVIEWER);
+    /*
+     * The HOLDER and an OVERRIDER, because both must be able to win for the
+     * race to mean anything. Racing the holder against a reviewer who is now
+     * refused outright would leave exactly one 200 whatever the database did,
+     * and the case would pass without testing the WHERE clause at all.
+     */
+    const master = await actingAs(ctx, 'admin', MASTER);
     await claim(reviewer);
 
-    const results = await Promise.all([release(reviewer), release(other)]);
+    const results = await Promise.all([release(reviewer), release(master)]);
     const ok = results.filter((r) => r.status === 200);
     expect(ok, 'a double release must not both succeed').toHaveLength(1);
     expect((await statusRow()).status).toBe('submitted');
@@ -280,9 +315,14 @@ describe('handing a claim back', () => {
     );
 
     const reviewer = await actingAs(ctx, 'admin', REVIEWER);
-    const other = await actingAs(ctx, 'admin', OTHER_REVIEWER);
+    /*
+     * An OVERRIDER, because `ownClaim: false` is the interesting audit row and
+     * only an overriding reviewer can produce one now. A plain colleague is
+     * refused before any release is recorded.
+     */
+    const master = await actingAs(ctx, 'admin', MASTER);
     await claim(reviewer);
-    await release(other);
+    await release(master);
 
     /*
      * POLLED, because the write is fire-and-forget.

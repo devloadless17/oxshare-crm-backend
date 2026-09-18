@@ -3,7 +3,13 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { KYC_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { filenameFromStored } from '../../common/uploads/storage/storage-key';
 import { AdminsStore } from '../../store/admins.store';
-import { STEP_STORAGE_COLUMN, collectsAnswers, isDataBearingStep } from './step-slugs';
+import {
+  STEP_STORAGE_COLUMN,
+  collectsAnswers,
+  isDataBearingStep,
+  isFileField,
+  isStoredFile,
+} from './step-slugs';
 import {
   KycStore,
   type KycSortKey,
@@ -319,7 +325,49 @@ export class KycService {
         },
       });
     } else {
-      throw new ValidationError(`Unknown file field: ${field}`);
+      /*
+       * ── A CUSTOM STEP'S DOCUMENT HAD NOWHERE TO GO ─────────────────────────
+       *
+       * The four names above are the canonical steps' own columns. A step the
+       * BROKER added names its fields through the builder, which generates
+       * `customField_<timestamp>` — so a custom step containing a File or
+       * Camera field rendered an uploader in the portal, took the client's
+       * passport, and answered `Unknown file field` on submit. The same shape as
+       * the text half before migration 0130: the capability was offered by one
+       * screen and refused by the storage behind it.
+       *
+       * Resolved by the CONFIGURATION rather than by a name, because there is no
+       * name to recognise. The field must belong to a step that is configured,
+       * enabled, non-canonical, and must actually be a file-bearing field —
+       * otherwise this route would accept an arbitrary key from a client-facing
+       * endpoint and write it into an unbounded jsonb column, which is precisely
+       * what `saveStep`'s own guard exists to prevent.
+       */
+      const owner = (await this.kycConfig.getSteps()).find(
+        (step) =>
+          step.enabled &&
+          collectsAnswers(step.slug) &&
+          !isDataBearingStep(step.slug) &&
+          (step.fields ?? []).some((f) => f.name === field && isFileField(f)),
+      );
+      if (!owner) throw new ValidationError(`Unknown file field: ${field}`);
+
+      /*
+       * Re-read inside the write, not reused from above: an upload is one of
+       * several a client may fire at once (a step can hold more than one
+       * document), and merging onto a snapshot taken before the previous upload
+       * landed is how the second one erases the first.
+       */
+      const current = await this.kycStore.getOrCreate(userId);
+      await this.kycStore.update(userId, {
+        stepData: {
+          ...current.stepData,
+          [owner.slug]: {
+            ...(current.stepData?.[owner.slug] ?? {}),
+            [field]: { filePath, fileName },
+          },
+        },
+      });
     }
 
     return { message: 'File uploaded.', field, fileName };
@@ -431,7 +479,22 @@ export class KycService {
         .filter((field) => field.required)
         .filter((field) => {
           const value = answers[field.name];
-          return value === undefined || value === null || String(value).trim() === '';
+          if (value === undefined || value === null) return true;
+          /*
+           * A FILE answer is present when it is a stored file, not when it
+           * stringifies to something non-empty. `String({...})` is
+           * "[object Object]", so the generic check below would have called an
+           * uploaded document complete no matter what the object held — and,
+           * worse, would have called a malformed one complete too.
+           */
+          if (isFileField(field)) return !isStoredFile(value);
+          /*
+           * A typed answer is a STRING. Anything else in a non-file field is
+           * malformed rather than an answer, and counts as missing — which is
+           * also why this cannot be `String(value)`: stringifying the file
+           * object would yield "[object Object]" and call it complete.
+           */
+          return typeof value !== 'string' || value.trim() === '';
         });
 
       if (missing.length > 0) {
@@ -705,7 +768,7 @@ export class KycService {
    * verification is `reject`'s job, with a reason attached, not a silent
    * reversal that leaves no trace of what was decided or why.
    */
-  async release(userId: string) {
+  async release(userId: string, adminId: string, mayOverride = false) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     if (submission.status !== 'under_review') {
@@ -717,6 +780,33 @@ export class KycService {
     }
 
     /*
+     * ── A CLAIM NOW MEANS SOMETHING ON THE WAY OUT TOO ──────────────────────
+     *
+     * `approve` and `reject` refuse a submission another reviewer is holding.
+     * This did not, so the claim they enforce could be removed by anybody: a
+     * second reviewer handed the submission back to the queue, the holder's
+     * screen still showed a submission they believed was theirs, and the next
+     * person to claim it decided an identity someone else was midway through
+     * verifying. The lock was on the door and the hinges were loose.
+     *
+     * ## Why this is not simply "only the holder may release"
+     *
+     * Because that deadlocks. A reviewer who claims a submission and then goes
+     * off shift, leaves, or loses their account would strand it forever —
+     * `approve` and `reject` are ALREADY holder-only, so release is the only
+     * way back to the queue. Locking it without an escape converts a stuck
+     * claim into a client who can never be verified.
+     *
+     * So the escape stays and becomes DELIBERATE rather than silent: a
+     * different reviewer needs `kyc.claim.override`, which is a separate
+     * permission precisely so that taking a colleague's work is a thing a role
+     * is granted, not a thing anyone with `kyc.review` does by accident. The
+     * seeded administrator holds it (the catalogue feeds `ALL_PERMISSIONS`), so
+     * the desk is never stranded.
+     */
+    if (!mayOverride) await this.assertNotHeldByAnother(submission, adminId);
+
+    /*
      * `transition`, for the reason `claim` documents: the read above is for
      * its error messages and cannot be the guard. Two reviewers releasing in
      * the same tick, or a release racing a decision, must resolve to exactly
@@ -726,10 +816,18 @@ export class KycService {
      * would show the next reader a submission in the pool that still names a
      * reviewer, which is the confusion this whole change is about.
      */
-    const released = await this.kycStore.transition(userId, ['under_review'], {
-      status: 'submitted',
-      reviewedBy: null,
-    });
+    const released = await this.kycStore.transition(
+      userId,
+      ['under_review'],
+      { status: 'submitted', reviewedBy: null },
+      undefined,
+      /*
+       * The WHERE is the enforcement; the read above only produces the message.
+       * An overriding reviewer passes `undefined` so the write is unconditional
+       * — that is what the override IS.
+       */
+      mayOverride ? undefined : adminId,
+    );
 
     if (!released) {
       throw new ConflictError('This submission was decided or released first.');
@@ -940,8 +1038,8 @@ export class KycService {
     const name = names.get(holder);
     throw new ConflictError(
       name
-        ? `${name} is reviewing this submission. Ask them to hand it back, or release it yourself, before deciding.`
-        : 'Another reviewer is holding this submission. Release it before deciding.',
+        ? `${name} is reviewing this submission. Ask them to hand it back first.`
+        : 'Another reviewer is holding this submission. It must be handed back first.',
     );
   }
 

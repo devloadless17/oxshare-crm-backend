@@ -115,7 +115,7 @@ export interface KycAttempt {
    * Always an object — the column is `NOT NULL DEFAULT '{}'` (migration 0130) —
    * so consumers never branch on null, only on whether a slug is present.
    */
-  stepData: Record<string, Record<string, string>>;
+  stepData: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
   rejectionReason?: string;
   rejectedFields?: string[];
   submittedAt?: Date;
@@ -142,7 +142,7 @@ export interface KycSubmission {
    * Always an object — the column is `NOT NULL DEFAULT '{}'` (migration 0130) —
    * so consumers never branch on null, only on whether a slug is present.
    */
-  stepData: Record<string, Record<string, string>>;
+  stepData: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
   createdAt: Date;
   updatedAt: Date;
 }

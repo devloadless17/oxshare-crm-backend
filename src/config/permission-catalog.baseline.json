@@ -4,7 +4,7 @@
     "",
     "It exists because permissions are a stored SNAPSHOT on each role, not a live",
     "reference to permissions.json. The seed writes the whole catalog into the",
-    "Administrator role, but with onConflictDoNothing — deliberately, so a boot",
+    "Administrator role, but with onConflictDoNothing \u2014 deliberately, so a boot",
     "cannot re-widen a role an operator narrowed on purpose. The cost is that an",
     "EXISTING role is frozen at whatever the catalog held the day it was created.",
     "",
@@ -36,7 +36,7 @@
     "quietly gains a power is found during an incident rather than during a review.",
     "",
     "The key leaves permissions.json and this file in the SAME commit as that",
-    "migration — a key left here after the catalog drops it would let the next genuine",
+    "migration \u2014 a key left here after the catalog drops it would let the next genuine",
     "addition slip through under cover of an already-passing test."
   ],
   "keys": [
@@ -78,6 +78,7 @@
     "ib.partners.suspend",
     "ib.reject",
     "ib.view",
+    "kyc.claim.override",
     "kyc.create",
     "kyc.delete",
     "kyc.documents.view",

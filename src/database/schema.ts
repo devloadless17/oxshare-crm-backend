@@ -738,7 +738,7 @@ export const kycSubmissions = pgTable(
      * is not one anything needs to make.
      */
     stepData: jsonb('step_data')
-      .$type<Record<string, Record<string, string>>>()
+      .$type<Record<string, Record<string, string | { filePath: string; fileName: string }>>>()
       .notNull()
       .default({}),
     rejectionReason: text('rejection_reason'),
@@ -829,7 +829,7 @@ export const kycSubmissionAttempts = pgTable(
     addressProof: jsonb('address_proof').$type<Record<string, string>>(),
     /** Archived alongside the four columns — see `kyc_submissions.step_data`. */
     stepData: jsonb('step_data')
-      .$type<Record<string, Record<string, string>>>()
+      .$type<Record<string, Record<string, string | { filePath: string; fileName: string }>>>()
       .notNull()
       .default({}),
     rejectionReason: text('rejection_reason'),

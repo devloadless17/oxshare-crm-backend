@@ -270,10 +270,12 @@ export class AdminComplianceController {
     description:
       'The way out of a claim. A reviewer who picked a submission up and cannot finish it — ' +
       'reassigned, off shift, or moved out of that territory — would otherwise leave a row that ' +
-      'looks taken to everyone else. Gated exactly like a decision, because approve and reject ' +
-      'already accept an under_review row from any reviewer who can see it: a claim is advisory, ' +
-      'never a lock. Refuses a submission that has already been DECIDED — reopening one is ' +
-      "reject's job, with a reason attached.",
+      'looks taken to everyone else. A reviewer may always hand back their OWN claim. Handing ' +
+      "back a colleague's needs `kyc.claim.override`: approve and reject already refuse a " +
+      'submission another reviewer holds, and leaving release open meant that claim could be ' +
+      'removed by anybody, which took the lock off its hinges. The override exists so the desk ' +
+      'is never stranded by a claim nobody is coming back to. Refuses a submission that has ' +
+      "already been DECIDED — reopening one is reject's job, with a reason attached.",
   })
   @ApiOkResponse({ type: KycSubmissionDto })
   @ScopedToClients(

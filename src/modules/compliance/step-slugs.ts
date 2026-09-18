@@ -55,3 +55,43 @@ export const REVIEW_STEP_SLUG = 'review';
 export function collectsAnswers(slug: string): boolean {
   return slug !== REVIEW_STEP_SLUG;
 }
+
+/**
+ * A field that holds an UPLOADED FILE rather than a typed answer.
+ *
+ * `file` and `camera` are the two base types that produce one, and every
+ * `doc:<value>` type is a document by construction (`documentFieldType`). The
+ * check is on the TYPE rather than a name allowlist because a custom step's
+ * fields are named by the builder — `customField_<timestamp>` — so there is no
+ * name to recognise, which is exactly how `POST /kyc/upload` came to refuse
+ * every custom document with `Unknown file field`.
+ */
+export function isFileField(field: { type?: string }): boolean {
+  const type = field.type ?? '';
+  return type === 'file' || type === 'camera' || type.startsWith('doc:');
+}
+
+/**
+ * One answer inside a custom step.
+ *
+ * A typed answer is a string. A File or Camera field stores the pair the
+ * serving route needs instead: `filePath` is what `GET /uploads/kyc/:file`
+ * resolves (and what the ownership check scans), `fileName` is what the client
+ * called it, kept for the reviewer to read and never used to build a path.
+ *
+ * The union is deliberately narrow. `stepData` is written from a client-facing
+ * route, so widening it to `unknown` would make every reader guess.
+ */
+export type KycStoredFile = { filePath: string; fileName: string };
+export type KycStepAnswer = string | KycStoredFile;
+export type KycStepData = Record<string, Record<string, KycStepAnswer>>;
+
+/** Narrows a stored answer to an uploaded file. */
+export function isStoredFile(value: unknown): value is KycStoredFile {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as KycStoredFile).filePath === 'string' &&
+    typeof (value as KycStoredFile).fileName === 'string'
+  );
+}

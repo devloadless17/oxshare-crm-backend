@@ -8,6 +8,7 @@ import {
   eq,
   getTableColumns,
   isNull,
+  not,
   sql,
 } from 'drizzle-orm';
 import type { CursorPosition } from '../common/pagination';
@@ -314,6 +315,39 @@ export class UsersStore {
       .select({ value: count() })
       .from(users)
       .where(scoped ? and(where, scoped) : where);
+    return value;
+  }
+
+  /**
+   * How many of this partner's referrals the reader may NOT see.
+   *
+   * ## Why a count of invisible people is the right disclosure
+   *
+   * Every other number on the Network tab is scoped, deliberately, so that the
+   * total and the list agree — "12 of 213" over a list of 12 reads as a bug.
+   * The cost showed up in production: a scoped administrator opening a partner
+   * whose whole downline sits in another territory saw an empty tab, and an
+   * empty tab says "this client introduced nobody". That is not a narrower
+   * truth, it is a false one, and an operator acts on it — chasing a partner
+   * for inactivity, or approving something on the belief they have no book.
+   *
+   * A COUNT says "there are people here, they are not yours" without naming
+   * one, which is the smallest thing that can be said that is not misleading.
+   * No name, no email, no tag, no id — nothing that identifies a client outside
+   * the reader's territory, and nothing that `clientScopePredicate` exists to
+   * protect. The reader already knows the partner exists; what they gain is
+   * that their own view of them is partial.
+   */
+  async countReferredOutsideScope(ibUserId: string, scope: ClientScope): Promise<number> {
+    const scoped = clientScopePredicate(scope, users.id);
+    // An unrestricted reader is outside nothing, and the extra query would
+    // always answer zero.
+    if (!scoped) return 0;
+    const where = eq(users.referredByIbUserId, ibUserId);
+    const [{ value }] = await this.db
+      .select({ value: count() })
+      .from(users)
+      .where(and(where, not(scoped)));
     return value;
   }
 

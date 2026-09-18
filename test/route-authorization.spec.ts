@@ -773,6 +773,18 @@ describe('the permission CATALOGUE and the decorators agree, both directions', (
     'admins.scope': 'admin-rbac.service.ts and admin-auth.service.ts, when a territory is set',
     'kyc.documents.view': 'uploads.controller.ts, inside the handler; and shapes the profile',
     'deposits.proofs.view': 'uploads.controller.ts, inside the handler',
+    /*
+     * Enforced INSIDE the release handler rather than on it, deliberately.
+     *
+     * `PATCH /admin/kyc/:userId/release` is gated on `kyc.review` — every
+     * reviewer may hand back their OWN claim, and that is the ordinary case. The
+     * override decides only whether they may hand back a COLLEAGUE'S, which is a
+     * fact about the row rather than about the route, so it cannot be a
+     * `@RequirePermissions` on the handler without also refusing the reviewer
+     * releasing their own work.
+     */
+    'kyc.claim.override':
+      'admin-compliance.service.ts releaseKyc — decides whether a reviewer may hand back a claim they do not hold',
     'trading.deposit': 'admin-money.service.ts — the real gate on funding an account',
     'trading.withdraw': 'admin-money.service.ts — the real gate on withdrawing from one',
     /*

@@ -98,6 +98,10 @@
         "label": "Claim, Approve & Reject Submissions"
       },
       {
+        "key": "kyc.claim.override",
+        "label": "Hand Back a Submission Another Reviewer Holds"
+      },
+      {
         "key": "kyc.identity.correct",
         "label": "Correct Identity Details on an Approved Submission"
       },

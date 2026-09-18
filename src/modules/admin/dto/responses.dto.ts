@@ -341,7 +341,7 @@ export class KycSubmissionDto {
     additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
     description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
   })
-  stepData?: Record<string, Record<string, string>>;
+  stepData?: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
   @ApiPropertyOptional({ type: KycUserDto, nullable: true })
   @NotClientField(
     'the nested person, whose own shape carries the marks \u2014 masked there, not here',
@@ -464,7 +464,7 @@ export class KycAttemptDto {
     additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
     description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
   })
-  stepData?: Record<string, Record<string, string>>;
+  stepData?: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   archivedAt: Date;
@@ -943,6 +943,22 @@ export class ClientProfileDto {
     'a money, paging or configuration value on the RECORD, carrying no client attribute',
   )
   referredTotal?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'How many of this partner’s referrals fall OUTSIDE the reader’s territory, and so ' +
+      'appear in neither `referredClients` nor `referredTotal`. Zero for an unrestricted reader. ' +
+      'Present exactly when `referredClients` is.\n\n' +
+      'It exists because every other number here is scoped, which is right for "50 of 213" and ' +
+      'wrong for nothing at all: a scoped admin opening a partner whose whole downline sits in ' +
+      'another territory saw an empty tab, and an empty tab reads as "introduced nobody". A ' +
+      'COUNT is the smallest thing that can be said without misleading them — no name, no ' +
+      'email, no id, nothing that identifies a client they may not see.',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  referredOutsideScope?: number;
 
   @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
   @ApiProperty({ type: [String] })
