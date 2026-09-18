@@ -76,6 +76,19 @@ function reviewerView(user: User) {
   };
 }
 
+/**
+ * The statuses a rejection may act on.
+ *
+ * Wider than approve's on purpose: a rejection is also the CORRECTION for a
+ * mistaken approval, so `approved` and `rejected` are in the list. What it will
+ * not do is reject a submission that was never submitted.
+ *
+ * Shared between the conditional write and the diagnosis of its failure, so
+ * "which statuses count" cannot be answered two different ways by the same
+ * method.
+ */
+const REJECTABLE_FROM: readonly KycStatus[] = ['submitted', 'under_review', 'approved', 'rejected'];
+
 @Injectable()
 export class KycService {
   private readonly logger = new Logger(KycService.name);
@@ -827,7 +840,7 @@ export class KycService {
     await this.db.transaction(async (tx) => {
       const updated = await this.kycStore.transition(
         userId,
-        ['submitted', 'under_review', 'approved', 'rejected'],
+        REJECTABLE_FROM,
         {
           status: 'rejected',
           rejectionReason: reason,
@@ -839,8 +852,37 @@ export class KycService {
         adminId,
       );
       if (!updated) {
+        /*
+         * TWO REASONS THE WRITE MATCHED NOTHING, AND THEY ARE NOT THE SAME 400.
+         *
+         * `from` here covers every status but `in_progress`, so a no-row result
+         * is almost never "wrong status". It is far more often a RACE: the row
+         * was claimed, approved or rejected between the read above and this
+         * write, and the claim guard or the status list then excluded it.
+         *
+         * Reported as a ValidationError, that told a reviewer their request was
+         * malformed when it was valid and merely late — and it made the two
+         * ways of losing the same race answer differently, since `approve`'s
+         * equivalent branch has always been a 409. Re-read and say which
+         * happened: the row is still there, so the question is cheap to answer
+         * properly rather than guess at.
+         */
+        const now = await this.kycStore.findByUserId(userId);
+        /*
+         * Judged against the SAME list the write used, not a hand-copied idea of
+         * it. The first version asked `status !== 'in_progress'`, which called a
+         * `not_started` submission a race and answered 409 for a request that
+         * really was invalid — the drift this shares-one-constant shape exists
+         * to stop.
+         */
+        if (now && REJECTABLE_FROM.includes(now.status)) {
+          throw new ConflictError(
+            'This submission was claimed or decided by another reviewer while you were ' +
+              'deciding. Reload it and try again.',
+          );
+        }
         throw new ValidationError(
-          `Only a submitted KYC can be rejected; this one is ${submission.status}.`,
+          `Only a submitted KYC can be rejected; this one is ${now?.status ?? submission.status}.`,
         );
       }
       await this.kycStore.archiveAttempt(updated, tx);

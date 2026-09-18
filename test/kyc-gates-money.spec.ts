@@ -326,6 +326,35 @@ describe('a claim actually reserves the submission', () => {
   });
 
   /**
+   * ⚠️ A CLAIM RESERVES; A COMPLETED DECISION DOES NOT.
+   *
+   * The first version of the claim guard put `reviewed_by IS NULL OR = me` in
+   * the WHERE with no reference to status — and every DECIDED row carries a
+   * reviewer. So the moment admin A approved, `reviewed_by` was A for good and
+   * no other admin could ever reject it: the guard silently removed the
+   * correction path that `reject`'s deliberately wider `from` list exists to
+   * provide.
+   *
+   * It is exactly the failure this guard was written to prevent, pointed the
+   * other way — a control that looks right and quietly takes a capability away —
+   * so it is pinned here rather than left to the adversarial suite that caught
+   * it.
+   */
+  it('still lets a DIFFERENT admin reject a submission someone else approved', async () => {
+    const userId = await makeClientAwaitingReview('claim-correction@oxshare.com');
+
+    await kyc.approve(userId, ADMIN_ID);
+    expect(await levelOf(userId)).toBe(1);
+
+    await kyc.reject(userId, OTHER_ADMIN_ID, 'Approved in error — document was expired.');
+
+    expect(await statusOf(userId)).toBe('rejected');
+    // The half that would be a real defect: a client left verified by an
+    // approval the desk has since reversed.
+    expect(await levelOf(userId)).toBe(0);
+  });
+
+  /**
    * TWO REVIEWERS, ONE PASSPORT, AT THE SAME INSTANT.
    *
    * Both calls read an unclaimed `submitted` row, so both pass every check in

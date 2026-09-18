@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, ne, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
 import { escapeLike } from './users.store';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
@@ -295,13 +295,32 @@ export class KycStore {
           eq(kycSubmissions.userId, userId),
           inArray(kycSubmissions.status, [...from]),
           /*
-           * `IS NULL OR = me`, not `= me`. A `submitted` row nobody has claimed
-           * carries no reviewer, and refusing those would mean every decision
-           * had to be preceded by a claim — friction on the ordinary path to
-           * fix a problem that only exists on the contested one.
+           * ⚠️ SCOPED TO `under_review`, AND THE FIRST VERSION WAS NOT.
+           *
+           * It read `reviewed_by IS NULL OR = me`, which is right for a claim
+           * and wrong for everything else: EVERY DECIDED ROW CARRIES A REVIEWER.
+           * So once admin A approved, `reviewed_by` was A for good and admin B's
+           * rejection matched nothing — silently removing the ability to reject
+           * a mistaken approval, which `reject`'s wider `from` list exists to
+           * allow and which `kyc-decision-adversarial.spec.ts` drives on purpose.
+           *
+           * The rule is about a CLAIM, so it has to name one. A claim reserves
+           * the submission; a completed decision reserves nothing — it is a fact
+           * a later decision may correct.
+           *
+           * `IS NULL OR = me` on top, not `= me` alone: a `submitted` row nobody
+           * has claimed carries no reviewer, and refusing those would put a
+           * mandatory claim in front of every decision — friction on the
+           * ordinary path to fix a problem that only exists on the contested one.
            */
           ...(unheldOrHeldBy
-            ? [or(isNull(kycSubmissions.reviewedBy), eq(kycSubmissions.reviewedBy, unheldOrHeldBy))]
+            ? [
+                or(
+                  ne(kycSubmissions.status, 'under_review'),
+                  isNull(kycSubmissions.reviewedBy),
+                  eq(kycSubmissions.reviewedBy, unheldOrHeldBy),
+                ),
+              ]
             : []),
         ),
       )

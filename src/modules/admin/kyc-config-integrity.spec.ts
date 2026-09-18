@@ -20,15 +20,14 @@ import type { KycStepConfig } from '../../store/kyc-config.store';
  * quietly reinstates it by another route would be the worse bug.
  */
 
-const field = (over: Partial<KycStepConfig['fields'][number]> = {}) =>
-  ({
-    id: 'f1',
-    name: 'firstName',
-    label: 'First Name',
-    type: 'text',
-    required: true,
-    ...over,
-  });
+const field = (over: Partial<KycStepConfig['fields'][number]> = {}) => ({
+  id: 'f1',
+  name: 'firstName',
+  label: 'First Name',
+  type: 'text',
+  required: true,
+  ...over,
+});
 
 const step = (over: Partial<KycStepConfig> = {}) =>
   ({
