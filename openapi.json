@@ -14373,6 +14373,16 @@
           "addressProof": {
             "$ref": "#/components/schemas/KycFileStateDto"
           },
+          "stepData": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "description": "Answers for configured steps beyond the four canonical ones, keyed by slug."
+          },
           "rejectionReason": {
             "type": "string",
             "description": "Set when status is rejected."
@@ -16276,6 +16286,16 @@
           "addressProof": {
             "$ref": "#/components/schemas/KycAddressProofDto"
           },
+          "stepData": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "description": "Answers for configured steps beyond the four canonical ones, keyed by slug."
+          },
           "user": {
             "nullable": true,
             "type": "object",
@@ -16396,6 +16416,16 @@
           },
           "addressProof": {
             "$ref": "#/components/schemas/KycAddressProofDto"
+          },
+          "stepData": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "description": "Answers for configured steps beyond the four canonical ones, keyed by slug."
           },
           "archivedAt": {
             "format": "date-time",

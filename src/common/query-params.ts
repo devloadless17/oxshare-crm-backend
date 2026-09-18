@@ -61,6 +61,45 @@ export const UuidParam = new ParseUUIDPipe({
 });
 
 /**
+ * A `kyc_config_steps.id` path parameter — TEXT, not a uuid.
+ *
+ * ## The bug this replaced
+ *
+ * `PUT` and `DELETE /admin/kyc-config/steps/:id` both parsed this id with
+ * `UuidParam`, and `kyc_config_steps.id` is a `text` column that has never held
+ * a bare uuid. The seeded steps are `step-1`…`step-4` and `KycConfigStore.addStep`
+ * mints `step-<uuid>`, so EVERY id that can exist was refused with
+ * `must be a UUID` — both routes answered 400 for every input, always. A step
+ * could be added and then never updated or deleted through its own endpoint.
+ *
+ * It stayed invisible because the builder screen does not use these routes: it
+ * saves the whole form through `PUT /admin/kyc-config`, which takes no id. So
+ * the console worked, the per-step routes were documented in Swagger, and
+ * nothing exercised the gap between them.
+ *
+ * ## Why a shape check and not a bare string
+ *
+ * The id reaches Drizzle as a bound parameter, so this is not about injection.
+ * It is about keeping the id a plausible KEY: bounded in length, and drawn from
+ * a charset that cannot smuggle a newline into an audit entry or a path segment
+ * into a log line. `step-1` and `step-<uuid>` both satisfy it.
+ */
+const STEP_ID_SHAPE = /^[a-z0-9][a-z0-9_-]{0,99}$/i;
+
+export const StepIdParam = {
+  transform(value: unknown): string {
+    if (typeof value !== 'string' || !STEP_ID_SHAPE.test(value)) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: ['must be a step id'],
+        fields: { id: 'must be a step id' },
+      });
+    }
+    return value;
+  },
+};
+
+/**
  * Validate an optional enum-valued query parameter against its schema enum.
  *
  * Returns `undefined` for an absent value — an omitted filter is not an invalid

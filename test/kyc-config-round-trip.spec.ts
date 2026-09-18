@@ -284,3 +284,99 @@ describe('a step the caller did not name', () => {
     await session.put('/v1/admin/kyc-config').send({ steps: original });
   });
 });
+
+/**
+ * THE PER-STEP ROUTES COULD NEVER SUCCEED.
+ *
+ * `PUT` and `DELETE /admin/kyc-config/steps/:id` both parsed the id with
+ * `UuidParam`. `kyc_config_steps.id` is a `text` column that has never held a
+ * bare uuid: the defaults are `step-1`…`step-4` and `addStep` mints
+ * `step-<uuid>`. So both routes answered 400 `must be a UUID` for every id that
+ * can exist — a step could be created through its own API and then never
+ * updated or deleted through it.
+ *
+ * Nothing caught it because the builder screen does not use these routes. It
+ * saves the whole form through `PUT /admin/kyc-config`, which takes no id, so
+ * the console worked while two documented endpoints were dead. The tests above
+ * exercise exactly that working path, which is why they were green throughout.
+ *
+ * Found by a Playwright spec whose CLEANUP used the delete route — the test
+ * body passed and the teardown could not undo it.
+ */
+describe('the per-step config routes', () => {
+  it('updates and deletes a step created through the API', async () => {
+    const created = await session.post('/v1/admin/kyc-config/steps').send({
+      slug: 'per-step-route',
+      title: 'Per Step Route',
+      enabled: true,
+      fields: [{ id: 'f-q', name: 'q', label: 'Q', type: 'text', required: false }],
+    });
+    expect(created.status, `add refused: ${JSON.stringify(created.body).slice(0, 200)}`).toBe(201);
+    const id = (created.body as { id: string }).id;
+
+    /*
+     * NON-VACUOUS: if ids ever become bare uuids this assertion fails loudly
+     * rather than letting the case pass for the wrong reason — a uuid id would
+     * satisfy the old pipe too, and the test would prove nothing.
+     */
+    expect(id, 'a step id is a text key, not a uuid').toMatch(/^step-/);
+
+    const renamed = await session.put(`/v1/admin/kyc-config/steps/${id}`).send({
+      slug: 'per-step-route',
+      title: 'Per Step Route Renamed',
+      enabled: true,
+      fields: [{ id: 'f-q', name: 'q', label: 'Q', type: 'text', required: false }],
+    });
+    expect(renamed.status, `PUT by id refused: ${JSON.stringify(renamed.body).slice(0, 200)}`).toBe(
+      200,
+    );
+
+    // Re-read: a 200 that did not persist is the same class of defect.
+    const afterRename = await session.get('/v1/admin/kyc-config');
+    const steps = (Array.isArray(afterRename.body) ? afterRename.body : afterRename.body.steps) as {
+      id: string;
+      title: string;
+    }[];
+    expect(steps.find((s) => s.id === id)?.title).toBe('Per Step Route Renamed');
+
+    const removed = await session.del(`/v1/admin/kyc-config/steps/${id}`);
+    expect(removed.status, `DELETE by id refused: ${removed.status}`).toBeLessThan(400);
+
+    const afterDelete = await session.get('/v1/admin/kyc-config');
+    const left = (Array.isArray(afterDelete.body) ? afterDelete.body : afterDelete.body.steps) as {
+      id: string;
+    }[];
+    expect(
+      left.some((s) => s.id === id),
+      'the step survived its own delete',
+    ).toBe(false);
+  });
+
+  it('addresses a SEEDED step by its id — the ids a real broker actually has', async () => {
+    const read = await session.get('/v1/admin/kyc-config');
+    const steps = (Array.isArray(read.body) ? read.body : read.body.steps) as {
+      id: string;
+      slug: string;
+      title: string;
+      enabled: boolean;
+      fields: unknown[];
+    }[];
+    const seeded = steps.find((s) => s.slug === 'personal');
+    expect(seeded, 'the personal step is missing from the fixture').toBeDefined();
+
+    const res = await session.put(`/v1/admin/kyc-config/steps/${seeded!.id}`).send({
+      slug: seeded!.slug,
+      title: seeded!.title,
+      enabled: seeded!.enabled,
+      fields: seeded!.fields,
+    });
+    expect(res.status, `a seeded id was not addressable: ${res.status}`).toBe(200);
+  });
+
+  it('still refuses an id that is not a plausible key', async () => {
+    for (const bad of ['../../../etc/passwd', 'has space', 'x'.repeat(200), 'semi;colon']) {
+      const res = await session.del(`/v1/admin/kyc-config/steps/${encodeURIComponent(bad)}`);
+      expect(res.status, `'${bad.slice(0, 20)}' was accepted as a step id`).toBe(400);
+    }
+  });
+});

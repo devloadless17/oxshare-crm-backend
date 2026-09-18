@@ -56,7 +56,7 @@ import {
   RequirePermissions,
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
-import { UuidParam, enumQuery, searchQuery } from '../../common/query-params';
+import { StepIdParam, UuidParam, enumQuery, searchQuery } from '../../common/query-params';
 import { NEEDS_REVIEW } from '../../store/kyc.store';
 import { kycStatusEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
@@ -495,7 +495,7 @@ export class AdminComplianceController {
   @NotClientScoped('The KYC form definition; contains no client data.')
   @Audited('kyc_config.step_update')
   updateKycStep(
-    @Param('id', UuidParam) id: string,
+    @Param('id', StepIdParam) id: string,
     @Body() dto: KycStepDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -510,7 +510,7 @@ export class AdminComplianceController {
   @NotClientScoped('The KYC form definition; contains no client data.')
   @Audited('kyc_config.step_delete')
   deleteKycStep(
-    @Param('id', UuidParam) id: string,
+    @Param('id', StepIdParam) id: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.deleteKycStep(id, req.admin);
