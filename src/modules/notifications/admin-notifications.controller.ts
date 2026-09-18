@@ -57,10 +57,34 @@ export class AdminNotificationsController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
   @ApiQuery({ name: 'unread', required: false, description: "Pass 'true' to see only unread." })
+  /*
+   * THE WRITE-TIME ARGUMENT, AND WHAT IT DOES NOT COVER.
+   *
+   * The fan-out only creates rows for admins whose client scope covered the
+   * subject at the moment of the event. That bounds the row when it is WRITTEN
+   * and says nothing about when it is READ: re-tag a client out of a desk and
+   * the rows already fanned out to that desk remain readable for the 90-day
+   * retention. Same shape as the `audit_log.actor_email` defect — a
+   * justification accurate about the moment it was written, never re-checked
+   * against the moment it is used.
+   *
+   * It stays unscoped because the residual was MEASURED rather than assumed: of
+   * 1,468 admin rows, zero carry an address or a name. Every payload is
+   * identifiers, amounts, currencies and states, so what a re-tagged-out admin
+   * can still read is "something happened to <uuid> at <time>" — and that uuid
+   * resolves nowhere else, because `GET /admin/clients/:id` 404s for a client
+   * outside their territory.
+   *
+   * That is only true while the PAYLOAD stays free of client-owned values, and
+   * nothing was enforcing it. `notification-params-no-pii.spec.ts` now does. If
+   * that test ever has to be relaxed, this decorator's reasoning expires with
+   * it and the read-time scope becomes required work — which needs a
+   * `subject_user_id` column this table does not have.
+   */
   @NotClientScoped(
-    'Scope is applied at WRITE time: the fan-out only creates rows for admins whose client ' +
-      'scope covered the subject client (NotificationsService.notifyAdminsWithPermission), so ' +
-      'every row here is already inside the reader’s territory.',
+    'Bounded at WRITE time by the fan-out, and the payload carries no client-owned value ' +
+      '(enforced by notification-params-no-pii.spec.ts) — so a row surviving a re-tag exposes ' +
+      'an opaque uuid that resolves nowhere else, never an identity. See the note above.',
   )
   list(
     @Req() req: Request & { admin: Admin },
