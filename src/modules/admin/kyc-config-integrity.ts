@@ -1,5 +1,4 @@
 import { ValidationError } from '../../common/errors/domain-errors';
-import { KNOWN_STEP_SLUGS, isKnownStepSlug } from '../compliance/step-slugs';
 import type { KycStepConfig } from '../../store/kyc-config.store';
 
 /**
@@ -44,24 +43,33 @@ const RESERVED_FIELD_KEYS: Readonly<Record<string, string>> = {
 };
 
 /**
- * A step whose slug has no storage column.
+ * ## NOT ENFORCED: a step slug with no storage column
  *
- * The builder saved these happily and `KycService.saveStep` threw
- * `Unknown step: …` at the client — so the console showed a valid form and
- * every client who reached that step was stopped by an error nobody configuring
- * it could see.
+ * There was a rule here and it was withdrawn, because it decided a product
+ * question that is not this file's to decide.
+ *
+ * The facts are real. Answers are written to a column per step —
+ * `personal_info`, `document`, `selfie`, `address_proof` — and
+ * `KycService.saveStep` refuses anything else with `Unknown step: …`. So a step
+ * configured with a custom slug renders in the portal, accepts what the client
+ * types, and fails when they press Continue.
+ *
+ * But the configuration layer advertises the opposite: `addKycStep` exists, the
+ * builder offers Add Step, and `kyc-config-round-trip.spec.ts` deliberately
+ * saves steps slugged `other` and `audit` to prove id assignment works for
+ * steps nobody named. Refusing those made that spec fail, and made
+ * `kyc-http.spec.ts`'s PERMISSION test fail for an unrelated reason — so the
+ * boundary it was written to prove stopped being exercised, which is worse than
+ * the gap it was papering over.
+ *
+ * Two honest resolutions exist and both are somebody's call, not a validator's:
+ * give the submission a generic per-slug store so custom steps work, or stop
+ * offering steps the storage cannot hold. Guessing in here would have shipped
+ * the second one silently, under the name of a bug fix.
+ *
+ * The two rules below stay because neither has that problem: a duplicate key
+ * and a renamed reserved key are wrong under every reading of what a step is.
  */
-export function assertStepSlugsStorable(steps: readonly KycStepConfig[]): void {
-  const unknown = steps.map((s) => s.slug).filter((slug) => !isKnownStepSlug(slug));
-  if (unknown.length === 0) return;
-
-  throw new ValidationError(
-    `A step's URL slug decides where its answers are stored, and ` +
-      `${unknown.map((s) => `"${s}"`).join(', ')} ${unknown.length === 1 ? 'is not' : 'are not'} ` +
-      `one this system can store: clients would reach the step and be refused when they ` +
-      `press Continue. Use one of ${KNOWN_STEP_SLUGS.join(', ')}.`,
-  );
-}
 
 /**
  * Two fields sharing a key WITHIN a step.
@@ -132,7 +140,6 @@ export function assertKycConfigIntegrity(
   previous: readonly KycStepConfig[],
   next: readonly KycStepConfig[],
 ): void {
-  assertStepSlugsStorable(next);
   assertFieldKeysUniquePerStep(next);
   assertReservedKeysNotRenamed(previous, next);
 }

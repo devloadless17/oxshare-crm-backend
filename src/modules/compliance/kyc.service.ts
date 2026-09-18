@@ -12,7 +12,7 @@ import {
 } from '../../store/kyc.store';
 import type { SortOrder } from '../../common/sorting';
 import { User, UsersStore } from '../../store/users.store';
-import { KycConfigStore } from '../../store/kyc-config.store';
+import { KycConfigStore, type KycStepConfig } from '../../store/kyc-config.store';
 import { EmailService } from '../email/email.service';
 import { findProfileProblem, type ProfileFieldRule } from './kyc-profile';
 import {
@@ -136,17 +136,30 @@ export class KycService {
    * compliance path, so submission is refused rather than waved through.
    */
   private async profileRules(): Promise<ProfileFieldRule[]> {
-    const steps = await this.kycConfig.getSteps();
+    return this.profileRulesFrom(await this.kycConfig.getSteps());
+  }
+
+  /**
+   * The same rules, from a configuration the caller has already loaded.
+   *
+   * `submit` needs the personal step's fields AND the enabled set of every other
+   * step, and reading the configuration twice inside one submission is a window
+   * where the two could disagree.
+   */
+  private profileRulesFrom(steps: readonly KycStepConfig[]): ProfileFieldRule[] {
     const personal = steps.find((s) => s.slug === 'personal' && s.enabled);
     if (!personal) {
       /*
        * A plain Error, so this surfaces as a 500 rather than a 400.
        *
-       * The caller did nothing wrong — the deployment has no profile step, which
-       * `assertMandatoryStepsIntact` makes unreachable through the API and the
-       * bootstrap seed makes unreachable in practice. Telling the client their
-       * request was invalid would be a lie, and "please contact support" on a 400
-       * is the kind of message that gets triaged as a user error for a week.
+       * The caller did nothing wrong — the deployment has no profile step. Only
+       * the bootstrap seed makes that unlikely now: this used to say
+       * `assertMandatoryStepsIntact` made it unreachable through the API, and
+       * that guard was deliberately removed (see `admin-compliance.service.ts`),
+       * so a broker CAN disable the personal step and reach this. Telling the
+       * client their request was invalid would be a lie, and "please contact
+       * support" on a 400 is the kind of message that gets triaged as a user
+       * error for a week.
        *
        * Failing closed rather than defaulting to "no fields are required": on a
        * compliance path, an empty rule set is the one outcome that must never be
@@ -307,22 +320,52 @@ export class KycService {
      * back to it. Submission is the point at which the profile is claimed to be
      * complete, so it is the point at which completeness is a rule.
      */
+    /*
+     * Read ONCE and shared: `profileRules` needs the personal step's fields and
+     * the upload checks below need the enabled set, and two reads of the same
+     * configuration inside one submission is a window where they could disagree.
+     */
+    const steps = await this.kycConfig.getSteps();
+
     const problem = findProfileProblem(
       // `PersonalInfo` declares named optional fields; the stored column is
       // `jsonb` and also carries whatever a custom field was named. The cast
       // widens to what is actually there rather than what the interface admits.
       finalSub.personalInfo as unknown as Record<string, unknown>,
-      await this.profileRules(),
+      this.profileRulesFrom(steps),
       new Date(),
     );
     if (problem) {
       throw new ValidationError(problem.message, { kind: problem.kind, fields: problem.fields });
     }
 
-    if (!finalSub.document?.frontFilePath)
+    /*
+     * ── REQUIRED BECAUSE THE FLOW ASKS FOR THEM, NOT BECAUSE THEY ARE NAMED ──
+     *
+     * These three were unconditional, and that contradicted the configuration
+     * they sit behind. `admin-compliance.service.ts` records that the
+     * mandatory-step rule was dropped on purpose — "a configurable flow that
+     * refuses to drop four of its steps is not configurable, and the broker owns
+     * which jurisdiction needs what" — so a broker may disable the address step.
+     *
+     * Doing so produced a DEAD END: the portal stopped showing the step, the
+     * client had no way to upload an address proof, and `submit` refused the
+     * submission for not having one. Nobody could finish KYC, and nothing said
+     * why — the console showed a valid flow and the error named a step that was
+     * no longer in it.
+     *
+     * Asking the configuration is the same thing `profileRules` above already
+     * does for the personal fields. A step that is present and enabled is a
+     * promise the client was asked for that document; a step that is not is a
+     * promise nobody made.
+     */
+    const enabledSlugs = new Set(steps.filter((step) => step.enabled).map((step) => step.slug));
+
+    if (enabledSlugs.has('document') && !finalSub.document?.frontFilePath)
       throw new ValidationError('ID document front is required.');
-    if (!finalSub.selfie?.filePath) throw new ValidationError('Selfie is required.');
-    if (!finalSub.addressProof?.filePath)
+    if (enabledSlugs.has('selfie') && !finalSub.selfie?.filePath)
+      throw new ValidationError('Selfie is required.');
+    if (enabledSlugs.has('address') && !finalSub.addressProof?.filePath)
       throw new ValidationError('Proof of address is required.');
 
     /*

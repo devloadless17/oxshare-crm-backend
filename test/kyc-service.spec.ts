@@ -127,6 +127,20 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
           { id: 'f-3', name: 'dateOfBirth', label: 'Date of Birth', type: 'date', required: true },
         ],
       },
+      /*
+       * The other three steps, because `submit` now asks the CONFIGURATION which
+       * uploads to require rather than demanding all three unconditionally.
+       *
+       * They carry no fields — the upload requirement follows the STEP being
+       * enabled, not any field inside it — but they have to be present, because
+       * a stub with only `personal` describes a deployment that asks for no
+       * documents at all. That is a real configuration a broker can create, and
+       * `submit` is correct to accept it; it is just not the one the seed ships
+       * or the one FR-CORE-15 is about.
+       */
+      { id: 'step-2', stepNumber: 2, slug: 'document', title: 'ID', enabled: true, fields: [] },
+      { id: 'step-3', stepNumber: 3, slug: 'selfie', title: 'Selfie', enabled: true, fields: [] },
+      { id: 'step-4', stepNumber: 4, slug: 'address', title: 'Address', enabled: true, fields: [] },
     ]),
   };
 
@@ -258,6 +272,40 @@ describe('documents cannot change once the review has started', () => {
 });
 
 describe('submit', () => {
+  /*
+   * ── THE DEAD END ──────────────────────────────────────────────────────────
+   *
+   * The three upload checks were unconditional, and that contradicted the
+   * configuration they sit behind: the mandatory-step rule was deliberately
+   * dropped, so a broker may disable the address step. Doing so meant the portal
+   * stopped showing it, the client had no way to upload an address proof, and
+   * `submit` refused the submission for not having one.
+   *
+   * Nobody could finish KYC on that deployment, and nothing said why — the
+   * console showed a valid flow and the error named a step no longer in it. The
+   * cost lands entirely on clients, which is why it is worth a test naming the
+   * shape rather than only the fix.
+   */
+  it('does not demand an upload for a step the broker has DISABLED', async () => {
+    const h = build({
+      stored: completeSubmission({ status: 'in_progress', addressProof: undefined }),
+    });
+    h.kycConfig.getSteps.mockResolvedValueOnce([
+      ...(await h.kycConfig.getSteps()).map((step: { slug: string }) =>
+        step.slug === 'address' ? { ...step, enabled: false } : step,
+      ),
+    ]);
+
+    await expect(h.service.submit('user-1')).resolves.toBeDefined();
+  });
+
+  it('still demands it when the step IS enabled', async () => {
+    const h = build({
+      stored: completeSubmission({ status: 'in_progress', addressProof: undefined }),
+    });
+    await expect(h.service.submit('user-1')).rejects.toThrow(/proof of address/i);
+  });
+
   it('requires all four documents FR-CORE-15 mandates', async () => {
     const cases: Array<[Partial<KycSubmission>, RegExp]> = [
       [{ personalInfo: undefined }, /personal information/i],

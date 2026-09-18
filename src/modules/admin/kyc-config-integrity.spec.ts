@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  assertFieldKeysUniquePerStep,
-  assertReservedKeysNotRenamed,
-  assertStepSlugsStorable,
-} from './kyc-config-integrity';
+import { assertFieldKeysUniquePerStep, assertReservedKeysNotRenamed } from './kyc-config-integrity';
 import type { KycStepConfig } from '../../store/kyc-config.store';
 
 /**
@@ -40,32 +36,16 @@ const step = (over: Partial<KycStepConfig> = {}) =>
     ...over,
   }) as KycStepConfig;
 
-describe('a step must have somewhere to store its answers', () => {
-  it.each([['personal'], ['document'], ['selfie'], ['address'], ['review']])(
-    'accepts the storable slug %s',
-    (slug) => {
-      expect(() => assertStepSlugsStorable([step({ slug })])).not.toThrow();
-    },
-  );
-
-  /**
-   * `saveStep` ends in `throw new ValidationError('Unknown step: …')`, so this
-   * used to save fine and then stop every client who pressed Continue — an
-   * error the person who configured it could never see.
-   */
-  it('refuses a slug with no storage column, and says what to use instead', () => {
-    expect(() => assertStepSlugsStorable([step({ slug: 'identity-checks' })])).toThrow(
-      /identity-checks/,
-    );
-    expect(() => assertStepSlugsStorable([step({ slug: 'identity-checks' })])).toThrow(/personal/);
-  });
-
-  /** Deleting steps stays allowed — the broker owns the flow. */
-  it('accepts a configuration with steps REMOVED', () => {
-    expect(() => assertStepSlugsStorable([step({ slug: 'personal' })])).not.toThrow();
-    expect(() => assertStepSlugsStorable([])).not.toThrow();
-  });
-});
+/*
+ * The step-slug rule that used to be tested here was WITHDRAWN — see the long
+ * note in `kyc-config-integrity.ts`. Its facts were right and its scope was not:
+ * the configuration layer advertises arbitrary steps (`kyc-config-round-trip`
+ * saves ones slugged `other` and `audit` on purpose), and refusing them also
+ * broke a PERMISSION test in `kyc-http.spec.ts` for an unrelated reason, so the
+ * boundary that test exists to prove stopped being exercised.
+ *
+ * The cases below are the two that hold under every reading of what a step is.
+ */
 
 describe('two fields in one step cannot share a key', () => {
   /*
