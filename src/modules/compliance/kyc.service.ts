@@ -3,6 +3,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { KYC_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { filenameFromStored } from '../../common/uploads/storage/storage-key';
 import { AdminsStore } from '../../store/admins.store';
+import { STEP_STORAGE_COLUMN, isDataBearingStep } from './step-slugs';
 import {
   KycStore,
   type KycSortKey,
@@ -168,11 +169,16 @@ export class KycService {
 
     const patch: Record<string, unknown> = { status: 'in_progress' };
 
-    if (step === 'personal') patch['personalInfo'] = { ...submission.personalInfo, ...data };
-    else if (step === 'document') patch['document'] = { ...submission.document, ...data };
-    else if (step === 'selfie') patch['selfie'] = { ...submission.selfie, ...data };
-    else if (step === 'address') patch['addressProof'] = { ...submission.addressProof, ...data };
-    else throw new ValidationError(`Unknown step: ${step}`);
+    /*
+     * The slug → column mapping lives in `step-slugs.ts`, because the config
+     * validator needs the SAME list: a step whose slug is not here has nowhere
+     * to store what the client types, and the builder used to save one happily.
+     * As an if/else chain here, the set of storable slugs was implicit in a
+     * dispatch nobody else could read.
+     */
+    if (!isDataBearingStep(step)) throw new ValidationError(`Unknown step: ${step}`);
+    const column = STEP_STORAGE_COLUMN[step];
+    patch[column] = { ...(submission[column] ?? {}), ...data };
 
     return await this.kycStore.update(userId, patch);
   }

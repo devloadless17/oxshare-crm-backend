@@ -8,6 +8,7 @@ import { NotFoundError, ValidationError } from '../../common/errors/domain-error
 import { AdminAuditService } from './admin-audit.service';
 import { maskedFieldsFor } from '../../common/security/field-mask';
 import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
+import { assertKycConfigIntegrity } from './kyc-config-integrity';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import type { CorrectKycIdentityDto } from './dto/requests/compliance.dto';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
@@ -527,6 +528,25 @@ export class AdminComplianceService {
    * what onboarding looked like on a given day.
    */
   async updateKycConfig(steps: KycStepConfig[], actor: Admin) {
+    /*
+     * Refused BEFORE the write, and refused here rather than in the DTO.
+     *
+     * Two of the three rules need the CURRENT configuration to judge the new one
+     * — a reserved key renamed is only visible by comparing the two — and a
+     * class-validator decorator cannot read the database. The third (unique keys
+     * per step) could live in the DTO and is kept beside its siblings instead,
+     * because an operator who fixes one and then meets the next in a different
+     * voice learns the screen is guessing.
+     *
+     * `kyc-config-integrity.ts` states at length that none of this is the
+     * mandatory-step rule coming back: a broker may still delete any step and
+     * stop collecting anything. What is refused is a configuration that cannot
+     * work — answers with nowhere to go, an answer silently overwritten, or a
+     * server-side check silently switched off.
+     */
+    const current = await this.kycConfig.getSteps();
+    assertKycConfigIntegrity(current, steps);
+
     const result = await this.kycConfig.setSteps(steps);
     this.audit.record(actor.id, 'kyc_config.replace', 'kyc_config', 'steps', {
       slugs: steps.map((step) => step.slug),
