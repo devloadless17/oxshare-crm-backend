@@ -10,6 +10,7 @@ import { PaymentMethodsService } from '../src/modules/payments/payment-methods.s
 import { MoneyLimits } from '../src/config/money-limits';
 import { KycStore } from '../src/store/kyc.store';
 import { UsersStore } from '../src/store/users.store';
+import { AdminsStore } from '../src/store/admins.store';
 import { KycConfigStore } from '../src/store/kyc-config.store';
 import { StoredObjectsStore } from '../src/store/stored-objects.store';
 import { auditStubAs } from './audit-stub';
@@ -126,6 +127,9 @@ beforeAll(async () => {
     new KycConfigStore(db),
     db,
     notificationsStubAs(),
+    // Appended LAST, matching the constructor: resolves the holder's name when a
+    // decision is refused because another reviewer is holding the submission.
+    new AdminsStore(db),
   );
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO admins (email, password_hash, name, role, permissions)
@@ -133,6 +137,13 @@ beforeAll(async () => {
     RETURNING id
   `);
   ADMIN_ID = rows[0].id;
+
+  const second = await ctx.db.execute<{ id: string }>(sql`
+    INSERT INTO admins (email, password_hash, name, role, permissions)
+    VALUES ('gate-colleague@oxshare.com', 'x', 'Gate Colleague', 'master_admin', '["*"]'::jsonb)
+    RETURNING id
+  `);
+  OTHER_ADMIN_ID = second.rows[0].id;
 }, 120_000);
 
 afterAll(async () => {
@@ -145,6 +156,8 @@ afterAll(async () => {
  * which is a fixture problem that presents as the decision path being broken.
  */
 let ADMIN_ID = '';
+/** A SECOND real reviewer — the claim guard is about two people, not one. */
+let OTHER_ADMIN_ID = '';
 
 /** A client with a funded wallet and a KYC submission waiting for a decision. */
 async function makeClientAwaitingReview(email: string): Promise<string> {
@@ -268,6 +281,87 @@ describe('the KYC gate on wallet-to-account transfers — the SECOND door', () =
       transfer(userId),
       'the withdrawal door closed on rejection and this one stayed open',
     ).rejects.toThrow(/verified account \(KYC level 1\)/i);
+  });
+});
+
+describe('a claim actually reserves the submission', () => {
+  /*
+   * ## The defect
+   *
+   * `approve` transitioned out of `under_review` without asking WHO held it, so
+   * a reviewer could decide a submission a colleague had open — silently,
+   * taking the claim with them. The colleague's screen still showed a
+   * submission they believed was theirs, and `reviewed_by` named somebody else.
+   *
+   * ## Why this file rather than the unit suite
+   *
+   * The unit suite pins the refusal and its message. It cannot pin the part
+   * that matters, because the guard is a WHERE clause: the service read is only
+   * there to produce a sentence, and two reviewers who both read before either
+   * writes both pass it. Only a real database can be asked to pick a winner.
+   */
+  it('refuses a decision by anyone but the holder', async () => {
+    const userId = await makeClientAwaitingReview('claim-guard@oxshare.com');
+    await kyc.claim(userId, ADMIN_ID);
+
+    await expect(kyc.approve(userId, OTHER_ADMIN_ID)).rejects.toThrow(/Gate Reviewer/);
+
+    // Nothing moved: not the status, and — the part that would be silent — not
+    // the money gate behind it.
+    expect(await statusOf(userId)).toBe('under_review');
+    expect(await levelOf(userId)).toBe(0);
+  });
+
+  it('lets the holder decide, and records THEM as the reviewer', async () => {
+    const userId = await makeClientAwaitingReview('claim-holder@oxshare.com');
+    await kyc.claim(userId, ADMIN_ID);
+
+    await kyc.approve(userId, ADMIN_ID);
+
+    expect(await statusOf(userId)).toBe('approved');
+    const { rows } = await ctx.db.execute<{ reviewed_by: string }>(
+      sql`SELECT reviewed_by FROM kyc_submissions WHERE user_id = ${userId}`,
+    );
+    expect(rows[0].reviewed_by).toBe(ADMIN_ID);
+  });
+
+  /**
+   * TWO REVIEWERS, ONE PASSPORT, AT THE SAME INSTANT.
+   *
+   * Both calls read an unclaimed `submitted` row, so both pass every check in
+   * the service. Exactly one may win, and the loser must leave nothing behind —
+   * the danger is not a failed request, it is two archived attempts or a
+   * verification level raised twice for one decision.
+   *
+   * ⚠️ **This case passes with the claim guard REMOVED, and that is not a flaw
+   * in it.** What decides this race is the `from` status in the WHERE, which
+   * predates the guard: the winner writes `approved`, and the loser's
+   * `['submitted', 'under_review']` then matches nothing. The claim guard
+   * answers a different question — a submission somebody has *claimed and left
+   * open*, where the status is still `under_review` and the status check alone
+   * would wave the second reviewer through.
+   *
+   * Both cases are worth pinning, and worth telling apart: a reader who thinks
+   * this one proves the claim guard will delete the guard and see green.
+   */
+  it('lets exactly ONE of two simultaneous approvals through', async () => {
+    const userId = await makeClientAwaitingReview('claim-race@oxshare.com');
+
+    const results = await Promise.allSettled([
+      kyc.approve(userId, ADMIN_ID),
+      kyc.approve(userId, OTHER_ADMIN_ID),
+    ]);
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(await statusOf(userId)).toBe('approved');
+    // Raised ONCE. A level of 1 is right; the failure this guards is a second
+    // decision landing on top of the first.
+    expect(await levelOf(userId)).toBe(1);
+
+    const { rows } = await ctx.db.execute<{ n: string }>(
+      sql`SELECT count(*)::text AS n FROM kyc_submission_attempts WHERE user_id = ${userId}`,
+    );
+    expect(Number(rows[0].n)).toBe(1);
   });
 });
 

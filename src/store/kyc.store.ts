@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
 import { escapeLike } from './users.store';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
@@ -263,11 +263,48 @@ export class KycStore {
     from: readonly KycStatus[],
     patch: Partial<Omit<KycSubmission, 'reviewedBy'>> & { reviewedBy?: string | null },
     executor?: Executor,
+    /**
+     * Additionally require the row to be UNCLAIMED, or claimed by this admin.
+     *
+     * ## Why this belongs in the WHERE and not in the service
+     *
+     * A claim was advisory: `approve` transitioned from `under_review` without
+     * looking at WHO held it, so a second reviewer could decide a submission a
+     * colleague had open — silently, taking the claim with it. The colleague's
+     * screen showed a submission they believed was theirs.
+     *
+     * The obvious fix, reading the row in the service and comparing
+     * `reviewedBy`, is the bug wearing a check: two reviewers who read before
+     * either writes both see a claim they are allowed to take, and the last
+     * write still wins. It is the same TOCTOU this method's `from` argument
+     * already exists to close, which is the argument for closing it the same
+     * way — the condition goes in the statement that does the write, so the
+     * database picks one winner.
+     *
+     * The service still reads first, and that read is still worth doing: it is
+     * what produces a message naming the holder. The WHERE is what makes the
+     * message true.
+     */
+    unheldOrHeldBy?: string,
   ): Promise<KycSubmission | undefined> {
     const [row] = await (executor ?? this.db)
       .update(kycSubmissions)
       .set(toColumns(patch))
-      .where(and(eq(kycSubmissions.userId, userId), inArray(kycSubmissions.status, [...from])))
+      .where(
+        and(
+          eq(kycSubmissions.userId, userId),
+          inArray(kycSubmissions.status, [...from]),
+          /*
+           * `IS NULL OR = me`, not `= me`. A `submitted` row nobody has claimed
+           * carries no reviewer, and refusing those would mean every decision
+           * had to be preceded by a claim — friction on the ordinary path to
+           * fix a problem that only exists on the contested one.
+           */
+          ...(unheldOrHeldBy
+            ? [or(isNull(kycSubmissions.reviewedBy), eq(kycSubmissions.reviewedBy, unheldOrHeldBy))]
+            : []),
+        ),
+      )
       .returning();
     return row ? toSubmission(row) : undefined;
   }

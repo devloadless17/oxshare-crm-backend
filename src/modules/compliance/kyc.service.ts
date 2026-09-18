@@ -2,6 +2,7 @@ import { basename } from 'path';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { KYC_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { filenameFromStored } from '../../common/uploads/storage/storage-key';
+import { AdminsStore } from '../../store/admins.store';
 import {
   KycStore,
   type KycSortKey,
@@ -99,6 +100,16 @@ export class KycService {
      * is constructed positionally in `kyc-service.spec.ts`.
      */
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
+    /**
+     * Resolves the holder's NAME for the refusal in `assertNotHeldByAnother`.
+     *
+     * Only ever read on the contested path, so it costs a query when a decision
+     * is refused and nothing at all when one succeeds. APPENDED LAST, like
+     * `notifications` above: this class is constructed positionally in
+     * `kyc-service.spec.ts`, so inserting a parameter in the middle silently
+     * shifts every one after it.
+     */
+    private readonly admins: AdminsStore,
   ) {}
 
   /**
@@ -455,12 +466,15 @@ export class KycService {
      * message ("already approved" vs "never submitted"), and the WHERE clause is
      * what actually enforces it. If they disagree, the database wins.
      */
+    await this.assertNotHeldByAnother(submission, adminId);
+
     await this.db.transaction(async (tx) => {
       const updated = await this.kycStore.transition(
         userId,
         ['submitted', 'under_review'],
         { status: 'approved', reviewedBy: adminId, reviewedAt: new Date() },
         tx,
+        adminId,
       );
       if (!updated) {
         // Lost a race with another reviewer between the read and this write.
@@ -742,6 +756,52 @@ export class KycService {
     return { submission: updated, before, after: patch };
   }
 
+  /**
+   * Refuse a decision on a submission a DIFFERENT reviewer is holding.
+   *
+   * ## The behaviour this replaces
+   *
+   * A claim was decoration. `approve` accepted a transition out of
+   * `under_review` without asking who held it, so two reviewers could open the
+   * same passport and the second to click decided it — taking the claim with
+   * them. Nothing told the first; their screen still showed a submission they
+   * believed was theirs, and `reviewed_by` now named somebody else.
+   *
+   * On a compliance desk that is worse than a wasted afternoon. The whole point
+   * of a claim is that two people do not verify the same identity in parallel
+   * and reach different answers, and the audit trail should record one reviewer
+   * per decision because that is the person who will be asked to account for it.
+   *
+   * ## Why it names the holder
+   *
+   * "Someone else has this" leaves the reader with one option: interrupt the
+   * whole desk to find out who. The name is the difference between a refusal
+   * they can act on and one they have to escalate, and it is already on the
+   * screen the queue renders — the API just never said it.
+   *
+   * ## Why this is NOT the enforcement
+   *
+   * It is a read, and two reviewers who read before either writes both pass it.
+   * `transition`'s `unheldOrHeldBy` argument is what actually decides, in the
+   * WHERE clause of the write. This exists to turn the database's "no" into a
+   * sentence — the same division of labour the `from` status check already has.
+   */
+  private async assertNotHeldByAnother(
+    submission: { status: KycStatus; reviewedBy?: string },
+    adminId: string,
+  ): Promise<void> {
+    const holder = submission.reviewedBy;
+    if (submission.status !== 'under_review' || !holder || holder === adminId) return;
+
+    const names = await this.admins.namesByIds([holder]);
+    const name = names.get(holder);
+    throw new ConflictError(
+      name
+        ? `${name} is reviewing this submission. Ask them to hand it back, or release it yourself, before deciding.`
+        : 'Another reviewer is holding this submission. Release it before deciding.',
+    );
+  }
+
   // ─── Admin: reject ─────────────────────────────────────────────────────────
   async reject(userId: string, adminId: string, reason: string, rejectedFields: string[] = []) {
     const submission = await this.kycStore.findByUserId(userId);
@@ -756,6 +816,8 @@ export class KycService {
      * client is exactly what `test/kyc-gates-money.spec.ts` pins. What it will
      * NOT do is reject a submission that was never submitted.
      */
+    await this.assertNotHeldByAnother(submission, adminId);
+
     await this.db.transaction(async (tx) => {
       const updated = await this.kycStore.transition(
         userId,
@@ -768,6 +830,7 @@ export class KycService {
           reviewedAt: new Date(),
         },
         tx,
+        adminId,
       );
       if (!updated) {
         throw new ValidationError(

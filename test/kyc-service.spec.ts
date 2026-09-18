@@ -3,6 +3,7 @@ import { storedFilesStub } from './storage-stub';
 import { KycService } from '../src/modules/compliance/kyc.service';
 import type { KycStore, KycSubmission } from '../src/store/kyc.store';
 import type { User, UsersStore } from '../src/store/users.store';
+import type { AdminsStore } from '../src/store/admins.store';
 import type { EmailService } from '../src/modules/email/email.service';
 import type { KycConfigStore } from '../src/store/kyc-config.store';
 import type { Db } from '../src/database/db';
@@ -72,8 +73,24 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
      * pass against a store that ignored it, which is the whole defect the real
      * `transition()` closes.
      */
-    transition: vi.fn((_id: string, from: string[], patch: Partial<KycSubmission>) =>
-      Promise.resolve(from.includes(stored.status) ? { ...stored, ...patch } : undefined),
+    /*
+     * The trailing two parameters are declared even though this stub ignores
+     * them, because the ASSERTIONS read them: `unheldOrHeldBy` is the claim
+     * guard, and a mock typed to three arguments makes `calls[0][4]` a type
+     * error rather than a failed expectation.
+     *
+     * `_executor` is named and unused for the same reason — dropping it would
+     * put the guard at index 3 here and index 4 in the real call, which is the
+     * kind of drift a stub is supposed to make impossible.
+     */
+    transition: vi.fn(
+      (
+        _id: string,
+        from: string[],
+        patch: Partial<KycSubmission>,
+        _executor?: unknown,
+        _unheldOrHeldBy?: string,
+      ) => Promise.resolve(from.includes(stored.status) ? { ...stored, ...patch } : undefined),
     ),
     // A decision snapshots the attempt before the next one can overwrite it.
     archiveAttempt: vi.fn().mockResolvedValue(undefined),
@@ -113,6 +130,10 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
     ]),
   };
 
+  const admins = {
+    namesByIds: vi.fn().mockResolvedValue(new Map([['admin-2', 'Sarah Chen']])),
+  };
+
   const service = new KycService(
     email as unknown as EmailService,
     // In-memory storage: this suite asserts the KYC decision rules, not where the
@@ -132,8 +153,17 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
      */
     db as unknown as Db,
     notificationsStubAs(),
+    /*
+     * Appended LAST, matching the constructor.
+     *
+     * Read ONLY when a decision is refused because another reviewer holds the
+     * submission, to name them — so `namesByIds` answering with a populated Map
+     * is what lets those cases assert the reviewer's name in the message rather
+     * than the anonymous fallback.
+     */
+    admins as unknown as AdminsStore,
   );
-  return { service, kycStore, users, email, kycConfig };
+  return { service, kycStore, users, email, kycConfig, admins };
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -387,6 +417,81 @@ describe('claim', () => {
   });
 });
 
+describe('a submission another reviewer is holding', () => {
+  /*
+   * ## What a claim was worth before this
+   *
+   * Nothing enforceable. `approve` accepted a transition out of `under_review`
+   * without asking who held it, so two reviewers could open the same passport
+   * and whoever clicked second decided it — taking the claim with them.
+   * Nothing told the first: their screen still showed a submission they
+   * believed was theirs, and `reviewed_by` now named somebody else.
+   *
+   * On a compliance desk that is worse than a wasted afternoon. A claim exists
+   * so two people do not verify one identity in parallel and reach different
+   * answers, and the audit trail should name one reviewer per decision —
+   * because that is the person who will be asked to account for it.
+   */
+  const heldByAnother = () => completeSubmission({ status: 'under_review', reviewedBy: 'admin-2' });
+
+  it('refuses an APPROVE by a different admin, and names the holder', async () => {
+    const h = build({ stored: heldByAnother() });
+    // Named, not "someone else": a refusal without a name leaves the reader one
+    // option, which is to interrupt the whole desk to find out who.
+    await expect(h.service.approve('user-1', 'admin-1')).rejects.toThrow(/Sarah Chen/);
+    expect(h.kycStore.transition).not.toHaveBeenCalled();
+  });
+
+  it('refuses a REJECT by a different admin too', async () => {
+    const h = build({ stored: heldByAnother() });
+    await expect(h.service.reject('user-1', 'admin-1', 'Blurry')).rejects.toThrow(/Sarah Chen/);
+    expect(h.kycStore.transition).not.toHaveBeenCalled();
+  });
+
+  it('lets the HOLDER decide their own claim', async () => {
+    const h = build({ stored: heldByAnother() });
+    await expect(h.service.approve('user-1', 'admin-2')).resolves.toBeDefined();
+  });
+
+  /*
+   * The ordinary path must stay frictionless. Requiring a claim before every
+   * decision would be friction on the common case to fix a problem that only
+   * exists on the contested one.
+   */
+  it('leaves an UNCLAIMED submission decidable by anyone', async () => {
+    const h = build({ stored: completeSubmission({ status: 'submitted' }) });
+    await expect(h.service.approve('user-1', 'admin-1')).resolves.toBeDefined();
+  });
+
+  /*
+   * ⚠️ THE CHECK ABOVE IS NOT THE ENFORCEMENT, and this pins the difference.
+   *
+   * Two reviewers who both READ before either WRITES both pass the service
+   * check — that is the same TOCTOU the `from` status argument already exists
+   * to close. What decides is `unheldOrHeldBy` in `transition`'s WHERE clause,
+   * so the database picks one winner.
+   *
+   * Asserting the argument is reached for is the only way a unit test over a
+   * stubbed store can say that; the race itself is proven against real Postgres
+   * in `test/kyc-gates-money.spec.ts`.
+   */
+  it('puts the holder into the WHERE clause, not only into the read', async () => {
+    const h = build({ stored: completeSubmission({ status: 'submitted' }) });
+    await h.service.approve('user-1', 'admin-1');
+
+    const call = h.kycStore.transition.mock.calls[0];
+    expect(call[1]).toEqual(['submitted', 'under_review']);
+    // 5th argument — the claim guard.
+    expect(call[4]).toBe('admin-1');
+  });
+
+  it('falls back to an anonymous refusal when the holder has been deleted', async () => {
+    const h = build({ stored: heldByAnother() });
+    h.admins.namesByIds.mockResolvedValueOnce(new Map());
+    await expect(h.service.approve('user-1', 'admin-1')).rejects.toThrow(/Another reviewer/);
+  });
+});
+
 describe('approve', () => {
   it('raises the client to verification level 1', async () => {
     // This is the line that unlocks withdrawals.
@@ -415,6 +520,10 @@ describe('approve', () => {
         reviewedAt: expect.any(Date),
       }),
       expect.anything(),
+      // The claim guard: the WHERE also requires the row to be unclaimed or
+      // claimed by this admin, so a colleague's open submission cannot be
+      // decided out from under them.
+      'admin-1',
     );
   });
 
@@ -494,6 +603,7 @@ describe('reject', () => {
         rejectedFields: ['doc_front'],
       }),
       expect.anything(),
+      'admin-1',
     );
   });
 
