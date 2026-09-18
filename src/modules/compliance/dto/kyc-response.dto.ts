@@ -197,6 +197,22 @@ export class KycStatusDto {
   @ApiPropertyOptional({ type: KycFileStateDto }) selfie?: KycFileStateDto;
   @ApiPropertyOptional({ type: KycFileStateDto }) addressProof?: KycFileStateDto;
 
+  /**
+   * The client's own answers to steps beyond the four canonical ones.
+   *
+   * Returned to the CLIENT, not only to a reviewer, because the portal reseeds
+   * a half-filled step from it: without it a custom step renders and saves
+   * correctly and comes back empty, so somebody who filled half of it and
+   * returned would retype their own answers — and on the last step would submit
+   * a form they believed they had finished.
+   */
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
+    description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
+  })
+  stepData?: Record<string, Record<string, string>>;
+
   @ApiPropertyOptional({ description: 'Set when status is rejected.' }) rejectionReason?: string;
 
   @ApiPropertyOptional({

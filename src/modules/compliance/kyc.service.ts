@@ -3,7 +3,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { KYC_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { filenameFromStored } from '../../common/uploads/storage/storage-key';
 import { AdminsStore } from '../../store/admins.store';
-import { STEP_STORAGE_COLUMN, isDataBearingStep } from './step-slugs';
+import { STEP_STORAGE_COLUMN, collectsAnswers, isDataBearingStep } from './step-slugs';
 import {
   KycStore,
   type KycSortKey,
@@ -196,15 +196,59 @@ export class KycService {
     const patch: Record<string, unknown> = { status: 'in_progress' };
 
     /*
-     * The slug → column mapping lives in `step-slugs.ts`, because the config
-     * validator needs the SAME list: a step whose slug is not here has nowhere
-     * to store what the client types, and the builder used to save one happily.
-     * As an if/else chain here, the set of storable slugs was implicit in a
-     * dispatch nobody else could read.
+     * ── A CUSTOM STEP NOW HAS SOMEWHERE TO PUT ITS ANSWERS ──────────────────
+     *
+     * This used to refuse anything but the four canonical slugs with
+     * `Unknown step`, which contradicted the screen that produced it: the
+     * builder has always offered Add Step and the API has always accepted any
+     * slug. So a broker's fifth step rendered in the portal, accepted what the
+     * client typed, and failed the instant they pressed Continue — the
+     * capability was offered and the storage could not honour it.
+     *
+     * The four keep their own columns because the rest of the system reads them
+     * by name; everything else lands under its slug in `step_data` (migration
+     * 0130). `review` is the one slug that stores nothing, because it collects
+     * nothing — it renders answers already given.
+     *
+     * Merged, not replaced, on both paths: steps are resumable and a client is
+     * expected to fill half a step, leave, and come back to it.
      */
-    if (!isDataBearingStep(step)) throw new ValidationError(`Unknown step: ${step}`);
-    const column = STEP_STORAGE_COLUMN[step];
-    patch[column] = { ...(submission[column] ?? {}), ...data };
+    if (!collectsAnswers(step)) {
+      throw new ValidationError(`The ${step} step does not collect answers.`);
+    }
+
+    /*
+     * A custom slug must be one the CONFIGURATION names, not merely one that is
+     * not canonical.
+     *
+     * Accepting any slug would have re-opened what the old `Unknown step` guard
+     * was protecting: `saveStep` is a client-facing route, so an arbitrary slug
+     * is arbitrary client-controlled keys written into a jsonb column that
+     * nothing displays and nothing bounds. `test/kyc-service.spec.ts` had a case
+     * named "rejects an unknown step rather than silently dropping the data"
+     * and it failed the moment this became permissive, which is the test doing
+     * exactly its job.
+     *
+     * The four canonical slugs skip the lookup: they have columns of their own
+     * and are storable whether or not a broker currently offers them, so a
+     * client finishing a step that was disabled mid-flow still saves.
+     */
+    if (!isDataBearingStep(step)) {
+      const configured = (await this.kycConfig.getSteps()).some(
+        (s) => s.slug === step && s.enabled,
+      );
+      if (!configured) throw new ValidationError(`Unknown step: ${step}`);
+    }
+
+    if (isDataBearingStep(step)) {
+      const column = STEP_STORAGE_COLUMN[step];
+      patch[column] = { ...(submission[column] ?? {}), ...data };
+    } else {
+      patch['stepData'] = {
+        ...submission.stepData,
+        [step]: { ...(submission.stepData?.[step] ?? {}), ...data },
+      };
+    }
 
     return await this.kycStore.update(userId, patch);
   }
@@ -360,6 +404,43 @@ export class KycService {
      * promise nobody made.
      */
     const enabledSlugs = new Set(steps.filter((step) => step.enabled).map((step) => step.slug));
+
+    /*
+     * ── A CUSTOM STEP'S `required` FLAGS ARE RULES, NOT DECORATION ──────────
+     *
+     * The personal step's required fields are enforced above, through
+     * `findProfileProblem`. Every other step's were enforced nowhere: a broker
+     * could mark a custom field required, the builder would save it, the portal
+     * would star it — and a client could submit without it, because nothing on
+     * the server ever looked.
+     *
+     * That is the exact shape `saveStep`'s own comment records for the personal
+     * step ("`saveStep` never consulted the configured `required` flags, so they
+     * were decoration"), and shipping custom steps without closing it would have
+     * reintroduced the bug on the new surface the same day.
+     *
+     * Checked at SUBMIT for the reason that one is: steps are resumable, a
+     * client is expected to save a half-filled step and come back, and
+     * submission is the point at which the flow is claimed to be complete.
+     */
+    for (const step of steps) {
+      if (!step.enabled || !collectsAnswers(step.slug) || isDataBearingStep(step.slug)) continue;
+
+      const answers = finalSub.stepData[step.slug] ?? {};
+      const missing = (step.fields ?? [])
+        .filter((field) => field.required)
+        .filter((field) => {
+          const value = answers[field.name];
+          return value === undefined || value === null || String(value).trim() === '';
+        });
+
+      if (missing.length > 0) {
+        throw new ValidationError(
+          `${step.title || step.slug} is incomplete: ${missing.map((f) => f.label || f.name).join(', ')}.`,
+          { kind: 'incomplete_step', fields: missing.map((f) => f.name) },
+        );
+      }
+    }
 
     if (enabledSlugs.has('document') && !finalSub.document?.frontFilePath)
       throw new ValidationError('ID document front is required.');

@@ -5,7 +5,7 @@ import type { KycStore, KycSubmission } from '../src/store/kyc.store';
 import type { User, UsersStore } from '../src/store/users.store';
 import type { AdminsStore } from '../src/store/admins.store';
 import type { EmailService } from '../src/modules/email/email.service';
-import type { KycConfigStore } from '../src/store/kyc-config.store';
+import type { KycConfigStore, KycStepConfig } from '../src/store/kyc-config.store';
 import type { Db } from '../src/database/db';
 import { notificationsStubAs } from './notifications-stub';
 import {
@@ -25,10 +25,80 @@ import {
  * verified client from moving their own.
  */
 
+/**
+ * The seeded flow, as a function so every caller gets a FRESH array.
+ *
+ * Shared by the default stub and by the custom-step cases, which spread it and
+ * append. A shared mutable constant would let one test's `mockResolvedValue`
+ * leak into the next.
+ */
+function defaultSteps(): KycStepConfig[] {
+  return [
+    {
+      id: 'step-1',
+      stepNumber: 1,
+      slug: 'personal',
+      title: 'Personal Information',
+      description: '',
+      icon: '',
+      enabled: true,
+      fields: [
+        { id: 'f-1', name: 'firstName', label: 'First Name', type: 'text', required: true },
+        { id: 'f-2', name: 'lastName', label: 'Last Name', type: 'text', required: true },
+        { id: 'f-3', name: 'dateOfBirth', label: 'Date of Birth', type: 'date', required: true },
+      ],
+    },
+    /*
+     * The other three steps, because `submit` now asks the CONFIGURATION which
+     * uploads to require rather than demanding all three unconditionally.
+     *
+     * They carry no fields — the upload requirement follows the STEP being
+     * enabled, not any field inside it — but they have to be present, because
+     * a stub with only `personal` describes a deployment that asks for no
+     * documents at all. That is a real configuration a broker can create, and
+     * `submit` is correct to accept it; it is just not the one the seed ships
+     * or the one FR-CORE-15 is about.
+     */
+    {
+      id: 'step-2',
+      stepNumber: 2,
+      slug: 'document',
+      title: 'ID',
+      description: '',
+      icon: '',
+      enabled: true,
+      fields: [],
+    },
+    {
+      id: 'step-3',
+      stepNumber: 3,
+      slug: 'selfie',
+      title: 'Selfie',
+      description: '',
+      icon: '',
+      enabled: true,
+      fields: [],
+    },
+    {
+      id: 'step-4',
+      stepNumber: 4,
+      slug: 'address',
+      title: 'Address',
+      description: '',
+      icon: '',
+      enabled: true,
+      fields: [],
+    },
+  ];
+}
+
 function submission(over: Partial<KycSubmission> = {}): KycSubmission {
   return {
     userId: 'user-1',
     status: 'in_progress',
+    // Always an object: the column is NOT NULL DEFAULT '{}' (migration 0130),
+    // so a fixture with it undefined describes a row the database cannot hold.
+    stepData: {},
     createdAt: new Date(),
     updatedAt: new Date(),
     ...over,
@@ -114,34 +184,7 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
    * the validation was added to remove.
    */
   const kycConfig = {
-    getSteps: vi.fn().mockResolvedValue([
-      {
-        id: 'step-1',
-        stepNumber: 1,
-        slug: 'personal',
-        title: 'Personal Information',
-        enabled: true,
-        fields: [
-          { id: 'f-1', name: 'firstName', label: 'First Name', type: 'text', required: true },
-          { id: 'f-2', name: 'lastName', label: 'Last Name', type: 'text', required: true },
-          { id: 'f-3', name: 'dateOfBirth', label: 'Date of Birth', type: 'date', required: true },
-        ],
-      },
-      /*
-       * The other three steps, because `submit` now asks the CONFIGURATION which
-       * uploads to require rather than demanding all three unconditionally.
-       *
-       * They carry no fields — the upload requirement follows the STEP being
-       * enabled, not any field inside it — but they have to be present, because
-       * a stub with only `personal` describes a deployment that asks for no
-       * documents at all. That is a real configuration a broker can create, and
-       * `submit` is correct to accept it; it is just not the one the seed ships
-       * or the one FR-CORE-15 is about.
-       */
-      { id: 'step-2', stepNumber: 2, slug: 'document', title: 'ID', enabled: true, fields: [] },
-      { id: 'step-3', stepNumber: 3, slug: 'selfie', title: 'Selfie', enabled: true, fields: [] },
-      { id: 'step-4', stepNumber: 4, slug: 'address', title: 'Address', enabled: true, fields: [] },
-    ]),
+    getSteps: vi.fn().mockResolvedValue(defaultSteps()),
   };
 
   const admins = {
@@ -290,11 +333,9 @@ describe('submit', () => {
     const h = build({
       stored: completeSubmission({ status: 'in_progress', addressProof: undefined }),
     });
-    h.kycConfig.getSteps.mockResolvedValueOnce([
-      ...(await h.kycConfig.getSteps()).map((step: { slug: string }) =>
-        step.slug === 'address' ? { ...step, enabled: false } : step,
-      ),
-    ]);
+    h.kycConfig.getSteps.mockResolvedValue(
+      defaultSteps().map((step) => (step.slug === 'address' ? { ...step, enabled: false } : step)),
+    );
 
     await expect(h.service.submit('user-1')).resolves.toBeDefined();
   });
@@ -304,6 +345,213 @@ describe('submit', () => {
       stored: completeSubmission({ status: 'in_progress', addressProof: undefined }),
     });
     await expect(h.service.submit('user-1')).rejects.toThrow(/proof of address/i);
+  });
+
+  describe('a CUSTOM step', () => {
+    /*
+     * The builder has always offered Add Step and the API has always accepted
+     * any slug. What did not exist was anywhere to store the answers, so a
+     * custom step rendered, took what the client typed, and died at Continue
+     * with `Unknown step` — a capability the console offered and the storage
+     * could not honour. Migration 0130 gives it `step_data`, keyed by slug.
+     */
+    const withCustomStep = (h: ReturnType<typeof build>, fields: unknown[]) =>
+      h.kycConfig.getSteps.mockResolvedValue([
+        ...defaultSteps(),
+        {
+          id: 'step-9',
+          stepNumber: 9,
+          slug: 'compliance-questions',
+          title: 'Compliance Questions',
+          enabled: true,
+          fields,
+        },
+      ]);
+
+    it('stores its answers under its slug rather than refusing them', async () => {
+      const h = build({ stored: submission({ status: 'in_progress' }) });
+      // Registered in the config first: a slug the configuration does not name
+      // is still refused, so an arbitrary one cannot write into `step_data`.
+      withCustomStep(h, []);
+      await h.service.saveStep('user-1', 'compliance-questions', { sourceOfFunds: 'salary' });
+
+      expect(h.kycStore.update).toHaveBeenCalledWith(
+        'user-1',
+        expect.objectContaining({
+          stepData: { 'compliance-questions': { sourceOfFunds: 'salary' } },
+        }),
+      );
+    });
+
+    /** Steps are resumable: a half-filled step must survive coming back to it. */
+    it('MERGES answers rather than replacing the step', async () => {
+      const h = build({
+        stored: submission({
+          status: 'in_progress',
+          stepData: { 'compliance-questions': { sourceOfFunds: 'salary' } },
+        }),
+      });
+      withCustomStep(h, []);
+      await h.service.saveStep('user-1', 'compliance-questions', { employer: 'Acme' });
+
+      expect(h.kycStore.update).toHaveBeenCalledWith(
+        'user-1',
+        expect.objectContaining({
+          stepData: { 'compliance-questions': { sourceOfFunds: 'salary', employer: 'Acme' } },
+        }),
+      );
+    });
+
+    it('does not disturb another custom step', async () => {
+      const h = build({
+        stored: submission({ status: 'in_progress', stepData: { other: { a: '1' } } }),
+      });
+      withCustomStep(h, []);
+      await h.service.saveStep('user-1', 'compliance-questions', { b: '2' });
+
+      expect(h.kycStore.update).toHaveBeenCalledWith(
+        'user-1',
+        expect.objectContaining({
+          stepData: { other: { a: '1' }, 'compliance-questions': { b: '2' } },
+        }),
+      );
+    });
+
+    /*
+     * The half that makes the feature CORRECT rather than merely present. A
+     * `required` flag nothing enforces is decoration — the exact bug
+     * `saveStep`'s own comment records for the personal step — and shipping
+     * custom steps without this would have reintroduced it on the new surface.
+     */
+    it('ENFORCES its required fields at submit', async () => {
+      const h = build({ stored: completeSubmission({ status: 'in_progress' }) });
+      withCustomStep(h, [
+        {
+          id: 'f-9',
+          name: 'sourceOfFunds',
+          label: 'Source of Funds',
+          type: 'text',
+          required: true,
+        },
+      ]);
+
+      await expect(h.service.submit('user-1')).rejects.toThrow(/Source of Funds/);
+    });
+
+    it('accepts the submission once they are answered', async () => {
+      const h = build({
+        stored: completeSubmission({
+          status: 'in_progress',
+          stepData: { 'compliance-questions': { sourceOfFunds: 'salary' } },
+        }),
+      });
+      withCustomStep(h, [
+        {
+          id: 'f-9',
+          name: 'sourceOfFunds',
+          label: 'Source of Funds',
+          type: 'text',
+          required: true,
+        },
+      ]);
+
+      await expect(h.service.submit('user-1')).resolves.toBeDefined();
+    });
+
+    /** Whitespace is not an answer — the same rule the personal fields use. */
+    it('treats a blank answer as missing', async () => {
+      const h = build({
+        stored: completeSubmission({
+          status: 'in_progress',
+          stepData: { 'compliance-questions': { sourceOfFunds: '   ' } },
+        }),
+      });
+      withCustomStep(h, [
+        {
+          id: 'f-9',
+          name: 'sourceOfFunds',
+          label: 'Source of Funds',
+          type: 'text',
+          required: true,
+        },
+      ]);
+
+      await expect(h.service.submit('user-1')).rejects.toThrow(/Source of Funds/);
+    });
+
+    it('leaves OPTIONAL custom fields optional', async () => {
+      const h = build({ stored: completeSubmission({ status: 'in_progress' }) });
+      withCustomStep(h, [
+        { id: 'f-9', name: 'note', label: 'Note', type: 'text', required: false },
+      ]);
+
+      await expect(h.service.submit('user-1')).resolves.toBeDefined();
+    });
+
+    it('ignores a DISABLED custom step entirely', async () => {
+      const h = build({ stored: completeSubmission({ status: 'in_progress' }) });
+      h.kycConfig.getSteps.mockResolvedValue([
+        ...defaultSteps(),
+        {
+          id: 'step-9',
+          stepNumber: 9,
+          slug: 'compliance-questions',
+          title: 'Compliance Questions',
+          enabled: false,
+          fields: [
+            {
+              id: 'f-9',
+              name: 'sourceOfFunds',
+              label: 'Source of Funds',
+              type: 'text',
+              required: true,
+            },
+          ],
+        },
+      ]);
+
+      await expect(h.service.submit('user-1')).resolves.toBeDefined();
+    });
+
+    /*
+     * The guard the old `Unknown step` error was really providing. `saveStep` is
+     * client-facing, so accepting any non-canonical slug would let a caller
+     * write arbitrary keys into a jsonb column nothing displays and nothing
+     * bounds.
+     */
+    it('refuses a slug the configuration does not name', async () => {
+      const h = build({ stored: submission({ status: 'in_progress' }) });
+      await expect(h.service.saveStep('user-1', 'not-configured', { x: '1' })).rejects.toThrow(
+        /unknown step/i,
+      );
+      expect(h.kycStore.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a custom step the broker has disabled', async () => {
+      const h = build({ stored: submission({ status: 'in_progress' }) });
+      h.kycConfig.getSteps.mockResolvedValue([
+        ...defaultSteps(),
+        {
+          id: 's9',
+          stepNumber: 9,
+          slug: 'compliance-questions',
+          title: 'C',
+          enabled: false,
+          fields: [],
+        },
+      ]);
+      await expect(
+        h.service.saveStep('user-1', 'compliance-questions', { x: '1' }),
+      ).rejects.toThrow(/unknown step/i);
+    });
+
+    /** `review` renders answers already given; it collects nothing. */
+    it('refuses to save answers against the review step', async () => {
+      const h = build({ stored: submission({ status: 'in_progress' }) });
+      await expect(h.service.saveStep('user-1', 'review', { x: '1' })).rejects.toThrow(
+        /does not collect answers/i,
+      );
+    });
   });
 
   it('requires all four documents FR-CORE-15 mandates', async () => {

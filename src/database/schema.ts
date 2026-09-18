@@ -713,6 +713,34 @@ export const kycSubmissions = pgTable(
     document: jsonb('document').$type<Record<string, string>>(),
     selfie: jsonb('selfie').$type<Record<string, string>>(),
     addressProof: jsonb('address_proof').$type<Record<string, string>>(),
+    /**
+     * Answers for steps that are NOT one of the four canonical ones, keyed by
+     * slug: `{ "compliance-questions": { "sourceOfFunds": "salary" } }`.
+     *
+     * ## Why a map beside four columns rather than instead of them
+     *
+     * `personal_info`, `document`, `selfie` and `address_proof` are read by
+     * NAME all over the system — `personalInfo.phone` and `.country` are
+     * promoted onto the client record, `document.frontFilePath` gates
+     * submission, the reviewer's card is built from them. Folding those into a
+     * generic map would be a rewrite of every read path to buy nothing: those
+     * four slugs are not going anywhere.
+     *
+     * What this buys is the fifth step. A broker could always ADD one — the
+     * builder offers it and the API accepts any slug — and until now
+     * `KycService.saveStep` had nowhere to put the answers and refused them with
+     * `Unknown step`, so a custom step rendered, accepted what the client typed,
+     * and failed the moment they pressed Continue.
+     *
+     * NOT NULL with a `{}` default, so every existing row reads as "no custom
+     * answers" rather than null — one fewer branch in every consumer, and the
+     * distinction between "no custom steps" and "custom steps, none answered"
+     * is not one anything needs to make.
+     */
+    stepData: jsonb('step_data')
+      .$type<Record<string, Record<string, string>>>()
+      .notNull()
+      .default({}),
     rejectionReason: text('rejection_reason'),
     rejectedFields: jsonb('rejected_fields').$type<string[]>(),
     submittedAt: timestamp('submitted_at', { withTimezone: true }),
@@ -799,6 +827,11 @@ export const kycSubmissionAttempts = pgTable(
     document: jsonb('document').$type<Record<string, string>>(),
     selfie: jsonb('selfie').$type<Record<string, string>>(),
     addressProof: jsonb('address_proof').$type<Record<string, string>>(),
+    /** Archived alongside the four columns — see `kyc_submissions.step_data`. */
+    stepData: jsonb('step_data')
+      .$type<Record<string, Record<string, string>>>()
+      .notNull()
+      .default({}),
     rejectionReason: text('rejection_reason'),
     rejectedFields: jsonb('rejected_fields').$type<string[]>(),
     submittedAt: timestamp('submitted_at', { withTimezone: true }),

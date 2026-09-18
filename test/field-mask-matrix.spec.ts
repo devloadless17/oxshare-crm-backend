@@ -67,6 +67,16 @@ const SENTINEL: Record<string, string> = {
   'kyc.personalInfo.dateOfBirth': '1979-03-14',
   'kyc.personalInfo.nationality': 'MatrixNationality',
   'kyc.personalInfo.address': 'MatrixStreet 12',
+  /*
+   * A CUSTOM step's answers, masked as ONE unit rather than per field.
+   *
+   * The slugs and field names are invented by a broker after this file ships,
+   * so no catalogue entry could name them and no reader's mask could contain
+   * one — `responses.dto.ts` records why a `@ClientFieldMap` prefix would have
+   * looked like a control and masked nothing for ever. The sentinel is the
+   * ANSWER, because that is the value a masked reader must stop seeing.
+   */
+  'kyc.stepData': 'MatrixSourceOfFunds',
   // Filled in `beforeAll`: one is a tag label, the other the row's real
   // timestamp. Both are maskable keys, and a key with no distinguishable value
   // in the fixture is a key this file would silently not be testing.
@@ -191,6 +201,11 @@ beforeAll(async () => {
       address: SENTINEL['kyc.personalInfo.address'],
     },
     document: { docType: 'passport' },
+    // One custom step, so `kyc.stepData` has something to hide. Without it the
+    // key is maskable in the catalogue and untested here, which this file's own
+    // guard refuses — a key with no distinguishable value is one it would
+    // silently not be testing.
+    stepData: { 'compliance-questions': { sourceOfFunds: SENTINEL['kyc.stepData'] } },
     addressProof: { docType: 'utility_bill', fileName: 'MatrixProofFile.pdf' },
   });
 

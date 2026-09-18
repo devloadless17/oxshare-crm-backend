@@ -1,32 +1,28 @@
 /**
- * Which step slugs this system can actually STORE an answer for.
+ * Where a step's answers are stored.
  *
- * ## Not a policy list — a mechanical one
+ * ## Four columns, and a map for everything else
  *
- * `admin-compliance.service.ts` records that the mandatory-step rule was
- * deliberately dropped: "a configurable flow that refuses to drop four of its
- * steps is not configurable, and the broker — not this service — owns which
- * jurisdiction needs what." That decision stands and nothing here reinstates it.
- * A broker may delete the address step, reorder the flow, or run two steps.
+ * `personal_info`, `document`, `selfie` and `address_proof` are read BY NAME
+ * across the system — `personalInfo.phone` and `.country` are promoted onto the
+ * client record on approval, `document.frontFilePath` gates submission, and the
+ * reviewer's card is built from all four. They keep their own columns because
+ * rewriting every one of those read paths would buy nothing: those slugs are
+ * not going anywhere.
  *
- * This is the different question underneath it: a submission's answers are
- * stored in a COLUMN PER STEP (`personal_info`, `document`, `selfie`,
- * `address_proof`), so a step whose slug is not one of these has nowhere to put
- * what the client types. `KycService.saveStep` ends in
- * `throw new ValidationError('Unknown step: …')`, and until now the builder
- * would happily save such a step: the console showed a valid-looking form and
- * every client who reached it got an error the moment they pressed Continue.
+ * Anything else a broker configures goes into `step_data`, keyed by slug. That
+ * is the whole of what migration 0130 added, and it is what makes a fifth step
+ * work: the builder could always ADD one, and `saveStep` had nowhere to put the
+ * answers, so a custom step rendered, accepted what the client typed, and failed
+ * the moment they pressed Continue with `Unknown step`.
  *
- * So the rule is not "you must have these steps". It is "a step you keep must
- * be one whose answers can be written down".
+ * ## This is not the mandatory-step rule
  *
- * ## Why the mapping lives here and not in `saveStep`
- *
- * It was an if/else chain inside `saveStep`, which meant the set of storable
- * slugs was implicit in a dispatch nobody else could read. Two lists that agree
- * today is the drift this file exists to prevent — the validator and the writer
- * now read the same one, so a new step column cannot be added to one and missed
- * by the other.
+ * `admin-compliance.service.ts` records that the rule was dropped on purpose —
+ * "a configurable flow that refuses to drop four of its steps is not
+ * configurable, and the broker owns which jurisdiction needs what." Nothing here
+ * requires any step to exist. This says only where an answer LANDS once a step
+ * does exist, which is why there is no longer a slug the API refuses.
  */
 
 /** Slug → the submission column its answers are written to. */
@@ -45,18 +41,17 @@ export function isDataBearingStep(slug: string): slug is DataBearingStepSlug {
 
 /**
  * The summary screen. It has a slug and a position in the flow, and it collects
- * NOTHING — the portal renders it from answers already given — so it is storable
- * in the only sense that matters: keeping it breaks nothing.
+ * NOTHING — the portal renders it from answers already given — so it stores
+ * nothing and needs no entry above.
  */
 export const REVIEW_STEP_SLUG = 'review';
 
-/** Every slug a saved configuration may legitimately contain. */
-export function isKnownStepSlug(slug: string): boolean {
-  return isDataBearingStep(slug) || slug === REVIEW_STEP_SLUG;
+/**
+ * Does this step collect answers at all?
+ *
+ * Only `review` does not. Every other slug stores something: the four canonical
+ * ones in their own column, the rest under their slug in `step_data`.
+ */
+export function collectsAnswers(slug: string): boolean {
+  return slug !== REVIEW_STEP_SLUG;
 }
-
-/** The storable slugs, for a message that tells an operator what to use. */
-export const KNOWN_STEP_SLUGS: readonly string[] = [
-  ...Object.keys(STEP_STORAGE_COLUMN),
-  REVIEW_STEP_SLUG,
-];

@@ -109,6 +109,13 @@ export interface KycAttempt {
   document?: DocumentInfo;
   selfie?: SelfieInfo;
   addressProof?: AddressInfo;
+  /**
+   * Answers for steps outside the four canonical ones, keyed by slug.
+   *
+   * Always an object — the column is `NOT NULL DEFAULT '{}'` (migration 0130) —
+   * so consumers never branch on null, only on whether a slug is present.
+   */
+  stepData: Record<string, Record<string, string>>;
   rejectionReason?: string;
   rejectedFields?: string[];
   submittedAt?: Date;
@@ -129,6 +136,13 @@ export interface KycSubmission {
   document?: DocumentInfo;
   selfie?: SelfieInfo;
   addressProof?: AddressInfo;
+  /**
+   * Answers for steps outside the four canonical ones, keyed by slug.
+   *
+   * Always an object — the column is `NOT NULL DEFAULT '{}'` (migration 0130) —
+   * so consumers never branch on null, only on whether a slug is present.
+   */
+  stepData: Record<string, Record<string, string>>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -147,6 +161,7 @@ const toSubmission = (r: Row): KycSubmission => ({
   document: (r.document as unknown as DocumentInfo) ?? undefined,
   selfie: (r.selfie as unknown as SelfieInfo) ?? undefined,
   addressProof: (r.addressProof as unknown as AddressInfo) ?? undefined,
+  stepData: r.stepData ?? {},
   createdAt: r.createdAt,
   updatedAt: r.updatedAt,
 });
@@ -168,6 +183,7 @@ const toColumns = (
     ['document', 'document'],
     ['selfie', 'selfie'],
     ['addressProof', 'addressProof'],
+    ['stepData', 'stepData'],
   ];
   /*
    * `key in patch`, not a truthiness test: a key present with `null` MEANS
@@ -602,6 +618,9 @@ export class KycStore {
         document: submission.document as unknown as Record<string, string>,
         selfie: submission.selfie as unknown as Record<string, string>,
         addressProof: submission.addressProof as unknown as Record<string, string>,
+        // An archived attempt missing the custom answers would show a reviewer a
+        // partial record of what they decided on.
+        stepData: submission.stepData,
         rejectionReason: submission.rejectionReason ?? null,
         rejectedFields: submission.rejectedFields ?? null,
         submittedAt: submission.submittedAt ?? null,
@@ -625,6 +644,7 @@ export class KycStore {
       document: (r.document as unknown as DocumentInfo) ?? undefined,
       selfie: (r.selfie as unknown as SelfieInfo) ?? undefined,
       addressProof: (r.addressProof as unknown as AddressInfo) ?? undefined,
+      stepData: r.stepData ?? {},
       rejectionReason: r.rejectionReason ?? undefined,
       rejectedFields: r.rejectedFields ?? undefined,
       submittedAt: r.submittedAt ?? undefined,

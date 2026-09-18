@@ -308,6 +308,40 @@ export class KycSubmissionDto {
     'a stored-document REFERENCE (its type and file name), never the document contents',
   )
   addressProof?: KycAddressProofDto;
+  /**
+   * Answers to steps outside the four canonical ones, keyed by slug.
+   *
+   * ONE key for the whole map, not a `@ClientFieldMap` prefix, and the
+   * difference is whether masking can ever do anything.
+   *
+   * `personalInfo` uses a prefix because its keys ARE in the catalogue
+   * (`kyc.personalInfo.dateOfBirth` and friends), so a role's mask can name
+   * one. A custom step's slugs are invented by a broker after this code ships,
+   * so no mask could ever contain one — a prefix here would look like a control
+   * and mask nothing, for ever.
+   *
+   * So custom-step answers are one maskable unit: a role that may not read them
+   * loses all of them. That is a coarser guarantee than `personalInfo` gets, and
+   * it is the honest one — better a control that plainly works at the level it
+   * claims than a finer one that silently never fires.
+   *
+   * ⚠️ The first version of this had the paragraph above and NO decorator: a
+   * comment asserting the field was "marked as such" while nothing marked it.
+   * `client-field-coverage.spec.ts` failed on exactly that, which is the census
+   * doing its job — and it is the same defect this codebase keeps finding, so
+   * it is recorded rather than quietly corrected.
+   */
+  @ClientField('kyc.stepData')
+  @ApiPropertyOptional({
+    type: 'object',
+    // Nested `additionalProperties`, not `true`: the shape is slug -> field ->
+    // value, and declaring it loosely generated `unknown` on the client, which
+    // pushed a cast into the screen that renders it. The contract is the place
+    // to be precise, so the consumer does not have to guess.
+    additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
+    description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
+  })
+  stepData?: Record<string, Record<string, string>>;
   @ApiPropertyOptional({ type: KycUserDto, nullable: true })
   @NotClientField(
     'the nested person, whose own shape carries the marks \u2014 masked there, not here',
@@ -397,6 +431,40 @@ export class KycAttemptDto {
   )
   @ApiPropertyOptional({ type: KycAddressProofDto })
   addressProof?: KycAddressProofDto;
+  /**
+   * Answers to steps outside the four canonical ones, keyed by slug.
+   *
+   * ONE key for the whole map, not a `@ClientFieldMap` prefix, and the
+   * difference is whether masking can ever do anything.
+   *
+   * `personalInfo` uses a prefix because its keys ARE in the catalogue
+   * (`kyc.personalInfo.dateOfBirth` and friends), so a role's mask can name
+   * one. A custom step's slugs are invented by a broker after this code ships,
+   * so no mask could ever contain one — a prefix here would look like a control
+   * and mask nothing, for ever.
+   *
+   * So custom-step answers are one maskable unit: a role that may not read them
+   * loses all of them. That is a coarser guarantee than `personalInfo` gets, and
+   * it is the honest one — better a control that plainly works at the level it
+   * claims than a finer one that silently never fires.
+   *
+   * ⚠️ The first version of this had the paragraph above and NO decorator: a
+   * comment asserting the field was "marked as such" while nothing marked it.
+   * `client-field-coverage.spec.ts` failed on exactly that, which is the census
+   * doing its job — and it is the same defect this codebase keeps finding, so
+   * it is recorded rather than quietly corrected.
+   */
+  @ClientField('kyc.stepData')
+  @ApiPropertyOptional({
+    type: 'object',
+    // Nested `additionalProperties`, not `true`: the shape is slug -> field ->
+    // value, and declaring it loosely generated `unknown` on the client, which
+    // pushed a cast into the screen that renders it. The contract is the place
+    // to be precise, so the consumer does not have to guess.
+    additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
+    description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
+  })
+  stepData?: Record<string, Record<string, string>>;
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   archivedAt: Date;
