@@ -58,14 +58,24 @@ export class AdminTagsController {
   /**
    * The tag vocabulary as CSV, with how many clients carry each.
    *
-   * ── `@NotClientScoped`, and why the COUNT does not change that ────────────
+   * ── `@NotClientScoped` on the ROWS; the COUNT is scoped ───────────────────
    *
    * The rows are tags, not clients: no client is named and no client-owned row
-   * is returned. `clientCount` is an aggregate over the whole client base
-   * rather than over the caller's territory, exactly as `GET /admin/tags`
-   * already reports it — a scoped admin reading "412" learns how many clients
-   * carry the tag platform-wide, which is a property of the tag and not a way
-   * to reach anybody's record.
+   * is returned, which is why the route itself is not client-scoped.
+   *
+   * ⚠️ This paragraph used to continue: "`clientCount` is an aggregate over the
+   * whole client base rather than over the caller's territory ... a property of
+   * the tag and not a way to reach anybody's record." The first half was true
+   * and the conclusion was not. `admin-stats.service.ts` opens "A COUNT IS A
+   * DISCLOSURE" and `client-scope-enforcement.spec.ts` pins an incident that
+   * was precisely a total describing rows the reader could not see — so a desk
+   * restricted to one tag could read the size of every cohort in the business
+   * off this file. Not a way to reach a record, and still a disclosure.
+   *
+   * The count now follows the reader's territory (`ClientTagsStore
+   * .findAllWithCounts`); the vocabulary does not, because an operator has to
+   * see a label to assign it. This export shares `AdminTagsService.list`, so it
+   * inherits both halves rather than re-deriving them.
    */
   @Get('tags/export')
   /*

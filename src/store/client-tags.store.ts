@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
 import { clientTagAssignments, clientTags } from '../database/schema';
+import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
 
 export interface ClientTag {
   id: string;
@@ -65,13 +66,29 @@ export class ClientTagsStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
   /**
-   * Every tag with its client count, alphabetically.
+   * Every tag with its client count, alphabetically — the count NARROWED to the
+   * reader's territory.
    *
    * One grouped query rather than a count per tag: the /tags screen renders the
    * whole vocabulary, and a per-row count is the N+1 ARCHITECTURE §5 warns
    * about in exactly this table.
+   *
+   * ## Why the count is scoped and the vocabulary is not
+   *
+   * The count was platform-wide, which contradicted this system's own rule —
+   * `admin-stats.service.ts` opens "A COUNT IS A DISCLOSURE", and the incident
+   * pinned in `client-scope-enforcement.spec.ts` is exactly a total describing
+   * rows the reader could not see. A desk restricted to one tag could read the
+   * size of every cohort in the business off this screen.
+   *
+   * The LIST of tags stays whole on purpose. It is the vocabulary an operator
+   * assigns from, and a desk that cannot see a label cannot be asked to use it;
+   * the label is the business's taxonomy rather than a fact about any client.
+   * What the count adds is a per-cohort POPULATION, which is a fact about
+   * clients — so that is the half that follows the territory.
    */
-  async findAllWithCounts(): Promise<ClientTagWithCount[]> {
+  async findAllWithCounts(scope: ClientScope): Promise<ClientTagWithCount[]> {
+    const scoped = clientScopePredicate(scope, clientTagAssignments.userId);
     const rows = await this.db
       .select({
         id: clientTags.id,
@@ -85,7 +102,18 @@ export class ClientTagsStore {
         clientCount: sql<number>`count(${clientTagAssignments.userId})::int`,
       })
       .from(clientTags)
-      .leftJoin(clientTagAssignments, eq(clientTagAssignments.tagId, clientTags.id))
+      .leftJoin(
+        clientTagAssignments,
+        /*
+         * The scope rides in the JOIN CONDITION, not a WHERE. A WHERE would
+         * drop the tag row itself as soon as no visible client carried it,
+         * which quietly turns a scoped COUNT into a scoped LIST — and the
+         * vocabulary is meant to stay whole.
+         */
+        scoped
+          ? and(eq(clientTagAssignments.tagId, clientTags.id), scoped)
+          : eq(clientTagAssignments.tagId, clientTags.id),
+      )
       .groupBy(clientTags.id)
       .orderBy(asc(clientTags.label));
 

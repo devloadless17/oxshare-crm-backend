@@ -350,6 +350,58 @@ describe('row-level client scoping', () => {
     expect(ids).toContain(betaClientId);
   });
 
+  it('the tag COUNT follows the territory — a cohort size is a disclosure', async () => {
+    /*
+     * `clientCount` was a platform-wide aggregate, defended on the grounds that
+     * the rows are tags rather than clients and a number is "not a way to reach
+     * anybody's record". True, and beside the point: `admin-stats.service.ts`
+     * opens "A COUNT IS A DISCLOSURE", and a desk restricted to one tag could
+     * read the size of every cohort in the business off this one screen.
+     */
+    const scoped = await actingAs(ctx, 'admin', SCOPED);
+    const master = await actingAs(ctx, 'admin', MASTER);
+
+    const asScoped = (await scoped.get(TAGS).expect(200)).body as {
+      slug: string;
+      clientCount: number;
+    }[];
+    const asMaster = (await master.get(TAGS).expect(200)).body as {
+      slug: string;
+      clientCount: number;
+    }[];
+
+    const betaFor = (rows: { slug: string; clientCount: number }[]) =>
+      rows.find((t) => t.slug === 'beta-desk')?.clientCount;
+    const alphaFor = (rows: { slug: string; clientCount: number }[]) =>
+      rows.find((t) => t.slug === 'alpha-desk')?.clientCount;
+
+    // The reader's own cohort is counted normally — this is not "scoped to nothing".
+    expect(alphaFor(asScoped), 'the reader cannot count their OWN cohort').toBeGreaterThan(0);
+    expect(alphaFor(asScoped)).toBe(alphaFor(asMaster));
+
+    // A cohort entirely outside the territory reports 0 to them, and its real
+    // size to a master. Without the master half this would pass against a
+    // system that had simply stopped counting.
+    expect(betaFor(asScoped), 'an out-of-territory cohort reported its size').toBe(0);
+    expect(betaFor(asMaster), 'the master lost a count they are entitled to').toBeGreaterThan(0);
+  });
+
+  it('but the VOCABULARY is not filtered — a label you cannot count is still assignable', async () => {
+    /*
+     * The deliberate half, pinned so a later "fix" cannot quietly turn the
+     * scoped count into a scoped list. An operator has to see a label to assign
+     * it, and the label is the business's taxonomy rather than a fact about any
+     * client. The predicate therefore rides in the JOIN, not a WHERE — a WHERE
+     * drops the tag row itself once no visible client carries it.
+     */
+    const scoped = await actingAs(ctx, 'admin', SCOPED);
+    const slugs = ((await scoped.get(TAGS).expect(200)).body as { slug: string }[]).map(
+      (t) => t.slug,
+    );
+
+    expect(slugs, 'the scoped count became a scoped list').toContain('beta-desk');
+  });
+
   it('404s a deep link to an out-of-scope client — NOT 403', async () => {
     /*
      * The whole reason the predicate lives in the WHERE clause.

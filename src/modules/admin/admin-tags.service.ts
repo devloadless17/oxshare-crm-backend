@@ -68,7 +68,9 @@ export class AdminTagsService {
     // R-4.3: asserted on the actor like every sibling method, not only in the
     // guard — the vocabulary names how the business sees its clients.
     assertActorCanAny(actor, ['tags.view', 'clients.view'], 'list client tags');
-    return this.tags.findAllWithCounts();
+    // The count follows the reader's territory; the vocabulary does not. See
+    // the store method's note for why those two halves differ.
+    return this.tags.findAllWithCounts(actor.clientScope);
   }
 
   async create(
