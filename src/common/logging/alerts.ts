@@ -72,6 +72,16 @@ export const ALERT_KINDS = {
   WEBHOOK_SIGNATURE_FAILURE: 'bridge.signature_failure',
   /** The reconciliation job itself could not run — the ledger is UNCHECKED. */
   RECONCILIATION_UNAVAILABLE: 'reconciliation.unavailable',
+  /**
+   * Object storage refused or timed out — documents cannot be STORED or SERVED.
+   *
+   * The sibling of RECONCILIATION_UNAVAILABLE, and absent for the same reason it
+   * was: a dependency being down produces a 500 per request and no statement
+   * anywhere that the dependency is the cause. `/health/ready` probes the driver
+   * and would show it, but only to something that polls — and the people who
+   * find out first are clients stuck part-way through onboarding.
+   */
+  STORAGE_UNAVAILABLE: 'storage.unavailable',
   /** An account hit the R-3.5 failure limit and was locked — someone is guessing. */
   LOGIN_LOCKOUT: 'auth.login_lockout',
   /** An operator-controlled security control is switched OFF. */
@@ -278,6 +288,10 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.RECONCILIATION_UNAVAILABLE]: {
     severity: 'notify',
     rule: 'Two consecutive failures. The ledger is not wrong — it is UNCHECKED, which is a different and quieter problem.',
+  },
+  [ALERT_KINDS.STORAGE_UNAVAILABLE]: {
+    severity: 'notify',
+    rule: 'A burst rather than a single occurrence — one timeout is a slow object-store round trip and resolves itself. Sustained, it means KYC and deposit-proof uploads are failing: clients cannot finish onboarding, reviewers cannot open the documents already held, and every one of those is a 500 that names nothing. NOTIFY rather than page because no money moves and nothing is corrupted — the ledger and the wallets are untouched — but it blocks the funnel, so it is answered the same working day rather than the next sprint. Read it beside /health/ready, which reports the same dependency as a state rather than as an event.',
   },
   [ALERT_KINDS.SECURITY_CONTROL_DISABLED]: {
     severity: 'notify',

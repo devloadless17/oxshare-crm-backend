@@ -442,11 +442,44 @@ export class StoredFilesService {
     const key = objectKey(bucket.dir, filename);
     const sha256 = createHash('sha256').update(buffer).digest('hex');
 
-    await this.driver.put(key, buffer, {
-      contentType: actual,
-      sha256,
-      ...(bucket.cacheControl ? { cacheControl: bucket.cacheControl } : {}),
-    });
+    /*
+     * THE STORE ITSELF BEING DOWN IS A DIFFERENT EVENT FROM A BAD UPLOAD.
+     *
+     * Everything above this line refuses the CALLER — wrong type, too large,
+     * active content — and each throws a ValidationError the client can act on.
+     * A failure here is ours: the object store timed out or refused, and the
+     * request becomes a 500 that names nothing. Measured during a verification
+     * run, an R2 timeout surfaced as `POST /v1/kyc/upload → 500: Request
+     * aborted`, and the only place that knew why was `/health/ready` — which
+     * tells somebody who polls it, while the people who find out first are
+     * clients stuck part-way through onboarding.
+     *
+     * Alert, then rethrow unchanged: the exception filter still maps it, the
+     * caller still gets its 500, and the bytes are still not stored. What
+     * changes is that the cause is stated once rather than inferred from a
+     * pattern of 500s across unrelated routes.
+     */
+    try {
+      await this.driver.put(key, buffer, {
+        contentType: actual,
+        sha256,
+        ...(bucket.cacheControl ? { cacheControl: bucket.cacheControl } : {}),
+      });
+    } catch (error) {
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.STORAGE_UNAVAILABLE,
+        'notify',
+        `Object storage (${this.driver.name}) refused a write — uploads are failing`,
+        {
+          bucket: bucket.dir,
+          provider: this.driver.name,
+          bytes: buffer.length,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      );
+      throw error;
+    }
 
     try {
       await this.registry.record({
