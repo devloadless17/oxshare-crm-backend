@@ -181,6 +181,21 @@ describe('R-2.4 keyset pagination', () => {
   }
 });
 
+/*
+ * ROW IDS ARE UUIDS, and these used to be `'x'`, `'abc'`, `'a'`, `'b'`.
+ *
+ * `decodeCursor` now shape-checks `position.id`, because every keyset seek in
+ * the codebase emits `${cursor.id}::uuid` — all seven of them, verified — and
+ * an id that is not a uuid can only ever become a cast error. The synthetic
+ * placeholders were therefore asserting behaviour against an input the system
+ * cannot produce, which is why adding the check turned four of these red.
+ *
+ * Kept as constants so the cases still read as "some row" rather than drowning
+ * in hex.
+ */
+const ROW_A = 'a3f1c2d4-0000-4000-8000-00000000000a';
+const ROW_B = 'a3f1c2d4-0000-4000-8000-00000000000b';
+
 describe('R-2.4 cursor encoding', () => {
   it('round-trips a position', () => {
     const position: CursorPosition = {
@@ -216,7 +231,11 @@ describe('R-2.4 cursor encoding', () => {
    * a silently wrong answer is worse than an error.
    */
   it('refuses a cursor minted for a DIFFERENT sort, naming both', () => {
-    const cursor = encodeCursor({ sort: 'createdAt', value: '2026-08-04T10:00:00.000Z', id: 'x' });
+    const cursor = encodeCursor({
+      sort: 'createdAt',
+      value: '2026-08-04T10:00:00.000Z',
+      id: ROW_A,
+    });
 
     expect(() => decodeCursor(cursor, 'email')).toThrow(ValidationError);
     expect(() => decodeCursor(cursor, 'email')).toThrow(/createdAt/);
@@ -224,7 +243,7 @@ describe('R-2.4 cursor encoding', () => {
   });
 
   it('accepts a cursor for the sort it was minted for', () => {
-    const cursor = encodeCursor({ sort: 'email', value: 'zulu@example.com', id: 'x' });
+    const cursor = encodeCursor({ sort: 'email', value: 'zulu@example.com', id: ROW_A });
     expect(decodeCursor(cursor, 'email').value).toBe('zulu@example.com');
   });
 
@@ -233,13 +252,13 @@ describe('R-2.4 cursor encoding', () => {
     // error they cannot act on, caused by a release they did not see.
     // Delete this, and the branch it covers, after one release.
     const legacy = Buffer.from(
-      JSON.stringify({ createdAt: '2026-08-04T10:00:00.000Z', id: 'abc' }),
+      JSON.stringify({ createdAt: '2026-08-04T10:00:00.000Z', id: ROW_A }),
     ).toString('base64url');
 
     expect(decodeCursor(legacy)).toEqual({
       sort: 'createdAt',
       value: '2026-08-04T10:00:00.000Z',
-      id: 'abc',
+      id: ROW_A,
     });
   });
 
@@ -247,14 +266,14 @@ describe('R-2.4 cursor encoding', () => {
     // Otherwise the refusal above can never fire: a cursor that does not say
     // which ordering it belongs to cannot be checked against one.
     const rows = [
-      { id: 'a', createdAt: new Date('2026-01-01'), email: 'alpha@example.com' },
-      { id: 'b', createdAt: new Date('2026-01-02'), email: 'bravo@example.com' },
+      { id: ROW_A, createdAt: new Date('2026-01-01'), email: 'alpha@example.com' },
+      { id: ROW_B, createdAt: new Date('2026-01-02'), email: 'bravo@example.com' },
     ];
     const page = buildCursorPage(rows, 1, undefined, 'email');
 
     expect(page.nextCursor).not.toBeNull();
     const decoded = decodeCursor(page.nextCursor as string, 'email');
-    expect(decoded).toEqual({ sort: 'email', value: 'alpha@example.com', id: 'a' });
+    expect(decoded).toEqual({ sort: 'email', value: 'alpha@example.com', id: ROW_A });
   });
 
   it('REFUSES a Date sort value rather than encoding a truncated one', () => {
@@ -281,8 +300,8 @@ describe('R-2.4 cursor encoding', () => {
      * than a page that quietly skips rows.
      */
     const rows = [
-      { id: 'a', createdAt: new Date('2026-01-01T10:00:00.123Z') },
-      { id: 'b', createdAt: new Date('2026-01-02T10:00:00.000Z') },
+      { id: ROW_A, createdAt: new Date('2026-01-01T10:00:00.123Z') },
+      { id: ROW_B, createdAt: new Date('2026-01-02T10:00:00.000Z') },
     ];
     expect(() => buildCursorPage(rows, 1)).toThrow(/milliseconds/i);
   });
@@ -291,12 +310,46 @@ describe('R-2.4 cursor encoding', () => {
     // What a caller supplies now. The value round-trips through `::timestamptz`
     // losslessly, which is the whole point of naming an exact position.
     const rows = [
-      { id: 'a', createdAt: new Date(), cursorValue: '2026-01-01 10:00:00.123456+00' },
-      { id: 'b', createdAt: new Date(), cursorValue: '2026-01-02 10:00:00.000001+00' },
+      { id: ROW_A, createdAt: new Date(), cursorValue: '2026-01-01 10:00:00.123456+00' },
+      { id: ROW_B, createdAt: new Date(), cursorValue: '2026-01-02 10:00:00.000001+00' },
     ];
     const page = buildCursorPage(rows, 1);
 
     expect(decodeCursor(page.nextCursor as string).value).toBe('2026-01-01 10:00:00.123456+00');
+  });
+
+  it('REFUSES a row id that is not a uuid', () => {
+    /*
+     * Every keyset seek in the codebase emits `${cursor.id}::uuid` — seven of
+     * them — so an id of any other shape can only become a cast error. It was
+     * never checked here, on any sort: the value was validated when the sort was
+     * `createdAt` and the id never.
+     *
+     * `transactions.service.ts` carried this exact regex in its own `cursorSeek`
+     * and was the only list that did. Moving it into the decoder is what gives
+     * the other six the same answer, and is why four cases in this file had to
+     * stop using `'a'` as a row id.
+     */
+    const cursor = encodeCursor({ sort: 'createdAt', value: new Date().toISOString(), id: 'nope' });
+
+    expect(() => decodeCursor(cursor)).toThrow(ValidationError);
+  });
+
+  it('REFUSES a value the caller says will be cast to numeric', () => {
+    // The half the old check could not reach: it only validated the value when
+    // the sort was `createdAt`, so every other sort carried anything into its
+    // own cast.
+    const cursor = encodeCursor({ sort: 'balance', value: 'not-a-number', id: ROW_A });
+
+    expect(() => decodeCursor(cursor, 'balance', 'numeric')).toThrow(ValidationError);
+    // And accepts a real one, so the guard is not simply closed.
+    expect(
+      decodeCursor(
+        encodeCursor({ sort: 'balance', value: '10.5', id: ROW_A }),
+        'balance',
+        'numeric',
+      ).value,
+    ).toBe('10.5');
   });
 
   it('clamps the page size so one caller cannot ask for the whole table', () => {

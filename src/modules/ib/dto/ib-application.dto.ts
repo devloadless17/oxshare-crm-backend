@@ -603,10 +603,35 @@ export class IbPartnerDetailDto {
     'the nested partner, whose own shape carries the marks \u2014 masked there, not here',
   )
   parent: IbPartnerPersonDto | null;
+  /**
+   * True when a parent EXISTS but sits outside this reader's territory.
+   *
+   * `parent` is null in two completely different situations and the difference
+   * decides how the partner is paid: a level 1 partner deals with the broker
+   * directly and genuinely has none, while a level 2 partner whose parent is in
+   * another desk's territory has one this reader may not see. Rendering both as
+   * "no parent" reads the second as the first.
+   *
+   * The id is deliberately NOT substituted. Scoping the downline below exists
+   * because ids of people a reader is denied are an oracle; handing one over
+   * here would reopen it for the most interesting person in the tree.
+   */
+  @NotClientField('a visibility state about the reader, not an attribute of the person')
+  @ApiProperty({
+    description:
+      'True when this partner has a parent the reader may not see. Distinguishes “deals ' +
+      'with the broker directly” from “parent outside your territory”.',
+  })
+  parentOutsideTerritory: boolean;
   @NotClientField(
     'the nested partner, whose own shape carries the marks \u2014 masked there, not here',
   )
-  @ApiProperty({ type: [IbSubPartnerRowDto] })
+  @ApiProperty({
+    type: [IbSubPartnerRowDto],
+    description:
+      'SCOPED to the reader’s territory. No out-of-territory total accompanies it — a count ' +
+      'is itself a disclosure, and there is no row cap here for one to describe.',
+  })
   directPartners: IbSubPartnerRowDto[];
   @NotClientField(
     'not a client-owned attribute \u2014 referredClientCount describes the record rather than the person',

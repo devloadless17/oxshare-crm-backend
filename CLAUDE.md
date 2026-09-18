@@ -177,23 +177,32 @@ and a parent always appears in the chain for clients introduced beneath them.
 describing which of two numbers were set, and the numbers say that themselves: a zero commission
 pays no partner, a zero rebate returns nothing to the client, both set pays both.
 
-⚠️ **HOW DEEP the ladder may go is capped by `trading_settings.ib_max_levels`** — "Maximum
-commission levels" on the Trading settings tab (0105).
+⚠️ **`trading_settings.ib_max_levels` NO LONGER CAPS ANYTHING (0113), and this section used to
+say it was the cap.**
 
-Committed scope is TWO — Feature List Rev 9, IB-17: *"no level beyond L2"* — so that is the default
-and a deployment configuring nothing ships what was agreed. The setting is what makes the number a
-commercial decision somebody makes rather than a constant somebody deploys.
+Precisely: the COLUMN is still there — `select column_name from information_schema.columns` lists
+it — and nothing on the live path reads it. The control left the Trading settings tab and the
+enforcement left `IbLevelsService.create`. It is a dead column, like `admins.role`, not a dropped
+one; do not go looking for the migration that removed it.
 
-Four bounds, and they are not the same thing:
+It was "Maximum commission levels" (0105), defaulting to 2, and it went for the reason the other
+four IB settings went: adding a third rung meant first raising a number on a DIFFERENT screen,
+which is a second place standing between an operator and a decision the IB Levels page already
+expresses — remove the rung and it stops paying. `test/ib-applications.spec.ts` carries the note
+in full, under a heading reading "THERE IS NO CONFIGURABLE CEILING ANY MORE".
+
+Committed scope is still TWO — Feature List Rev 9, IB-17: *"no level beyond L2"* — and it is now
+expressed by which rungs EXIST rather than by a ceiling above them.
+
+Three bounds, and they are not the same thing:
 
 | bound | value | what it is |
 | ----- | ----- | ---------- |
-| `trading_settings.ib_max_levels` | 2 | POLICY — the deepest rung that may be SAVED |
 | `trading_settings.ib_max_total_payout_pct` | 100 | COST — the most ONE TRADE may pay out across every percentage leg |
 | `trading_settings.ib_max_payout_per_lot` | 50 | COST — the same, in the units per-lot terms are quoted in (0111) |
 | `ib_levels_level_range` / `MAX_CHAIN_DEPTH` | 1..10 | STRUCTURE and CYCLE GUARD — what the column holds, and where the walk stops |
 
-The first bounds how DEEP, the next two how MUCH, and they fail differently: an over-deep rung is
+The first two bound how MUCH and the last how DEEP, and they fail differently: an over-deep rung is
 refused at SAVE time on the levels form, an over-budget chain is refused at ACCRUAL time and the
 deal defers on the 0092 backoff. Neither truncates or scales anything already agreed.
 
@@ -204,11 +213,11 @@ control, on an explicit instruction. `UpdateTradingSettingsDto` and `TradingSett
 carry them, which is the whole mechanism by which a PUT leaves the stored values alone: `setTrading`
 spreads exactly the keys it is given.
 
-`common/ib-levels.ts` owns the normalising of `ib_max_levels` and `tradingTermsFrom` calls it. An
-unusable stored value falls back to the DEFAULT rather than to the maximum — a bad row must not
-widen what partners are paid.
+`common/ib-levels.ts` still carries the normalising helper the setting used, and its own header
+records that the number "used to be `MAX_CHAIN_DEPTH = 2`". Nothing on the live path reads a
+configured ceiling any more.
 
-**Lowering `ib_max_levels` truncates nothing.** An existing level 3 keeps paying, because an
+**Removing a RUNG truncates nothing that is already owed.** An existing level 3 keeps paying, because an
 operator adjusting a limit must not silently restate money that is owed. Only the next CREATE past
 the new ceiling is refused. That is a deliberate difference from the programme catalogue this
 replaced, where the next EDIT of a too-deep ladder was refused too: a programme's ladder was
@@ -401,7 +410,8 @@ Four controls lived there and each decided what partners are PAID: `ib_max_reven
 | `ib_accrual_start`         | `IB_ACCRUAL_START`                                                    |
 | `ib_revenue_basis`         | `ib_levels.revenue_basis` — FR-IB-16 puts it with the TERMS           |
 
-**What remains on that form is `ib_max_levels`, and it passes the test the four failed:** it
+**Nothing of the IB block remains on that form (0113).** The last survivor was `ib_max_levels`,
+which for a while passed the test the other four failed:
 CONSTRAINS the Commission Levels page rather than restating it. A rate belongs to one partner's
 agreement; a bound belongs to the platform.
 

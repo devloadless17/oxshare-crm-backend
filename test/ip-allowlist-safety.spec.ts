@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { adminNetworkAdmits, ipAllowlistEnforced } from '../src/common/security/admin-network';
 import { isAdminSurface } from '../src/common/api-prefix';
+import { ALERT_KINDS } from '../src/common/logging/alerts';
 
 /**
  * RBAC-08 — the properties that stop this feature hurting anybody.
@@ -157,6 +158,60 @@ describe('an unreadable list cannot take the console down', () => {
     };
 
     await expect(guard.canActivate(context as never)).resolves.toBe(true);
+  });
+
+  it('PAGES when it fails open, instead of failing open quietly', async () => {
+    /*
+     * The half the catch was missing, and the one its own comment already
+     * demanded: "the log line is ERROR, not WARN, because a security control
+     * that is not running is worth waking somebody for."
+     *
+     * An ERROR line wakes nobody. `RedisThrottlerStorage` makes the identical
+     * fail-open argument and raises `SECURITY_CONTROL_DISABLED` at `page`; this
+     * guard made the argument and stopped there — so RBAC-08 could be off across
+     * the whole estate, admitting every admin request regardless of network,
+     * with nothing but a log line among thousands to say so.
+     *
+     * Asserted on the ALERT PAYLOAD rather than on the prose, because the
+     * payload is the machine-detectable half — `alert: true` and a kind from a
+     * closed set are what a log pipeline can route on.
+     */
+    const { IpAllowlistGuard } = await import('../src/modules/admin/guards/ip-allowlist.guard');
+    const store = {
+      listCidrs: () => Promise.reject(new Error('relation "admin_ip_allowlist" does not exist')),
+    };
+    const guard = new IpAllowlistGuard(store as never);
+
+    const logged: unknown[] = [];
+    const logger = (guard as unknown as { logger: { error: (v: unknown) => void } }).logger;
+    const original = logger.error.bind(logger);
+    logger.error = (value: unknown) => {
+      logged.push(value);
+    };
+
+    const context = {
+      getType: () => 'http',
+      switchToHttp: () => ({ getRequest: () => ({ path: '/v1/admin/auth/login', ip: '::1' }) }),
+    };
+
+    try {
+      await expect(guard.canActivate(context as never)).resolves.toBe(true);
+    } finally {
+      logger.error = original;
+    }
+
+    const alert = logged.find(
+      (entry): entry is { alert: true; kind: string; severity: string } =>
+        typeof entry === 'object' && entry !== null && 'alert' in entry,
+    );
+
+    expect(alert, 'failing open raised no alert — only a log line').toBeDefined();
+    // The CONSTANT, not a string copy of it — a literal here would keep passing
+    // if the kind were renamed, which is the drift the closed set exists to stop.
+    expect(alert!.kind).toBe(ALERT_KINDS.SECURITY_CONTROL_DISABLED);
+    // `page`, not `notify`: the control is off for every admin request in the
+    // estate, and nothing else in the system will notice.
+    expect(alert!.severity).toBe('page');
   });
 
   it('still enforces normally when the store answers', async () => {

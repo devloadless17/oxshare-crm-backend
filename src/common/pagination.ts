@@ -60,6 +60,15 @@ export interface CursorPosition {
  * already has, so there is nothing to protect. It IS validated on the way back
  * in, because it lands in a WHERE clause.
  */
+/** What a cursor's `value` will be cast to by the seek that consumes it. */
+export type CursorValueShape = 'timestamptz' | 'numeric' | 'text';
+
+/** Every seek emits `${cursor.id}::uuid`, so anything else is a guaranteed 22P02. */
+const CURSOR_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A decimal a `::numeric` cast will accept, sign and fraction included. */
+const NUMERIC_SHAPE = /^-?\d+(\.\d+)?$/;
+
 export function encodeCursor(position: CursorPosition): string {
   return Buffer.from(JSON.stringify(position), 'utf8').toString('base64url');
 }
@@ -72,6 +81,13 @@ export function encodeCursor(position: CursorPosition): string {
 export function decodeCursor(
   cursor: string,
   expectedSort: string = DEFAULT_SORT_KEY,
+  /**
+   * The cast the caller's seek will apply to `value`, when it knows it.
+   *
+   * Omitted means "check what can be checked without it" — the id always, and
+   * the value when the sort is the default timestamp one.
+   */
+  valueShape?: CursorValueShape,
 ): CursorPosition {
   let parsed: unknown;
   try {
@@ -116,10 +132,48 @@ export function decodeCursor(
     );
   }
 
-  // Timestamps are the one value with a shape worth checking: an unparseable
-  // one reaches the query as a `timestamptz` comparison and errors there, well
-  // away from the input that caused it.
-  if (position.sort === DEFAULT_SORT_KEY && Number.isNaN(Date.parse(position.value))) {
+  /*
+   * The ROW ID, shape-checked for every sort — not only for the default one.
+   *
+   * ⚠️ The paragraph below used to open "Timestamps are the one value with a
+   * shape worth checking", and that was the whole of it: `id` was never checked
+   * at all, though every keyset seek emits `${cursor.id}::uuid`.
+   *
+   * ⚠️ AND THE OBVIOUS REASON TO FIX IT WAS WRONG. A tampered cursor was never a
+   * 500: `AllExceptionsFilter` maps Postgres `22P02` to a 400, deliberately and
+   * for this exact class. Verified by removing these two checks and watching the
+   * route keep answering 400.
+   *
+   * What the cast error cannot do is SAY WHAT IS WRONG. "A value in the request
+   * is not a valid identifier" gives a caller holding a stale cursor nothing to
+   * act on, where "Malformed cursor. Omit it to start from the first page."
+   * names the remedy. The check also keeps a caller-supplied value from
+   * reaching the database at all, which is where it belonged anyway.
+   *
+   * It lives here rather than at the seeks because there are seven of those and
+   * one of this. `transactions.service.ts` already validated both halves in its
+   * own `cursorSeek`; the other six inherited nothing, which is the shape of gap
+   * a shared decoder exists to close.
+   */
+  if (!CURSOR_ID_SHAPE.test(position.id)) {
+    throw new ValidationError('Malformed cursor. Omit it to start from the first page.');
+  }
+
+  /*
+   * And the VALUE, where the caller has told us what it should look like.
+   *
+   * `valueShape` is optional because the decoder cannot infer it: the same
+   * function serves lists sorted by timestamp, by numeric balance and by text.
+   * A caller that knows the cast its seek will apply passes it, and a tampered
+   * cursor is then refused by a message about CURSORS rather than by a generic
+   * one about identifiers. The `createdAt` default below is the case that was
+   * already covered.
+   */
+  const shape = valueShape ?? (position.sort === DEFAULT_SORT_KEY ? 'timestamptz' : undefined);
+  if (shape === 'timestamptz' && Number.isNaN(Date.parse(position.value))) {
+    throw new ValidationError('Malformed cursor. Omit it to start from the first page.');
+  }
+  if (shape === 'numeric' && !NUMERIC_SHAPE.test(position.value)) {
     throw new ValidationError('Malformed cursor. Omit it to start from the first page.');
   }
 

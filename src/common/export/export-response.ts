@@ -119,6 +119,22 @@ export function setExportHeaders(res: Response, filename: string): void {
 export const MAX_EXPORT_ROWS = 200_000;
 
 /** How many rows are fetched per database round trip while streaming. */
+/**
+ * Exports a caller may start per minute, per route.
+ *
+ * Named here beside the batch size because the two describe the same cost from
+ * opposite ends: one bounds how much a single export reads at a time, this
+ * bounds how often one can be started at all. Both were absent from the route
+ * decorators, so every export inherited the global 120/min — a limit sized for a
+ * person clicking around a console, not for a hundred concurrent streaming reads
+ * over the whole client base.
+ *
+ * Deliberately generous against human use and tight against a loop: nobody
+ * presses Export six times in a minute, and a script doing so is the case worth
+ * bounding.
+ */
+export const EXPORT_RATE_LIMIT = 6;
+
 export const EXPORT_BATCH_SIZE = 1_000;
 
 /**

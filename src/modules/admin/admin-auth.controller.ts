@@ -176,6 +176,22 @@ export class AdminAuthController {
   @Post('invite')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('admins.create')
+  /*
+   * Throttled like the other route on this controller that emails a credential.
+   *
+   * It sends outbound mail to a caller-named address and mints a 48-hour bearer
+   * token that CREATES AN ADMINISTRATOR ACCOUNT — and carried no limit but the
+   * global 120/min, while `users/:id/password-reset` directly below, the same
+   * "send an admin an email with a link in it" shape, has been capped at 5/min
+   * throughout.
+   *
+   * `admins.create` bounds WHO, not HOW OFTEN, and the two are different
+   * questions: the duplicate-suppression in `createInvite` bounds repeats to one
+   * live invite per ADDRESS, which does nothing about a thousand distinct ones.
+   * The cost of that is a mail reputation burned by a compromised session and a
+   * thousand live admin-creating tokens.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Invite a new sub-admin with a role or explicit permissions (requires admins.create)',
@@ -270,11 +286,18 @@ export class AdminAuthController {
   /**
    * Start a password reset for another administrator — D-44.
    *
-   * `admins.create` is the admin-management grant in this catalogue (it is what
-   * `POST /admin/invite` requires to create one). The permission is only half
-   * the control: `refuseReset` inside the service refuses anyone reaching a
-   * privilege level above their own, which is what stops a sub-admin holding
-   * this grant from resetting a master admin and taking the console.
+   * `admins.reset` — its own key, and deliberately not `admins.create`.
+   *
+   * ⚠️ This paragraph named `admins.create` and explained why that was the right
+   * grant, directly above a decorator requiring `admins.reset`. Arming a reset
+   * link for another administrator is a different act from inviting one, and the
+   * catalogue has separated them; the comment was describing the arrangement
+   * before it did.
+   *
+   * The permission is only half the control either way: `refuseReset` inside the
+   * service refuses anyone reaching a privilege level above their own, which is
+   * what stops a sub-admin holding this grant from resetting a master admin and
+   * taking the console.
    */
   @Post('users/:id/password-reset')
   @UseGuards(PermissionsGuard)

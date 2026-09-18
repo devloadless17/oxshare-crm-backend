@@ -435,3 +435,46 @@ describe('append-only', () => {
     ).rejects.toThrow();
   });
 });
+
+describe('R-6.6 — reading a KYC HISTORY writes a row, like reading the live record', () => {
+  /*
+   * `GET /admin/kyc/:userId` records `kyc.submission.view`. `GET
+   * /admin/kyc/:userId/history` returns the SAME identity data one decision
+   * older — email, phone, date of birth, nationality, address, on every
+   * superseded attempt — and recorded nothing at all.
+   *
+   * The route's own comment argues the two are equivalent where ACCESS is
+   * concerned: "previously decided attempts carry the same identity data as the
+   * live submission, so an out-of-scope read here is the same disclosure by a
+   * different URL". It was gated identically on that reasoning and audited
+   * differently anyway, so a reviewer could work through a client's whole
+   * verification history leaving no trace.
+   *
+   * Its own action rather than reusing `kyc.submission.view`, because "who
+   * opened the current record" and "who went looking through the superseded
+   * ones" are different questions for an auditor.
+   */
+  it('records kyc.history.view', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const before = await countOf('kyc.history.view');
+
+    await session.get(`/v1/admin/kyc/${clientId}/history`).expect(200);
+
+    expect(await waitForCount('kyc.history.view', before + 1)).toBe(before + 1);
+  });
+
+  it('names the CLIENT as the subject, so the trail is searchable by person', async () => {
+    /*
+     * Not the reviewer and not the route. An investigation starts from "who
+     * looked at this client", and a subject naming anything else makes that
+     * question unanswerable however many rows exist.
+     */
+    const session = await actingAs(ctx, 'admin', MASTER);
+    await session.get(`/v1/admin/kyc/${clientId}/history`).expect(200);
+    await waitForCount('kyc.history.view', 1);
+
+    const row = await latest('kyc.history.view');
+    expect(row.subjectId).toBe(clientId);
+    expect(row.subjectType).toBe('kyc_submission');
+  });
+});

@@ -15,6 +15,8 @@ import {
   auditLog,
   clientTagAssignments,
   clientTags,
+  ibAccounts,
+  ibApplications,
   kycSubmissions,
   roles,
   transactions,
@@ -144,7 +146,19 @@ beforeAll(async () => {
     .insert(roles)
     .values({
       name: 'Export Masked',
-      permissions: ['clients.view', 'kyc.view'],
+      // `ib.view` belongs here for the reason the comment above already states:
+      // this fixture must hold every read the exports need, so a mask assertion
+      // cannot pass because of a missing permission. It did not hold it, and
+      // the two IB exports were the ones that masked nothing.
+      //
+      // `audit.view` is here for the SAME reason, and it was missing for the
+      // same reason — so the audit export was never reached by a masked reader
+      // in this file either, and it leaked the client address in its `Actor
+      // email` column until the crosshost browser run downloaded the file and
+      // read it. That is twice this one absent permission has hidden a live
+      // leak; the lesson is that a mask fixture must hold EVERY read, not the
+      // reads whose masking somebody already suspected.
+      permissions: ['clients.view', 'kyc.view', 'ib.view', 'audit.view'],
       maskedFields: ['client.email'],
     })
     .returning();
@@ -214,6 +228,26 @@ beforeAll(async () => {
     tagId: mineTag.id,
     createdBy: scopedAdmin.id,
   });
+
+  /*
+   * Both clients are also PARTNERS and APPLICANTS, so the two IB exports have
+   * rows at all.
+   *
+   * Without this they had none, and `ib partners: the partner export omits
+   * out-of-scope partners` below passed on an EMPTY FILE — a file containing no
+   * partners contains no out-of-scope partner either. That is the vacuous pass
+   * this file's own header warns about ("an empty file would pass vacuously"),
+   * and it is why the mask cases further down assert a row is PRESENT before
+   * asserting a field is absent.
+   */
+  await db.insert(ibAccounts).values([
+    { userId: mineId, referralCode: 'EXPORT-MINE' },
+    { userId: theirsId, referralCode: 'EXPORT-THEIRS' },
+  ]);
+  await db.insert(ibApplications).values([
+    { userId: mineId, status: 'approved' },
+    { userId: theirsId, status: 'approved' },
+  ]);
 
   /*
    * A withdrawal for each client, so the money assertions and the withdrawal
@@ -472,6 +506,130 @@ describe('the mask reaches the FILE — an export is not a bypass', () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain('export-mine@oxshare-e2e.test');
   });
+
+  /*
+   * The two IB exports, which were the ONLY two of nine batch methods that
+   * returned their rows unmasked — `return rows;` where every sibling ends in
+   * `maskByShape`. A reviewer refused `client.email` on every screen could
+   * download every applicant's and every partner's address.
+   *
+   * Both assert the ROW SURVIVES before asserting the field is gone. Masking by
+   * deleting a property and masking by returning nothing are indistinguishable
+   * from the outside, and only one of them is correct.
+   */
+  it('ib applications: the masked email is absent while the row remains', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get('/v1/admin/ib/applications/export');
+
+    expect(res.status).toBe(200);
+    expect(
+      res.text,
+      'the applications export came back empty — the mask case is vacuous',
+    ).toContain(mineId);
+    expect(res.text).not.toContain('export-mine@oxshare-e2e.test');
+    expect(res.text).not.toContain('export-theirs@oxshare-e2e.test');
+  });
+
+  it('ib partners: the masked email is absent while the row remains', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get('/v1/admin/ib/partners/export');
+
+    expect(res.status).toBe(200);
+    expect(res.text, 'the partners export came back empty — the mask case is vacuous').toContain(
+      mineId,
+    );
+    expect(res.text).not.toContain('export-mine@oxshare-e2e.test');
+    expect(res.text).not.toContain('export-theirs@oxshare-e2e.test');
+  });
+
+  /*
+   * THE AUDIT TRAIL'S OWN ACTOR COLUMN.
+   *
+   * `audit_log.actor_kind` is one of `admin | client | system | provider`, so
+   * `actor_email` is a CLIENT's address on every row a client generated — and
+   * clients generate them routinely (`kyc.document.view`,
+   * `deposit.proof.view`). `AuditEntryDto.actorEmail` nonetheless declared
+   * `@NotClientField('the ACTOR ... an administrator')`, which was true of the
+   * table as first written and was not revisited when `actorKind` was added to
+   * that same class to record that it had stopped being true.
+   *
+   * Masking it unconditionally would be the wrong fix and is what the control
+   * below forbids: an ADMIN actor's address is the answer to "who did this",
+   * and a log that withholds that is not a log.
+   */
+  it('audit log: a client ACTOR’s address is masked, while the admin actor’s remains', async () => {
+    const db = ctx.db.db;
+    const [masterAdmin] = await db.select().from(admins).where(eq(admins.email, MASTER.email));
+    const ACTION = 'export.actor_mask_probe';
+
+    await db.insert(auditLog).values([
+      {
+        // A client acting on their own record — the row shape the DTO's
+        // "an administrator" sentence denied could exist.
+        actorId: mineId,
+        actorEmail: 'export-mine@oxshare-e2e.test',
+        actorKind: 'client',
+        action: ACTION,
+        subjectType: 'client',
+        subjectId: mineId,
+      },
+      {
+        actorId: masterAdmin.id,
+        actorEmail: 'export-master@oxshare.com',
+        actorKind: 'admin',
+        action: ACTION,
+        subjectType: 'client',
+        subjectId: mineId,
+      },
+    ]);
+
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get(`/v1/admin/audit-log/export?action=${ACTION}`);
+
+    expect(res.status).toBe(200);
+    // The rows must SURVIVE: masking by dropping the row and masking by
+    // dropping the value are indistinguishable from outside the file.
+    const dataRows = res.text
+      .split(/\r?\n/)
+      .slice(1)
+      .filter((line) => line.trim().length > 0);
+    expect(dataRows.length, 'the audit export came back empty — the mask case is vacuous').toBe(2);
+
+    expect(
+      res.text,
+      'the Actor email column handed a masked operator a client address',
+    ).not.toContain('export-mine@oxshare-e2e.test');
+    expect(
+      res.text,
+      'the ADMIN actor was masked too — that empties the column the log exists for',
+    ).toContain('export-master@oxshare.com');
+  });
+
+  it('audit log: the master reads both actor addresses — the control', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get('/v1/admin/audit-log/export?action=export.actor_mask_probe');
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('export-mine@oxshare-e2e.test');
+    expect(res.text).toContain('export-master@oxshare.com');
+  });
+
+  it('gives the master BOTH IB exports in full — the mask is policy, not a dropped column', async () => {
+    /*
+     * The control that makes the two cases above mean something. Without it
+     * they would pass equally well if the exporter had simply stopped emitting
+     * the email for everybody, which is a different bug wearing the same shape.
+     */
+    const session = await actingAs(ctx, 'admin', MASTER);
+
+    const applications = await session.get('/v1/admin/ib/applications/export');
+    expect(applications.status).toBe(200);
+    expect(applications.text).toContain('export-mine@oxshare-e2e.test');
+
+    const partners = await session.get('/v1/admin/ib/partners/export');
+    expect(partners.status).toBe(200);
+    expect(partners.text).toContain('export-mine@oxshare-e2e.test');
+  });
 });
 
 describe('an export requires the SAME permission as its list', () => {
@@ -695,4 +853,130 @@ describe('every declared export resource answers', () => {
       expect(res.text.startsWith('﻿')).toBe(true);
     });
   }
+});
+
+describe('the export honours the SAME filters as the list', () => {
+  /*
+   * `admin-clients.controller.ts` promises exactly this, directly above the
+   * query it builds: "the export honours the SAME filters as the list, so
+   * 'export what I am looking at' stays true as filters are added. Omitting
+   * these two would have made a filtered screen produce an unfiltered file."
+   *
+   * It then passed `emailVerified` and `kycStatus` into an object typed by
+   * `ClientExportQuery`, which declared neither — so `clientBatch` never
+   * forwarded them and a filtered screen produced exactly the unfiltered file
+   * the comment says it must not. TypeScript could not see it: the object binds
+   * to a `const` before the call, which is the one case excess-property checking
+   * does not cover.
+   */
+  it('narrows by kycStatus, instead of returning every client', async () => {
+    const master = await actingAs(ctx, 'admin', MASTER);
+
+    const res = await master.get('/v1/admin/clients/export?kycStatus=submitted');
+
+    expect(res.status).toBe(200);
+    // `mine` has a submitted submission; `theirs` has none at all.
+    expect(res.text, 'the filtered client is missing — the filter over-narrowed').toContain(mineId);
+    expect(res.text, 'the filter was ignored and the file holds everybody').not.toContain(theirsId);
+  });
+
+  it('narrows by emailVerified, and tells absent apart from false', async () => {
+    const db = ctx.db.db;
+    await db.update(users).set({ emailVerified: true }).where(eq(users.id, mineId));
+    await db.update(users).set({ emailVerified: false }).where(eq(users.id, theirsId));
+
+    const master = await actingAs(ctx, 'admin', MASTER);
+
+    const verified = await master.get('/v1/admin/clients/export?emailVerified=true');
+    expect(verified.status).toBe(200);
+    expect(verified.text).toContain(mineId);
+    expect(verified.text).not.toContain(theirsId);
+
+    /*
+     * The tri-state, which is why this is parsed by a shared function rather
+     * than `=== 'true'`. An ABSENT filter must return both — collapsing absent
+     * into false would silently show only unverified clients on an unfiltered
+     * export.
+     */
+    const all = await master.get('/v1/admin/clients/export');
+    expect(all.text).toContain(mineId);
+    expect(all.text).toContain(theirsId);
+  });
+
+  it('REFUSES an unrecognised kycStatus rather than ignoring it', async () => {
+    // The same 400 the list gives. A silently ignored filter returns everybody,
+    // and "every client" looks enough like a plausible answer that nobody
+    // checks it against what they asked for.
+    const master = await actingAs(ctx, 'admin', MASTER);
+
+    const res = await master.get('/v1/admin/clients/export?kycStatus=nonsense');
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('an offset-batched export is bounded to ONE instant', () => {
+  /*
+   * ⚠️ The claim this replaces was exactly backwards.
+   *
+   * Two exports justified offset batching with: "a concurrent insert can only
+   * add a row at the head this pass has already passed — it cannot shift a row
+   * across a batch boundary."
+   *
+   * The ordering is `created_at DESC`. A new row sorts FIRST. It does not land
+   * at a head already gone by — it pushes every later row down one, so
+   * `OFFSET 1000` points at what was row 999 and the last row of batch 1 is
+   * written to the file a second time. The sentence described the one thing that
+   * cannot happen and asserted it as the reason the thing that does happen
+   * cannot.
+   *
+   * `created_at <= startedAt` removes the possibility rather than reasoning
+   * about it, which is why this asserts the BOUND rather than trying to race an
+   * insert against a streaming download — a test that has to win a race to fail
+   * is a test that will pass on a busy machine.
+   */
+  it('excludes rows created after the run began', async () => {
+    const db = ctx.db.db;
+    const { TransactionsService } = await import('../src/modules/payments/transactions.service');
+    const service = ctx.app.get(TransactionsService);
+
+    const startedAt = new Date();
+    // Unambiguously after the snapshot, so the assertion cannot turn on clock
+    // resolution.
+    const later = new Date(startedAt.getTime() + 60_000);
+
+    // The client's EXISTING wallet — `currency` carries a foreign key to
+    // `currencies`, so an invented code fails the insert rather than the test.
+    const [wallet] = await db.select().from(wallets).where(eq(wallets.userId, mineId)).limit(1);
+    const [fresh] = await db
+      .insert(transactions)
+      .values({
+        userId: mineId,
+        walletId: wallet.id,
+        direction: 'withdrawal',
+        amount: '1.00000000',
+        currency: wallet.currency,
+        state: 'pending',
+        provider: 'whish',
+        destination: 'inserted-mid-export',
+        createdAt: later,
+      })
+      .returning();
+
+    const bounded = await service.listForExport({ offset: 0, limit: 100, startedAt });
+    expect(
+      bounded.map((row) => row.id),
+      'a row created after the snapshot entered the export, so offsets can still shift',
+    ).not.toContain(fresh.id);
+
+    // And the control: the same query with a snapshot taken AFTER the insert
+    // does include it, so the exclusion is about the bound and not about the row
+    // being invisible for some other reason.
+    const unbounded = await service.listForExport({
+      offset: 0,
+      limit: 100,
+      startedAt: new Date(later.getTime() + 1_000),
+    });
+    expect(unbounded.map((row) => row.id)).toContain(fresh.id);
+  });
 });

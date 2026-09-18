@@ -1,3 +1,4 @@
+import { Throttle } from '@nestjs/throttler';
 import {
   Body,
   Controller,
@@ -27,7 +28,11 @@ import {
 import { ValidationError } from '../../common/errors/domain-errors';
 import { PAYMENT_LOGO_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { Request, Response } from 'express';
-import { exportFormat, streamCsvFromArray } from '../../common/export/export-response';
+import {
+  exportFormat,
+  streamCsvFromArray,
+  EXPORT_RATE_LIMIT,
+} from '../../common/export/export-response';
 import { NotAudited } from '../admin/guards/audited.decorator';
 import {
   AuthenticatedAdmin,
@@ -95,6 +100,20 @@ export class AdminPaymentMethodsController {
    * operator decides: whether clients are offered it.
    */
   @Get('export')
+  /*
+   * A ceiling on a STREAMING read of the whole client base.
+   *
+   * Every export here is batched over the full filtered set and held open for
+   * the length of the download, and none carried anything but the global
+   * 120/min — which is sized for a person clicking around a console, not for
+   * 120 concurrent full-table CSV streams. The limit is per route per IP, so a
+   * desk exporting clients and then withdrawals is unaffected; what it bounds is
+   * one caller pulling the same export in a loop.
+   *
+   * Six a minute: far above any human use of an Export button, far below what
+   * it takes to hurt the database.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
   @RequirePermissions('payments.view')
   @ApiCookieAuth()

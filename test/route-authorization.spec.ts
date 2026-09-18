@@ -10,6 +10,7 @@ import { AppModule } from '../src/app.module';
 import { ANY_ADMIN_KEY, PERMISSIONS_KEY } from '../src/modules/admin/guards/admin.guard';
 import { NO_CSRF_KEY } from '../src/common/security/csrf.guard';
 import { isAdminSurface } from '../src/common/api-prefix';
+import { CATALOG_KEYS } from '../src/common/security/actor';
 
 /**
  * Every route declares how it is protected — PLATFORM-CONVENTIONS R-4.2.
@@ -109,7 +110,7 @@ const PUBLIC_ROUTES: Record<string, string> = {
   'POST /admin/password-reset/complete':
     'Spends an admin reset link; the emailed token IS the authentication. Single use ' +
     '(enforced in the UPDATE), 1-hour TTL, throttled 3/min, and it revokes every session ' +
-    'for that admin. Arming it requires users.create plus the D-44 escalation guard.',
+    'for that admin. Arming it requires admins.reset plus the D-44 escalation guard.',
 
   /*
    * ENDING a session cannot require a live one either.
@@ -506,10 +507,24 @@ describe('R-4.2 every route declares how it is protected', () => {
      * and the bare AdminGuard leave the question open, so only those must answer
      * it — with @RequirePermissions, or @AnyAdmin plus a reason.
      */
+    /*
+     * "Guarded by an admin guard", not "has /admin in its path".
+     *
+     * The filter was `r.signature.includes(' /admin')`, and one route slipped
+     * straight through it: `GET /uploads/admin-avatars/:file` is
+     * `@UseGuards(AdminGuard)` — authenticated as an administrator — but its
+     * signature reads `/uploads`, so the census never asked it anything. It
+     * declared no permission and no `@AnyAdmin`, which is the precise condition
+     * this test exists to refuse, and `AdminGuard` does not read
+     * `PERMISSIONS_KEY`, so deny-by-default could not catch it either.
+     *
+     * `client-scope-coverage.spec.ts` governs `/uploads` and this did not — two
+     * censuses disagreeing about what "the admin surface" means, which is how a
+     * route ends up inside neither.
+     */
     const needsAnAnswer = routes().filter(
       (r) =>
-        r.signature.includes(' /admin') &&
-        r.guards.length > 0 &&
+        (r.guards.includes('AdminGuard') || r.guards.includes('PermissionsGuard')) &&
         !r.guards.includes('MasterAdminGuard'),
     );
 
@@ -713,3 +728,107 @@ function reflectorHasNoCsrf(signature: string): boolean {
   }
   return false;
 }
+
+describe('the permission CATALOGUE and the decorators agree, both directions', () => {
+  /*
+   * Neither direction was checked, and each fails silently in its own way.
+   *
+   * ── A key in a decorator that the catalogue does not contain ────────────────
+   *
+   * `AdminRbacService.assertKnownKeys` refuses to GRANT a key outside the
+   * catalogue. So a typo in `@RequirePermissions('clients.viewx')` produces a
+   * route that is permanently 403 for EVERY principal — including `SYSTEM_ACTOR`
+   * — because the key it demands can never be held by anybody. Nothing fails:
+   * not the build, not the guard, not the existing suites. The route simply
+   * never works, and reads as a permissions misconfiguration at the far end.
+   *
+   * ── A catalogue key no code enforces ───────────────────────────────────────
+   *
+   * It renders in the console's permission picker as a grantable option. An
+   * operator hands it to a role believing they have granted something; it grants
+   * nothing. `permission-drift.ts` then re-grants it to the system roles on every
+   * boot, so it never even looks unused.
+   *
+   * `permission-catalog-baseline.spec.ts` compares the catalogue to a BASELINE
+   * FILE, which catches an unrecorded change to the catalogue and says nothing
+   * about whether code agrees with it.
+   */
+  /*
+   * IMPORTED, not re-parsed. `CATALOG_KEYS` is the same list the guard and
+   * `assertKnownKeys` read, so this cannot pass by agreeing with a second
+   * reading of the file — which is precisely the failure mode of a census that
+   * builds its own copy of the thing it is checking.
+   */
+  const catalogueKeys = (): string[] => CATALOG_KEYS;
+
+  /**
+   * Catalogue keys enforced at the SERVICE layer, never on a route.
+   *
+   * Real enforcement, invisible to a scan of route metadata: each is asserted
+   * inside a method with `assertActorCan`, or consulted while shaping a
+   * response. Listed with where, so "not on a route" cannot quietly become "not
+   * anywhere".
+   */
+  const ENFORCED_OFF_ROUTE: Record<string, string> = {
+    'admins.scope': 'admin-rbac.service.ts and admin-auth.service.ts, when a territory is set',
+    'kyc.documents.view': 'uploads.controller.ts, inside the handler; and shapes the profile',
+    'deposits.proofs.view': 'uploads.controller.ts, inside the handler',
+    'trading.deposit': 'admin-money.service.ts — the real gate on funding an account',
+    'trading.withdraw': 'admin-money.service.ts — the real gate on withdrawing from one',
+    /*
+     * ⚠️ NOT enforced anywhere, and kept deliberately rather than deleted.
+     *
+     * There is no `GET /admin/deposits`: deposits surface through
+     * `GET /admin/transactions` under `transactions.view`. So this key grants
+     * nothing and shows in the picker as though it does.
+     *
+     * Deleting it is the right end state and is NOT a one-line change:
+     * `assertKnownKeys` rejects any permissions array containing an unknown key,
+     * so a role that already holds it would become uneditable the moment the key
+     * left the catalogue. That needs a migration stripping it from every role
+     * first. Recorded here so the next person meets the reason rather than the
+     * trap.
+     */
+    'deposits.view': 'NOTHING — dead key; removing it needs a migration first, see the note',
+  };
+
+  it('every @RequirePermissions key exists in the catalogue', () => {
+    const known = new Set(catalogueKeys());
+    const used = new Set(routes().flatMap((route) => route.permissions ?? []));
+    const unknown = [...used].filter((key) => !known.has(key)).sort();
+
+    expect(
+      unknown,
+      'These keys are demanded by a route and are not in src/config/permissions.json, so ' +
+        'they can never be granted and the routes are permanently 403:\n' +
+        unknown.map((k) => `  ${k}`).join('\n'),
+    ).toEqual([]);
+  });
+
+  it('every catalogue key is enforced somewhere, on a route or off it', () => {
+    const onRoutes = new Set(routes().flatMap((route) => route.permissions ?? []));
+    const unenforced = catalogueKeys()
+      .filter((key) => !onRoutes.has(key) && !(key in ENFORCED_OFF_ROUTE))
+      .sort();
+
+    expect(
+      unenforced,
+      'These catalogue keys guard nothing. Each is a grantable option in the console that ' +
+        'confers no access. Either enforce it, or add it to ENFORCED_OFF_ROUTE saying where ' +
+        'it is enforced:\n' +
+        unenforced.map((k) => `  ${k}`).join('\n'),
+    ).toEqual([]);
+  });
+
+  it('keeps ENFORCED_OFF_ROUTE honest — no entry for a key that left the catalogue', () => {
+    const known = new Set(catalogueKeys());
+    const stale = Object.keys(ENFORCED_OFF_ROUTE)
+      .filter((key) => !known.has(key))
+      .sort();
+
+    expect(
+      stale,
+      `Listed as enforced off-route but no longer in the catalogue:\n${stale.join('\n')}`,
+    ).toEqual([]);
+  });
+});

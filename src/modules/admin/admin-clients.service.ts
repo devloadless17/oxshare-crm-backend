@@ -38,7 +38,7 @@ const KYC_STATUSES = [
  * would return the unfiltered list, and "every client" looks enough like a
  * plausible answer that nobody checks it against the filter they asked for.
  */
-function kycStatusFilter(value: string | undefined): string | undefined {
+export function kycStatusFilter(value: string | undefined): string | undefined {
   if (value === undefined || value === '') return undefined;
   if (!(KYC_STATUSES as readonly string[]).includes(value)) {
     throw new ValidationError(
@@ -46,6 +46,25 @@ function kycStatusFilter(value: string | undefined): string | undefined {
     );
   }
   return value;
+}
+
+/**
+ * A caller's `?emailVerified=`, as the TRI-STATE it is.
+ *
+ * Absent means "do not filter", which is a different request from
+ * `emailVerified=false` — `=== 'true'` alone collapses the two and makes an
+ * unfiltered list silently show only unverified clients.
+ *
+ * EXPORTED, and that is the point of it being a function at all. This logic
+ * lived inline in `listClients` while `AdminExportService` had none, so
+ * `/admin/clients/export?emailVerified=false` returned every client while the
+ * screen it was exported from showed a filtered set. One definition is what
+ * stops the file and the screen answering differently — the same argument
+ * `export-rows.dto.ts` makes about masking having one set of declarations.
+ */
+export function emailVerifiedFilter(value: string | undefined): boolean | undefined {
+  if (value === undefined || value === '') return undefined;
+  return value === 'true';
 }
 
 /**
@@ -256,16 +275,7 @@ export class AdminClientsService {
       status: query.status,
       level,
       country: query.country?.trim() || undefined,
-      /*
-       * A tri-state, not a boolean: absent means "do not filter", which is a
-       * different request from `emailVerified=false`. `=== 'true'` alone would
-       * collapse the two and make an unfiltered list silently show only
-       * unverified clients.
-       */
-      emailVerified:
-        query.emailVerified === undefined || query.emailVerified === ''
-          ? undefined
-          : query.emailVerified === 'true',
+      emailVerified: emailVerifiedFilter(query.emailVerified),
       kycStatus: kycStatusFilter(query.kycStatus),
       tagSlug: query.tag,
       referredBy,
@@ -858,6 +868,23 @@ export class AdminClientsService {
     const updated = (await this.users.update(userId, { status }))!;
     // Suspension bites immediately: the JWT strategy re-checks status on every
     // request, and login/refresh refuse suspended accounts.
+    /*
+     * And it ends the SESSIONS, which the status check alone does not.
+     *
+     * The strategy reads `users.status`, so the moment somebody reactivates the
+     * account the old cookies work again — a session nobody signed in resumes on
+     * its own. That is the whole reason the admin path revokes
+     * (`admin-rbac.service.ts`, "what stops their cookies quietly resuming").
+     *
+     * This path only CLAIMED to. Two comments asserted it — the one above
+     * `assertActorCan` here, and the belt-and-braces note in `auth.service.ts`
+     * — while nothing revoked anything, so both were false for every reader who
+     * checked the behaviour by reading. The email-change path three hundred
+     * lines up had the call all along, which is what made the omission look
+     * deliberate rather than missed.
+     */
+    const sessionsRevoked =
+      status === 'suspended' ? await this.refreshTokens.revokeAllForSubject('portal', userId) : 0;
     this.audit.record(
       actor.id,
       status === 'suspended' ? 'client.suspend' : 'client.activate',
@@ -869,6 +896,10 @@ export class AdminClientsService {
         // a store nothing can mask.
         before: user.status,
         after: status,
+        // Recorded like the admin path records it: "we took their access away"
+        // is a different statement from "we changed a column", and the count is
+        // what tells the two apart months later.
+        ...(status === 'suspended' ? { sessionsRevoked } : {}),
       },
     );
 

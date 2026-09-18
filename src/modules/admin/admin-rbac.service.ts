@@ -38,6 +38,7 @@ import { assertActorCan, normalizePermissionKey } from '../../common/security/ac
 import { ClientFieldsService } from './client-fields.service';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
+import { ApiKeysStore } from '../../store/api-keys.store';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { adminAvatarUrl } from '../../common/uploads/stored-files.service';
@@ -82,6 +83,7 @@ export class AdminRbacService {
     private readonly clientTags: ClientTagsStore,
     private readonly scopes: AdminClientScopesStore,
     private readonly refreshTokens: RefreshTokensService,
+    private readonly apiKeys: ApiKeysStore,
     /** The db handle — manager-invariant writes serialise on an advisory lock. */
     @Inject(DRIZZLE_DB) private readonly db: Db,
   ) {}
@@ -907,6 +909,21 @@ export class AdminRbacService {
      */
     const sessionsRevoked =
       status === 'suspended' ? await this.refreshTokens.revokeAllForSubject('admin', id) : 0;
+    /*
+     * And the API KEYS they minted, for the same reason and in the same breath.
+     *
+     * Ending the sessions without ending the keys takes away the screen and
+     * leaves the access: a key carries the creator's permissions and territory
+     * snapshotted onto the row (`admin.guard.ts`), so it keeps answering with
+     * their authority long after their cookies stop working. Someone suspended
+     * for cause who minted a key on the way out keeps everything that key can
+     * reach.
+     *
+     * Deliberately NOT extended to deletion — see `revokeAllCreatedBy`, and the
+     * guard's note that the snapshot exists so a key survives its creator.
+     * Suspension is the case that reasoning never covered.
+     */
+    const apiKeysRevoked = status === 'suspended' ? await this.apiKeys.revokeAllCreatedBy(id) : 0;
     this.audit.record(
       actor.id,
       status === 'suspended' ? 'admin.suspend' : 'admin.activate',
@@ -916,7 +933,7 @@ export class AdminRbacService {
         email: admin.email,
         before: admin.status,
         after: status,
-        ...(status === 'suspended' ? { sessionsRevoked } : {}),
+        ...(status === 'suspended' ? { sessionsRevoked, apiKeysRevoked } : {}),
       },
     );
     return await this.sanitize(updated);

@@ -5,9 +5,7 @@ import {
   count,
   desc,
   eq,
-  ilike,
   inArray,
-  or,
   sql,
   type SQLWrapper,
 } from 'drizzle-orm';
@@ -225,9 +223,35 @@ export class IbStore {
      * Filtering fetched rows would leave the total counting everything and the
      * pager offering pages that render empty — see the note on `scoped`.
      */
-    const term = filter.q?.trim() ? `%${filter.q.trim()}%` : undefined;
+    /*
+     * ESCAPED. A user-typed term goes into a LIKE pattern, where `%` and `_` are
+     * wildcards and a backslash escapes them — so an operator searching for a
+     * literal `%` matched every row, and `a_c` matched `abc`.
+     *
+     * Not an injection: the value is still a bind parameter. It is a SEARCH that
+     * silently answers a different question from the one asked, which on a review
+     * queue reads as "everybody is pending" rather than as a bug. Eight sibling
+     * searches already escape; these two were the exceptions.
+     */
+    const term = filter.q?.trim() ? `%${escapeLike(filter.q.trim())}%` : undefined;
     const matches = term
-      ? or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))
+      ? /*
+         * The CONCATENATED expression, which is the one the trigram index is built
+         * on (`users_search_trgm_idx`, migration 0010).
+         *
+         * This was three separate `ILIKE`s OR-ed together, and
+         * `client-list-indexes.spec.ts` already PROVES that form cannot use the
+         * index — it asserts `not.toContain('users_search_trgm_idx')` for exactly
+         * this shape. So every search of this queue was a sequential scan while
+         * the index sat beside it, unused.
+         *
+         * It also searches BETTER: "jane smith" matches the concatenation and can
+         * never match any single column, which is what an operator typing a full
+         * name expects. `kyc.store.ts` already states the intent — both queues are
+         * review queues of people and "a search box that matched different fields
+         * on each would be a trap".
+         */
+        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${term}`
       : undefined;
 
     const sortKey: IbApplicationSortKey = filter.sort ?? DEFAULT_IB_APPLICATION_SORT;
@@ -361,41 +385,71 @@ export class IbStore {
    * only level below their own. If that stops being true the screen will want
    * paging, and this signature is where it goes.
    *
-   * UNSCOPED, and the caller is where scope is applied. The parent has already
-   * been checked visible by the time this runs, and filtering the children by
-   * the reader's own tag scope would silently under-report a partner's line —
-   * "you have two sub-partners" when they have five is worse than the panel
-   * saying it is scoped.
+   * SCOPED, and it reports what it withheld.
+   *
+   * This was unscoped, on the reasoning that filtering the children by the
+   * reader's own tag scope "would silently under-report a partner's line — you
+   * have two sub-partners when they have five".
+   *
+   * That is the SAME argument `users.store.ts` made for `listReferredBy` and
+   * `countReferredBy` ("unscoped by design"), and it was overturned on 11 Sep —
+   * see the header of `test/referral-network-scope.spec.ts`. The reasoning
+   * carries over exactly, because a sub-partner IS a client of this platform:
+   * "the subject has already been checked visible" is true about the PARTNER
+   * and says nothing about the people below them, and an unscoped downline
+   * hands over the IDS of clients the reader is specifically denied — a larger
+   * oracle than the 403-versus-404 distinction `client-scope.ts` refuses to
+   * give away.
+   *
+   * And NO out-of-territory total is published beside the rows, which is the
+   * half worth stating because the obvious fix is to add one. `referredShown` /
+   * `referredTotal` on the client profile are BOTH scoped, deliberately —
+   * `client-network-tree.tsx` records why: "an unscoped count over a scoped list
+   * would read 12 of 213 and then show 12, which is correct and looks like a
+   * bug". And a count is itself a disclosure (`admin-stats.service.ts`), so an
+   * unscoped total here would hand over exactly the fact the rows withhold: how
+   * many partners this line has in territories the reader is denied. The pair
+   * exists there to publish a ROW CAP; this list has no cap, so a scoped total
+   * would only restate `rows.length`.
+   *
+   * It also settles a response that contradicted itself: `countReferredBy` on
+   * this same partner-detail payload is scoped, so the counts obeyed territory
+   * while the roster beside them did not.
    */
-  async findDirectPartners(parentUserId: string) {
-    return (
-      this.db
-        .select({
-          userId: ibAccounts.userId,
-          /* The RUNG they stand on, which is what decides their terms (0112). */
-          level: ibAccounts.level,
-          levelName: ibLevels.name,
-          referralCode: ibAccounts.referralCode,
-          active: ibAccounts.active,
-          approvedAt: ibAccounts.approvedAt,
-          email: users.email,
-          firstName: users.firstName,
-          lastName: users.lastName,
-        })
-        .from(ibAccounts)
-        .innerJoin(users, eq(users.id, ibAccounts.userId))
-        /*
-         * `leftJoin`, and the nullability is real: `ib_accounts.level` is NOT
-         * NULL but carries no foreign key to `ib_levels`, deliberately — a tree
-         * may legitimately run deeper than the ladder the broker pays on, and a
-         * FK would make appointing that partner impossible rather than making
-         * them earn nothing. So a partner on an unconfigured rung is a row this
-         * table can hold, and `levelName` is null for them.
-         */
-        .leftJoin(ibLevels, eq(ibLevels.level, ibAccounts.level))
-        .where(eq(ibAccounts.parentIbUserId, parentUserId))
-        .orderBy(asc(ibAccounts.level), desc(ibAccounts.approvedAt))
-    );
+  async findDirectPartners(parentUserId: string, scope: ClientScope) {
+    const belongsToParent = eq(ibAccounts.parentIbUserId, parentUserId);
+
+    const rows = await this.db
+      .select({
+        userId: ibAccounts.userId,
+        /* The RUNG they stand on, which is what decides their terms (0112). */
+        level: ibAccounts.level,
+        levelName: ibLevels.name,
+        referralCode: ibAccounts.referralCode,
+        active: ibAccounts.active,
+        approvedAt: ibAccounts.approvedAt,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+      })
+      .from(ibAccounts)
+      .innerJoin(users, eq(users.id, ibAccounts.userId))
+      /*
+       * `leftJoin`, and the nullability is real: `ib_accounts.level` is NOT
+       * NULL but carries no foreign key to `ib_levels`, deliberately — a tree
+       * may legitimately run deeper than the ladder the broker pays on, and a
+       * FK would make appointing that partner impossible rather than making
+       * them earn nothing. So a partner on an unconfigured rung is a row this
+       * table can hold, and `levelName` is null for them.
+       */
+      .leftJoin(ibLevels, eq(ibLevels.level, ibAccounts.level))
+      // The predicate goes in the WHERE CLAUSE, never a filter after the rows
+      // are loaded — client-scope.ts, and the reason it names a `findById
+      // reached from somewhere unexpected`.
+      .where(and(belongsToParent, clientScopePredicate(scope, users.id)))
+      .orderBy(asc(ibAccounts.level), desc(ibAccounts.approvedAt));
+
+    return rows;
   }
 
   /**

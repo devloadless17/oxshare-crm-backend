@@ -23,9 +23,31 @@ const decimalLimit = (name: string) =>
     )
     .optional();
 
+/**
+ * Every environment this service will start in — and therefore, by omission,
+ * every environment it refuses.
+ *
+ * NAMED rather than inlined into the schema because two other files depend on
+ * the set being exactly this, and neither can see a literal buried in a zod
+ * call. `app.module.ts` mounts the unauthenticated `E2eFixturesModule`, and
+ * `main.ts` runs `runSeeds()` (a known-password admin), behind
+ * `NODE_ENV !== 'production'` — a DENYLIST, which is the shape
+ * `admin-auth.service.ts` abandoned after it leaked an invite token on staging
+ * because it "also matched 'staging' and every typo".
+ *
+ * What makes the denylist safe here is this list, and only this list: a box set
+ * to anything outside it does not serve those routes, it refuses to boot. Add a
+ * fourth environment and that stops being true — the denylist would admit it.
+ *
+ * `test/dev-only-modules-env.spec.ts` imports this and pins it, so widening the
+ * set is a red build rather than a one-word edit. Give `app.module.ts` and
+ * `main.ts` a real allowlist first.
+ */
+export const NODE_ENVIRONMENTS = ['development', 'test', 'production'] as const;
+
 const envSchema = z
   .object({
-    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    NODE_ENV: z.enum(NODE_ENVIRONMENTS).default('development'),
 
     /*
      * Seed the end-to-end FIXTURES (`e2e-*` accounts, the @oxshare-e2e.test

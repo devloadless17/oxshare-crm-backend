@@ -271,7 +271,24 @@ export class TradingService {
        * time. Ordering the closed set by `openedAt` would bury a trade opened
        * last month and closed this morning beneath older, already-settled ones.
        */
-      .orderBy(status === 'open' ? desc(positions.openedAt) : desc(positions.closedAt))
+      /*
+       * The `id` TIEBREAK, and it is not cosmetic.
+       *
+       * `opened_at` and `closed_at` are not unique — two positions opened in the
+       * same instant are ordinary — and Postgres gives no guarantee about the
+       * relative order of tied rows between queries. With a LIMIT on the end,
+       * that decides WHICH of the tied rows is included: the same client
+       * refreshing sees the list reorder, and one trade appear or vanish at the
+       * boundary, with nothing having changed.
+       *
+       * `sorting.ts` states the rule for the paged lists; a capped list has the
+       * same problem in a smaller window. Migration 0129 indexes both pairs, so
+       * the tiebreak is free.
+       */
+      .orderBy(
+        status === 'open' ? desc(positions.openedAt) : desc(positions.closedAt),
+        desc(positions.id),
+      )
       .limit(limit);
 
     // Returned as-is: every numeric column arrives as the STRING Postgres sends

@@ -1,3 +1,4 @@
+import { Throttle } from '@nestjs/throttler';
 import {
   Body,
   Controller,
@@ -18,7 +19,7 @@ import {
   PermissionsGuard,
   RequirePermissions,
 } from '../admin/guards/admin.guard';
-import { NotClientScoped, ScopedToClients } from '../admin/guards/client-scope.decorator';
+import { ScopedToClients } from '../admin/guards/client-scope.decorator';
 import { Audited } from '../admin/guards/audited.decorator';
 import { IbApplicationsService } from './ib-applications.service';
 import { CommissionService } from './commission.service';
@@ -28,10 +29,10 @@ import {
   IB_PARTNER_SORT_COLUMNS,
 } from '../../store/ib.store';
 import { ibAccrualKindEnum, ibAccrualStatusEnum } from '../../database/schema';
-import { enumQuery } from '../../common/query-params';
+import { enumQuery, uuidQuery } from '../../common/query-params';
 import { AdminExportService } from '../admin/admin-export.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
-import { exportFormat, streamCsv } from '../../common/export/export-response';
+import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
 import {
   ApproveIbApplicationDto,
   ChangeIbLevelDto,
@@ -46,6 +47,12 @@ import {
   type IbApplicationStatusDto,
 } from './dto/ib-application.dto';
 import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
+import { maskByShape } from '../../common/security/mask-by-shape';
+import {
+  IbAccrualListMaskDto,
+  IbApplicationListMaskDto,
+  IbPartnerListMaskDto,
+} from './dto/ib-list-mask.dto';
 
 /**
  * Reviewing partner applications.
@@ -105,7 +112,7 @@ export class AdminIbController {
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_APPLICATION_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients('IbStore.findPageWithUsers applies the predicate to ib_applications.user_id.')
-  list(
+  async list(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('status') status?: string,
     @Query('q') q?: string,
@@ -114,7 +121,7 @@ export class AdminIbController {
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
-    return this.applications.list(
+    const result = await this.applications.list(
       {
         // `ib_application_status` is a Postgres enum, so an unrecognised value
         // would error in the database rather than at the edge.
@@ -129,6 +136,12 @@ export class AdminIbController {
       },
       req.admin.clientScope,
     );
+    /*
+     * Masked HERE rather than by the interceptor, because this route declares
+     * no response type and the interceptor declines to act without one. See
+     * `ib-list-mask.dto.ts` for why that is the shape of the fix.
+     */
+    return maskByShape(IbApplicationListMaskDto, result, req.admin.fieldMask);
   }
 
   /**
@@ -141,6 +154,20 @@ export class AdminIbController {
    * and deciding on it are separate powers here, and an export is a read.
    */
   @Get('applications/export')
+  /*
+   * A ceiling on a STREAMING read of the whole client base.
+   *
+   * Every export here is batched over the full filtered set and held open for
+   * the length of the download, and none carried anything but the global
+   * 120/min — which is sized for a person clicking around a console, not for
+   * 120 concurrent full-table CSV streams. The limit is per route per IP, so a
+   * desk exporting clients and then withdrawals is unaffected; what it bounds is
+   * one caller pulling the same export in a loop.
+   *
+   * Six a minute: far above any human use of an Export button, far below what
+   * it takes to hurt the database.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
   @RequirePermissions('ib.view')
   @ApiCookieAuth()
@@ -302,7 +329,7 @@ export class AdminIbController {
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_ACCRUAL_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients('IbStore.findAccrualsPage applies the predicate to ib_accruals.ib_user_id.')
-  listAccruals(
+  async listAccruals(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -314,12 +341,20 @@ export class AdminIbController {
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
-    return this.applications.listAccruals(
+    const result = await this.applications.listAccruals(
       {
         page: parsePositive(page),
         limit: parsePositive(limit),
-        ibUserId,
-        clientUserId,
+        /*
+         * SHAPE-CHECKED AT THE EDGE, so the refusal names the parameter.
+         *
+         * ⚠️ Not a 500 fix — `AllExceptionsFilter` already maps Postgres `22P02`
+         * to a 400. What it cannot do is say WHICH value was wrong, because by
+         * then all it has is a cast error. On a route taking several ids that
+         * matters, and the database paid for a round trip to produce it.
+         */
+        ibUserId: uuidQuery(ibUserId, 'ibUserId'),
+        clientUserId: uuidQuery(clientUserId, 'clientUserId'),
         q,
         // Validated against the column's own enum, so an unrecognised value is
         // a 400 rather than a filter that silently matches nothing.
@@ -335,6 +370,13 @@ export class AdminIbController {
       },
       req.admin.clientScope,
     );
+    /*
+     * BOTH people on the row. Same reasoning as `list` above — and note this is
+     * a different control from the territory nulling `findAccrualsPage` already
+     * does to `client`: that decides which rows exist to this reader, this
+     * decides which columns they are shown of the rows that do.
+     */
+    return maskByShape(IbAccrualListMaskDto, result, req.admin.fieldMask);
   }
 
   /**
@@ -364,17 +406,17 @@ export class AdminIbController {
       'wallets cannot go negative, so the recovery is a conversation rather than an API call.',
   })
   @Audited('ib.accrual_reverse')
-  @NotClientScoped(
-    'The scope predicates filter ib_accruals.ib_user_id, which on a REBATE row is the ' +
-      'attributing partner rather than the person debited — scoping on it would be a check ' +
-      'that reads the wrong column. `ib.commissions.reverse` is the gate.',
+  @ScopedToClients(
+    'CommissionService.reverseAccrual asserts visibility of the person whose wallet it ' +
+      'debits — the client on a rebate row, the partner on a commission — read from the same ' +
+      'expression the debit uses, so the check cannot drift from the write.',
   )
   async reverseAccrual(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ReverseAccrualDto,
   ) {
-    const result = await this.commissions.reverseAccrual(id, dto.reason);
+    const result = await this.commissions.reverseAccrual(id, dto.reason, req.admin.clientScope);
 
     /*
      * WRITTEN HERE, because `@Audited` is metadata and nothing reads it at
@@ -413,17 +455,19 @@ export class AdminIbController {
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_PARTNER_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients('IbStore.findPartnersPage applies the predicate to ib_accounts.user_id.')
-  listPartners(
+  async listPartners(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
-    return this.applications.listPartners(
+    const result = await this.applications.listPartners(
       { page: parsePositive(page), limit: parsePositive(limit), sort, order },
       req.admin.clientScope,
     );
+    // Same reasoning as `list` above.
+    return maskByShape(IbPartnerListMaskDto, result, req.admin.fieldMask);
   }
 
   /**
@@ -433,6 +477,20 @@ export class AdminIbController {
    * applications export above.
    */
   @Get('partners/export')
+  /*
+   * A ceiling on a STREAMING read of the whole client base.
+   *
+   * Every export here is batched over the full filtered set and held open for
+   * the length of the download, and none carried anything but the global
+   * 120/min — which is sized for a person clicking around a console, not for
+   * 120 concurrent full-table CSV streams. The limit is per route per IP, so a
+   * desk exporting clients and then withdrawals is unaffected; what it bounds is
+   * one caller pulling the same export in a loop.
+   *
+   * Six a minute: far above any human use of an Export button, far below what
+   * it takes to hurt the database.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
   @RequirePermissions('ib.view')
   @ApiCookieAuth()

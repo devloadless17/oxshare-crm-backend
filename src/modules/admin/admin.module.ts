@@ -6,7 +6,8 @@ import { AdminTagsController } from './admin-tags.controller';
 import { AdminClientsController } from './admin-clients.controller';
 import { AdminComplianceController } from './admin-compliance.controller';
 import { AdminRbacController } from './admin-rbac.controller';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { DenialAuditInterceptor } from './denial-audit.interceptor';
 import { AdminIpAllowlistController } from './admin-ip-allowlist.controller';
 import { AdminIpAllowlistService } from './admin-ip-allowlist.service';
 import { IpAllowlistGuard } from './guards/ip-allowlist.guard';
@@ -126,7 +127,18 @@ const ADMIN_SERVICES = [
    * control an operator can change from the console, on a deployment that has no
    * WAF in front of it yet — which is this one.
    */
-  providers: [...ADMIN_SERVICES, { provide: APP_GUARD, useClass: IpAllowlistGuard }],
+  providers: [
+    ...ADMIN_SERVICES,
+    { provide: APP_GUARD, useClass: IpAllowlistGuard },
+    /*
+     * Records the permission refusals decided INSIDE services, which the guard
+     * never sees — see `denial-audit.interceptor.ts`. Global because
+     * `assertActorCan` is called from every admin module, not only this one, and
+     * a per-controller interceptor would be a list to keep in step with the
+     * eighty call sites it exists to cover.
+     */
+    { provide: APP_INTERCEPTOR, useClass: DenialAuditInterceptor },
+  ],
   // Re-exported so importers keep reaching the audit writer through this
   // module, as they did when it was provided here.
   exports: [...ADMIN_SERVICES, AdminAuthModule],

@@ -5,6 +5,10 @@ import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { UNRESTRICTED, scopeOf } from '../src/common/security/client-scope';
+import { ClientVisibilityService } from '../src/common/security/client-visibility.service';
+import { UsersStore } from '../src/store/users.store';
+import { ClientNotFoundError } from '../src/common/errors/domain-errors';
 
 /**
  * Taking an accrual back — against real Postgres, because every guarantee here
@@ -177,6 +181,10 @@ beforeAll(async () => {
     /* The per-run payout summary email (0114). Stubbed: this suite is
        about the money, and the send is fire-and-forget by contract. */
     emailStubAs(),
+    /* The territory gate. Stubbed open for the money cases above, which are
+       about WHO is debited and by how much; the gate itself is exercised with
+       the real service at the end of this file. */
+    { assertVisible: () => Promise.resolve() } as never,
   );
 }, 180_000);
 
@@ -224,7 +232,11 @@ describe('reversing a PENDING accrual costs nothing', () => {
     const [accrual] = await accrualRows();
     expect(accrual.status).toBe('pending');
 
-    const result = await commissions.reverseAccrual(accrual.id, 'dealer cancelled the trade');
+    const result = await commissions.reverseAccrual(
+      accrual.id,
+      'dealer cancelled the trade',
+      UNRESTRICTED,
+    );
 
     /*
      * THE asymmetry the settlement window exists to buy. Inside the window an
@@ -253,7 +265,11 @@ describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
     const [accrual] = await accrualRows();
     expect(accrual.status).toBe('confirmed');
 
-    const result = await commissions.reverseAccrual(accrual.id, 'dealer cancelled the trade');
+    const result = await commissions.reverseAccrual(
+      accrual.id,
+      'dealer cancelled the trade',
+      UNRESTRICTED,
+    );
 
     expect(result.movedMoney).toBe(true);
     expect(await walletOf(partnerId, 'commission')).toBe('0.00000000');
@@ -288,8 +304,8 @@ describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
     await commissions.confirmPending();
 
     const [accrual] = await accrualRows();
-    await commissions.reverseAccrual(accrual.id, 'first');
-    const second = await commissions.reverseAccrual(accrual.id, 'double-submitted');
+    await commissions.reverseAccrual(accrual.id, 'first', UNRESTRICTED);
+    const second = await commissions.reverseAccrual(accrual.id, 'double-submitted', UNRESTRICTED);
 
     /*
      * A desk that double-clicks is asking for a state the row is already in.
@@ -315,7 +331,7 @@ describe('a REBATE is taken back from the client, not the partner', () => {
     const [rebate] = await accrualRows();
     expect(rebate.kind).toBe('rebate');
 
-    await commissions.reverseAccrual(rebate.id, 'trade cancelled');
+    await commissions.reverseAccrual(rebate.id, 'trade cancelled', UNRESTRICTED);
 
     /*
      * `ib_user_id` on a rebate row is the partner whose programme PRODUCED it —
@@ -349,7 +365,7 @@ describe('a reversal REFUSES when the money is already gone', () => {
      * wallet driven negative is a debt the CRM has no concept of, cannot collect
      * and cannot show a partner.
      */
-    await expect(commissions.reverseAccrual(accrual.id, 'cancelled')).rejects.toThrow(
+    await expect(commissions.reverseAccrual(accrual.id, 'cancelled', UNRESTRICTED)).rejects.toThrow(
       /insufficient/i,
     );
 
@@ -361,5 +377,125 @@ describe('a reversal REFUSES when the money is already gone', () => {
      */
     expect((await accrualRows())[0].status).toBe('confirmed');
     expect(await walletOf(partnerId, 'commission')).toBe('2.00000000');
+  });
+});
+
+describe('the reversal obeys the reader’s TERRITORY, on the column it actually debits', () => {
+  /*
+   * This route carried `@NotClientScoped`, and its reason was half right:
+   * "the scope predicates in IbStore filter on ib_accruals.ib_user_id, which on
+   * a REBATE row is the attributing partner rather than the person debited —
+   * scoping on it would be a check that reads the wrong column."
+   *
+   * True, and an argument against ONE implementation. It was taken as an
+   * argument against scoping at all, leaving `ib.commissions.reverse` as the
+   * only gate — so any holder of it could take money out of any client's wallet
+   * on the platform, in a system whose entire territory model exists to stop
+   * exactly that.
+   *
+   * The column the check needs is the one the DEBIT uses: the client on a
+   * rebate, the partner on a commission. These two cases are a matched pair
+   * that fail in opposite directions if that expression is ever inverted —
+   * which is the mistake worth guarding, because inverting it still balances
+   * perfectly and still refuses somebody, so it looks like it works.
+   */
+  let scopedCommissions: CommissionService;
+  let partnerOnlyTagId: string;
+
+  beforeEach(async () => {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO client_tags (slug, label)
+      VALUES (${'reversal-territory-' + Date.now()}, 'Reversal Territory')
+      RETURNING id
+    `);
+    partnerOnlyTagId = rows[0].id;
+    // ONLY the partner is in this territory. The client is deliberately not.
+    await ctx.db.execute(sql`
+      INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${partnerId}, ${partnerOnlyTagId})
+    `);
+
+    scopedCommissions = new CommissionService(
+      ctx.db,
+      new WalletService(ctx.db),
+      {
+        notify: vi.fn().mockResolvedValue(undefined),
+        notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
+      },
+      new AppSettingsStore(ctx.db),
+      emailStubAs(),
+      // The REAL gate, against the real users table — a stub here would only
+      // assert that a stub was called.
+      new ClientVisibilityService(new UsersStore(ctx.db)),
+    );
+  });
+
+  it('lets a reader reverse a COMMISSION when the PARTNER is in their territory', async () => {
+    await setTerms({ tiers: ['30.0000'], rebateRate: '5.0000' });
+    await accrue();
+    const commission = (await accrualRows()).find((r) => r.kind === 'commission')!;
+
+    const result = await scopedCommissions.reverseAccrual(
+      commission.id,
+      'in territory',
+      scopeOf([partnerOnlyTagId]),
+    );
+
+    expect(result.status).toBe('reversed');
+  });
+
+  it('REFUSES a REBATE to that same reader — the beneficiary is the CLIENT, who is not', async () => {
+    /*
+     * The case the old reasoning was built around, and the one that proves the
+     * check reads the debited party rather than `ib_user_id`. The partner IS in
+     * this reader's territory and the accrual row names them — so a check on
+     * `ib_user_id` would ALLOW this, and take money from a client the reader
+     * cannot see.
+     */
+    await setTerms({ tiers: ['30.0000'], rebateRate: '5.0000' });
+    await accrue();
+    const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
+
+    await expect(
+      scopedCommissions.reverseAccrual(rebate.id, 'out of territory', scopeOf([partnerOnlyTagId])),
+    ).rejects.toBeInstanceOf(ClientNotFoundError);
+
+    // And nothing moved: the row is untouched, not half-reversed.
+    const after = (await accrualRows()).find((r) => r.kind === 'rebate')!;
+    expect(after.status).not.toBe('reversed');
+  });
+
+  it('answers NOT FOUND rather than forbidden, so it is no enumeration oracle', async () => {
+    /*
+     * The same rule `ClientVisibilityService` exists to keep in one place. A 403
+     * would confirm the accrual is real, letting a scoped desk enumerate rows
+     * belonging to territories they were specifically denied.
+     */
+    await setTerms({ tiers: ['30.0000'], rebateRate: '5.0000' });
+    await accrue();
+    const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
+
+    await expect(
+      scopedCommissions.reverseAccrual(rebate.id, 'probe', scopeOf([partnerOnlyTagId])),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  it('is refused BEFORE the idempotent “already reversed” answer', async () => {
+    /*
+     * Order matters. The short-circuit that makes a double-submit safe returns
+     * "done" for a row already reversed — and returning it to somebody who may
+     * not see the beneficiary would confirm the row exists, reopening the oracle
+     * the case above closes.
+     */
+    await setTerms({ tiers: ['30.0000'], rebateRate: '5.0000' });
+    await accrue();
+    const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
+
+    // Reversed by somebody who may.
+    await commissions.reverseAccrual(rebate.id, 'first', UNRESTRICTED);
+
+    // The scoped reader must still be refused, not told "already done".
+    await expect(
+      scopedCommissions.reverseAccrual(rebate.id, 'probe', scopeOf([partnerOnlyTagId])),
+    ).rejects.toBeInstanceOf(ClientNotFoundError);
   });
 });

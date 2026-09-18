@@ -7,13 +7,12 @@ import {
   desc,
   eq,
   gte,
-  ilike,
   isNull,
   ne,
-  or,
   sql,
   type SQL,
   type SQLWrapper,
+  lte,
 } from 'drizzle-orm';
 import {
   tradingAccounts,
@@ -271,6 +270,7 @@ import { assertActorCan, type Actor } from '../../common/security/actor';
 import { money, toDecimal } from '../wallet/money';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
 import type { SortOrder } from '../../common/sorting';
+import { sortKey, sortOrder } from '../../common/sorting';
 import { MoneyLimits } from '../../config/money-limits';
 import { PaymentMethodsService } from './payment-methods.service';
 import { wishDestinationIssue } from './rival/wish-phone';
@@ -423,6 +423,40 @@ export const ADMIN_TRANSACTION_SORT_COLUMNS = {
 } as const satisfies Record<string, { column: SQL; cast: 'timestamptz' | 'numeric' | 'text' }>;
 
 export type AdminTransactionSortKey = keyof typeof ADMIN_TRANSACTION_SORT_COLUMNS;
+
+/**
+ * The CLIENT's own history — `GET /payments/transactions`.
+ *
+ * A separate map from the admin one above because the two lists are separate
+ * decisions about the same union: the admin desk offers three keys and says why
+ * ("the allowlist may not exceed the indexes"), the portal offers five.
+ *
+ * `direction` and `currency` are offered here and are indexed in no arm of the
+ * union — and that is FINE here, unlike on the admin desk.
+ *
+ * The admin map's rule ("the allowlist may not exceed the indexes") is about a
+ * list spanning every client. This one is not: `listForUser` builds each arm
+ * with `WHERE <arm>.user_id = ${userId}`, so the sort only ever orders one
+ * client's own movements — tens of rows, not millions. An index on `direction`
+ * would also be close to useless at that cardinality.
+ *
+ * Recorded because the absence looks like the admin desk's problem and is not,
+ * and because the reasoning changes the moment this query stops being
+ * user-scoped.
+ *
+ * Existed only as an inline object literal in `listForUser`, which is why the
+ * lookup that read it walked the prototype chain. A named map is what lets
+ * `sortKey` guard it the way it guards the other twelve.
+ */
+export const CLIENT_TRANSACTION_SORT_COLUMNS = {
+  createdAt: sql`created_at`,
+  amount: sql`amount`,
+  direction: sql`direction`,
+  currency: sql`currency`,
+  state: sql`state`,
+} as const satisfies Record<string, SQL>;
+
+export type ClientTransactionSortKey = keyof typeof CLIENT_TRANSACTION_SORT_COLUMNS;
 
 /** Newest first, like every other money list. */
 export const DEFAULT_ADMIN_TRANSACTION_SORT: AdminTransactionSortKey = 'createdAt';
@@ -948,10 +982,36 @@ export class TransactionsService {
      * counts and the cursor with it. Filtering fetched rows would leave the
      * total describing something else and the pager offering empty pages.
      */
-    const term = filter.q?.trim() ? `%${filter.q.trim()}%` : undefined;
+    /*
+     * ESCAPED. A user-typed term goes into a LIKE pattern, where `%` and `_` are
+     * wildcards and a backslash escapes them — so an operator searching for a
+     * literal `%` matched every row, and `a_c` matched `abc`.
+     *
+     * Not an injection: the value is still a bind parameter. It is a SEARCH that
+     * silently answers a different question from the one asked, which on a review
+     * queue reads as "everybody is pending" rather than as a bug. Eight sibling
+     * searches already escape; these two were the exceptions.
+     */
+    const term = filter.q?.trim() ? `%${escapeLike(filter.q.trim())}%` : undefined;
     if (term) {
       conditions.push(
-        or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))!,
+        /*
+         * The CONCATENATED expression, which is the one the trigram index is built
+         * on (`users_search_trgm_idx`, migration 0010).
+         *
+         * This was three separate `ILIKE`s OR-ed together, and
+         * `client-list-indexes.spec.ts` already PROVES that form cannot use the
+         * index — it asserts `not.toContain('users_search_trgm_idx')` for exactly
+         * this shape. So every search of this queue was a sequential scan while
+         * the index sat beside it, unused.
+         *
+         * It also searches BETTER: "jane smith" matches the concatenation and can
+         * never match any single column, which is what an operator typing a full
+         * name expects. `kyc.store.ts` already states the intent — both queues are
+         * review queues of people and "a search box that matched different fields
+         * on each would be a trap".
+         */
+        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${term}`,
       );
     }
 
@@ -1077,7 +1137,23 @@ export class TransactionsService {
      */
     if (term) {
       countConditions.push(
-        or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))!,
+        /*
+         * The CONCATENATED expression, which is the one the trigram index is built
+         * on (`users_search_trgm_idx`, migration 0010).
+         *
+         * This was three separate `ILIKE`s OR-ed together, and
+         * `client-list-indexes.spec.ts` already PROVES that form cannot use the
+         * index — it asserts `not.toContain('users_search_trgm_idx')` for exactly
+         * this shape. So every search of this queue was a sequential scan while
+         * the index sat beside it, unused.
+         *
+         * It also searches BETTER: "jane smith" matches the concatenation and can
+         * never match any single column, which is what an operator typing a full
+         * name expects. `kyc.store.ts` already states the intent — both queues are
+         * review queues of people and "a search box that matched different fields
+         * on each would be a trap".
+         */
+        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${term}`,
       );
     }
     const countRows = await db
@@ -1177,18 +1253,36 @@ export class TransactionsService {
    * `transactions.userId` column, in the WHERE clause. An export cannot see a
    * row the queue would have hidden.
    *
-   * Offset paging rather than a keyset seek, deliberately. The ordering is
-   * total (`created_at DESC, id DESC`) and the export reads it to completion in
-   * one request, so a concurrent insert can only add a row at the head this
-   * pass has already passed — it cannot shift a row across a batch boundary.
+   * Offset paging rather than a keyset seek, and a SNAPSHOT BOUND is what makes
+   * that safe.
+   *
+   * ⚠️ This used to claim the bound was unnecessary: "a concurrent insert can
+   * only add a row at the head this pass has already passed — it cannot shift a
+   * row across a batch boundary." That is exactly backwards. The ordering is
+   * `created_at DESC`, so a new row sorts FIRST — it does not land at a head
+   * already gone by, it pushes every later row down one. `OFFSET 1000` then
+   * points at what was row 999, and the last row of batch 1 is written to the
+   * file a second time.
+   *
+   * `createdAt <= startedAt` removes the possibility rather than reasoning about
+   * it: rows created after the run began never enter the set, so the offsets
+   * cannot shift. It is the same snapshot instant `AdminExportService
+   * .transactionBatch` threads through its keyset export — "the SAME value on
+   * every batch" — applied to the paging strategy that actually needs it.
    */
   async listForExport(filter: {
     state?: string;
     offset: number;
     limit: number;
     scope?: ClientScope;
+    /** The export run's snapshot instant — the SAME value on every batch. */
+    startedAt: Date;
   }) {
-    const conditions = [eq(transactions.direction, 'withdrawal')];
+    const conditions = [
+      eq(transactions.direction, 'withdrawal'),
+      // The snapshot bound. Without it a concurrent insert shifts every offset.
+      lte(transactions.createdAt, filter.startedAt),
+    ];
 
     // Identical to the queue's, on the same column. See the note above.
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, transactions.userId);
@@ -1693,16 +1787,31 @@ export class TransactionsService {
      * identifier, only a lookup that either finds a known fragment or falls back
      * to created_at. That matters more here than it did before — this
      * statement is assembled as SQL text rather than by the query builder.
+     *
+     * ⚠️ REWRITTEN. The paragraph above describes what this used to do and why
+     * that was thought sufficient; both halves were wrong in the same way.
+     *
+     *   const column = sortable[query.sort ?? 'createdAt'] ?? sortable.createdAt;
+     *
+     * A bracket lookup with no `hasOwnProperty` guard walks the PROTOTYPE, so
+     * `?sort=constructor` resolves to `Object` — truthy, so the `??` never
+     * fires. That is the identical shape of the bug `sorting.ts` and
+     * `users.store.ts` were written about after `?sort=constructor` 500'd the
+     * client list and its CSV export. The only thing holding it shut here was
+     * `@IsIn` on the DTO, which is a second guard rather than this one working.
+     *
+     * The `??` fallback was wrong on its own terms too: R-2.5 requires an
+     * unrecognised sort to be a 400 naming the allowlist, never a silent
+     * substitution — "a sort the server ignored is a lie the UI tells". And
+     * `order` accepted anything, silently meaning DESC, where `sortOrder`
+     * throws.
+     *
+     * All three are now the shared helpers, which is what the other twelve sort
+     * surfaces already use.
      */
-    const sortable = {
-      createdAt: sql`created_at`,
-      amount: sql`amount`,
-      direction: sql`direction`,
-      currency: sql`currency`,
-      state: sql`state`,
-    } as const;
-    const column = sortable[query.sort ?? 'createdAt'] ?? sortable.createdAt;
-    const order = query.order === 'asc' ? sql`ASC` : sql`DESC`;
+    const key = sortKey(query.sort, CLIENT_TRANSACTION_SORT_COLUMNS, 'createdAt', 'transactions');
+    const column = CLIENT_TRANSACTION_SORT_COLUMNS[key];
+    const order = sortOrder(query.order) === 'asc' ? sql`ASC` : sql`DESC`;
 
     /*
      * The ORDER BY carries a TIE-BREAKER on id, and it is not cosmetic.
@@ -1874,7 +1983,13 @@ export class TransactionsService {
       // The same three columns every admin queue searches (see `listForAdmin`).
       if (term) {
         conditions.push(
-          sql`(u.email ILIKE ${term} OR u.first_name ILIKE ${term} OR u.last_name ILIKE ${term})`,
+          /*
+           * The same concatenation as the drizzle queues above, spelled in raw
+           * SQL because this list is assembled as text. Three OR-ed ILIKEs
+           * cannot use `users_search_trgm_idx`; the concatenation is the
+           * expression the index was built on.
+           */
+          sql`(coalesce(u.email, '') || ' ' || coalesce(u.first_name, '') || ' ' || coalesce(u.last_name, '')) ILIKE ${term}`,
         );
       }
       return conditions;

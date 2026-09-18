@@ -1,3 +1,4 @@
+import { Throttle } from '@nestjs/throttler';
 // Part of the `admin` controller surface, split by concern — the same shape as
 // admin-clients.controller.ts and admin-money.controller.ts. Nest allows several
 // controllers to share one @Controller prefix, so these routes sit alongside the
@@ -13,7 +14,7 @@ import { AdminHoldingsService } from './admin-holdings.service';
 import { TRADING_ACCOUNT_SORT_COLUMNS, WALLET_SORT_COLUMNS } from './admin-holdings.service';
 import { AdminExportService } from './admin-export.service';
 import { AdminAuditService } from './admin-audit.service';
-import { exportFormat, streamCsv } from '../../common/export/export-response';
+import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
 import {
   ClientPositionsPageDto,
   ClientTransactionsPageDto,
@@ -25,8 +26,12 @@ import {
   RequirePermissions,
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
-import { enumQuery } from '../../common/query-params';
-import { tradingAccountStatusEnum, tradingEnvironmentEnum } from '../../database/schema';
+import { enumQuery, uuidQuery } from '../../common/query-params';
+import {
+  tradingAccountStatusEnum,
+  tradingEnvironmentEnum,
+  positionStatusEnum,
+} from '../../database/schema';
 import { ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 
@@ -94,6 +99,20 @@ export class AdminHoldingsController {
    * add a `wallets/:id` route does not create the trap.
    */
   @Get('wallets/export')
+  /*
+   * A ceiling on a STREAMING read of the whole client base.
+   *
+   * Every export here is batched over the full filtered set and held open for
+   * the length of the download, and none carried anything but the global
+   * 120/min — which is sized for a person clicking around a console, not for
+   * 120 concurrent full-table CSV streams. The limit is per route per IP, so a
+   * desk exporting clients and then withdrawals is unaffected; what it bounds is
+   * one caller pulling the same export in a loop.
+   *
+   * Six a minute: far above any human use of an Export button, far below what
+   * it takes to hurt the database.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
   // The SAME permission as the list. An export must never be a way around one.
   @RequirePermissions('wallets.view')
@@ -134,15 +153,22 @@ export class AdminHoldingsController {
     @Query('currency') currency?: string,
   ) {
     const chosen = exportFormat(format);
-    const query = { userId, currency };
+    // Shape-checked, so a typo is a 400 here and on the list alike.
+    const query = { userId: uuidQuery(userId, 'userId'), currency };
 
     this.audit.record(req.admin.id, 'export.wallets', 'wallet_list', req.admin.id, {
       format: chosen,
       filters: query,
     });
 
+    /*
+     * ONE instant for the whole run. The batches page by OFFSET and the ordering
+     * is `created_at DESC`, so without this a row inserted mid-export shifts
+     * every later offset and writes a boundary row to the file twice.
+     */
+    const startedAt = new Date();
     await streamCsv(res, 'wallets', chosen, this.exports.walletColumns, (offset, limit) =>
-      this.exports.walletBatch(query, req.admin, offset, limit),
+      this.exports.walletBatch(query, req.admin, offset, limit, startedAt),
     );
   }
 
@@ -201,7 +227,15 @@ export class AdminHoldingsController {
   ) {
     return this.holdings.listWallets(
       {
-        userId,
+        /*
+         * SHAPE-CHECKED AT THE EDGE, so the refusal names the parameter.
+         *
+         * ⚠️ Not a 500 fix — `AllExceptionsFilter` already maps Postgres `22P02`
+         * to a 400. What it cannot do is say WHICH value was wrong, because by
+         * then all it has is a cast error. On a route taking several ids that
+         * matters, and the database paid for a round trip to produce it.
+         */
+        userId: uuidQuery(userId, 'userId'),
         currency,
         q,
         page,
@@ -221,6 +255,20 @@ export class AdminHoldingsController {
   // ── Trading accounts ──────────────────────────────────────────────────────
 
   @Get('trading-accounts/export')
+  /*
+   * A ceiling on a STREAMING read of the whole client base.
+   *
+   * Every export here is batched over the full filtered set and held open for
+   * the length of the download, and none carried anything but the global
+   * 120/min — which is sized for a person clicking around a console, not for
+   * 120 concurrent full-table CSV streams. The limit is per route per IP, so a
+   * desk exporting clients and then withdrawals is unaffected; what it bounds is
+   * one caller pulling the same export in a loop.
+   *
+   * Six a minute: far above any human use of an Export button, far below what
+   * it takes to hurt the database.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
   @RequirePermissions('trading.view')
   @ApiCookieAuth()
@@ -255,7 +303,7 @@ export class AdminHoldingsController {
     // Validated identically to the list route, so an unrecognised value is the
     // same 400 there and here rather than a silently empty file.
     const query = {
-      userId,
+      userId: uuidQuery(userId, 'userId'),
       environment: enumQuery(environment, tradingEnvironmentEnum.enumValues, 'environment'),
       status: enumQuery(status, tradingAccountStatusEnum.enumValues, 'status'),
     };
@@ -268,12 +316,15 @@ export class AdminHoldingsController {
       { format: chosen, filters: query },
     );
 
+    // Same snapshot bound as the wallet export above.
+    const startedAt = new Date();
     await streamCsv(
       res,
       'trading-accounts',
       chosen,
       this.exports.tradingAccountColumns,
-      (offset, limit) => this.exports.tradingAccountBatch(query, req.admin, offset, limit),
+      (offset, limit) =>
+        this.exports.tradingAccountBatch(query, req.admin, offset, limit, startedAt),
     );
   }
 
@@ -328,7 +379,15 @@ export class AdminHoldingsController {
   ) {
     return this.holdings.listTradingAccounts(
       {
-        userId,
+        /*
+         * SHAPE-CHECKED AT THE EDGE, so the refusal names the parameter.
+         *
+         * ⚠️ Not a 500 fix — `AllExceptionsFilter` already maps Postgres `22P02`
+         * to a 400. What it cannot do is say WHICH value was wrong, because by
+         * then all it has is a cast error. On a route taking several ids that
+         * matters, and the database paid for a round trip to produce it.
+         */
+        userId: uuidQuery(userId, 'userId'),
         q,
         // Both are Postgres enum columns compared behind a cast in the service,
         // so an unrecognised value surfaced as a 500 carrying a database error
@@ -386,10 +445,22 @@ export class AdminHoldingsController {
   ) {
     return this.holdings.listClientPositions({
       userId: id,
-      // Anything that is not one of the two known values is treated as "no
-      // filter" rather than refused: a stray query string should not 400 a
-      // read-only screen.
-      status: status === 'open' || status === 'closed' ? status : undefined,
+      /*
+       * REFUSED, not ignored — the same answer `GET /trading/positions` gives
+       * for the same column.
+       *
+       * This read "anything that is not one of the two known values is treated
+       * as 'no filter' rather than refused: a stray query string should not 400
+       * a read-only screen." The sibling route runs the identical enum through
+       * `enumQuery` and 400s, so one admin screen and one portal screen
+       * disagreed about what `?status=opne` means.
+       *
+       * The tie-breaker is R-2.5's rule for sorts, which is the same question:
+       * a filter the server ignored is a lie the screen tells. "No filter"
+       * returns open AND closed positions — a superset — and an operator who
+       * asked for open ones has no way to tell they are looking at both.
+       */
+      status: enumQuery(status, positionStatusEnum.enumValues, 'status'),
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
       scope: req.admin.clientScope,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { AUDIT_ACTION_KEYS } from '../src/modules/admin/audit-actions.catalog';
+import { AUDIT_ACTION_KEYS, AUDIT_ACTIONS } from '../src/modules/admin/audit-actions.catalog';
 
 /**
  * A DECLARED action must actually be WRITTEN somewhere.
@@ -158,6 +158,34 @@ function recordedActions(): Set<string> {
       }
     }
   }
+
+  /*
+   * Actions reached through a POLICY OBJECT rather than named at the call.
+   *
+   * `uploads.controller.ts` serves two buckets through one handler shape and
+   * passes `audit: { action: 'kyc.document.view', subjectType: … }` into
+   * `recordRead`, so the action literal is nowhere near a `record(` call. The
+   * scan above cannot see it, and the catalogued-to-written check below
+   * therefore reported both as dead when they are written on every document a
+   * reviewer opens.
+   *
+   * Matching the declaration shape is closer to the truth than exempting the two
+   * by name: a third bucket added tomorrow is found the same way, where a
+   * hand-kept exemption list would not know about it.
+   */
+  for (const { path, text } of SOURCES) {
+    /*
+     * NOT the catalogue itself. Its entries are `{ action: 'x', label: … }`, so
+     * scanning it would make every catalogued action look recorded and turn the
+     * check below into a tautology — the exact failure shape this suite exists
+     * to find elsewhere.
+     */
+    if (path.endsWith('audit-actions.catalog.ts')) continue;
+    for (const literal of text.matchAll(/\baction:\s*'([a-z_]+\.[a-z_.]+)'/g)) {
+      found.add(literal[1]);
+    }
+  }
+
   return found;
 }
 
@@ -249,5 +277,61 @@ describe('the scan reads the source tree', () => {
   it('finds the services it is meant to be checking', () => {
     expect(FILES.length).toBeGreaterThan(50);
     expect(ALL_SOURCE).toContain('AdminAuditService');
+  });
+});
+
+describe('the catalogue names nothing that no code writes', () => {
+  it('has no action that is neither recorded nor marked historical', () => {
+    /*
+     * The direction this file never checked.
+     *
+     * It asserts written→catalogued (an action `record()`ed but absent from the
+     * catalogue is unfilterable) and said nothing about catalogued→written. Five
+     * entries were in the second state: `ib.program_change`, `ib_level.reorder`
+     * and the three `ib_program.*`. Each renders in the console's action filter
+     * as a selectable option that can only ever answer "no results" — which an
+     * operator reads as "that never happened".
+     *
+     * ## Why they are marked rather than deleted
+     *
+     * Because "no code writes it" and "no row carries it" are different claims.
+     * `ib_program.*` were written on every programme edit until migration 0112
+     * retired the catalogue they described, so rows exist — and this file's
+     * subject exists so an auditor can ask "has anyone ever done X". Deleting the
+     * label makes the historical rows unfilterable, which is the defect the
+     * catalogue was built to prevent, arriving from the other side.
+     *
+     * So `historical: true` is the statement, and this is what forces a NEW dead
+     * entry to be one or the other rather than neither.
+     */
+    const recorded = recordedActions();
+    const orphaned = AUDIT_ACTIONS.filter(
+      (entry) => !entry.historical && !recorded.has(entry.action),
+    ).map((entry) => entry.action);
+
+    expect(
+      orphaned,
+      'These actions are in the catalogue and no code records them, so the audit filter ' +
+        'offers them and they can never return a result. Record the action, delete the ' +
+        'entry, or mark it `historical: true` if rows already carry it:\n' +
+        orphaned.map((a) => `  ${a}`).join('\n'),
+    ).toEqual([]);
+  });
+
+  it('marks nothing historical that code still writes', () => {
+    /*
+     * The other half, and the one that stops `historical` becoming a way to
+     * silence the check above. An action still being written is not historical,
+     * whatever the label says.
+     */
+    const recorded = recordedActions();
+    const alive = AUDIT_ACTIONS.filter(
+      (entry) => entry.historical && recorded.has(entry.action),
+    ).map((entry) => entry.action);
+
+    expect(
+      alive,
+      `These are marked historical and are still recorded by live code:\n${alive.join('\n')}`,
+    ).toEqual([]);
   });
 });

@@ -8,7 +8,11 @@ import {
 } from '../src/modules/payments/transactions.service';
 import { KYC_SORT_COLUMNS } from '../src/store/kyc.store';
 import { AUDIT_SORT_COLUMNS } from '../src/store/audit-log.store';
-import { IB_APPLICATION_SORT_COLUMNS, IB_PARTNER_SORT_COLUMNS } from '../src/store/ib.store';
+import {
+  IB_APPLICATION_SORT_COLUMNS,
+  IB_PARTNER_SORT_COLUMNS,
+  IB_ACCRUAL_SORT_COLUMNS,
+} from '../src/store/ib.store';
 import { ADMIN_SORT_COLUMNS } from '../src/store/admins.store';
 import { ROLE_SORT_COLUMNS } from '../src/store/roles.store';
 import {
@@ -91,6 +95,48 @@ afterAll(async () => {
  * @param expressions allowlist key → the SQL expression it maps to.
  * @param allowlist   the real `*_SORT_COLUMNS` object, so this cannot drift.
  */
+/**
+ * The (list, sort key) pairs allowed to order by a JOINED column.
+ *
+ * Frozen so the exemption is a decision rather than a consequence. Each orders a
+ * queue by something on `users`, which no index on the base table can serve — so
+ * the plan is asserted to USE an index without being asserted to avoid a sort.
+ *
+ * ⚠️ Some of these lists page by KEYSET. For them an unindexed ORDER BY means a
+ * full sort of the filtered set on every page, which is precisely the cost
+ * keyset paging was chosen to avoid. They are kept because sorting a review
+ * queue by the person is what the desk actually does, and the sets are bounded
+ * by the filters above them — but the next addition should answer that question
+ * rather than inherit this answer.
+ */
+const JOINED_SORTS_EXEMPT = new Set<string>([
+  // Keyset-paged. These are the three the bound was written for.
+  'the withdrawal queue.userEmail',
+  'the withdrawal queue.userFirstName',
+  'the wallet list.userEmail',
+  'the wallet list.userFirstName',
+  'the trading-account list.userEmail',
+  'the trading-account list.userFirstName',
+  // Offset-paged, so an unindexed ORDER BY costs what offset already costs.
+  'the KYC review queue.userEmail',
+  'the KYC review queue.userFirstName',
+  'the partner application queue.userEmail',
+  'the partner application queue.userFirstName',
+  'the partner list.userEmail',
+  'the partner list.userFirstName',
+]);
+
+/**
+ * Every exemption still names a live sort key.
+ *
+ * The other direction, for the reason the sibling censuses give: an exemption
+ * for a key that no longer exists is a line that looks like diligence and
+ * protects nothing. Collected as the suites run — `describeSortIndexes` records
+ * each pair it sees — so this compares the list against what the allowlists
+ * actually declare rather than against a second copy of it.
+ */
+const JOINED_SORTS_SEEN = new Set<string>();
+
 function describeSortIndexes(
   label: string,
   table: string,
@@ -128,7 +174,31 @@ function describeSortIndexes(
         `);
 
         expect(p).toContain('Index');
-        if (!joined) {
+        if (joined) {
+          /*
+           * The exemption is FROZEN, not a property of being joined.
+           *
+           * `if (!joined)` alone meant any sort key reaching through a join
+           * skipped the "no Sort node" assertion automatically — so a new joined
+           * key inherited the exemption by existing, and three of the lists it
+           * covers page by KEYSET, where an unindexed ORDER BY is a full sort of
+           * the filtered set on every page of every filter. That is the exact
+           * cost `pagination.ts` chose keyset to avoid, reachable from a
+           * query-string value.
+           *
+           * It cannot be closed by an index — a cross-table ordering has nowhere
+           * to put one — so what is available is a BOUND: these are the ones
+           * that were weighed, and a new one has to be weighed too.
+           */
+          JOINED_SORTS_SEEN.add(`${label}.${key}`);
+          expect(
+            JOINED_SORTS_EXEMPT.has(`${label}.${key}`),
+            `${label}.${key} orders by a JOINED column, so it cannot avoid a sort node. ` +
+              'That may be acceptable — it is for the ones listed — but it is a decision ' +
+              'about a list that may page by keyset, not something to inherit. Add it to ' +
+              'JOINED_SORTS_EXEMPT deliberately, or drop the key from the allowlist.',
+          ).toBe(true);
+        } else {
           expect(p, `ORDER BY ${spec.sql} fell back to a sort`).not.toContain('Sort');
         }
       });
@@ -336,6 +406,34 @@ describeSortIndexes(
   INDEXABLE_ADMIN_TRANSACTION_SORTS,
 );
 
+// ── The commission ledger ────────────────────────────────────────────────────
+//
+// ⚠️ THE MAP THIS SPEC HAD NEVER SEEN.
+//
+// `IB_ACCRUAL_SORT_COLUMNS` was the only `*_SORT_COLUMNS` object in the codebase
+// absent from this file, and it offered four sort keys against a table carrying
+// none of them as a leading column — `ib_accruals`' three indexes lead with
+// `ib_user_id`, `(status, created_at)` and `batch_id`. So every ordering of the
+// partner payout ledger was a full sort of the filtered set, on every page.
+//
+// The whole design of this file is that "each EXPRESSIONS map is checked against
+// the real `*_SORT_COLUMNS` object, so a sort key added without an index arrives
+// in this spec automatically". That works per list — and says nothing about a
+// list nobody registered. Migration 0129 adds the four indexes; this is what
+// stops the fifth key arriving without one.
+describeSortIndexes(
+  'the commission ledger',
+  'ib_accruals',
+  'id',
+  {
+    createdAt: { sql: 'ib_accruals.created_at' },
+    amount: { sql: 'ib_accruals.amount' },
+    status: { sql: 'ib_accruals.status' },
+    depth: { sql: 'ib_accruals.depth' },
+  },
+  IB_ACCRUAL_SORT_COLUMNS,
+);
+
 /**
  * The index DIRECTIONS, asserted directly.
  *
@@ -384,5 +482,24 @@ describe('the composites are direction-pinned in the shape the queries order by'
     );
     expect(rows.rows).toHaveLength(1);
     expect((rows.rows[0] as { indexdef: string }).indexdef).toContain('NULLS LAST');
+  });
+});
+
+describe('the joined-sort exemption list stays honest', () => {
+  it('names no pair that is no longer a sort key', () => {
+    /*
+     * Runs last, after every `describeSortIndexes` block has recorded the joined
+     * pairs it actually saw. An exemption for a key that has since been dropped
+     * from an allowlist is the decay the sibling censuses name: a line that
+     * looks like diligence and protects nothing.
+     */
+    const stale = [...JOINED_SORTS_EXEMPT].filter((pair) => !JOINED_SORTS_SEEN.has(pair)).sort();
+
+    expect(
+      stale,
+      `These are exempted but no longer appear in any allowlist. Delete them:\n${stale
+        .map((p) => `  ${p}`)
+        .join('\n')}`,
+    ).toEqual([]);
   });
 });

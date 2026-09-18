@@ -1085,7 +1085,7 @@ export class IbApplicationsService {
     if (!account) return null;
 
     const [directPartners, earningsMap, referredCount, agencies, products] = await Promise.all([
-      this.ib.findDirectPartners(userId),
+      this.ib.findDirectPartners(userId, scope),
       this.ib.earningsByPartner([userId]),
       // Scoped, like every other client read on this route: `assertVisible`
       // above proves the PARTNER is visible and says nothing about their
@@ -1103,9 +1103,29 @@ export class IbApplicationsService {
      * the account that names somebody, and a screen that printed the id would
      * send an operator to the client list to resolve it by hand.
      */
+    /*
+     * Resolved through the SCOPED lookup, not `findById`.
+     *
+     * `findById` is the deliberately-unscoped variant, and using it here handed
+     * the reader the email and full name of a partner who may sit in a territory
+     * they are specifically denied — while `countReferredBy` two calls up obeys
+     * the same reader's scope. One response, two answers about the same rule.
+     *
+     * Out of territory comes back as NULL, and the id is not substituted: the
+     * whole reason the downline beside this one is scoped is that ids of people
+     * a reader is denied are an oracle, and handing one over here would reopen
+     * it for the single most interesting person in the tree.
+     *
+     * `parentOutsideTerritory` is what stops that null misdescribing the tree.
+     * "No parent" and "a parent you may not see" are different facts — the first
+     * says this partner deals with the broker directly, which decides their
+     * terms — and collapsing them into one null is how somebody reads a level 2
+     * partner as a level 1.
+     */
     const parent = account.parentIbUserId
-      ? ((await this.users.findById(account.parentIbUserId)) ?? null)
+      ? ((await this.users.findForAdmin(account.parentIbUserId, scope)) ?? null)
       : null;
+    const parentOutsideTerritory = Boolean(account.parentIbUserId) && parent === null;
 
     /*
      * The RUNG, and the terms it carries — the whole of what this partner is
@@ -1161,6 +1181,11 @@ export class IbApplicationsService {
             lastName: parent.lastName ?? null,
           }
         : null,
+      /** True when a parent exists but sits outside this reader's territory. */
+      parentOutsideTerritory,
+      /* SCOPED to the reader's territory, and no total beside it — see
+         `IbStore.findDirectPartners` for why publishing one would give away the
+         fact the rows withhold. */
       directPartners,
       /* How many CLIENTS they introduced — the other half of a partner's line,
          and the number the earnings are a consequence of. */

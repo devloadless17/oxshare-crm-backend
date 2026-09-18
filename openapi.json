@@ -1878,7 +1878,7 @@
     },
     "/v1/ib/commissions": {
       "get": {
-        "description": "The other half of the dashboard totals. Those read the LEDGER — money actually paid — so a partner whose accruals are still maturing sees zero there with no way to tell \"nothing earned\" from \"earned, not yet released\". Each row carries its status, so the two numbers explain each other.\n\n`source: position` is a closed trade, which is the only thing that pays a revenue share. `transaction` rows are historical — commission is no longer earned on deposits.",
+        "description": "The other half of the dashboard totals. Those read the LEDGER — money actually paid — so a partner whose accruals are still maturing sees zero there with no way to tell \"nothing earned\" from \"earned, not yet released\". Each row carries its status, so the two numbers explain each other.\n\n⚠️ **CAPPED, and deliberately so.** This returns the newest 200 entries and takes no paging parameters. A sum over these rows is a sum over WHAT WAS RETURNED, never a lifetime total — for that, read `earnings` on `GET /ib/overview`, which the database sums over the whole ledger. The portal labels the two separately for exactly this reason (`partner-earnings.ts`).\n\nThis summary read \"Every commission this partner has earned\" while the cap was in place, which is the same sentence-versus-behaviour gap the client money history carried under its old LIMIT 100.\n\n`source: position` is a closed trade, which is the only thing that pays a revenue share. `transaction` rows are historical — commission is no longer earned on deposits.",
         "operationId": "IbController_commissions",
         "parameters": [],
         "responses": {
@@ -1901,7 +1901,7 @@
             "cookie": []
           }
         ],
-        "summary": "Every commission this partner has earned, newest first",
+        "summary": "This partner’s MOST RECENT commission entries, newest first",
         "tags": [
           "ib"
         ]
@@ -3049,6 +3049,83 @@
           }
         ],
         "summary": "Declare an incoming deposit and get the reference to quote on the transfer",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/v1/payments/deposits/offline": {
+      "post": {
+        "description": "Creates a PENDING deposit carrying the uploaded receipt. No balance changes until an operator approves it. Only methods configured as needing a receipt are accepted here.",
+        "operationId": "PaymentsController_requestOfflineDeposit",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended deposit, reused only when retrying that same one. Without it a double-clicked button files two declarations for one transfer.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file",
+                  "amount",
+                  "currency",
+                  "method"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "A photo or PDF of the transfer."
+                  },
+                  "amount": {
+                    "type": "string",
+                    "example": "250.00"
+                  },
+                  "currency": {
+                    "type": "string",
+                    "example": "USD"
+                  },
+                  "method": {
+                    "type": "string",
+                    "example": "offline"
+                  },
+                  "destinationTradingAccountId": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositRequestDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Declare a deposit paid outside the platform, with the receipt attached",
         "tags": [
           "payments"
         ]
@@ -4635,6 +4712,35 @@
           }
         },
         "summary": "Serve a payment-method logo (public)",
+        "tags": [
+          "Uploads"
+        ]
+      }
+    },
+    "/v1/uploads/deposit-proofs/{file}": {
+      "get": {
+        "operationId": "UploadsController_serveDepositProof",
+        "parameters": [
+          {
+            "name": "file",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Serve a deposit receipt to its owner or a deposits reviewer",
         "tags": [
           "Uploads"
         ]
@@ -9081,6 +9187,108 @@
         ]
       }
     },
+    "/v1/admin/deposits/{id}/approve": {
+      "patch": {
+        "description": "Moves the deposit from pending to success and posts the ledger credit in one transaction. If the client chose a trading account, the money is chained on to it exactly as a gateway deposit would be. Approving twice credits once.",
+        "operationId": "AdminMoneyController_approveDeposit",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action, reused only when retrying that same one. The conditional transition makes a replayed CAUSE a no-op; this makes a replayed REQUEST one too (R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositDecisionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Approve an offline deposit and credit the client wallet",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/deposits/{id}/reject": {
+      "patch": {
+        "description": "Moves the deposit to rejected and emails the client the reason. NOTHING IS REFUNDED, because nothing was ever debited: a deposit posts no ledger entry when it is filed. A client who really did send the money needs support, not a reversal.",
+        "operationId": "AdminMoneyController_rejectDeposit",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action, reused only when retrying that same one.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DepositRejectDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositDecisionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Reject an offline deposit, with a reason the client is told",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/withdrawals/{id}/settle": {
       "patch": {
         "description": "Requires `withdrawals.settle`, which is separate from `withdrawals.approve` so the two steps can be granted to different people (separation of duties, R-5.4).",
@@ -12111,7 +12319,12 @@
               }
             ]
           },
+          "parentOutsideTerritory": {
+            "type": "boolean",
+            "description": "True when this partner has a parent the reader may not see. Distinguishes “deals with the broker directly” from “parent outside your territory”."
+          },
           "directPartners": {
+            "description": "SCOPED to the reader’s territory. No out-of-territory total accompanies it — a count is itself a disclosure, and there is no row cap here for one to describe.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/IbSubPartnerRowDto"
@@ -12149,6 +12362,7 @@
           "agencyName",
           "products",
           "parent",
+          "parentOutsideTerritory",
           "directPartners",
           "referredClientCount",
           "earnings"
@@ -12472,6 +12686,10 @@
           },
           "sortOrder": {
             "type": "number"
+          },
+          "requiresProof": {
+            "type": "boolean",
+            "description": "The client must attach a receipt: this method is paid outside the platform and an operator approves it by hand. The portal reads this to decide whether to ask for one, rather than branching on the method key."
           }
         },
         "required": [
@@ -12482,7 +12700,8 @@
           "minAmount",
           "maxAmount",
           "enabled",
-          "sortOrder"
+          "sortOrder",
+          "requiresProof"
         ]
       },
       "RequestDepositDto": {
@@ -12679,6 +12898,10 @@
             "nullable": true
           },
           "destination": {
+            "type": "string",
+            "nullable": true
+          },
+          "proofFilename": {
             "type": "string",
             "nullable": true
           },
@@ -12882,6 +13105,10 @@
           "sortOrder": {
             "type": "number",
             "default": 0
+          },
+          "requiresProof": {
+            "type": "boolean",
+            "description": "OFFLINE: the client pays outside the platform and must attach a receipt. Such a deposit is filed through POST /payments/deposits/offline and settles when an operator approves it — the JSON deposit route refuses the method. Cannot be combined with a gateway key."
           }
         },
         "required": [
@@ -12909,6 +13136,10 @@
           },
           "sortOrder": {
             "type": "number"
+          },
+          "requiresProof": {
+            "type": "boolean",
+            "description": "OFFLINE: the client pays outside the platform and must attach a receipt. Such a deposit is filed through POST /payments/deposits/offline and settles when an operator approves it — the JSON deposit route refuses the method. Cannot be combined with a gateway key."
           }
         }
       },
@@ -16217,7 +16448,8 @@
             "enum": [
               "kyc",
               "withdrawal",
-              "partner"
+              "partner",
+              "deposit"
             ]
           },
           "label": {
@@ -16242,7 +16474,8 @@
             "type": "string",
             "enum": [
               "kyc",
-              "withdrawal"
+              "withdrawal",
+              "deposit"
             ]
           },
           "label": {
@@ -16643,7 +16876,8 @@
             "type": "string"
           },
           "actorEmail": {
-            "type": "string"
+            "type": "string",
+            "description": "Absent when the actor is a client and the reader may not see client addresses. The column is NOT NULL, so absence can only mean the mask removed it."
           },
           "actorKind": {
             "type": "string",
@@ -16681,7 +16915,6 @@
         "required": [
           "id",
           "actorId",
-          "actorEmail",
           "actorKind",
           "action",
           "subjectType",
@@ -16794,10 +17027,10 @@
           },
           "permissions": {
             "example": [
-              "users.view",
+              "clients.view",
               "withdrawals.view"
             ],
-            "description": "Permission keys from config/permissions.json. An admin may only grant permissions they themselves hold; only a master admin may grant \"*\". At least one is required — a key with none can authenticate but do nothing.",
+            "description": "Permission keys from config/permissions.json. An admin may only grant permissions they themselves hold. At least one is required — a key with none can authenticate but do nothing. There is no wildcard: migration 0044 removed `*` along with the master tier, and keys are compared exactly.",
             "type": "array",
             "items": {
               "type": "string"
@@ -17198,6 +17431,87 @@
           }
         }
       },
+      "DepositDecisionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "string",
+            "description": "The client this deposit belongs to."
+          },
+          "amount": {
+            "type": "string",
+            "description": "Monetary value — always a string, never a number",
+            "example": "250.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "success",
+              "failure",
+              "rejected"
+            ]
+          },
+          "methodKey": {
+            "type": "object",
+            "description": "The deposit method the client chose.",
+            "nullable": true
+          },
+          "providerRef": {
+            "type": "object",
+            "description": "The OX- reference quoted on the transfer.",
+            "nullable": true
+          },
+          "proofPath": {
+            "type": "object",
+            "description": "The stored receipt, as `uploads/deposit-proofs/<file>`. Null when the deposit carried none.",
+            "nullable": true
+          },
+          "rejectionReason": {
+            "type": "object",
+            "nullable": true
+          },
+          "reviewedAt": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          },
+          "settledAt": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "amount",
+          "currency",
+          "state"
+        ]
+      },
+      "DepositRejectDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Free-text note, used alone or appended to the configured reason.",
+            "maxLength": 500
+          },
+          "reasonId": {
+            "type": "string",
+            "description": "A configured rejection reason from the `deposit` context."
+          }
+        }
+      },
       "SettleWithdrawalDto": {
         "type": "object",
         "properties": {
@@ -17520,6 +17834,11 @@
             "type": "string",
             "nullable": true,
             "description": "The trading account a TRANSFER moved money to or from. Null on other kinds."
+          },
+          "proofFilename": {
+            "type": "string",
+            "nullable": true,
+            "description": "The RECEIPT on an offline deposit — the stored filename, served from GET /v1/uploads/deposit-proofs/<file>. Null on every other movement. On the list so the deposit desk can show the image beside the row it decides on, rather than fetching one per row."
           },
           "walletId": {
             "type": "string"

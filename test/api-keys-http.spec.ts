@@ -1,6 +1,6 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import {
   actingAs,
   anonymous,
@@ -13,6 +13,7 @@ import {
   adminClientTagScopes,
   admins,
   apiKeys,
+  auditLog,
   clientTagAssignments,
   clientTags,
   roles,
@@ -39,8 +40,17 @@ import { hashApiKey } from '../src/common/security/api-key';
 const MASTER = { email: 'apikey-master@oxshare.com', password: 'admin-password-123' };
 const SUB = { email: 'apikey-sub@oxshare.com', password: 'admin-password-123' };
 const SCOPED = { email: 'apikey-scoped@oxshare.com', password: 'admin-password-123' };
+/**
+ * Mints a key and is then SUSPENDED, which no other case here does.
+ *
+ * Separate from SCOPED deliberately: suspending a fixture the rest of the
+ * file signs in as would fail later cases for a reason that has nothing to do
+ * with what they assert, and would do it only when this test runs first.
+ */
+const KEY_OWNER = { email: 'apikey-owner@oxshare.com', password: 'admin-password-123' };
 
 let inScopeClientId: string;
+let keyOwnerId: string;
 let outScopeClientId: string;
 
 let ctx: HttpTestContext;
@@ -85,7 +95,7 @@ beforeAll(async () => {
     })
     .returning();
 
-  const [, , scopedAdmin] = await ctx.db.db
+  const [, , scopedAdmin, keyOwner] = await ctx.db.db
     .insert(admins)
     .values([
       {
@@ -113,8 +123,17 @@ beforeAll(async () => {
         permissions: ['clients.view', 'apikeys.create'],
         seesUntriaged: false,
       },
+      {
+        email: KEY_OWNER.email,
+        passwordHash: hash,
+        name: 'API Key Owner',
+        role: 'sub_admin',
+        roleId: scopedRole.id,
+        permissions: ['clients.view', 'apikeys.create'],
+      },
     ])
     .returning();
+  keyOwnerId = keyOwner.id;
 
   const [tag] = await ctx.db.db
     .insert(clientTags)
@@ -162,6 +181,18 @@ async function issueKey(
   const session = await actingAs(ctx, 'admin', MASTER);
   const res = await session.post('/v1/admin/api-keys', body).expect(201);
   return { plaintext: res.body.plaintext, id: res.body.key.id };
+}
+
+/**
+ * Put KEY_OWNER back to active.
+ *
+ * Every case in the suspension block below ends with them suspended, and a
+ * suspended admin cannot sign in — so without this the second case fails at
+ * `actingAs` with a 401 that looks like broken login rather than a fixture left
+ * where the previous test dropped it.
+ */
+async function reactivateKeyOwner(): Promise<void> {
+  await ctx.db.db.update(admins).set({ status: 'active' }).where(eq(admins.id, keyOwnerId));
 }
 
 describe('issuing a key', () => {
@@ -465,5 +496,93 @@ describe('the anti-forgery waiver is exactly as wide as the admin surface', () =
       .send({})
       .expect(400);
     expect(res.body.code).toBe('VALIDATION_FAILED');
+  });
+});
+
+describe('suspending the administrator who minted a key', () => {
+  it('REVOKES the keys they issued — the session and the credential end together', async () => {
+    /*
+     * Ending the sessions and leaving the keys takes away the screen and leaves
+     * the access.
+     *
+     * A key carries its creator's permissions and territory snapshotted onto the
+     * row, so it keeps answering with their authority after their cookies stop
+     * working — `admin-rbac.service.ts` has revoked the refresh families on
+     * suspend since it was written, and nothing touched the keys. Someone
+     * suspended for cause who minted a key on the way out kept everything that
+     * key could reach, indefinitely: `findActiveByHash` filters `revoked_at IS
+     * NULL` and never looks at who created the row.
+     *
+     * The snapshot itself is deliberate and stays — `admin.guard.ts` explains
+     * that a key holds no live join to its creator so it survives their
+     * DELETION. Suspension is the case that reasoning never covered: a decision
+     * about the person, taken while the link still exists.
+     */
+    await reactivateKeyOwner();
+    const owner = await actingAs(ctx, 'admin', KEY_OWNER);
+    const issued = await owner
+      .post('/v1/admin/api-keys', { name: 'Owner key', permissions: ['clients.view'] })
+      .expect(201);
+    const key = issued.body.plaintext as string;
+
+    // It works while its creator is active — otherwise the assertion below
+    // passes for the wrong reason.
+    const before = await anonymous(ctx)
+      .get('/v1/admin/clients?limit=1')
+      .set('X-API-Key', key)
+      .expect(200);
+    expect(before.body).toHaveProperty('items');
+
+    const master = await actingAs(ctx, 'admin', MASTER);
+    await master.patch(`/v1/admin/users/${keyOwnerId}/status`, { status: 'suspended' }).expect(200);
+
+    // 401, not 403: the credential is no longer valid at all, which is the same
+    // answer a revoked key has always given.
+    await anonymous(ctx).get('/v1/admin/clients?limit=1').set('X-API-Key', key).expect(401);
+  });
+
+  it('leaves keys minted by OTHER administrators alone', async () => {
+    /*
+     * The blast radius. Revoking every key on any suspension would take down
+     * integrations belonging to people who were not suspended — a far worse
+     * outage than the gap being closed, and the reason `revokeAllCreatedBy`
+     * filters on `created_by` rather than revoking the table.
+     */
+    await reactivateKeyOwner();
+    const { plaintext } = await issueKey({ name: 'Master key', permissions: ['clients.view'] });
+
+    const owner = await actingAs(ctx, 'admin', KEY_OWNER);
+    await owner
+      .post('/v1/admin/api-keys', { name: 'Doomed key', permissions: ['clients.view'] })
+      .expect(201);
+
+    const master = await actingAs(ctx, 'admin', MASTER);
+    await master.patch(`/v1/admin/users/${keyOwnerId}/status`, { status: 'suspended' }).expect(200);
+
+    await anonymous(ctx).get('/v1/admin/clients?limit=1').set('X-API-Key', plaintext).expect(200);
+  });
+
+  it('reports what it revoked, so the audit row says what the suspension cost', async () => {
+    await reactivateKeyOwner();
+    const owner = await actingAs(ctx, 'admin', KEY_OWNER);
+    await owner
+      .post('/v1/admin/api-keys', { name: 'Counted key', permissions: ['clients.view'] })
+      .expect(201);
+
+    const master = await actingAs(ctx, 'admin', MASTER);
+    await master.patch(`/v1/admin/users/${keyOwnerId}/status`, { status: 'suspended' }).expect(200);
+
+    const [row] = await ctx.db.db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.subjectId, keyOwnerId), eq(auditLog.action, 'admin.suspend')))
+      .orderBy(desc(auditLog.createdAt))
+      .limit(1);
+
+    const details = row?.details as { apiKeysRevoked?: number } | null;
+    expect(
+      details?.apiKeysRevoked,
+      'the suspension row does not say what it ended',
+    ).toBeGreaterThan(0);
   });
 });

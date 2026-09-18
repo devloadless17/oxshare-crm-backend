@@ -9,6 +9,7 @@ import {
 import { AdminAuditService } from '../src/modules/admin/admin-audit.service';
 import { ClientFieldsService } from '../src/modules/admin/client-fields.service';
 import { RefreshTokensService } from '../src/common/security/refresh-tokens.service';
+import { ApiKeysStore } from '../src/store/api-keys.store';
 import { DRIZZLE_DB } from '../src/database/database.module';
 import { AdminRbacService } from '../src/modules/admin/admin-rbac.service';
 import { AdminsStore, InvitesStore, type Admin } from '../src/store/admins.store';
@@ -158,6 +159,13 @@ async function build(overrides: { admin?: Partial<Admin>; role?: Role | undefine
       {
         provide: RefreshTokensService,
         useValue: { revokeAllForSubject: vi.fn().mockResolvedValue(0) },
+      },
+      {
+        // Suspension also revokes the API keys the suspended admin minted. The
+        // cases here assert who may suspend whom, not what suspension ends, so
+        // a stub reporting nothing revoked is the honest shape.
+        provide: ApiKeysStore,
+        useValue: { revokeAllCreatedBy: vi.fn().mockResolvedValue(0) },
       },
       {
         provide: DRIZZLE_DB,

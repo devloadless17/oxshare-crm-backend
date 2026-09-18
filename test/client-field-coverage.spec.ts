@@ -289,3 +289,51 @@ describe('every admin-reachable shape says whose data it holds', () => {
     ).toEqual([]);
   });
 });
+
+describe('no field claims to be both client-owned and not', () => {
+  it('refuses a property carrying @ClientField AND @NotClientField', () => {
+    /*
+     * Thirty-eight properties did. Each paired a REAL catalogue key —
+     * `client.email`, `client.phone`, `client.country`, `client.createdAt` —
+     * with templated boilerplate reading "not a client-owned attribute — email
+     * describes the record rather than the person". Five more carried the same
+     * `@NotClientField` twice.
+     *
+     * ## Why it passed everything
+     *
+     * The two decorators write DISJOINT metadata keys, `maskByShape` consults
+     * only the first, and the coverage census above unions all three maps to ask
+     * whether a field said *anything*. So masking worked, every suite was green,
+     * and each of those fields simultaneously asserted two opposite facts about
+     * itself.
+     *
+     * ## Why that is worth a test rather than a tidy-up
+     *
+     * The failure is a future one. Anybody deleting the `@ClientField` on the
+     * strength of the sentence beside it — which is what a `@NotClientField`
+     * reason is FOR — silently unmasks a client's email address, with a green
+     * build and nothing in the diff that looks wrong. The contradiction is the
+     * bug; the masking still working is what makes it invisible.
+     *
+     * The `@ClientField` was authoritative in all thirty-eight: every key named
+     * one that really exists in `client-fields.json`, which is what settled
+     * which half to delete.
+     */
+    const contradictory: string[] = [];
+
+    for (const [name, type] of reachableShapes()) {
+      const owned = new Set(clientFieldsOf(type).keys());
+      for (const property of notClientFieldsOf(type).keys()) {
+        if (owned.has(property)) contradictory.push(`${name}.${property}`);
+      }
+    }
+
+    expect(
+      contradictory,
+      'These properties are marked @ClientField AND @NotClientField. Both cannot be true, ' +
+        'and masking silently honours the first — so the second is a sentence that will one ' +
+        'day persuade somebody to delete the mark that does the work:\n' +
+        contradictory.map((c) => `  ${c}`).join('\n'),
+    ).toEqual([]);
+  });
+});

@@ -154,4 +154,37 @@ export class ApiKeysStore {
       .returning();
     return row ?? null;
   }
+
+  /**
+   * Revoke every live key one administrator minted, and say how many.
+   *
+   * Suspension is "we are taking this person's access away NOW"
+   * (`admin-rbac.service.ts`), and a key they issued carries THEIR permissions
+   * and THEIR territory — snapshotted onto the row, so it keeps working with
+   * their authority after their sessions are gone. Ending the sessions and
+   * leaving the keys takes away the screen and not the access.
+   *
+   * Scoped to `created_by` rather than to every key, because the keys another
+   * administrator minted are not this person's to lose.
+   *
+   * ⚠️ This does NOT run on deletion, and must not be made to. `admin.guard.ts`
+   * is explicit that a key holds a snapshot rather than a live join to its
+   * creator precisely so it "neither drifts with the creator's scope nor breaks
+   * when they are deleted" — and `created_by` is `set null` there, so after a
+   * delete there is nothing to match on anyway. Suspension is the case that
+   * reasoning never covered: a decision about the person, made while the link
+   * still exists.
+   *
+   * Same idempotent shape as `revoke`: `revoked_at IS NULL` in the WHERE means a
+   * second suspension revokes nothing and reports 0, rather than restamping keys
+   * that were already dead and overstating what this call did.
+   */
+  async revokeAllCreatedBy(adminId: string): Promise<number> {
+    const rows = await this.db
+      .update(apiKeys)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(apiKeys.createdBy, adminId), isNull(apiKeys.revokedAt)))
+      .returning({ id: apiKeys.id });
+    return rows.length;
+  }
 }

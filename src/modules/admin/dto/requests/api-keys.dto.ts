@@ -27,11 +27,21 @@ export class CreateApiKeyDto {
 
   @ApiProperty({
     type: [String],
-    example: ['users.view', 'withdrawals.view'],
+    /*
+     * ⚠️ `users.view` — the key in this example did not exist.
+     *
+     * The catalogue names it `clients.view`. A caller copying the published
+     * example straight out of Swagger got `Unknown permission key(s):
+     * users.view.` from `assertKnownKeys`, which reads as a broken endpoint
+     * rather than a wrong sample. An example is documentation that people
+     * execute, so a wrong one is worse than none.
+     */
+    example: ['clients.view', 'withdrawals.view'],
     description:
       'Permission keys from config/permissions.json. An admin may only grant permissions they ' +
-      'themselves hold; only a master admin may grant "*". At least one is required — a key ' +
-      'with none can authenticate but do nothing.',
+      'themselves hold. At least one is required — a key with none can authenticate but do ' +
+      'nothing. There is no wildcard: migration 0044 removed `*` along with the master tier, ' +
+      'and keys are compared exactly.',
   })
   @IsArray()
   @ArrayNotEmpty()

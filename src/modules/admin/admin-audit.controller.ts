@@ -1,3 +1,4 @@
+import { Throttle } from '@nestjs/throttler';
 // Part of the `admin` controller surface, split by concern.
 //
 // admin.controller.ts had grown to 717 lines fronting six already well-separated
@@ -18,11 +19,11 @@ import { AuditActionDto, AuditListResponseDto } from './dto/responses.dto';
 import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
 import { AUDIT_ACTIONS } from './audit-actions.catalog';
 import { AUDIT_SORT_COLUMNS } from '../../store/audit-log.store';
-import { searchQuery } from '../../common/query-params';
+import { searchQuery, uuidQuery } from '../../common/query-params';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 import { AdminExportService } from './admin-export.service';
-import { exportFormat, streamCsv } from '../../common/export/export-response';
+import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
 
 /** Append-only admin action log (master admin only). */
 @ApiTags('admin')
@@ -79,6 +80,20 @@ export class AdminAuditController {
    * behaviour: a reader of one export can see that the previous one happened.
    */
   @Get('audit-log/export')
+  /*
+   * A ceiling on a STREAMING read of the whole client base.
+   *
+   * Every export here is batched over the full filtered set and held open for
+   * the length of the download, and none carried anything but the global
+   * 120/min — which is sized for a person clicking around a console, not for
+   * 120 concurrent full-table CSV streams. The limit is per route per IP, so a
+   * desk exporting clients and then withdrawals is unaffected; what it bounds is
+   * one caller pulling the same export in a loop.
+   *
+   * Six a minute: far above any human use of an Export button, far below what
+   * it takes to hurt the database.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
   @RequirePermissions('audit.view')
   @ApiCookieAuth()
@@ -139,7 +154,9 @@ export class AdminAuditController {
     const query = {
       action: searchQuery(action, 'action'),
       subjectType: searchQuery(subjectType, 'subjectType'),
-      actorId,
+      // Same shape check as the list — an export must refuse what the screen
+      // refuses, or the file answers a question the screen would not.
+      actorId: uuidQuery(actorId, 'actorId'),
       subjectId,
       q: searchQuery(q, 'q'),
     };
@@ -226,7 +243,22 @@ export class AdminAuditController {
       cursor,
       action: searchQuery(action, 'action'),
       subjectType: searchQuery(subjectType, 'subjectType'),
-      actorId,
+      /*
+       * SHAPE-CHECKED AT THE EDGE, so the message names the parameter.
+       *
+       * ⚠️ Not a 500 fix. `AllExceptionsFilter` already maps Postgres `22P02` to
+       * a 400 — it was added for exactly this, after a typo'd uuid in a URL was
+       * "logged with a full stack as an unexpected server error". So the status
+       * was right before this; what was wrong was the SENTENCE. "A value in the
+       * request is not a valid identifier" does not say which value, on a route
+       * taking four of them, and the database paid for a round trip to produce
+       * it.
+       *
+       * `subjectId` beside it is deliberately NOT uuid-checked: that column is
+       * text and holds route signatures like `PATCH /v1/admin/users/:id` as well
+       * as ids.
+       */
+      actorId: uuidQuery(actorId, 'actorId'),
       subjectId,
       /*
        * Bounded the same way: `actor_email` is varchar(255), so a term longer

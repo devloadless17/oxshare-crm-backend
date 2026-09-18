@@ -59,6 +59,12 @@ let ctx: HttpTestContext;
 let partnerId: string;
 let mineId: string;
 let theirsId: string;
+/** Sub-partners of `partnerId`: one inside the reader's territory, one outside. */
+let subMineId: string;
+let subTheirsId: string;
+/** A partner the reader CAN open, whose PARENT sits outside their territory. */
+let childPartnerId: string;
+let outsideParentId: string;
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -156,9 +162,96 @@ beforeAll(async () => {
   mineId = mine.id;
   theirsId = theirs.id;
 
+  /*
+   * A SUB-PARTNER LINE, one rung down, split across the territory boundary.
+   *
+   * `findDirectPartners` was unscoped on the same "it would under-report the
+   * line" reasoning this file's header overturns for referred clients — and it
+   * projected each sub-partner's email and full name, so the roster leaked
+   * exactly what the counts beside it were careful not to.
+   */
+  const [subMine] = await db
+    .insert(users)
+    .values({
+      email: 'ref-scope-sub-mine@oxshare-e2e.test',
+      passwordHash: 'x',
+      firstName: 'SubMine',
+      lastName: 'Partner',
+    })
+    .returning();
+  const [subTheirs] = await db
+    .insert(users)
+    .values({
+      email: 'ref-scope-sub-theirs@oxshare-e2e.test',
+      passwordHash: 'x',
+      firstName: 'SubTheirs',
+      lastName: 'Partner',
+    })
+    .returning();
+  subMineId = subMine.id;
+  subTheirsId = subTheirs.id;
+  await db.insert(ibAccounts).values([
+    {
+      userId: subMineId,
+      level: 2,
+      active: true,
+      referralCode: 'REFSUB1',
+      parentIbUserId: partnerId,
+    },
+    {
+      userId: subTheirsId,
+      level: 2,
+      active: true,
+      referralCode: 'REFSUB2',
+      parentIbUserId: partnerId,
+    },
+  ]);
+
+  /*
+   * A partner whose PARENT is outside the reader's territory.
+   *
+   * Separate from the pair above because it exercises the opposite direction:
+   * looking UP the tree rather than down. The parent was resolved with the
+   * deliberately-unscoped `findById`, so their address arrived whoever asked.
+   */
+  const [outsideParent] = await db
+    .insert(users)
+    .values({
+      email: 'ref-scope-parent-theirs@oxshare-e2e.test',
+      passwordHash: 'x',
+      firstName: 'Outside',
+      lastName: 'Parent',
+    })
+    .returning();
+  const [childPartner] = await db
+    .insert(users)
+    .values({
+      email: 'ref-scope-child@oxshare-e2e.test',
+      passwordHash: 'x',
+      firstName: 'Child',
+      lastName: 'Partner',
+    })
+    .returning();
+  outsideParentId = outsideParent.id;
+  childPartnerId = childPartner.id;
+  await db.insert(ibAccounts).values([
+    { userId: outsideParentId, level: 1, active: true, referralCode: 'REFPARENT1' },
+    {
+      userId: childPartnerId,
+      level: 2,
+      active: true,
+      referralCode: 'REFCHILD1',
+      parentIbUserId: outsideParentId,
+    },
+  ]);
+
   await db.insert(clientTagAssignments).values([
     { userId: partnerId, tagId: tag.id },
     { userId: mineId, tagId: tag.id },
+    // The sub-partner the reader may see, and the child partner whose profile
+    // they may open. `subTheirs` and `outsideParent` are deliberately untagged.
+    { userId: subMineId, tagId: tag.id },
+    { userId: childPartnerId, tagId: tag.id },
   ]);
 }, 180_000);
 
@@ -337,5 +430,130 @@ describe('GET /admin/clients?referredBy=', () => {
 
     expect(body.items).toEqual([]);
     expect(body.total).toBe(0);
+  });
+});
+
+describe("a partner's SUB-PARTNERS follow the reader's territory too", () => {
+  /*
+   * The same rule as the referred-client block above, one rung down, and it was
+   * decided the other way until now: `findDirectPartners` was unscoped, on the
+   * argument that scoping "would silently under-report a partner's line".
+   *
+   * That argument is about the COUNT, and this file's header is the precedent
+   * for answering it by SAYING SO rather than by handing over the rows — a
+   * sub-partner IS a client of this platform, and an unscoped roster gives away
+   * their id, name and email. `directPartnersShown` / `directPartnersTotal` are
+   * the `referredShown` / `referredTotal` of the line below.
+   */
+  type Detail = {
+    parent: { userId: string; email: string } | null;
+    parentOutsideTerritory: boolean;
+    directPartners: { userId: string; email?: string }[];
+  };
+
+  const detailFor = async (who: typeof MASTER, userId: string): Promise<Detail> => {
+    const session = await actingAs(ctx, 'admin', who);
+    const res = await session.get(`/v1/admin/ib/partners/${userId}`).expect(200);
+    return res.body as Detail;
+  };
+
+  it('MASTER sees the whole line', async () => {
+    const body = await detailFor(MASTER, partnerId);
+
+    expect(body.directPartners.map((p) => p.userId).sort()).toEqual(
+      [subMineId, subTheirsId].sort(),
+    );
+  });
+
+  it('a SCOPED reader gets only the sub-partner in their own territory', async () => {
+    const body = await detailFor(SCOPED, partnerId);
+
+    expect(body.directPartners.map((p) => p.userId)).toEqual([subMineId]);
+  });
+
+  it('publishes NO out-of-territory count beside the scoped list', async () => {
+    /*
+     * The obvious next move after scoping this list is to add "3 of 5" so the
+     * reader is not silently under-reported. It is deliberately NOT done, for
+     * two reasons that both come from this codebase.
+     *
+     * `client-network-tree.tsx` keeps `referredShown` and `referredTotal` BOTH
+     * scoped, and says why: "an unscoped count over a scoped list would read 12
+     * of 213 and then show 12, which is correct and looks like a bug". And
+     * `admin-stats.service.ts` states the rule such a count would break — "A
+     * COUNT IS A DISCLOSURE" — so a total here would hand over precisely what
+     * the rows withhold: how many partners this line has in territories the
+     * reader is denied.
+     *
+     * That pair exists on the client profile to publish a ROW CAP. There is no
+     * cap on sub-partners, so a scoped total would only restate the array's
+     * length.
+     */
+    const body = (await detailFor(SCOPED, partnerId)) as unknown as Record<string, unknown>;
+
+    expect(body['directPartnersTotal']).toBeUndefined();
+    expect(body['directPartnersShown']).toBeUndefined();
+  });
+
+  it('leaks NOTHING about the sub-partner outside the territory — not even the id', async () => {
+    /*
+     * The id specifically, because that is what this file's header calls "a
+     * larger oracle than the 403-versus-404 distinction client-scope.ts refuses
+     * to give away". Serialised whole so a value nested anywhere is caught.
+     */
+    const body = await detailFor(SCOPED, partnerId);
+    const serialised = JSON.stringify(body);
+
+    expect(serialised).not.toContain(subTheirsId);
+    expect(serialised).not.toContain('ref-scope-sub-theirs@oxshare-e2e.test');
+    expect(serialised).not.toContain('SubTheirs');
+  });
+});
+
+describe("a partner's PARENT follows the reader's territory", () => {
+  type Detail = {
+    parent: { userId: string; email: string } | null;
+    parentOutsideTerritory: boolean;
+  };
+
+  const detailFor = async (who: typeof MASTER, userId: string): Promise<Detail> => {
+    const session = await actingAs(ctx, 'admin', who);
+    const res = await session.get(`/v1/admin/ib/partners/${userId}`).expect(200);
+    return res.body as Detail;
+  };
+
+  it('MASTER sees the parent in full', async () => {
+    const body = await detailFor(MASTER, childPartnerId);
+
+    expect(body.parent?.userId).toBe(outsideParentId);
+    expect(body.parent?.email).toBe('ref-scope-parent-theirs@oxshare-e2e.test');
+    expect(body.parentOutsideTerritory).toBe(false);
+  });
+
+  it('a SCOPED reader gets no parent identity at all — not the id, not the address', async () => {
+    const body = await detailFor(SCOPED, childPartnerId);
+    const serialised = JSON.stringify(body);
+
+    expect(body.parent).toBeNull();
+    expect(serialised).not.toContain(outsideParentId);
+    expect(serialised).not.toContain('ref-scope-parent-theirs@oxshare-e2e.test');
+  });
+
+  it('but IS told a parent exists — "direct with the broker" is a different fact', async () => {
+    /*
+     * The one assertion that stops this fix creating a worse bug than it closes.
+     * `parent: null` already meant "deals with the broker directly", which is
+     * what a level 1 partner does, and that decides their terms. Without this
+     * flag a scoped reader would read every out-of-territory parent as its
+     * absence and misjudge the rung the partner is paid on.
+     */
+    const scopedView = await detailFor(SCOPED, childPartnerId);
+    expect(scopedView.parentOutsideTerritory).toBe(true);
+
+    // And a partner who genuinely has none reports the opposite, or the flag
+    // would be indistinguishable from "always true when parent is null".
+    const rootView = await detailFor(MASTER, partnerId);
+    expect(rootView.parent).toBeNull();
+    expect(rootView.parentOutsideTerritory).toBe(false);
   });
 });

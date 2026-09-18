@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { maskAuditDetails } from '../../common/security/audit-detail-fields';
+import { maskAuditRow } from '../../common/security/audit-detail-fields';
 import { UsersStore, clientSortKey, clientSortOrder } from '../../store/users.store';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import { KycStore } from '../../store/kyc.store';
@@ -12,6 +12,8 @@ import { maskByShape } from '../../common/security/mask-by-shape';
 import { ClientRowDto, KycSubmissionDto } from './dto/responses.dto';
 import {
   FinancialExportRowDto,
+  IbApplicationExportRowDto,
+  IbPartnerExportRowDto,
   TradingAccountExportRowDto,
   WalletExportRowDto,
   WithdrawalExportRowDto,
@@ -24,6 +26,7 @@ import {
 import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { CsvColumn } from '../../common/export/csv';
+import { emailVerifiedFilter, kycStatusFilter } from './admin-clients.service';
 
 /**
  * Row sources for the admin table exports.
@@ -170,6 +173,16 @@ export class AdminExportService {
       level,
       country: query.country?.trim() || undefined,
       tagSlug: query.tag,
+      /*
+       * Forwarded, so the file matches the screen it was exported from — and
+       * parsed through the SAME functions the list uses, not a second reading of
+       * the same strings. `emailVerified` is a tri-state and `kycStatus` refuses
+       * an unknown value with a 400 rather than ignoring it; a copy of either
+       * here would be one more place for the file and the screen to disagree,
+       * which is the defect this whole change is about.
+       */
+      emailVerified: emailVerifiedFilter(query.emailVerified),
+      kycStatus: kycStatusFilter(query.kycStatus),
       sort,
       order,
       // The whole point. Row-level visibility, in the WHERE clause.
@@ -229,9 +242,12 @@ export class AdminExportService {
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
+    /** The export run's snapshot instant — the SAME value on every batch. */
+    startedAt: Date,
   ): Promise<WithdrawalExportRow[]> {
     assertActorCan(actor, 'withdrawals.view', 'export withdrawals');
     const rows = await this.transactions.listForExport({
+      startedAt,
       state: query.state,
       offset,
       limit,
@@ -384,6 +400,8 @@ export class AdminExportService {
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
+    /** The export run's snapshot instant — the SAME value on every batch. */
+    startedAt: Date,
   ): Promise<WalletExportRow[]> {
     assertActorCan(actor, 'wallets.view', 'export client wallets');
     /*
@@ -401,7 +419,7 @@ export class AdminExportService {
      * that blind spot, which is why the census promises completeness over
      * DECLARED schemas and not over routes.
      */
-    const rows = await this.holdings.walletExportBatch(query, actor, offset, limit);
+    const rows = await this.holdings.walletExportBatch(query, actor, offset, limit, startedAt);
     return maskByShape(WalletExportRowDto, rows, actor.fieldMask);
   }
 
@@ -448,6 +466,8 @@ export class AdminExportService {
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
+    /** The export run's snapshot instant — the SAME value on every batch. */
+    startedAt: Date,
   ): Promise<TradingAccountExportRow[]> {
     assertActorCan(actor, 'trading.view', 'export client trading accounts');
     /*
@@ -465,7 +485,13 @@ export class AdminExportService {
      * that blind spot, which is why the census promises completeness over
      * DECLARED schemas and not over routes.
      */
-    const rows = await this.holdings.tradingAccountExportBatch(query, actor, offset, limit);
+    const rows = await this.holdings.tradingAccountExportBatch(
+      query,
+      actor,
+      offset,
+      limit,
+      startedAt,
+    );
     return maskByShape(TradingAccountExportRowDto, rows, actor.fieldMask);
   }
 
@@ -530,7 +556,7 @@ export class AdminExportService {
 
   readonly auditColumns: readonly CsvColumn<AuditExportRow>[] = [
     { header: 'Recorded at', value: (r) => r.createdAt },
-    { header: 'Actor email', value: (r) => r.actorEmail },
+    { header: 'Actor email', value: (r) => r.actorEmail ?? '' },
     { header: 'Actor ID', value: (r) => r.actorId },
     { header: 'Actor kind', value: (r) => r.actorKind },
     { header: 'Action', value: (r) => r.action },
@@ -617,10 +643,7 @@ export class AdminExportService {
      * Same declaration as the list read (`audit-detail-fields.ts`), so the two
      * cannot drift: one definition, two call sites.
      */
-    return items.slice(0, limit).map((row) => ({
-      ...row,
-      details: maskAuditDetails(row.action, row.details, actor.fieldMask),
-    }));
+    return items.slice(0, limit).map((row) => maskAuditRow(row, actor.fieldMask));
   }
 
   // ── IB applications ───────────────────────────────────────────────────────
@@ -664,7 +687,21 @@ export class AdminExportService {
       limit,
       scope: actor.clientScope,
     });
-    return rows;
+    /*
+     * Masked, like every other export on this service.
+     *
+     * This and `ibPartnerBatch` were the only two of nine batch methods that
+     * returned their rows untouched, and both emit `Client email`, `First name`
+     * and `Last name` straight off `r.user`. An administrator whose ROLE hides
+     * `client.email` was refused it on every screen and handed a CSV of every
+     * applicant's address — the export button as a documented bypass of the
+     * masking feature, which is the defect `export-rows.dto.ts` was written
+     * about after the withdrawal desk did the same thing for seventeen days.
+     *
+     * The interceptor cannot cover this: the response is a byte stream by the
+     * time it exists, which is why every export masks its ROWS instead.
+     */
+    return maskByShape(IbApplicationExportRowDto, rows, actor.fieldMask);
   }
 
   // ── IB partners ───────────────────────────────────────────────────────────
@@ -699,7 +736,8 @@ export class AdminExportService {
       limit,
       scope: actor.clientScope,
     });
-    return rows;
+    // Same reasoning as `ibApplicationBatch` above.
+    return maskByShape(IbPartnerExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Roles ─────────────────────────────────────────────────────────────────
@@ -744,6 +782,23 @@ export interface ClientExportQuery {
   level?: string;
   country?: string;
   tag?: string;
+  /**
+   * The two the controller has always SENT and this interface never declared.
+   *
+   * `admin-clients.controller.ts` builds the export query with a comment saying
+   * "the export honours the SAME filters as the list, so 'export what I am
+   * looking at' stays true as filters are added. Omitting these two would have
+   * made a filtered screen produce an unfiltered file" — and then passed them
+   * into an object typed by this interface, which declared neither, so
+   * `clientBatch` never forwarded them.
+   *
+   * TypeScript could not catch it: the object is bound to a `const` before being
+   * passed, which is exactly the case excess-property checking does not cover.
+   * So `?kycStatus=rejected` narrowed the screen and returned every client in
+   * the file — the promise in that comment inverted, in silence.
+   */
+  emailVerified?: string;
+  kycStatus?: string;
   sort?: string;
   order?: string;
 }
@@ -837,7 +892,13 @@ export interface KycExportRow {
 export interface AuditExportRow {
   id: string;
   actorId: string;
-  actorEmail: string;
+  /*
+   * OPTIONAL because `maskAuditRow` removes it when the actor is a client and
+   * the reader may not see client addresses. Typed `string` here would be the
+   * same class of false statement that caused the leak: a declaration that was
+   * true when written and is not checked again.
+   */
+  actorEmail?: string;
   actorKind: string;
   action: string;
   subjectType: string;

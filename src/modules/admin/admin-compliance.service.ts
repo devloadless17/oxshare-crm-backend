@@ -184,6 +184,20 @@ export class AdminComplianceService {
      * this viewer, so a second copy would be one more thing to keep in step.
      */
     const attempts = await this.kycService.getHistory(userId);
+    /*
+     * R-6.6, recorded — and it was not.
+     *
+     * `getKyc` above writes `kyc.submission.view` for the live record; this read
+     * returns the same identity data one decision older and wrote nothing, so a
+     * reviewer could work through a client's superseded submissions leaving no
+     * trace. The access comment ten lines up already argues the two are the same
+     * disclosure; only the audit disagreed.
+     *
+     * Fire-and-forget, matching its sibling rather than the document read: the
+     * same trade that comment names, since failing a reviewer's panel over an
+     * audit write is the wrong one for a screen opened all day.
+     */
+    this.audit.record(actor.id, 'kyc.history.view', 'kyc_submission', userId);
     return attempts;
   }
   /*

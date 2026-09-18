@@ -10,6 +10,7 @@ import { Reflector } from '@nestjs/core';
 import { AdminAuditService } from '../src/modules/admin/admin-audit.service';
 import { ClientFieldsService } from '../src/modules/admin/client-fields.service';
 import { RefreshTokensService } from '../src/common/security/refresh-tokens.service';
+import { ApiKeysStore } from '../src/store/api-keys.store';
 import { DRIZZLE_DB } from '../src/database/database.module';
 import { AdminRbacService } from '../src/modules/admin/admin-rbac.service';
 import {
@@ -131,6 +132,10 @@ async function buildRbacService(
       { provide: AdminAuditService, useValue: { record: vi.fn() } },
       // Suspension revokes sessions; the paths under test here never reach it.
       { provide: RefreshTokensService, useValue: { revokeAllForSubject: vi.fn() } },
+      // setAdminStatus revokes the API keys a suspended admin minted; no case
+      // in this file suspends anyone, so a stub that reports nothing revoked is
+      // the honest shape.
+      { provide: ApiKeysStore, useValue: { revokeAllCreatedBy: vi.fn().mockResolvedValue(0) } },
       // The manager-invariant lock wraps writes in a transaction; a
       // pass-through executor keeps the store fakes in charge.
       {

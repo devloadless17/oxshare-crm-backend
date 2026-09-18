@@ -243,6 +243,23 @@ describe('the measured expression is the SHIPPED expression', () => {
     'src/store/users.store.ts',
     'src/modules/wallet/wallet.service.ts',
     'src/modules/admin/admin-holdings.service.ts',
+    /*
+     * The four that were NOT on this list and were NOT sending the expression.
+     *
+     * Each searched people with three separate `ILIKE`s OR-ed together — the
+     * KYC review queue, the IB application queue, the withdrawal queue and its
+     * per-state counts. `client-list-indexes.spec.ts` already proves that form
+     * cannot use `users_search_trgm_idx`, so all four were sequential scans
+     * beside an index built for them.
+     *
+     * They were invisible here for the simplest possible reason: this list is
+     * hand-kept, and nobody added them. That is the same shape as the sort map
+     * `admin-sort-indexes.spec.ts` had never seen — a per-item check is only as
+     * complete as the list of items.
+     */
+    'src/store/kyc.store.ts',
+    'src/store/ib.store.ts',
+    'src/modules/payments/transactions.service.ts',
   ];
 
   it.each(senders)('%s searches clients on the indexed expression', (file) => {
@@ -252,6 +269,28 @@ describe('the measured expression is the SHIPPED expression', () => {
       `${file} no longer sends the expression \`users_search_trgm_idx\` was built on. ` +
         'Either restore it or add the index the new expression needs — a mismatch is a ' +
         'sequential scan with no error and no warning.',
+    ).toBe(true);
+  });
+
+  it('the Financial list sends it too, in raw SQL', () => {
+    /*
+     * `listAllForAdmin` assembles its statement as TEXT over a CTE, so it names
+     * the columns `u.email` rather than through drizzle — the predicate above
+     * cannot match it and would report a clean bill of health for a query that
+     * had gone back to three ORs.
+     *
+     * Same expression, different spelling: `coalesce(a,'') || ' ' || …`, which
+     * is what the index was built on whichever way it is written.
+     */
+    const source = readFileSync('src/modules/payments/transactions.service.ts', 'utf8').replace(
+      /\s+/g,
+      ' ',
+    );
+    expect(
+      source.includes(
+        "(coalesce(u.email, '') || ' ' || coalesce(u.first_name, '') || ' ' || coalesce(u.last_name, '')) ILIKE",
+      ),
+      'the admin Financial search no longer sends the indexed expression',
     ).toBe(true);
   });
 

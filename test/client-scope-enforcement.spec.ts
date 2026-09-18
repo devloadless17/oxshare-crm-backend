@@ -1,4 +1,5 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
+import { scopedByIdRoutes } from './support/scope-facts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -103,6 +104,19 @@ beforeAll(async () => {
          */
         'wallets.view',
         'trading.view',
+        /*
+         * The rest of what the by-id census below drives. Same reasoning as the
+         * block above and as this fixture's own header: an assertion that 404s
+         * because the admin lacks the KEY proves nothing about territory, and
+         * reads as scoping working when it has not been tested at all.
+         */
+        'clients.edit',
+        'clients.email',
+        'clients.referrer.set',
+        'kyc.identity.correct',
+        'ib.partners.edit',
+        'ib.partners.suspend',
+        'transactions.view',
         // Granted so the reconciliation case below proves the refusal is about
         // the reader's TERRITORY, not a missing permission.
         'reconciliation.view',
@@ -285,49 +299,225 @@ describe('list routes omit out-of-scope clients', () => {
 
 describe('by-id routes answer 404 for an out-of-scope client, never 403', () => {
   /**
-   * Every scoped route that names a client in its path.
+   * Every scoped route that names a CLIENT in its path.
    *
-   * Kept in step with the `@ScopedToClients` declarations by
-   * `client-scope-coverage.spec.ts`, which fails if a route joins that set —
+   * ⚠️ THIS COMMENT USED TO CLAIM THE LIST WAS DERIVED, AND IT WAS NOT.
+   *
+   * It said the list was "kept in step with the `@ScopedToClients` declarations
+   * by `client-scope-coverage.spec.ts`, which fails if a route joins that set —
    * so a new scoped by-id route cannot ship without either appearing here or
-   * making that spec red.
+   * making that spec red". `client-scope.decorator.ts` said the same thing in
+   * stronger words: a route "cannot enter the declared-scoped set without also
+   * being exercised".
+   *
+   * Neither was true. That spec asserts only that a route DECLARES a stance; it
+   * has never looked at this file. `scopeFacts()` was exported for the purpose
+   * and nothing imported it — nothing could have, because it read module-level
+   * state only its own `beforeAll` assigns. So seven routes were exercised
+   * against thirty-seven declarations, and the only numeric guard was
+   * `toBeGreaterThanOrEqual(10)` one file over.
+   *
+   * The linkage is real now: `the by-id census` below reads the live metadata
+   * through `test/support/scope-facts.ts` and fails when a scoped by-id route
+   * appears in neither this list nor `PARAM_IS_NOT_A_CLIENT`.
    */
   const BY_ID = [
-    { name: 'client tags', run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}/tags`) },
-    { name: 'kyc detail', run: (s: Session, id: string) => s.get(`/v1/admin/kyc/${id}`) },
-    { name: 'kyc history', run: (s: Session, id: string) => s.get(`/v1/admin/kyc/${id}/history`) },
     {
-      name: 'suspend client',
+      signature: 'GET /admin/clients/:id/tags',
+      run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}/tags`),
+    },
+    {
+      signature: 'GET /admin/kyc/:userId',
+      run: (s: Session, id: string) => s.get(`/v1/admin/kyc/${id}`),
+    },
+    {
+      signature: 'GET /admin/kyc/:userId/history',
+      run: (s: Session, id: string) => s.get(`/v1/admin/kyc/${id}/history`),
+    },
+    {
+      signature: 'PATCH /admin/clients/:id/status',
       run: (s: Session, id: string) =>
         s.patch(`/v1/admin/clients/${id}/status`, { status: 'suspended' }),
     },
     {
-      name: 'kyc claim',
+      signature: 'PATCH /admin/kyc/:userId/claim',
       run: (s: Session, id: string) => s.patch(`/v1/admin/kyc/${id}/claim`, {}),
     },
     {
-      name: 'kyc approve',
+      signature: 'PATCH /admin/kyc/:userId/approve',
       run: (s: Session, id: string) => s.patch(`/v1/admin/kyc/${id}/approve`, {}),
     },
     {
-      name: 'kyc reject',
+      signature: 'PATCH /admin/kyc/:userId/reject',
       run: (s: Session, id: string) =>
         s.patch(`/v1/admin/kyc/${id}/reject`, { reason: 'scope enforcement probe' }),
+    },
+    /*
+     * Added when the census below turned the claim above into a fact. Each one
+     * was a scoped route naming a client that nothing had ever driven against an
+     * out-of-scope id.
+     *
+     * The write routes are safe to point at somebody else's client precisely
+     * because of the property under test: the visibility check runs before the
+     * write, so a 404 means nothing happened. If one of them ever performs its
+     * change first, this file goes red AND the fixture's data changes — which is
+     * the loudest way for that bug to announce itself.
+     */
+    {
+      signature: 'GET /admin/clients/:id',
+      run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}`),
+    },
+    {
+      signature: 'GET /admin/clients/:id/positions',
+      run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}/positions`),
+    },
+    {
+      signature: 'GET /admin/clients/:id/transactions',
+      run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}/transactions`),
+    },
+    {
+      signature: 'GET /admin/ib/partners/:userId',
+      run: (s: Session, id: string) => s.get(`/v1/admin/ib/partners/${id}`),
+    },
+    {
+      signature: 'PATCH /admin/clients/:id',
+      run: (s: Session, id: string) => s.patch(`/v1/admin/clients/${id}`, { firstName: 'Probe' }),
+    },
+    {
+      signature: 'PATCH /admin/clients/:id/email',
+      run: (s: Session, id: string) =>
+        s.patch(`/v1/admin/clients/${id}/email`, { email: 'scope-probe@oxshare-e2e.test' }),
+    },
+    {
+      signature: 'PATCH /admin/clients/:id/referrer',
+      run: (s: Session, id: string) =>
+        s.patch(`/v1/admin/clients/${id}/referrer`, { referralCode: 'SCOPEPROBE' }),
+    },
+    {
+      signature: 'PATCH /admin/kyc/:userId/release',
+      run: (s: Session, id: string) => s.patch(`/v1/admin/kyc/${id}/release`, {}),
+    },
+    {
+      signature: 'PATCH /admin/kyc/:userId/personal-info',
+      run: (s: Session, id: string) =>
+        s.patch(`/v1/admin/kyc/${id}/personal-info`, { dateOfBirth: '1985-04-12' }),
+    },
+    {
+      signature: 'PATCH /admin/ib/partners/:userId/active',
+      run: (s: Session, id: string) =>
+        s.patch(`/v1/admin/ib/partners/${id}/active`, { active: false }),
+    },
+    {
+      signature: 'PATCH /admin/ib/partners/:userId/level',
+      run: (s: Session, id: string) => s.patch(`/v1/admin/ib/partners/${id}/level`, { level: 2 }),
+    },
+    {
+      signature: 'PATCH /admin/ib/partners/:userId/parent',
+      run: (s: Session, id: string) =>
+        s.patch(`/v1/admin/ib/partners/${id}/parent`, { parentIbUserId: null }),
+    },
+    {
+      signature: 'POST /admin/clients/:id/tags/:tagId',
+      run: (s: Session, id: string) =>
+        s.post(`/v1/admin/clients/${id}/tags/00000000-0000-4000-8000-000000000000`, {}),
+    },
+    {
+      signature: 'DELETE /admin/clients/:id/tags/:tagId',
+      run: (s: Session, id: string) =>
+        s.del(`/v1/admin/clients/${id}/tags/00000000-0000-4000-8000-000000000000`),
     },
   ];
 
   for (const route of BY_ID) {
-    it(`${route.name}: 404 for an out-of-scope client`, async () => {
+    it(`${route.signature}: 404 for an out-of-scope client`, async () => {
       const session = await actingAs(ctx, 'admin', SCOPED);
       const res = await route.run(session, theirsId);
 
-      expect(res.status, `${route.name} answered ${res.status}`).toBe(404);
+      expect(res.status, `${route.signature} answered ${res.status}`).toBe(404);
       // Not redundant with the line above — THIS is the property. A 403 tells a
       // scoped admin the id names a real client, which is the enumeration the
       // whole 404 convention exists to prevent.
       expect(res.status).not.toBe(403);
     });
   }
+
+  /**
+   * Scoped by-id routes whose path parameter names something OTHER than a client.
+   *
+   * They are scoped, and they are tested — but not by driving a client id at
+   * them, because the id in the path is a wallet, a transaction, an application,
+   * an accrual, a trading account, a transfer or a filename. Handing one of
+   * those `theirsId` produces a 404 that says "no such wallet", which would pass
+   * this suite while proving nothing about territory.
+   *
+   * Listing them is the point: the census below refuses a scoped by-id route
+   * that is in neither set, so a new one has to be either exercised above or
+   * argued for here.
+   */
+  const PARAM_IS_NOT_A_CLIENT: Record<string, string> = {
+    'DELETE /admin/wallets/:id': 'a wallet id — holdings scope is covered by admin-wallets.spec.ts',
+    'GET /admin/trading-accounts/:id/live':
+      'a trading-account id — see admin-trading-accounts.spec.ts',
+    'POST /admin/trading-accounts/:id/fund':
+      'a trading-account id; the money path is admin-holdings',
+    'GET /uploads/kyc/:file': 'a stored filename, resolved to its owner — uploads.controller.ts',
+    'GET /uploads/deposit-proofs/:file': 'a stored filename, resolved to its deposit’s owner',
+    'PATCH /admin/deposits/:id/approve': 'a transaction id — withdrawal-desk-scope.spec.ts',
+    'PATCH /admin/deposits/:id/reject': 'a transaction id — withdrawal-desk-scope.spec.ts',
+    'PATCH /admin/withdrawals/:id/approve': 'a transaction id — withdrawal-desk-scope.spec.ts',
+    'PATCH /admin/withdrawals/:id/reject': 'a transaction id — withdrawal-desk-scope.spec.ts',
+    'PATCH /admin/withdrawals/:id/settle': 'a transaction id — withdrawal-desk-scope.spec.ts',
+    'PATCH /admin/withdrawals/:id/cancel': 'a transaction id — withdrawal-desk-scope.spec.ts',
+    'POST /admin/withdrawals/:id/rival-submit': 'a transaction id — withdrawal-desk-scope.spec.ts',
+    'POST /admin/transfers/:id/abandon': 'a transfer id',
+    'PATCH /admin/ib/applications/:id/approve': 'an application id — ib-applications.spec.ts',
+    'PATCH /admin/ib/applications/:id/reject': 'an application id — ib-applications.spec.ts',
+    'POST /admin/ib/accruals/:id/reverse':
+      'an accrual id; the beneficiary check is ib-accrual-reversal.spec.ts',
+  };
+
+  it('the by-id census: every scoped route naming an id is exercised or argued for', () => {
+    /*
+     * THE ASSERTION THAT MAKES THE HEADER TRUE.
+     *
+     * Read from the running application's own metadata — the same source
+     * `client-scope-coverage.spec.ts` uses — so a route joins this set by being
+     * decorated, not by anybody remembering. Before this existed, seven routes
+     * were driven against thirty-seven declarations and the gap was invisible.
+     */
+    const declared = scopedByIdRoutes(ctx.app);
+    const exercised = new Set(BY_ID.map((r) => r.signature));
+
+    const unaccounted = declared.filter(
+      (signature) => !exercised.has(signature) && !(signature in PARAM_IS_NOT_A_CLIENT),
+    );
+
+    expect(
+      unaccounted,
+      'These routes declare @ScopedToClients and name an id in their path, and nothing ' +
+        'drives an out-of-scope id at them. Add a case to BY_ID, or say in ' +
+        'PARAM_IS_NOT_A_CLIENT why the parameter is not a client:\n' +
+        unaccounted.map((r) => `  ${r}`).join('\n'),
+    ).toEqual([]);
+  });
+
+  it('keeps both lists honest — no entry outlives its route', () => {
+    /*
+     * The other direction, and the reason it matters: an entry for a route that
+     * no longer exists is a line that looks like diligence and protects nothing,
+     * which is how the list this replaces decayed in the first place.
+     */
+    const declared = new Set(scopedByIdRoutes(ctx.app));
+    const claimed = [...BY_ID.map((r) => r.signature), ...Object.keys(PARAM_IS_NOT_A_CLIENT)];
+    const stale = claimed.filter((signature) => !declared.has(signature));
+
+    expect(
+      stale,
+      `These are listed but no longer declare @ScopedToClients with an id in the path:\n${stale
+        .map((r) => `  ${r}`)
+        .join('\n')}`,
+    ).toEqual([]);
+  });
 
   it('a route reachable for an IN-scope client proves the 404s are about scope', async () => {
     // Without this, every 404 above would also be produced by a system where

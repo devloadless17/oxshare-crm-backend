@@ -1,3 +1,4 @@
+import { Throttle } from '@nestjs/throttler';
 // Part of the `admin` controller surface, split by concern.
 //
 // admin.controller.ts had grown to 717 lines fronting six already well-separated
@@ -15,7 +16,7 @@ import { Request, Response } from 'express';
 import { AdminClientsService } from './admin-clients.service';
 import { AdminExportService } from './admin-export.service';
 import { AdminAuditService } from './admin-audit.service';
-import { exportFormat, streamCsv } from '../../common/export/export-response';
+import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
 import {
   ChangeClientEmailDto,
   ClientStatusDto,
@@ -174,6 +175,20 @@ export class AdminClientsController {
    * addresses on screen must not be handed a file of them.
    */
   @Get('clients/export')
+  /*
+   * A ceiling on a STREAMING read of the whole client base.
+   *
+   * Every export here is batched over the full filtered set and held open for
+   * the length of the download, and none carried anything but the global
+   * 120/min — which is sized for a person clicking around a console, not for
+   * 120 concurrent full-table CSV streams. The limit is per route per IP, so a
+   * desk exporting clients and then withdrawals is unaffected; what it bounds is
+   * one caller pulling the same export in a loop.
+   *
+   * Six a minute: far above any human use of an Export button, far below what
+   * it takes to hurt the database.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
   @RequirePermissions('clients.view')
   @ApiCookieAuth()

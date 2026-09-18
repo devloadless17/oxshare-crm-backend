@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, desc, eq, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, desc, eq, sql, type SQL, type SQLWrapper, lte } from 'drizzle-orm';
 import { escapeLike } from '../../store/users.store';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
@@ -32,6 +32,7 @@ import {
   decodeCursor,
   pageSize,
   type CursorPosition,
+  type CursorValueShape,
 } from '../../common/pagination';
 import { sortKey, sortOrder, type SortOrder } from '../../common/sorting';
 import { assertActorCan } from '../../common/security/actor';
@@ -39,6 +40,7 @@ import { maskedFieldsFor } from '../../common/security/field-mask';
 import { enumQuery } from '../../common/query-params';
 import { tradingAccountStatusEnum, tradingEnvironmentEnum } from '../../database/schema';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
+import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 
 /**
  * The two client-HOLDINGS lists: every wallet, and every trading account.
@@ -168,6 +170,25 @@ const NULLABLE_TRADING_ACCOUNT_SORT: TradingAccountSortKey = 'login';
  * the cursor carries the exact decimal string the row held, and `::numeric` is
  * what compares it at full precision against a `NUMERIC(28,8)` column.
  */
+/**
+ * The CAST a holdings seek will apply to a cursor value, by sort key.
+ *
+ * Extracted because it is now needed twice — once to build the seek, once to
+ * validate the cursor on the way in — and two copies of a cast decision is how
+ * a seek and its validator come to disagree. `createdAt` is a timestamp,
+ * `balance` is numeric, everything else compares as text.
+ */
+function seekKindFor(sort: string): 'timestamp' | 'numeric' | 'text' {
+  return sort === 'createdAt' ? 'timestamp' : sort === 'balance' ? 'numeric' : 'text';
+}
+
+/** `seekTerms`' vocabulary, in the one `decodeCursor` speaks. */
+const CURSOR_SHAPE: Record<'timestamp' | 'numeric' | 'text', CursorValueShape> = {
+  timestamp: 'timestamptz',
+  numeric: 'numeric',
+  text: 'text',
+};
+
 function seekTerms(
   sortColumn: SQLWrapper,
   kind: 'timestamp' | 'numeric' | 'text',
@@ -196,7 +217,20 @@ export class AdminHoldingsService {
    * the reason `TransactionsService` records: a declared dependency can be seen,
    * and reaching for a global from inside a method that reads balances cannot.
    */
-  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DRIZZLE_DB) private readonly db: Db,
+    /**
+     * The by-id gate for the two per-client DRILL-DOWNS below.
+     *
+     * The list surfaces on this service need none: they are scoped in the WHERE
+     * clause and return the rows the reader may see. A drill-down names ONE
+     * client in its path, and for those the scoped query alone answers 200 with
+     * an empty list — which says "this client has no positions" to somebody who
+     * is simply not allowed to know. Every other by-id client route in this
+     * codebase answers 404.
+     */
+    private readonly visibility: ClientVisibilityService,
+  ) {}
 
   // ── Wallets ───────────────────────────────────────────────────────────────
 
@@ -232,7 +266,18 @@ export class AdminHoldingsService {
      */
     const sort = sortKey(query.sort, WALLET_SORT_COLUMNS, DEFAULT_WALLET_SORT, 'wallets');
     const order = sortOrder(query.order);
-    const cursor = query.cursor ? decodeCursor(query.cursor, sort) : undefined;
+    /*
+     * The cursor's VALUE is shape-checked against the cast this list will apply.
+     *
+     * Without it `?sort=balance&cursor=<tampered>` reached `::numeric` and
+     * answered 500 with a Postgres cast error. `transactions.service.ts`
+     * validated both halves in its own seek; every other keyset list inherited
+     * nothing, which is why the check now lives in the shared decoder and the
+     * caller only has to name its cast.
+     */
+    const cursor = query.cursor
+      ? decodeCursor(query.cursor, sort, CURSOR_SHAPE[seekKindFor(sort)])
+      : undefined;
 
     /*
      * RBAC-03, applied HERE rather than inside `walletPage` because the mask is the
@@ -368,8 +413,7 @@ export class AdminHoldingsService {
     const conditions = this.walletConditions(filter);
 
     if (filter.cursor) {
-      const kind =
-        filter.sort === 'createdAt' ? 'timestamp' : filter.sort === 'balance' ? 'numeric' : 'text';
+      const kind = seekKindFor(filter.sort);
       conditions.push(seekTerms(sortColumn, kind, filter.cursor, wallets.id, filter.order));
     }
 
@@ -477,20 +521,33 @@ export class AdminHoldingsService {
    * call against the same `wallets.user_id` column, in the WHERE clause, so an
    * export cannot see a row the list would have hidden.
    *
-   * Offset paging rather than a keyset seek, deliberately: the ordering is total
-   * (`created_at DESC, id DESC`) and the export is read to completion in one
-   * request, so a concurrent insert can only add a row at the head this pass has
-   * already gone by.
+   * Offset paging rather than a keyset seek, and a SNAPSHOT BOUND is what makes
+   * that safe.
+   *
+   * ⚠️ This used to claim the bound was unnecessary: "a concurrent insert can
+   * only add a row at the head this pass has already gone by." Backwards. The
+   * ordering is `created_at DESC`, so a new row sorts FIRST and pushes every
+   * later row down one — `OFFSET 1000` then points at what was row 999, and the
+   * boundary row is written to the file twice.
+   *
+   * `createdAt <= startedAt` removes the possibility instead of reasoning about
+   * it. Same instant on every batch of a run, the way
+   * `AdminExportService.transactionBatch` already threads one.
    */
   async walletExportBatch(
     query: { userId?: string; currency?: string },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
+    /** The export run's snapshot instant — the SAME value on every batch. */
+    startedAt: Date,
   ) {
     assertActorCan(actor, 'wallets.view', 'export client wallets');
 
     const conditions = this.walletConditions({ ...query, scope: actor.clientScope });
+    // The snapshot bound: rows created after the run began never enter the
+    // set, so the offsets cannot shift underneath it.
+    conditions.push(lte(wallets.createdAt, startedAt));
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     return (
@@ -584,7 +641,18 @@ export class AdminHoldingsService {
       'trading accounts',
     );
     const order = sortOrder(query.order);
-    const cursor = query.cursor ? decodeCursor(query.cursor, sort) : undefined;
+    /*
+     * The cursor's VALUE is shape-checked against the cast this list will apply.
+     *
+     * Without it `?sort=balance&cursor=<tampered>` reached `::numeric` and
+     * answered 500 with a Postgres cast error. `transactions.service.ts`
+     * validated both halves in its own seek; every other keyset list inherited
+     * nothing, which is why the check now lives in the shared decoder and the
+     * caller only has to name its cast.
+     */
+    const cursor = query.cursor
+      ? decodeCursor(query.cursor, sort, CURSOR_SHAPE[seekKindFor(sort)])
+      : undefined;
 
     /*
      * RBAC-03, applied HERE rather than inside `tradingAccountPage` because the mask is the
@@ -694,8 +762,7 @@ export class AdminHoldingsService {
     const conditions = this.tradingAccountConditions(filter);
 
     if (filter.cursor) {
-      const kind =
-        filter.sort === 'createdAt' ? 'timestamp' : filter.sort === 'balance' ? 'numeric' : 'text';
+      const kind = seekKindFor(filter.sort);
       conditions.push(seekTerms(sortColumn, kind, filter.cursor, tradingAccounts.id, filter.order));
     }
 
@@ -812,10 +879,15 @@ export class AdminHoldingsService {
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
+    /** The export run's snapshot instant — the SAME value on every batch. */
+    startedAt: Date,
   ) {
     assertActorCan(actor, 'trading.view', 'export client trading accounts');
 
     const conditions = this.tradingAccountConditions({ ...query, scope: actor.clientScope });
+    // The snapshot bound: rows created after the run began never enter the
+    // set, so the offsets cannot shift underneath it.
+    conditions.push(lte(tradingAccounts.createdAt, startedAt));
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     return (
@@ -898,6 +970,23 @@ export class AdminHoldingsService {
     limit?: number;
     scope?: ClientScope;
   }) {
+    /*
+     * VISIBILITY FIRST, so an out-of-scope client is a 404 like every sibling.
+     *
+     * The predicate below already protects the DATA — it is in the WHERE clause
+     * and always was — so this is not closing a leak. It is closing the gap
+     * between "you may not see this client" and "this client has nothing",
+     * which the scoped query alone reports identically. That collapse is the one
+     * `lib/masking.ts` exists to prevent on the frontend, and it is how an
+     * operator ends up reasoning from an emptiness that was never real.
+     *
+     * No oracle either way: a client id that names nobody answered 200 with an
+     * empty list before this and answers 404 now, exactly as an out-of-scope one
+     * does. Found by the by-id census in `client-scope-enforcement.spec.ts`,
+     * which drove these two for the first time.
+     */
+    await this.visibility.assertVisible(filter.userId, filter.scope ?? UNRESTRICTED);
+
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, positions.userId);
@@ -957,6 +1046,23 @@ export class AdminHoldingsService {
     limit?: number;
     scope?: ClientScope;
   }) {
+    /*
+     * VISIBILITY FIRST, so an out-of-scope client is a 404 like every sibling.
+     *
+     * The predicate below already protects the DATA — it is in the WHERE clause
+     * and always was — so this is not closing a leak. It is closing the gap
+     * between "you may not see this client" and "this client has nothing",
+     * which the scoped query alone reports identically. That collapse is the one
+     * `lib/masking.ts` exists to prevent on the frontend, and it is how an
+     * operator ends up reasoning from an emptiness that was never real.
+     *
+     * No oracle either way: a client id that names nobody answered 200 with an
+     * empty list before this and answers 404 now, exactly as an out-of-scope one
+     * does. Found by the by-id census in `client-scope-enforcement.spec.ts`,
+     * which drove these two for the first time.
+     */
+    await this.visibility.assertVisible(filter.userId, filter.scope ?? UNRESTRICTED);
+
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, transactions.userId);

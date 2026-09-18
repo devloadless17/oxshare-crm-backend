@@ -10,6 +10,7 @@ import { AdminIpAllowlistStore } from '../../../store/admin-ip-allowlist.store';
 import { clientIp } from '../../../common/security/client-ip';
 import { adminNetworkAdmits } from '../../../common/security/admin-network';
 import { isAdminSurface } from '../../../common/api-prefix';
+import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
 
 /**
  * RBAC-08 — the admin surface answers only from allowlisted addresses.
@@ -40,6 +41,15 @@ import { isAdminSurface } from '../../../common/api-prefix';
 @Injectable()
 export class IpAllowlistGuard implements CanActivate {
   private readonly logger = new Logger(IpAllowlistGuard.name);
+  /**
+   * When the fail-open alarm was last raised.
+   *
+   * The read fails per REQUEST, so an unreachable table alarms on every one of
+   * them — and an alarm that fires a thousand times a minute is muted, taking
+   * the real incidents with it. Same throttle, for the same reason, as
+   * `RedisThrottlerStorage.warnOnce`.
+   */
+  private lastAlertedAt = 0;
 
   constructor(private readonly allowlist: AdminIpAllowlistStore) {}
 
@@ -87,6 +97,36 @@ export class IpAllowlistGuard implements CanActivate {
     try {
       rules = await this.allowlist.listCidrs();
     } catch (error) {
+      /*
+       * RAISED, not only logged — which is what the paragraph above already
+       * argued for and did not do.
+       *
+       * "The log line is ERROR, not WARN, because a security control that is
+       * not running is worth waking somebody for" — and an ERROR line wakes
+       * nobody. `RedisThrottlerStorage` makes the identical fail-open argument
+       * and raises `SECURITY_CONTROL_DISABLED` at `page`; this one made the
+       * argument and stopped. Two global guards, the same deliberate decision to
+       * fail open, and only one of them told anybody.
+       *
+       * `page` rather than `notify` for the same reason the throttler pages:
+       * the control is off, every admin request is being admitted regardless of
+       * network, and nothing else in the system will notice.
+       */
+      const now = Date.now();
+      if (now - this.lastAlertedAt >= 60_000) {
+        this.lastAlertedAt = now;
+        raiseAlert(
+          this.logger,
+          ALERT_KINDS.SECURITY_CONTROL_DISABLED,
+          'page',
+          'RBAC-08 is DEGRADED: the IP allowlist cannot be read, so it is not being enforced ' +
+            'and every admin request is admitted regardless of network.',
+          {
+            control: 'ip-allowlist',
+            cause: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
       this.logger.error(
         'RBAC-08 could not read the IP allowlist, so it is NOT being enforced for this request. ' +
           'Every admin request is being admitted regardless of network. This usually means ' +

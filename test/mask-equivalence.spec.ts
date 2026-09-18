@@ -15,6 +15,7 @@ import {
   WithdrawalRowDto,
 } from '../src/modules/admin/dto/responses.dto';
 import { IbPartnerDetailDto } from '../src/modules/ib/dto/ib-application.dto';
+import { CreatedMt5AccountDto } from '../src/modules/trading/mt5/dto/mt5-account.dto';
 
 /**
  * EVERY PATH THE CATALOGUE CAN MASK IS ACTUALLY MARKED ON A SHAPE.
@@ -81,6 +82,14 @@ const SHAPE_FOR: Record<string, unknown> = {
   wallet: WalletRowDto,
   tradingAccount: TradingAccountRowDto,
   ibPartner: IbPartnerDetailDto,
+  /*
+   * The create-account response. It sat in `NO_DECLARED_SHAPE` as "a surface
+   * that must KEEP its path-based call until the route gains a DTO" — and the
+   * route had already gained one, so the exemption excused a shape that was
+   * fully covered. Mapping it is the way OFF that list; adding a line to the
+   * list is not.
+   */
+  tradingAccountCreated: CreatedMt5AccountDto,
 };
 
 /**
@@ -99,8 +108,15 @@ const STREAM_ONLY = new Set([
  * Resources whose route declares NO response type, so `maskByShape` has nothing
  * to walk. Listed rather than skipped: each is a surface that must KEEP its
  * path-based call until the route gains a DTO.
+ *
+ * EMPTY, and that is the point of keeping the constant. It held
+ * `tradingAccountCreated` after `POST /admin/trading-accounts` gained
+ * `@ApiOkResponse({ type: CreatedMt5AccountDto })` — so the entry went on
+ * excusing a shape that was fully covered, which is the decay this file's
+ * sibling `response-shape-coverage.spec.ts` calls "a line that looks like due
+ * diligence and protects nothing".
  */
-const NO_DECLARED_SHAPE = new Set(['tradingAccountCreated']);
+const NO_DECLARED_SHAPE = new Set<string>([]);
 
 /** Set `a.b.c` on a nested object, creating arrays where the DTO declares one. */
 function plant(target: Record<string, unknown>, path: string, value: string): void {

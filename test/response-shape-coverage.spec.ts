@@ -109,6 +109,7 @@ const NO_JSON_BODY: readonly string[] = [
   'GET /admin/withdrawals/export',
   'GET /uploads/admin-avatars/:file',
   'GET /uploads/avatars/:file',
+  'GET /uploads/deposit-proofs/:file',
   'GET /uploads/kyc/:file',
   'GET /uploads/payment-logos/:file',
 ];
@@ -116,15 +117,38 @@ const NO_JSON_BODY: readonly string[] = [
 /**
  * Routes returning JSON with NO declared shape — the census's blind spot.
  *
- * Every one has been read by hand and carries no client-owned field. The list
- * is frozen so that a NEW undeclared route fails this suite rather than joining
- * them silently: the wallet CSV and the trading-account create both leaked from
- * inside a list exactly like this one, and both were invisible to a scan that
- * reads declared schemas.
+ * The list is frozen so that a NEW undeclared route fails this suite rather than
+ * joining them silently: the wallet CSV and the trading-account create both
+ * leaked from inside a list exactly like this one, and both were invisible to a
+ * scan that reads declared schemas.
  *
  * The way OFF this list is to give the route a response DTO, not to add a line.
+ *
+ * ⚠️ THIS COMMENT USED TO SAY "every one has been read by hand and carries no
+ * client-owned field", AND THAT WAS FALSE OF THE FIRST THREE.
+ *
+ * `/admin/ib/{accruals,applications,partners}` all return client email, first
+ * name and last name — the accrual ledger returns two people's. Because they
+ * declare no shape, `FieldMaskInterceptor` passed them through untouched, so
+ * every one of them handed a reviewer whose role hides `client.email` exactly
+ * the field their own screens withheld. Every OTHER route in that controller
+ * declares a shape, which is what made the three invisible: nothing looked
+ * unusual about them except the absence.
+ *
+ * The sentence is worth recording rather than quietly deleting, because it is
+ * what kept anyone from re-checking. A reassuring line above a list is read
+ * instead of the list.
+ *
+ * They are masked EXPLICITLY now — `ib-list-mask.dto.ts`, called from the
+ * controller, the same way the CSV exports mask rows the interceptor cannot
+ * reach — and `field-masking-http.spec.ts` asserts all three over real HTTP.
+ * They stay on this list because they still declare no shape: the leak is
+ * closed, the typing gap is not, and pretending otherwise would repeat exactly
+ * the mistake above. Giving them real response DTOs remains the way off.
  */
 const AUDITED_WITHOUT_A_SHAPE: readonly string[] = [
+  // ⚠️ These three DO carry client-owned fields. See the note above: masked
+  // explicitly in the controller, not by the interceptor.
   'GET /admin/ib/accruals',
   'GET /admin/ib/applications',
   'GET /admin/ib/partners',
@@ -206,6 +230,6 @@ describe('the response-shape census', () => {
     expect(
       AUDITED_WITHOUT_A_SHAPE.length,
       'this list may only shrink — a new entry means a route was exempted rather than typed',
-    ).toBeLessThanOrEqual(14);
+    ).toBeLessThanOrEqual(13);
   });
 });

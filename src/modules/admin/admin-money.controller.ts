@@ -1,3 +1,4 @@
+import { Throttle } from '@nestjs/throttler';
 // Part of the `admin` controller surface, split by concern.
 //
 // admin.controller.ts had grown to 717 lines fronting six already well-separated
@@ -46,7 +47,7 @@ import { Request, Response } from 'express';
 import { AdminMoneyService } from './admin-money.service';
 import { AdminExportService } from './admin-export.service';
 import { AdminAuditService } from './admin-audit.service';
-import { exportFormat, streamCsv } from '../../common/export/export-response';
+import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
 import {
   CreditWalletDto,
   FundTradingAccountDto,
@@ -70,7 +71,7 @@ import {
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
 import { ReconciliationService } from '../wallet/reconciliation.service';
-import { UuidParam, enumQuery } from '../../common/query-params';
+import { UuidParam, enumQuery, uuidQuery } from '../../common/query-params';
 import { transactionStateEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
@@ -121,6 +122,20 @@ export class AdminMoneyController {
    * exports follow.
    */
   @Get('withdrawals/export')
+  /*
+   * A ceiling on a STREAMING read of the whole client base.
+   *
+   * Every export here is batched over the full filtered set and held open for
+   * the length of the download, and none carried anything but the global
+   * 120/min — which is sized for a person clicking around a console, not for
+   * 120 concurrent full-table CSV streams. The limit is per route per IP, so a
+   * desk exporting clients and then withdrawals is unaffected; what it bounds is
+   * one caller pulling the same export in a loop.
+   *
+   * Six a minute: far above any human use of an Export button, far below what
+   * it takes to hurt the database.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
   // The SAME permission as the list. An export must never be a way around one.
   @RequirePermissions('withdrawals.view')
@@ -159,8 +174,17 @@ export class AdminMoneyController {
       filters: query,
     });
 
+    /*
+     * ONE instant for the whole run, captured before the first batch.
+     *
+     * The batches page by OFFSET, and `created_at DESC` puts a newly inserted
+     * row FIRST — which shifts every later row down one and re-emits a boundary
+     * row into the file. Bounding every batch to the same instant is what makes
+     * the offsets stable; see `TransactionsService.listForExport`.
+     */
+    const startedAt = new Date();
     await streamCsv(res, 'withdrawals', chosen, this.exports.withdrawalColumns, (offset, limit) =>
-      this.exports.withdrawalBatch(query, req.admin, offset, limit),
+      this.exports.withdrawalBatch(query, req.admin, offset, limit, startedAt),
     );
   }
 
@@ -807,9 +831,17 @@ export class AdminMoneyController {
   ) {
     return this.money.listLedger(
       {
-        userId,
+        /*
+         * SHAPE-CHECKED AT THE EDGE, so the refusal names the parameter.
+         *
+         * ⚠️ Not a 500 fix — `AllExceptionsFilter` already maps Postgres `22P02`
+         * to a 400. What it cannot do is say WHICH value was wrong, because by
+         * then all it has is a cast error. On a route taking several ids that
+         * matters, and the database paid for a round trip to produce it.
+         */
+        userId: uuidQuery(userId, 'userId'),
         q,
-        walletId,
+        walletId: uuidQuery(walletId, 'walletId'),
         entryType,
         page,
         limit,

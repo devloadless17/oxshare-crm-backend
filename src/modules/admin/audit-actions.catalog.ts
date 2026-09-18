@@ -38,6 +38,20 @@ export interface AuditActionDefinition {
   label: string;
   /** Groups the filter, so thirty-four entries are readable. */
   group: string;
+  /**
+   * No current code writes this action; rows carrying it are HISTORICAL.
+   *
+   * Kept in the catalogue rather than deleted, for the reason this file's header
+   * gives: the filter exists so an auditor can ask "has anyone ever done X", and
+   * a label removed when the feature was is a question they can no longer ask
+   * about the rows that already exist. `ib_program.*` were written on every
+   * programme edit until migration 0112 retired the catalogue they described.
+   *
+   * It is also what lets `audit-record-coverage.spec.ts` check the direction it
+   * never checked — catalogued-but-never-written — without that check failing on
+   * every label a retired feature left behind.
+   */
+  historical?: true;
 }
 
 export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
@@ -68,6 +82,21 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'kyc.release', label: 'KYC handed back to the queue', group: 'Verification' },
   { action: 'kyc.submission.view', label: 'KYC submission opened', group: 'Verification' },
   { action: 'kyc.document.view', label: 'KYC document viewed', group: 'Verification' },
+  /*
+   * The HISTORY panel, recorded separately from the live submission.
+   *
+   * Previously decided attempts carry the same `personalInfo` the detail screen
+   * shows — email, phone, date of birth, nationality, address — so reading them
+   * is the same R-6.6 disclosure by a different URL. The route's own comment
+   * says as much about ACCESS ("this is the same PII one decision older, so
+   * gating it differently would be arbitrary") and it was gated identically and
+   * audited differently.
+   *
+   * Its own action rather than reusing `kyc.submission.view`, because the two
+   * answer different questions for an auditor: who opened the current record,
+   * and who went looking through the superseded ones.
+   */
+  { action: 'kyc.history.view', label: 'KYC history opened', group: 'Verification' },
   /*
    * CORE-18. Its own action rather than folding into `kyc.approve`, because it
    * is the one write that CHANGES WHAT THE CLIENT CLAIMED rather than deciding
@@ -306,7 +335,12 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'ib_level.update', label: 'IB level changed', group: 'Configuration' },
   { action: 'ib_level.delete', label: 'IB level removed', group: 'Configuration' },
   // Renumbering moves every partner's placement with it, so it is its own act.
-  { action: 'ib_level.reorder', label: 'IB ladder reordered', group: 'Configuration' },
+  {
+    action: 'ib_level.reorder',
+    label: 'IB ladder reordered',
+    group: 'Configuration',
+    historical: true,
+  },
 
   /*
    * The PROGRAMME is where a partner's rates actually live — the ladder above
@@ -314,9 +348,24 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * later asking why a partner's earnings changed, and the update record keeps
    * both the before and the after for exactly that conversation.
    */
-  { action: 'ib_program.create', label: 'Commission programme added', group: 'Configuration' },
-  { action: 'ib_program.update', label: 'Commission programme changed', group: 'Configuration' },
-  { action: 'ib_program.delete', label: 'Commission programme removed', group: 'Configuration' },
+  {
+    action: 'ib_program.create',
+    label: 'Commission programme added',
+    group: 'Configuration',
+    historical: true,
+  },
+  {
+    action: 'ib_program.update',
+    label: 'Commission programme changed',
+    group: 'Configuration',
+    historical: true,
+  },
+  {
+    action: 'ib_program.delete',
+    label: 'Commission programme removed',
+    group: 'Configuration',
+    historical: true,
+  },
 
   /*
    * A partner DECISION, not a configuration change — hence a different group
@@ -336,6 +385,8 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     action: 'ib.program_change',
     label: 'Partner moved to another commission programme',
     group: 'Partners',
+
+    historical: true,
   },
   { action: 'ib.parent_change', label: 'Partner parent reassigned', group: 'Compliance' },
   /*

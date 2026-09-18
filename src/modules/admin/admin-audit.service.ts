@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { maskAuditDetails } from '../../common/security/audit-detail-fields';
+import { maskAuditRow } from '../../common/security/audit-detail-fields';
 import { maskedFieldsFor } from '../../common/security/field-mask';
 import { AdminsStore } from '../../store/admins.store';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
@@ -98,17 +98,28 @@ export class AdminAuditService {
   }
 
   /**
-   * Read the trail — master admin only, asserted HERE as well as in the guard.
+   * Read the trail — `audit.view`, asserted HERE as well as in the guard.
    *
-   * R-4.3. The route carries `MasterAdminGuard`, which is correct and was the
-   * only check: a guard runs on an HTTP request, and this method is what a
-   * report job or an export would call. The trail records who approved every
-   * payout and every permission grant, so "who may read it" is a privileged
-   * question in its own right — it names which admins acted on which clients.
+   * R-4.3. A guard runs on an HTTP request, and this method is what a report job
+   * or an export would call. The trail records who approved every payout and
+   * every permission grant, so "who may read it" is a privileged question in its
+   * own right — it names which admins acted on which clients.
    *
-   * Deliberately not expressed as a permission key: master-only is not a grant
-   * anybody can be given, which is the whole point of the distinction, and
-   * inventing an `audit.view` key here would let a sub-admin be granted it.
+   * ⚠️ THIS DOCSTRING USED TO SAY THE OPPOSITE, IN THREE PLACES.
+   *
+   * It read "master admin only", "the route carries `MasterAdminGuard`", and
+   * "deliberately not expressed as a permission key … inventing an `audit.view`
+   * key here would let a sub-admin be granted it" — while the code below checks
+   * exactly `audit.view`, and `audit.view` is a real entry in
+   * `permissions.json`. `MasterAdminGuard` no longer exists at all; migration
+   * 0044 removed the master tier and the twelve routes it guarded were given
+   * real keys.
+   *
+   * So every sentence here argued against the thing the method does, and would
+   * have persuaded a reader that granting `audit.view` to a sub-admin was a
+   * privilege escalation rather than the designed behaviour. Recorded rather
+   * than quietly rewritten, because a docstring this confident is precisely what
+   * stops somebody checking the line beneath it.
    */
   async listAuditLog(
     actor: AuthenticatedAdmin,
@@ -191,10 +202,10 @@ export class AdminAuditService {
 
     return {
       ...page,
-      items: page.items.map((row) => ({
-        ...row,
-        details: maskAuditDetails(row.action, row.details, actor.fieldMask),
-      })),
+      // Both client-owned parts of the row: the declared `details` keys, and the
+      // actor's own address when the actor IS a client. One call, so the screen
+      // and the CSV cannot narrow different things.
+      items: page.items.map((row) => maskAuditRow(row, actor.fieldMask)),
       maskedFields: maskedFieldsFor('client', actor.fieldMask),
     };
   }

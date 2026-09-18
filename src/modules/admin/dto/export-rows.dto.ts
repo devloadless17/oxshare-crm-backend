@@ -71,3 +71,54 @@ export class FinancialExportRowDto extends ExportedPerson {
   @ApiProperty()
   id!: string;
 }
+
+/**
+ * The person on an IB export row — NESTED, not flattened.
+ *
+ * The four shapes above flatten to `userEmail` because their CSVs are built
+ * from flat rows. The two IB exports are not: `IbApplicationExportRow` and
+ * `IbPartnerExportRow` carry a `user` object, and their columns read
+ * `r.user.email`. `maskByShape` walks the DECLARED type of each property, so the
+ * shape it is given has to match the rows it is handed — a flat DTO would find
+ * no `userEmail` on these rows, delete nothing, and mask nothing while appearing
+ * to be wired up.
+ *
+ * That "appearing to be wired up" is the whole risk here, and it is why these
+ * exist as their own classes rather than as a reuse of `ExportedPerson`.
+ */
+class IbExportedPerson {
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id!: string;
+
+  @ClientField('client.email')
+  @ApiProperty({ required: false })
+  email?: string | null;
+
+  @ClientField('client.firstName')
+  @ApiProperty({ required: false })
+  firstName?: string | null;
+
+  @ClientField('client.lastName')
+  @ApiProperty({ required: false })
+  lastName?: string | null;
+}
+
+/**
+ * An application row in `GET /admin/ib/applications/export`.
+ *
+ * Only `user` is declared, for the same reason `WalletExportRowDto` declares
+ * only `id`: these shapes exist for masking to walk, not to describe the CSV.
+ * Columns nothing masks — the application's status, the agency, the dates —
+ * need no declaration and get none.
+ */
+export class IbApplicationExportRowDto {
+  @ApiProperty({ type: () => IbExportedPerson })
+  user!: IbExportedPerson;
+}
+
+/** A partner row in `GET /admin/ib/partners/export`. */
+export class IbPartnerExportRowDto {
+  @ApiProperty({ type: () => IbExportedPerson })
+  user!: IbExportedPerson;
+}

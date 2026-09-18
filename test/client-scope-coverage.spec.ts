@@ -2,15 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Test } from '@nestjs/testing';
-import { DiscoveryService, MetadataScanner, Reflector } from '@nestjs/core';
-import { PATH_METADATA, METHOD_METADATA, GUARDS_METADATA } from '@nestjs/common/constants';
 import type { INestApplication } from '@nestjs/common';
-import { RequestMethod } from '@nestjs/common';
 import { AppModule } from '../src/app.module';
-import {
-  CLIENT_SCOPE_KEY,
-  type ClientScopeStance,
-} from '../src/modules/admin/guards/client-scope.decorator';
+import type { ClientScopeStance } from '../src/modules/admin/guards/client-scope.decorator';
+import { collectScopeFacts } from './support/scope-facts';
 
 /**
  * Every admin route states whether it applies the CLIENT SCOPE.
@@ -36,19 +31,6 @@ import {
  */
 
 let app: INestApplication;
-let discovery: DiscoveryService;
-let reflector: Reflector;
-
-const METHOD_NAMES: Record<number, string> = {
-  [RequestMethod.GET]: 'GET',
-  [RequestMethod.POST]: 'POST',
-  [RequestMethod.PUT]: 'PUT',
-  [RequestMethod.DELETE]: 'DELETE',
-  [RequestMethod.PATCH]: 'PATCH',
-  [RequestMethod.OPTIONS]: 'OPTIONS',
-  [RequestMethod.HEAD]: 'HEAD',
-  [RequestMethod.ALL]: 'ALL',
-};
 
 interface ScopeFacts {
   signature: string;
@@ -61,66 +43,23 @@ beforeAll(async () => {
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
   app = moduleRef.createNestApplication();
   await app.init();
-  discovery = app.get(DiscoveryService);
-  reflector = app.get(Reflector);
 }, 60_000);
 
 afterAll(async () => {
   await app?.close();
 });
 
-const normalise = (p: string) => (p === '/' || p === '' ? '' : `/${p.replace(/^\/|\/$/g, '')}`);
-const joinPath = (prefix: string, path: string) => `${prefix}${path}` || '/';
-
-function pathsOf(raw: unknown): string[] {
-  if (typeof raw === 'string') return [normalise(raw)];
-  if (Array.isArray(raw)) return raw.flatMap((entry) => pathsOf(entry));
-  if (raw && typeof raw === 'object' && 'path' in raw) return pathsOf(raw.path);
-  return [''];
-}
-
-const nameOf = (guard: unknown): string => {
-  if (typeof guard === 'function') return guard.name;
-  if (guard && typeof guard === 'object') return guard.constructor.name;
-  return String(guard);
-};
-
-/** Every route, with the scope stance it declares. */
-export function scopeFacts(): ScopeFacts[] {
-  const scanner = new MetadataScanner();
-  const found: ScopeFacts[] = [];
-
-  for (const wrapper of discovery.getControllers()) {
-    const instance = wrapper.instance as Record<string, unknown> | undefined;
-    const controllerClass = wrapper.metatype as (new (...args: never[]) => unknown) | undefined;
-    if (!instance || !controllerClass) continue;
-
-    const prefixes = pathsOf(Reflect.getMetadata(PATH_METADATA, controllerClass));
-    const classGuards = (Reflect.getMetadata(GUARDS_METADATA, controllerClass) ?? []) as unknown[];
-    const prototype = Object.getPrototypeOf(instance) as object;
-
-    for (const methodName of scanner.getAllMethodNames(prototype)) {
-      const handler = instance[methodName] as ((...args: never[]) => unknown) | undefined;
-      if (!handler) continue;
-      const raw = Reflect.getMetadata(PATH_METADATA, handler) as unknown;
-      if (raw === undefined) continue;
-
-      const method = Reflect.getMetadata(METHOD_METADATA, handler) as number;
-      const handlerGuards = (Reflect.getMetadata(GUARDS_METADATA, handler) ?? []) as unknown[];
-
-      for (const prefix of prefixes) {
-        for (const path of pathsOf(raw)) {
-          found.push({
-            signature: `${METHOD_NAMES[method]} ${joinPath(prefix, path)}`,
-            stance: reflector.get<ClientScopeStance>(CLIENT_SCOPE_KEY, handler),
-            guards: [...classGuards, ...handlerGuards].map(nameOf),
-          });
-        }
-      }
-    }
-  }
-  return found;
-}
+/**
+ * Every route, with the scope stance it declares.
+ *
+ * DELEGATES to `test/support/scope-facts.ts` rather than implementing the scan.
+ * It used to be implemented here and exported, and `client-scope-enforcement
+ * .spec.ts` claimed to derive its inputs from it — but it read module-level
+ * `discovery` and `reflector` that only THIS file's `beforeAll` assigns, so the
+ * import would have thrown and never happened. Taking the app as an argument is
+ * what makes one scan serve both specs, which is what the claim always needed.
+ */
+const scopeFacts = (): ScopeFacts[] => collectScopeFacts(app);
 
 /**
  * The routes this rule governs: the admin surface, plus the one client-PII

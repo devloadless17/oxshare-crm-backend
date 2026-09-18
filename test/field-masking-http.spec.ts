@@ -11,7 +11,9 @@ import {
 } from '../src/modules/admin/dto/responses.dto';
 import {
   admins,
+  ibAccruals,
   ibAccounts,
+  ibApplications,
   ibProgramTiers,
   ibPrograms,
   kycSubmissionAttempts,
@@ -165,12 +167,41 @@ beforeAll(async () => {
     referralCode: 'MASKIB1',
     active: true,
   });
-  await db.insert(users).values({
-    email: 'mask-downline@oxshare-e2e.test',
-    passwordHash: 'x',
-    firstName: 'Downline',
-    lastName: 'Client',
-    referredByIbUserId: clientId,
+  const [downline] = await db
+    .insert(users)
+    .values({
+      email: 'mask-downline@oxshare-e2e.test',
+      passwordHash: 'x',
+      firstName: 'Downline',
+      lastName: 'Client',
+      referredByIbUserId: clientId,
+    })
+    .returning();
+
+  /*
+   * An APPLICATION and an ACCRUAL, so the three admin IB LISTS have rows.
+   *
+   * Those three routes declare no response type, so `FieldMaskInterceptor`
+   * declined to act on them at all and they returned client email and name to a
+   * reviewer whose role hides both — every other route in that controller
+   * declares a shape. They are masked explicitly now (`ib-list-mask.dto.ts`),
+   * and these fixtures are what stop the assertions passing on empty lists.
+   *
+   * The accrual names TWO people — the partner who earned it and the client who
+   * generated it — and the case below asserts both, because a mask that reached
+   * one of them would look entirely correct from the other's side.
+   */
+  await db.insert(ibApplications).values({ userId: clientId, status: 'approved' });
+  await db.insert(ibAccruals).values({
+    ibUserId: clientId,
+    clientUserId: downline.id,
+    sourceType: 'deal',
+    sourceId: '11111111-2222-3333-4444-555555555555',
+    depth: 1,
+    rateValue: '10.0000',
+    baseAmount: '100.00000000',
+    amount: '10.00000000',
+    currency: 'USD',
   });
 
   /*
@@ -773,5 +804,74 @@ describe('the withdrawal desk', () => {
     expect((row?.['user'] as Record<string, unknown>)['email']).toBe(
       'mask-target@oxshare-e2e.test',
     );
+  });
+});
+
+describe('the IB lists are not a bypass either', () => {
+  /*
+   * Three routes in `admin-ib.controller.ts` declared no `@ApiOkResponse({
+   * type })` while returning client email, first name and last name. The
+   * interceptor masks by walking a route's DECLARED type and passes the
+   * response through untouched when there is none — so it was a structural
+   * no-op on exactly the three routes that needed it, and on no others in that
+   * file.
+   *
+   * Every case asserts the ROW IS PRESENT before asserting the field is gone.
+   * An empty list withholds an email too, and would pass identically.
+   */
+  it('the application queue withholds the applicant’s email', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get('/v1/admin/ib/applications').expect(200);
+
+    const body = res.body as { rows: { user: { id: string; email?: string } }[] };
+    expect(body.rows.length, 'no applications — the mask case is vacuous').toBeGreaterThan(0);
+    expect(body.rows.some((r) => r.user.id === clientId)).toBe(true);
+    expect(JSON.stringify(body)).not.toContain('mask-target@oxshare-e2e.test');
+  });
+
+  it('the partner list withholds the partner’s email', async () => {
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get('/v1/admin/ib/partners').expect(200);
+
+    const body = res.body as { rows: { user: { id: string } }[] };
+    expect(body.rows.length, 'no partners — the mask case is vacuous').toBeGreaterThan(0);
+    expect(JSON.stringify(body)).not.toContain('mask-target@oxshare-e2e.test');
+  });
+
+  it('the accrual ledger withholds BOTH people’s email', async () => {
+    /*
+     * The partner AND the client. Territory scoping already nulls an
+     * out-of-territory client here, which is a different control answering a
+     * different question — this reviewer is unrestricted, so every row is in
+     * territory and only the FIELD mask can withhold anything.
+     */
+    const session = await actingAs(ctx, 'admin', MASKED);
+    const res = await session.get('/v1/admin/ib/accruals').expect(200);
+
+    const body = res.body as { rows: unknown[] };
+    expect(body.rows.length, 'no accruals — the mask case is vacuous').toBeGreaterThan(0);
+
+    const serialised = JSON.stringify(body);
+    expect(serialised, 'the partner’s email survived').not.toContain(
+      'mask-target@oxshare-e2e.test',
+    );
+    expect(serialised, 'the client’s email survived').not.toContain(
+      'mask-downline@oxshare-e2e.test',
+    );
+  });
+
+  it('gives the MASTER all three in full — the mask is policy, not a dropped column', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+
+    const applications = await session.get('/v1/admin/ib/applications').expect(200);
+    expect(JSON.stringify(applications.body)).toContain('mask-target@oxshare-e2e.test');
+
+    const partners = await session.get('/v1/admin/ib/partners').expect(200);
+    expect(JSON.stringify(partners.body)).toContain('mask-target@oxshare-e2e.test');
+
+    const accruals = await session.get('/v1/admin/ib/accruals').expect(200);
+    const serialised = JSON.stringify(accruals.body);
+    expect(serialised).toContain('mask-target@oxshare-e2e.test');
+    expect(serialised).toContain('mask-downline@oxshare-e2e.test');
   });
 });

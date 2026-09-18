@@ -320,13 +320,22 @@ export class AdminAuthenticator {
    * `passwordHash` is empty because a key has none. Nothing downstream reads
    * it — checked — and it exists here only to satisfy the `Admin` shape.
    *
-   * ── A key is NEVER unrestricted ───────────────────────────────────────────
+   * ── A key is NEVER unrestricted by IDENTITY ───────────────────────────────
    *
-   * `role` is always 'sub_admin' and the client scope is whatever the key's
-   * permissions justify — never the master-admin bypass, even when the key
-   * holds `*`. `isMaster()` keys on the role column OR the wildcard, so a key
-   * granted `*` by a master admin does get the unrestricted scope; what it
-   * cannot do is acquire that by claiming a role it was never given.
+   * `role` is always 'sub_admin', and what a key may see is decided by the
+   * permissions and territory snapshotted onto it — never by who it claims to
+   * be.
+   *
+   * ⚠️ This paragraph used to describe a mechanism that no longer exists: "`
+   * isMaster()` keys on the role column OR the wildcard, so a key granted `*` by
+   * a master admin does get the unrestricted scope". There is no `isMaster()`
+   * and no `*` — migration 0044 removed the master tier and the wildcard
+   * together, and `admin.guard.ts` compares permission keys EXACTLY (see
+   * `normalizePermissionKey`, which lower-cases and nothing else).
+   *
+   * Left as a correction rather than deleted because the sentence described a
+   * privilege path, and a reader who found it would reasonably go looking for
+   * the wildcard handling it implies — or, worse, add some.
    */
   private async authenticateApiKey(presented: string): Promise<AuthenticatedAdmin> {
     const row = await this.apiKeys.findActiveByHash(hashApiKey(presented));

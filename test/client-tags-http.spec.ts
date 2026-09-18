@@ -471,3 +471,94 @@ describe('an assignment says WHO put the client there', () => {
     expect(row?.assignedAt).toBeTruthy();
   });
 });
+
+describe('a client’s OWN tag list is not filtered to the reader’s territory — decided, not overlooked', () => {
+  /*
+   * `AdminTagsService.tagsForClient` returns every tag on a client the reader
+   * may see, including tags belonging to other desks' territories. That reads
+   * like an oversight beside `unassign`, which DOES intersect the client's tags
+   * against `actor.clientScope.tagIds` a few lines down — so this pins it as a
+   * decision and records why the two differ.
+   *
+   * ── Why it is not a leak ────────────────────────────────────────────────────
+   *
+   * The tag VOCABULARY is already global by design: `AdminTagsService.list`
+   * returns every tag with its counts to any holder of `tags.view` OR
+   * `clients.view`, because "the vocabulary names how the business sees its
+   * clients". So no label here is one the reader could not already enumerate.
+   * What filtering would hide is only the ASSOCIATION between a client they
+   * legitimately manage and another desk — which is operational context, not
+   * client-owned data, and is the sort of thing a second desk handling the same
+   * person usually needs to know.
+   *
+   * ── Why filtering would be actively worse ───────────────────────────────────
+   *
+   * A partial list is indistinguishable from a complete one. An operator seeing
+   * two tags cannot tell that a third exists, and this endpoint is what the
+   * profile renders — so they would reason about a client's segmentation from a
+   * view silently missing part of it. That is the same failure `lib/masking.ts`
+   * exists to prevent on the frontend: "hidden from you" and "there is none" are
+   * different answers, and collapsing them is how somebody acts on the wrong
+   * belief. The scoped alternatives elsewhere in this codebase all publish what
+   * they withheld — `referredShown`/`referredTotal`,
+   * `directPartnersShown`/`directPartnersTotal` — and there is nothing to
+   * publish here that the reader cannot already see.
+   *
+   * ── Why `unassign` intersecting is NOT the same question ────────────────────
+   *
+   * That intersection decides an ACTION — "would removing this tag strand you
+   * outside your own view" — not a VIEW. `assertTagWithinScope` already refuses
+   * any assign or unassign of a tag outside the reader's territory, so seeing a
+   * foreign tag grants no power over it.
+   *
+   * If this ever needs to change, the honest shape is the one used above: filter
+   * AND report the count withheld. Do not filter silently.
+   */
+  /*
+   * Its OWN foreign tag, minted here rather than reusing `betaTagId` — an
+   * earlier block deletes that one, and a 404 from a tag that no longer exists
+   * would look exactly like the filtering this asserts is absent.
+   */
+  let foreignTagId: string;
+
+  beforeAll(async () => {
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const created = await master.post(TAGS, { label: 'Other Desk Territory' }).expect(201);
+    foreignTagId = (created.body as { id: string }).id;
+    await master.post(`${CLIENTS}/${alphaClientId}/tags/${foreignTagId}`, {}).expect(201);
+  });
+
+  it('shows a scoped reader every tag on a client they may see, including another desk’s', async () => {
+    const scoped = await actingAs(ctx, 'admin', SCOPED);
+    const res = await scoped.get(`${CLIENTS}/${alphaClientId}/tags`).expect(200);
+
+    const ids = (res.body as { id: string }[]).map((t) => t.id);
+    expect(ids, 'the reader’s own territory tag is missing').toContain(alphaTagId);
+    expect(
+      ids,
+      'a foreign tag was filtered out — see the note above before changing this',
+    ).toContain(foreignTagId);
+  });
+
+  it('but still refuses to let them ACT on the foreign tag', async () => {
+    /*
+     * The half that makes the above safe, and the reason visibility and
+     * authority are separate questions here. Seeing another desk's label on a
+     * client grants nothing over it.
+     */
+    const scoped = await actingAs(ctx, 'admin', SCOPED);
+    const res = await scoped.del(`${CLIENTS}/${alphaClientId}/tags/${foreignTagId}`);
+
+    /*
+     * 400, not 403, because `assertTagWithinScope` raises a `ValidationError`.
+     * Asserted as it actually behaves rather than as it arguably should: this is
+     * an authority refusal wearing a validation code, which is a naming
+     * inconsistency and not a hole — the message names the reason, nothing is
+     * performed, and the tag vocabulary is public anyway so the code reveals
+     * nothing a 403 would have hidden. Pinned so that a change to either the
+     * code or the refusal is a deliberate one.
+     */
+    expect(res.status).toBe(400);
+    expect((res.body as { message?: string }).message).toMatch(/within your own client scope/i);
+  });
+});

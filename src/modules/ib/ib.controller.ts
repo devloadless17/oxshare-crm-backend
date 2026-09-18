@@ -10,7 +10,7 @@ import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { IbApplicationsService } from './ib-applications.service';
-import { IbOverviewService } from './ib-overview.service';
+import { IbOverviewService, COMMISSION_FEED_LIMIT } from './ib-overview.service';
 import { IbWalletService } from './ib-wallet.service';
 import { CreateIbApplicationDto, IbApplicationDto, IbStatusDto } from './dto/ib-application.dto';
 import { IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
@@ -106,12 +106,20 @@ export class IbController {
   @Get('commissions')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Every commission this partner has earned, newest first',
+    summary: 'This partner’s MOST RECENT commission entries, newest first',
     description:
       'The other half of the dashboard totals. Those read the LEDGER — money actually paid — so ' +
       'a partner whose accruals are still maturing sees zero there with no way to tell "nothing ' +
       'earned" from "earned, not yet released". Each row carries its status, so the two numbers ' +
       'explain each other.\n\n' +
+      '⚠️ **CAPPED, and deliberately so.** This returns the newest ' +
+      `${COMMISSION_FEED_LIMIT} entries and takes no paging parameters. A sum over these rows ` +
+      'is a sum over WHAT WAS RETURNED, never a lifetime total — for that, read `earnings` on ' +
+      '`GET /ib/overview`, which the database sums over the whole ledger. The portal labels the ' +
+      'two separately for exactly this reason (`partner-earnings.ts`).\n\n' +
+      'This summary read "Every commission this partner has earned" while the cap was in place, ' +
+      'which is the same sentence-versus-behaviour gap the client money history carried under ' +
+      'its old LIMIT 100.\n\n' +
       '`source: position` is a closed trade, which is the only thing that pays a revenue share. ' +
       '`transaction` rows are historical — commission is no longer earned on deposits.',
   })

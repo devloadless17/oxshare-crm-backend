@@ -56,6 +56,75 @@ const CREDENTIAL_ROUTES: { controller: object; name: string; method: string }[] 
     name: 'POST /admin/auth/refresh',
     method: 'refresh',
   },
+  /*
+   * The seven the list had always omitted, plus the invite.
+   *
+   * Every one of these accepts, rotates or resets a credential, and all but the
+   * invite were ALREADY throttled — so the list was not even a record of what
+   * had been considered, which is what made "if a new one appears it is not
+   * listed" impossible to act on. The completeness census at the end of this
+   * file is what now forces the question.
+   */
+  {
+    controller: AuthController.prototype,
+    name: 'POST /auth/change-password',
+    method: 'changePassword',
+  },
+  {
+    controller: AuthController.prototype,
+    name: 'POST /auth/forgot-password',
+    method: 'forgotPassword',
+  },
+  {
+    controller: AuthController.prototype,
+    name: 'POST /auth/reset-password',
+    method: 'resetPassword',
+  },
+  {
+    controller: AuthController.prototype,
+    name: 'POST /auth/resend-verification',
+    method: 'resendVerification',
+  },
+  {
+    controller: AdminAuthController.prototype,
+    name: 'POST /admin/invite/accept',
+    method: 'acceptInvite',
+  },
+  {
+    controller: AdminAuthController.prototype,
+    name: 'POST /admin/auth/change-password',
+    method: 'changePassword',
+  },
+  {
+    controller: AdminAuthController.prototype,
+    name: 'POST /admin/password-reset/complete',
+    method: 'completePasswordReset',
+  },
+  {
+    controller: AdminAuthController.prototype,
+    name: 'POST /admin/users/:id/password-reset',
+    method: 'initiatePasswordReset',
+  },
+  /*
+   * The one that was genuinely unthrottled: it emails a 48-hour token that
+   * creates an administrator account. See the note on the route.
+   */
+  { controller: AdminAuthController.prototype, name: 'POST /admin/invite', method: 'invite' },
+  /*
+   * Both CONSUME a token, which is what makes them credential routes even
+   * though neither sets a password.
+   *
+   * `verifyEmail` spends the single-use verification token. `validateInvite` is
+   * UNAUTHENTICATED and answers with the invitee's name and address for a valid
+   * token — so an unlimited one is an offline oracle for guessing invite tokens
+   * that returns PII on a hit.
+   */
+  { controller: AuthController.prototype, name: 'POST /auth/verify-email', method: 'verifyEmail' },
+  {
+    controller: AdminAuthController.prototype,
+    name: 'GET /admin/invite/validate',
+    method: 'validateInvite',
+  },
 ];
 
 describe('R-3.5 credential routes declare a rate limit', () => {
@@ -86,5 +155,94 @@ describe('R-3.5 credential routes declare a rate limit', () => {
     // removed the first time it did, so the ceiling has to be worth keeping.
     expect(throttleOf(AuthController.prototype, 'refresh')!.limit).toBeGreaterThanOrEqual(10);
     expect(throttleOf(AdminAuthController.prototype, 'refresh')!.limit).toBeGreaterThanOrEqual(10);
+  });
+});
+
+describe('the completeness test this file has always claimed to have', () => {
+  /*
+   * ⚠️ THE HEADER ABOVE PROMISED THIS AND IT DID NOT EXIST.
+   *
+   * "Adding a route here is deliberate: if a new one appears on either
+   * controller and is not listed, the completeness test below fails and the
+   * author has to decide, rather than inherit the global limit by omission."
+   *
+   * There was no such test. `CREDENTIAL_ROUTES` was five hand-written entries,
+   * and a new handler on either controller inherited the global 120/min in
+   * silence — the exact failure the sentence describes, left open by the
+   * sentence that describes it. Seven routes that ARE credential-handling and
+   * ARE throttled were also missing from it, so the list was not even a record
+   * of what had been considered.
+   *
+   * It enumerates the controllers' own route handlers rather than a list, so a
+   * new one arrives here by existing.
+   */
+  const PATH_METADATA = 'path';
+
+  function handlersOf(prototype: object): string[] {
+    return Object.getOwnPropertyNames(prototype).filter((name) => {
+      if (name === 'constructor') return false;
+      const handler = (prototype as Record<string, unknown>)[name];
+      if (typeof handler !== 'function') return false;
+      return Reflect.getMetadata(PATH_METADATA, handler) !== undefined;
+    });
+  }
+
+  /**
+   * Handlers on these two controllers that do NOT accept, rotate or reset a
+   * credential — so the global limit is the right answer for them.
+   *
+   * Each says why, because "not a credential route" is a judgement and the next
+   * person deserves the one that was made rather than a silence.
+   */
+  const NOT_A_CREDENTIAL: Record<string, string> = {
+    // Reads of the caller's own identity or session list. They present nothing
+    // and grant nothing.
+    'AuthController.me': 'reads the caller’s own identity',
+    'AuthController.sessions': 'reads the caller’s own sessions',
+    'AdminAuthController.me': 'reads the caller’s own identity',
+    'AdminAuthController.sessions': 'reads the caller’s own sessions',
+    // Ending a session is destructive and grants nothing: the worst a flood
+    // achieves is signing the caller out of their own sessions.
+    'AuthController.logout': 'ends the caller’s own session',
+    'AuthController.revokeSession': 'ends one of the caller’s own sessions',
+    'AdminAuthController.logout': 'ends the caller’s own session',
+    'AdminAuthController.revokeSession': 'ends one of the caller’s own sessions',
+    // Profile media. Throttled in their own right at 20/hour — a size and rate
+    // concern rather than a credential one.
+    'AuthController.uploadAvatar': 'profile media; carries its own 20/hour limit',
+    'AuthController.removeAvatar': 'profile media',
+    'AdminAuthController.uploadAvatar': 'profile media; carries its own 20/hour limit',
+    'AdminAuthController.removeAvatar': 'profile media',
+    // An admin may change their own NAME here and deliberately not their email
+    // — the account-takeover primitive is not on this route.
+    'AdminAuthController.updateProfile': 'changes the caller’s display name, never their email',
+    // Administration OF invites rather than acceptance of one: permission-gated
+    // reads and revocations that present no token.
+    'AdminAuthController.listInvites': 'lists outstanding invites; presents no token',
+    'AdminAuthController.revokeInvite': 'revokes one; presents no token',
+  };
+
+  it.each([
+    ['AuthController', AuthController.prototype],
+    ['AdminAuthController', AdminAuthController.prototype],
+  ])('%s: every handler is classified', (label, prototype) => {
+    const classified = new Set([
+      ...CREDENTIAL_ROUTES.filter((r) => r.controller === prototype).map((r) => r.method),
+      ...Object.keys(NOT_A_CREDENTIAL)
+        .filter((key) => key.startsWith(`${label}.`))
+        .map((key) => key.slice(label.length + 1)),
+    ]);
+
+    const unclassified = handlersOf(prototype)
+      .filter((name) => !classified.has(name))
+      .sort();
+
+    expect(
+      unclassified,
+      'These handlers are neither listed as credential routes (and therefore asserted to ' +
+        'carry a limit) nor explained as not being one. They currently inherit the global ' +
+        '120/min by omission:\n' +
+        unclassified.map((n) => `  ${n}`).join('\n'),
+    ).toEqual([]);
   });
 });

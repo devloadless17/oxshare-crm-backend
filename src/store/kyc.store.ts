@@ -1,4 +1,4 @@
-import { and, asc, eq, ilike, inArray, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, eq, inArray, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
 import { escapeLike } from './users.store';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
@@ -344,7 +344,23 @@ export class KycStore {
     if (filter.q) {
       const term = `%${escapeLike(filter.q)}%`;
       visibility.push(
-        or(ilike(users.email, term), ilike(users.firstName, term), ilike(users.lastName, term))!,
+        /*
+         * The CONCATENATED expression, which is the one the trigram index is built
+         * on (`users_search_trgm_idx`, migration 0010).
+         *
+         * This was three separate `ILIKE`s OR-ed together, and
+         * `client-list-indexes.spec.ts` already PROVES that form cannot use the
+         * index — it asserts `not.toContain('users_search_trgm_idx')` for exactly
+         * this shape. So every search of this queue was a sequential scan while
+         * the index sat beside it, unused.
+         *
+         * It also searches BETTER: "jane smith" matches the concatenation and can
+         * never match any single column, which is what an operator typing a full
+         * name expects. `kyc.store.ts` already states the intent — both queues are
+         * review queues of people and "a search box that matched different fields
+         * on each would be a trap".
+         */
+        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${term}`,
       );
     }
     conditions.push(...visibility);

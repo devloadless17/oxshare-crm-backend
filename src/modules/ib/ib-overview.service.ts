@@ -90,6 +90,27 @@ const RECENT_WINDOW_DAYS = 30;
  * the partner themselves. Keeping them apart means the client-facing dashboard
  * cannot accidentally acquire a code path that mutates a placement.
  */
+/**
+ * How many commission entries the partner feed returns.
+ *
+ * A CAP, and the screen has to say so. The route's own summary read "Every
+ * commission this partner has earned" while this returned the newest 200 — the
+ * same sentence-versus-behaviour gap `transactions.service.ts` records for the
+ * old `LIMIT 100` on the client's money history, where "a client with 150
+ * movements was filtering the newest 100 and being told showing 4 of 100".
+ *
+ * The portal is the half that got this right: `partner-earnings.ts` states that
+ * a sum over these rows "is NOT the same claim as everything you have ever
+ * earned", and the screen labels the totals as covering the entries listed while
+ * putting the LIFETIME figure — summed by the database over the whole ledger —
+ * somewhere else entirely. So the product does not mislead anybody; the API
+ * description did.
+ *
+ * Named rather than inline so the number is one thing with one reason, and so
+ * `ib-commission-feed.spec.ts` can assert the cap rather than restate it.
+ */
+export const COMMISSION_FEED_LIMIT = 200;
+
 @Injectable()
 export class IbOverviewService {
   constructor(
@@ -426,7 +447,10 @@ export class IbOverviewService {
    * join back through the chain and cannot widen to somebody else's earnings
    * if that chain were ever mis-resolved.
    */
-  async commissionsFor(userId: string, limit = 200): Promise<IbCommissionRowDto[]> {
+  async commissionsFor(
+    userId: string,
+    limit = COMMISSION_FEED_LIMIT,
+  ): Promise<IbCommissionRowDto[]> {
     const rows = await this.db
       .select({
         id: ibAccruals.id,

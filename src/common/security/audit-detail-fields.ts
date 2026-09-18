@@ -60,3 +60,67 @@ export function maskAuditDetails<T>(action: string, details: T, mask: readonly s
   }
   return kept as T;
 }
+
+/**
+ * The catalogue key for a client's address, named once so the two places that
+ * consult it cannot disagree about its spelling.
+ */
+const CLIENT_EMAIL = 'client.email';
+
+/** The parts of an audit row this module is allowed to narrow. */
+export type AuditMaskableRow = {
+  action: string;
+  actorKind?: string | null;
+  actorEmail?: string | null;
+  details?: unknown;
+};
+
+/**
+ * A copy of an audit row with BOTH of its client-owned parts narrowed: the
+ * declared `details` keys above, and the actor's own address when THE ACTOR IS
+ * A CLIENT.
+ *
+ * ## The actor-email half, and why it was missing
+ *
+ * `AuditEntryDto.actorEmail` is declared `@NotClientField` with the reason
+ * "the ACTOR who performed the action, an administrator; a client field mask
+ * has no standing over it". That was true of the table as first written — and
+ * `actorKind` was added to THAT SAME CLASS precisely because it stopped being
+ * true. Its own comment opens "The table assumed an admin" and enumerates
+ * `admin | client | system | provider`. The masking sentence three lines above
+ * it was never revisited.
+ *
+ * So a fully-masked operator could download `/admin/audit-log/export` and read
+ * client addresses straight out of the `Actor email` column. Found by
+ * `masking-adversarial.spec.ts`, which fetches the file through that operator's
+ * own session rather than asserting about it in-process.
+ *
+ * ## Why it cannot be a decorator
+ *
+ * The answer depends on a SIBLING field. `maskByShape` walks a shape and
+ * decides per field with no view of the row, so it can express "this field is
+ * client-owned" but not "this field is client-owned when that one says
+ * `client`". Exactly the reason `details` is handled here rather than declared.
+ *
+ * ## What stays readable, deliberately
+ *
+ * An `admin`, `system` or `provider` actor is not client-owned and is NOT
+ * masked. Hiding it would empty the column that answers "who did this", which
+ * is the entire purpose of the log — the mask narrows whose PII an operator can
+ * harvest, not whose accountability it can see.
+ *
+ * One definition, both call sites: the list read and the CSV batch call THIS,
+ * so the export cannot drift from the screen. That asymmetry is not
+ * hypothetical here — it is how the withdrawal desk leaked for seventeen days
+ * after its own list was fixed.
+ */
+export function maskAuditRow<T extends AuditMaskableRow>(row: T, mask: readonly string[]): T {
+  const out: Record<string, unknown> = {
+    ...row,
+    details: maskAuditDetails(row.action, row.details, mask),
+  };
+  if (row.actorKind === 'client' && mask.includes(CLIENT_EMAIL)) {
+    delete out.actorEmail;
+  }
+  return out as T;
+}

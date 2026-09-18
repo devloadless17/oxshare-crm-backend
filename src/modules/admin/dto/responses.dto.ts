@@ -35,9 +35,6 @@ export class AdminProfileDto {
     'the administrator OWN address - this DTO describes the operator reading the screen, not a client',
   )
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 email describes the record rather than the person',
-  )
   email: string;
   @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   @ApiProperty()
@@ -188,21 +185,12 @@ export class KycUserDto {
   id: string;
   @ClientField('client.email')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 email describes the record rather than the person',
-  )
   email: string;
   @ClientField('client.firstName')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
-  )
   firstName: string;
   @ClientField('client.lastName')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
-  )
   lastName: string;
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   @ApiPropertyOptional({ enum: ['individual', 'referral', 'partner'] })
@@ -217,23 +205,15 @@ export class KycUserDto {
     'a verification STATUS rather than the address; the catalogue offers no key for it, and hiding it would blank the badge rather than protect anything',
   )
   @ApiPropertyOptional()
-  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   emailVerified?: boolean;
   @ClientField('client.country')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 country describes the record rather than the person',
-  )
   country?: string;
   @ClientField('client.phone')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 phone describes the record rather than the person',
-  )
   phone?: string;
   @ClientField('client.createdAt')
   @ApiPropertyOptional({ type: String, format: 'date-time' })
-  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   createdAt?: string;
 }
 
@@ -533,21 +513,12 @@ export class ClientRowDto {
   id: string;
   @ClientField('client.email')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 email describes the record rather than the person',
-  )
   email?: string;
   @ClientField('client.firstName')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
-  )
   firstName?: string;
   @ClientField('client.lastName')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
-  )
   lastName?: string;
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   @ApiProperty({ enum: ['individual', 'referral', 'partner'] })
@@ -597,26 +568,16 @@ export class ClientRowDto {
    */
   @ClientField('client.phone')
   @ApiPropertyOptional({ type: String, nullable: true })
-  @NotClientField(
-    'not a client-owned attribute \u2014 phone describes the record rather than the person',
-  )
   phone?: string | null;
 
   @ClientField('client.country')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 country describes the record rather than the person',
-  )
   country?: string;
   @ClientField('client.createdAt')
   @ApiPropertyOptional()
-  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   createdAt?: Date;
   @ClientField('client.tags')
   @ApiPropertyOptional({ type: [ClientTagDto] })
-  @NotClientField(
-    'not a client-owned attribute \u2014 tags describes the record rather than the person',
-  )
   tags?: ClientTagDto[];
 }
 
@@ -648,21 +609,12 @@ export class ProfileReferrerDto {
   ibUserId: string;
   @ClientField('client.email')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 email describes the record rather than the person',
-  )
   email: string;
   @ClientField('client.firstName')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
-  )
   firstName: string;
   @ClientField('client.lastName')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
-  )
   lastName: string;
   @ApiProperty({ description: 'False when the attribution was switched off.' })
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
@@ -678,21 +630,12 @@ export class ProfileReferredClientDto {
   clientUserId: string;
   @ClientField('client.email')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 email describes the record rather than the person',
-  )
   email: string;
   @ClientField('client.firstName')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
-  )
   firstName: string;
   @ClientField('client.lastName')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
-  )
   lastName: string;
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   @ApiProperty()
@@ -748,21 +691,12 @@ export class ClientAccountDto {
   id: string;
   @ClientField('client.email')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 email describes the record rather than the person',
-  )
   email: string;
   @ClientField('client.firstName')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
-  )
   firstName: string;
   @ClientField('client.lastName')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
-  )
   lastName: string;
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   @ApiProperty({ enum: ['individual', 'referral', 'partner'] })
@@ -783,19 +717,12 @@ export class ClientAccountDto {
 
   @ClientField('client.country')
   @ApiProperty({ type: String, nullable: true })
-  @NotClientField(
-    'not a client-owned attribute \u2014 country describes the record rather than the person',
-  )
   country: string | null;
   @ClientField('client.phone')
   @ApiProperty({ type: String, nullable: true })
-  @NotClientField(
-    'not a client-owned attribute \u2014 phone describes the record rather than the person',
-  )
   phone: string | null;
   @ClientField('client.createdAt')
   @ApiProperty()
-  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   createdAt: Date;
 
   @ApiProperty({
@@ -815,21 +742,12 @@ export class ClientProfileDto {
   id: string;
   @ClientField('client.email')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 email describes the record rather than the person',
-  )
   email?: string;
   @ClientField('client.firstName')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
-  )
   firstName?: string;
   @ClientField('client.lastName')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
-  )
   lastName?: string;
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   @ApiProperty({ enum: ['individual', 'referral', 'partner'] })
@@ -844,30 +762,19 @@ export class ClientProfileDto {
     'a verification STATUS rather than the address; the catalogue offers no key for it, and hiding it would blank the badge rather than protect anything',
   )
   @ApiProperty()
-  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   emailVerified: boolean;
   @ClientField('client.country')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 country describes the record rather than the person',
-  )
   country?: string;
   @ClientField('client.phone')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 phone describes the record rather than the person',
-  )
   phone?: string;
   @ClientField('client.createdAt')
   @ApiPropertyOptional()
-  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   createdAt?: Date;
 
   @ClientField('client.tags')
   @ApiProperty({ type: [ClientTagDto] })
-  @NotClientField(
-    'not a client-owned attribute \u2014 tags describes the record rather than the person',
-  )
   tags: ClientTagDto[];
 
   @ApiPropertyOptional({ type: ProfileKycDto, description: 'Absent without kyc.view.' })
@@ -1131,9 +1038,6 @@ export class PendingInviteDto {
   id: string;
   @NotClientField('the invited ADMINISTRATOR, not a client')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 email describes the record rather than the person',
-  )
   email: string;
   @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   @ApiProperty()
@@ -1170,14 +1074,32 @@ export class AuditEntryDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   actorId: string;
+  /*
+   * CONDITIONALLY client-owned, so it is masked by `maskAuditRow` rather than
+   * declared here — see `common/security/audit-detail-fields.ts`.
+   *
+   * This carried the reason "the ACTOR who performed the action, AN
+   * ADMINISTRATOR; a client field mask has no standing over it". That was true
+   * of the table as first written. `actorKind`, a few lines below, was added to
+   * this same class BECAUSE it stopped being true — its comment opens "The
+   * table assumed an admin" — and this sentence was not revisited, so a
+   * fully-masked operator could read client addresses out of the `Actor email`
+   * column of `/admin/audit-log/export`.
+   *
+   * It stays `@NotClientField` because the alternative is worse: `maskByShape`
+   * would hide the field on EVERY row, including the administrator actors that
+   * are the whole reason the log exists. The decision needs the sibling
+   * `actorKind`, which a shape walker cannot see.
+   */
   @NotClientField(
-    'the ACTOR who performed the action, an administrator; a client field mask has no standing over it',
+    'client-owned only when actorKind is `client`, which a per-field shape walk cannot express; masked by maskAuditRow at both read sites instead',
   )
-  @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 actorEmail describes the record rather than the person',
-  )
-  actorEmail: string;
+  @ApiPropertyOptional({
+    description:
+      'Absent when the actor is a client and the reader may not see client addresses. ' +
+      'The column is NOT NULL, so absence can only mean the mask removed it.',
+  })
+  actorEmail?: string;
   /*
    * WHO KIND of actor, and from WHERE. Both were stored, returned by the store,
    * and absent from this contract — so the API sent them and the document
@@ -1275,21 +1197,12 @@ export class WithdrawalUserDto {
   id: string;
   @ClientField('client.email')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 email describes the record rather than the person',
-  )
   email?: string;
   @ClientField('client.firstName')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
-  )
   firstName?: string;
   @ClientField('client.lastName')
   @ApiPropertyOptional()
-  @NotClientField(
-    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
-  )
   lastName?: string;
 }
 
@@ -1737,21 +1650,12 @@ export class HoldingOwnerDto {
   id: string;
   @ClientField('client.email')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 email describes the record rather than the person',
-  )
   email: string;
   @ClientField('client.firstName')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 firstName describes the record rather than the person',
-  )
   firstName: string;
   @ClientField('client.lastName')
   @ApiProperty()
-  @NotClientField(
-    'not a client-owned attribute \u2014 lastName describes the record rather than the person',
-  )
   lastName: string;
 }
 

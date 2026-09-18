@@ -14,6 +14,8 @@ import type { RevenueBasis } from '../../common/revenue-basis';
 import { tradingTermsFrom } from '../../common/trading-terms';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { WalletService } from '../wallet/wallet.service';
+import { ClientVisibilityService } from '../../common/security/client-visibility.service';
+import type { ClientScope } from '../../common/security/client-scope';
 import {
   CommissionRefusedError,
   type CommissionAccrualPort,
@@ -115,6 +117,19 @@ export class CommissionService implements CommissionAccrualPort {
      * made the email possible rather than what made it desirable.
      */
     private readonly emails: EmailService,
+    /**
+     * The by-id territory gate, for `reverseAccrual` alone.
+     *
+     * The shared one rather than four scoped lines here, for the reason its own
+     * header gives: a copy that answers 403 instead of 404 is a client
+     * enumeration oracle nobody notices in review because the others look right.
+     *
+     * LAST in the list on purpose: eight specs construct this class by hand with
+     * positional arguments, so a parameter inserted in the middle rebinds every
+     * one of them silently. Appending makes each update an added argument rather
+     * than a reshuffle.
+     */
+    private readonly visibility: ClientVisibilityService,
   ) {}
 
   /**
@@ -1139,6 +1154,7 @@ export class CommissionService implements CommissionAccrualPort {
   async reverseAccrual(
     accrualId: string,
     reason: string,
+    scope: ClientScope,
   ): Promise<{ id: string; status: 'reversed'; movedMoney: boolean }> {
     return this.db.transaction(async (tx) => {
       /*
@@ -1155,6 +1171,38 @@ export class CommissionService implements CommissionAccrualPort {
         .limit(1);
 
       if (!accrual) throw new NotFoundError('Accrual not found.');
+
+      /*
+       * TERRITORY, on the person whose wallet this debits.
+       *
+       * This route carried `@NotClientScoped`, and the reason was sound as far
+       * as it went: the scope predicates in `IbStore` filter on
+       * `ib_accruals.ib_user_id`, which on a REBATE row is the partner whose
+       * rung produced it rather than the person being debited — "a check that
+       * reads the wrong column". That rules out one WRONG fix. It was then
+       * taken as ruling out scoping altogether, so `ib.commissions.reverse`
+       * became the only gate and any holder of it could take money out of any
+       * client's wallet on the platform.
+       *
+       * The right column is the one the debit itself uses, twenty lines down:
+       * the client on a rebate, the partner on a commission. Asked here, once,
+       * from the same expression — so the check cannot drift from the write.
+       *
+       * ⚠️ AFTER the row is read, which departs from `assertVisible`'s own "call
+       * it FIRST" instruction, and has to: who is debited is a property of the
+       * row. Nothing from the accrual has reached a log, a message or the
+       * response by this point, so the reason behind that instruction is
+       * satisfied even though its letter is not.
+       *
+       * BEFORE the idempotency short-circuit below, deliberately. Answering
+       * "already reversed" to an administrator who may not see the beneficiary
+       * would confirm the accrual exists — the same oracle the 404-not-403 rule
+       * exists to close.
+       */
+      await this.visibility.assertVisible(
+        accrual.kind === 'rebate' ? accrual.clientUserId : accrual.ibUserId,
+        scope,
+      );
 
       /*
        * Idempotent rather than an error. A desk that double-submits, or retries

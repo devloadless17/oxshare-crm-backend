@@ -35,7 +35,7 @@ import { adminNetworkAdmits } from '../../common/security/admin-network';
 import { clientIp } from '../../common/security/client-ip';
 import { COOKIE_BASES, readSessionCookie } from '../../common/security/session-cookies';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
-import { AdminGuard } from '../admin/guards/admin.guard';
+import { AdminGuard, AnyAdmin } from '../admin/guards/admin.guard';
 import {
   AVATAR_BUCKET,
   DEPOSIT_PROOF_BUCKET,
@@ -218,6 +218,25 @@ export class UploadsController {
    */
   @Get('admin-avatars/:file')
   @UseGuards(AdminGuard)
+  /*
+   * Authenticated is the whole requirement, and it has to SAY so.
+   *
+   * This route serves an administrator their own photo and nothing else — the
+   * ownership check below refuses any other file with a 404 — so no permission
+   * key is right for it. That made it the one admin-guarded route in the
+   * codebase declaring neither `@RequirePermissions` nor `@AnyAdmin`, which
+   * looks identical to a route that forgot.
+   *
+   * It escaped the census that exists to catch exactly that: `AdminGuard` does
+   * not read `PERMISSIONS_KEY`, so deny-by-default never fires, and
+   * `route-authorization.spec.ts` filtered on a `/admin` path prefix while this
+   * signature reads `/uploads`. That filter is now "guarded by an admin guard",
+   * which is the question it was always trying to ask.
+   */
+  @AnyAdmin(
+    'Serves the CALLING administrator their own profile photo. The ownership check in the ' +
+      'handler is the authorization; no permission distinguishes one admin from another here.',
+  )
   @ApiCookieAuth()
   @ApiOperation({ summary: "Serve an administrator's own profile photo" })
   @NotClientScoped(
