@@ -590,15 +590,27 @@ export class AdminHoldingsService {
    * be wrong about — a client with more accounts than a page would otherwise
    * see a truncated list with nothing saying so.
    *
-   * ## No client scope here, deliberately
+   * ## The scope is applied here too, and it is a no-op on the happy path
    *
-   * The caller has ALREADY resolved this client through `findForAdmin` with the
-   * actor's scope, and an out-of-scope client 404s there. Re-applying the scope
-   * would be a second, quieter check whose only distinct outcome is a profile
-   * that renders with an empty accounts card for a client the reader was
-   * allowed to open — which is the exact failure this card exists to end.
+   * This said "no client scope here, deliberately", arguing that the caller has
+   * already resolved the client through `findForAdmin` with the actor's scope,
+   * so re-applying it could only produce an empty accounts card for a client the
+   * reader was allowed to open.
+   *
+   * That outcome requires the two checks to DISAGREE, and for a client the
+   * reader legitimately opened they agree — the predicate tests the same
+   * `userId` against the same territory. So the feared failure could not happen,
+   * and what the argument actually bought was a method that is safe only while
+   * every caller remembers to pre-check. It has one caller today. The audit
+   * flagged it as "safe by caller convention", which is a description of a
+   * method waiting for its second caller.
+   *
+   * Applying it costs nothing on the path that exists and fails closed on the
+   * one that does not exist yet.
    */
-  async accountsForProfile(userId: string) {
+  async accountsForProfile(userId: string, scope: ClientScope) {
+    const scoped = clientScopePredicate(scope, tradingAccounts.userId);
+    const owner = eq(tradingAccounts.userId, userId);
     return (
       this.db
         .select({
@@ -610,7 +622,7 @@ export class AdminHoldingsService {
           createdAt: tradingAccounts.createdAt,
         })
         .from(tradingAccounts)
-        .where(eq(tradingAccounts.userId, userId))
+        .where(scoped ? and(owner, scoped) : owner)
         // Live before demo, newest first within each: the accounts that hold real
         // money are what an operator opened this card to see.
         .orderBy(asc(tradingAccounts.environment), desc(tradingAccounts.createdAt))

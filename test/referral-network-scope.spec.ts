@@ -65,6 +65,8 @@ let subTheirsId: string;
 /** A partner the reader CAN open, whose PARENT sits outside their territory. */
 let childPartnerId: string;
 let outsideParentId: string;
+/** In the reader's territory, but INTRODUCED by a partner who is not. */
+let introducedFromOutsideId: string;
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -234,6 +236,7 @@ beforeAll(async () => {
     .returning();
   outsideParentId = outsideParent.id;
   childPartnerId = childPartner.id;
+
   await db.insert(ibAccounts).values([
     { userId: outsideParentId, level: 1, active: true, referralCode: 'REFPARENT1' },
     {
@@ -245,6 +248,28 @@ beforeAll(async () => {
     },
   ]);
 
+  /*
+   * The case the referrer card is about: a client the scoped desk OWNS, whose
+   * introducer sits outside their territory. Without this fixture the referrer
+   * assertions pass trivially — `partnerId` is tagged INTO the territory below,
+   * so every other referred client in this file has a visible introducer.
+   *
+   * Created AFTER the `ib_accounts` insert above: `users.referred_by_ib_user_id`
+   * is a foreign key onto `ib_accounts.user_id`, not onto `users.id`, so the
+   * introducer must already hold a partner row.
+   */
+  const [introducedFromOutside] = await db
+    .insert(users)
+    .values({
+      email: 'ref-scope-introduced-outside@oxshare-e2e.test',
+      passwordHash: 'x',
+      firstName: 'Introduced',
+      lastName: 'FromOutside',
+      referredByIbUserId: outsideParentId,
+    })
+    .returning();
+  introducedFromOutsideId = introducedFromOutside.id;
+
   await db.insert(clientTagAssignments).values([
     { userId: partnerId, tagId: tag.id },
     { userId: mineId, tagId: tag.id },
@@ -252,6 +277,8 @@ beforeAll(async () => {
     // they may open. `subTheirs` and `outsideParent` are deliberately untagged.
     { userId: subMineId, tagId: tag.id },
     { userId: childPartnerId, tagId: tag.id },
+    // In the territory; their INTRODUCER (outsideParent) is not.
+    { userId: introducedFromOutsideId, tagId: tag.id },
   ]);
 }, 180_000);
 
@@ -555,5 +582,72 @@ describe("a partner's PARENT follows the reader's territory", () => {
     const rootView = await detailFor(MASTER, partnerId);
     expect(rootView.parent).toBeNull();
     expect(rootView.parentOutsideTerritory).toBe(false);
+  });
+});
+
+describe("the client profile's REFERRER follows the reader's territory", () => {
+  /*
+   * The same fix as the partner PARENT above, on the other surface that names
+   * an introducer. This one was built unscoped on a recorded argument: hiding
+   * the introducer would render the false sentence "not introduced by a
+   * partner". True, and it treated "all" and "nothing" as the only options —
+   * while `parentOutsideTerritory`, a few hundred lines away in the same
+   * codebase, was already the third.
+   *
+   * The FIELD MASK never covered this. Masking hides COLUMNS by role; scope
+   * hides ROWS by territory. A scoped-desk admin holding every field permission
+   * was shown an out-of-territory person's address and full name.
+   */
+  type Profile = {
+    referrer?: {
+      ibUserId: string;
+      email?: string;
+      firstName?: string;
+      lastName?: string;
+      outsideTerritory: boolean;
+    };
+  };
+
+  const profileFor = async (who: typeof MASTER, clientId: string): Promise<Profile> => {
+    const session = await actingAs(ctx, 'admin', who);
+    const res = await session.get(`/v1/admin/clients/${clientId}`).expect(200);
+    return res.body as Profile;
+  };
+
+  it('MASTER reads the introducer in full', async () => {
+    const body = await profileFor(MASTER, mineId);
+
+    expect(body.referrer?.ibUserId).toBe(partnerId);
+    expect(body.referrer?.email).toBe('ref-scope-partner@oxshare-e2e.test');
+    expect(body.referrer?.outsideTerritory).toBe(false);
+  });
+
+  it('a SCOPED reader gets no introducer IDENTITY — not the address, not the name', async () => {
+    const body = await profileFor(SCOPED, introducedFromOutsideId);
+    const serialised = JSON.stringify(body.referrer ?? {});
+
+    expect(
+      body.referrer,
+      'the card vanished entirely — that is the false sentence this fix exists to avoid',
+    ).toBeDefined();
+    expect(serialised).not.toContain('ref-scope-parent-theirs@oxshare-e2e.test');
+    expect(serialised).not.toContain('Outside');
+    expect(body.referrer?.email).toBeUndefined();
+    expect(body.referrer?.firstName).toBeUndefined();
+    expect(body.referrer?.lastName).toBeUndefined();
+  });
+
+  it('but IS told the client was introduced — the fact survives, the identity does not', async () => {
+    // Without this the fix would be a worse bug than the one it closes: a
+    // scoped desk would read every out-of-territory introducer as "walked in
+    // off the street", which is a different commercial fact.
+    const body = await profileFor(SCOPED, introducedFromOutsideId);
+    expect(body.referrer?.outsideTerritory).toBe(true);
+
+    // And an in-territory introducer reports the opposite, or the flag would be
+    // indistinguishable from "always true".
+    const visible = await profileFor(SCOPED, mineId);
+    expect(visible.referrer?.outsideTerritory).toBe(false);
+    expect(visible.referrer?.email).toBe('ref-scope-partner@oxshare-e2e.test');
   });
 });

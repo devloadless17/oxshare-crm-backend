@@ -363,7 +363,7 @@ export class AdminClientsService {
     const [tags, kyc, referrer, referredClients, referredTotal, trading] = await Promise.all([
       this.tags.tagsForClient(clientId),
       may('kyc.view') || may('kyc.review') ? this.kyc.findByUserId(clientId) : undefined,
-      canSeeNetwork ? this.referrerOf(client) : undefined,
+      canSeeNetwork ? this.referrerOf(client, actor.clientScope) : undefined,
       canSeeNetwork ? this.referredClientsOf(clientId, actor.clientScope) : undefined,
       /*
        * The TOTAL, from SQL, under the same `ib.view` gate and the same scope.
@@ -388,7 +388,9 @@ export class AdminClientsService {
        * portal's own accounts page once gave, on the console this time, and to
        * the reader most likely to act on it.
        */
-      may('trading.view') ? this.holdings.accountsForProfile(clientId) : undefined,
+      may('trading.view')
+        ? this.holdings.accountsForProfile(clientId, actor.clientScope)
+        : undefined,
     ]);
 
     const profile = {
@@ -457,22 +459,46 @@ export class AdminClientsService {
   /**
    * Who introduced this client, shaped for `ProfileReferrerDto`.
    *
-   * Undefined when nobody did — the ordinary case. The introducer and their
-   * partner row are looked up UNSCOPED on purpose: the reader was allowed to
-   * open this client, and hiding who introduced them because the introducer
-   * is outside the reader's own tag scope would render the false sentence
-   * "not introduced by a partner" — the exact bug this method fixes.
+   * Undefined when nobody did — the ordinary case.
+   *
+   * ## Territory, without the false sentence
+   *
+   * This was UNSCOPED, and the recorded argument was that hiding the introducer
+   * would render "not introduced by a partner", which is exactly the bug the
+   * card was added to fix. True — but it treated "show everything" and "show
+   * nothing" as the only options, and this codebase had already found the third
+   * one for the IB partner parent: say that an introducer EXISTS and withhold
+   * who they are (`parentOutsideTerritory`).
+   *
+   * So the existence of the attribution is still told truthfully to every
+   * reader, and the introducer's email and name are told only to a reader whose
+   * territory covers them. The field mask never covered this: masking hides
+   * COLUMNS by role, scope hides ROWS by territory, and a scoped-desk admin
+   * holding every field permission was shown an out-of-territory person in full.
    *
    * `active` is the partner row's flag (a suspended partner still introduced
    * them; the screen labels it), and `since` is the CLIENT's registration —
    * attribution is written once at register and never re-pointed.
    */
-  private async referrerOf(client: User) {
+  private async referrerOf(client: User, scope: ClientScope) {
     if (!client.referredByIbUserId) return undefined;
     const [introducer, account] = await Promise.all([
-      this.users.findById(client.referredByIbUserId),
+      this.users.findByIdInScope(client.referredByIbUserId, scope),
       this.ib.findAccount(client.referredByIbUserId),
     ]);
+    /*
+     * In scope returns nothing but the attribution column says someone did
+     * introduce them: the introducer is real and outside this reader's
+     * territory. Told as a fact, with no identity attached.
+     */
+    if (!introducer && account) {
+      return {
+        ibUserId: client.referredByIbUserId,
+        active: account.active,
+        since: client.createdAt,
+        outsideTerritory: true,
+      };
+    }
     // Unreachable while the users→ib_accounts FK stands; refusing to fabricate
     // a half-empty card is still better than trusting that forever.
     if (!introducer || !account) return undefined;
@@ -483,6 +509,7 @@ export class AdminClientsService {
       lastName: introducer.lastName,
       active: account.active,
       since: client.createdAt,
+      outsideTerritory: false,
     };
   }
 

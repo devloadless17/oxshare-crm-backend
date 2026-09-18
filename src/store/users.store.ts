@@ -240,6 +240,25 @@ export class UsersStore {
     return row ? toUser(row) : undefined;
   }
 
+  /**
+   * `findById`, narrowed to the reader's territory.
+   *
+   * Returns `undefined` for a client who exists but is outside the scope, which
+   * is deliberately indistinguishable from one who does not exist — the
+   * 404-never-403 rule, so a by-id probe cannot be used to enumerate clients the
+   * reader may not see.
+   *
+   * The predicate is in the WHERE clause (RBAC-08), not a filter applied after
+   * the row is fetched: fetch-then-discard puts the value in the process, one
+   * refactor away from a response.
+   */
+  async findByIdInScope(id: string, scope: ClientScope): Promise<User | undefined> {
+    const scoped = clientScopePredicate(scope, users.id);
+    const where = scoped ? and(eq(users.id, id), scoped) : eq(users.id, id);
+    const [row] = await this.db.select(USER_COLUMNS).from(users).where(where).limit(1);
+    return row ? toUser(row) : undefined;
+  }
+
   /*
    * ⚠️ BOTH METHODS BELOW TAKE THE READER'S SCOPE, AND THAT REVERSES WHAT THEY
    * SAID UNTIL 11 Sep 2026. The old text is quoted here rather than deleted,

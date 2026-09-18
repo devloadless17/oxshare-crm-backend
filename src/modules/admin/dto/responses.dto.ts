@@ -607,15 +607,38 @@ export class ProfileReferrerDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   ibUserId: string;
+  /*
+   * IDENTITY IS OMITTED WHEN THE INTRODUCER IS OUTSIDE THE READER'S TERRITORY.
+   *
+   * This card was built unscoped on purpose, and the argument was sound as far
+   * as it went: hiding the introducer because they sit outside the reader's tag
+   * scope would render the false sentence "not introduced by a partner", which
+   * is the bug the card was added to fix. What it missed is that those are not
+   * the only two options — the same codebase had already solved it for the IB
+   * partner parent with `parentOutsideTerritory`, which keeps the true sentence
+   * without handing over an out-of-territory person's email and name.
+   *
+   * The FIELD MASK already covered a mask-restricted reader. What it could not
+   * cover is the scoped-desk admin who holds every field permission and simply
+   * may not see this person's row — territory is rows, masking is columns, and
+   * only one of the two was applied here.
+   */
   @ClientField('client.email')
-  @ApiProperty()
-  email: string;
+  @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
+  email?: string;
   @ClientField('client.firstName')
-  @ApiProperty()
-  firstName: string;
+  @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
+  firstName?: string;
   @ClientField('client.lastName')
-  @ApiProperty()
-  lastName: string;
+  @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
+  lastName?: string;
+  @NotClientField('a visibility state about the reader, not an attribute of the person')
+  @ApiProperty({
+    description:
+      'True when this client WAS introduced by a partner the reader may not see. Keeps ' +
+      '“introduced, by someone outside your territory” distinct from “not introduced”.',
+  })
+  outsideTerritory: boolean;
   @ApiProperty({ description: 'False when the attribution was switched off.' })
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   active: boolean;

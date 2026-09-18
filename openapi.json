@@ -15667,13 +15667,20 @@
             "type": "string"
           },
           "email": {
-            "type": "string"
+            "type": "string",
+            "description": "Absent when the introducer is outside your territory."
           },
           "firstName": {
-            "type": "string"
+            "type": "string",
+            "description": "Absent when the introducer is outside your territory."
           },
           "lastName": {
-            "type": "string"
+            "type": "string",
+            "description": "Absent when the introducer is outside your territory."
+          },
+          "outsideTerritory": {
+            "type": "boolean",
+            "description": "True when this client WAS introduced by a partner the reader may not see. Keeps “introduced, by someone outside your territory” distinct from “not introduced”."
           },
           "active": {
             "type": "boolean",
@@ -15686,9 +15693,7 @@
         },
         "required": [
           "ibUserId",
-          "email",
-          "firstName",
-          "lastName",
+          "outsideTerritory",
           "active",
           "since"
         ]
