@@ -221,6 +221,61 @@ describe('groups must match the product type', () => {
   });
 });
 
+/*
+ * ── WHAT AN ACCOUNT ACTUALLY IS, AS OPPOSED TO WHAT WAS ASKED FOR ──────────
+ *
+ * `trading_accounts.environment` gates whether a trade pays partner commission,
+ * and it used to be written from the REQUEST while `mt5Group` and `productId`
+ * beside it were read back from the broker's own response. This lookup is what
+ * lets the account service verify it instead of believing it.
+ *
+ * The bug that forced it: a deployment whose catalogue holds a single LIVE
+ * group answers every open with that group — demo requests included — so an
+ * account requested as demo sat in a live group, was filed as demo, and every
+ * trade on it accrued real commission and a real rebate.
+ */
+describe('a group knows whether it is live or demo', () => {
+  it('reports the environment the catalogue sells the group as', async () => {
+    const realId = await makeProduct('Standard');
+    const demoId = await makeProduct('Demo A', 'demo');
+
+    await service.attachGroup(
+      realId,
+      { environment: 'live', mt5Group: 'real\\Standard-USD' },
+      TEST_ACTOR,
+    );
+    await service.attachGroup(
+      demoId,
+      { environment: 'demo', mt5Group: 'demo\\Standard-USD' },
+      TEST_ACTOR,
+    );
+
+    expect(await store.environmentForGroup('real\\Standard-USD')).toBe('live');
+    expect(await store.environmentForGroup('demo\\Standard-USD')).toBe('demo');
+  });
+
+  it('matches case-insensitively, as MT5 group paths do', async () => {
+    const realId = await makeProduct('Standard');
+    await service.attachGroup(
+      realId,
+      { environment: 'live', mt5Group: 'real\\Standard-USD' },
+      TEST_ACTOR,
+    );
+
+    // A browser round trip can change the casing and nothing else.
+    expect(await store.environmentForGroup('REAL\\standard-usd')).toBe('live');
+  });
+
+  it('answers NULL for a group the catalogue does not sell', async () => {
+    /*
+     * The admin path can open an account directly into a bespoke or internal
+     * group. There is nothing to verify against, so this refuses to guess — the
+     * caller falls back to the requested value and logs that it did.
+     */
+    expect(await store.environmentForGroup('test\\API\\0-cl')).toBeNull();
+  });
+});
+
 describe('agencies carry real products only', () => {
   it('refuses assigning the demo product', async () => {
     const agencyId = await makeAgency('Gold');

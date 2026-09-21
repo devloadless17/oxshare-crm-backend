@@ -119,6 +119,70 @@ export class Mt5AccountsService {
    * which the portal renders by omitting the row. The difference is that a
    * failure is logged with the group named, so it can be set by hand.
    */
+  /**
+   * The environment of the group MT5 ACTUALLY opened the account in.
+   *
+   * ## ⚠️ This exists because commission was paid on demo trades
+   *
+   * `environment` used to be written straight from the request, while
+   * `mt5Group` and `productId` beside it were read back from the broker's own
+   * response. The one column with money hanging off it — it is what the IB
+   * engine checks before accruing — was the one field nobody verified.
+   *
+   * A deployment whose catalogue holds a single LIVE group answers every open
+   * with that group, demo requests included. The account then sits in a live
+   * group while the CRM files it however the caller asked, and every trade on
+   * it pays a partner real commission and the client a real rebate.
+   *
+   * Falls back to the REQUESTED value when the catalogue does not sell the
+   * group, which is legitimate on the admin path: an operator can open an
+   * account directly into a bespoke or internal group the catalogue has never
+   * heard of. There is nothing to verify against there, so the caller's word is
+   * all there is — and the log line says so rather than leaving it silent.
+   */
+  private async environmentForGroup(
+    group: string,
+    requested: 'live' | 'demo',
+    login: string | number,
+  ): Promise<'live' | 'demo'> {
+    let actual: 'live' | 'demo' | null = null;
+    try {
+      actual = await this.products.environmentForGroup(group);
+    } catch (error) {
+      this.logger.error(
+        `Could not resolve the environment for group ${group}; account ${login} is being ` +
+          `recorded as ${requested} on the caller's word. ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return requested;
+    }
+
+    if (actual === null) {
+      this.logger.warn(
+        `Group ${group} is not in the catalogue, so account ${login} is recorded as ` +
+          `${requested} unverified. If this is a live group, every trade on it will accrue ` +
+          `partner commission.`,
+      );
+      return requested;
+    }
+
+    if (actual !== requested) {
+      /*
+       * LOUD. The broker and the request disagree about whether this account
+       * trades real money, and the broker is the one that decides. Recording
+       * the request instead is how a demo account ends up paying commission —
+       * or how a live one silently stops.
+       */
+      this.logger.error(
+        `Account ${login} was requested as ${requested} but MT5 opened it in ${group}, which ` +
+          `the catalogue sells as ${actual}. Recording ${actual} — the broker decides what an ` +
+          `account is, and this column gates whether its trades pay commission.`,
+      );
+    }
+
+    return actual;
+  }
+
   private async productForGroup(group: string): Promise<string | null> {
     try {
       return await this.products.productIdForGroup(group);
@@ -270,7 +334,12 @@ export class Mt5AccountsService {
          * morning. NULL records that honestly instead of guessing.
          */
         productId: await this.productForGroup(created.group),
-        environment: input.environment,
+        /* From the group MT5 confirmed, not from the request — see the helper. */
+        environment: await this.environmentForGroup(
+          created.group,
+          input.environment,
+          created.login,
+        ),
         currency: created.currency,
         leverage: created.leverage,
         // Zero, not the MT5 balance: a new account has none, and writing
@@ -570,7 +639,12 @@ export class Mt5AccountsService {
          * between the picker rendering and the account opening.
          */
         productId: await this.productForGroup(created.group),
-        environment: input.environment,
+        /* From the group MT5 confirmed, not from the request — see the helper. */
+        environment: await this.environmentForGroup(
+          created.group,
+          input.environment,
+          created.login,
+        ),
         currency: created.currency,
         leverage: created.leverage,
         balance: snapshot?.balance ?? '0',

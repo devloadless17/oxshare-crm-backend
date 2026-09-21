@@ -521,4 +521,36 @@ export class ProductsStore {
 
     return row?.productId ?? null;
   }
+
+  /**
+   * Whether the group MT5 put an account in is a LIVE or a DEMO group.
+   *
+   * ## Why an account's environment has to be read rather than believed
+   *
+   * `trading_accounts.environment` is what decides whether a trade pays a
+   * partner real commission, and it was written straight from the request that
+   * opened the account — while `mt5Group` and `productId` beside it were read
+   * back from what the broker ACTUALLY did. So the one field with money hanging
+   * off it was the one nobody verified.
+   *
+   * That is not hypothetical. A deployment whose catalogue holds a single live
+   * group answers every open — demo requests included — with a live group, and
+   * every account lands `environment: 'demo'` sitting in a live group, or the
+   * reverse. Either way the column and the broker disagree, and the commission
+   * engine trusts the column.
+   *
+   * `null` when the catalogue does not sell this group, which is a real case on
+   * the admin path: an operator may open an account directly into a bespoke or
+   * internal group. The caller decides what that means — see its own note — and
+   * this refuses to guess.
+   */
+  async environmentForGroup(mt5Group: string): Promise<'live' | 'demo' | null> {
+    const [row] = await this.db
+      .select({ environment: tradingProductGroups.environment })
+      .from(tradingProductGroups)
+      .where(sql`lower(${tradingProductGroups.mt5Group}) = lower(${mt5Group})`)
+      .limit(1);
+
+    return row?.environment ?? null;
+  }
 }
