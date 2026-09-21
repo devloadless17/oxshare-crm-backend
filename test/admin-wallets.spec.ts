@@ -245,6 +245,38 @@ describe('listing and paging', () => {
     expect(row?.walletNumber).toMatch(/^[0-9a-hjkmnp-tv-z]{12}$/);
   });
 
+  /*
+   * ── EVERY WALLET IS NAMED, AND THE DATABASE IS WHAT NAMES IT ─────────────
+   *
+   * The name is a GENERATED column (migration 0132), not something a caller
+   * writes. That is the point: three separate paths insert wallets — two in
+   * `WalletService` and the set-based `openForAllClients` backfill no
+   * application generator can reach — so a name assembled in code would need
+   * all three to remember, and the one that forgot would put a nameless wallet
+   * on a client's screen.
+   *
+   * Asserted through the HTTP layer rather than against the column, because
+   * what matters is that it survives the projection and the DTO mapping. It
+   * was selected-but-never-mapped once already on this very endpoint: `kind`
+   * shipped absent for months and a partner's two same-currency rows were
+   * indistinguishable because of it.
+   */
+  it('names every wallet from its currency and kind', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get('/v1/admin/wallets?limit=100');
+
+    expect(res.status).toBe(200);
+
+    const rows = body(res).items;
+    expect(rows.length).toBeGreaterThan(0);
+
+    for (const wallet of rows) {
+      expect(wallet.name).toBe(
+        wallet.kind === 'commission' ? 'Commission Wallet' : `${wallet.currency} Wallet`,
+      );
+    }
+  });
+
   it('pages with a cursor, and the second page does not repeat the first', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const first = await session.get('/v1/admin/wallets?limit=2');
