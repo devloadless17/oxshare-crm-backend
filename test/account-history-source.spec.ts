@@ -165,10 +165,21 @@ describe('account history is served from mt5_deals', () => {
 
     const history = await trading.historyMine(userId, accountId, MAY);
 
-    expect(history.deals.map((deal) => deal.ticket)).toEqual(['102', '101']);
-    expect(history.deals[0].actionLabel).toBe('balance');
-    expect(history.deals[1].closing).toBe(true);
+    /*
+     * ONLY the closed trade. The balance operation (102) is ingested, counts
+     * toward `lastDealAt`, and is deliberately NOT listed: this endpoint pages
+     * CLOSED TRADES now, and the filter moved into SQL when it did — a page of
+     * 25 ingested rows holding three closed trades would otherwise return short
+     * pages and a `total` nobody can reach. Balance movements are read through
+     * `/accounts/:id/movements`, which exists for exactly them.
+     */
+    expect(history.deals.map((deal) => deal.ticket)).toEqual(['101']);
+    expect(history.deals[0].closing).toBe(true);
+    expect(history.total).toBe(1);
     expect(history.stats.trades).toBe(1);
+    /* The deposit still moved money on the account, so "last activity" is its
+       timestamp and not the trade's. */
+    expect(history.stats.lastDealAt?.toISOString()).toBe(localIso(2026, 5, 11, 9));
   });
 
   it("never returns another client's deals, even though it queries by login", async () => {
@@ -295,9 +306,17 @@ describe('account history is served from mt5_deals', () => {
       },
     ]);
 
-    const { stats, deals } = await trading.historyMine(userId, accountId, MAY);
+    const { stats, deals, total } = await trading.historyMine(userId, accountId, MAY);
 
-    expect(deals).toHaveLength(6);
+    /*
+     * FOUR, not six: the opening deal (15) and the deposit (16) are ingested and
+     * are not closed trades, so they are filtered in SQL rather than returned
+     * for the browser to hide. The statistics below are unchanged by that — they
+     * always counted closing trades only, which is why `trades` is also 4.
+     */
+    expect(deals).toHaveLength(4);
+    expect(deals.map((deal) => deal.ticket)).toEqual(['14', '13', '12', '11']);
+    expect(total).toBe(4);
     expect(stats.trades).toBe(4);
     expect(stats.wins).toBe(2);
     expect(stats.losses).toBe(1);
@@ -312,6 +331,90 @@ describe('account history is served from mt5_deals', () => {
     // The dates span EVERY deal, the deposit included — this is "last activity".
     expect(stats.firstDealAt?.toISOString()).toBe(localIso(2026, 5, 10, 9));
     expect(stats.lastDealAt?.toISOString()).toBe(localIso(2026, 5, 10, 14));
+  });
+
+  /*
+   * ── PAGING ───────────────────────────────────────────────────────────────
+   *
+   * The window used to come back as ONE array capped at 500, and the screen
+   * inferred truncation from its length. These pin the replacement: a slice
+   * plus a real `total`, and statistics that describe the WINDOW rather than
+   * the slice.
+   */
+  it('returns one page of closed trades and a total for the whole window', async () => {
+    await seedDeals(
+      Array.from({ length: 7 }, (_, index) => ({
+        ticket: String(300 + index),
+        login: '5000001',
+        action: 0,
+        entry: 1,
+        profit: '1.00000000',
+        // An hour apart so the newest-first order is unambiguous.
+        dealtAt: localIso(2026, 5, 10, 9 + index),
+      })),
+    );
+
+    const first = await trading.historyMine(userId, accountId, { ...MAY, page: 1, limit: 3 });
+
+    // Newest first: 306 was dealt at 15:00, 300 at 09:00.
+    expect(first.deals.map((deal) => deal.ticket)).toEqual(['306', '305', '304']);
+    expect(first.total).toBe(7);
+    expect(first.page).toBe(1);
+    expect(first.limit).toBe(3);
+
+    const last = await trading.historyMine(userId, accountId, { ...MAY, page: 3, limit: 3 });
+
+    // The final page is SHORT rather than padded, and page 4 would be empty.
+    expect(last.deals.map((deal) => deal.ticket)).toEqual(['300']);
+    expect(last.total).toBe(7);
+  });
+
+  it('keeps the statistics describing the WINDOW, not the page', async () => {
+    await seedDeals([
+      {
+        ticket: '401',
+        login: '5000001',
+        action: 0,
+        entry: 1,
+        profit: '100.00000000',
+        dealtAt: localIso(2026, 5, 10, 9),
+      },
+      {
+        ticket: '402',
+        login: '5000001',
+        action: 0,
+        entry: 1,
+        profit: '-40.00000000',
+        dealtAt: localIso(2026, 5, 10, 10),
+      },
+      {
+        ticket: '403',
+        login: '5000001',
+        action: 0,
+        entry: 1,
+        profit: '7.00000000',
+        dealtAt: localIso(2026, 5, 10, 11),
+      },
+    ]);
+
+    /*
+     * A page holding ONE trade whose profit is 7.00. If the totals were summed
+     * from the returned array — the bug this guards — `netProfit` would read
+     * 7.00 and `bestTrade` 7.00, and a client paging through their month would
+     * watch both change under them.
+     */
+    const page = await trading.historyMine(userId, accountId, { ...MAY, page: 1, limit: 1 });
+
+    expect(page.deals).toHaveLength(1);
+    expect(page.deals[0].ticket).toBe('403');
+    expect(page.total).toBe(3);
+
+    expect(page.stats.trades).toBe(3);
+    expect(page.stats.netProfit).toBe('67.00000000');
+    expect(page.stats.bestTrade).toBe('100.00000000');
+    expect(page.stats.worstTrade).toBe('-40.00000000');
+    expect(page.stats.wins).toBe(2);
+    expect(page.stats.losses).toBe(1);
   });
 
   it('reports an empty window rather than reaching for the trading server', async () => {

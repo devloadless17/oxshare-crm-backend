@@ -1,5 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, Matches } from 'class-validator';
+import { IsInt, IsOptional, Matches, Max, Min } from 'class-validator';
+import { Type } from 'class-transformer';
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../../../common/pagination';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -369,11 +371,39 @@ export class AccountHistoryDto {
   @ApiProperty({ format: 'date-time', description: 'End of the window, inclusive.' })
   to: Date;
 
+  /**
+   * Computed over EVERY closed trade in the window, never over `deals`.
+   *
+   * That is the whole contract of this field now that the list is paged. The
+   * totals used to be derived from the same array the client rendered, which
+   * made them agree by construction — page 2 would otherwise report "3 trades,
+   * best 12.40" about whichever rows happened to be on screen, and a client
+   * paging through their month would watch their net profit change.
+   *
+   * So the statistics are aggregated in SQL over the window and the deals are a
+   * slice of it. They no longer cover the same rows, and that is the POINT:
+   * one describes the period, the other is a page of it.
+   */
   @ApiProperty({ type: () => AccountStatsDto })
   stats: AccountStatsDto;
 
-  @ApiProperty({ type: [AccountDealDto], description: 'Newest first.' })
+  @ApiProperty({ type: [AccountDealDto], description: 'One PAGE of closed trades, newest first.' })
   deals: AccountDealDto[];
+
+  @ApiProperty({
+    example: 128,
+    description:
+      'CLOSED trades in the whole window — the count `deals` is a page of, and the same set the ' +
+      'statistics describe. Not the number of ingested deals: opening legs and balance ' +
+      'operations are excluded here exactly as they are from `stats`.',
+  })
+  total: number;
+
+  @ApiProperty({ example: 1, description: 'The 1-based page this response is.' })
+  page: number;
+
+  @ApiProperty({ example: 25, description: 'Rows per page this response was built with.' })
+  limit: number;
 }
 
 /**
@@ -385,11 +415,16 @@ export class AccountHistoryDto {
  * bound moved to the PERIOD when the read went live against MT5, which answers
  * per time range and truncates a large one silently.
  *
- * The read has since come back to `mt5_deals` and the window has stayed, on a
- * different justification: the whole window is returned in ONE array so that the
- * statistics and the deal list provably cover the same rows, which makes the
- * period the thing that has to be bounded. Paging the deals is the change that
- * would let the window widen, and it is a change to both at once.
+ * The read has since come back to `mt5_deals`, and the deals are now PAGED —
+ * the change the previous note said would have to be made to both at once, made
+ * to both at once. The statistics are aggregated in SQL across the whole window
+ * rather than summed from the returned array, so they still describe the period
+ * even though the list is a slice of it.
+ *
+ * The window survives as a FILTER rather than as a bound on the response size,
+ * because it is still what the screen's subtitle claims and what a client
+ * reasons about. What it no longer has to do is keep the array small enough to
+ * send, which is what the 500-row truncation was for.
  *
  * Dates are INCLUSIVE at both ends by DATE PART, matching
  * `ListTransactionsQueryDto` — and for the reason recorded there and in the
@@ -413,6 +448,40 @@ export class AccountHistoryQueryDto {
   @IsOptional()
   @Matches(DATE_PATTERN, { message: 'to must be a YYYY-MM-DD date' })
   to?: string;
+
+  /*
+   * ── THE WINDOW IS NO LONGER THE PAGE ──────────────────────────────────────
+   *
+   * This response used to return every deal in the window as one array, capped
+   * at 500. A 31-day window on an active account is thousands of rows, so the
+   * cap was doing real work — and what it did was TRUNCATE, silently, with the
+   * screen guessing from `length >= 500` that it had been cut.
+   *
+   * Paging replaces truncation: the client asks for the slice it is showing,
+   * and `total` says how much there is. The statistics keep describing the
+   * WHOLE window regardless of which page is on screen — see `AccountStatsDto`
+   * — so paging changes what is listed and never what is totalled.
+   */
+  @ApiPropertyOptional({
+    example: 1,
+    description: '1-based page of CLOSED trades. Defaults to 1.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'page must be a whole number' })
+  @Min(1, { message: 'page starts at 1' })
+  page?: number;
+
+  @ApiPropertyOptional({
+    example: 25,
+    description: `Rows per page, 1–${MAX_PAGE_SIZE}. Defaults to ${DEFAULT_PAGE_SIZE}.`,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'limit must be a whole number' })
+  @Min(1, { message: 'limit must be at least 1' })
+  @Max(MAX_PAGE_SIZE, { message: `limit cannot exceed ${MAX_PAGE_SIZE}` })
+  limit?: number;
 }
 
 /**

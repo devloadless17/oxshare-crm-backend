@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
@@ -21,9 +21,12 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain-errors';
+import { DEFAULT_PAGE_SIZE } from '../../common/pagination';
 import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
 import { Mt5AccountSyncService } from './mt5/mt5-account-sync.service';
 import {
+  CLOSING_ENTRIES,
+  TRADE_ACTIONS,
   dealActionLabel,
   isCancelledAction,
   isRealisedTrade,
@@ -759,8 +762,11 @@ export class TradingService {
     const account = await this.findMine(userId, accountId);
     const { from, to } = resolveWindow(query);
 
+    const page = query.page ?? 1;
+    const limit = query.limit ?? DEFAULT_PAGE_SIZE;
+
     if (!account.login) {
-      return { from, to, stats: emptyStats(), deals: [] };
+      return { from, to, stats: emptyStats(), deals: [], total: 0, page, limit };
     }
 
     /*
@@ -776,6 +782,31 @@ export class TradingService {
      * inclusive comparison is what the client asked for rather than an off-by-a-
      * day.
      */
+
+    /*
+     * ── CLOSED TRADES ONLY, DECIDED IN SQL ───────────────────────────────────
+     *
+     * `closing` used to be computed per row in Node and filtered in the BROWSER,
+     * which is affordable only while the whole window is in memory — and that is
+     * exactly what stopped being true when this started paging. A page of 25
+     * ingested deals might hold three closed trades, so filtering after the
+     * slice returns short pages and a `total` nobody can page to.
+     *
+     * `isRealisedTrade` is still the definition; this is that predicate pushed
+     * into the database, built from the same two code lists so the pair cannot
+     * drift apart silently.
+     */
+    const windowFilter = and(
+      eq(mt5Deals.login, account.login),
+      gte(mt5Deals.dealtAt, from),
+      lte(mt5Deals.dealtAt, to),
+    );
+    const closedFilter = and(
+      windowFilter,
+      inArray(mt5Deals.action, [...TRADE_ACTIONS]),
+      inArray(mt5Deals.entry, [...CLOSING_ENTRIES]),
+    );
+
     const rows = await this.db
       .select({
         ticket: mt5Deals.mt5DealId,
@@ -791,13 +822,7 @@ export class TradingService {
         dealtAt: mt5Deals.dealtAt,
       })
       .from(mt5Deals)
-      .where(
-        and(
-          eq(mt5Deals.login, account.login),
-          gte(mt5Deals.dealtAt, from),
-          lte(mt5Deals.dealtAt, to),
-        ),
-      )
+      .where(closedFilter)
       /*
        * Newest first, and the index gives that ordering for free: this filter
        * and this sort are exactly `mt5_deals_login_dealt_idx`.
@@ -811,7 +836,13 @@ export class TradingService {
        * on every client's account page. It is settled in Node instead, below.
        */
       .orderBy(desc(mt5Deals.dealtAt))
-      .limit(MOVEMENT_LIMIT + 1);
+      /*
+       * ONE PAGE, not the window. The `MOVEMENT_LIMIT + 1` that stood here was a
+       * truncation the screen had to INFER from the array's length; an OFFSET
+       * and a real `total` replace it.
+       */
+      .limit(limit)
+      .offset((page - 1) * limit);
 
     const items: AccountDealDto[] = rows
       .map((row) => ({
@@ -842,7 +873,80 @@ export class TradingService {
         (a, b) => b.dealtAt.getTime() - a.dealtAt.getTime() || Number(b.ticket) - Number(a.ticket),
       );
 
-    return { from, to, stats: computeStats(items), deals: items };
+    /*
+     * The TOTALS, over the whole window rather than over this page.
+     *
+     * This is the half of paging that is easy to get wrong: summing the returned
+     * array would make page 2 report "3 trades, best 12.40" about whichever rows
+     * happened to be on screen, and a client paging through their month would
+     * watch their net profit change under them.
+     *
+     * Every sum stays NUMERIC end to end. `SUM` over NUMERIC returns NUMERIC and
+     * reaches Node as a decimal STRING, which is what §6.1 requires of money
+     * leaving this service — the `computeStats` this replaces used decimal.js
+     * for exactly that reason, and pushing the arithmetic into Postgres keeps
+     * the property rather than trading it for floats.
+     */
+    const [totals] = await this.db
+      .select({
+        trades: sql<string>`count(*)`,
+        wins: sql<string>`count(*) filter (where ${mt5Deals.profit} > 0)`,
+        losses: sql<string>`count(*) filter (where ${mt5Deals.profit} < 0)`,
+        volume: sql<string>`coalesce(sum(${mt5Deals.volume}), 0)`,
+        netProfit: sql<string>`coalesce(sum(${mt5Deals.profit}), 0)`,
+        grossProfit: sql<string>`coalesce(sum(${mt5Deals.profit}) filter (where ${mt5Deals.profit} > 0), 0)`,
+        grossLoss: sql<string>`coalesce(sum(${mt5Deals.profit}) filter (where ${mt5Deals.profit} < 0), 0)`,
+        commission: sql<string>`coalesce(sum(${mt5Deals.commission}), 0)`,
+        swap: sql<string>`coalesce(sum(${mt5Deals.swap}), 0)`,
+        /* NULL with no trades, never '0' — the DTO's own note: '0' beside a
+           currency symbol claims there WAS a best trade and it broke even. */
+        bestTrade: sql<string | null>`max(${mt5Deals.profit})`,
+        worstTrade: sql<string | null>`min(${mt5Deals.profit})`,
+      })
+      .from(mt5Deals)
+      .where(closedFilter);
+
+    /*
+     * The DATES span EVERY deal in the window, not only the realised ones —
+     * unchanged from `computeStats`, and the reason is unchanged with it: "last
+     * activity" is answered by the last thing that happened on the account, so a
+     * client who funded an account without trading it has a real date rather
+     * than a blank. That is why this reads `windowFilter` where the totals above
+     * read `closedFilter`.
+     */
+    const [activity] = await this.db
+      .select({
+        /*
+         * TYPED AS A STRING, and converted below.
+         *
+         * Drizzle's `sql<T>` is an ASSERTION, not a conversion: it tells the
+         * compiler what to expect and the driver still hands back whatever
+         * Postgres sent. A bare `min()`/`max()` over a timestamptz arrives as a
+         * STRING — annotating it `Date` compiles happily and then fails at
+         * runtime on `.toISOString()`, which is exactly how this was caught.
+         *
+         * The column reads elsewhere in this file get real `Date`s because
+         * Drizzle maps a known column type; an aggregate expression has no
+         * column behind it, so nothing maps it.
+         */
+        firstDealAt: sql<string | null>`min(${mt5Deals.dealtAt})`,
+        lastDealAt: sql<string | null>`max(${mt5Deals.dealtAt})`,
+      })
+      .from(mt5Deals)
+      .where(windowFilter);
+
+    return {
+      from,
+      to,
+      stats: statsFromTotals(totals, activity),
+      /* `count(*)` over the CLOSED filter — the same set the page is a slice of
+         and the same set the statistics describe, so `total` can never disagree
+         with `trades`. */
+      total: Number(totals?.trades ?? 0),
+      deals: items,
+      page,
+      limit,
+    };
   }
 
   /**
@@ -1105,85 +1209,74 @@ function todayIso(): string {
 }
 
 /**
- * The statistics for one window, from the deals in it.
+ * The statistics DTO, assembled from what Postgres already computed.
  *
- * ## decimal.js for every total (§6.1)
+ * ## Why this is not `computeStats` any more
  *
- * Summed in Node rather than as a SQL aggregate, even though the rows now come
- * from our own table and `SUM()` is right there. The point is that the totals
- * and the returned list are provably the SAME rows: an aggregate is a second
- * query over a second snapshot, and the two can disagree.
+ * That function summed a decimal.js accumulator across the deals array, which
+ * was correct precisely while the array WAS the window. Paging broke that: the
+ * array is now one page, and totals derived from it would describe whichever
+ * rows the client happened to be looking at.
  *
- * `+` on two of these values is exactly the coercion the money rules exist to
- * forbid, so every running total is a `Decimal`. The window's ceiling is what
- * keeps the loop bounded.
+ * So the arithmetic moved into the query and this became a mapper. It does no
+ * maths — every figure arrives from Postgres as a NUMERIC decimal string and is
+ * passed through untouched (§6.1), which is the same guarantee the decimal.js
+ * version gave and the reason neither ever used a float.
  *
- * ## Only realised round trips count
- *
- * An opening deal carries `profit: '0'` because nothing has been realised yet.
- * Counting opens would drag every average toward zero and add one guaranteed
- * non-winning row per position. Balance operations are excluded for a blunter
- * reason: a deposit is not a winning trade.
+ * `null` totals are impossible for the sums (`coalesce` floors them at 0) and
+ * expected for `bestTrade`/`worstTrade`, where `MAX`/`MIN` over no rows is NULL
+ * — which is the answer the DTO wants there.
  */
-function computeStats(deals: AccountDealDto[]): AccountStatsDto {
-  const realised = deals.filter((deal) => deal.closing);
+/** A nullable aggregate timestamp, as the `Date` the DTO promises. */
+function toDate(value: string | null | undefined): Date | null {
+  return value ? new Date(value) : null;
+}
 
-  let volume = new Decimal(0);
-  let netProfit = new Decimal(0);
-  let grossProfit = new Decimal(0);
-  let grossLoss = new Decimal(0);
-  let commission = new Decimal(0);
-  let swap = new Decimal(0);
-  let best: Decimal | null = null;
-  let worst: Decimal | null = null;
-  let wins = 0;
-  let losses = 0;
-
-  for (const deal of realised) {
-    const profit = new Decimal(deal.profit);
-
-    volume = volume.plus(deal.volume);
-    netProfit = netProfit.plus(profit);
-    commission = commission.plus(deal.commission);
-    swap = swap.plus(deal.swap);
-
-    if (profit.isPositive() && !profit.isZero()) {
-      wins += 1;
-      grossProfit = grossProfit.plus(profit);
-    } else if (profit.isNegative() && !profit.isZero()) {
-      losses += 1;
-      grossLoss = grossLoss.plus(profit);
-    }
-    // A trade closing at exactly zero is neither — see the DTO note.
-
-    if (best === null || profit.greaterThan(best)) best = profit;
-    if (worst === null || profit.lessThan(worst)) worst = profit;
-  }
-
+function statsFromTotals(
+  totals:
+    | {
+        trades: string;
+        wins: string;
+        losses: string;
+        volume: string;
+        netProfit: string;
+        grossProfit: string;
+        grossLoss: string;
+        commission: string;
+        swap: string;
+        bestTrade: string | null;
+        worstTrade: string | null;
+      }
+    | undefined,
+  activity: { firstDealAt: string | null; lastDealAt: string | null } | undefined,
+): AccountStatsDto {
   /*
-   * The dates span EVERY deal in the window, not only the realised ones. "Last
-   * activity" is answered by the last thing that happened on the account — a
-   * deposit counts — so a client who funded an account without trading it has a
-   * real date rather than a blank.
+   * An aggregate over an empty table still returns ONE row, so `undefined` here
+   * means the query itself returned nothing — which it cannot. Guarded anyway
+   * rather than asserted, because the alternative on a money screen is a crash
+   * where an empty panel would do.
    */
-  const times = deals.map((deal) => deal.dealtAt.getTime());
+  if (!totals) return emptyStats();
 
   return {
-    trades: realised.length,
-    wins,
-    losses,
-    volume: volume.toFixed(8),
-    netProfit: netProfit.toFixed(8),
-    grossProfit: grossProfit.toFixed(8),
-    grossLoss: grossLoss.toFixed(8),
-    commission: commission.toFixed(8),
-    swap: swap.toFixed(8),
-    // Null rather than '0' with no trades: '0' beside a currency symbol claims
-    // there WAS a best trade and it broke even.
-    bestTrade: best === null ? null : best.toFixed(8),
-    worstTrade: worst === null ? null : worst.toFixed(8),
-    firstDealAt: times.length ? new Date(Math.min(...times)) : null,
-    lastDealAt: times.length ? new Date(Math.max(...times)) : null,
+    /* COUNTS are the one place a number is right: `count(*)` is a bigint, it
+       arrives as a string, and it is a row count rather than an amount. */
+    trades: Number(totals.trades),
+    wins: Number(totals.wins),
+    losses: Number(totals.losses),
+    volume: totals.volume,
+    netProfit: totals.netProfit,
+    grossProfit: totals.grossProfit,
+    grossLoss: totals.grossLoss,
+    commission: totals.commission,
+    swap: totals.swap,
+    bestTrade: totals.bestTrade,
+    worstTrade: totals.worstTrade,
+    /* Back to a `Date`, which is what the DTO declares and what every other
+       timestamp leaving this service is. See the aggregate's own note on why
+       these arrive as strings in the first place. */
+    firstDealAt: toDate(activity?.firstDealAt),
+    lastDealAt: toDate(activity?.lastDealAt),
   };
 }
 

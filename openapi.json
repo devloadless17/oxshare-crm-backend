@@ -4139,6 +4139,26 @@
               "example": "2026-08-31",
               "type": "string"
             }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "1-based page of CLOSED trades. Defaults to 1.",
+            "schema": {
+              "example": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "description": "Rows per page, 1–100. Defaults to 25.",
+            "schema": {
+              "example": 25,
+              "type": "number"
+            }
           }
         ],
         "responses": {
@@ -4187,6 +4207,26 @@
             "schema": {
               "example": "2026-08-31",
               "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "1-based page of CLOSED trades. Defaults to 1.",
+            "schema": {
+              "example": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "description": "Rows per page, 1–100. Defaults to 25.",
+            "schema": {
+              "example": 25,
+              "type": "number"
             }
           }
         ],
@@ -13882,18 +13922,36 @@
             "$ref": "#/components/schemas/AccountStatsDto"
           },
           "deals": {
-            "description": "Newest first.",
+            "description": "One PAGE of closed trades, newest first.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AccountDealDto"
             }
+          },
+          "total": {
+            "type": "number",
+            "example": 128,
+            "description": "CLOSED trades in the whole window — the count `deals` is a page of, and the same set the statistics describe. Not the number of ingested deals: opening legs and balance operations are excluded here exactly as they are from `stats`."
+          },
+          "page": {
+            "type": "number",
+            "example": 1,
+            "description": "The 1-based page this response is."
+          },
+          "limit": {
+            "type": "number",
+            "example": 25,
+            "description": "Rows per page this response was built with."
           }
         },
         "required": [
           "from",
           "to",
           "stats",
-          "deals"
+          "deals",
+          "total",
+          "page",
+          "limit"
         ]
       },
       "BalanceMovementDto": {
