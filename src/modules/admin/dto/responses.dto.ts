@@ -392,13 +392,18 @@ export class KycAttemptDto {
   @ApiPropertyOptional()
   reviewedBy?: string;
   /**
-   * The reviewer's NAME, resolved from `reviewedBy`.
+   * The NAME of the administrator who decided this attempt, resolved from
+   * `reviewedBy`.
    *
-   * "Who has this" is the only question a claim answers for a colleague, and a
-   * uuid answers it to nobody — so the queue showed a submission as taken with
-   * no way to find out by whom, and hid the Claim button from everyone else.
-   * Null when unclaimed, and null when the administrator who held it has since
-   * been deleted: an absence the screen states rather than filling with an id.
+   * ⚠️ This was declared and never filled. The comment it carried was copied
+   * from `KycSubmissionDto` and described the queue's Claim button, and the
+   * history route returned archived rows raw — so the contract promised a field
+   * no response ever contained. Reported from production as "I can see who
+   * approved, not who rejected": a rejection has usually been archived into an
+   * attempt by the time anybody reads it, so this panel is where it is read.
+   *
+   * Null when the administrator has since been deleted — an absence the screen
+   * states rather than filling with an id.
    */
   @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   @ApiPropertyOptional({ type: String, nullable: true })

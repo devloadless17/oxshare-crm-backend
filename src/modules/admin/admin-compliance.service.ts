@@ -199,7 +199,25 @@ export class AdminComplianceService {
      * audit write is the wrong one for a screen opened all day.
      */
     this.audit.record(actor.id, 'kyc.history.view', 'kyc_submission', userId);
-    return attempts;
+    /*
+     * WHO DECIDED EACH PAST ATTEMPT — the name, not the id.
+     *
+     * `KycAttemptDto` has always declared `reviewedByName`, and this returned the
+     * archived rows raw, so the field the contract promised was absent from every
+     * response. The id was archived correctly (`archiveAttempt` copies
+     * `reviewedBy`); only the lookup was missing.
+     *
+     * Reported from production as "I can see who approved, not who rejected".
+     * The current submission's card and the queue both name the reviewer — but a
+     * rejection is almost always a PAST attempt by the time anyone reads it: the
+     * client corrects and resubmits, which archives the rejection. So the decision
+     * people most need attributed was rendered here, anonymously.
+     *
+     * Masking is untouched by this: the global `FieldMaskInterceptor` masks by the
+     * route's declared shape, and `reviewedByName` is an administrator attribute
+     * (`@NotClientField`), never a client's.
+     */
+    return this.withReviewerNames(attempts);
   }
   /*
    * The three decisions below assert on the ACTOR, not only in the guard —
