@@ -1,5 +1,7 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { lockoutMessage } from '../../common/security/lockout-message';
+import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
+import { normaliseReferralCode } from '../../common/referral-code';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
@@ -402,17 +404,49 @@ export class AuthService {
    * should not be defeated by their keyboard.
    */
   private async resolveReferral(code: string | undefined): Promise<string | undefined> {
-    const trimmed = code?.trim().toUpperCase();
-    if (!trimmed) return undefined;
+    /*
+     * NORMALISED, not merely trimmed — see `common/referral-code.ts`.
+     *
+     * This read `code?.trim().toUpperCase()`, which handles a stray space and
+     * nothing else. A referral link is pasted, forwarded, wrapped by a mail
+     * client and retyped from a screenshot, so what arrives is routinely the
+     * code plus debris: a backslash typed into the address bar, a slash from a
+     * copied URL, quotes from a chat app. Any one of them made the code
+     * unknown, and an unknown code did not fail the registration — it
+     * registered the client with NO partner at all.
+     */
+    const normalised = normaliseReferralCode(code);
+    if (!normalised) return undefined;
 
     // Absent only in hand-constructed test instances — see the constructor.
     if (!this.ib) return undefined;
 
-    const account = await this.ib.findAccountByReferralCode(trimmed);
+    const account = await this.ib.findAccountByReferralCode(normalised);
     if (!account) {
-      // Logged, not thrown. An operator seeing a stream of these has a real
-      // signal that a published link is wrong.
-      this.logger.warn(`Registration used an unknown referral code: ${trimmed}`);
+      /*
+       * NOT thrown: refusing the signup would be worse. A partner whose link
+       * carries a typo would block every client who follows it, and the person
+       * punished is the one who did nothing wrong.
+       *
+       * But no longer only logged either. The introduction is lost PERMANENTLY
+       * here — `referred_by_ib_user_id` stays null, the partner is never
+       * credited, and nothing downstream notices, because an unattributed
+       * client is indistinguishable from one who walked in off the street. A
+       * log line is not a signal; it is something nobody reads until they
+       * already know to look.
+       *
+       * The repair exists and is manual (`PATCH /admin/clients/:id/referrer`),
+       * which is precisely why the desk has to be told, and told while the
+       * client is still identifiable as having arrived through a partner link.
+       */
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.REFERRAL_CODE_UNRESOLVED,
+        'notify',
+        'A registration used a referral code that resolves to no partner — the introduction ' +
+          'was not attributed and must be repaired by hand',
+        { received: code ?? '', normalised },
+      );
       return undefined;
     }
     return account.userId;

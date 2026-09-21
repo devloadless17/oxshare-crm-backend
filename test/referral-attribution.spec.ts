@@ -161,6 +161,60 @@ describe('a code that resolves', () => {
     expect(client?.referredByIbUserId).toBe(partnerId);
   });
 
+  it('survives the DEBRIS a referral link picks up on its way to a client', async () => {
+    /*
+     * THE DEFECT THIS EXISTS FOR, reported from production.
+     *
+     * A client followed a partner's link and typed a backslash on the end of
+     * the address by mistake. The code arrived as `ABCD2345\`, `trim()` had
+     * nothing to trim, the lookup missed, and the registration SUCCEEDED with
+     * no partner attached. `t11@gmail.com` carries no referred_by_ib_user_id
+     * to this day; `t12@gmail.com`, through the same link intact, is correct.
+     *
+     * Nobody found out from the system. An unattributed client looks exactly
+     * like one who arrived on their own, so the partner simply never gets paid
+     * for an introduction they made.
+     *
+     * Each of these is a real way a link reaches a person: retyped from the
+     * address bar, copied with its trailing slash, quoted by a chat client,
+     * wrapped in a zero-width character by an email client.
+     */
+    const partnerId = await makePartner('debris@test.local', 'ABCD2345');
+    /*
+     * A code OUTSIDE the mint alphabet, because stored codes are not restricted
+     * to it — `E2EPARTL1` and `E2EPARTL2` both hold an `L` in this system
+     * today. The first version of the normaliser stripped by the mint alphabet
+     * and would have broken every one of them; this pins the weaker, true rule.
+     */
+    const legacyPartnerId = await makePartner('legacy@test.local', 'PROTOL01');
+
+    const mangled = [
+      'ABCD2345\\',
+      'ABCD2345/',
+      '"ABCD2345"',
+      ' abcd2345 ',
+      'ABCD-2345',
+      'ABCD2345\u200b',
+    ];
+
+    for (const [i, code] of mangled.entries()) {
+      const clientId = await registerClient(`debris-${i}@test.local`, code);
+      const client = await users.findById(clientId);
+      expect(
+        client?.referredByIbUserId,
+        `\`${code}\` lost the attribution — the partner is not credited and nothing says so`,
+      ).toBe(partnerId);
+    }
+
+    // The legacy-shaped code survives the same debris, letters and all.
+    const legacyClientId = await registerClient('legacy-client@test.local', ' protol01/ ');
+    const legacyClient = await users.findById(legacyClientId);
+    expect(
+      legacyClient?.referredByIbUserId,
+      'a stored code outside the MINT alphabet was mangled by the normaliser',
+    ).toBe(legacyPartnerId);
+  });
+
   it('attributes to a SUSPENDED partner', async () => {
     const partnerId = await makePartner('suspended@test.local', 'SUSP2345', false);
 

@@ -82,6 +82,14 @@ export const ALERT_KINDS = {
    * find out first are clients stuck part-way through onboarding.
    */
   STORAGE_UNAVAILABLE: 'storage.unavailable',
+  /**
+   * A registration arrived with a referral code that resolved to no partner.
+   *
+   * The client is registered either way — refusing a signup over a mangled link
+   * is worse than losing the attribution — so without this the introduction is
+   * lost silently and permanently, and the only trace was a log line.
+   */
+  REFERRAL_CODE_UNRESOLVED: 'ib.referral_code_unresolved',
   /** An account hit the R-3.5 failure limit and was locked — someone is guessing. */
   LOGIN_LOCKOUT: 'auth.login_lockout',
   /** An operator-controlled security control is switched OFF. */
@@ -288,6 +296,10 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.RECONCILIATION_UNAVAILABLE]: {
     severity: 'notify',
     rule: 'Two consecutive failures. The ledger is not wrong — it is UNCHECKED, which is a different and quieter problem.',
+  },
+  [ALERT_KINDS.REFERRAL_CODE_UNRESOLVED]: {
+    severity: 'notify',
+    rule: 'Any occurrence is worth reading; a REPEAT of the same code is the one to act on, because it means a link is published somewhere whose code resolves to nobody and every client arriving through it registers unattributed. NOTIFY rather than page — the client is registered and no money has moved wrongly — but attribution is permanent per client and the repair is manual (PATCH /admin/clients/:id/referrer), so the longer it runs the more rows a human fixes by hand. The payload carries the code AS RECEIVED and the normalised form, which usually separates a corrupted link from a partner whose account is gone.',
   },
   [ALERT_KINDS.STORAGE_UNAVAILABLE]: {
     severity: 'notify',

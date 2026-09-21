@@ -29,6 +29,7 @@ import { WalletProvisioningService } from '../wallet/wallet-provisioning.service
 import type { Actor } from '../../common/security/actor';
 import type { ClientScope } from '../../common/security/client-scope';
 import { maskedFieldsFor, type FieldMask } from '../../common/security/field-mask';
+import { REFERRAL_CODE_ALPHABET, REFERRAL_CODE_LENGTH } from '../../common/referral-code';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import type { IbIneligibleCode } from './dto/ib-application.dto';
 
@@ -53,16 +54,14 @@ const REQUIRED_VERIFICATION_LEVEL = 1;
  */
 const MAX_STORED_LEVEL = 10;
 
-/**
- * Referral codes are drawn from an unambiguous alphabet.
- *
- * No 0/O, no 1/I/L. These get read off a screen, dictated over a phone and
- * typed into a registration form by somebody who is not the partner — a code
- * that is one glyph away from another person's is an attribution that silently
- * pays the wrong partner, and attribution is permanent per client.
+/*
+ * The alphabet moved to `common/referral-code.ts`, because RECOGNISING a code
+ * now depends on it as well as minting one. Two copies would be two answers to
+ * "which characters are legal", and the reader that strips everything else
+ * would drift from the generator that produces them.
  */
-const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-const CODE_LENGTH = 8;
+const CODE_ALPHABET = REFERRAL_CODE_ALPHABET;
+const CODE_LENGTH = REFERRAL_CODE_LENGTH;
 
 /*
  * `CHAIN_FULL_REASON` IS BACK, in the catalogue-driven form.
