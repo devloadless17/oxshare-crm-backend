@@ -558,9 +558,11 @@ export class IbStore {
    *
    * ## The scope predicate is on the PARTNER
    *
-   * An admin restricted to a set of clients sees the accruals of the partners
-   * they can see. Filtering on the client instead would leak a partner's total
-   * earnings to somebody entitled to only part of their book.
+   * An admin restricted to a set of clients sees the accruals whose BENEFICIARY
+   * is in their territory — the partner on a commission, the client on a
+   * rebate. Scoping every row on the partner would do both wrongs at once: show
+   * a partner's desk the rebates that are their client's own money, and hide a
+   * client's rebates from the desk that actually holds that client.
    */
   async findAccrualsPage(filter: {
     page: number;
@@ -571,13 +573,17 @@ export class IbStore {
     /**
      * Free text over the PARTNER's email and name — never the client's.
      *
-     * The row names two people and only one of them is safely searchable. Rows
-     * are scoped on `ib_user_id`, and an out-of-scope client's identity is
-     * MASKED in the mapper below; a filter that matched on the client's email
-     * would answer "does a client with this address exist in some other
-     * territory" from the row count alone, which is the existence probe the
-     * masking is there to prevent. So the search reads the partner, which is
-     * the column the scope is already decided on.
+     * The row names two people and only one of them is safely searchable. An
+     * out-of-scope person's identity is MASKED in the mapper below, and a
+     * filter that matched on it would answer "does someone with this address
+     * exist in another territory" from the row count alone — the existence
+     * probe the masking is there to prevent.
+     *
+     * It stays on the PARTNER even now that scope follows the beneficiary,
+     * because on a commission — the rows an operator searches this list for —
+     * the partner IS the beneficiary and is therefore never masked. On a rebate
+     * the partner is attribution rather than entitlement, so a match there
+     * reveals nothing about who was paid.
      */
     q?: string;
     status?: string;
@@ -587,12 +593,12 @@ export class IbStore {
     order?: SortOrder;
   }) {
     /*
-     * Rows are scoped on the PARTNER (`ib_user_id`): a scoped admin sees the
-     * accruals of a partner in their territory. But each accrual ALSO names the
-     * CLIENT whose deposit generated it, and that client may be OUTSIDE the
-     * reader's territory — so a scoped desk reviewing an in-scope partner's
+     * Each accrual names TWO people, and the reader may hold territory over
+     * only one of them. Whichever of the two is out of scope must not have
+     * their identity rendered — a scoped desk reviewing an in-scope partner's
      * commissions was shown out-of-scope clients' names and emails (#4, the
-     * 13 Aug scoped walk).
+     * 13 Aug scoped walk), and the mirror now applies to a rebate whose
+     * beneficiary is in scope but whose attributed partner is not.
      *
      * The fix is the field-mask philosophy (RBAC-03): keep the row and its
      * AMOUNTS — the partner's earning is legitimately theirs to review — but
@@ -602,7 +608,34 @@ export class IbStore {
      * applied in the mapper below, so it cannot be forgotten by a later select.
      */
     const scope = filter.scope ?? UNRESTRICTED;
-    const visible = clientScopePredicate(scope, ibAccruals.ibUserId);
+
+    /*
+     * ── THE ROW IS SCOPED ON ITS BENEFICIARY, AND THAT DEPENDS ON `kind` ─────
+     *
+     * ⚠️ This scoped every row on `ib_user_id`, and on a REBATE that is the
+     * wrong person. `confirmPending` states the rule this query has to follow:
+     * "`ibUserId` on a rebate row is the partner whose RUNG produced it —
+     * attribution, not entitlement", and the money goes to `clientUserId`.
+     *
+     * Scoping the wrong column inverted the answer in both directions at once.
+     * An admin holding the PARTNER's tag saw rebates that are the client's
+     * money and the client's business — a client they have no territory over.
+     * An admin holding the CLIENT's tag saw none of their own client's rebates,
+     * because the row was filed under a partner they cannot see. Both halves
+     * were live: every rebate row in this database has `ib_user_id` different
+     * from `client_user_id`.
+     *
+     * A commission is unchanged — the partner earns it, so `ib_user_id` IS the
+     * beneficiary and the territory question is about them.
+     *
+     * Expressed as ONE predicate over a CASE rather than two branches, so the
+     * `kind` filter and the scope cannot disagree: an unfiltered list mixes
+     * both kinds in one page, and each row has to be judged by its own
+     * beneficiary rather than by whichever branch the request happened to take.
+     */
+    const beneficiary = sql`CASE WHEN ${ibAccruals.kind} = 'rebate'
+        THEN ${ibAccruals.clientUserId} ELSE ${ibAccruals.ibUserId} END`;
+    const visible = clientScopePredicate(scope, beneficiary);
 
     /*
      * Aliased, because both joins land on `users`. Without distinct aliases the
@@ -649,6 +682,20 @@ export class IbStore {
     const clientScope = clientScopePredicate(scope, client.id);
     const clientInScopeExpr = clientScope ? sql<boolean>`(${clientScope})` : sql<boolean>`true`;
 
+    /*
+     * THE SAME QUESTION ABOUT THE PARTNER, and it became answerable the moment
+     * scope started following the beneficiary.
+     *
+     * Before, a row was only ever visible through its partner, so the partner
+     * was in scope by construction and masking them was meaningless. A rebate
+     * is now visible through its CLIENT — which is correct, it is the client's
+     * money — and the partner on that row is attribution: someone whose
+     * territory this reader may not hold. Rendering their name and email would
+     * reintroduce the 13 Aug finding pointing the other way.
+     */
+    const partnerScope = clientScopePredicate(scope, partner.id);
+    const partnerInScopeExpr = partnerScope ? sql<boolean>`(${partnerScope})` : sql<boolean>`true`;
+
     const rawRows = await this.db
       .select({
         accrual: ibAccruals,
@@ -665,6 +712,7 @@ export class IbStore {
          */
         termsName: sql<string | null>`COALESCE(${ibLevels.name}, ${ibPrograms.name})`,
         clientInScope: clientInScopeExpr,
+        partnerInScope: partnerInScopeExpr,
         partner: {
           id: partner.id,
           email: partner.email,
@@ -699,15 +747,38 @@ export class IbStore {
      * rather than a blank that reads as missing data. The accrual amounts are
      * untouched: the partner earned them and may review them.
      */
-    const rows = rawRows.map(({ clientInScope, ...row }) =>
-      clientInScope
-        ? { ...row, clientMasked: false }
-        : {
-            ...row,
-            client: { id: row.client.id, email: null, firstName: null, lastName: null },
-            clientMasked: true,
-          },
-    );
+    const rows = rawRows.map(({ clientInScope, partnerInScope, ...row }) => {
+      /*
+       * EITHER PERSON can be the out-of-scope one, and the masks are applied
+       * independently. A commission is visible through its partner, so the
+       * client is the one that may need masking; a rebate is visible through
+       * its client, so the partner is. Masking only whichever the row was
+       * matched ON would leave the other side exposed on the other kind.
+       *
+       * The AMOUNTS are untouched either way — the row is visible because its
+       * beneficiary is in territory, and what they were paid is the reader's
+       * business. It is the other party's identity that is not.
+       */
+      const hide = (person: {
+        id: string;
+        email: string;
+        firstName: string;
+        lastName: string;
+      }) => ({
+        id: person.id,
+        email: null as string | null,
+        firstName: null as string | null,
+        lastName: null as string | null,
+      });
+
+      return {
+        ...row,
+        client: clientInScope ? row.client : hide(row.client),
+        partner: partnerInScope ? row.partner : hide(row.partner),
+        clientMasked: !clientInScope,
+        partnerMasked: !partnerInScope,
+      };
+    });
 
     /*
      * The partner join is REQUIRED here, not decorative: `where` can now name
@@ -767,7 +838,32 @@ export class IbStore {
         amount: sql<string>`coalesce(sum(${ibAccruals.amount}), 0)::text`,
       })
       .from(ibAccruals)
-      .where(inArray(ibAccruals.ibUserId, ibUserIds))
+      .where(
+        and(
+          inArray(ibAccruals.ibUserId, ibUserIds),
+          /*
+           * ── COMMISSION ONLY. A REBATE IS NOT THIS PARTNER'S EARNING ───────
+           *
+           * ⚠️ This summed EVERY accrual carrying the partner's id, and a
+           * rebate row carries it too — `ibUserId` there is the partner whose
+           * rung PRICED the rebate, while the money is paid to
+           * `clientUserId`. `confirmPending` says so in as many words:
+           * "attribution, not entitlement".
+           *
+           * So a partner's lifetime earnings were inflated by money that went
+           * to their clients. Measured on this database: one partner earned
+           * 20.79 and the figure read 41.58, because their client's rebate
+           * happened to equal their commission. It is not a rounding
+           * discrepancy — it is a different person's money added in.
+           *
+           * The wallet was always right; only this display total was wrong,
+           * which is the worst shape for it: an operator reconciling the
+           * partner's commission wallet against the number on screen finds a
+           * gap and no explanation for it.
+           */
+          eq(ibAccruals.kind, 'commission'),
+        ),
+      )
       .groupBy(ibAccruals.ibUserId, ibAccruals.status);
 
     const map = new Map<string, { confirmed: string; pending: string }>();
