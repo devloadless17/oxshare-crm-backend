@@ -120,6 +120,17 @@ export interface DealAccrualRun {
   /** Deals correctly worth nothing: not a trade, no revenue, nobody referred. */
   nothingOwed: number;
   /**
+   * Closing deals declined because the account trades PRACTICE money.
+   *
+   * Marked done rather than left queued — a demo trade is worth nothing now and
+   * always will be, so leaving it NULL would re-examine it forever.
+   *
+   * Its own tally rather than part of `nothingOwed`: this number climbing while
+   * live accruals stay flat is how a bridge mislabelling live accounts as demo
+   * becomes visible, and folding it into "owed nobody" would hide exactly that.
+   */
+  demo: number;
+  /**
    * Open legs CONSUMED by the closes in this batch.
    *
    * Not "deals waiting on their close" — those are filtered out in SQL and the
@@ -330,6 +341,7 @@ export class DealCommissionService {
         accrued: 0,
         accrualRows: 0,
         nothingOwed: 0,
+        demo: 0,
         legsConsumed: 0,
         orphaned: await this.stuckCounts().then((c) => c.orphaned),
         deferred: 0,
@@ -362,6 +374,16 @@ export class DealCommissionService {
          * accrue a EUR account's commission as USD, at par.
          */
         currency: tradingAccounts.currency,
+        /*
+         * PRACTICE MONEY OR REAL MONEY. The deal carries no such flag — the
+         * account is the only thing that knows, which is why this is selected
+         * rather than inferred from the deal.
+         *
+         * Nullable here only because the join above is LEFT: an unlinked login
+         * has no account and therefore no environment. That case is decided
+         * before this column is ever read.
+         */
+        environment: tradingAccounts.environment,
         /*
          * What the DESK says this account's product is sold on, per standard
          * lot — the spread half of `brokerRevenueFor`.
@@ -481,6 +503,7 @@ export class DealCommissionService {
       accrued: 0,
       accrualRows: 0,
       nothingOwed: 0,
+      demo: 0,
       legsConsumed: 0,
       orphaned: 0,
       deferred: 0,
@@ -538,6 +561,62 @@ export class DealCommissionService {
        * and this deal must accrue when it is — see the column's own note.
        */
       if (!deal.userId || !deal.currency) continue;
+
+      /*
+       * ── A DEMO TRADE PAYS NOBODY ─────────────────────────────────────────
+       *
+       * ⚠️ THIS WAS A LIVE BUG AND IT PAID REAL MONEY FOR PRACTICE TRADES.
+       *
+       * Nothing in this pipeline had ever read `trading_accounts.environment`.
+       * A demo account trades practice money against a demo product, and every
+       * closing deal it produced was queued, priced and accrued exactly like a
+       * live one — so a partner above that client earned commission, the client
+       * earned a rebate, and `confirmPending` credited both into REAL wallets
+       * as withdrawable balance. The house received nothing on any of it,
+       * because there was nothing to receive: no client funded the account.
+       *
+       * It is a demo account's whole PURPOSE to be traded freely, so the
+       * exposure is unbounded and self-serve — a client with an introducer can
+       * open a demo account, trade it all day and mint commission out of
+       * nothing. Worse, the accrual looked completely ordinary: correct chain,
+       * correct arithmetic, a `nothingOwed`/`accrued` tally that read healthy.
+       *
+       * Every OTHER money path in this system already refuses demo, with this
+       * same `!== 'live'` test: `TransfersService` on a wallet→account
+       * transfer, `TransactionsService` on a deposit that declares a
+       * destination, `AdminMoneyService` on a manual credit or debit. Commission
+       * was the one path that never asked, and it is the one where the money is
+       * created rather than moved.
+       *
+       * `!== 'live'` rather than `=== 'demo'`, matching those three: the enum
+       * may grow, and a value nobody has considered yet must not default to
+       * paying out.
+       *
+       * AFTER the orphan guard above, and that order is load-bearing. The join
+       * onto `trading_accounts` is a LEFT one, so an unlinked login arrives
+       * here with a NULL environment — which `!== 'live'` is perfectly happy to
+       * treat as demo. Marking that done would discard a real trade's
+       * commission permanently over an account somebody is about to link, which
+       * is the exact failure the orphan column's own note warns about. Past
+       * that guard, `environment` is non-null by construction.
+       *
+       * MARKED DONE rather than left queued, exactly like `predating` above. A
+       * demo deal is not a deal that cannot be priced yet — it is one that is
+       * correctly worth nothing and always will be. Leaving it NULL would
+       * re-examine it on every run forever and build a backlog nobody intends
+       * to pay, which is the failure this loop's own notes keep returning to.
+       *
+       * Counted in its own tally and not folded into `nothingOwed`, because
+       * "practice trades we declined to pay" and "real trades that happened to
+       * owe nobody" answer different questions, and an operator whose demo
+       * count climbs while live accruals sit flat is looking at a bridge
+       * mislabelling live accounts as demo.
+       */
+      if (deal.environment !== 'live') {
+        await this.markProcessed([deal.id]);
+        run.demo += 1;
+        continue;
+      }
 
       /*
        * ── COMMISSION IS EARNED ON A CLOSED POSITION, NEVER ON AN OPEN ONE ──

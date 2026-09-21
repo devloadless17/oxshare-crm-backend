@@ -133,6 +133,46 @@ export class PositionsService {
     if (!row) throw new NotFoundError('No open position with that id.');
 
     /*
+     * ── A DEMO POSITION PAYS NOBODY ──────────────────────────────────────
+     *
+     * The same hole the deal feed carried, closed in the same breath and for
+     * the same reason: a demo account trades PRACTICE money, so the house earns
+     * nothing on it and there is no revenue to share. Accruing here would mint
+     * a partner commission and a client rebate — credited into real wallets as
+     * withdrawable balance — out of a trade that moved no money at all.
+     *
+     * This path is DORMANT today (`LIVE_REVENUE_FEED` is `deal`, so the accrual
+     * below refuses), and fixing it anyway is the point. The day somebody flips
+     * that constant, a guard missing here is the live bug returning through the
+     * other door — and it would arrive with the feed migration, when attention
+     * is on the id space rather than on which accounts are allowed to pay.
+     * That is precisely the trap the basis note below this one warns about.
+     *
+     * BEFORE the pricing work rather than after it: a demo trade must not be
+     * able to fail a close by being unpriceable. `revenue.ok` throws on an
+     * account linked to no product, and refusing to close a practice position
+     * over a product link nobody needs would be a worse bug than the one this
+     * prevents.
+     *
+     * `!== 'live'`, matching `TransfersService`, `TransactionsService` and
+     * `AdminMoneyService`: the enum may grow, and a value nobody has considered
+     * yet must not default to paying out.
+     */
+    const [account] = await this.db
+      .select({ environment: tradingAccounts.environment })
+      .from(tradingAccounts)
+      .where(eq(tradingAccounts.id, row.tradingAccountId))
+      .limit(1);
+
+    if (account && account.environment !== 'live') {
+      this.logger.log(
+        `Position ${row.ticket} closed on a ${account.environment} account: no commission accrued, ` +
+          `because practice money earns the house nothing to share.`,
+      );
+      return row;
+    }
+
+    /*
      * ── The basis applies HERE TOO, and that is not decoration ────────────
      *
      * This path is dormant: `LIVE_REVENUE_FEED` is `deal`, so the accrual below

@@ -451,6 +451,7 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
       accrued: 0,
       accrualRows: 0,
       nothingOwed: 0,
+      demo: 0,
       legsConsumed: 0,
       orphaned: 0,
       deferred: 0,
@@ -466,6 +467,7 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
       total.accrued += run.accrued;
       total.accrualRows += run.accrualRows;
       total.nothingOwed += run.nothingOwed;
+      total.demo += run.demo;
       total.legsConsumed += run.legsConsumed;
       total.failed += run.failed;
       total.predating += run.predating;

@@ -46,6 +46,9 @@ const LOGIN = '5000001';
 const UNREFERRED_LOGIN = '5000002';
 /** Ingested, never linked to a trading account. */
 const ORPHAN_LOGIN = '5009999';
+/* The referred client's DEMO account. Same client, same partner, practice money.
+   Past the block-scoped logins below, which run to 5000006. */
+const DEMO_LOGIN = '5000007';
 
 async function makeUser(email: string): Promise<string> {
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
@@ -221,6 +224,19 @@ beforeAll(async () => {
     VALUES (${clientId}, ${LOGIN}, 'USD'), (${unreferredId}, ${UNREFERRED_LOGIN}, 'USD')
   `);
 
+  /*
+   * A DEMO account belonging to the SAME referred client, stated explicitly
+   * rather than left to the column default.
+   *
+   * Every other fixture here omits `environment` and relies on it defaulting to
+   * 'live', which is what makes the demo case invisible unless a row asks for
+   * it by name.
+   */
+  await ctx.db.execute(sql`
+    INSERT INTO trading_accounts (user_id, login, currency, environment)
+    VALUES (${clientId}, ${DEMO_LOGIN}, 'USD', 'demo')
+  `);
+
   commissions = new CommissionService(
     ctx.db,
     new WalletService(ctx.db),
@@ -279,6 +295,53 @@ describe('an ingested deal pays the partner behind the client', () => {
     // 30% of the 10.00 the broker kept. Not of the client's volume or profit.
     expect(accrual.amount).toBe('3.00000000');
     expect(accrual.base_amount).toBe('10.00000000');
+  });
+
+  /*
+   * ── PRACTICE MONEY PAYS NOBODY ────────────────────────────────────────────
+   *
+   * This was a live bug: nothing in the pipeline read
+   * `trading_accounts.environment`, so a demo account's closing deals accrued
+   * commission and rebate into REAL wallets. The house earns nothing on a demo
+   * trade, so every cent of it was minted out of nothing — and a demo account
+   * exists to be traded freely, which makes the exposure self-serve and
+   * unbounded.
+   *
+   * The account below belongs to the SAME client whose live deals pay the same
+   * partner in the case above, so nothing about the chain explains the
+   * difference. Only the environment does.
+   */
+  it('accrues NOTHING on a demo account, and marks the deal done', async () => {
+    const id = await ingest({
+      ticket: '90299',
+      login: DEMO_LOGIN,
+      // Identical to the paying case above — the money is not what differs.
+      commission: '-10.00000000',
+      swap: '0.00000000',
+    });
+
+    const run = await deals.accruePending();
+
+    expect(await accrualsFor(id)).toHaveLength(0);
+    expect(run.accrued).toBe(0);
+    expect(run.accrualRows).toBe(0);
+    /*
+     * Its OWN tally, not `nothingOwed`. "We declined to pay a practice trade"
+     * and "a real trade owed nobody" are different facts, and an operator
+     * watching this number climb while live accruals sit flat is looking at a
+     * bridge mislabelling live accounts as demo.
+     */
+    expect(run.demo).toBe(1);
+    expect(run.nothingOwed).toBe(0);
+
+    /*
+     * MARKED DONE, not left queued. A demo deal is worth nothing now and always
+     * will be, so leaving it unprocessed would re-examine it on every run
+     * forever and build a backlog nobody intends to pay — and, being oldest
+     * first, would eventually starve the payable deals behind it.
+     */
+    const rerun = await deals.accruePending();
+    expect(rerun.examined).toBe(0);
   });
 
   /*

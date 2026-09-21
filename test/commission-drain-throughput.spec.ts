@@ -39,6 +39,7 @@ function accrualRun(overrides: Partial<DealAccrualRun> = {}): DealAccrualRun {
     accrued: 0,
     accrualRows: 0,
     nothingOwed: 0,
+    demo: 0,
     legsConsumed: 0,
     orphaned: 0,
     deferred: 0,
