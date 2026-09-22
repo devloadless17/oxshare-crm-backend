@@ -52,22 +52,48 @@ const UUID_SHAPE = sql`'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
  * The trail is scoped on THIS expression, not on `subjectId` alone, because a
  * row names its client in one of three places:
  *   - the SUBJECT, for `CLIENT_SUBJECT_TYPES` (uuid-shape-guarded);
- *   - `details.clientId`, for `trading_account` rows (the subject is the MT5
- *     account uuid, which is not a client id);
- *   - `details.userId`, for `transaction` and `wallet` rows (the subject is the
- *     transaction / wallet uuid).
+ *   - `details.clientId` OR `details.userId`, for `trading_account` rows — the
+ *     subject is the MT5 account uuid, and the three writers of that type do
+ *     not agree on which key they use;
+ *   - `details.userId`, for `transaction`, `wallet`, `ib_application` and
+ *     `transfer` rows (the subject is the transaction / wallet / application /
+ *     transfer uuid).
  * Every branch guards the uuid shape, so a malformed value yields NULL and the
  * row FAILS CLOSED (hidden from a scoped reader) rather than aborting the query
  * — the recoverable way to be wrong about the record that must not leak.
  */
 function auditRowClientId(): SQL {
+  /*
+   * ── WHICH ROWS NAME A CLIENT, AND THE TWO WAYS THIS WAS WRONG ───────────
+   *
+   * A type missing from this expression resolves to NULL, and the scope filter
+   * KEEPS a NULL row for everyone — so an omission here is a leak, not a
+   * hidden row. Both of the following were live, and both were measured on the
+   * development database before this was changed.
+   *
+   * 1. `ib_application` and `transfer` name a client in `details.userId` and
+   *    were not listed at all: 7 `ib.reject` rows carrying a client id and the
+   *    reviewer's free-text reason, and 1 `transfer.abandon` row carrying an
+   *    amount, currency and direction, all shown to desks holding no territory
+   *    over those clients. This is precisely the failure the file note above
+   *    warns about — "adding a type here without teaching that function is how
+   *    the D-54 fix leaked money-audit rows".
+   *
+   * 2. THREE writers disagree about the key on `trading_account`.
+   *    `trading.account_create` writes `clientId`; `trading.deposit` and
+   *    `trading.withdraw` write `userId`. Only the first was read, so every
+   *    hand-funding and hand-debiting of a trading account leaked the same way.
+   *    COALESCE reads both, which closes it without editing three writers in
+   *    two modules AND without stranding the rows already written under
+   *    whichever key their writer happened to choose.
+   */
   return sql`(CASE
     WHEN ${auditLog.subjectType} IN ('user', 'kyc_submission', 'ib_account')
          AND ${auditLog.subjectId} ~* ${UUID_SHAPE} THEN ${auditLog.subjectId}::uuid
     WHEN ${auditLog.subjectType} = 'trading_account'
-         AND ${auditLog.details}->>'clientId' ~* ${UUID_SHAPE}
-         THEN (${auditLog.details}->>'clientId')::uuid
-    WHEN ${auditLog.subjectType} IN ('transaction', 'wallet')
+         AND COALESCE(${auditLog.details}->>'clientId', ${auditLog.details}->>'userId') ~* ${UUID_SHAPE}
+         THEN COALESCE(${auditLog.details}->>'clientId', ${auditLog.details}->>'userId')::uuid
+    WHEN ${auditLog.subjectType} IN ('transaction', 'wallet', 'ib_application', 'transfer')
          AND ${auditLog.details}->>'userId' ~* ${UUID_SHAPE}
          THEN (${auditLog.details}->>'userId')::uuid
   END)`;

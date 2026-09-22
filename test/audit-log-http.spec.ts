@@ -364,6 +364,48 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
         subjectId: '99999999-8888-7777-6666-555555555555',
         details: { clientId: outScope.id },
       },
+      /*
+       * ── THE THREE SHAPES THAT LEAKED, EACH SEEDED BY NAME ───────────────
+       *
+       * This fixture listed only the subject types `auditRowClientId` already
+       * knew about, so the test and the expression were written from one list
+       * and agreed with each other while both were wrong. Measured on the
+       * development database: 7 `ib.reject` rows and 1 `transfer.abandon` row
+       * were being shown to every scoped reader.
+       */
+      {
+        // `ib.reject` — carries the client id AND the reviewer's free text.
+        actorId: scopedAdmin.id,
+        actorEmail: SCOPED.email,
+        action: 'ib.reject',
+        subjectType: 'ib_application',
+        subjectId: '33333333-4444-5555-6666-777777777777',
+        details: { userId: outScope.id, reason: 'not eligible' },
+      },
+      {
+        // `transfer.abandon` — carries an amount, a currency and a direction.
+        actorId: scopedAdmin.id,
+        actorEmail: SCOPED.email,
+        action: 'transfer.abandon',
+        subjectType: 'transfer',
+        subjectId: '44444444-5555-6666-7777-888888888888',
+        details: { userId: outScope.id, amount: '250.00000000', currency: 'USD' },
+      },
+      {
+        /*
+         * A `trading_account` row keyed on `userId` rather than `clientId`.
+         * Three writers of this subject type disagree — `trading.account_create`
+         * writes `clientId`, `trading.deposit` and `trading.withdraw` write
+         * `userId` — and only the first key was read, so every hand-funding of
+         * a trading account leaked.
+         */
+        actorId: scopedAdmin.id,
+        actorEmail: SCOPED.email,
+        action: 'trading.deposit',
+        subjectType: 'trading_account',
+        subjectId: '55555555-6666-7777-8888-999999999999',
+        details: { userId: outScope.id, amount: '1000.00000000' },
+      },
       // The in-scope side of the money path, to prove the filter keeps as well
       // as drops — a wallet credit for the reader's OWN client must remain.
       {
@@ -400,6 +442,9 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
         (r) =>
           r.subjectId === '11111111-2222-3333-4444-555555555555' ||
           r.subjectId === '99999999-8888-7777-6666-555555555555' ||
+          r.subjectId === '33333333-4444-5555-6666-777777777777' ||
+          r.subjectId === '44444444-5555-6666-7777-888888888888' ||
+          r.subjectId === '55555555-6666-7777-8888-999999999999' ||
           (r.subjectType === 'ib_account' && r.subjectId === outScope.id),
       ),
       'a money/trading/ib row naming an out-of-scope client in its details leaked',

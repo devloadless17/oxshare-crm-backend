@@ -328,7 +328,12 @@ export class AdminIbController {
   })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_ACCRUAL_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
-  @ScopedToClients('IbStore.findAccrualsPage applies the predicate to ib_accruals.ib_user_id.')
+  @ScopedToClients(
+    'IbStore.findAccrualsPage applies the predicate to the row BENEFICIARY — ' +
+      'ib_accruals.client_user_id on a rebate, ib_user_id on a commission. Not ib_user_id ' +
+      'alone: that showed a partner desk their clients rebates and hid a client desk their ' +
+      'own, because a rebate records the partner as attribution rather than entitlement.',
+  )
   async listAccruals(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('page') page?: string,
@@ -382,14 +387,22 @@ export class AdminIbController {
   /**
    * Take one accrual back.
    *
-   * NOT scoped to clients. Every other partner operation here carries
-   * `@ScopedToClients`, and this deliberately does not: the scope predicates in
-   * `IbStore` filter on `ib_accruals.ib_user_id`, which on a REBATE row is the
-   * partner whose programme produced it and not the person being debited. A
-   * scope that reads the wrong column would let an operator reverse a client's
-   * rebate they cannot otherwise see, which is worse than not scoping at all.
-   * The permission is the gate, and it is a new one rather than `ib.view` —
-   * reading accruals and clawing one back are not the same authority.
+   * SCOPED, on the person whose wallet is debited.
+   *
+   * ⚠️ This docblock used to say the opposite, and the reasoning it gave was
+   * right about the problem and wrong about the remedy: the scope predicates
+   * filtered on `ib_accruals.ib_user_id`, which on a REBATE row is the partner
+   * whose programme produced it rather than the person being debited, so
+   * scoping on it would have let an operator reverse a client's rebate they
+   * cannot otherwise see. The conclusion drawn was to scope nothing.
+   *
+   * The column was fixed instead. `reverseAccrual` asserts visibility of the
+   * BENEFICIARY — `kind === 'rebate' ? clientUserId : ibUserId`, the same
+   * expression the list now scopes on — so the operation is gated on the
+   * person whose money moves, which is what territory is for.
+   *
+   * The permission is still its own, rather than `ib.view`: reading accruals
+   * and clawing one back are not the same authority.
    */
   @Post('accruals/:id/reverse')
   @UseGuards(PermissionsGuard)
