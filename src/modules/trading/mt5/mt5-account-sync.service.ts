@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
-import { tradingAccounts } from '../../../database/schema';
+import { tradingAccounts, tradingProductGroups } from '../../../database/schema';
 import type { Mt5AccountSnapshotDto } from './dto/mt5-account-snapshot.dto';
 
 export interface SnapshotIngestResult {
@@ -102,6 +102,42 @@ export class Mt5AccountSyncService {
         balanceSyncedAt: readAt,
         ...(snapshot.credit !== undefined ? { credit: snapshot.credit } : {}),
         ...(snapshot.group !== undefined ? { mt5Group: snapshot.group } : {}),
+        /*
+         * ── THE ENVIRONMENT FOLLOWS THE GROUP, OR THE FIX ONLY HELD ONCE ────
+         *
+         * `environment` decides whether a trade pays partner commission, and
+         * it is derived from the MT5 group at account CREATION. This method is
+         * the one place that learns a group has CHANGED — its own note above
+         * says it exists because "a broker moving an account to a different
+         * group was invisible here for ever" — and it was updating `mt5Group`
+         * while leaving `environment` frozen at whatever creation decided.
+         *
+         * So the two columns could disagree, and the one with money hanging
+         * off it was the stale one. A live account moved into a demo group
+         * keeps paying commission; a demo account moved into a live group
+         * keeps refusing it. Both are silent.
+         *
+         * Resolved in the SAME statement rather than a read-then-write: a
+         * snapshot that loses the staleness race must not leave a half-applied
+         * row, and a subquery cannot interleave with a competing update the
+         * way two round trips can.
+         *
+         * COALESCE to the existing value, deliberately. A group the catalogue
+         * does not sell resolves to NULL — an operator's bespoke or internal
+         * group — and the honest answer there is to leave the column alone
+         * rather than guess, which is the same call `environmentForGroup`
+         * makes at creation time.
+         */
+        ...(snapshot.group !== undefined
+          ? {
+              environment: sql`COALESCE(
+                (SELECT g.environment FROM ${tradingProductGroups} g
+                  WHERE lower(g.mt5_group) = lower(${snapshot.group})
+                  LIMIT 1),
+                ${tradingAccounts.environment}
+              )`,
+            }
+          : {}),
         ...(snapshot.leverage !== undefined ? { leverage: snapshot.leverage } : {}),
         updatedAt: new Date(),
       })

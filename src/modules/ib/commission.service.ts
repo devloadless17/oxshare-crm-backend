@@ -281,6 +281,20 @@ export class CommissionService implements CommissionAccrualPort {
    * amount: a clawback is a deliberate compensating entry, not a side effect of
    * a quiet trade.
    */
+  /*
+   * ⚠️ THIS METHOD CANNOT SEE WHETHER THE ACCOUNT IS DEMO, AND DOES NOT CHECK.
+   *
+   * It receives a client and an amount, never an account, so the demo gate for
+   * this path lives in `PositionsService.close` — which refuses before calling
+   * here. That is sound today because `close` is the only caller AND the feed
+   * constant below refuses anyway.
+   *
+   * It stops being sound the moment somebody flips `LIVE_REVENUE_FEED` to
+   * `position` and adds a second caller: the deal path keeps its own
+   * `environment !== 'live'` check inside the loop, and this one would have
+   * nothing. Whoever makes that change must either take the account here and
+   * check it, or prove `close` is still the only door.
+   */
   async accrueForClosedPosition(position: {
     positionId: string;
     clientUserId: string;

@@ -1005,10 +1005,30 @@ export class TradingService {
   ): Promise<{ from: Date; to: Date; items: BalanceMovementRow[]; truncated: boolean }> {
     const { from, to } = resolveMovementWindow(query);
 
+    /*
+     * ── LIVE ACCOUNTS ONLY, OR THIS LIST MIXES TWO KINDS OF MONEY ──────────
+     *
+     * This read every account the client holds, demo included. A demo account
+     * is topped up with practice money through `fundOwnDemoAccount`, and MT5
+     * records that as an ordinary balance operation — so a $10,000 practice
+     * top-up landed in this list beside real deposits, in the same shape, with
+     * nothing on the row saying which was which.
+     *
+     * The question this endpoint answers is "where did my money go", and
+     * practice money is not an answer to it. Filtering the ACCOUNTS rather
+     * than the deals is what keeps the fix in one place: every row here is
+     * found by login, so an account excluded here cannot contribute one.
+     */
     const accounts = await this.db
       .select({ id: tradingAccounts.id, login: tradingAccounts.login })
       .from(tradingAccounts)
-      .where(and(eq(tradingAccounts.userId, userId), isNotNull(tradingAccounts.login)));
+      .where(
+        and(
+          eq(tradingAccounts.userId, userId),
+          isNotNull(tradingAccounts.login),
+          eq(tradingAccounts.environment, 'live'),
+        ),
+      );
 
     if (accounts.length === 0) return { from, to, items: [], truncated: false };
 

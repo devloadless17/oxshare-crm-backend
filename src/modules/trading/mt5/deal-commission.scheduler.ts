@@ -271,6 +271,53 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
         );
       }
 
+      /*
+       * ── THE DEMO TALLY, WHICH NOBODY COULD SEE ──────────────────────────
+       *
+       * `run.demo` was counted, summed into the drain total, and then thrown
+       * away: no log line, no alert, no metric. The counter's own docblock
+       * says why it exists — "this number climbing while live accruals stay
+       * flat is how a bridge mislabelling live accounts as demo becomes
+       * visible" — and the number reached no operator, so the failure it was
+       * built to expose produced exactly zero output.
+       *
+       * Reported at `log` rather than `warn` because demo traffic is ORDINARY:
+       * a platform with demo accounts declines them on every run, and a
+       * warning that fires every five minutes is one people filter out. What
+       * is NOT ordinary is the shape below.
+       */
+      if (run.demo > 0) {
+        this.logger.log(
+          `${run.demo} deal(s) were on demo accounts and pay nobody. They are marked decided, ` +
+            'not queued — practice money earns the house nothing to share.',
+        );
+      }
+
+      /*
+       * ── DECLINING EVERYTHING AND PAYING NOTHING ─────────────────────────
+       *
+       * Demo deals alone, with no live accrual anywhere in the batch, is the
+       * exact signature of the failure the tally was added for: a bridge or a
+       * catalogue mapping that has started filing LIVE accounts as demo. Every
+       * trade is then correctly refused by a rule that is being fed the wrong
+       * facts, partners stop being paid money they are genuinely owed, and
+       * every counter reads healthy — `failed` is 0, `orphaned` is 0, the
+       * queue drains.
+       *
+       * A `warn` rather than an alert: on a quiet platform a batch of demo
+       * trades and no live ones is a normal morning. It is the PATTERN across
+       * runs that matters, which is what a log an operator can grep gives
+       * them and a per-run alarm would only cry wolf about.
+       */
+      if (run.demo > 0 && run.accrued === 0 && run.examined > 0) {
+        this.logger.warn(
+          `Every deal in this batch (${run.demo} of ${run.examined}) was declined as demo and ` +
+            'nothing accrued. Normal on a quiet platform; if it persists while clients are ' +
+            'trading live, suspect accounts being mislabelled demo — trading_accounts.environment ' +
+            'is what this decision reads, and it is derived from the MT5 group the broker reports.',
+        );
+      }
+
       if (run.failed > 0) {
         this.logger.warn(
           `${run.failed} deal(s) could not be accrued and remain queued, on a backoff that ` +
