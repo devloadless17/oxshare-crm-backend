@@ -48,6 +48,24 @@ export default defineConfig({
     env: {
       NODE_ENV: 'test',
       /*
+       * THE TWO ORIGINS THE ANTI-FORGERY GUARD COMPARES AGAINST.
+       *
+       * Same divergence as the secrets below, and it bites harder because it
+       * does not look like a config problem. `CsrfGuard` matches the request's
+       * Origin EXACTLY against these two, so on a machine whose .env points them
+       * at real hosts every cookie-authenticated state change in the suite comes
+       * back 403 "failed anti-forgery validation" — 282 failures across 37 files,
+       * measured on the production VPS, every one of them reading like a security
+       * regression rather than a leaked variable. CI has no .env, so CI stayed
+       * green.
+       *
+       * They are not merely unpinned by oversight: env.validation DEFAULTS them
+       * to exactly these values, so pinning them here restores what a fresh
+       * clone already gets and changes nothing about how CI runs.
+       */
+      PORTAL_URL: 'http://localhost:3000',
+      ADMIN_URL: 'http://localhost:3002',
+      /*
        * The suite ASSERTS on the e2e fixtures, so it must seed them whatever a
        * developer's `.env` says. `SEED_E2E_FIXTURES=false` is a legitimate
        * local setting — it keeps a hand-testing database free of two hundred

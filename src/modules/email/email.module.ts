@@ -1,5 +1,4 @@
 import { Module, Global } from '@nestjs/common';
-import { AlertEmailService } from './alert-email.service';
 import { EmailService } from './email.service';
 import { SmtpConfigService } from './smtp-config.service';
 
@@ -15,7 +14,7 @@ import { SmtpConfigService } from './smtp-config.service';
  */
 @Global()
 @Module({
-  providers: [EmailService, SmtpConfigService, AlertEmailService],
+  providers: [EmailService, SmtpConfigService],
   exports: [EmailService, SmtpConfigService],
 })
 export class EmailModule {}
