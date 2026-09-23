@@ -7,6 +7,7 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { MoneyLimits } from '../src/config/money-limits';
 import { auditStubAs } from './audit-stub';
+import { AuditLogStore } from '../src/store/audit-log.store';
 import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
@@ -58,6 +59,7 @@ beforeAll(async () => {
     notificationsStubAs(),
     transfersStubAs(),
     transferExecutorStubAs(),
+    new AuditLogStore(ctx.db),
   );
 }, 120_000);
 
@@ -175,6 +177,56 @@ describe('the mapping table, row by row', () => {
           JOIN wallets w ON w.id = le.wallet_id WHERE w.user_id = ${userId}`,
     );
     expect(rows[0].n).toBe('1');
+  });
+
+  /*
+   * THE TRAIL, FOR MONEY NOBODY APPROVED.
+   *
+   * Every other way a wallet is credited leaves a row somebody can search:
+   * `deposit.approve` for an offline deposit, `wallet.credit` for a hand
+   * adjustment. The gateway path wrote none, and on the production database
+   * that was eight settled deposits totalling 3,190.12 present in the ledger
+   * and absent from the trail. Nothing failed, which is why it survived.
+   *
+   * `details.userId` is asserted for a reason beyond completeness: the audit
+   * scope predicate resolves a `transaction` row's client from exactly that
+   * key, and a row it cannot resolve is KEPT for every reader. Without it this
+   * fix would close a blind spot by opening a leak.
+   */
+  it('a gateway settlement writes a system audit row naming the client', async () => {
+    const { txId, userId, externalId } = await makePendingDeposit('150');
+    rivalSays('PAID');
+    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('applied');
+
+    const { rows } = await ctx.db.execute<{
+      action: string;
+      actor_kind: string;
+      actor_email: string;
+      user_id: string | null;
+      n: string;
+    }>(
+      sql`SELECT action, actor_kind, actor_email,
+                 details->>'userId' AS user_id, count(*) OVER () AS n
+            FROM audit_log
+           WHERE subject_type = 'transaction' AND subject_id = ${txId}
+             AND action = 'deposit.settle'`,
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].actor_kind).toBe('system');
+    expect(rows[0].actor_email).toBe('system@oxshare.internal');
+    expect(rows[0].user_id).toBe(userId);
+
+    /*
+     * At-least-once delivery must not double the trail either. The replay is
+     * absorbed before the conditional UPDATE, so the second call writes nothing.
+     */
+    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('duplicate');
+    const after = await ctx.db.execute<{ n: string }>(
+      sql`SELECT count(*) AS n FROM audit_log
+           WHERE subject_id = ${txId} AND action = 'deposit.settle'`,
+    );
+    expect(after.rows[0].n).toBe('1');
   });
 
   it('REFUSES to credit when the platform names a different amount', async () => {

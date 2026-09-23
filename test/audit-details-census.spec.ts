@@ -104,6 +104,7 @@ const WRITES_DETAILS: readonly string[] = [
   'currency.create',
   'currency.delete',
   'currency.update',
+  'deposit.settle',
   'export.audit_log',
   'export.clients',
   'export.ib_applications',

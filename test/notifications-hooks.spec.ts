@@ -16,6 +16,7 @@ import type { ClientVisibilityService } from '../src/common/security/client-visi
 import type { PaymentGateways } from '../src/modules/payments/payment-gateways.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { auditStubAs } from './audit-stub';
+import { AuditLogStore } from '../src/store/audit-log.store';
 import { emailStubAs } from './email-stub';
 import { gatewayStub } from './gateway-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
@@ -85,6 +86,7 @@ beforeAll(async () => {
     dispatch,
     transfersStubAs(),
     transferExecutorStubAs(),
+    new AuditLogStore(ctx.db),
   );
   /*
    * The maturation window is switched OFF for this spec, through the real

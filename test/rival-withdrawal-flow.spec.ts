@@ -69,6 +69,7 @@ beforeAll(async () => {
     notificationsStubAs(),
     transfersStubAs(),
     transferExecutorStubAs(),
+    new AuditLogStore(ctx.db),
   );
   service = new RivalWithdrawalsService(
     ctx.db,
