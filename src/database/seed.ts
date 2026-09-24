@@ -1117,6 +1117,26 @@ export const REVIEW_POOL_LABELS = [
 export const E2E_POOL_DOMAIN = 'oxshare-e2e.test';
 
 /**
+ * A domain of its own for the UNBOUNDED fixtures.
+ *
+ * `createFreshE2eClient` mints a new client on every call and nothing ever
+ * removes them, so they accumulate for as long as the database lives — 135 of
+ * them here after a few days of runs. They used to share `E2E_POOL_DOMAIN` with
+ * the seeded cohort, and the admin suite finds that cohort by searching for the
+ * domain and reading page one, newest first. So every fresh fixture pushed
+ * `Alpha Aardvark` further down, and once enough had built up the cohort slid
+ * off the page entirely: 38 specs failed at once, all of them reading as a
+ * broken client search on a search that was working perfectly.
+ *
+ * This is the SECOND time that has happened. `searchOwnClients` in the admin
+ * suite records the first — the portal's registration specs shared the domain
+ * and were moved off it — and raising the page size to 100 bought time rather
+ * than fixing it. Unbounded fixtures and a cohort lookup cannot share a domain;
+ * one of them has to move, and it is not the cohort.
+ */
+export const E2E_FRESH_DOMAIN = 'oxshare-e2e-fresh.test';
+
+/**
  * Put every pooled fixture back to PENDING, UNCLAIMED and UNDECIDED.
  *
  * Extracted from `runSeeds` so it can run per E2E RUN rather than only per
@@ -1256,7 +1276,7 @@ export async function createFreshE2eClient(
 ): Promise<{ id: string; email: string; password: string }> {
   const password = 'client123';
   const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const email = `e2e-fresh-${stamp}@${E2E_POOL_DOMAIN}`;
+  const email = `e2e-fresh-${stamp}@${E2E_FRESH_DOMAIN}`;
 
   const [client] = await db
     .insert(users)
