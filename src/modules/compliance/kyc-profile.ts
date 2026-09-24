@@ -68,6 +68,8 @@ export interface ProfileFieldRule {
   label: string;
   type: string;
   required: boolean;
+  /** A checkbox with choices is "tick all that apply" — see `tickedChoices`. */
+  options?: readonly string[];
 }
 
 /** What a caller must fix, or `undefined` when the profile is acceptable. */
@@ -146,7 +148,7 @@ export function findProfileProblem(
   // them here would reject every complete submission.
   const missing = rules
     .filter((f) => f.required && !isFileField(f))
-    .filter((f) => isBlank(provided[f.name]) || isBarePhone(f, provided[f.name]))
+    .filter((f) => !isAnswered(f, provided[f.name]))
     .map((f) => f.name);
 
   if (missing.length > 0) {
@@ -156,6 +158,38 @@ export function findProfileProblem(
       fields: missing,
     };
   }
+  return profileValueProblem(provided, rules, asOf);
+}
+
+/**
+ * Is a REQUIRED typed field answered? One definition, shared by the profile
+ * rules above and every other step (`kyc-step-state.ts`).
+ *
+ *  - blank is not an answer;
+ *  - a phone holding only its country code is not a number (see `isBarePhone`);
+ *  - a CHECKBOX is answered only when TICKED. Unticked is stored as `'false'`,
+ *    which is a perfectly non-empty string — so "required" on a consent box
+ *    used to be satisfied by leaving it unticked. One with CHOICES ("tick all
+ *    that apply") is answered when at least one is ticked.
+ */
+export function isAnswered(field: ProfileFieldRule, value: unknown): boolean {
+  if (field.type === 'checkbox') {
+    return field.options?.length ? !isBlank(value) : scalar(value) === 'true';
+  }
+  return !isBlank(value) && !isBarePhone(field, value);
+}
+
+/**
+ * What is wrong with the answers GIVEN — a phone number cut short, a date of
+ * birth that is not a date, in the future, or under the minimum age. Missing
+ * answers are `isAnswered`'s business; this judges only what is there.
+ */
+export function profileValueProblem(
+  values: Record<string, unknown> | undefined,
+  rules: readonly ProfileFieldRule[],
+  asOf: Date,
+): ProfileProblem | undefined {
+  const provided = values ?? {};
 
   /*
    * A phone number must be one somebody can dial.

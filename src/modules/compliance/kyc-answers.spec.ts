@@ -156,3 +156,37 @@ describe('a document step records a document of its own category', () => {
     expect(documentTypeFor(category, value)).toBe(expected);
   });
 });
+
+describe('a checkbox WITH choices is "tick all that apply"', () => {
+  // Asked for in local testing: "where can I put checkbox options?"
+  const funds = {
+    name: 'funds',
+    label: 'Source of funds',
+    type: 'checkbox',
+    options: ['Salary', 'Savings', 'Gift'],
+  };
+
+  it('stores the ticked choices, in the order the broker listed them', () => {
+    expect(typedAnswersFor([funds], { funds: 'Gift, Salary' }).answers).toEqual({
+      funds: 'Salary, Gift',
+    });
+  });
+
+  it('stores nothing ticked as an empty answer', () => {
+    expect(typedAnswersFor([funds], { funds: '' }).answers).toEqual({ funds: '' });
+  });
+
+  it('refuses a choice the field does not offer, naming it', () => {
+    const { answers, problems } = typedAnswersFor([funds], { funds: 'Salary, Lottery' });
+    expect(answers).toEqual({});
+    expect(problems).toEqual([
+      { field: 'funds', message: 'Source of funds: "Lottery" is not one of its choices.' },
+    ]);
+  });
+
+  it('leaves a single checkbox a yes-or-no', () => {
+    const consent = { name: 'consent', label: 'I agree', type: 'checkbox' };
+    expect(typedAnswersFor([consent], { consent: 'true' }).answers).toEqual({ consent: 'true' });
+    expect(typedAnswersFor([consent], { consent: 'Salary' }).problems).toHaveLength(1);
+  });
+});

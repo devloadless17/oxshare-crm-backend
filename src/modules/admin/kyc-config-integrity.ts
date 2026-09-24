@@ -1,4 +1,5 @@
 import { ValidationError } from '../../common/errors/domain-errors';
+import { DOCUMENT_TYPE_PREFIX, documentForFieldType } from '../../common/kyc/document-catalogue';
 import type { KycStepConfig } from '../../store/kyc-config.store';
 
 /**
@@ -135,11 +136,106 @@ export function assertReservedKeysNotRenamed(
   }
 }
 
+/** The kind of document each document step holds. Any other step holds none. */
+const DOCUMENT_STEPS: Readonly<Record<string, 'identity' | 'address'>> = {
+  document: 'identity',
+  address: 'address',
+};
+
+function documentKindOf(slug: string): 'identity' | 'address' | undefined {
+  // Own keys only: a slug is typed by an operator, and `constructor` is a step
+  // they added, not an entry on the prototype chain.
+  return Object.prototype.hasOwnProperty.call(DOCUMENT_STEPS, slug)
+    ? DOCUMENT_STEPS[slug]
+    : undefined;
+}
+
+const kindName = (kind: 'identity' | 'address') =>
+  kind === 'address' ? 'proof of address' : 'an identity document';
+
+/**
+ * A catalogue document where it cannot be held — and a built-in step without
+ * the one thing it exists to collect.
+ *
+ * ## Documents have ONE home each (reported from local testing, 25 Sep 2026)
+ *
+ * A passport, a national ID, a utility bill live on the identity step and the
+ * proof-of-address step, where a document is stored with its type and every
+ * page in typed columns — read by the review screen, the reviewer's page flags
+ * and the approval. The builder also offered them on steps a broker ADDS, and
+ * each attempt to give them a home there built a second, weaker copy of the
+ * same machinery: the two sides of a national ID sharing one upload slot,
+ * "required" on several cards meaning all of them to the server and one of them
+ * to the client. So elsewhere, a File field per photo does the job — migration
+ * 0137 converted the ones already configured exactly that way.
+ *
+ * A document of the other KIND is refused on a document step too: its pages are
+ * filed by category, so a utility bill offered on the identity step would be
+ * filed as the client's proof of address, over the real one. A `doc:` value the
+ * catalogue no longer knows is tolerated there, as `resolveAcceptedDocuments`
+ * tolerates it.
+ *
+ * ## Every other field goes anywhere
+ *
+ * Text, date, phone, dropdown, checkbox, File and Camera fields are welcome on
+ * EVERY step, built-in or added: the answers of a built-in step's extra fields
+ * are kept in `step_data` under its slug, checked by the one judgement that
+ * gates submission (`kyc-step-state.ts`) and shown to the reviewer.
+ *
+ * ## What a built-in step cannot lose
+ *
+ * An enabled identity or address step is a promise that the client uploads one
+ * of its documents, and the selfie step that they take the selfie. Offering no
+ * document, or no selfie camera, leaves a step nobody can complete and a flow
+ * nobody can submit — so those are refused, and disabling the step is the way
+ * to stop asking.
+ */
+export function assertFieldsFitTheirStep(steps: readonly KycStepConfig[]): void {
+  for (const step of steps) {
+    const title = step.title || step.slug;
+    const holds = documentKindOf(step.slug);
+    const fields = step.fields ?? [];
+    for (const field of fields) {
+      if (!field.type?.startsWith(DOCUMENT_TYPE_PREFIX)) continue;
+      const where = `"${field.label || field.name}" in "${title}"`;
+      if (!holds) {
+        throw new ValidationError(
+          `${where} is a document type. Documents are collected on the Identity Document and ` +
+            `Proof of Address steps — here, add a File field for each photo you need.`,
+        );
+      }
+      const document = documentForFieldType(field.type);
+      if (document && document.category !== holds) {
+        throw new ValidationError(
+          `${where} cannot collect a ${document.label}: it is ${kindName(document.category)}, ` +
+            `and this step collects ${kindName(holds)} — its pages would be filed as the wrong document.`,
+        );
+      }
+    }
+    if (holds && !fields.some((field) => documentForFieldType(field.type))) {
+      throw new ValidationError(
+        `"${title}" offers no document to upload, so no client could complete it. ` +
+          `Add one, or disable the step to stop asking.`,
+      );
+    }
+    if (step.slug === 'selfie') {
+      const selfie = fields.find((field) => field.name === 'selfie');
+      if (!selfie || selfie.type !== 'camera') {
+        throw new ValidationError(
+          `"${title}" needs its selfie camera — without it no client could complete the step. ` +
+            `Disable the step to stop asking for a selfie.`,
+        );
+      }
+    }
+  }
+}
+
 /** Every rule, in the order whose message is most useful first. */
 export function assertKycConfigIntegrity(
   previous: readonly KycStepConfig[],
   next: readonly KycStepConfig[],
 ): void {
   assertFieldKeysUniquePerStep(next);
+  assertFieldsFitTheirStep(next);
   assertReservedKeysNotRenamed(previous, next);
 }

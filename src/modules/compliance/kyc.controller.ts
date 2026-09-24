@@ -104,6 +104,10 @@ export class KycController {
   @ApiOperation({
     summary: 'Save data for a KYC step (personal/document/selfie/address)',
   })
+  @ApiOkResponse({
+    type: KycStatusDto,
+    description: 'The saved submission with every step state — this step judged as presented.',
+  })
   saveStep(@Req() req: Request & { user: User }, @Body() dto: SaveKycStepDto) {
     return this.kyc.saveStep(req.user.id, dto.step, dto.data);
   }

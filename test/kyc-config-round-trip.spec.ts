@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -378,5 +380,256 @@ describe('the per-step config routes', () => {
       const res = await session.del(`/v1/admin/kyc-config/steps/${encodeURIComponent(bad)}`);
       expect(res.status, `'${bad.slice(0, 20)}' was accepted as a step id`).toBe(400);
     }
+  });
+});
+
+/**
+ * A FIELD GOES ONLY ON A STEP THAT CAN STORE IT — and every route that saves a
+ * step says so, not just the one the builder uses.
+ *
+ * Reported from local testing: documents offered on a step the broker added,
+ * and a week of bugs from giving them a second home there. `kyc-config-integrity`
+ * holds the rule and its unit cases; these prove each save route applies it,
+ * because the two per-step routes applied NO integrity rule until this change.
+ */
+describe('a field goes only on a step that can store it', () => {
+  const passport = {
+    id: 'f-pp',
+    name: 'pp',
+    label: 'Passport',
+    type: 'doc:passport',
+    required: true,
+  };
+  const note = { id: 'f-note', name: 'note', label: 'Note', type: 'text', required: false };
+  const stepsOf = (body: unknown) =>
+    (Array.isArray(body) ? body : (body as { steps: unknown[] }).steps) as { id: string }[];
+
+  it('refuses a document on an added step through the whole-configuration save, and changes nothing', async () => {
+    const before = stepsOf((await session.get('/v1/admin/kyc-config')).body);
+
+    const write = await session.put('/v1/admin/kyc-config').send({
+      steps: [...before, { slug: 'extra-docs', title: 'Extra', enabled: true, fields: [passport] }],
+    });
+    expect(write.status, JSON.stringify(write.body).slice(0, 300)).toBe(400);
+    expect(JSON.stringify(write.body)).toMatch(/Passport.*document type/);
+
+    const after = stepsOf((await session.get('/v1/admin/kyc-config')).body);
+    expect(after.map((s) => s.id)).toEqual(before.map((s) => s.id));
+  });
+
+  it('refuses it through the per-step ADD and UPDATE routes too', async () => {
+    const add = await session
+      .post('/v1/admin/kyc-config/steps')
+      .send({ slug: 'extra-docs', title: 'Extra', enabled: true, fields: [passport] });
+    expect(add.status, JSON.stringify(add.body).slice(0, 300)).toBe(400);
+
+    const created = await session
+      .post('/v1/admin/kyc-config/steps')
+      .send({ slug: 'extra-docs', title: 'Extra', enabled: true, fields: [note] });
+    expect(created.status).toBe(201);
+    const id = (created.body as { id: string }).id;
+
+    const patched = await session
+      .put(`/v1/admin/kyc-config/steps/${id}`)
+      .send({ slug: 'extra-docs', title: 'Extra', enabled: true, fields: [note, passport] });
+    expect(patched.status, JSON.stringify(patched.body).slice(0, 300)).toBe(400);
+
+    const stored = stepsOf((await session.get('/v1/admin/kyc-config')).body).find(
+      (s) => s.id === id,
+    ) as { fields: { type: string }[] } | undefined;
+    expect(stored?.fields.map((f) => f.type)).toEqual(['text']);
+
+    await session.del(`/v1/admin/kyc-config/steps/${id}`);
+  });
+});
+
+describe('0137 puts every catalogue document on the step that holds its kind', () => {
+  const migration = readFileSync(
+    'src/database/migrations/0137_kyc_fields_fit_their_step.sql',
+    'utf8',
+  );
+
+  it('keeps every key a file was uploaded under, names each page, and leaves the document steps alone', async () => {
+    const documentSteps = async () =>
+      ctx.db.db
+        .select()
+        .from(kycConfigSteps)
+        .where(inArray(kycConfigSteps.slug, ['document', 'address']));
+    const untouched = await documentSteps();
+    expect(untouched.length, 'the fixture must hold both document steps').toBe(2);
+
+    // Written straight to the table — the configuration the rule now refuses.
+    await ctx.db.db.insert(kycConfigSteps).values({
+      id: 'step-0137',
+      stepNumber: 99,
+      slug: 'mig-0137',
+      title: 'Migrated',
+      enabled: true,
+      fields: [
+        { id: 'f-t', name: 'note', label: 'Note', type: 'text', required: true },
+        {
+          id: 'f-n',
+          name: 'natID',
+          label: 'Identity card',
+          type: 'doc:national_id',
+          required: true,
+          hint: 'Both sides',
+        },
+        { id: 'f-p', name: 'pp', label: '', type: 'doc:passport', required: false },
+        { id: 'f-l', name: 'lease', label: 'Lease', type: 'doc:tenancy_agreement', required: true },
+        {
+          id: 'f-x',
+          name: 'old',
+          label: 'Old card',
+          type: 'doc:withdrawn_card',
+          required: true,
+          options: ['a'],
+        },
+      ],
+    });
+
+    await ctx.db.db.execute(sql.raw(migration));
+
+    const [row] = await ctx.db.db
+      .select()
+      .from(kycConfigSteps)
+      .where(eq(kycConfigSteps.id, 'step-0137'));
+    expect(row.fields).toEqual([
+      { id: 'f-t', name: 'note', label: 'Note', type: 'text', required: true },
+      // The first page keeps the key its uploads are stored under.
+      {
+        id: 'f-n',
+        name: 'natID',
+        label: 'Identity card — Front Side',
+        type: 'file',
+        required: true,
+        hint: 'Both sides',
+      },
+      {
+        id: 'f-n-back',
+        name: 'natID__back',
+        label: 'Identity card — Back Side',
+        type: 'file',
+        required: true,
+      },
+      // One page: no page name. No label: the document's own.
+      {
+        id: 'f-p',
+        name: 'pp',
+        label: 'Passport',
+        type: 'file',
+        required: false,
+        hint: 'The page with your photo and details',
+      },
+      { id: 'f-l', name: 'lease', label: 'Lease — Signature Page', type: 'file', required: true },
+      // The optional second sheet stays optional.
+      {
+        id: 'f-l-back',
+        name: 'lease__back',
+        label: 'Lease — Additional Page',
+        type: 'file',
+        required: false,
+        hint: 'Only if your address is on a separate page',
+      },
+      // A document the catalogue no longer knows: one File field.
+      { id: 'f-x', name: 'old', label: 'Old card', type: 'file', required: true },
+    ]);
+
+    expect(await documentSteps()).toEqual(untouched);
+
+    // Re-runnable: nothing is left to convert.
+    const second = await ctx.db.db.execute(sql.raw(migration));
+    expect(second.rowCount).toBe(0);
+
+    // And what it leaves is a configuration the builder can save.
+    const read = await session.get('/v1/admin/kyc-config');
+    const write = await session
+      .put('/v1/admin/kyc-config')
+      .send({ steps: Array.isArray(read.body) ? read.body : read.body.steps });
+    expect(write.status, JSON.stringify(write.body).slice(0, 300)).toBe(200);
+
+    await ctx.db.db.delete(kycConfigSteps).where(eq(kycConfigSteps.id, 'step-0137'));
+  });
+
+  it('converts documents on the built-in steps that hold none, drops the wrong kind, and leaves every extra field alone', async () => {
+    const f = (id: string, type: string, extra: object = {}) => ({
+      id,
+      name: id,
+      label: id,
+      type,
+      required: true,
+      ...extra,
+    });
+    // Extra built-in rows, written straight to the table: slugs are not unique.
+    await ctx.db.db.insert(kycConfigSteps).values([
+      {
+        id: 'step-0137-personal',
+        stepNumber: 97,
+        slug: 'personal',
+        title: 'P',
+        enabled: true,
+        fields: [f('name', 'text'), f('scan', 'file'), f('pp', 'doc:passport'), f('tel', 'phone')],
+      },
+      {
+        id: 'step-0137-address',
+        stepNumber: 98,
+        slug: 'address',
+        title: 'A',
+        enabled: true,
+        // `prooof3`: an extra upload on Proof of Address — kept, and now it works.
+        fields: [
+          f('bill', 'doc:utility_bill'),
+          f('prooof3', 'file'),
+          f('ref', 'checkbox'),
+          f('pp', 'doc:passport'),
+          f('gone', 'doc:withdrawn_bill'),
+        ],
+      },
+      {
+        id: 'step-0137-selfie',
+        stepNumber: 99,
+        slug: 'selfie',
+        title: 'S',
+        enabled: true,
+        fields: [
+          f('selfie', 'camera'),
+          f('pick', 'select', { options: ['a'] }),
+          f('id', 'doc:national_id'),
+        ],
+      },
+    ]);
+
+    await ctx.db.db.execute(sql.raw(migration));
+
+    const fieldsOf = async (id: string) =>
+      (await ctx.db.db.select().from(kycConfigSteps).where(eq(kycConfigSteps.id, id)))[0].fields;
+    expect(await fieldsOf('step-0137-personal')).toEqual([
+      f('name', 'text'),
+      f('scan', 'file'),
+      { ...f('pp', 'file'), hint: 'The page with your photo and details' },
+      f('tel', 'phone'),
+    ]);
+    // The wrong kind goes; the withdrawn one and every extra stay.
+    expect((await fieldsOf('step-0137-address')).map((x) => x.name)).toEqual([
+      'bill',
+      'prooof3',
+      'ref',
+      'gone',
+    ]);
+    expect(await fieldsOf('step-0137-selfie')).toEqual([
+      f('selfie', 'camera'),
+      f('pick', 'select', { options: ['a'] }),
+      { ...f('id', 'file'), label: 'id — Front Side' },
+      { id: 'id-back', name: 'id__back', label: 'id — Back Side', type: 'file', required: true },
+    ]);
+
+    const second = await ctx.db.db.execute(sql.raw(migration));
+    expect(second.rowCount, 'a second run changed a step again').toBe(0);
+
+    await ctx.db.db
+      .delete(kycConfigSteps)
+      .where(
+        inArray(kycConfigSteps.id, ['step-0137-personal', 'step-0137-address', 'step-0137-selfie']),
+      );
   });
 });

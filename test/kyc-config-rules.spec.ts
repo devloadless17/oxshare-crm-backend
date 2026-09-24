@@ -29,6 +29,32 @@ import { MANDATORY_KYC_SLUGS, type KycStepConfig } from '../src/store/kyc-config
  * fake. The §11 money specs are where Testcontainers earns its cost.
  */
 
+/**
+ * What each built-in step exists to collect — a document to choose on the two
+ * document steps, the camera on the selfie step. Without them the flow is one
+ * no client could finish, which the builder now refuses to save
+ * (`assertFieldsFitTheirStep`); these cases are about which steps exist, so
+ * each carries its core.
+ */
+const CORE: Record<string, KycStepConfig['fields']> = {
+  personal: [
+    { id: 'f-first', name: 'firstName', label: 'First Name', type: 'text', required: true },
+  ],
+  document: [
+    { id: 'f-pp', name: 'passport', label: 'Passport', type: 'doc:passport', required: false },
+  ],
+  selfie: [{ id: 'f-selfie', name: 'selfie', label: 'Selfie', type: 'camera', required: true }],
+  address: [
+    {
+      id: 'f-bill',
+      name: 'utilityBill',
+      label: 'Utility Bill',
+      type: 'doc:utility_bill',
+      required: false,
+    },
+  ],
+};
+
 function step(slug: string, over: Partial<KycStepConfig> = {}): KycStepConfig {
   return {
     id: `step-${slug}`,
@@ -38,7 +64,7 @@ function step(slug: string, over: Partial<KycStepConfig> = {}): KycStepConfig {
     description: '',
     icon: 'User',
     enabled: true,
-    fields: [],
+    fields: CORE[slug] ?? [],
     ...over,
   };
 }
@@ -177,8 +203,21 @@ describe('patching a single step', () => {
      * audit row records it.
      */
     const service = makeService();
-    await service.updateKycStep('step-address', { slug: 'residence' }, ACTOR);
-    expect(updateStep).toHaveBeenCalledWith('step-address', { slug: 'residence' });
+    await service.updateKycStep('step-personal', { slug: 'profile' }, ACTOR);
+    expect(updateStep).toHaveBeenCalledWith('step-personal', { slug: 'profile' });
+  });
+
+  it('refuses to re-slug a document step while it still holds documents', async () => {
+    /*
+     * Renaming Proof of Address makes it a step the broker ADDED, holding a
+     * utility bill — the configuration the builder no longer offers, because a
+     * document has no home there (reported from local testing, 25 Sep 2026).
+     */
+    const service = makeService();
+    await expect(
+      service.updateKycStep('step-address', { slug: 'residence' }, ACTOR),
+    ).rejects.toThrow(/Utility Bill.*document type/);
+    expect(updateStep).not.toHaveBeenCalled();
   });
 
   it('allows cosmetic edits, as it always did', async () => {

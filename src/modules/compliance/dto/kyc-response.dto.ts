@@ -182,6 +182,47 @@ export class KycFileStateDto {
   page2FilePath?: string;
 }
 
+/**
+ * One thing a step still owes — see `kyc-step-state.ts`, the one judgement
+ * `submit` applies and the portal renders.
+ */
+@NoClientFields(
+  "the CLIENT's own KYC view in the portal, which carries no admin-maskable projection",
+)
+export class KycOwedDto {
+  @ApiProperty({
+    description: 'A field name, a canonical page slot (`doc_back`), or `docType` for the choice.',
+    example: 'doc_back',
+  })
+  id: string;
+  @ApiProperty({ example: 'National ID: Back Side' }) label: string;
+  @ApiProperty({ enum: ['choice', 'page', 'upload', 'answer', 'invalid', 'returned'] })
+  kind: 'choice' | 'page' | 'upload' | 'answer' | 'invalid' | 'returned';
+  @ApiPropertyOptional({ description: 'For `invalid`: why, ready to print.' }) message?: string;
+  @ApiPropertyOptional({ description: 'For `invalid`: the machine-readable reason.' })
+  code?: string;
+  @ApiPropertyOptional({
+    description: 'For `returned`: a document blocks the step; a typed answer only asks.',
+  })
+  blocking?: boolean;
+}
+
+@NoClientFields(
+  "the CLIENT's own KYC view in the portal, which carries no admin-maskable projection",
+)
+export class KycStepStateDto {
+  @ApiProperty({ example: 'address' }) slug: string;
+  @ApiProperty({ description: 'Nothing owed and nothing returned that blocks.' })
+  complete: boolean;
+  @ApiProperty({ type: [KycOwedDto], description: 'What the client still owes, in step order.' })
+  missing: KycOwedDto[];
+  @ApiProperty({
+    type: [KycOwedDto],
+    description: 'What the reviewer returned here and the client has not answered.',
+  })
+  returned: KycOwedDto[];
+}
+
 export class KycStatusDto {
   @ApiProperty() userId: string;
   @ApiProperty({ enum: KYC_STATUSES }) status: (typeof KYC_STATUSES)[number];
@@ -221,6 +262,13 @@ export class KycStatusDto {
   })
   rejectedFields?: string[];
 
+  @ApiProperty({
+    type: [KycStepStateDto],
+    description:
+      'Every enabled step, in order: complete or not, what it still owes and what was returned. ' +
+      'The same judgement `POST /kyc/submit` applies — render it, do not re-derive it.',
+  })
+  steps: KycStepStateDto[];
   @ApiPropertyOptional() submittedAt?: Date;
   @ApiPropertyOptional() reviewedBy?: string;
   @ApiPropertyOptional() reviewedAt?: Date;

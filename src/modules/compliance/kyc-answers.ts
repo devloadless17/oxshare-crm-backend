@@ -51,6 +51,8 @@ export interface AnswerField {
   label: string;
   type: string;
   required?: boolean;
+  /** For `select`, and for a checkbox that is "tick all that apply". */
+  options?: readonly string[];
 }
 
 /**
@@ -139,6 +141,16 @@ export function typedAnswersFor(
 
     if (field.type === 'phone' && isBarePhonePrefix(value)) value = '';
 
+    if (field.type === 'checkbox' && field.options?.length) {
+      const ticked = tickedChoices(field, value);
+      if ('problem' in ticked) {
+        problems.push({ field: field.name, message: ticked.problem });
+        continue;
+      }
+      answers[field.name] = ticked.value;
+      continue;
+    }
+
     const problem = value === '' ? undefined : valueProblem(field, value);
     if (problem) {
       problems.push({ field: field.name, message: problem });
@@ -151,6 +163,29 @@ export function typedAnswersFor(
 }
 
 /** What is wrong with a non-empty value for this field's type, if anything. */
+/**
+ * A checkbox WITH choices is "tick all that apply" (asked for in local testing:
+ * "where can I put checkbox options?"). Its answer is the ticked choices,
+ * comma-separated, in the order the broker listed them — one spelling every
+ * screen and export reads without parsing. The builder splits choices on
+ * commas, so none can contain one and the list round-trips exactly. A choice
+ * the field does not offer is refused rather than stored.
+ */
+function tickedChoices(field: AnswerField, value: string): { value: string } | { problem: string } {
+  const options = field.options ?? [];
+  const ticked = new Set(
+    value
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part !== ''),
+  );
+  const unknown = [...ticked].find((choice) => !options.includes(choice));
+  if (unknown !== undefined) {
+    return { problem: `${field.label}: "${unknown}" is not one of its choices.` };
+  }
+  return { value: options.filter((option) => ticked.has(option)).join(', ') };
+}
+
 function valueProblem(field: AnswerField, value: string): string | undefined {
   switch (field.type) {
     case 'phone':

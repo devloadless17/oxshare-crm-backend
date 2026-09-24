@@ -3,15 +3,21 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { KYC_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { filenameFromStored } from '../../common/uploads/storage/storage-key';
 import { AdminsStore } from '../../store/admins.store';
-import { collectsAnswers, isDataBearingStep, isFileField, isStoredFile } from './step-slugs';
+import { collectsAnswers, isDataBearingStep } from './step-slugs';
 import { documentTypeFor, typedAnswersFor } from './kyc-answers';
 import {
   CANONICAL_FILE_STEP,
   documentFlagLabel,
   flagsSettledByUpload,
-  missingRequiredPage,
   outstandingDocumentFlags,
 } from './kyc-document-rules';
+import {
+  isPlainUpload,
+  stepStates,
+  type ChosenDocument,
+  type Owed,
+  type StepState,
+} from './kyc-step-state';
 import {
   KycStore,
   stepDataFilePaths,
@@ -142,6 +148,53 @@ function placePage(
 }
 
 /**
+ * The refusal `submit` gives for a step that still owes something — the
+ * messages it has always given, now read off the one judgement
+ * (`kyc-step-state.ts`) rather than computed beside it.
+ */
+function refusalFor(step: KycStepConfig, missing: readonly Owed[]): ValidationError {
+  const answers = missing.filter((item) => item.kind === 'answer');
+  if (step.slug === 'personal' && answers.length > 0) {
+    const names = answers.map((item) => item.id);
+    return new ValidationError(
+      `These profile fields are required before submitting: ${names.join(', ')}.`,
+      { kind: 'missing_fields', fields: names },
+    );
+  }
+  const first = missing[0];
+  if (first.kind === 'invalid') {
+    return new ValidationError(first.message ?? `${first.label} is not acceptable.`, {
+      kind: first.code ?? 'invalid_answer',
+      fields: [first.id],
+    });
+  }
+  if (first.kind === 'choice' || first.kind === 'page') {
+    const identity = step.slug === 'document';
+    const firstPage = identity ? 'doc_front' : 'address_proof';
+    const primary = first.kind === 'choice' || first.id === firstPage;
+    return new ValidationError(
+      primary
+        ? identity
+          ? 'ID document front is required.'
+          : 'Proof of address is required.'
+        : `${first.label} is required.`,
+      { kind: 'missing_document', fields: [primary ? firstPage : first.id] },
+    );
+  }
+  if (step.slug === 'selfie' && first.id === 'selfie') {
+    return new ValidationError('Selfie is required.', {
+      kind: 'missing_document',
+      fields: ['selfie'],
+    });
+  }
+  const owed = missing.filter((item) => item.kind === 'answer' || item.kind === 'upload');
+  return new ValidationError(
+    `${step.title || step.slug} is incomplete: ${owed.map((item) => item.label).join(', ')}.`,
+    { kind: 'incomplete_step', fields: owed.map((item) => item.id) },
+  );
+}
+
+/**
  * The statuses a rejection may act on.
  *
  * Wider than approve's on purpose: a rejection is also the CORRECTION for a
@@ -240,10 +293,25 @@ export class KycService {
   // ─── Get status ────────────────────────────────────────────────────────────
   async getStatus(userId: string) {
     const submission = await this.kycStore.getOrCreate(userId);
+    return this.statusView(userId, submission, await this.kycConfig.getSteps());
+  }
+
+  /**
+   * The submission as the client reads it, WITH every step's state — the one
+   * judgement `submit` also applies, so the portal renders a verdict rather
+   * than re-deriving one (`kyc-step-state.ts`).
+   */
+  private async statusView(
+    userId: string,
+    submission: KycSubmission,
+    steps: readonly KycStepConfig[],
+    chosen?: ChosenDocument,
+  ): Promise<KycSubmission & { verificationLevel: number; steps: StepState[] }> {
     const user = await this.users.findById(userId);
     return {
       ...submission,
       verificationLevel: user?.verificationLevel ?? 0,
+      steps: stepStates(steps, submission, new Date(), chosen),
     };
   }
 
@@ -315,46 +383,70 @@ export class KycService {
      * PATHS, so the same merge let a client point their submission at any
      * stored file. `kyc-answers.ts` holds the rule and the whole argument.
      */
-    let changed: string[] = [];
+    /*
+     * ── WHICH DOCUMENT, on the two document steps ────────────────────────────
+     *
+     * The pages arrive by upload, each naming its document (`attachFile`); this
+     * records the choice. It used to overwrite the stored type whatever was on
+     * file, so a client who had uploaded a passport, clicked National ID and
+     * pressed Continue had their PASSPORT's photo page relabelled as a national
+     * ID's front. Now a different document is only recorded while nothing is
+     * on file for the one stored; otherwise the choice is JUDGED — every page of
+     * it is owed, since the stored ones belong to the other document — and the
+     * pages already on file are left alone until one of the new document's
+     * arrives (which starts it afresh, in `placePage`).
+     */
+    let chosen: ChosenDocument | undefined;
     if (step === 'document' || step === 'address') {
-      // These two record WHICH document was chosen; the pages arrive by upload.
       const docType = documentTypeFor(
         step === 'document' ? 'identity' : 'address',
         data['docType'],
       );
-      if (docType && step === 'document') patch['document'] = { ...submission.document, docType };
-      if (docType && step === 'address') {
-        patch['addressProof'] = { ...submission.addressProof, docType };
+      const stored = step === 'document' ? submission.document : submission.addressProof;
+      const onFile =
+        step === 'document'
+          ? Boolean(submission.document?.frontFilePath || submission.document?.backFilePath)
+          : Boolean(submission.addressProof?.filePath || submission.addressProof?.page2FilePath);
+      if (docType && docType !== stored?.docType) {
+        if (onFile) chosen = { slug: step, docType };
+        else if (step === 'document') patch['document'] = { ...submission.document, docType };
+        else patch['addressProof'] = { ...submission.addressProof, docType };
       }
-    } else if (step !== 'selfie') {
-      // The personal step even when the broker has disabled it — the reason the
-      // canonical slugs skip the enabled check above.
-      const fields = steps.find((s) => s.slug === step)?.fields ?? [];
-      const { answers, problems } = typedAnswersFor(fields, data);
-      if (problems.length > 0) {
-        throw new ValidationError(problems.map((p) => p.message).join(' '), {
-          kind: 'invalid_answer',
-          fields: problems.map((p) => p.field),
-        });
-      }
-      const current = (
-        step === 'personal' ? submission.personalInfo : submission.stepData?.[step]
-      ) as Record<string, unknown> | undefined;
-      changed = Object.keys(answers).filter((key) => current?.[key] !== answers[key]);
+    }
 
-      if (step === 'personal') {
-        // `PersonalInfo` names the seeded fields; the column also carries any
-        // field the builder added, so the cast widens to what is stored.
-        patch['personalInfo'] = {
-          ...(submission.personalInfo ?? {}),
-          ...answers,
-        };
-      } else {
-        patch['stepData'] = {
-          ...submission.stepData,
-          [step]: { ...(submission.stepData?.[step] ?? {}), ...answers },
-        };
-      }
+    /*
+     * ── THE STEP'S TYPED ANSWERS, on every step ──────────────────────────────
+     *
+     * The personal step's go to `personal_info`, read by name across the system
+     * (the verified phone and country are promoted from it). Every other step's
+     * — an added step's, and the extra questions a broker puts on a built-in
+     * step — go to `step_data` under the step's slug.
+     */
+    const fields = steps.find((s) => s.slug === step)?.fields ?? [];
+    const { answers, problems } = typedAnswersFor(fields, data);
+    if (problems.length > 0) {
+      throw new ValidationError(problems.map((p) => p.message).join(' '), {
+        kind: 'invalid_answer',
+        fields: problems.map((p) => p.field),
+      });
+    }
+    const current = (
+      step === 'personal' ? submission.personalInfo : submission.stepData?.[step]
+    ) as Record<string, unknown> | undefined;
+    const changed = Object.keys(answers).filter((key) => current?.[key] !== answers[key]);
+
+    if (step === 'personal') {
+      // `PersonalInfo` names the seeded fields; the column also carries any
+      // field the builder added, so the cast widens to what is stored.
+      patch['personalInfo'] = {
+        ...(submission.personalInfo ?? {}),
+        ...answers,
+      };
+    } else if (!isDataBearingStep(step) || Object.keys(answers).length > 0) {
+      patch['stepData'] = {
+        ...submission.stepData,
+        [step]: { ...(submission.stepData?.[step] ?? {}), ...answers },
+      };
     }
 
     /*
@@ -366,7 +458,13 @@ export class KycService {
     const remaining = flagged.filter((id) => !changed.includes(id));
     if (remaining.length !== flagged.length) patch['rejectedFields'] = remaining;
 
-    return await this.kycStore.update(userId, patch);
+    /*
+     * Answered with every step's state — this step's judged against the
+     * document the client says they are presenting — so Continue can ask the
+     * server rather than guess.
+     */
+    const saved = await this.kycStore.update(userId, patch);
+    return this.statusView(userId, saved, steps, chosen);
   }
 
   // ─── Attach uploaded file to a step ────────────────────────────────────────
@@ -422,11 +520,15 @@ export class KycService {
      * refused by the storage behind it.
      *
      * Resolved by the CONFIGURATION rather than by a name, because there is no
-     * name to recognise. The field must belong to a step that is configured,
-     * enabled, non-canonical, and must actually be a file-bearing field —
-     * otherwise this route would accept an arbitrary key from a client-facing
-     * endpoint and write it into an unbounded jsonb column, which is precisely
-     * what `saveStep`'s own guard exists to prevent.
+     * name to recognise. The field must be a File or Camera field of an enabled
+     * step — otherwise this route would accept an arbitrary key from a
+     * client-facing endpoint and write it into an unbounded jsonb column, which
+     * is precisely what `saveStep`'s own guard exists to prevent.
+     *
+     * ANY step, built-in or added. It used to be added steps only, so a File
+     * field a broker put on Proof of Address rendered an uploader this refused
+     * — and "required" on it blocked nothing (reported from local testing). A
+     * catalogue document's pages never arrive here: they have canonical slots.
      */
     const owner = canonical
       ? undefined
@@ -434,8 +536,7 @@ export class KycService {
           (step) =>
             step.enabled &&
             collectsAnswers(step.slug) &&
-            !isDataBearingStep(step.slug) &&
-            (step.fields ?? []).some((f) => f.name === field && isFileField(f)),
+            (step.fields ?? []).some((f) => f.name === field && isPlainUpload(f)),
         );
     if (!canonical && !owner) throw new ValidationError(`Unknown file field: ${field}`);
 
@@ -573,139 +674,33 @@ export class KycService {
      * configuration inside one submission is a window where they could disagree.
      */
     const steps = await this.kycConfig.getSteps();
-
-    const problem = findProfileProblem(
-      // `PersonalInfo` declares named optional fields; the stored column is
-      // `jsonb` and also carries whatever a custom field was named. The cast
-      // widens to what is actually there rather than what the interface admits.
-      finalSub.personalInfo as unknown as Record<string, unknown>,
-      this.profileRulesFrom(steps),
-      new Date(),
-    );
-    if (problem) {
-      throw new ValidationError(problem.message, { kind: problem.kind, fields: problem.fields });
-    }
+    // Fails closed when the deployment has no enabled profile step — see
+    // `profileRulesFrom` for why an empty rule set must never be reachable.
+    this.profileRulesFrom(steps);
 
     /*
-     * ── REQUIRED BECAUSE THE FLOW ASKS FOR THEM, NOT BECAUSE THEY ARE NAMED ──
+     * ── ONE JUDGE: `stepStates` ─────────────────────────────────────────────
      *
-     * These three were unconditional, and that contradicted the configuration
-     * they sit behind. `admin-compliance.service.ts` records that the
-     * mandatory-step rule was dropped on purpose — "a configurable flow that
-     * refuses to drop four of its steps is not configurable, and the broker owns
-     * which jurisdiction needs what" — so a broker may disable the address step.
+     * Everything a submission must hold — the profile's required answers and
+     * its age rule, every required page of the chosen documents, the selfie,
+     * every required answer and upload on every step, built-in or added — is
+     * decided in `kyc-step-state.ts`. It is the same judgement
+     * `GET /kyc/status` serves, so the portal and this refusal cannot
+     * disagree: this used to be six hand-written checks here and another set in
+     * the browser, and their disagreements were a week of bug reports.
      *
-     * Doing so produced a DEAD END: the portal stopped showing the step, the
-     * client had no way to upload an address proof, and `submit` refused the
-     * submission for not having one. Nobody could finish KYC, and nothing said
-     * why — the console showed a valid flow and the error named a step that was
-     * no longer in it.
-     *
-     * Asking the configuration is the same thing `profileRules` above already
-     * does for the personal fields. A step that is present and enabled is a
-     * promise the client was asked for that document; a step that is not is a
-     * promise nobody made.
+     * Steps whose broker has disabled them owe nothing: a step that is present
+     * and enabled is a promise the client was asked for that; one that is not
+     * is a promise nobody made. Refused at the FIRST step that still owes
+     * something, in the order the client meets them, with the message that
+     * kind of gap has always produced (`refusalFor`).
      */
-    const enabledSlugs = new Set(steps.filter((step) => step.enabled).map((step) => step.slug));
-
-    /*
-     * ── A CUSTOM STEP'S `required` FLAGS ARE RULES, NOT DECORATION ──────────
-     *
-     * The personal step's required fields are enforced above, through
-     * `findProfileProblem`. Every other step's were enforced nowhere: a broker
-     * could mark a custom field required, the builder would save it, the portal
-     * would star it — and a client could submit without it, because nothing on
-     * the server ever looked.
-     *
-     * That is the exact shape `saveStep`'s own comment records for the personal
-     * step ("`saveStep` never consulted the configured `required` flags, so they
-     * were decoration"), and shipping custom steps without closing it would have
-     * reintroduced the bug on the new surface the same day.
-     *
-     * Checked at SUBMIT for the reason that one is: steps are resumable, a
-     * client is expected to save a half-filled step and come back, and
-     * submission is the point at which the flow is claimed to be complete.
-     */
-    for (const step of steps) {
-      if (!step.enabled || !collectsAnswers(step.slug) || isDataBearingStep(step.slug)) continue;
-
-      const answers = finalSub.stepData[step.slug] ?? {};
-      const missing = (step.fields ?? [])
-        .filter((field) => field.required)
-        .filter((field) => {
-          const value = answers[field.name];
-          if (value === undefined || value === null) return true;
-          /*
-           * A FILE answer is present when it is a stored file, not when it
-           * stringifies to something non-empty. `String({...})` is
-           * "[object Object]", so the generic check below would have called an
-           * uploaded document complete no matter what the object held — and,
-           * worse, would have called a malformed one complete too.
-           */
-          if (isFileField(field)) return !isStoredFile(value);
-          /*
-           * A typed answer is a STRING. Anything else in a non-file field is
-           * malformed rather than an answer, and counts as missing — which is
-           * also why this cannot be `String(value)`: stringifying the file
-           * object would yield "[object Object]" and call it complete.
-           */
-          return typeof value !== 'string' || value.trim() === '';
-        });
-
-      if (missing.length > 0) {
-        throw new ValidationError(
-          `${step.title || step.slug} is incomplete: ${missing.map((f) => f.label || f.name).join(', ')}.`,
-          { kind: 'incomplete_step', fields: missing.map((f) => f.name) },
-        );
-      }
-    }
-
-    /*
-     * EVERY REQUIRED PAGE of the document the client chose, not just the first.
-     * A national ID with no back — half a card — used to go to the queue as
-     * complete. `missingRequiredPage` reads the pages from the catalogue.
-     */
-    if (enabledSlugs.has('document')) {
-      const missing = missingRequiredPage(
-        {
-          docType: finalSub.document?.docType,
-          files: [finalSub.document?.frontFilePath, finalSub.document?.backFilePath],
-        },
-        'identity',
+    for (const state of stepStates(steps, finalSub, new Date())) {
+      if (state.missing.length === 0) continue;
+      throw refusalFor(
+        steps.find((step) => step.slug === state.slug)!,
+        state.missing,
       );
-      if (missing) {
-        throw new ValidationError(
-          missing.index === 0 || !missing.label
-            ? 'ID document front is required.'
-            : `${missing.label} is required.`,
-          { kind: 'missing_document', fields: [missing.index === 0 ? 'doc_front' : 'doc_back'] },
-        );
-      }
-    }
-    if (enabledSlugs.has('selfie') && !finalSub.selfie?.filePath)
-      throw new ValidationError('Selfie is required.', {
-        kind: 'missing_document',
-        fields: ['selfie'],
-      });
-    if (enabledSlugs.has('address')) {
-      const missing = missingRequiredPage(
-        {
-          docType: finalSub.addressProof?.docType,
-          files: [finalSub.addressProof?.filePath, finalSub.addressProof?.page2FilePath],
-        },
-        'address',
-      );
-      if (missing) {
-        throw new ValidationError(
-          missing.index === 0 || !missing.label
-            ? 'Proof of address is required.'
-            : `${missing.label} is required.`,
-          {
-            kind: 'missing_document',
-            fields: [missing.index === 0 ? 'address_proof' : 'address_proof_2'],
-          },
-        );
-      }
     }
 
     /*

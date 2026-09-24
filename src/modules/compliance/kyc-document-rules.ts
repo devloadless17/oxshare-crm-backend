@@ -173,11 +173,21 @@ export function missingRequiredPage(
   stored: StoredDocument,
   category: 'identity' | 'address',
 ): MissingPage | undefined {
+  return missingRequiredPages(stored, category)[0];
+}
+
+/** Every required page with no file, in page order — `missingRequiredPage` is the first. */
+export function missingRequiredPages(
+  stored: StoredDocument,
+  category: 'identity' | 'address',
+): MissingPage[] {
   const entry = stored.docType ? catalogueDocument(stored.docType) : undefined;
   if (!entry || entry.category !== category) {
-    return stored.files[0] ? undefined : { index: 0 };
+    return stored.files[0] ? [] : [{ index: 0 }];
   }
-  const index = entry.parts.findIndex((part, i) => part.required && !stored.files[i]);
-  if (index === -1) return undefined;
-  return { index, label: `${entry.label}: ${entry.parts[index].label}` };
+  return entry.parts.flatMap((part, index) =>
+    part.required && !stored.files[index]
+      ? [{ index, label: `${entry.label}: ${part.label}` }]
+      : [],
+  );
 }

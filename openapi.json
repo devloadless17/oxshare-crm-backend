@@ -4576,8 +4576,15 @@
           }
         },
         "responses": {
-          "201": {
-            "description": ""
+          "200": {
+            "description": "The saved submission with every step state — this step judged as presented.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycStatusDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4613,6 +4620,10 @@
                   "field": {
                     "type": "string",
                     "example": "doc_front"
+                  },
+                  "docType": {
+                    "type": "string",
+                    "example": "national_id"
                   }
                 }
               }
@@ -14429,6 +14440,81 @@
           }
         }
       },
+      "KycOwedDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "A field name, a canonical page slot (`doc_back`), or `docType` for the choice.",
+            "example": "doc_back"
+          },
+          "label": {
+            "type": "string",
+            "example": "National ID: Back Side"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "choice",
+              "page",
+              "upload",
+              "answer",
+              "invalid",
+              "returned"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "For `invalid`: why, ready to print."
+          },
+          "code": {
+            "type": "string",
+            "description": "For `invalid`: the machine-readable reason."
+          },
+          "blocking": {
+            "type": "boolean",
+            "description": "For `returned`: a document blocks the step; a typed answer only asks."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "kind"
+        ]
+      },
+      "KycStepStateDto": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "example": "address"
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "Nothing owed and nothing returned that blocks."
+          },
+          "missing": {
+            "description": "What the client still owes, in step order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycOwedDto"
+            }
+          },
+          "returned": {
+            "description": "What the reviewer returned here and the client has not answered.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycOwedDto"
+            }
+          }
+        },
+        "required": [
+          "slug",
+          "complete",
+          "missing",
+          "returned"
+        ]
+      },
       "KycStatusDto": {
         "type": "object",
         "properties": {
@@ -14481,6 +14567,13 @@
               "type": "string"
             }
           },
+          "steps": {
+            "description": "Every enabled step, in order: complete or not, what it still owes and what was returned. The same judgement `POST /kyc/submit` applies — render it, do not re-derive it.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycStepStateDto"
+            }
+          },
           "submittedAt": {
             "format": "date-time",
             "type": "string"
@@ -14500,6 +14593,7 @@
         "required": [
           "userId",
           "status",
+          "steps",
           "createdAt"
         ]
       },

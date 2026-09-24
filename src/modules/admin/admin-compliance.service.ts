@@ -584,6 +584,16 @@ export class AdminComplianceService {
     return result;
   }
   async addKycStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>, actor: Admin) {
+    /*
+     * The same rules as a whole-configuration save. The two per-step routes
+     * checked nothing, so anything `updateKycConfig` refuses — a document on a
+     * step that cannot hold it, two fields sharing a key — went through here.
+     */
+    const current = await this.kycConfig.getSteps();
+    assertKycConfigIntegrity(current, [
+      ...current,
+      { ...stepData, id: '', stepNumber: current.length + 1 },
+    ]);
     const created = await this.kycConfig.addStep(stepData);
     this.audit.record(actor.id, 'kyc_config.step_add', 'kyc_config', created.id, {
       slug: stepData.slug,
@@ -594,6 +604,13 @@ export class AdminComplianceService {
   async updateKycStep(id: string, patch: Partial<KycStepConfig>, actor: Admin) {
     const steps = await this.kycConfig.getSteps();
     const target = steps.find((s) => s.id === id);
+    // Judged as the configuration it would produce — see `addKycStep`.
+    if (target) {
+      assertKycConfigIntegrity(
+        steps,
+        steps.map((step) => (step.id === id ? { ...step, ...patch, id } : step)),
+      );
+    }
     /*
      * NO MANDATORY-STEP GUARD. See `assertMandatoryStepsIntact` below for why
      * the whole rule was dropped: a configurable flow that refuses to drop four

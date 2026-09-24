@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { assertFieldKeysUniquePerStep, assertReservedKeysNotRenamed } from './kyc-config-integrity';
-import type { KycStepConfig } from '../../store/kyc-config.store';
+import {
+  assertFieldKeysUniquePerStep,
+  assertFieldsFitTheirStep,
+  assertReservedKeysNotRenamed,
+} from './kyc-config-integrity';
+import { DEFAULT_KYC_STEPS, type KycStepConfig } from '../../store/kyc-config.store';
 
 /**
  * The rules that stop the builder saving a form that cannot work.
@@ -130,5 +134,93 @@ describe('a reserved key cannot be renamed out from under the server', () => {
     expect(() => assertReservedKeysNotRenamed(reserved('dateOfBirth'), after)).toThrow(
       /dateOfBirth/,
     );
+  });
+});
+
+describe('documents at home, every other field anywhere, and no step left impossible', () => {
+  /*
+   * Reported from local testing: documents on a step the broker added, and the
+   * week of bugs that came from giving them a second home there. And the other
+   * half, asked for the same day: extra questions and uploads on the built-in
+   * steps, which must WORK rather than be refused.
+   */
+  const passport = field({ id: 'p', name: 'passport', label: 'Passport', type: 'doc:passport' });
+  const bill = field({ id: 'b', name: 'bill', label: 'Utility Bill', type: 'doc:utility_bill' });
+  const camera = field({ id: 's', name: 'selfie', label: 'Selfie', type: 'camera' });
+  /** The step's core, so what is asserted is only the field added beside it. */
+  const coreOf = (slug: string) =>
+    slug === 'document'
+      ? [passport]
+      : slug === 'address'
+        ? [bill]
+        : slug === 'selfie'
+          ? [camera]
+          : [];
+  const check =
+    (slug: string, ...extra: ReturnType<typeof field>[]) =>
+    () =>
+      assertFieldsFitTheirStep([step({ slug, title: slug, fields: [...coreOf(slug), ...extra] })]);
+
+  it('keeps every document off a step the broker added, and says what to use instead', () => {
+    expect(check('source-of-funds', passport)).toThrow(/document type.*File field/);
+    expect(check('source-of-funds', bill)).toThrow(/document type/);
+  });
+
+  it('keeps every document off the personal and selfie steps', () => {
+    expect(check('personal', field({ type: 'doc:national_id' }))).toThrow(/document type/);
+    expect(check('selfie', field({ id: 'x', name: 'x', type: 'doc:passport' }))).toThrow(
+      /document type/,
+    );
+  });
+
+  it('refuses a document of the other KIND on a document step — its pages would be filed as the wrong one', () => {
+    expect(check('document', bill)).toThrow(/Utility Bill.*proof of address.*wrong document/);
+    expect(check('address', passport)).toThrow(/Passport.*identity document.*wrong document/);
+  });
+
+  it('ALLOWS every other field on EVERY step — the extra questions and uploads a broker adds', () => {
+    for (const slug of ['personal', 'document', 'address', 'selfie', 'source-of-funds']) {
+      for (const type of ['text', 'date', 'phone', 'select', 'checkbox', 'file', 'camera']) {
+        expect(
+          check(slug, field({ id: 'extra', name: 'extra', type })),
+          `${type} on ${slug}`,
+        ).not.toThrow();
+      }
+    }
+  });
+
+  it('refuses a document step that offers no document — nobody could complete it', () => {
+    expect(() =>
+      assertFieldsFitTheirStep([
+        step({ slug: 'address', title: 'Proof of Address', fields: [field()] }),
+      ]),
+    ).toThrow(/"Proof of Address" offers no document.*disable the step/);
+  });
+
+  it('refuses a selfie step without its selfie camera', () => {
+    expect(() =>
+      assertFieldsFitTheirStep([step({ slug: 'selfie', title: 'Selfie', fields: [field()] })]),
+    ).toThrow(/needs its selfie camera/);
+    expect(() =>
+      assertFieldsFitTheirStep([
+        step({ slug: 'selfie', title: 'Selfie', fields: [{ ...camera, type: 'text' }] }),
+      ]),
+    ).toThrow(/needs its selfie camera/);
+  });
+
+  it('accepts the default configuration exactly as seeded', () => {
+    expect(() => assertFieldsFitTheirStep(DEFAULT_KYC_STEPS)).not.toThrow();
+  });
+
+  it('tolerates a document the catalogue has withdrawn, beside one it knows', () => {
+    expect(
+      check('document', field({ id: 'old', name: 'old', type: 'doc:old_card' })),
+    ).not.toThrow();
+  });
+
+  it('reads the step table by OWN key — a slug is typed by an operator', () => {
+    // `constructor` is a step somebody added, not an entry on the prototype.
+    expect(check('constructor', passport)).toThrow(/document type/);
+    expect(check('constructor', field({ type: 'file' }))).not.toThrow();
   });
 });

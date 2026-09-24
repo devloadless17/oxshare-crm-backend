@@ -960,6 +960,13 @@
       "when": 1789139298743,
       "tag": "0136_kyc_personal_info_debris",
       "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "7",
+      "when": 1789139298744,
+      "tag": "0137_kyc_fields_fit_their_step",
+      "breakpoints": true
     }
   ]
 }

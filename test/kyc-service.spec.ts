@@ -717,8 +717,11 @@ describe('saveStep stores only what the step asks for', () => {
       frontFilePath: 'uploads/kyc/someone-else.jpg',
       backFilePath: 'uploads/kyc/someone-else-2.jpg',
     });
+    // The same document again writes NOTHING to the column — so there is no
+    // write for a smuggled path to ride on, and the client's own file stays.
     const patch = h.kycStore.update.mock.calls[0][1];
-    expect(patch.document).toEqual({ docType: 'passport', frontFilePath: 'uploads/kyc/mine.jpg' });
+    expect(patch).not.toHaveProperty('document');
+    expect(JSON.stringify(patch)).not.toContain('someone-else');
   });
 
   it('does not let a blank choice erase the document already chosen', async () => {
@@ -907,6 +910,120 @@ describe('an upload says which document its page belongs to', () => {
     h.kycStore.lockForUpdate.mockResolvedValue(submission({ status: 'submitted' }));
     await expect(upload(h, 'doc_front', 'late.jpg', 'passport')).rejects.toThrow(/under review/i);
     expect(h.kycStore.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('a built-in step holds extra fields, and ONE judge decides every step', () => {
+  /*
+   * Reported from local testing: a required File field on Proof of Address
+   * ("prooof3") that let the client continue without it — the step had nowhere
+   * to keep it, so nothing could check it. And the week before: the portal and
+   * `submit` judging completeness separately, and disagreeing.
+   */
+  const withExtras = (h: ReturnType<typeof build>) =>
+    h.kycConfig.getSteps.mockResolvedValue(
+      defaultSteps().map((step) =>
+        step.slug === 'address'
+          ? {
+              ...step,
+              fields: [
+                {
+                  id: 'f-u',
+                  name: 'utilityBill',
+                  label: 'Utility Bill',
+                  type: 'doc:utility_bill',
+                  required: false,
+                },
+                { id: 'f-l', name: 'prooof3', label: 'Lease', type: 'file', required: true },
+                { id: 'f-n', name: 'note', label: 'Landlord', type: 'text', required: true },
+              ],
+            }
+          : step,
+      ),
+    );
+
+  it('saves an extra answer under the step’s slug, and answers with every step’s state', async () => {
+    const h = build({ stored: completeSubmission() });
+    withExtras(h);
+    const saved = await h.service.saveStep('user-1', 'address', {
+      docType: 'utility_bill',
+      note: ' Mr Haddad ',
+    });
+    expect(h.kycStore.update).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ stepData: { address: { note: 'Mr Haddad' } } }),
+    );
+    const address = saved.steps.find((state) => state.slug === 'address')!;
+    expect(address.missing).toEqual([{ id: 'prooof3', label: 'Lease', kind: 'upload' }]);
+  });
+
+  it('accepts an upload into an extra File field on a built-in step', async () => {
+    const h = build({ stored: completeSubmission() });
+    withExtras(h);
+    await h.service.attachFile('user-1', 'prooof3', 'uploads/kyc/lease.png', 'lease.png');
+    expect(h.kycStore.update).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({
+        stepData: {
+          address: { prooof3: { filePath: 'uploads/kyc/lease.png', fileName: 'lease.png' } },
+        },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('will not submit without a required extra — named by its label, on its step', async () => {
+    const h = build({ stored: completeSubmission() });
+    withExtras(h);
+    await expect(h.service.submit('user-1')).rejects.toThrow(
+      /Address is incomplete: Lease, Landlord\./,
+    );
+  });
+
+  it('submits once the extras are there', async () => {
+    const h = build({
+      stored: completeSubmission({
+        stepData: {
+          address: {
+            prooof3: { filePath: 'uploads/kyc/l.png', fileName: 'l.png' },
+            note: 'Mr Haddad',
+          },
+        },
+      }),
+    });
+    withExtras(h);
+    await expect(h.service.submit('user-1')).resolves.toBeDefined();
+  });
+
+  it('NEVER relabels the pages on file when the client picks another document — it judges the choice', async () => {
+    // A passport on file; the client clicked National ID and pressed Continue.
+    const h = build({ stored: completeSubmission() });
+    const saved = await h.service.saveStep('user-1', 'document', { docType: 'national_id' });
+    const patch = h.kycStore.update.mock.calls[0][1] as Record<string, unknown>;
+    expect(patch).not.toHaveProperty('document');
+    expect(
+      saved.steps.find((state) => state.slug === 'document')!.missing.map((m) => m.label),
+    ).toEqual(['National ID: Front Side', 'National ID: Back Side']);
+  });
+
+  it('records a document chosen before anything is on file', async () => {
+    const h = build({ stored: completeSubmission({ document: undefined }) });
+    await h.service.saveStep('user-1', 'document', { docType: 'national_id' });
+    expect(h.kycStore.update).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ document: { docType: 'national_id' } }),
+    );
+  });
+
+  it('serves every step’s state with the status', async () => {
+    const h = build({ stored: completeSubmission({ selfie: undefined }) });
+    const status = await h.service.getStatus('user-1');
+    expect(status.steps.map((state) => [state.slug, state.complete])).toEqual([
+      ['personal', true],
+      ['document', true],
+      ['selfie', false],
+      ['address', true],
+    ]);
   });
 });
 
