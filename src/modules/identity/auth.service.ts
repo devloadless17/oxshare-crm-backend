@@ -424,20 +424,25 @@ export class AuthService {
     const account = await this.ib.findAccountByReferralCode(normalised);
     if (!account) {
       /*
-       * NOT thrown: refusing the signup would be worse. A partner whose link
-       * carries a typo would block every client who follows it, and the person
-       * punished is the one who did nothing wrong.
+       * REFUSED, and this REVERSES an earlier decision in this file.
        *
-       * But no longer only logged either. The introduction is lost PERMANENTLY
-       * here — `referred_by_ib_user_id` stays null, the partner is never
-       * credited, and nothing downstream notices, because an unattributed
-       * client is indistinguishable from one who walked in off the street. A
-       * log line is not a signal; it is something nobody reads until they
-       * already know to look.
+       * It used to register the client anyway, on the argument that refusing a
+       * signup over a mangled link punishes the one person who did nothing
+       * wrong — a partner's typo would block every client who follows it.
        *
-       * The repair exists and is manual (`PATCH /admin/clients/:id/referrer`),
-       * which is precisely why the desk has to be told, and told while the
-       * client is still identifiable as having arrived through a partner link.
+       * The owner overruled that after watching it happen, and the reasoning is
+       * better than mine was. Accepting the code silently produces an account
+       * that LOOKS correct to everyone: the client believes they signed up
+       * under their partner, the partner never appears, and attribution is
+       * permanent per client. Nobody finds out, because an unattributed client
+       * is indistinguishable from one who walked in off the street. Refusing is
+       * loud and recoverable in the ten seconds it takes to check the link;
+       * accepting is silent and recoverable only by an administrator who
+       * happens to notice.
+       *
+       * So the client is TOLD, and can remove the code and continue. The alert
+       * still fires, because a published link resolving to nobody is a fact the
+       * desk needs whether or not that one client retried.
        */
       raiseAlert(
         this.logger,
@@ -447,7 +452,16 @@ export class AuthService {
           'was not attributed and must be repaired by hand',
         { received: code ?? '', normalised },
       );
-      return undefined;
+      /*
+       * The message names the code as WE read it, not as it was typed: a client
+       * who pasted `R6AA6AMV\` is told `R6AA6AMV` was not recognised, which is
+       * the string they can actually check against the one their partner gave
+       * them. Naming the raw input would send them hunting for a backslash that
+       * the normaliser already removed.
+       */
+      throw new ValidationError(
+        `The referral code ${normalised} is not recognised. Check the link, or remove the code to continue without a partner.`,
+      );
     }
     return account.userId;
   }

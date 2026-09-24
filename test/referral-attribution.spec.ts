@@ -232,13 +232,46 @@ describe('a code that resolves', () => {
 });
 
 describe('a code that does not resolve', () => {
-  it('registers the client anyway, unattributed', async () => {
-    // The signup is the thing we cannot get back. The attribution is not.
-    const clientId = await registerClient('unknown@test.local', 'NOSUCH99');
+  it('REFUSES the registration and names the code, rather than registering unattributed', async () => {
+    /*
+     * THIS REVERSES THE ORIGINAL BEHAVIOUR, deliberately, after the owner
+     * watched it happen.
+     *
+     * It used to register the client with no partner, on the argument that
+     * refusing a signup over a mangled link punishes the one person who did
+     * nothing wrong. The counter-argument won: accepting silently produces an
+     * account that looks correct to everyone. The client believes they signed
+     * up under their partner, the partner never appears, and attribution is
+     * permanent per client — so nobody finds out, because an unattributed
+     * client is indistinguishable from one who arrived alone.
+     *
+     * Refusing is loud and recoverable in the seconds it takes to check a link.
+     * Accepting is silent and recoverable only by an administrator who happens
+     * to notice.
+     */
+    await expect(registerClient('unknown@test.local', 'NOSUCH99')).rejects.toThrow(/NOSUCH99/);
 
-    const client = await users.findById(clientId);
-    expect(client?.referredByIbUserId).toBeUndefined();
-    expect(sendVerificationEmail).toHaveBeenCalledTimes(1);
+    // Nothing was created, and no verification mail was sent for an account
+    // that does not exist.
+    const [row] = await ctx.db
+      .execute<{ n: string }>(
+        sql`SELECT count(*)::text AS n FROM users WHERE email = 'unknown@test.local'`,
+      )
+      .then((r) => r.rows);
+    expect(row.n).toBe('0');
+    expect(sendVerificationEmail).not.toHaveBeenCalled();
+  });
+
+  it('names the code as NORMALISED, which is the string the client can check', async () => {
+    /*
+     * A client who pasted `NOSUCH99\` is told `NOSUCH99` was not recognised —
+     * the string they can compare against the one their partner gave them.
+     * Naming the raw input would send them hunting for a backslash the
+     * normaliser has already removed.
+     */
+    await expect(registerClient('debris-unknown@test.local', ' nosuch99\\ ')).rejects.toThrow(
+      /NOSUCH99 is not recognised/,
+    );
   });
 
   it('registers when the code is empty or blank', async () => {
