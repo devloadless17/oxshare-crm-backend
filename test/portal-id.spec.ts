@@ -243,3 +243,48 @@ describe('every client search box reads digits as a Portal ID', () => {
     expect(rows.map((r) => Number(r.portal_id))).toEqual([31337]);
   });
 });
+
+describe('0135 lets an API role that does not own the schema number new clients', () => {
+  /*
+   * The hardening 0033 anticipates: the API connecting as `app`, a role that
+   * does not own the schema. Every registration calls `nextval` on the Portal ID
+   * sequence, so without a grant that role could not create a single client.
+   * Proved against a real non-owner role rather than asserted from the SQL.
+   */
+  it('refuses the role before the grant and allows it after', async () => {
+    const { rows } = await ctx.db.execute<{ existed: boolean }>(sql`
+      SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app') AS existed
+    `);
+    const existed = rows[0].existed;
+    if (!existed) await ctx.db.execute(sql.raw('CREATE ROLE app NOLOGIN'));
+
+    const client = await ctx.pool.connect();
+    const drawAsApp = async (): Promise<string | undefined> => {
+      try {
+        await client.query('SET ROLE app');
+        await client.query(`SELECT nextval('users_portal_id_seq')`);
+        return undefined;
+      } catch (error) {
+        return (error as { code?: string }).code;
+      } finally {
+        await client.query('RESET ROLE');
+      }
+    };
+
+    try {
+      await ctx.db.execute(sql.raw('REVOKE ALL ON SEQUENCE users_portal_id_seq FROM app'));
+      expect(await drawAsApp()).toBe('42501'); // insufficient_privilege
+
+      await ctx.db.execute(
+        sql.raw(readFileSync('src/database/migrations/0135_grant_portal_id_sequence.sql', 'utf8')),
+      );
+      expect(await drawAsApp()).toBeUndefined();
+    } finally {
+      client.release();
+      // Leave the cluster as it was found: roles are cluster-wide, and the next
+      // spec file's migrations branch on whether `app` exists.
+      await ctx.db.execute(sql.raw('REVOKE ALL ON SEQUENCE users_portal_id_seq FROM app'));
+      if (!existed) await ctx.db.execute(sql.raw('DROP ROLE app'));
+    }
+  });
+});

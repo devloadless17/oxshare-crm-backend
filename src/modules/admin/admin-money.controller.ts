@@ -771,7 +771,8 @@ export class AdminMoneyController {
     summary: 'Run reconciliation now and return the report (§12.2)',
     description:
       'The same check the hourly job runs: every wallet balance against the sum of its own ' +
-      'ledger, and every confirmed accrual against the entry that should have credited it. ' +
+      'ledger. Wallet balances ONLY — a confirmed commission accrual that was never credited ' +
+      'is a separate alert (UNPAID_CONFIRMED_ACCRUAL), not part of this report. ' +
       'Read-only — a discrepancy is reported, never repaired, because an automatic correction ' +
       'would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an ' +
       'admin scoped to a client territory is refused, because a reconciliation over a fragment ' +

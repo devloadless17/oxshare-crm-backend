@@ -9489,7 +9489,7 @@
     },
     "/v1/admin/reconciliation": {
       "get": {
-        "description": "The same check the hourly job runs: every wallet balance against the sum of its own ledger, and every confirmed accrual against the entry that should have credited it. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an admin scoped to a client territory is refused, because a reconciliation over a fragment is meaningless and the full report names clients outside their territory.",
+        "description": "The same check the hourly job runs: every wallet balance against the sum of its own ledger. Wallet balances ONLY — a confirmed commission accrual that was never credited is a separate alert (UNPAID_CONFIRMED_ACCRUAL), not part of this report. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an admin scoped to a client territory is refused, because a reconciliation over a fragment is meaningless and the full report names clients outside their territory.",
         "operationId": "AdminMoneyController_reconcile",
         "parameters": [],
         "responses": {
