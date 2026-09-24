@@ -7,6 +7,7 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { MoneyLimits } from '../src/config/money-limits';
 import { auditStubAs } from './audit-stub';
+import { AuditLogStore } from '../src/store/audit-log.store';
 import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
@@ -64,6 +65,7 @@ beforeAll(async () => {
     notificationsStubAs(),
     transfersStubAs(),
     transferExecutorStubAs(),
+    new AuditLogStore(ctx.db),
   );
 }, 120_000);
 

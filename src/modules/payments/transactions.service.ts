@@ -289,6 +289,8 @@ import {
   type NotificationDispatchPort,
 } from '../../common/provisioning/notification-dispatch.port';
 import { PaymentGateways } from './payment-gateways.service';
+import { AuditLogStore } from '../../store/audit-log.store';
+import { SYSTEM_ACTOR } from '../../common/security/actor';
 import {
   AuthorizationError,
   MoneyRuleError,
@@ -591,6 +593,14 @@ export class TransactionsService {
      */
     private readonly transfers: TransfersService,
     private readonly transferExecutor: TransferExecutor,
+    /*
+     * The forensic record for a deposit NOBODY approved.
+     *
+     * Appended, never inserted, for the reason the parameters above record:
+     * this class is constructed positionally in the suite, so a parameter added
+     * in the middle silently shifts every one after it.
+     */
+    private readonly auditLog: AuditLogStore,
   ) {}
 
   /**
@@ -3499,7 +3509,56 @@ export class TransactionsService {
         dbTx,
       );
 
-      return updated.length > 0;
+      /*
+       * THE AUDIT ROW, IN THE SAME TRANSACTION AS THE CREDIT.
+       *
+       * Every OTHER way money enters a wallet writes one: `deposit.approve`
+       * for an offline deposit a person credited, `wallet.credit` for a hand
+       * adjustment. The gateway path — the one a client actually uses — wrote
+       * nothing at all, so eight settled deposits totalling 3,190.12 existed in
+       * the ledger with no entry in the trail. The ledger says money arrived;
+       * only this says on whose authority, against which provider reference.
+       *
+       * `actorKind: 'system'` because a provider callback IS the system
+       * acting, and recording it as an unknown admin would be a false statement
+       * in the one record that must not contain any. The withdrawal side
+       * already settles this way (`withdrawal.settle`, SYSTEM_ACTOR); this is
+       * the deposit half of the same pattern.
+       *
+       * ⚠️ `details.userId` IS LOAD-BEARING, not decoration. The audit scope
+       * predicate resolves a `transaction` row's client from exactly that key,
+       * and a row it cannot resolve is KEPT for every reader — so omitting it
+       * would publish each settled deposit to desks holding no territory over
+       * that client.
+       *
+       * Written only when the conditional UPDATE actually won. This method is
+       * deliberately reachable twice at once (provider callback plus the
+       * client's browser landing), and the loser of that race must not add a
+       * second row for one payment.
+       */
+      const settled = updated.length > 0;
+      if (settled) {
+        await this.auditLog.record(
+          {
+            actorId: SYSTEM_ACTOR.id,
+            actorEmail: SYSTEM_ACTOR.email,
+            actorKind: 'system',
+            action: 'deposit.settle',
+            subjectType: 'transaction',
+            subjectId: tx.id,
+            details: {
+              userId: tx.userId,
+              amount: tx.amount,
+              currency: tx.currency,
+              method: tx.methodKey ?? tx.provider,
+              providerRef: tx.providerRef,
+            },
+          },
+          dbTx,
+        );
+      }
+
+      return settled;
     });
 
     /*

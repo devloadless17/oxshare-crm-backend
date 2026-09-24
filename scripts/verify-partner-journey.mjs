@@ -285,8 +285,10 @@ async function reconcile(one, all, ctx) {
 
   // The commission actually accrued, and for the right amount.
   const accruals = await all(
-    `SELECT a.amount, a.base_amount, a.rate_value, a.status, a.depth, p.name AS program_name
-       FROM ib_accruals a LEFT JOIN ib_programs p ON p.id = a.program_id
+    `SELECT a.amount, a.base_amount, a.rate_value, a.status, a.depth, a.kind,
+            lv.level, lv.name AS level_name,
+            CASE a.kind WHEN 'commission' THEN lv.commission_mode ELSE lv.rebate_mode END AS mode
+       FROM ib_accruals a LEFT JOIN ib_levels lv ON lv.id = a.level_id
       WHERE a.ib_user_id = '${partner.id}' AND a.client_user_id = '${client.id}'
       ORDER BY a.created_at DESC LIMIT 5`,
   );
@@ -294,34 +296,71 @@ async function reconcile(one, all, ctx) {
     (await one(`SELECT count(*) n FROM ib_accruals WHERE ib_user_id = '${partner.id}'`)).n,
   );
 
-  if (now <= accrualsBefore) {
-    bad('commission accrued', 'no new accrual row');
+  /*
+   * A SETTLED DEPOSIT ACCRUES NOTHING, AND THAT IS THE CORRECT OUTCOME.
+   *
+   * This used to assert the opposite, and failed on every healthy database.
+   * Commission is earned on a CLOSED POSITION and on nothing else (FR-IB-04):
+   * `calculate` refuses `source: 'deposit'` outright, and
+   * `accrueForSettledDeposit` has no callers at all — it survives, unwired and
+   * @deprecated, because CPA is a real model that would trigger on a deposit.
+   *
+   * So the deposit leg of this journey proves the WALLET and LEDGER half, which
+   * it does above. Trade commission is covered by test/deal-commission.spec.ts
+   * and, end to end, by scripts/simulate-trading.mjs.
+   */
+  if (now > accrualsBefore) {
+    bad(
+      'a deposit accrued commission',
+      `${now - accrualsBefore} new row(s) — a deposit must accrue nothing; see commission.ts`,
+    );
   } else {
-    ok('commission accrued', `${now - accrualsBefore} new row(s)`);
-    /*
-     * Every rate is a percentage of the broker's revenue, so there is one
-     * arithmetic to check. `payout_model` used to branch this — it went with
-     * migration 0055, and the `per_lot` half was never checkable here anyway.
-     */
-    for (const row of accruals.slice(0, now - accrualsBefore)) {
-      const expected = ((Number(row.base_amount) * Number(row.rate_value)) / 100).toFixed(2);
-      const actual = Number(row.amount).toFixed(2);
-      const terms = row.program_name ? ` on "${row.program_name}"` : '';
-      if (expected === actual) {
-        ok(
-          `  depth ${row.depth} amount`,
-          `${row.base_amount} × ${row.rate_value}%${terms} = ${actual}`,
-        );
-      } else {
-        bad(`  depth ${row.depth} amount`, `expected ${expected}, stored ${actual}`);
-      }
+    ok('deposit accrued no commission', 'correct — only a closed position pays');
+  }
+
+  /*
+   * Reconcile the accruals this partner ALREADY holds. Checking arithmetic on
+   * rows that exist is worth more than checking none at all, and it is the only
+   * place this script can see a rate applied.
+   *
+   * THE MODE DECIDES THE ARITHMETIC. This divided by 100 unconditionally, which
+   * is right for a percentage rung and wrong for every per-lot one — and per_lot
+   * is what the live rate card uses, so the check reported correct money as
+   * broken. A per-lot term is money PER LOT: amount = lots × rate, no percent
+   * anywhere in it.
+   */
+  for (const row of accruals) {
+    const base = Number(row.base_amount);
+    const rate = Number(row.rate_value);
+    const perLot = row.mode === 'per_lot';
+    const expected = (perLot ? base * rate : (base * rate) / 100).toFixed(2);
+    const actual = Number(row.amount).toFixed(2);
+    const terms = row.level_name ? ` on "${row.level_name}" (L${row.level})` : '';
+    const shown = perLot ? `${base} lots × ${rate}/lot` : `${base} × ${rate}%`;
+    if (expected === actual) {
+      ok(`  ${row.kind} depth ${row.depth}`, `${shown}${terms} = ${actual}`);
+    } else {
+      bad(`  ${row.kind} depth ${row.depth}`, `expected ${expected}, stored ${actual}`);
     }
   }
 
-  // Nothing may be accrued twice for one transaction.
+  /*
+   * Nothing may be accrued twice for one source — and KIND is part of "twice".
+   *
+   * Grouping on (source, earner) alone called every healthy trade a duplicate:
+   * one closed position legitimately produces a `commission` row AND a
+   * `rebate` row for the same earner, which is the shape `ib_accruals.kind`
+   * exists to express. The database's own guarantee is
+   * `ib_accruals_source_earner_uq (source_type, source_id, ib_user_id, kind)`,
+   * so this mirrors it exactly.
+   *
+   * It matters that this matches: a duplicate check that fires on correct data
+   * is one nobody reads, and this is the check standing between a paid trade
+   * and a twice-paid one.
+   */
   const dupes = await all(
-    `SELECT source_id, ib_user_id, count(*) n FROM ib_accruals
-      GROUP BY 1, 2 HAVING count(*) > 1 LIMIT 5`,
+    `SELECT source_type, source_id, ib_user_id, kind, count(*) n FROM ib_accruals
+      GROUP BY 1, 2, 3, 4 HAVING count(*) > 1 LIMIT 5`,
   );
   dupes.length === 0
     ? ok('no accrual counted twice for one source')

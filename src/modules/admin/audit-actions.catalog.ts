@@ -134,6 +134,19 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'deposit.approve', label: 'Deposit approved & wallet credited', group: 'Compliance' },
   { action: 'deposit.reject', label: 'Deposit rejected', group: 'Compliance' },
   { action: 'deposit.proof.view', label: 'Deposit receipt opened', group: 'Compliance' },
+  /*
+   * GATEWAY DEPOSITS — money that arrived without anybody approving it.
+   *
+   * Written by `settleGatewayDeposit` as SYSTEM_ACTOR, not by a desk. It is
+   * in this catalog for the same reason the rows above are: the trail's filter
+   * is built from these entries, so an action absent here is one an operator
+   * cannot search for even once it is being written.
+   */
+  {
+    action: 'deposit.settle',
+    label: 'Deposit settled by the payment provider',
+    group: 'Compliance',
+  },
   { action: 'withdrawal.approve', label: 'Withdrawal approved', group: 'Compliance' },
   { action: 'withdrawal.reject', label: 'Withdrawal rejected', group: 'Compliance' },
   /* Settlement is the step that actually releases the money — a separate

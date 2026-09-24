@@ -27,7 +27,37 @@ import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers
 
 let container: StartedPostgreSqlContainer | undefined;
 
+/**
+ * An ALREADY-RUNNING Postgres, named by the environment, is used as-is.
+ *
+ * The container is the default because it needs no setup and pins the server
+ * version. But it needs a working container runtime, and there are machines
+ * that run this suite where there is not one: the production VPS has Docker
+ * Engine up while the CLI is refused on the named pipe unless the shell is
+ * elevated and in `docker-users`. There, every suite in the run died on
+ * "Could not find a working container runtime strategy" — the money
+ * acceptance tests included, which is the one suite you most want to be able
+ * to run on the box you are about to trust with a ledger.
+ *
+ * Pointing this at a real server is SAFE, and the reason is in money-setup.ts
+ * rather than here: a suite never touches the database named in the URI. It
+ * CREATEs `money_<uuid>`, migrates that, and DROPs it on teardown. The URI is
+ * used for exactly two statements, both DDL against a generated name. So the
+ * role needs CREATEDB, and nothing it already owns is at risk.
+ *
+ * Deliberately NOT falling back automatically when the container fails to
+ * start. A suite that silently retargets itself at whatever `DATABASE_URL`
+ * happens to hold is how a test run ends up creating databases on production
+ * because somebody's shell had the deploy env sourced. Setting TEST_PG_URI is
+ * a decision somebody makes out loud.
+ */
 export async function setup(): Promise<void> {
+  const provided = process.env['TEST_PG_URI'];
+  if (provided) {
+    process.env['TEST_PG_URI'] = ipv4(provided);
+    return;
+  }
+
   container = await new PostgreSqlContainer('postgres:16-alpine').start();
   // Suites reach the container through this, rather than through an import —
   // vitest runs globalSetup in a separate module graph from the test files.

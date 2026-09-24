@@ -14,6 +14,7 @@ import { AdminsStore } from '../src/store/admins.store';
 import { KycConfigStore } from '../src/store/kyc-config.store';
 import { StoredObjectsStore } from '../src/store/stored-objects.store';
 import { auditStubAs } from './audit-stub';
+import { AuditLogStore } from '../src/store/audit-log.store';
 import type { EmailService } from '../src/modules/email/email.service';
 import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
@@ -89,6 +90,7 @@ beforeAll(async () => {
     notificationsStubAs(),
     transfersStubAs(),
     transferExecutorStubAs(),
+    new AuditLogStore(ctx.db),
   );
 
   /*

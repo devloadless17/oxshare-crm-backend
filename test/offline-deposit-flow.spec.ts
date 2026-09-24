@@ -8,6 +8,7 @@ import { MoneyLimits } from '../src/config/money-limits';
 import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
 import { SYSTEM_ACTOR } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
+import { AuditLogStore } from '../src/store/audit-log.store';
 import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
@@ -61,6 +62,7 @@ beforeAll(async () => {
     notificationsStubAs(),
     transfersStubAs(),
     transferExecutorStubAs(),
+    new AuditLogStore(ctx.db),
   );
   await seedMethods();
 }, 120_000);

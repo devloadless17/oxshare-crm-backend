@@ -151,9 +151,17 @@ describe('no paging call site mints its cursor from a Date', () => {
      * instance of the bug with a green suite. This derives the callers from the
      * source and refuses a mismatch in either direction.
      */
-    const found = walkSource('src').filter((file) =>
-      /buildCursorPage\(/.test(readFileSync(file, 'utf8')),
-    );
+    /*
+     * Separators normalised, because `walkSource` builds paths with `join`
+     * and the list above is written the way this repository spells a path.
+     * On Windows the two differ, so this compared backslash paths against
+     * slash ones and failed with two lists a reader has to diff character by
+     * character to see name the same six files. The census is about WHICH
+     * files call buildCursorPage, never about how the host writes a path.
+     */
+    const found = walkSource('src')
+      .filter((file) => /buildCursorPage\(/.test(readFileSync(file, 'utf8')))
+      .map((file) => file.split('\\').join('/'));
     expect(found.sort(), 'the set of cursor-paging call sites has changed').toEqual(
       [...CALLERS].sort(),
     );

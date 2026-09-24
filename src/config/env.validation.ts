@@ -93,16 +93,6 @@ const envSchema = z
     PORT: z.coerce.number().int().min(1).max(65535).default(3001),
     PORTAL_URL: z.string().url().default('http://localhost:3000'),
     ADMIN_URL: z.string().url().default('http://localhost:3002'),
-    /*
-     * Where `page`-severity alerts are emailed. OPTIONAL by design.
-     *
-     * A developer running this locally has no ops address and should not have to
-     * invent one, so an unset value is valid and `AlertEmailService` warns once
-     * at boot rather than refusing to start. Validated as an email so a typo is
-     * caught here instead of becoming a silent non-delivery at 3am — which is
-     * the precise failure the alert channel exists to prevent.
-     */
-    ALERT_EMAIL_TO: z.string().email().optional(),
 
     /*
      * Print emailed LINKS to the log instead of relying on a mailbox — local
