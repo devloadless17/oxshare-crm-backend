@@ -168,6 +168,15 @@ export class LedgerEntryDto {
    * an id it cannot resolve. So the screen falls back to the uuid rather than
    * the row vanishing.
    */
+  /**
+   * The client's Portal ID. NOT masked: it identifies the client without
+   * revealing anything about them, which makes it the identifier a masked
+   * reader still gets (this row used to fall back to the UUID for that).
+   */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: Number, nullable: true, example: 1000001 })
+  userPortalId: number | null;
+
   @ClientField('client.firstName')
   @ApiProperty({ type: 'string', nullable: true })
   userFirstName: string | null;

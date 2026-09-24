@@ -32,6 +32,7 @@ import {
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
 import { UuidParam } from '../../common/query-params';
+import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 
@@ -182,7 +183,7 @@ export class AdminTagsController {
     'AdminTagsService.assertClientVisible → findForAdmin, so an out-of-scope client 404s.',
   )
   forClient(
-    @Param('id', UuidParam) id: string,
+    @Param('id', ClientRefPipe) id: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.tags.tagsForClient(id, req.admin);
@@ -199,7 +200,7 @@ export class AdminTagsController {
   )
   @Audited('client_tag.assign')
   assign(
-    @Param('id', UuidParam) id: string,
+    @Param('id', ClientRefPipe) id: string,
     @Param('tagId', UuidParam) tagId: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -217,7 +218,7 @@ export class AdminTagsController {
   )
   @Audited('client_tag.unassign')
   unassign(
-    @Param('id', UuidParam) id: string,
+    @Param('id', ClientRefPipe) id: string,
     @Param('tagId', UuidParam) tagId: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {

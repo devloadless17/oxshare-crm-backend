@@ -932,6 +932,20 @@
       "when": 1789139298739,
       "tag": "0132_wallet_name",
       "breakpoints": true
+    },
+    {
+      "idx": 134,
+      "version": "7",
+      "when": 1789139298740,
+      "tag": "0133_client_portal_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 135,
+      "version": "7",
+      "when": 1789139298741,
+      "tag": "0134_audit_log_client_id_idx",
+      "breakpoints": true
     }
   ]
 }

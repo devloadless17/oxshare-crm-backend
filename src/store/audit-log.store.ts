@@ -5,6 +5,7 @@ import {
   desc,
   eq,
   getTableColumns,
+  inArray,
   isNull,
   or,
   sql,
@@ -22,9 +23,9 @@ import type { SortOrder } from '../common/sorting';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { auditLog } from '../database/schema';
+import { auditLog, users } from '../database/schema';
 import { currentClientIp } from '../common/logging/request-context';
-import { escapeLike } from './users.store';
+import { clientIdByPortalId, escapeLike, parsePortalId } from './users.store';
 
 /**
  * Subject types whose `subjectId` is itself a CLIENT's user id — the rows that
@@ -97,6 +98,85 @@ function auditRowClientId(): SQL {
          AND ${auditLog.details}->>'userId' ~* ${UUID_SHAPE}
          THEN (${auditLog.details}->>'userId')::uuid
   END)`;
+}
+
+const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Every uuid-shaped string anywhere inside a details value, lower-cased. */
+export function collectUuids(value: unknown, into: Set<string>): void {
+  if (typeof value === 'string') {
+    if (UUID_TEXT.test(value)) into.add(value.toLowerCase());
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectUuids(item, into);
+  } else if (value !== null && typeof value === 'object') {
+    for (const item of Object.values(value)) collectUuids(item, into);
+  }
+}
+
+/**
+ * A denied-route row's subject: the request line, e.g. `PATCH /v1/admin/clients/<id>`.
+ * Our OWN path, so a client uuid inside it can be shown as the Portal ID
+ * without falsifying anything — the Portal ID form is itself a valid request.
+ * Nothing else is rewritten inside a string: a provider reference that happens
+ * to embed a uuid is somebody else's identifier and must read exactly as they
+ * issued it.
+ */
+const REQUEST_LINE = /^(GET|POST|PUT|PATCH|DELETE) \//;
+const UUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/** Every uuid inside a request line, lower-cased — see `REQUEST_LINE`. */
+export function collectRequestLineUuids(subjectId: string, into: Set<string>): void {
+  if (!REQUEST_LINE.test(subjectId)) return;
+  for (const match of subjectId.matchAll(UUID_ANYWHERE)) into.add(match[0].toLowerCase());
+}
+
+/** A request line with each client uuid in it shown as that client's Portal ID. */
+export function requestLineWithPortalIds(
+  subjectId: string,
+  portalIdOf: ReadonlyMap<string, number>,
+): string {
+  if (!REQUEST_LINE.test(subjectId)) return subjectId;
+  return subjectId.replace(UUID_ANYWHERE, (id) => String(portalIdOf.get(id.toLowerCase()) ?? id));
+}
+
+/**
+ * A details value with every client uuid replaced by that client's Portal ID —
+ * keys, nesting and every other value exactly as stored. Pure, so the rule is
+ * one assertion away from a test.
+ */
+export function withPortalIds(value: unknown, portalIdOf: ReadonlyMap<string, number>): unknown {
+  if (typeof value === 'string') return portalIdOf.get(value.toLowerCase()) ?? value;
+  if (Array.isArray(value)) return value.map((item) => withPortalIds(item, portalIdOf));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, withPortalIds(item, portalIdOf)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * The audit rows a PORTAL ID search returns: every row ABOUT that client, and
+ * every row they performed. Exported so the planner test measures this
+ * predicate rather than a copy of it.
+ *
+ * About: `auditRowClientId()`, the expression the scope filter uses, so "rows
+ * about client X" means exactly what "rows a scoped reader may see because of
+ * client X" means — nothing more, nothing less. Served by
+ * `audit_log_client_id_idx` (0134), an index on that very expression.
+ *
+ * Performed: `actor_id` for a client actor (`audit_log_actor_idx`). Both
+ * branches are on this one table, so Postgres can BitmapOr them, and the client
+ * is resolved once, as an InitPlan (`clientIdByPortalId`).
+ *
+ * It does not widen what a scoped reader can learn: the scope predicate is
+ * ANDed onto it in `findAll`, so an out-of-territory client's rows stay
+ * invisible and their Portal ID finds nothing — the same answer an unused
+ * number gets.
+ */
+export function auditClientSearch(portalId: number): SQL {
+  const clientId = clientIdByPortalId(portalId);
+  return sql`(${auditRowClientId()} = ${clientId} OR (${auditLog.actorKind} = 'client' AND ${auditLog.actorId} = ${clientId}))`;
 }
 
 // D-21: admin action log — actor, action, subject, details, timestamp.
@@ -232,6 +312,9 @@ export class AuditLogStore {
        * match over it would let a reader with `audit.view` but a narrow client
        * scope confirm a client's existence from a row count — the same
        * existence probe the scope predicate below exists to prevent.
+       *
+       * A PORTAL ID is the one exception to "who did it": a number finds every
+       * row about that client or performed by them. See the predicate below.
        */
       q?: string;
       /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
@@ -291,7 +374,11 @@ export class AuditLogStore {
     if (filter.subjectType) conditions.push(eq(auditLog.subjectType, filter.subjectType));
     if (filter.actorId) conditions.push(eq(auditLog.actorId, filter.actorId));
     if (filter.subjectId) conditions.push(eq(auditLog.subjectId, filter.subjectId));
-    if (filter.q?.trim()) {
+    const searchedPortalId = parsePortalId(filter.q);
+    if (searchedPortalId !== undefined) {
+      // A Portal ID: every row about that client, or performed by them.
+      conditions.push(auditClientSearch(searchedPortalId));
+    } else if (filter.q?.trim()) {
       /*
        * ⚠️ THE `::text` IS LOAD-BEARING, and leaving it out is how 0124 shipped
        * an index nothing could use.
@@ -372,8 +459,20 @@ export class AuditLogStore {
        * GAP in the one record whose entire value is completeness, and which is
        * believed precisely because it is supposed to be complete.
        */
-      .select({ ...getTableColumns(auditLog), cursorValue: sql<string>`${sortColumn}::text` })
+      .select({
+        ...getTableColumns(auditLog),
+        cursorValue: sql<string>`${sortColumn}::text`,
+        /*
+         * The Portal ID of the client this row concerns — resolved through
+         * `auditRowClientId()`, because a row names its client in one of three
+         * places and the subject id is only one of them. NULL for a row about
+         * no client (a role edit, a setting). A LEFT join on the primary key:
+         * one index probe per row of the page, and never a row lost.
+         */
+        clientPortalId: users.portalId,
+      })
       .from(auditLog)
+      .leftJoin(users, sql`${users.id} = ${auditRowClientId()}`)
       .where(where)
       .orderBy(orderBy(sortColumn), orderBy(auditLog.id))
       .limit(limit + 1)
@@ -385,12 +484,66 @@ export class AuditLogStore {
     // different ordering — `decodeCursor` refuses one that was, rather than
     // seeking to a meaningless position and returning the wrong rows silently.
     const page_ = buildCursorPage(
-      rows.map((r) => ({ ...r, details: r.details ?? undefined })),
+      (await this.withClientPortalIds(rows)).map((r) => ({
+        ...r,
+        details: r.details ?? undefined,
+      })),
       limit,
       total,
       sortKey,
     );
 
     return { ...page_, page, limit };
+  }
+
+  /**
+   * Every CLIENT uuid on the row, shown as that client's Portal ID.
+   *
+   * The console names a client by Portal ID and nothing else, and an audit row
+   * is where a uuid would otherwise still surface: a client ACTOR is recorded
+   * by id, a client SUBJECT by id, and `details` names clients too — money rows
+   * as `userId`, trading rows as `clientId`, IB rows their parents and
+   * partners. So each row gains `actorPortalId` and `subjectPortalId` (null
+   * when that id is not a client's), `details` shows Portal IDs in place of
+   * client uuids, and a denied-route row's request line shows the Portal ID
+   * inside its path (`REQUEST_LINE`). The STORED row is untouched — the table is append-only and
+   * this is a read; only what a reader is shown changes.
+   *
+   * WHETHER a uuid is a client's is answered by `users` itself, not by a list
+   * of types that would drift: every uuid-shaped value on the page is looked up
+   * in ONE query, and a transaction, wallet, tag or administrator id is simply
+   * not found there and stays as written.
+   */
+  private async withClientPortalIds<
+    T extends { actorId: string; subjectId: string; details: Record<string, unknown> | null },
+  >(
+    rows: T[],
+  ): Promise<Array<T & { actorPortalId: number | null; subjectPortalId: number | null }>> {
+    const ids = new Set<string>();
+    for (const row of rows) {
+      collectUuids(row.actorId, ids);
+      collectUuids(row.subjectId, ids);
+      collectRequestLineUuids(row.subjectId, ids);
+      collectUuids(row.details, ids);
+    }
+    const found =
+      ids.size === 0
+        ? []
+        : await this.db
+            .select({ id: users.id, portalId: users.portalId })
+            .from(users)
+            .where(inArray(users.id, [...ids]));
+    const portalIdOf = new Map(found.map((u) => [u.id, u.portalId]));
+
+    return rows.map((row) => ({
+      ...row,
+      actorPortalId: portalIdOf.get(row.actorId.toLowerCase()) ?? null,
+      subjectPortalId: portalIdOf.get(row.subjectId.toLowerCase()) ?? null,
+      subjectId: requestLineWithPortalIds(row.subjectId, portalIdOf),
+      details:
+        row.details === null
+          ? null
+          : (withPortalIds(row.details, portalIdOf) as Record<string, unknown>),
+    }));
   }
 }

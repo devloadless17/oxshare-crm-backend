@@ -2077,7 +2077,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search the applicant’s email and name — the same three columns the KYC queue searches.",
+            "description": "A Portal ID (digits, matched exactly) or free text over the applicant’s email and name — the one client search every queue shares.",
             "schema": {
               "type": "string"
             }
@@ -2332,7 +2332,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Free text over the PARTNER's email and name — the identifiers the list displays. It deliberately does not search the client on the row: an out-of-scope client's identity is masked, and a filter that matched it would answer \"does this person exist in another territory\" from the row count.",
+            "description": "The PARTNER's Portal ID (digits, matched exactly) or free text over their email and name — the identifiers the list displays. It deliberately does not search the client on the row: an out-of-scope client's identity is masked, and a filter that matched it would answer \"does this person exist in another territory\" from the row count.",
             "schema": {
               "type": "string"
             }
@@ -4355,7 +4355,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search the OWNER by email or name — the identifiers the Owner column displays. The only client filter used to be `userId`, a uuid shown nowhere on the page.",
+            "description": "A number matches the MT5 login OR the owner’s Portal ID — both exact, because an operator holding one cannot tell which it is. Anything else searches the OWNER by email or name — the identifiers the Owner column displays.",
             "schema": {
               "type": "string"
             }
@@ -6121,7 +6121,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search email and name.",
+            "description": "A Portal ID (digits, matched exactly) or free text over email and name.",
             "schema": {
               "type": "string"
             }
@@ -6216,7 +6216,7 @@
             "name": "referredBy",
             "required": false,
             "in": "query",
-            "description": "Clients introduced by this partner (users.referred_by_ib_user_id). Scoped like every other filter — a reader still only sees their own territory. A value that is not a client id is a 400, never a silently unfiltered list.",
+            "description": "Clients introduced by this partner, by the partner’s Portal ID (users.referred_by_ib_user_id). Scoped like every other filter — a reader still only sees their own territory. A value that is not a Portal ID is a 400, never a silently unfiltered list.",
             "schema": {
               "type": "string"
             }
@@ -6293,7 +6293,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search email and name.",
+            "description": "A Portal ID (digits, matched exactly) or free text over email and name.",
             "schema": {
               "type": "string"
             }
@@ -6985,7 +6985,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search applicant email and name.",
+            "description": "A Portal ID (digits, matched exactly) or free text over email and name.",
             "schema": {
               "type": "string"
             }
@@ -7093,7 +7093,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search email and name.",
+            "description": "A Portal ID (digits, matched exactly) or free text over email and name.",
             "schema": {
               "type": "string"
             }
@@ -8330,7 +8330,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Free text over the ACTOR's email, which is denormalised onto every row so a deleted administrator's trail still names them. It deliberately does not search `details`: that blob holds client PII, and matching inside it would let a narrow-scoped reader confirm a client exists from a row count.",
+            "description": "A Portal ID (digits) finds every row about that client or performed by them. Anything else is free text over the ACTOR's email, which is denormalised onto every row so a deleted administrator's trail still names them. It deliberately does not search `details`: that blob holds client PII, and matching inside it would let a narrow-scoped reader confirm a client exists from a row count.",
             "schema": {
               "type": "string"
             }
@@ -8427,7 +8427,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Free text over the ACTOR's email, which is denormalised onto every row so a deleted administrator's trail still names them. It deliberately does not search `details`: that blob holds client PII, and matching inside it would let a narrow-scoped reader confirm a client exists from a row count.",
+            "description": "A Portal ID (digits) finds every row about that client or performed by them. Anything else is free text over the ACTOR's email, which is denormalised onto every row so a deleted administrator's trail still names them. It deliberately does not search `details`: that blob holds client PII, and matching inside it would let a narrow-scoped reader confirm a client exists from a row count.",
             "schema": {
               "type": "string"
             }
@@ -8761,7 +8761,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search the client’s email and name — the same columns the KYC and partner queues search.",
+            "description": "A Portal ID (digits, matched exactly) or free text over the client’s email and name — the one client search every queue shares.",
             "schema": {
               "type": "string"
             }
@@ -9004,7 +9004,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search the OWNER by email or name — the identifiers this screen actually displays. Before this existed the only client filter was `userId`, a uuid shown nowhere on the page, so an operator had to fetch it from /clients first.",
+            "description": "A wallet number or the OWNER’s Portal ID (both matched exactly), or free text over the owner’s email and name — the identifiers this screen actually displays. Before this existed the only client filter was `userId`, a uuid shown nowhere on the page, so an operator had to fetch it from /clients first.",
             "schema": {
               "type": "string"
             }
@@ -9531,7 +9531,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search the client by email or name — the identifiers the Client column shows. Scope still applies: this cannot reach a client outside the actor’s territory.",
+            "description": "A Portal ID (digits, matched exactly) or the client’s email or name — the identifiers the Client column shows. Scope still applies: this cannot reach a client outside the actor’s territory.",
             "schema": {
               "type": "string"
             }
@@ -9763,7 +9763,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search the client’s email and name — the same columns every other queue searches.",
+            "description": "A Portal ID (digits, matched exactly) or free text over the client’s email and name — the one client search every queue shares.",
             "schema": {
               "type": "string"
             }
@@ -9878,7 +9878,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search the client’s email and name — the same columns every other queue searches.",
+            "description": "A Portal ID (digits, matched exactly) or free text over the client’s email and name — the one client search every queue shares.",
             "schema": {
               "type": "string"
             }
@@ -9992,7 +9992,7 @@
             "name": "q",
             "required": false,
             "in": "query",
-            "description": "Search the client’s email and name — the same columns every other queue searches.",
+            "description": "A Portal ID (digits, matched exactly) or free text over the client’s email and name — the one client search every queue shares.",
             "schema": {
               "type": "string"
             }
@@ -10939,6 +10939,10 @@
           "id": {
             "type": "string"
           },
+          "portalId": {
+            "type": "number",
+            "example": 1000001
+          },
           "email": {
             "type": "string",
             "example": "client@oxshare.com"
@@ -10996,6 +11000,7 @@
         },
         "required": [
           "id",
+          "portalId",
           "email",
           "firstName",
           "lastName",
@@ -12187,6 +12192,11 @@
           "userId": {
             "type": "string"
           },
+          "portalId": {
+            "type": "integer",
+            "example": 1000245,
+            "description": "Their Portal ID."
+          },
           "email": {
             "type": "string"
           },
@@ -12201,6 +12211,7 @@
         },
         "required": [
           "userId",
+          "portalId",
           "email",
           "firstName",
           "lastName"
@@ -12211,6 +12222,11 @@
         "properties": {
           "userId": {
             "type": "string"
+          },
+          "portalId": {
+            "type": "integer",
+            "example": 1000245,
+            "description": "Their Portal ID."
           },
           "email": {
             "type": "string"
@@ -12247,6 +12263,7 @@
         },
         "required": [
           "userId",
+          "portalId",
           "email",
           "firstName",
           "lastName",
@@ -13219,6 +13236,11 @@
           "userId": {
             "type": "string"
           },
+          "userPortalId": {
+            "type": "number",
+            "nullable": true,
+            "example": 1000001
+          },
           "userFirstName": {
             "type": "string",
             "nullable": true
@@ -13271,6 +13293,7 @@
           "walletId",
           "walletNumber",
           "userId",
+          "userPortalId",
           "userFirstName",
           "userLastName",
           "userEmail",
@@ -15549,6 +15572,10 @@
           "id": {
             "type": "string"
           },
+          "portalId": {
+            "type": "number",
+            "example": 1000001
+          },
           "email": {
             "type": "string"
           },
@@ -15619,6 +15646,7 @@
         },
         "required": [
           "id",
+          "portalId",
           "type",
           "status",
           "emailVerified",
@@ -15740,6 +15768,10 @@
           "ibUserId": {
             "type": "string"
           },
+          "portalId": {
+            "type": "integer",
+            "description": "The introducer’s Portal ID — what the profile links by. Absent, with the rest of their identity, when the introducer is outside your territory."
+          },
           "email": {
             "type": "string",
             "description": "Absent when the introducer is outside your territory."
@@ -15778,6 +15810,11 @@
           "clientUserId": {
             "type": "string"
           },
+          "clientPortalId": {
+            "type": "integer",
+            "example": 1000245,
+            "description": "Their Portal ID."
+          },
           "email": {
             "type": "string"
           },
@@ -15797,6 +15834,7 @@
         },
         "required": [
           "clientUserId",
+          "clientPortalId",
           "email",
           "firstName",
           "lastName",
@@ -15809,6 +15847,10 @@
         "properties": {
           "id": {
             "type": "string"
+          },
+          "portalId": {
+            "type": "number",
+            "example": 1000001
           },
           "email": {
             "type": "string"
@@ -15919,6 +15961,7 @@
         },
         "required": [
           "id",
+          "portalId",
           "type",
           "status",
           "verificationLevel",
@@ -15957,6 +16000,11 @@
           "id": {
             "type": "string",
             "format": "uuid"
+          },
+          "portalId": {
+            "type": "integer",
+            "example": 1000245,
+            "description": "The client’s Portal ID."
           },
           "email": {
             "type": "string"
@@ -16016,6 +16064,7 @@
         },
         "required": [
           "id",
+          "portalId",
           "email",
           "firstName",
           "lastName",
@@ -16245,6 +16294,10 @@
           "id": {
             "type": "string"
           },
+          "portalId": {
+            "type": "number",
+            "example": 1000001
+          },
           "email": {
             "type": "string"
           },
@@ -16293,6 +16346,7 @@
         },
         "required": [
           "id",
+          "portalId",
           "email",
           "firstName",
           "lastName"
@@ -17006,9 +17060,28 @@
           "subjectId": {
             "type": "string"
           },
+          "clientPortalId": {
+            "type": "integer",
+            "nullable": true,
+            "example": 1000245,
+            "description": "The Portal ID of the client this row is about, or null when it is about no client (a role edit, a setting) or the client no longer exists."
+          },
+          "actorPortalId": {
+            "type": "integer",
+            "nullable": true,
+            "example": 1000245,
+            "description": "The actor’s Portal ID when the actor is a CLIENT; null for an administrator, the system or a provider, none of whom has one."
+          },
+          "subjectPortalId": {
+            "type": "integer",
+            "nullable": true,
+            "example": 1000245,
+            "description": "The subject’s Portal ID when the subject IS a client — shown in place of `subjectId`. Null for any other subject: a transaction, a wallet or a role keeps its own id."
+          },
           "details": {
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": true,
+            "description": "As recorded, except that any client uuid inside it is shown as that client’s Portal ID."
           },
           "createdAt": {
             "format": "date-time",
@@ -17022,6 +17095,9 @@
           "action",
           "subjectType",
           "subjectId",
+          "clientPortalId",
+          "actorPortalId",
+          "subjectPortalId",
           "createdAt"
         ]
       },
@@ -17250,6 +17326,10 @@
           "id": {
             "type": "string"
           },
+          "portalId": {
+            "type": "number",
+            "example": 1000001
+          },
           "email": {
             "type": "string"
           },
@@ -17261,7 +17341,8 @@
           }
         },
         "required": [
-          "id"
+          "id",
+          "portalId"
         ]
       },
       "WithdrawalRowDto": {
@@ -17641,6 +17722,11 @@
           "userId": {
             "type": "string"
           },
+          "userPortalId": {
+            "type": "number",
+            "nullable": true,
+            "example": 1000001
+          },
           "userFirstName": {
             "type": "string",
             "nullable": true
@@ -17676,6 +17762,7 @@
           "walletId",
           "walletNumber",
           "userId",
+          "userPortalId",
           "userFirstName",
           "userLastName",
           "userEmail",
@@ -18393,6 +18480,11 @@
           "id": {
             "type": "string"
           },
+          "portalId": {
+            "type": "integer",
+            "example": 1000245,
+            "description": "The owner’s Portal ID."
+          },
           "email": {
             "type": "string"
           },
@@ -18405,6 +18497,7 @@
         },
         "required": [
           "id",
+          "portalId",
           "email",
           "firstName",
           "lastName"

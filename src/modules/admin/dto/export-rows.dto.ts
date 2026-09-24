@@ -31,6 +31,11 @@ import { ClientField, NotClientField } from '../../../common/security/client-fie
  */
 
 class ExportedPerson {
+  /** The client's Portal ID — the identifier a spreadsheet is filtered by. Never masked. */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ required: false })
+  userPortalId?: number | null;
+
   @ClientField('client.email')
   @ApiProperty({ required: false })
   userEmail?: string | null;

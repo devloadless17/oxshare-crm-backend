@@ -30,6 +30,7 @@ import {
 } from '../../store/ib.store';
 import { ibAccrualKindEnum, ibAccrualStatusEnum } from '../../database/schema';
 import { enumQuery, uuidQuery } from '../../common/query-params';
+import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { AdminExportService } from '../admin/admin-export.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
@@ -105,7 +106,8 @@ export class AdminIbController {
     name: 'q',
     required: false,
     description:
-      'Search the applicant’s email and name — the same three columns the KYC queue searches.',
+      'A Portal ID (digits, matched exactly) or free text over the applicant’s email and name — ' +
+      'the one client search every queue shares.',
   })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
@@ -312,7 +314,8 @@ export class AdminIbController {
     name: 'q',
     required: false,
     description:
-      "Free text over the PARTNER's email and name — the identifiers the list displays. " +
+      "The PARTNER's Portal ID (digits, matched exactly) or free text over their email and " +
+      'name — the identifiers the list displays. ' +
       "It deliberately does not search the client on the row: an out-of-scope client's " +
       'identity is masked, and a filter that matched it would answer "does this person exist ' +
       'in another territory" from the row count.',
@@ -338,8 +341,8 @@ export class AdminIbController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('page') page?: string,
     @Query('limit') limit?: string,
-    @Query('ibUserId') ibUserId?: string,
-    @Query('clientUserId') clientUserId?: string,
+    @Query('ibUserId', ClientRefPipe) ibUserId?: string,
+    @Query('clientUserId', ClientRefPipe) clientUserId?: string,
     @Query('q') q?: string,
     @Query('status') status?: string,
     @Query('kind') kind?: string,
@@ -562,7 +565,7 @@ export class AdminIbController {
   @ScopedToClients('Checks the SUBJECT with assertVisible; out-of-scope 404s like a missing one.')
   partnerDetail(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ParseUUIDPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: string,
   ) {
     return this.applications.partnerDetailFor(userId, req.admin.clientScope, req.admin.fieldMask);
   }
@@ -597,7 +600,7 @@ export class AdminIbController {
   @Audited('ib.level_change')
   changeLevel(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ParseUUIDPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: string,
     @Body() dto: ChangeIbLevelDto,
   ) {
     return this.applications.changeLevel(userId, dto.level, req.admin.clientScope, req.admin);
@@ -619,7 +622,7 @@ export class AdminIbController {
   @Audited('ib.parent_change')
   reassignParent(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ParseUUIDPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: string,
     @Body() dto: ReassignIbParentDto,
   ) {
     return this.applications.reassignParent(
@@ -645,7 +648,7 @@ export class AdminIbController {
   @Audited('ib.partners.suspend')
   setActive(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ParseUUIDPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: string,
     @Body() dto: SetIbActiveDto,
   ) {
     return this.applications.setActive(userId, dto.active, req.admin.clientScope, req.admin);

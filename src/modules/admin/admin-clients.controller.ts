@@ -29,7 +29,8 @@ import {
   RequirePermissions,
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
-import { UuidParam, enumQuery, searchQuery } from '../../common/query-params';
+import { enumQuery, searchQuery } from '../../common/query-params';
+import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { kycStatusEnum, userStatusEnum, userTypeEnum } from '../../database/schema';
 import { CLIENT_SORT_COLUMNS } from '../../store/users.store';
 import { ScopedToClients } from './guards/client-scope.decorator';
@@ -65,7 +66,11 @@ export class AdminClientsController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
   @ApiQuery({ name: 'withTotal', required: false, description: 'Counting is a full scan.' })
-  @ApiQuery({ name: 'q', required: false, description: 'Search email and name.' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description: 'A Portal ID (digits, matched exactly) or free text over email and name.',
+  })
   @ApiQuery({ name: 'type', required: false, enum: userTypeEnum.enumValues })
   @ApiQuery({ name: 'status', required: false, enum: userStatusEnum.enumValues })
   @ApiQuery({ name: 'level', required: false, enum: [0, 1] })
@@ -87,9 +92,10 @@ export class AdminClientsController {
     name: 'referredBy',
     required: false,
     description:
-      'Clients introduced by this partner (users.referred_by_ib_user_id). Scoped like ' +
-      'every other filter — a reader still only sees their own territory. A value that is ' +
-      'not a client id is a 400, never a silently unfiltered list.',
+      'Clients introduced by this partner, by the partner’s Portal ID ' +
+      '(users.referred_by_ib_user_id). Scoped like every other filter — a reader still only ' +
+      'sees their own territory. A value that is not a Portal ID is a 400, never a silently ' +
+      'unfiltered list.',
   })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
@@ -110,7 +116,7 @@ export class AdminClientsController {
     @Query('emailVerified') emailVerified?: string,
     @Query('kycStatus') kycStatus?: string,
     @Query('tag') tag?: string,
-    @Query('referredBy') referredBy?: string,
+    @Query('referredBy', ClientRefPipe) referredBy?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
@@ -161,7 +167,7 @@ export class AdminClientsController {
    *
    * Express matches routes in registration order, so with `clients/:id` first a
    * request for `/admin/clients/export` binds `id = 'export'`, fails
-   * `UuidParam` and 400s. The export route must be registered before the
+   * `ClientRefPipe` and 400s. The export route must be registered before the
    * parameterised one. This is the same trap `kyc/:userId` and the IB routes
    * have, and each of those export routes is placed the same way.
    *
@@ -207,7 +213,11 @@ export class AdminClientsController {
   // it Swagger marks each as required and the generated frontend types demand
   // filters a plain "export everything" call legitimately omits.
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
-  @ApiQuery({ name: 'q', required: false, description: 'Search email and name.' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description: 'A Portal ID (digits, matched exactly) or free text over email and name.',
+  })
   @ApiQuery({ name: 'type', required: false, enum: userTypeEnum.enumValues })
   @ApiQuery({ name: 'status', required: false, enum: userStatusEnum.enumValues })
   @ApiQuery({ name: 'level', required: false, enum: [0, 1] })
@@ -296,7 +306,7 @@ export class AdminClientsController {
     'UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, identically to a missing one.',
   )
   getClientProfile(
-    @Param('id', UuidParam) id: string,
+    @Param('id', ClientRefPipe) id: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.clients.getClientProfile(id, req.admin);
@@ -323,7 +333,7 @@ export class AdminClientsController {
   @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
   @Audited('client.profile_update')
   updateClientProfile(
-    @Param('id', UuidParam) id: string,
+    @Param('id', ClientRefPipe) id: string,
     @Body() dto: UpdateClientProfileDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -351,7 +361,7 @@ export class AdminClientsController {
   @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
   @Audited('client.email_change')
   changeClientEmail(
-    @Param('id', UuidParam) id: string,
+    @Param('id', ClientRefPipe) id: string,
     @Body() dto: ChangeClientEmailDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -386,7 +396,7 @@ export class AdminClientsController {
   @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
   @Audited('client.referrer_set')
   setClientReferrer(
-    @Param('id', UuidParam) id: string,
+    @Param('id', ClientRefPipe) id: string,
     @Body() dto: SetClientReferrerDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -404,7 +414,7 @@ export class AdminClientsController {
   @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
   @Audited('client.suspend')
   setClientStatus(
-    @Param('id', UuidParam) id: string,
+    @Param('id', ClientRefPipe) id: string,
     @Body() dto: ClientStatusDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {

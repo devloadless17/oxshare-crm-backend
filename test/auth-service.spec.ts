@@ -52,6 +52,7 @@ const config = {
 function makeUser(overrides: Partial<User> = {}): User {
   return {
     id: 'user-1',
+    portalId: 1000000,
     email: 'client@oxshare.com',
     passwordHash: 'stored-hash',
     firstName: 'Jane',

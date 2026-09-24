@@ -118,7 +118,7 @@ export class AdminRbacController {
     'The field VOCABULARY — a static catalog read from disk, containing no client data.',
   )
   listClientFields() {
-    return this.clientFields.getCatalog();
+    return this.clientFields.publicCatalog();
   }
 
   @Get('roles')

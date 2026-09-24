@@ -57,6 +57,7 @@ import {
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
 import { StepIdParam, UuidParam, enumQuery, searchQuery } from '../../common/query-params';
+import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { NEEDS_REVIEW } from '../../store/kyc.store';
 import { kycStatusEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
@@ -88,7 +89,11 @@ export class AdminComplianceController {
    * that legitimately passes none.
    */
   @ApiQuery({ name: 'status', required: false, enum: kycStatusEnum.enumValues })
-  @ApiQuery({ name: 'q', required: false, description: 'Search applicant email and name.' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description: 'A Portal ID (digits, matched exactly) or free text over email and name.',
+  })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(KYC_SORT_COLUMNS) })
@@ -175,7 +180,11 @@ export class AdminComplianceController {
   })
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
   @ApiQuery({ name: 'status', required: false, enum: kycStatusEnum.enumValues })
-  @ApiQuery({ name: 'q', required: false, description: 'Search email and name.' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description: 'A Portal ID (digits, matched exactly) or free text over email and name.',
+  })
   @ScopedToClients(
     'AdminExportService.kycBatch → KycStore.findPageWithUsers with actor.clientScope, the same predicate on kyc_submissions.user_id the queue applies.',
   )
@@ -211,7 +220,7 @@ export class AdminComplianceController {
   @ApiOkResponse({ type: KycSubmissionDto })
   @ScopedToClients('Scoped by-id read — an out-of-scope submission 404s like a missing one.')
   getKyc(
-    @Param('userId', UuidParam) userId: string,
+    @Param('userId', ClientRefPipe) userId: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.getKyc(userId, req.admin);
@@ -234,7 +243,7 @@ export class AdminComplianceController {
   @ApiOkResponse({ type: [KycAttemptDto] })
   @ScopedToClients('Scoped by-id read over kyc_submission_attempts.')
   getKycHistory(
-    @Param('userId', UuidParam) userId: string,
+    @Param('userId', ClientRefPipe) userId: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.getKycHistory(userId, req.admin);
@@ -254,7 +263,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.claim')
   claimKyc(
-    @Param('userId', UuidParam) userId: string,
+    @Param('userId', ClientRefPipe) userId: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.claimKyc(userId, req.admin);
@@ -283,7 +292,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.release')
   releaseKyc(
-    @Param('userId', UuidParam) userId: string,
+    @Param('userId', ClientRefPipe) userId: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.releaseKyc(userId, req.admin);
@@ -316,7 +325,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.identity_correct')
   correctKycIdentity(
-    @Param('userId', UuidParam) userId: string,
+    @Param('userId', ClientRefPipe) userId: string,
     @Body() dto: CorrectKycIdentityDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -337,7 +346,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.approve')
   approveKyc(
-    @Param('userId', UuidParam) userId: string,
+    @Param('userId', ClientRefPipe) userId: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.approveKyc(userId, req.admin);
@@ -356,7 +365,7 @@ export class AdminComplianceController {
   @ScopedToClients("Predicate inside the transition's UPDATE ... WHERE.")
   @Audited('kyc.reject')
   rejectKyc(
-    @Param('userId', UuidParam) userId: string,
+    @Param('userId', ClientRefPipe) userId: string,
     @Body() dto: RejectDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {

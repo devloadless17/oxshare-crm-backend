@@ -1175,6 +1175,7 @@ export class IbApplicationsService {
       parent: parent
         ? {
             userId: parent.id,
+            portalId: parent.portalId,
             email: parent.email,
             firstName: parent.firstName ?? null,
             lastName: parent.lastName ?? null,

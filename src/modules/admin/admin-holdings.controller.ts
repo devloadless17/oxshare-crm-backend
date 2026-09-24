@@ -7,7 +7,7 @@ import { Throttle } from '@nestjs/throttler';
 // @ApiTags('admin') is repeated here so Swagger groups them as one tag and the
 // generated types.gen.ts stays one coherent surface.
 
-import { Controller, Get, Param, ParseUUIDPipe, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { AdminHoldingsService } from './admin-holdings.service';
@@ -27,6 +27,7 @@ import {
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
 import { enumQuery, uuidQuery } from '../../common/query-params';
+import { ClientRefPipe } from '../../common/client-ref.pipe';
 import {
   tradingAccountStatusEnum,
   tradingEnvironmentEnum,
@@ -149,7 +150,7 @@ export class AdminHoldingsController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Res() res: Response,
     @Query('format') format?: string,
-    @Query('userId') userId?: string,
+    @Query('userId', ClientRefPipe) userId?: string,
     @Query('currency') currency?: string,
   ) {
     const chosen = exportFormat(format);
@@ -195,7 +196,8 @@ export class AdminHoldingsController {
     name: 'q',
     required: false,
     description:
-      'Search the OWNER by email or name — the identifiers this screen actually displays. ' +
+      'A wallet number or the OWNER’s Portal ID (both matched exactly), or free text over the ' +
+      'owner’s email and name — the identifiers this screen actually displays. ' +
       'Before this existed the only client filter was `userId`, a uuid shown nowhere on the ' +
       'page, so an operator had to fetch it from /clients first.',
   })
@@ -215,7 +217,7 @@ export class AdminHoldingsController {
   )
   listWallets(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Query('userId') userId?: string,
+    @Query('userId', ClientRefPipe) userId?: string,
     @Query('currency') currency?: string,
     @Query('q') q?: string,
     @Query('page') page?: string,
@@ -295,7 +297,7 @@ export class AdminHoldingsController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Res() res: Response,
     @Query('format') format?: string,
-    @Query('userId') userId?: string,
+    @Query('userId', ClientRefPipe) userId?: string,
     @Query('environment') environment?: string,
     @Query('status') status?: string,
   ) {
@@ -345,8 +347,9 @@ export class AdminHoldingsController {
     name: 'q',
     required: false,
     description:
-      'Search the OWNER by email or name — the identifiers the Owner column displays. The only ' +
-      'client filter used to be `userId`, a uuid shown nowhere on the page.',
+      'A number matches the MT5 login OR the owner’s Portal ID — both exact, because an ' +
+      'operator holding one cannot tell which it is. Anything else searches the OWNER by email ' +
+      'or name — the identifiers the Owner column displays.',
   })
   @ApiQuery({ name: 'environment', required: false, enum: tradingEnvironmentEnum.enumValues })
   @ApiQuery({ name: 'status', required: false, enum: tradingAccountStatusEnum.enumValues })
@@ -366,7 +369,7 @@ export class AdminHoldingsController {
   )
   listTradingAccounts(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Query('userId') userId?: string,
+    @Query('userId', ClientRefPipe) userId?: string,
     @Query('q') q?: string,
     @Query('environment') environment?: string,
     @Query('status') status?: string,
@@ -438,7 +441,7 @@ export class AdminHoldingsController {
   )
   listClientPositions(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ClientRefPipe) id: string,
     @Query('status') status?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -491,7 +494,7 @@ export class AdminHoldingsController {
   )
   listClientTransactions(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ClientRefPipe) id: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {

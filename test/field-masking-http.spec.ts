@@ -657,10 +657,17 @@ describe('the field catalog', () => {
     >;
     const fields = Object.values(groups).flatMap((g) => g.fields);
 
-    const id = fields.find((f) => f.key === 'client.id');
-    expect(id?.maskable).toBe(false);
+    // The Portal ID is the identifier every screen names a client by, so it is
+    // the one a role cannot hide — served locked, with the reason.
+    const portalId = fields.find((f) => f.key === 'client.portalId');
+    expect(portalId?.maskable).toBe(false);
     // "You cannot hide this" with no explanation reads as a bug.
-    expect(id?.reason).toBeTruthy();
+    expect(portalId?.reason).toBeTruthy();
+
+    // The uuid is INTERNAL: no screen shows it, so the role editor must not
+    // offer it either — not even as a locked row that tells an administrator
+    // a second, hidden identifier exists (owner's rule, 24 Sep 2026).
+    expect(fields.find((f) => f.key === 'client.id')).toBeUndefined();
   });
 });
 

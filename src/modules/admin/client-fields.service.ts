@@ -18,6 +18,13 @@ export interface ClientFieldDefinition {
    * different tab.
    */
   aliases?: string[];
+  /**
+   * A key the system addresses records by and no screen shows — the client's
+   * uuid. It stays in the catalog so the coverage tests know every returned
+   * field is accounted for, and is never offered to an operator, maskable or
+   * not: the admin screens identify a client by the Portal ID alone.
+   */
+  internal?: boolean;
 }
 
 export interface ClientFieldGroup {
@@ -66,7 +73,20 @@ export class ClientFieldsService {
     return ClientFieldsService.catalog;
   }
 
-  /** Every field, flattened — the shape the admin UI renders. */
+  /**
+   * The catalog as the admin screens receive it: every group, without the
+   * `internal` keys — see `ClientFieldDefinition.internal`.
+   */
+  publicCatalog(): ClientFieldCatalog {
+    return Object.fromEntries(
+      Object.entries(this.getCatalog()).map(([name, group]) => [
+        name,
+        { ...group, fields: group.fields.filter((field) => !field.internal) },
+      ]),
+    );
+  }
+
+  /** Every field, flattened — internal keys included, for the enforcement layer. */
   definitions(): ClientFieldDefinition[] {
     return Object.values(this.getCatalog()).flatMap((group) => group.fields);
   }

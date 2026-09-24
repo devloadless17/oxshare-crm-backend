@@ -1,7 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { sql } from 'drizzle-orm';
+import { aliasedTable, sql } from 'drizzle-orm';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { users } from '../src/database/schema';
+import { clientIdentitySearch } from '../src/store/users.store';
+import { auditClientSearch } from '../src/store/audit-log.store';
+import { tradingAccountSearch } from '../src/modules/admin/admin-holdings.service';
 
 /**
  * THE SEARCH BOXES STAY INDEXED AT VOLUME — measured, not asserted in a comment.
@@ -52,6 +56,8 @@ const ROWS = 20_000;
 const RARE = 5;
 
 let rareSubjectId: string;
+/** One of the rare clients, found by the PORTAL ID cases — see the last block. */
+let portalClient: { id: string; portalId: number };
 
 async function plan(query: ReturnType<typeof sql>): Promise<string> {
   const { rows } = await ctx.db.execute<{ 'QUERY PLAN': string }>(
@@ -200,6 +206,26 @@ beforeAll(async () => {
   `);
 
   /*
+   * A CLIENT WITH A SMALL AUDIT HISTORY kept in both places a row can name one:
+   * the SUBJECT (a status change) and `details.userId` (a money row, whose
+   * subject is the transaction). The Portal ID search has to find both, from
+   * one index on the expression that knows where to look.
+   */
+  const { rows: found } = await ctx.db.execute<{ id: string; portal_id: number }>(sql`
+    SELECT id, portal_id FROM users WHERE email = 'rare-3@oxshare-e2e.test'
+  `);
+  portalClient = { id: found[0].id, portalId: Number(found[0].portal_id) };
+  await ctx.db.execute(sql`
+    INSERT INTO audit_log (actor_id, actor_email, actor_kind, action, subject_type, subject_id, details)
+    VALUES
+      (gen_random_uuid(), 'desk@oxshare.com', 'admin', 'client.suspend', 'user', ${portalClient.id}, NULL),
+      (gen_random_uuid(), 'desk@oxshare.com', 'admin', 'withdrawal.approve', 'transaction',
+       gen_random_uuid()::text, jsonb_build_object('userId', ${portalClient.id}::text)),
+      (gen_random_uuid(), 'desk@oxshare.com', 'admin', 'withdrawal.settle', 'transaction',
+       gen_random_uuid()::text, jsonb_build_object('userId', ${portalClient.id}::text))
+  `);
+
+  /*
    * ANALYZE, and it is not optional.
    *
    * A freshly-bulk-loaded table has no statistics, so the planner guesses — and
@@ -222,76 +248,70 @@ describe('the measured expression is the SHIPPED expression', () => {
   /*
    * THE WEAKNESS THIS CLOSES.
    *
-   * Every plan below is measured against SQL written in this file. That proves
-   * the INDEX can serve that SQL — and proves nothing about the query the
-   * application actually sends. If `wallet.service.ts` reorders its
-   * concatenation tomorrow, the plans here stay green and the product goes back
-   * to a sequential scan, which is the precise failure mode this file exists
-   * for. So the two are tied together: the predicate measured here has to
-   * appear, character for character, in the source that sends it.
+   * A plan measured against SQL written in this file proves the INDEX can serve
+   * that SQL — and nothing about the query the application sends. Reorder the
+   * application's concatenation tomorrow and a plan over a copy stays green
+   * while the product goes back to a sequential scan, the precise failure this
+   * file exists for.
    *
-   * A string comparison rather than a `.toSQL()` round trip because these are
-   * `sql` template fragments built inside methods that execute them — there is
-   * no query object to intercept without changing the production code to be
-   * testable, which trades a real design for a test convenience.
+   * Every client search now goes through ONE function, `clientIdentitySearch`,
+   * so the cases below plan THAT — the fragment the product sends, not a
+   * transcription of it. What is left to check by reading source is that each
+   * screen still calls it, rather than growing its own copy again: the copies
+   * are how the KYC queue, the IB queue and the withdrawal desk spent months as
+   * sequential scans beside an index built for them (three ORed `ILIKE`s,
+   * which `client-list-indexes.spec.ts` proves cannot use it).
    */
-  const CLIENT_PREDICATE =
-    "(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || " +
-    "coalesce(${users.lastName}, '')) ILIKE";
-
   const senders = [
     'src/store/users.store.ts',
     'src/modules/wallet/wallet.service.ts',
     'src/modules/admin/admin-holdings.service.ts',
-    /*
-     * The four that were NOT on this list and were NOT sending the expression.
-     *
-     * Each searched people with three separate `ILIKE`s OR-ed together — the
-     * KYC review queue, the IB application queue, the withdrawal queue and its
-     * per-state counts. `client-list-indexes.spec.ts` already proves that form
-     * cannot use `users_search_trgm_idx`, so all four were sequential scans
-     * beside an index built for them.
-     *
-     * They were invisible here for the simplest possible reason: this list is
-     * hand-kept, and nobody added them. That is the same shape as the sort map
-     * `admin-sort-indexes.spec.ts` had never seen — a per-item check is only as
-     * complete as the list of items.
-     */
     'src/store/kyc.store.ts',
     'src/store/ib.store.ts',
     'src/modules/payments/transactions.service.ts',
   ];
 
-  it.each(senders)('%s searches clients on the indexed expression', (file) => {
-    const source = readFileSync(file, 'utf8').replace(/\s+/g, ' ');
+  it.each(senders)('%s searches clients through the one shared definition', (file) => {
+    const source = readFileSync(file, 'utf8');
     expect(
-      source.includes(CLIENT_PREDICATE.replace(/\s+/g, ' ')),
-      `${file} no longer sends the expression \`users_search_trgm_idx\` was built on. ` +
-        'Either restore it or add the index the new expression needs — a mismatch is a ' +
-        'sequential scan with no error and no warning.',
+      source.includes('clientIdentitySearch('),
+      `${file} no longer calls clientIdentitySearch — whatever replaced it has to be the ` +
+        'expression `users_search_trgm_idx` was built on, or it is a sequential scan with no ' +
+        'error and no warning.',
     ).toBe(true);
   });
 
-  it('the Financial list sends it too, in raw SQL', () => {
-    /*
-     * `listAllForAdmin` assembles its statement as TEXT over a CTE, so it names
-     * the columns `u.email` rather than through drizzle — the predicate above
-     * cannot match it and would report a clean bill of health for a query that
-     * had gone back to three ORs.
-     *
-     * Same expression, different spelling: `coalesce(a,'') || ' ' || …`, which
-     * is what the index was built on whichever way it is written.
-     */
-    const source = readFileSync('src/modules/payments/transactions.service.ts', 'utf8').replace(
-      /\s+/g,
-      ' ',
+  it.each(senders.filter((f) => f !== 'src/store/users.store.ts'))(
+    '%s carries no private copy of the client expression',
+    (file) => {
+      // A copy is where drift starts: it is right the day it is pasted.
+      const source = readFileSync(file, 'utf8').replace(/\s+/g, ' ');
+      expect(source).not.toMatch(/coalesce\(\$\{\w+\.email\}, ''\) \|\| ' '/);
+      expect(source).not.toMatch(/coalesce\(\w+\.email, ''\) \|\| ' '/);
+    },
+  );
+
+  it('the shared definition CAN be served by the index', async () => {
+    const text = await planWithoutSeqScan(sql`
+      SELECT id FROM users WHERE ${clientIdentitySearch('zephyrine')} LIMIT 25
+    `);
+    expect(text, `the shipped client search cannot use its index:\n${text}`).toMatch(
+      /users_search_trgm_idx/,
     );
-    expect(
-      source.includes(
-        "(coalesce(u.email, '') || ' ' || coalesce(u.first_name, '') || ' ' || coalesce(u.last_name, '')) ILIKE",
-      ),
-      'the admin Financial search no longer sends the indexed expression',
-    ).toBe(true);
+  });
+
+  it('and so can its form over an ALIAS of users (the commission list)', async () => {
+    // `ib.store.ts` searches the PARTNER through `aliasedTable(users, …)`. The
+    // alias changes the name in the FROM, not the columns, so the planner must
+    // still match the expression — asserted, not assumed.
+    const partner = aliasedTable(users, 'partner_user');
+    const text = await planWithoutSeqScan(sql`
+      SELECT ${partner.id} FROM users AS partner_user
+      WHERE ${clientIdentitySearch('zephyrine', partner)} LIMIT 25
+    `);
+    expect(text, `the aliased client search cannot use its index:\n${text}`).toMatch(
+      /users_search_trgm_idx/,
+    );
   });
 
   it('the audit actor search keeps its ::text cast', () => {
@@ -627,5 +647,94 @@ describe('the audit log stays investigable as it grows', () => {
      * client's whole history; what is pinned here is that the read reaches the
      * index built for it rather than one that merely contains the column.
      */
+  });
+});
+
+describe('a PORTAL ID search is a point lookup on every screen', () => {
+  /*
+   * The number staff know a client by (0133). Digits in any client search box
+   * are read as one and matched EXACTLY, so each of these has to be the cheapest
+   * read there is — an equality on a unique index — at any size. Asserted at
+   * natural settings where the answer is a lookup at every size, and with a
+   * sequential scan penalised where the question is whether an index CAN serve
+   * the predicate at all.
+   */
+  it('finds the client through the unique index, not the trigram one', async () => {
+    const text = await plan(sql`
+      SELECT id FROM users WHERE ${clientIdentitySearch(String(portalClient.portalId))}
+    `);
+    expect(text, `the Portal ID lookup is scanning:\n${text}`).not.toMatch(/Seq Scan on users/);
+    expect(text).toMatch(/users_portal_id_uq/);
+  });
+
+  it('finds exactly that client — a number is not a substring of anyone', async () => {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      SELECT id FROM users WHERE ${clientIdentitySearch(`#${portalClient.portalId}`)}
+    `);
+    expect(rows.map((r) => r.id)).toEqual([portalClient.id]);
+  });
+
+  it('on trading accounts, a number is a login OR a Portal ID, on one table', async () => {
+    /*
+     * The OR stays inside `trading_accounts` — `login` against the unique
+     * login index, `user_id` against the owner the subquery resolves — so it
+     * can be a BitmapOr of two of this table's own indexes. The version that
+     * OR-ed `users.portal_id` across the join could not, and would read every
+     * account to find one.
+     */
+    const text = await planWithoutSeqScan(sql`
+      SELECT id FROM trading_accounts
+      WHERE ${tradingAccountSearch(String(portalClient.portalId))}
+    `);
+    expect(text, `the account-number search cannot use its indexes:\n${text}`).not.toMatch(
+      /Seq Scan on trading_accounts/,
+    );
+    // Either login index serves the equality — the unique one or 0038's
+    // `(login, id)` sort composite; which one is the planner's call.
+    expect(text).toMatch(/BitmapOr/);
+    expect(text).toMatch(/Bitmap Index Scan on trading_accounts_login_(uq|id_idx)/);
+    expect(text).toMatch(/Bitmap Index Scan on trading_accounts_user_idx/);
+    expect(text).toMatch(/users_portal_id_uq/);
+
+    const { rows } = await ctx.db.execute<{ user_id: string }>(sql`
+      SELECT user_id FROM trading_accounts
+      WHERE ${tradingAccountSearch(String(portalClient.portalId))}
+    `);
+    expect(rows.map((r) => r.user_id)).toEqual([portalClient.id]);
+  });
+
+  it('a login with a leading zero stays a login and never becomes a Portal ID', async () => {
+    const { rows } = await ctx.db.execute<{ login: string }>(sql`
+      SELECT login FROM trading_accounts WHERE ${tradingAccountSearch('00000042')}
+    `);
+    expect(rows.map((r) => r.login)).toEqual(['00000042']);
+  });
+
+  it('the audit log finds a client’s rows through the index on its expression', async () => {
+    /*
+     * 0134's `audit_log_client_id_idx` is only worth anything if the query's
+     * expression is the index's expression, tree for tree — 0125 is the record
+     * of an index that existed and could never be chosen. This plans the
+     * shipped predicate, so a change to `auditRowClientId()` that is not made
+     * to the migration too turns this red.
+     */
+    const text = await planWithoutSeqScan(sql`
+      SELECT id FROM audit_log WHERE ${auditClientSearch(portalClient.portalId)}
+    `);
+    expect(text, `the audit Portal ID search cannot use its index:\n${text}`).toMatch(
+      /audit_log_client_id_idx/,
+    );
+  });
+
+  it('and finds them wherever the row keeps the client — subject or details', async () => {
+    const { rows } = await ctx.db.execute<{ action: string }>(sql`
+      SELECT action FROM audit_log WHERE ${auditClientSearch(portalClient.portalId)}
+      ORDER BY action
+    `);
+    expect(rows.map((r) => r.action)).toEqual([
+      'client.suspend',
+      'withdrawal.approve',
+      'withdrawal.settle',
+    ]);
   });
 });

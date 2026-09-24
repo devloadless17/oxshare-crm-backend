@@ -82,6 +82,18 @@ const HOSTILE_NAME = '=HYPERLINK("http://evil","x"),Robert';
 let ctx: HttpTestContext;
 let mineId: string;
 let theirsId: string;
+/*
+ * The same two clients by PORTAL ID — what every export identifies a client by
+ * now. The uuid is in no file any more, so a `not.toContain(uuid)` would pass
+ * whatever the export did; rows are found by their Portal ID cell instead.
+ */
+let minePortalId: number;
+let theirsPortalId: number;
+
+/** Does the CSV hold a row for this client — their Portal ID as a whole cell? */
+function hasClientRow(csv: string, portalId: number): boolean {
+  return csv.split('\r\n').some((line) => line.split(',').includes(String(portalId)));
+}
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -218,6 +230,8 @@ beforeAll(async () => {
     .returning();
   mineId = mine.id;
   theirsId = theirs.id;
+  minePortalId = mine.portalId;
+  theirsPortalId = theirs.portalId;
 
   await db.insert(clientTagAssignments).values({ userId: mineId, tagId: mineTag.id });
   // A submission for the in-scope client, so the KYC export has a row whose
@@ -407,7 +421,7 @@ describe('THE LEAK TEST: a scoped admin exports only their own territory', () =>
 
     expect(res.status).toBe(200);
     expect(res.text).not.toContain('export-theirs@oxshare-e2e.test');
-    expect(res.text).not.toContain(theirsId);
+    expect(hasClientRow(res.text, theirsPortalId)).toBe(false);
     // The control: without it this passes against an empty file.
     expect(res.text).toContain('export-mine@oxshare-e2e.test');
   });
@@ -495,7 +509,7 @@ describe('the mask reaches the FILE — an export is not a bypass', () => {
     const res = await session.get('/v1/admin/kyc/export');
 
     expect(res.status).toBe(200);
-    expect(res.text).toContain(mineId);
+    expect(hasClientRow(res.text, minePortalId)).toBe(true);
     expect(res.text).not.toContain('export-mine@oxshare-e2e.test');
   });
 
@@ -523,9 +537,9 @@ describe('the mask reaches the FILE — an export is not a bypass', () => {
 
     expect(res.status).toBe(200);
     expect(
-      res.text,
+      hasClientRow(res.text, minePortalId),
       'the applications export came back empty — the mask case is vacuous',
-    ).toContain(mineId);
+    ).toBe(true);
     expect(res.text).not.toContain('export-mine@oxshare-e2e.test');
     expect(res.text).not.toContain('export-theirs@oxshare-e2e.test');
   });
@@ -535,9 +549,10 @@ describe('the mask reaches the FILE — an export is not a bypass', () => {
     const res = await session.get('/v1/admin/ib/partners/export');
 
     expect(res.status).toBe(200);
-    expect(res.text, 'the partners export came back empty — the mask case is vacuous').toContain(
-      mineId,
-    );
+    expect(
+      hasClientRow(res.text, minePortalId),
+      'the partners export came back empty — the mask case is vacuous',
+    ).toBe(true);
     expect(res.text).not.toContain('export-mine@oxshare-e2e.test');
     expect(res.text).not.toContain('export-theirs@oxshare-e2e.test');
   });
@@ -855,6 +870,60 @@ describe('every declared export resource answers', () => {
   }
 });
 
+describe('no export names a client by uuid — the Portal ID is their identifier', () => {
+  /*
+   * The owner's rule (24 Sep 2026): an administrator identifies a client by
+   * Portal ID alone, as if the uuid had never existed. The uuid still keys every
+   * row; it must just never reach a person — and a spreadsheet is where it would
+   * surface first, in an ID column or inside the audit trail's details.
+   *
+   * Each file must hold the client's Portal ID (or the absence of the uuid
+   * proves nothing — an empty file has no uuid in it either) and never their
+   * uuid, in any column or inside any JSON.
+   */
+  const CLIENT_EXPORTS = [
+    'clients',
+    'kyc',
+    'withdrawals',
+    'transactions',
+    'wallets',
+    'ib/applications',
+    'ib/partners',
+    'audit-log',
+  ];
+
+  beforeAll(async () => {
+    // A money row naming the client only inside `details`, as the withdrawal
+    // desk records one — the place a uuid would otherwise survive.
+    const [masterAdmin] = await ctx.db.db
+      .select()
+      .from(admins)
+      .where(eq(admins.email, MASTER.email));
+    await ctx.db.db.insert(auditLog).values({
+      actorId: masterAdmin.id,
+      actorEmail: MASTER.email,
+      actorKind: 'admin',
+      action: 'withdrawal.approve',
+      subjectType: 'transaction',
+      subjectId: '11111111-1111-4111-8111-111111111111',
+      details: { userId: mineId, amount: '10.00000000' },
+    });
+  });
+
+  for (const resource of CLIENT_EXPORTS) {
+    it(`${resource}: carries the Portal ID and never the uuid`, async () => {
+      const session = await actingAs(ctx, 'admin', MASTER);
+      const res = await session.get(`/v1/admin/${resource}/export?format=csv`);
+
+      expect(res.status).toBe(200);
+      expect(res.text, `${resource} names no client at all — the check is vacuous`).toMatch(
+        new RegExp(`(^|[,"{:\\s])${minePortalId}([,"}\\s]|$)`, 'm'),
+      );
+      expect(res.text, `${resource} still prints a client uuid`).not.toContain(mineId);
+    });
+  }
+});
+
 describe('the export honours the SAME filters as the list', () => {
   /*
    * `admin-clients.controller.ts` promises exactly this, directly above the
@@ -876,8 +945,14 @@ describe('the export honours the SAME filters as the list', () => {
 
     expect(res.status).toBe(200);
     // `mine` has a submitted submission; `theirs` has none at all.
-    expect(res.text, 'the filtered client is missing — the filter over-narrowed').toContain(mineId);
-    expect(res.text, 'the filter was ignored and the file holds everybody').not.toContain(theirsId);
+    expect(
+      hasClientRow(res.text, minePortalId),
+      'the filtered client is missing — the filter over-narrowed',
+    ).toBe(true);
+    expect(
+      hasClientRow(res.text, theirsPortalId),
+      'the filter was ignored and the file holds everybody',
+    ).toBe(false);
   });
 
   it('narrows by emailVerified, and tells absent apart from false', async () => {
@@ -889,8 +964,8 @@ describe('the export honours the SAME filters as the list', () => {
 
     const verified = await master.get('/v1/admin/clients/export?emailVerified=true');
     expect(verified.status).toBe(200);
-    expect(verified.text).toContain(mineId);
-    expect(verified.text).not.toContain(theirsId);
+    expect(hasClientRow(verified.text, minePortalId)).toBe(true);
+    expect(hasClientRow(verified.text, theirsPortalId)).toBe(false);
 
     /*
      * The tri-state, which is why this is parsed by a shared function rather
@@ -899,8 +974,8 @@ describe('the export honours the SAME filters as the list', () => {
      * export.
      */
     const all = await master.get('/v1/admin/clients/export');
-    expect(all.text).toContain(mineId);
-    expect(all.text).toContain(theirsId);
+    expect(hasClientRow(all.text, minePortalId)).toBe(true);
+    expect(hasClientRow(all.text, theirsPortalId)).toBe(true);
   });
 
   it('REFUSES an unrecognised kycStatus rather than ignoring it', async () => {

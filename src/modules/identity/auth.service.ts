@@ -1177,6 +1177,7 @@ export class AuthService {
   private sanitize(user: User) {
     return {
       id: user.id,
+      portalId: user.portalId,
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,

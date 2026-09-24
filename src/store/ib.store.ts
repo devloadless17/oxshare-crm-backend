@@ -27,7 +27,7 @@ import {
   UNRESTRICTED,
   type ClientScope,
 } from '../common/security/client-scope';
-import { escapeLike } from './users.store';
+import { clientIdentitySearch } from './users.store';
 
 export type IbApplicationStatus = (typeof ibApplications.status.enumValues)[number];
 
@@ -233,26 +233,9 @@ export class IbStore {
      * queue reads as "everybody is pending" rather than as a bug. Eight sibling
      * searches already escape; these two were the exceptions.
      */
-    const term = filter.q?.trim() ? `%${escapeLike(filter.q.trim())}%` : undefined;
-    const matches = term
-      ? /*
-         * The CONCATENATED expression, which is the one the trigram index is built
-         * on (`users_search_trgm_idx`, migration 0010).
-         *
-         * This was three separate `ILIKE`s OR-ed together, and
-         * `client-list-indexes.spec.ts` already PROVES that form cannot use the
-         * index — it asserts `not.toContain('users_search_trgm_idx')` for exactly
-         * this shape. So every search of this queue was a sequential scan while
-         * the index sat beside it, unused.
-         *
-         * It also searches BETTER: "jane smith" matches the concatenation and can
-         * never match any single column, which is what an operator typing a full
-         * name expects. `kyc.store.ts` already states the intent — both queues are
-         * review queues of people and "a search box that matched different fields
-         * on each would be a trap".
-         */
-        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${term}`
-      : undefined;
+    // A Portal ID or a name/email — see `clientIdentitySearch`.
+    const q = filter.q?.trim();
+    const matches = q ? clientIdentitySearch(q) : undefined;
 
     const sortKey: IbApplicationSortKey = filter.sort ?? DEFAULT_IB_APPLICATION_SORT;
     const direction = filter.order ?? 'desc';
@@ -269,6 +252,7 @@ export class IbStore {
         application: ibApplications,
         user: {
           id: users.id,
+          portalId: users.portalId,
           email: users.email,
           firstName: users.firstName,
           lastName: users.lastName,
@@ -428,6 +412,7 @@ export class IbStore {
         referralCode: ibAccounts.referralCode,
         active: ibAccounts.active,
         approvedAt: ibAccounts.approvedAt,
+        portalId: users.portalId,
         email: users.email,
         firstName: users.firstName,
         lastName: users.lastName,
@@ -490,6 +475,19 @@ export class IbStore {
     order?: SortOrder;
   }) {
     const visible = clientScopePredicate(filter.scope ?? UNRESTRICTED, users.id);
+    /*
+     * The PARENT, by Portal ID — the number the console names people by. Only
+     * when the parent is inside the reader's territory: the list is scoped on
+     * the partner, and their parent may sit in a territory this reader does not
+     * hold. The Portal ID is the handle every other screen's search takes, so
+     * it goes with the rest of an out-of-scope person's identity.
+     */
+    const parentVisible = clientScopePredicate(
+      filter.scope ?? UNRESTRICTED,
+      ibAccounts.parentIbUserId,
+    );
+    const parentPortalId = sql<number | null>`(SELECT parent.portal_id FROM users AS parent
+      WHERE parent.id = ${ibAccounts.parentIbUserId}${parentVisible ? sql` AND ${parentVisible}` : sql``})`;
 
     const sortKey: IbPartnerSortKey = filter.sort ?? DEFAULT_IB_PARTNER_SORT;
     const direction = filter.order ?? 'desc';
@@ -500,10 +498,12 @@ export class IbStore {
         account: ibAccounts,
         user: {
           id: users.id,
+          portalId: users.portalId,
           email: users.email,
           firstName: users.firstName,
           lastName: users.lastName,
         },
+        parentPortalId,
       })
       .from(ibAccounts)
       .innerJoin(users, eq(users.id, ibAccounts.userId))
@@ -571,7 +571,8 @@ export class IbStore {
     ibUserId?: string;
     clientUserId?: string;
     /**
-     * Free text over the PARTNER's email and name — never the client's.
+     * The PARTNER's Portal ID, or free text over their email and name — never
+     * the client's.
      *
      * The row names two people and only one of them is safely searchable. An
      * out-of-scope person's identity is MASKED in the mapper below, and a
@@ -659,18 +660,10 @@ export class IbStore {
        * straight at a partner's rows could not filter to them without leaving
        * for another screen to copy an id.
        *
-       * ⚠️ CHARACTER-FOR-CHARACTER the expression `users.store.ts` searches on.
-       * A leading wildcard cannot use a b-tree, so this is served by the
-       * pg_trgm GIN index, and Postgres uses that index ONLY when the query
-       * expression matches the one it was built on. Splitting it into three
-       * ILIKEs or reordering the concatenation silently turns it into a
-       * sequential scan over the accrual ledger on every keystroke.
+       * A Portal ID or a name/email, through the one definition every client
+       * search shares — on the PARTNER alias, for the reason given on `q`.
        */
-      ...(filter.q?.trim()
-        ? [
-            sql`(coalesce(${partner.email}, '') || ' ' || coalesce(${partner.firstName}, '') || ' ' || coalesce(${partner.lastName}, '')) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
-          ]
-        : []),
+      ...(filter.q?.trim() ? [clientIdentitySearch(filter.q, partner)] : []),
     );
 
     const sortKey: IbAccrualSortKey = filter.sort ?? DEFAULT_IB_ACCRUAL_SORT;
@@ -715,12 +708,14 @@ export class IbStore {
         partnerInScope: partnerInScopeExpr,
         partner: {
           id: partner.id,
+          portalId: partner.portalId,
           email: partner.email,
           firstName: partner.firstName,
           lastName: partner.lastName,
         },
         client: {
           id: client.id,
+          portalId: client.portalId,
           email: client.email,
           firstName: client.firstName,
           lastName: client.lastName,
@@ -759,13 +754,21 @@ export class IbStore {
        * beneficiary is in territory, and what they were paid is the reader's
        * business. It is the other party's identity that is not.
        */
+      /*
+       * The Portal ID goes with the name. Unlike the uuid it is not opaque: it
+       * is the number an operator types into every other screen's search, so
+       * showing it for someone outside the reader's territory would hand them
+       * the key to a person they may not look up.
+       */
       const hide = (person: {
         id: string;
+        portalId: number;
         email: string;
         firstName: string;
         lastName: string;
       }) => ({
         id: person.id,
+        portalId: null as number | null,
         email: null as string | null,
         firstName: null as string | null,
         lastName: null as string | null,

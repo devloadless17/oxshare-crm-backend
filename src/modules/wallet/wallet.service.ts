@@ -11,7 +11,7 @@ import {
   wallets,
 } from '../../database/schema';
 import { available, money, MoneyInput, toDecimal } from './money';
-import { escapeLike } from '../../store/users.store';
+import { clientIdentitySearch } from '../../store/users.store';
 import {
   ConflictError,
   MoneyRuleError,
@@ -543,9 +543,7 @@ export class WalletService {
      */
     if (filter.q?.trim()) {
       conditions.push(isNotNull(users.id));
-      conditions.push(
-        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
-      );
+      conditions.push(clientIdentitySearch(filter.q));
     }
 
     // In the WHERE clause. The ADM-13 ledger is the screen used FOR
@@ -617,6 +615,8 @@ export class WalletService {
         userFirstName: users.firstName,
         userLastName: users.lastName,
         userEmail: users.email,
+        // The identifier a masked reader still gets — see `users.portal_id`.
+        userPortalId: users.portalId,
       })
       .from(ledgerEntries)
       .innerJoin(wallets, eq(ledgerEntries.walletId, wallets.id))

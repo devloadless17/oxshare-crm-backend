@@ -183,6 +183,13 @@ export class KycUserDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   id: string;
+  /**
+   * The client's PORTAL ID — the human number, 1,000,000 up (migration 0133).
+   * What staff read and search by; `id` stays the key for URLs and the API.
+   */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: Number, example: 1000001 })
+  portalId: number;
   @ClientField('client.email')
   @ApiProperty()
   email: string;
@@ -584,6 +591,13 @@ export class ClientRowDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   id: string;
+  /**
+   * The client's PORTAL ID — the human number, 1,000,000 up (migration 0133).
+   * What staff read and search by; `id` stays the key for URLs and the API.
+   */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: Number, example: 1000001 })
+  portalId: number;
   @ClientField('client.email')
   @ApiPropertyOptional()
   email?: string;
@@ -696,6 +710,14 @@ export class ProfileReferrerDto {
    * may not see this person's row — territory is rows, masking is columns, and
    * only one of the two was applied here.
    */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiPropertyOptional({
+    type: 'integer',
+    description:
+      'The introducer’s Portal ID — what the profile links by. Absent, with the rest of their ' +
+      'identity, when the introducer is outside your territory.',
+  })
+  portalId?: number;
   @ClientField('client.email')
   @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
   email?: string;
@@ -724,6 +746,9 @@ export class ProfileReferredClientDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   clientUserId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: 'integer', example: 1000245, description: 'Their Portal ID.' })
+  clientPortalId: number;
   @ClientField('client.email')
   @ApiProperty()
   email: string;
@@ -785,6 +810,9 @@ export class ClientAccountDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ format: 'uuid' })
   id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: 'integer', example: 1000245, description: 'The client’s Portal ID.' })
+  portalId: number;
   @ClientField('client.email')
   @ApiProperty()
   email: string;
@@ -836,6 +864,13 @@ export class ClientProfileDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   id: string;
+  /**
+   * The client's PORTAL ID — the human number, 1,000,000 up (migration 0133).
+   * What staff read and search by; `id` stays the key for URLs and the API.
+   */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: Number, example: 1000001 })
+  portalId: number;
   @ClientField('client.email')
   @ApiPropertyOptional()
   email?: string;
@@ -1256,7 +1291,47 @@ export class AuditEntryDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   subjectId: string;
-  @ApiPropertyOptional({ type: 'object', additionalProperties: true })
+  /*
+   * The CLIENT the row concerns, by the number staff know them by — wherever
+   * the row keeps the client (the subject, or `details` for money and trading
+   * rows; see `auditRowClientId`). The screen shows this instead of a uuid.
+   */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({
+    type: 'integer',
+    nullable: true,
+    example: 1000245,
+    description:
+      'The Portal ID of the client this row is about, or null when it is about no client (a ' +
+      'role edit, a setting) or the client no longer exists.',
+  })
+  clientPortalId: number | null;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({
+    type: 'integer',
+    nullable: true,
+    example: 1000245,
+    description:
+      'The actor’s Portal ID when the actor is a CLIENT; null for an administrator, the system ' +
+      'or a provider, none of whom has one.',
+  })
+  actorPortalId: number | null;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({
+    type: 'integer',
+    nullable: true,
+    example: 1000245,
+    description:
+      'The subject’s Portal ID when the subject IS a client — shown in place of `subjectId`. ' +
+      'Null for any other subject: a transaction, a wallet or a role keeps its own id.',
+  })
+  subjectPortalId: number | null;
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: true,
+    description:
+      'As recorded, except that any client uuid inside it is shown as that client’s Portal ID.',
+  })
   @NotClientField(
     'not a client-owned attribute \u2014 details describes the record rather than the person',
   )
@@ -1307,6 +1382,10 @@ export class WithdrawalUserDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   id: string;
+  /** The client's Portal ID — what staff read and search by. Never masked. */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: Number, example: 1000001 })
+  portalId: number;
   @ClientField('client.email')
   @ApiPropertyOptional()
   email?: string;
@@ -1760,6 +1839,9 @@ export class HoldingOwnerDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: 'integer', example: 1000245, description: 'The owner’s Portal ID.' })
+  portalId: number;
   @ClientField('client.email')
   @ApiProperty()
   email: string;
@@ -2177,6 +2259,11 @@ export class WalletDiscrepancyDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   userId: string;
+
+  /** The client's Portal ID — the identifier an operator quotes. Never masked. */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: Number, nullable: true, example: 1000001 })
+  userPortalId: number | null;
 
   /* Nullable for the LEFT join's reason — see the service. A discrepancy must
      not disappear because the client row did. */

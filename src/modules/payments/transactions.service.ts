@@ -23,7 +23,7 @@ import {
   withdrawalPaymentMethods,
 } from '../../database/schema';
 import type { ListTransactionsQueryDto } from './dto/transaction-query.dto';
-import { escapeLike } from '../../store/users.store';
+import { clientIdentitySearch } from '../../store/users.store';
 import { TransfersService } from './transfers.service';
 import { TransferExecutor } from './transfer-executor.service';
 
@@ -118,6 +118,7 @@ interface CombinedRow {
 interface AdminCombinedRow extends CombinedRow {
   user_email: string;
   user_first_name: string;
+  user_portal_id: number;
   user_last_name: string;
 }
 
@@ -175,6 +176,7 @@ export interface AdminTransactionExportRow {
   destination: string | null;
   rejectionReason: string | null;
   userId: string;
+  userPortalId: number;
   userEmail: string;
   userFirstName: string;
   userLastName: string;
@@ -992,8 +994,9 @@ export class TransactionsService {
      * queue reads as "everybody is pending" rather than as a bug. Eight sibling
      * searches already escape; these two were the exceptions.
      */
-    const term = filter.q?.trim() ? `%${escapeLike(filter.q.trim())}%` : undefined;
-    if (term) {
+    // A Portal ID or a name/email — see `clientIdentitySearch`.
+    const q = filter.q?.trim() || undefined;
+    if (q) {
       conditions.push(
         /*
          * The CONCATENATED expression, which is the one the trigram index is built
@@ -1011,7 +1014,7 @@ export class TransactionsService {
          * review queues of people and "a search box that matched different fields
          * on each would be a trap".
          */
-        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${term}`,
+        clientIdentitySearch(q),
       );
     }
 
@@ -1070,6 +1073,7 @@ export class TransactionsService {
         rivalNeedsAttention: transactions.rivalNeedsAttention,
         rivalAttentionReason: transactions.rivalAttentionReason,
         userId: transactions.userId,
+        userPortalId: users.portalId,
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
@@ -1135,7 +1139,7 @@ export class TransactionsService {
      * looking at one client, a Pending badge counting all 8,571 rows describes
      * a queue they are not looking at, and they would act on it.
      */
-    if (term) {
+    if (q) {
       countConditions.push(
         /*
          * The CONCATENATED expression, which is the one the trigram index is built
@@ -1153,7 +1157,7 @@ export class TransactionsService {
          * review queues of people and "a search box that matched different fields
          * on each would be a trap".
          */
-        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${term}`,
+        clientIdentitySearch(q),
       );
     }
     const countRows = await db
@@ -1225,6 +1229,7 @@ export class TransactionsService {
       rivalAttentionReason: r.rivalAttentionReason,
       user: {
         id: r.userId,
+        portalId: r.userPortalId,
         email: r.userEmail,
         firstName: r.userFirstName,
         lastName: r.userLastName,
@@ -1305,6 +1310,7 @@ export class TransactionsService {
         reviewedAt: transactions.reviewedAt,
         settledAt: transactions.settledAt,
         userId: transactions.userId,
+        userPortalId: users.portalId,
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
@@ -1930,16 +1936,20 @@ export class TransactionsService {
     const joined = sql`${cte}
       SELECT
         combined.*,
-        u.email      AS user_email,
-        u.first_name AS user_first_name,
-        u.last_name  AS user_last_name
+        users.email      AS user_email,
+        users.first_name AS user_first_name,
+        users.last_name  AS user_last_name,
+        users.portal_id  AS user_portal_id
       FROM combined
-      JOIN users u ON u.id = combined.user_id`;
+      JOIN users ON users.id = combined.user_id`;
 
     // Escaped, so a literal % or _ in the search means itself — the same
     // `escapeLike` the client and KYC queues adopted; an unescaped `_` turns
     // "j_n@x.com" into a one-character wildcard and over-matches silently.
-    const term = filter.q?.trim() ? `%${escapeLike(filter.q.trim())}%` : undefined;
+    // A Portal ID or a name/email — see `clientIdentitySearch`. Joined as
+    // plain `users` (it was aliased `u`) so the shared expression applies here
+    // too, and this search cannot drift from the other six.
+    const q = filter.q?.trim() || undefined;
 
     /*
      * The counts do not need the client columns unless the SEARCH references
@@ -1948,7 +1958,7 @@ export class TransactionsService {
      * facet of every page render; the join is count-neutral either way (the
      * FK is NOT NULL), so the numbers cannot differ.
      */
-    const countSource = term ? joined : sql`${cte} SELECT combined.* FROM combined`;
+    const countSource = q ? joined : sql`${cte} SELECT combined.* FROM combined`;
 
     /*
      * `omit` is how the count facets stay honest — the same two-axis rule the
@@ -1981,7 +1991,7 @@ export class TransactionsService {
         conditions.push(sql`combined.created_at < ${filter.to}::date + interval '1 day'`);
       }
       // The same three columns every admin queue searches (see `listForAdmin`).
-      if (term) {
+      if (q) {
         conditions.push(
           /*
            * The same concatenation as the drizzle queues above, spelled in raw
@@ -1989,7 +1999,7 @@ export class TransactionsService {
            * cannot use `users_search_trgm_idx`; the concatenation is the
            * expression the index was built on.
            */
-          sql`(coalesce(u.email, '') || ' ' || coalesce(u.first_name, '') || ' ' || coalesce(u.last_name, '')) ILIKE ${term}`,
+          clientIdentitySearch(q),
         );
       }
       return conditions;
@@ -2104,6 +2114,7 @@ export class TransactionsService {
       walletId: row.wallet_id,
       user: {
         id: row.user_id,
+        portalId: row.user_portal_id,
         email: row.user_email,
         firstName: row.user_first_name,
         lastName: row.user_last_name,
@@ -2168,6 +2179,7 @@ export class TransactionsService {
       // does, §6.1 string amount included.
       ...toMovementRow(row),
       userId: row.user_id,
+      userPortalId: row.user_portal_id,
       userEmail: row.user_email,
       userFirstName: row.user_first_name,
       userLastName: row.user_last_name,

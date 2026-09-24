@@ -53,11 +53,18 @@
     "groupName": "Identity",
     "description": "Who the client is",
     "fields": [
-      {
+{
         "key": "client.id",
-        "label": "Client ID",
+        "label": "Internal record key",
         "maskable": false,
-        "reason": "Every row and every link is addressed by it."
+        "internal": true,
+        "reason": "Addresses the record inside the system and is shown on no screen — the Portal ID is what identifies a client."
+      },
+      {
+        "key": "client.portalId",
+        "label": "Portal ID",
+        "maskable": false,
+        "reason": "Every screen names a client by it — with name and email hidden, it is what still identifies the row."
       },
       {
         "key": "client.firstName",

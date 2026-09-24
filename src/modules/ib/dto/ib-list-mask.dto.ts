@@ -54,6 +54,10 @@ class IbListPerson {
   @ApiProperty()
   id!: string;
 
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: 'integer', nullable: true })
+  portalId?: number | null;
+
   @ClientField('client.email')
   @ApiProperty({ required: false })
   email?: string | null;

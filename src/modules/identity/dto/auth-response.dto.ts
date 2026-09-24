@@ -19,6 +19,11 @@ const USER_STATUSES = ['active', 'suspended', 'pending'] as const;
 
 export class UserProfileDto {
   @ApiProperty() id: string;
+  /**
+   * The client's own PORTAL ID (0133), shown on their profile as their client
+   * number — the same number staff will ask for on the phone.
+   */
+  @ApiProperty({ type: Number, example: 1000001 }) portalId: number;
   @ApiProperty({ example: 'client@oxshare.com' }) email: string;
   @ApiProperty({ example: 'John' }) firstName: string;
   @ApiProperty({ example: 'Doe' }) lastName: string;

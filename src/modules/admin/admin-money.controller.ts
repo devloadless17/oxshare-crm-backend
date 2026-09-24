@@ -72,6 +72,7 @@ import {
 } from './guards/admin.guard';
 import { ReconciliationService } from '../wallet/reconciliation.service';
 import { UuidParam, enumQuery, uuidQuery } from '../../common/query-params';
+import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { transactionStateEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
@@ -207,7 +208,8 @@ export class AdminMoneyController {
     name: 'q',
     required: false,
     description:
-      'Search the client’s email and name — the same columns the KYC and partner queues search.',
+      'A Portal ID (digits, matched exactly) or free text over the client’s email and name — ' +
+      'the one client search every queue shares.',
   })
   @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
@@ -814,14 +816,15 @@ export class AdminMoneyController {
     name: 'q',
     required: false,
     description:
-      'Search the client by email or name — the identifiers the Client column shows. Scope ' +
+      'A Portal ID (digits, matched exactly) or the client’s email or name — the identifiers ' +
+      'the Client column shows. Scope ' +
       'still applies: this cannot reach a client outside the actor’s territory.',
   })
   @ApiOkResponse({ type: LedgerListResponseDto })
   @ScopedToClients('WalletService.listEntries applies the predicate to wallets.user_id.')
   listLedger(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Query('userId') userId?: string,
+    @Query('userId', ClientRefPipe) userId?: string,
     @Query('q') q?: string,
     @Query('walletId') walletId?: string,
     @Query('entryType') entryType?: string,

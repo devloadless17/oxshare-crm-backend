@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, desc, eq, sql, type SQL, type SQLWrapper, lte } from 'drizzle-orm';
-import { escapeLike } from '../../store/users.store';
+import { clientIdByPortalId, clientIdentitySearch, parsePortalId } from '../../store/users.store';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
@@ -155,6 +155,36 @@ const WALLET_NUMBER = /^[0-9a-hjkmnp-tv-z]{12}$/i;
  * person search.
  */
 const MT5_LOGIN = /^\d{3,20}$/;
+
+/**
+ * What the trading-account search box matches — exported so the planner test
+ * (`search-at-scale.spec.ts`) measures THIS predicate rather than a copy of it.
+ *
+ * The same one-box-two-things rule as the wallet search, with the MT5 LOGIN as
+ * this screen's identifier — see `walletConditions` for why it is routed by
+ * shape rather than OR-ed across the join.
+ *
+ * A login is all digits and a name is not, so the shape decides. Leading zeros
+ * are significant to the bridge, which is why `login` is a string and is
+ * compared as one: `00012345` and `12345` are different accounts, and parsing
+ * the term as a number would silently merge them.
+ *
+ * ## A number is also a Portal ID
+ *
+ * Both identifiers are digits, and an operator holding "1000245" cannot know
+ * which one it is — so a number matches EITHER: the account with that login,
+ * and every account of the client with that Portal ID. Still one table: the
+ * Portal ID branch compares `trading_accounts.user_id` to the owner resolved by
+ * `clientIdByPortalId`, so the OR is between two of this table's own indexes
+ * (`trading_accounts_login_uq`, `trading_accounts_user_idx`) and Postgres can
+ * BitmapOr them — the join the rule above forbids never enters it.
+ */
+export function tradingAccountSearch(term: string): SQL {
+  if (!MT5_LOGIN.test(term)) return clientIdentitySearch(term);
+  const portalId = parsePortalId(term);
+  if (portalId === undefined) return eq(tradingAccounts.login, term);
+  return sql`(${tradingAccounts.login} = ${term} OR ${tradingAccounts.userId} = ${clientIdByPortalId(portalId)})`;
+}
 
 export const DEFAULT_TRADING_ACCOUNT_SORT: TradingAccountSortKey = 'createdAt';
 
@@ -374,9 +404,7 @@ export class AdminHoldingsService {
       if (WALLET_NUMBER.test(term)) {
         conditions.push(eq(wallets.walletNumber, term.toLowerCase()));
       } else {
-        conditions.push(
-          sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(term)}%`}`,
-        );
+        conditions.push(clientIdentitySearch(term));
       }
     }
     /*
@@ -444,6 +472,7 @@ export class AdminHoldingsService {
         createdAt: wallets.createdAt,
         updatedAt: wallets.updatedAt,
         userId: wallets.userId,
+        userPortalId: users.portalId,
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
@@ -501,6 +530,7 @@ export class AdminHoldingsService {
         updatedAt: r.updatedAt,
         user: {
           id: r.userId,
+          portalId: r.userPortalId,
           email: r.userEmail,
           firstName: r.userFirstName,
           lastName: r.userLastName,
@@ -567,6 +597,7 @@ export class AdminHoldingsService {
           createdAt: wallets.createdAt,
           updatedAt: wallets.updatedAt,
           userId: wallets.userId,
+          userPortalId: users.portalId,
           userEmail: users.email,
           userFirstName: users.firstName,
           userLastName: users.lastName,
@@ -719,35 +750,14 @@ export class AdminHoldingsService {
     const conditions: SQL[] = [];
     if (filter.userId) conditions.push(eq(tradingAccounts.userId, filter.userId));
     /*
-     * The owner, by what the screen shows — see `walletConditions` for the full
-     * reasoning and for why this expression must stay character-for-character
-     * identical to the one `users.store.ts` uses (pg_trgm GIN, or a sequential
-     * scan on every keystroke).
+     * The owner or the account, by what the screen shows — see
+     * `tradingAccountSearch`.
      *
      * This desk had the same defect as the wallets one and was missed on the
      * first pass: the column displays a named Owner and the only client filter
      * was a uuid the page never prints.
      */
-    if (filter.q?.trim()) {
-      const term = filter.q.trim();
-      /*
-       * The same one-box-two-things rule as `walletConditions`, with the MT5
-       * LOGIN as this screen's identifier — see there for why it is routed by
-       * shape rather than OR-ed across the join.
-       *
-       * A login is all digits and a person is not, so the shape decides. Leading
-       * zeros are significant to the bridge, which is why `login` is a string
-       * and is compared as one: `00012345` and `12345` are different accounts,
-       * and parsing the term as a number would silently merge them.
-       */
-      if (MT5_LOGIN.test(term)) {
-        conditions.push(eq(tradingAccounts.login, term));
-      } else {
-        conditions.push(
-          sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(term)}%`}`,
-        );
-      }
-    }
+    if (filter.q?.trim()) conditions.push(tradingAccountSearch(filter.q.trim()));
     if (filter.environment) {
       conditions.push(eq(tradingAccounts.environment, filter.environment as 'live'));
     }
@@ -835,6 +845,7 @@ export class AdminHoldingsService {
         createdAt: tradingAccounts.createdAt,
         updatedAt: tradingAccounts.updatedAt,
         userId: tradingAccounts.userId,
+        userPortalId: users.portalId,
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
@@ -878,6 +889,7 @@ export class AdminHoldingsService {
         updatedAt: r.updatedAt,
         user: {
           id: r.userId,
+          portalId: r.userPortalId,
           email: r.userEmail,
           firstName: r.userFirstName,
           lastName: r.userLastName,
@@ -937,6 +949,7 @@ export class AdminHoldingsService {
           createdAt: tradingAccounts.createdAt,
           updatedAt: tradingAccounts.updatedAt,
           userId: tradingAccounts.userId,
+          userPortalId: users.portalId,
           userEmail: users.email,
           userFirstName: users.firstName,
           userLastName: users.lastName,

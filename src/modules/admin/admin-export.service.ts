@@ -94,7 +94,7 @@ export class AdminExportService {
    * shape between two exports taken a week apart and stop being diffable.
    */
   readonly clientColumns: readonly CsvColumn<ClientExportRow>[] = [
-    { header: 'Client ID', value: (r) => r.id },
+    { header: 'Portal ID', value: (r) => r.portalId },
     { header: 'Email', value: (r) => r.email },
     { header: 'First name', value: (r) => r.firstName },
     { header: 'Last name', value: (r) => r.lastName },
@@ -224,7 +224,7 @@ export class AdminExportService {
     { header: 'Amount', value: (r) => r.amount },
     { header: 'Currency', value: (r) => r.currency },
     { header: 'State', value: (r) => r.state },
-    { header: 'Client ID', value: (r) => r.userId },
+    { header: 'Portal ID', value: (r) => r.userPortalId },
     { header: 'Client email', value: (r) => r.userEmail },
     { header: 'Client first name', value: (r) => r.userFirstName },
     { header: 'Client last name', value: (r) => r.userLastName },
@@ -296,7 +296,7 @@ export class AdminExportService {
     { header: 'Amount', value: (r) => r.amount },
     { header: 'Currency', value: (r) => r.currency },
     { header: 'State', value: (r) => r.state },
-    { header: 'Client ID', value: (r) => r.userId },
+    { header: 'Portal ID', value: (r) => r.userPortalId },
     { header: 'Client email', value: (r) => r.userEmail },
     { header: 'Client first name', value: (r) => r.userFirstName },
     { header: 'Client last name', value: (r) => r.userLastName },
@@ -387,7 +387,7 @@ export class AdminExportService {
      * across the first and last columns of a wide sheet is how it gets missed.
      */
     { header: 'Wallet kind', value: (r) => r.kind },
-    { header: 'Client ID', value: (r) => r.userId },
+    { header: 'Portal ID', value: (r) => r.userPortalId },
     { header: 'Client email', value: (r) => r.userEmail },
     { header: 'Client first name', value: (r) => r.userFirstName },
     { header: 'Client last name', value: (r) => r.userLastName },
@@ -462,7 +462,7 @@ export class AdminExportService {
     { header: 'Balance synced', value: (r) => r.balanceSyncedAt },
     { header: 'Leverage', value: (r) => r.leverage },
     { header: 'Status', value: (r) => r.status },
-    { header: 'Client ID', value: (r) => r.userId },
+    { header: 'Portal ID', value: (r) => r.userPortalId },
     { header: 'Client email', value: (r) => r.userEmail },
     { header: 'Client first name', value: (r) => r.userFirstName },
     { header: 'Client last name', value: (r) => r.userLastName },
@@ -507,7 +507,7 @@ export class AdminExportService {
   // ── KYC ───────────────────────────────────────────────────────────────────
 
   readonly kycColumns: readonly CsvColumn<KycExportRow>[] = [
-    { header: 'Client ID', value: (r) => r.userId },
+    { header: 'Portal ID', value: (r) => r.user.portalId },
     { header: 'Client email', value: (r) => r.user.email },
     { header: 'First name', value: (r) => r.user.firstName },
     { header: 'Last name', value: (r) => r.user.lastName },
@@ -566,11 +566,15 @@ export class AdminExportService {
   readonly auditColumns: readonly CsvColumn<AuditExportRow>[] = [
     { header: 'Recorded at', value: (r) => r.createdAt },
     { header: 'Actor email', value: (r) => r.actorEmail ?? '' },
-    { header: 'Actor ID', value: (r) => r.actorId },
+    // A client actor by Portal ID; an administrator, who has none, by their id.
+    { header: 'Actor ID', value: (r) => r.actorPortalId ?? r.actorId },
     { header: 'Actor kind', value: (r) => r.actorKind },
     { header: 'Action', value: (r) => r.action },
     { header: 'Subject type', value: (r) => r.subjectType },
-    { header: 'Subject ID', value: (r) => r.subjectId },
+    // A subject that IS a client is named by Portal ID; any other subject (a
+    // transaction, a wallet, a role) keeps its own id.
+    { header: 'Subject ID', value: (r) => r.subjectPortalId ?? r.subjectId },
+    { header: 'Client Portal ID', value: (r) => r.clientPortalId },
     { header: 'IP address', value: (r) => r.ipAddress },
     /*
      * `details` is jsonb and has no fixed shape, so it is serialised whole
@@ -659,7 +663,7 @@ export class AdminExportService {
 
   readonly ibApplicationColumns: readonly CsvColumn<IbApplicationExportRow>[] = [
     { header: 'Application ID', value: (r) => r.application.id },
-    { header: 'Client ID', value: (r) => r.application.userId },
+    { header: 'Portal ID', value: (r) => r.user.portalId },
     { header: 'Client email', value: (r) => r.user.email },
     { header: 'First name', value: (r) => r.user.firstName },
     { header: 'Last name', value: (r) => r.user.lastName },
@@ -716,7 +720,7 @@ export class AdminExportService {
   // ── IB partners ───────────────────────────────────────────────────────────
 
   readonly ibPartnerColumns: readonly CsvColumn<IbPartnerExportRow>[] = [
-    { header: 'Partner client ID', value: (r) => r.account.userId },
+    { header: 'Portal ID', value: (r) => r.user.portalId },
     { header: 'Email', value: (r) => r.user.email },
     { header: 'First name', value: (r) => r.user.firstName },
     { header: 'Last name', value: (r) => r.user.lastName },
@@ -728,7 +732,9 @@ export class AdminExportService {
      */
     { header: 'Level', value: (r) => r.account.level },
     { header: 'Referral code', value: (r) => r.account.referralCode },
-    { header: 'Parent partner ID', value: (r) => r.account.parentIbUserId },
+    // The parent's Portal ID — blank when there is none, or when they sit
+    // outside the reader's territory (see `IbStore.findPartnersPage`).
+    { header: 'Parent partner Portal ID', value: (r) => r.parentPortalId },
     { header: 'Active', value: (r) => r.account.active },
     { header: 'Approved at', value: (r) => r.account.approvedAt },
   ];
@@ -814,6 +820,8 @@ export interface ClientExportQuery {
 
 export interface ClientExportRow {
   id: string;
+  /** The Portal ID — what a spreadsheet is filtered by; the UUID is never exported. */
+  portalId: number;
   email: string;
   firstName: string;
   lastName: string;
@@ -842,6 +850,7 @@ export interface WithdrawalExportRow {
   reviewedAt: Date | null;
   settledAt: Date | null;
   userId: string;
+  userPortalId: number;
   userEmail: string;
   userFirstName: string;
   userLastName: string;
@@ -863,6 +872,7 @@ export interface WalletExportRow {
   createdAt: Date;
   updatedAt: Date;
   userId: string;
+  userPortalId: number;
   userEmail: string;
   userFirstName: string;
   userLastName: string;
@@ -883,6 +893,7 @@ export interface TradingAccountExportRow {
   createdAt: Date;
   updatedAt: Date;
   userId: string;
+  userPortalId: number;
   userEmail: string;
   userFirstName: string;
   userLastName: string;
@@ -897,7 +908,7 @@ export interface KycExportRow {
   reviewedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
-  user: { id: string; email: string; firstName: string; lastName: string };
+  user: { id: string; portalId: number; email: string; firstName: string; lastName: string };
 }
 
 export interface AuditExportRow {
@@ -914,6 +925,12 @@ export interface AuditExportRow {
   action: string;
   subjectType: string;
   subjectId: string;
+  /** The client the row is about — see `AuditEntryDto.clientPortalId`. */
+  clientPortalId: number | null;
+  /** A client actor's Portal ID — see `AuditEntryDto.actorPortalId`. */
+  actorPortalId: number | null;
+  /** The subject's Portal ID when the subject IS a client. */
+  subjectPortalId: number | null;
   details?: Record<string, unknown>;
   ipAddress: string | null;
   createdAt: Date;
@@ -934,6 +951,7 @@ export interface IbApplicationExportRow {
   agencyName: string | null;
   user: {
     id: string;
+    portalId: number;
     email: string;
     firstName: string;
     lastName: string;
@@ -950,7 +968,8 @@ export interface IbPartnerExportRow {
     active: boolean;
     approvedAt: Date;
   };
-  user: { id: string; email: string; firstName: string; lastName: string };
+  user: { id: string; portalId: number; email: string; firstName: string; lastName: string };
+  parentPortalId: number | null;
 }
 
 export interface RoleExportRow {

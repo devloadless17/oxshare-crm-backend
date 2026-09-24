@@ -126,7 +126,8 @@ export class AdminAuditController {
     name: 'q',
     required: false,
     description:
-      "Free text over the ACTOR's email, which is denormalised onto every row so a deleted " +
+      'A Portal ID (digits) finds every row about that client or performed by them. Anything ' +
+      "else is free text over the ACTOR's email, which is denormalised onto every row so a deleted " +
       "administrator's trail still names them. It deliberately does not search `details`: " +
       'that blob holds client PII, and matching inside it would let a narrow-scoped reader ' +
       'confirm a client exists from a row count.',
@@ -211,7 +212,8 @@ export class AdminAuditController {
     name: 'q',
     required: false,
     description:
-      "Free text over the ACTOR's email, which is denormalised onto every row so a deleted " +
+      'A Portal ID (digits) finds every row about that client or performed by them. Anything ' +
+      "else is free text over the ACTOR's email, which is denormalised onto every row so a deleted " +
       "administrator's trail still names them. It deliberately does not search `details`: " +
       'that blob holds client PII, and matching inside it would let a narrow-scoped reader ' +
       'confirm a client exists from a row count.',

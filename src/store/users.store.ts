@@ -107,19 +107,6 @@ export function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
-/**
- * Is this search term a complete uuid — i.e. a pasted client ID?
- *
- * Full uuids only, on purpose: a fragment stays on the name/email ILIKE path,
- * because "matches nothing" is a truthful answer for half an ID while an
- * accidental prefix match against the wrong client is not. Comparing a
- * non-uuid string to the `users.id` column would also be a Postgres cast
- * error, not an empty result.
- */
-export function isUuid(term: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(term.trim());
-}
-
 export const DEFAULT_CLIENT_SORT: ClientSortKey = 'createdAt';
 
 /**
@@ -165,6 +152,11 @@ export function clientSortOrder(value: string | undefined): 'asc' | 'desc' {
 
 export interface User {
   id: string;
+  /**
+   * The human number, from 1,000,000 up (0133). Assigned by the database, so it
+   * is absent from `create()`'s input — see `users.portal_id` in the schema.
+   */
+  portalId: number;
   email: string;
   passwordHash: string;
   firstName: string;
@@ -216,6 +208,87 @@ const toUser = (r: Row): User => ({
 });
 
 /**
+ * A search term that IS a Portal ID, or `undefined`.
+ *
+ * Digits only — surrounding spaces and a leading `#` forgiven, since staff paste
+ * "#1000245" as often as "1000245" — and within int4, the column's type, so the
+ * comparison can never make Postgres raise on an out-of-range cast.
+ *
+ * No leading zero: no Portal ID is written with one, and the trading-account
+ * search needs "00012345" to stay an MT5 login — the bridge treats leading
+ * zeros as significant — rather than also matching client 12345.
+ */
+export function parsePortalId(q: string | undefined): number | undefined {
+  const digits = q?.trim().replace(/^#/, '');
+  if (!digits || !/^[1-9]\d{0,9}$/.test(digits)) return undefined;
+  const n = Number(digits);
+  return n <= 2_147_483_647 ? n : undefined;
+}
+
+/**
+ * The uuid of the client holding a Portal ID, as a scalar subquery.
+ *
+ * For the searches that must stay on ONE table to keep their index — a
+ * predicate spanning a join cannot be BitmapOr-ed, so `login = $1 OR
+ * users.portal_id = $2` would scan both. `user_id = (this)` keeps the Portal
+ * ID branch on the searched table's own `user_id` index, and Postgres runs the
+ * subquery once, as an InitPlan, through `users_portal_id_uq`.
+ *
+ * NULL when nobody holds the number, and `= NULL` matches nothing — the right
+ * answer, with no second round trip to find it out.
+ */
+export function clientIdByPortalId(portalId: number): SQL<string | null> {
+  return sql<
+    string | null
+  >`(SELECT ${users.id} FROM ${users} WHERE ${users.portalId} = ${portalId})`;
+}
+
+/**
+ * How EVERY client search in the system matches a client — one definition.
+ *
+ * The client list, the KYC queue, the withdrawal desk, the financial view, the
+ * ledger, wallets, trading accounts, IB applications and the commission list
+ * (by partner) all search for a person, and each used to carry its own copy of
+ * the name/email expression. They call this now, so a search behaves the same
+ * on every screen and there is one place to change it. The audit log is the one
+ * search that cannot: its rows name a client in three different places, so it
+ * resolves the Portal ID first (`AuditLogStore.findAll`).
+ *
+ * ## A number is a Portal ID
+ *
+ * Digits alone are read as a Portal ID and matched EXACTLY — a point lookup on
+ * the unique index, so "1000245" finds that client and not every email
+ * containing those digits. Anything else is matched against email and name.
+ * The UUID is no longer searchable: it is shown nowhere, so nobody can have one
+ * to paste.
+ *
+ * ## The text expression must not drift
+ *
+ * The concatenation below is character-for-character the expression indexed by
+ * migration 0010 (trigram). Reorder it, add a column, or split it into three
+ * ILIKEs and every one of these searches silently becomes a sequential scan —
+ * the other reason there is exactly one copy.
+ *
+ * Why ONE concatenation and not `ilike(email) OR ilike(first) OR ilike(last)`: a
+ * leading wildcard cannot use a b-tree, so that form was a sequential scan per
+ * keystroke at ~219,000 rows (ARCHITECTURE §5). pg_trgm's GIN index makes an
+ * infix ILIKE indexable, but only on the exact expression it was built on. The
+ * space separator is not cosmetic either: it stops a match spanning a column
+ * boundary. `%` and `_` in the term are escaped (`escapeLike`), or a search for
+ * "%" matches every client and a run of them is an expensive scan.
+ *
+ * `person` is the table to match — `users` itself, or an alias of it where one
+ * query joins `users` twice (the commission list names a partner AND a client).
+ * An alias does not stop Postgres using either index: the planner matches the
+ * expression against the table's columns, not against the name in the FROM.
+ */
+export function clientIdentitySearch(q: string, person: typeof users = users): SQL {
+  const portalId = parsePortalId(q);
+  if (portalId !== undefined) return eq(person.portalId, portalId);
+  return sql`(coalesce(${person.email}, '') || ' ' || coalesce(${person.firstName}, '') || ' ' || coalesce(${person.lastName}, '')) ILIKE ${`%${escapeLike(q.trim())}%`}`;
+}
+
+/**
  * Every single-row read selects THIS, not `users.*`.
  *
  * `type` is the derived expression (see `DERIVED_CLIENT_TYPE`): the list had
@@ -231,7 +304,22 @@ const USER_COLUMNS = { ...getTableColumns(users), type: DERIVED_CLIENT_TYPE };
 export class UsersStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
-  async create(data: Omit<User, 'id' | 'createdAt'>): Promise<User> {
+  /**
+   * The uuid behind a Portal ID, or `undefined` when nobody holds it — the
+   * point lookup `ClientRefPipe` makes for every URL that names a client.
+   * Unscoped on purpose: it only translates one identifier into the other,
+   * and every route it feeds applies the reader's scope to the uuid itself.
+   */
+  async idForPortalId(portalId: number): Promise<string | undefined> {
+    const [row] = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.portalId, portalId))
+      .limit(1);
+    return row?.id;
+  }
+
+  async create(data: Omit<User, 'id' | 'createdAt' | 'portalId'>): Promise<User> {
     const [row] = await this.db.insert(users).values(data).returning();
     return toUser(row);
   }
@@ -694,47 +782,9 @@ export class UsersStore {
     // design. `undefined` for an unrestricted actor, and `and()` drops it.
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, users.id);
     if (scoped) conditions.push(scoped);
-    if (filter.q && isUuid(filter.q)) {
-      /*
-       * A pasted client ID. The admin UI now shows the uuid everywhere a client
-       * appears, so the search box has to answer it — and an exact primary-key
-       * match is the only honest reading of a full uuid: it is not a name
-       * fragment, and pushing 36 hex characters through the trgm ILIKE below
-       * would only ever match an email that happens to contain them.
-       *
-       * Deliberately NOT OR-ed into the ILIKE predicate — its comment explains
-       * that the concatenation must stay character-for-character identical to
-       * the expression index in migration 0010.
-       */
-      conditions.push(eq(users.id, filter.q.trim()));
-    } else if (filter.q) {
-      /*
-       * ONE predicate over the three searchable columns concatenated, matching
-       * the expression index in migration 0010 exactly.
-       *
-       * This was `ilike(email) OR ilike(first_name) OR ilike(last_name)`. A
-       * LEADING wildcard cannot use a b-tree, so the unique index on email did
-       * nothing for it and every keystroke was a sequential scan over the whole
-       * table — precisely the "unindexed filters" ARCHITECTURE §5 warns about at
-       * ~219,000 rows.
-       *
-       * pg_trgm's GIN index makes an infix ILIKE indexable, but ONLY when the
-       * query's expression is character-for-character what the index was built
-       * on. That is why this is written as one concatenation rather than three
-       * ORs, and why the coalesce and the separator are not cosmetic: change
-       * either here and the index silently stops being used, with nothing
-       * failing and only the query plan to tell you.
-       *
-       * The space separator also stops a match spanning a column boundary — a
-       * search for "n j" should not match first_name "John" against a
-       * neighbouring column's leading character.
-       */
-      // `%` and `_` are wildcards inside the pattern; a search for "%" matched
-      // every client and a long run of them was an expensive scan. Escaped with
-      // the backslash Postgres already treats as LIKE's default escape.
-      conditions.push(
-        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${`%${escapeLike(filter.q)}%`}`,
-      );
+    if (filter.q?.trim()) {
+      // Portal ID or name/email — the one definition every client search shares.
+      conditions.push(clientIdentitySearch(filter.q));
     }
     /*
      * The keyset seek — R-2.4.
@@ -815,6 +865,7 @@ export class UsersStore {
        */
       cursorValue: sql<string>`${sortColumn}::text`,
       id: users.id,
+      portalId: users.portalId,
       email: users.email,
       firstName: users.firstName,
       lastName: users.lastName,

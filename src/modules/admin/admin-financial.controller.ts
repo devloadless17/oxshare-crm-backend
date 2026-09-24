@@ -32,6 +32,7 @@ import {
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
 import { dateQuery, enumQuery, searchQuery, uuidQuery } from '../../common/query-params';
+import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { transactionDirectionEnum, transactionStateEnum } from '../../database/schema';
 import { ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
@@ -67,7 +68,8 @@ function FinancialFilterQueries() {
       name: 'q',
       required: false,
       description:
-        'Search the client’s email and name — the same columns every other queue searches.',
+        'A Portal ID (digits, matched exactly) or free text over the client’s email and name — ' +
+        'the one client search every queue shares.',
     }),
     ApiQuery({ name: 'from', required: false, description: 'Inclusive, YYYY-MM-DD.' }),
     ApiQuery({ name: 'to', required: false, description: 'Inclusive, YYYY-MM-DD.' }),
@@ -204,7 +206,7 @@ export class AdminFinancialController {
     @Query('direction') direction?: string,
     @Query('kind') kind?: string,
     @Query('state') state?: string,
-    @Query('userId') userId?: string,
+    @Query('userId', ClientRefPipe) userId?: string,
     @Query('currency') currency?: string,
     @Query('q') q?: string,
     @Query('from') from?: string,
@@ -263,7 +265,7 @@ export class AdminFinancialController {
     @Query('direction') direction?: string,
     @Query('kind') kind?: string,
     @Query('state') state?: string,
-    @Query('userId') userId?: string,
+    @Query('userId', ClientRefPipe) userId?: string,
     @Query('currency') currency?: string,
     @Query('q') q?: string,
     @Query('from') from?: string,
@@ -311,7 +313,7 @@ export class AdminFinancialController {
     @Query('direction') direction?: string,
     @Query('kind') kind?: string,
     @Query('state') state?: string,
-    @Query('userId') userId?: string,
+    @Query('userId', ClientRefPipe) userId?: string,
     @Query('currency') currency?: string,
     @Query('q') q?: string,
     @Query('from') from?: string,

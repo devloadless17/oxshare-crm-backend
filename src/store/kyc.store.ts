@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, isNull, ne, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
-import { escapeLike } from './users.store';
+import { clientIdentitySearch } from './users.store';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -413,27 +413,10 @@ export class KycStore {
     // or export that forgot to filter. See common/security/client-scope.ts.
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, kycSubmissions.userId);
     if (scoped) visibility.push(scoped);
-    if (filter.q) {
-      const term = `%${escapeLike(filter.q)}%`;
-      visibility.push(
-        /*
-         * The CONCATENATED expression, which is the one the trigram index is built
-         * on (`users_search_trgm_idx`, migration 0010).
-         *
-         * This was three separate `ILIKE`s OR-ed together, and
-         * `client-list-indexes.spec.ts` already PROVES that form cannot use the
-         * index — it asserts `not.toContain('users_search_trgm_idx')` for exactly
-         * this shape. So every search of this queue was a sequential scan while
-         * the index sat beside it, unused.
-         *
-         * It also searches BETTER: "jane smith" matches the concatenation and can
-         * never match any single column, which is what an operator typing a full
-         * name expects. `kyc.store.ts` already states the intent — both queues are
-         * review queues of people and "a search box that matched different fields
-         * on each would be a trap".
-         */
-        sql`(coalesce(${users.email}, '') || ' ' || coalesce(${users.firstName}, '') || ' ' || coalesce(${users.lastName}, '')) ILIKE ${term}`,
-      );
+    if (filter.q?.trim()) {
+      // A Portal ID or a name/email — the one definition every client search
+      // shares, including why its text expression must match migration 0010.
+      visibility.push(clientIdentitySearch(filter.q));
     }
     conditions.push(...visibility);
     const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -477,6 +460,7 @@ export class KycStore {
           country: sql<string | null>`${kycSubmissions.personalInfo}->>'country'`,
           user: {
             id: users.id,
+            portalId: users.portalId,
             email: users.email,
             firstName: users.firstName,
             lastName: users.lastName,

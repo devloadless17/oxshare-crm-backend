@@ -86,6 +86,23 @@ export const users = pgTable(
   'users',
   {
     id: uuid('id').defaultRandom().primaryKey(),
+    /**
+     * The client's PORTAL ID — the human number, from 1,000,000 up (0133).
+     *
+     * What staff and the client see and search by; the UUID above stays the
+     * key every foreign key points at, and the one URLs and API routes use. A
+     * sequential number is guessable, so it must never become an access key —
+     * it names a client to a person, not to the system.
+     *
+     * Drawn from `users_portal_id_seq` by a column DEFAULT, so no insert path
+     * has to remember it. Clients imported from the old platform set it
+     * explicitly to their original number (1 … ~200,000), below the range the
+     * sequence owns; the importer must refuse anything ≥ 1,000,000. Gaps are
+     * expected — a failed registration still consumes its number.
+     */
+    portalId: integer('portal_id')
+      .notNull()
+      .default(sql`nextval('users_portal_id_seq')`),
     email: varchar('email', { length: 255 }).notNull().unique(),
     passwordHash: varchar('password_hash', { length: 255 }).notNull(),
     firstName: varchar('first_name', { length: 100 }).notNull(),
@@ -239,6 +256,7 @@ export const users = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    uniqueIndex('users_portal_id_uq').on(t.portalId),
     index('users_type_idx').on(t.type),
     index('users_status_idx').on(t.status),
     index('users_verification_level_idx').on(t.verificationLevel),
@@ -3099,6 +3117,10 @@ export const auditLog = pgTable(
      * one subject is read newest first; the actor's email is searched with a
      * leading wildcard, which no b-tree can serve, so it carries a pg_trgm GIN
      * index declared in the migration (Drizzle has no expression-index form).
+     *
+     * A third lives only in its migration for the same reason: 0134's
+     * `audit_log_client_id_idx`, on `auditRowClientId()` — the client a row is
+     * about, wherever the row keeps it — which the Portal ID search reads.
      */
     index('audit_log_subject_id_created_at_idx').on(t.subjectId, t.createdAt.desc()),
   ],

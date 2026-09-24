@@ -405,6 +405,7 @@ export class AdminClientsService {
 
     const profile = {
       id: client.id,
+      portalId: client.portalId,
       email: client.email,
       firstName: client.firstName,
       lastName: client.lastName,
@@ -519,6 +520,7 @@ export class AdminClientsService {
     if (!introducer || !account) return undefined;
     return {
       ibUserId: introducer.id,
+      portalId: introducer.portalId,
       email: introducer.email,
       firstName: introducer.firstName,
       lastName: introducer.lastName,
@@ -540,6 +542,7 @@ export class AdminClientsService {
     const clients = await this.users.listReferredBy(clientId, REFERRED_CLIENTS_SHOWN, scope);
     return clients.map((referred) => ({
       clientUserId: referred.id,
+      clientPortalId: referred.portalId,
       email: referred.email,
       firstName: referred.firstName,
       lastName: referred.lastName,
@@ -770,6 +773,7 @@ export class AdminClientsService {
   private profileView(
     user: {
       id: string;
+      portalId: number;
       email: string;
       firstName: string;
       lastName: string;
@@ -785,6 +789,7 @@ export class AdminClientsService {
   ) {
     const view = {
       id: user.id,
+      portalId: user.portalId,
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
@@ -950,6 +955,7 @@ export class AdminClientsService {
     // read the address out of the 200 by suspending and reactivating.
     const view = {
       id: updated.id,
+      portalId: updated.portalId,
       email: updated.email,
       firstName: updated.firstName,
       lastName: updated.lastName,

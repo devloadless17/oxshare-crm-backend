@@ -407,6 +407,9 @@ export class IbPartnerPersonDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   userId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: 'integer', example: 1000245, description: 'Their Portal ID.' })
+  portalId: number;
   @ClientField('client.email')
   @ApiProperty()
   email: string;

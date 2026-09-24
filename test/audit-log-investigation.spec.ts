@@ -215,3 +215,130 @@ describe('the search cannot be turned into a probe for a client', () => {
     expect(byId.total).toBe(0);
   });
 });
+
+describe('a client is found — and named — by Portal ID', () => {
+  /*
+   * The console identifies a client by Portal ID alone (0133), so the audit
+   * search takes one and every row names clients by one: as the subject, as
+   * the actor, and inside `details`. The uuid is what the row is keyed on and
+   * never what a reader is shown.
+   */
+  let inScopePortalId: number;
+  let outScopePortalId: number;
+  const walletId = crypto.randomUUID();
+
+  beforeAll(async () => {
+    const { rows } = await ctx.db.execute<{ id: string; portal_id: number }>(sql`
+      SELECT id, portal_id FROM users WHERE id IN (${inScopeClientId}, ${outScopeClientId})
+    `);
+    const portalIdOf = new Map(rows.map((r) => [r.id, Number(r.portal_id)]));
+    inScopePortalId = portalIdOf.get(inScopeClientId)!;
+    outScopePortalId = portalIdOf.get(outScopeClientId)!;
+
+    // A money row: the subject is the transaction, the client only in details.
+    await entry(aliceId, 'alice@oxshare.com', 'withdrawal.approve', 'transaction', walletId, {
+      userId: inScopeClientId,
+      walletId,
+    });
+    // A row the CLIENT performed.
+    await store.record({
+      actorId: inScopeClientId,
+      actorEmail: 'audit-inscope@oxshare-e2e.test',
+      actorKind: 'client',
+      action: 'client.self_update',
+      subjectType: 'session',
+      subjectId: crypto.randomUUID(),
+      ipAddress: '127.0.0.1',
+    });
+  });
+
+  it('finds every row about the client — by subject AND inside details — and every row they did', async () => {
+    const found = await find({ scope: UNRESTRICTED, q: String(inScopePortalId) });
+    expect(found.items.map((r) => r.action).sort()).toEqual([
+      'client.email_change',
+      'client.reactivate',
+      'client.self_update',
+      'client.suspend',
+      'withdrawal.approve',
+    ]);
+    expect(found.total).toBe(5);
+  });
+
+  it('names the client by Portal ID everywhere on the row, and never by uuid', async () => {
+    const found = await find({ scope: UNRESTRICTED, q: String(inScopePortalId) });
+    expect(
+      JSON.stringify(found.items.map(({ actorId, subjectId, ...shown }) => shown)),
+    ).not.toContain(inScopeClientId);
+
+    const suspend = found.items.find((r) => r.action === 'client.suspend')!;
+    expect(suspend.subjectPortalId).toBe(inScopePortalId);
+    expect(suspend.clientPortalId).toBe(inScopePortalId);
+
+    const performed = found.items.find((r) => r.action === 'client.self_update')!;
+    expect(performed.actorPortalId).toBe(inScopePortalId);
+
+    const money = found.items.find((r) => r.action === 'withdrawal.approve')!;
+    expect(money.subjectPortalId).toBeNull();
+    expect(money.clientPortalId).toBe(inScopePortalId);
+    // The client's uuid became their Portal ID; the wallet's id is not a
+    // client's and stays exactly as recorded.
+    expect(money.details).toEqual({ userId: inScopePortalId, walletId });
+  });
+
+  it('shows a denied route’s path by Portal ID, and leaves a provider reference as issued', async () => {
+    await entry(
+      aliceId,
+      'alice@oxshare.com',
+      'route.denied',
+      'route',
+      `PATCH /v1/admin/clients/${inScopeClientId}/tags/${tagId}`,
+      {
+        reason: 'permission',
+      },
+    );
+    await entry(
+      aliceId,
+      'alice@oxshare.com',
+      'deposit.approve',
+      'transaction',
+      crypto.randomUUID(),
+      {
+        userId: inScopeClientId,
+        providerRef: `psp-ref-${inScopeClientId}`,
+      },
+    );
+
+    const routes = await find({ scope: UNRESTRICTED, action: 'route.denied' });
+    // Our own path: the client's uuid becomes their Portal ID — a valid request
+    // in its own right — and the TAG's id, not a client's, is untouched.
+    expect(routes.items[0].subjectId).toBe(
+      `PATCH /v1/admin/clients/${inScopePortalId}/tags/${tagId}`,
+    );
+
+    const deposits = await find({ scope: UNRESTRICTED, action: 'deposit.approve' });
+    // Somebody else's identifier must read exactly as they issued it.
+    expect(deposits.items[0].details).toEqual({
+      userId: inScopePortalId,
+      providerRef: `psp-ref-${inScopeClientId}`,
+    });
+  });
+
+  it('gives an administrator actor no Portal ID — they have none', async () => {
+    const found = await find({ scope: UNRESTRICTED, actorId: aliceId });
+    expect(found.items.length).toBeGreaterThan(0);
+    expect(found.items.every((r) => r.actorPortalId === null)).toBe(true);
+  });
+
+  it('finds nothing for a Portal ID outside the reader’s territory — the same as an unused one', async () => {
+    const desk = scopeOf([tagId], false);
+    const outside = await find({ scope: desk, q: String(outScopePortalId) });
+    const unused = await find({ scope: desk, q: '999999999' });
+    expect(outside.total).toBe(0);
+    expect(unused.total).toBe(0);
+    expect(outside.items).toEqual(unused.items);
+
+    // …while their own client's number still finds their own client.
+    const inside = await find({ scope: desk, q: String(inScopePortalId) });
+    expect(inside.total).toBeGreaterThan(0);
+  });
+});
