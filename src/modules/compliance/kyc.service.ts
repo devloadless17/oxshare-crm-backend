@@ -3,15 +3,18 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { KYC_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { filenameFromStored } from '../../common/uploads/storage/storage-key';
 import { AdminsStore } from '../../store/admins.store';
+import { collectsAnswers, isDataBearingStep, isFileField, isStoredFile } from './step-slugs';
+import { documentTypeFor, typedAnswersFor } from './kyc-answers';
 import {
-  STEP_STORAGE_COLUMN,
-  collectsAnswers,
-  isDataBearingStep,
-  isFileField,
-  isStoredFile,
-} from './step-slugs';
+  CANONICAL_FILE_STEP,
+  documentFlagLabel,
+  flagsSettledByUpload,
+  missingRequiredPage,
+  outstandingDocumentFlags,
+} from './kyc-document-rules';
 import {
   KycStore,
+  stepDataFilePaths,
   type KycSortKey,
   type KycStatus,
   type KycSubmission,
@@ -63,6 +66,8 @@ function documentPathsOf(submission: KycSubmission): string[] {
     submission.selfie?.filePath,
     submission.addressProof?.filePath,
     submission.addressProof?.page2FilePath,
+    // A custom step's uploads — left out, they outlived every reset.
+    ...stepDataFilePaths(submission.stepData),
   ].filter((p): p is string => typeof p === 'string' && p.length > 0);
 }
 
@@ -81,6 +86,59 @@ function reviewerView(user: User) {
     phone: user.phone,
     createdAt: user.createdAt,
   };
+}
+
+/**
+ * Uploads are the client's to make until the submission leaves their hands —
+ * see the note in `attachFile` for the two attacks the guard closes.
+ */
+function assertOpenForUploads(submission: { status: KycStatus }): void {
+  if (submission.status === 'approved') {
+    throw new AuthorizationError('KYC already approved.');
+  }
+  if (submission.status === 'under_review' || submission.status === 'submitted') {
+    throw new AuthorizationError('KYC is under review. You cannot change your documents now.');
+  }
+}
+
+type StoredPage = { filePath: string; fileName: string } | undefined;
+
+function pageOf(filePath: string | undefined, fileName: string | undefined): StoredPage {
+  return filePath ? { filePath, fileName: fileName ?? '' } : undefined;
+}
+
+/**
+ * One canonical document after a page is placed in it.
+ *
+ * ## The pages belong to ONE document, and the upload now says which
+ *
+ * Every identity document stores its first page in the same column, and the
+ * upload never said which document a page was. So the type was guessed —
+ * `docType ?? 'passport'` — and recorded only when the client pressed Continue.
+ * Upload a national ID's front, leave, come back: the server said "passport",
+ * the portal selected Passport, and the ID's front sat in the passport's slot as
+ * if it were one. Switch the choice the other way and a passport stood in for a
+ * national ID. Reported from production.
+ *
+ * The type now arrives WITH the page. A page of a DIFFERENT document starts the
+ * column afresh: the other pages belonged to the document the client moved
+ * away from, and keeping them is how a passport's photo page and a national
+ * ID's back ended up in one submission.
+ *
+ * An upload without a type (a portal predating it) keeps the stored type and
+ * never invents one — the invented `'passport'` was the bug.
+ */
+function placePage(
+  storedType: string | undefined,
+  pages: readonly StoredPage[],
+  page: number,
+  file: { filePath: string; fileName: string },
+  type: string | undefined,
+): { docType?: string; pages: StoredPage[] } {
+  const switching = type !== undefined && storedType !== undefined && storedType !== type;
+  const next = switching ? [] : [...pages];
+  next[page] = file;
+  return { docType: type ?? storedType, pages: next };
 }
 
 /**
@@ -240,28 +298,90 @@ export class KycService {
      * and are storable whether or not a broker currently offers them, so a
      * client finishing a step that was disabled mid-flow still saves.
      */
-    if (!isDataBearingStep(step)) {
-      const configured = (await this.kycConfig.getSteps()).some(
-        (s) => s.slug === step && s.enabled,
-      );
-      if (!configured) throw new ValidationError(`Unknown step: ${step}`);
+    const steps = await this.kycConfig.getSteps();
+    if (!isDataBearingStep(step) && !steps.some((s) => s.slug === step && s.enabled)) {
+      throw new ValidationError(`Unknown step: ${step}`);
     }
 
-    if (isDataBearingStep(step)) {
-      const column = STEP_STORAGE_COLUMN[step];
-      patch[column] = { ...(submission[column] ?? {}), ...data };
-    } else {
-      patch['stepData'] = {
-        ...submission.stepData,
-        [step]: { ...(submission.stepData?.[step] ?? {}), ...data },
-      };
+    /*
+     * ── ONLY WHAT THE STEP ASKS FOR, AND NEVER A FILE ────────────────────────
+     *
+     * This merged whatever `data` held into the stored step. The portal's review
+     * screen re-posted its whole form as `personal` on submit, so every custom
+     * step's answers, the document-choice keys and each upload stringified to
+     * "[object Object]" landed in `personal_info` — and the reviewer read them
+     * as "Custom Field 1790263652846: [object Object]" (reported from
+     * production). Worse, `document`, `selfie` and `address_proof` hold FILE
+     * PATHS, so the same merge let a client point their submission at any
+     * stored file. `kyc-answers.ts` holds the rule and the whole argument.
+     */
+    let changed: string[] = [];
+    if (step === 'document' || step === 'address') {
+      // These two record WHICH document was chosen; the pages arrive by upload.
+      const docType = documentTypeFor(
+        step === 'document' ? 'identity' : 'address',
+        data['docType'],
+      );
+      if (docType && step === 'document') patch['document'] = { ...submission.document, docType };
+      if (docType && step === 'address') {
+        patch['addressProof'] = { ...submission.addressProof, docType };
+      }
+    } else if (step !== 'selfie') {
+      // The personal step even when the broker has disabled it — the reason the
+      // canonical slugs skip the enabled check above.
+      const fields = steps.find((s) => s.slug === step)?.fields ?? [];
+      const { answers, problems } = typedAnswersFor(fields, data);
+      if (problems.length > 0) {
+        throw new ValidationError(problems.map((p) => p.message).join(' '), {
+          kind: 'invalid_answer',
+          fields: problems.map((p) => p.field),
+        });
+      }
+      const current = (
+        step === 'personal' ? submission.personalInfo : submission.stepData?.[step]
+      ) as Record<string, unknown> | undefined;
+      changed = Object.keys(answers).filter((key) => current?.[key] !== answers[key]);
+
+      if (step === 'personal') {
+        // `PersonalInfo` names the seeded fields; the column also carries any
+        // field the builder added, so the cast widens to what is stored.
+        patch['personalInfo'] = {
+          ...(submission.personalInfo ?? {}),
+          ...answers,
+        };
+      } else {
+        patch['stepData'] = {
+          ...submission.stepData,
+          [step]: { ...(submission.stepData?.[step] ?? {}), ...answers },
+        };
+      }
     }
+
+    /*
+     * An answer the reviewer returned is settled by CHANGING it. Kept when the
+     * value is the same, so the portal goes on showing it red — a client who
+     * re-saves an untouched step has not answered the reviewer.
+     */
+    const flagged = submission.rejectedFields ?? [];
+    const remaining = flagged.filter((id) => !changed.includes(id));
+    if (remaining.length !== flagged.length) patch['rejectedFields'] = remaining;
 
     return await this.kycStore.update(userId, patch);
   }
 
   // ─── Attach uploaded file to a step ────────────────────────────────────────
-  async attachFile(userId: string, field: string, filePath: string, fileName: string) {
+  async attachFile(
+    userId: string,
+    field: string,
+    filePath: string,
+    fileName: string,
+    /**
+     * Which catalogue document this page belongs to (`passport`,
+     * `national_id`, `utility_bill`…). Optional only because a portal predating
+     * it sends none — see the note on `placePage`.
+     */
+    docType?: string,
+  ) {
     const submission = await this.kycStore.getOrCreate(userId);
 
     /*
@@ -283,93 +403,127 @@ export class KycService {
      * `frontFilePath` as the danger — it was only ever solved for the
      * post-decision case.
      */
-    if (submission.status === 'approved') {
-      throw new AuthorizationError('KYC already approved.');
-    }
-    if (submission.status === 'under_review' || submission.status === 'submitted') {
-      throw new AuthorizationError('KYC is under review. You cannot change your documents now.');
+    assertOpenForUploads(submission);
+
+    const steps = await this.kycConfig.getSteps();
+    const canonical = Object.prototype.hasOwnProperty.call(CANONICAL_FILE_STEP, field)
+      ? CANONICAL_FILE_STEP[field]
+      : undefined;
+
+    /*
+     * ── A CUSTOM STEP'S DOCUMENT HAD NOWHERE TO GO ───────────────────────────
+     *
+     * The canonical slots are the four steps' own columns. A step the BROKER
+     * added names its fields through the builder, which generates
+     * `customField_<timestamp>` — so a custom step containing a File or Camera
+     * field rendered an uploader in the portal, took the client's passport, and
+     * answered `Unknown file field` on submit. The same shape as the text half
+     * before migration 0130: the capability was offered by one screen and
+     * refused by the storage behind it.
+     *
+     * Resolved by the CONFIGURATION rather than by a name, because there is no
+     * name to recognise. The field must belong to a step that is configured,
+     * enabled, non-canonical, and must actually be a file-bearing field —
+     * otherwise this route would accept an arbitrary key from a client-facing
+     * endpoint and write it into an unbounded jsonb column, which is precisely
+     * what `saveStep`'s own guard exists to prevent.
+     */
+    const owner = canonical
+      ? undefined
+      : steps.find(
+          (step) =>
+            step.enabled &&
+            collectsAnswers(step.slug) &&
+            !isDataBearingStep(step.slug) &&
+            (step.fields ?? []).some((f) => f.name === field && isFileField(f)),
+        );
+    if (!canonical && !owner) throw new ValidationError(`Unknown file field: ${field}`);
+
+    /*
+     * The document a canonical page belongs to, checked against its CATEGORY:
+     * an identity slot takes an identity document, an address slot an address
+     * one. Refused rather than ignored when it is wrong — a page recorded under
+     * the wrong document is exactly the mismatch this parameter exists to end.
+     */
+    const category =
+      canonical === 'document' ? 'identity' : canonical === 'address' ? 'address' : undefined;
+    const type = category ? documentTypeFor(category, docType) : undefined;
+    if (category && docType && !type) {
+      throw new ValidationError(`${docType} is not a document this step accepts.`);
     }
 
-    if (field === 'doc_front') {
-      await this.kycStore.update(userId, {
-        document: {
-          ...submission.document,
-          frontFilePath: filePath,
-          frontFileName: fileName,
-          docType: submission.document?.docType ?? 'passport',
-        },
-      });
-    } else if (field === 'doc_back') {
-      await this.kycStore.update(userId, {
-        document: {
-          ...submission.document,
-          backFilePath: filePath,
-          backFileName: fileName,
-          docType: submission.document?.docType ?? 'passport',
-        },
-      });
-    } else if (field === 'selfie') {
-      await this.kycStore.update(userId, { selfie: { filePath, fileName } });
-    } else if (field === 'address_proof' || field === 'address_proof_2') {
-      await this.kycStore.update(userId, {
-        addressProof: {
-          ...submission.addressProof,
-          filePath:
-            field === 'address_proof' ? filePath : submission.addressProof?.filePath || filePath,
-          fileName:
-            field === 'address_proof' ? fileName : submission.addressProof?.fileName || fileName,
-          page2FilePath:
-            field === 'address_proof_2' ? filePath : submission.addressProof?.page2FilePath,
-          page2FileName:
-            field === 'address_proof_2' ? fileName : submission.addressProof?.page2FileName,
-          docType: submission.addressProof?.docType ?? 'utility_bill',
-        },
-      });
-    } else {
+    const file = { filePath, fileName };
+    await this.db.transaction(async (tx) => {
       /*
-       * ── A CUSTOM STEP'S DOCUMENT HAD NOWHERE TO GO ─────────────────────────
-       *
-       * The four names above are the canonical steps' own columns. A step the
-       * BROKER added names its fields through the builder, which generates
-       * `customField_<timestamp>` — so a custom step containing a File or
-       * Camera field rendered an uploader in the portal, took the client's
-       * passport, and answered `Unknown file field` on submit. The same shape as
-       * the text half before migration 0130: the capability was offered by one
-       * screen and refused by the storage behind it.
-       *
-       * Resolved by the CONFIGURATION rather than by a name, because there is no
-       * name to recognise. The field must belong to a step that is configured,
-       * enabled, non-canonical, and must actually be a file-bearing field —
-       * otherwise this route would accept an arbitrary key from a client-facing
-       * endpoint and write it into an unbounded jsonb column, which is precisely
-       * what `saveStep`'s own guard exists to prevent.
+       * Locked, and re-checked under the lock. An upload MERGES a page into a
+       * column, and the front and back of an ID confirmed a moment apart arrive
+       * together: each read the column before the other wrote, and the second
+       * write erased the first page. The status is read again because a
+       * submission may have gone to review since the check above.
        */
-      const owner = (await this.kycConfig.getSteps()).find(
-        (step) =>
-          step.enabled &&
-          collectsAnswers(step.slug) &&
-          !isDataBearingStep(step.slug) &&
-          (step.fields ?? []).some((f) => f.name === field && isFileField(f)),
-      );
-      if (!owner) throw new ValidationError(`Unknown file field: ${field}`);
+      const current = (await this.kycStore.lockForUpdate(userId, tx)) ?? submission;
+      assertOpenForUploads(current);
 
-      /*
-       * Re-read inside the write, not reused from above: an upload is one of
-       * several a client may fire at once (a step can hold more than one
-       * document), and merging onto a snapshot taken before the previous upload
-       * landed is how the second one erases the first.
-       */
-      const current = await this.kycStore.getOrCreate(userId);
-      await this.kycStore.update(userId, {
-        stepData: {
+      const patch: Partial<KycSubmission> = {};
+      if (canonical === 'document') {
+        const page = field === 'doc_back' ? 1 : 0;
+        const doc = placePage(
+          current.document?.docType,
+          [
+            pageOf(current.document?.frontFilePath, current.document?.frontFileName),
+            pageOf(current.document?.backFilePath, current.document?.backFileName),
+          ],
+          page,
+          file,
+          type,
+        );
+        patch.document = {
+          ...(doc.docType ? { docType: doc.docType } : {}),
+          frontFilePath: doc.pages[0]?.filePath,
+          frontFileName: doc.pages[0]?.fileName,
+          backFilePath: doc.pages[1]?.filePath,
+          backFileName: doc.pages[1]?.fileName,
+        };
+      } else if (canonical === 'address') {
+        const page = field === 'address_proof_2' ? 1 : 0;
+        const doc = placePage(
+          current.addressProof?.docType,
+          [
+            pageOf(current.addressProof?.filePath, current.addressProof?.fileName),
+            pageOf(current.addressProof?.page2FilePath, current.addressProof?.page2FileName),
+          ],
+          page,
+          file,
+          type,
+        );
+        patch.addressProof = {
+          ...(doc.docType ? { docType: doc.docType } : {}),
+          filePath: doc.pages[0]?.filePath,
+          fileName: doc.pages[0]?.fileName,
+          page2FilePath: doc.pages[1]?.filePath,
+          page2FileName: doc.pages[1]?.fileName,
+        };
+      } else if (canonical === 'selfie') {
+        patch.selfie = file;
+      } else {
+        patch.stepData = {
           ...current.stepData,
-          [owner.slug]: {
-            ...(current.stepData?.[owner.slug] ?? {}),
-            [field]: { filePath, fileName },
-          },
-        },
-      });
-    }
+          [owner!.slug]: { ...(current.stepData?.[owner!.slug] ?? {}), [field]: file },
+        };
+      }
+
+      /*
+       * A new file is the answer to a returned one. Settling the flag here is
+       * what lets the portal stop drawing it red on the client's next visit, and
+       * what lets `submit` accept the submission back.
+       */
+      const settled = flagsSettledByUpload(field, steps);
+      const flagged = current.rejectedFields ?? [];
+      const remaining = flagged.filter((id) => !settled.includes(id));
+      if (remaining.length !== flagged.length) patch.rejectedFields = remaining;
+
+      await this.kycStore.update(userId, patch, tx);
+    });
 
     return { message: 'File uploaded.', field, fileName };
   }
@@ -506,18 +660,84 @@ export class KycService {
       }
     }
 
-    if (enabledSlugs.has('document') && !finalSub.document?.frontFilePath)
-      throw new ValidationError('ID document front is required.');
+    /*
+     * EVERY REQUIRED PAGE of the document the client chose, not just the first.
+     * A national ID with no back — half a card — used to go to the queue as
+     * complete. `missingRequiredPage` reads the pages from the catalogue.
+     */
+    if (enabledSlugs.has('document')) {
+      const missing = missingRequiredPage(
+        {
+          docType: finalSub.document?.docType,
+          files: [finalSub.document?.frontFilePath, finalSub.document?.backFilePath],
+        },
+        'identity',
+      );
+      if (missing) {
+        throw new ValidationError(
+          missing.index === 0 || !missing.label
+            ? 'ID document front is required.'
+            : `${missing.label} is required.`,
+          { kind: 'missing_document', fields: [missing.index === 0 ? 'doc_front' : 'doc_back'] },
+        );
+      }
+    }
     if (enabledSlugs.has('selfie') && !finalSub.selfie?.filePath)
-      throw new ValidationError('Selfie is required.');
-    if (enabledSlugs.has('address') && !finalSub.addressProof?.filePath)
-      throw new ValidationError('Proof of address is required.');
+      throw new ValidationError('Selfie is required.', {
+        kind: 'missing_document',
+        fields: ['selfie'],
+      });
+    if (enabledSlugs.has('address')) {
+      const missing = missingRequiredPage(
+        {
+          docType: finalSub.addressProof?.docType,
+          files: [finalSub.addressProof?.filePath, finalSub.addressProof?.page2FilePath],
+        },
+        'address',
+      );
+      if (missing) {
+        throw new ValidationError(
+          missing.index === 0 || !missing.label
+            ? 'Proof of address is required.'
+            : `${missing.label} is required.`,
+          {
+            kind: 'missing_document',
+            fields: [missing.index === 0 ? 'address_proof' : 'address_proof_2'],
+          },
+        );
+      }
+    }
+
+    /*
+     * A DOCUMENT THE REVIEWER RETURNED MUST BE REPLACED before it goes back.
+     *
+     * It was not: the flag drew a typed field red and did nothing for a file,
+     * and resubmitting the very passport the reviewer had refused went straight
+     * back into the queue. Each upload into a flagged slot settles its flag
+     * (`attachFile`), so what is left here is what the client has not answered.
+     * Typed fields are highlighted but not enforced — `kyc-document-rules.ts`
+     * says why.
+     */
+    const owed = outstandingDocumentFlags(finalSub.rejectedFields, steps);
+    if (owed.length > 0) {
+      const names = [...new Set(owed.map((id) => documentFlagLabel(id, steps, finalSub)))];
+      throw new ValidationError(
+        `Please replace the documents the reviewer returned: ${names.join(', ')}.`,
+        { kind: 'returned_documents', fields: owed },
+      );
+    }
 
     /*
      * Read BEFORE the transition below overwrites it — this is what tells a
      * first submission from a client returning to fix one.
+     *
+     * The REASON as well as the status: saving any step moves a returned
+     * submission to `in_progress`, so a client who corrected one field before
+     * resubmitting was announced to the reviewers as a brand-new submission —
+     * the resubmission the reviewer is waiting on, filed as a stranger's. The
+     * reason survives until this transition clears it.
      */
-    const wasRejected = finalSub.status === 'rejected';
+    const wasRejected = finalSub.status === 'rejected' || Boolean(finalSub.rejectionReason);
 
     /*
      * `transition`, NOT `update`, and the difference was a real bug.

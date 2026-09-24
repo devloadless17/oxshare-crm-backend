@@ -1,0 +1,265 @@
+import { ALL_PERMISSIONS } from './support/all-permissions';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { eq, sql } from 'drizzle-orm';
+import {
+  actingAs,
+  startHttpTestApp,
+  stopHttpTestApp,
+  type HttpTestContext,
+  type Session,
+} from './http-setup';
+import { PasswordService } from '../src/common/security/password.service';
+import { admins, kycConfigSteps, kycSubmissions, roles, users } from '../src/database/schema';
+import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
+
+/**
+ * A client's KYC, from the first answer to a corrected resubmission, over HTTP
+ * against real Postgres — the four things reported from production on 24 Sep
+ * 2026, each asserted on what the DATABASE holds afterwards:
+ *
+ *  1. The review screen posted its whole form as the personal step, and the
+ *     reviewer read "Doc Choice Document" and "Custom Field 1790263652846:
+ *     [object Object]" beside the client's name.
+ *  2. A phone number of "+961" — a country code alone — was accepted.
+ *  3. A passport was shown as uploaded for the national ID: every identity
+ *     document shares one column and the upload never said which it was.
+ *  4. Rejecting a passport told the client nothing, and the same passport could
+ *     be sent straight back.
+ */
+
+const ADMIN = { email: 'kyc-round-admin@oxshare.com', password: 'admin-password-123' };
+const PASSWORD = 'client-password-123';
+
+const COMPLETE_PROFILE = {
+  firstName: 'Round',
+  lastName: 'Trip',
+  dateOfBirth: '1990-01-01',
+  phone: '+961 70 123 456',
+  nationality: 'Lebanese',
+  country: 'Lebanon',
+};
+
+/** Starts with the PNG signature, which is what the upload route checks. */
+const PNG = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  Buffer.alloc(2048, 1),
+]);
+
+let ctx: HttpTestContext;
+let passwordHash: string;
+
+async function newClient(tag: string): Promise<{ id: string; session: Session }> {
+  const email = `kyc-round-${tag}-${Date.now()}@oxshare-e2e.test`;
+  const [user] = await ctx.db.db
+    .insert(users)
+    .values({ email, passwordHash, firstName: 'Round', lastName: 'Trip', emailVerified: true })
+    .returning();
+  return { id: user.id, session: await actingAs(ctx, 'portal', { email, password: PASSWORD }) };
+}
+
+function upload(session: Session, field: string, docType?: string) {
+  const req = session.post('/v1/kyc/upload', undefined).field('field', field);
+  if (docType) req.field('docType', docType);
+  return req.attach('file', PNG, { filename: `${field}.png`, contentType: 'image/png' });
+}
+
+async function stored(userId: string) {
+  const [row] = await ctx.db.db
+    .select()
+    .from(kycSubmissions)
+    .where(eq(kycSubmissions.userId, userId));
+  return row;
+}
+
+beforeAll(async () => {
+  ctx = await startHttpTestApp();
+  await ctx.db.db.insert(kycConfigSteps).values(
+    DEFAULT_KYC_STEPS.map((s) => ({
+      id: s.id,
+      stepNumber: s.stepNumber,
+      slug: s.slug,
+      title: s.title,
+      description: s.description,
+      icon: s.icon,
+      enabled: s.enabled,
+      fields: s.fields as unknown as Record<string, unknown>[],
+    })),
+  );
+
+  const passwords = new PasswordService();
+  passwordHash = await passwords.hash(PASSWORD);
+  const [role] = await ctx.db.db
+    .insert(roles)
+    .values({ name: 'Round Master', permissions: ALL_PERMISSIONS, isSystem: true })
+    .returning();
+  await ctx.db.db.insert(admins).values({
+    email: ADMIN.email,
+    passwordHash: await passwords.hash(ADMIN.password),
+    name: 'Round Admin',
+    role: 'master_admin',
+    roleId: role.id,
+    permissions: ALL_PERMISSIONS,
+  });
+}, 180_000);
+
+afterAll(async () => {
+  await stopHttpTestApp(ctx);
+});
+
+describe('a step stores what it asks for, and nothing else', () => {
+  it('keeps the review screen’s whole form out of the personal details', async () => {
+    const { id, session } = await newClient('debris');
+    await session
+      .post('/v1/kyc/step', {
+        step: 'personal',
+        data: {
+          ...COMPLETE_PROFILE,
+          __docChoice__document: 'passport',
+          __docChoice__address: 'utilityBill',
+          customField_1790263652846: '[object Object]',
+          docType: 'passport',
+        },
+      })
+      .expect(201);
+
+    const row = await stored(id);
+    expect(row.personalInfo).toEqual(COMPLETE_PROFILE);
+  });
+
+  it('never lets a step write a file path — only an upload stores a file', async () => {
+    const { id, session } = await newClient('forge');
+    await session
+      .post('/v1/kyc/step', {
+        step: 'document',
+        data: { docType: 'passport', frontFilePath: 'uploads/kyc/someone-elses-passport.jpg' },
+      })
+      .expect(201);
+    expect((await stored(id)).document).toEqual({ docType: 'passport' });
+  });
+
+  it('reads "+961" as no phone, and refuses a number cut short', async () => {
+    const { id, session } = await newClient('phone');
+    await session
+      .post('/v1/kyc/step', { step: 'personal', data: { ...COMPLETE_PROFILE, phone: '+961' } })
+      .expect(201);
+    expect((await stored(id)).personalInfo).toMatchObject({ phone: '' });
+
+    const res = await session.post('/v1/kyc/step', {
+      step: 'personal',
+      data: { ...COMPLETE_PROFILE, phone: '+961 70 12' },
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/Phone Number is incomplete/);
+  });
+});
+
+describe('an uploaded page belongs to the document the client chose', () => {
+  it('starts afresh when the client switches document, so pages never mix', async () => {
+    const { id, session } = await newClient('switch');
+    await upload(session, 'doc_front', 'national_id').expect(201);
+    await upload(session, 'doc_back', 'national_id').expect(201);
+    let document = (await stored(id)).document as Record<string, unknown>;
+    expect(document).toMatchObject({ docType: 'national_id' });
+    expect(document.backFilePath).toEqual(expect.any(String));
+
+    await upload(session, 'doc_front', 'passport').expect(201);
+    document = (await stored(id)).document as Record<string, unknown>;
+    expect(document.docType).toBe('passport');
+    // The national ID's back does not survive as the passport's.
+    expect(document.backFilePath).toBeUndefined();
+  });
+
+  it('refuses a proof of address in an identity slot', async () => {
+    const { session } = await newClient('category');
+    await upload(session, 'doc_front', 'utility_bill').expect(400);
+  });
+
+  it('asks for a national ID’s back before the submission can go', async () => {
+    const { session } = await newClient('half-card');
+    await session.post('/v1/kyc/step', { step: 'personal', data: COMPLETE_PROFILE }).expect(201);
+    await upload(session, 'doc_front', 'national_id').expect(201);
+    await upload(session, 'selfie').expect(201);
+    await upload(session, 'address_proof', 'utility_bill').expect(201);
+
+    const res = await session.post('/v1/kyc/submit');
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/National ID: Back Side is required/);
+  });
+});
+
+describe('a returned document must be replaced before the submission goes back', () => {
+  it('refuses the same passport, then accepts once it is replaced', async () => {
+    const { id, session } = await newClient('returned');
+    await session.post('/v1/kyc/step', { step: 'personal', data: COMPLETE_PROFILE }).expect(201);
+    await upload(session, 'doc_front', 'passport').expect(201);
+    await upload(session, 'selfie').expect(201);
+    await upload(session, 'address_proof', 'utility_bill').expect(201);
+    await session.post('/v1/kyc/submit').expect(201);
+
+    const admin = await actingAs(ctx, 'admin', ADMIN);
+    await admin
+      .patch(`/v1/admin/kyc/${id}/reject`, {
+        reason: 'The passport photo is blurred',
+        rejectedFields: ['doc_front', 'dateOfBirth'],
+      })
+      .expect(200);
+
+    // The same passport, straight back: refused, naming the document.
+    const refused = await session.post('/v1/kyc/submit');
+    expect(refused.status).toBe(400);
+    expect(refused.body.message).toMatch(/replace the documents the reviewer returned: Passport/);
+
+    // A typed flag is highlighted, not enforced: the date is re-saved unchanged.
+    await session.post('/v1/kyc/step', { step: 'personal', data: COMPLETE_PROFILE }).expect(201);
+    expect((await stored(id)).rejectedFields).toEqual(['doc_front', 'dateOfBirth']);
+
+    // A new passport settles the flag it answers, and only that one.
+    await upload(session, 'doc_front', 'passport').expect(201);
+    expect((await stored(id)).rejectedFields).toEqual(['dateOfBirth']);
+
+    await session.post('/v1/kyc/submit').expect(201);
+    const after = await stored(id);
+    expect(after.status).toBe('submitted');
+    expect(after.rejectedFields).toBeNull();
+  });
+});
+
+describe('0136 takes the form debris out of personal_info', () => {
+  const migration = readFileSync(
+    'src/database/migrations/0136_kyc_personal_info_debris.sql',
+    'utf8',
+  );
+
+  it('removes UI state, stringified files and copies of custom answers — and keeps answers', async () => {
+    const { id } = await newClient('migration');
+    await ctx.db.db.insert(kycSubmissions).values({
+      userId: id,
+      status: 'rejected',
+      personalInfo: {
+        ...COMPLETE_PROFILE,
+        __docChoice__document: 'passport',
+        customField_1790263652846: '[object Object]',
+        customField_1790263641710: 'Acme Ltd',
+        weird: { filePath: 'uploads/kyc/x.jpg' },
+      } as never,
+      stepData: {
+        'source-of-funds': {
+          customField_1790263641710: 'Acme Ltd',
+          customField_1790263652846: { filePath: 'uploads/kyc/p.jpg', fileName: 'p.jpg' },
+        },
+      },
+    });
+
+    await ctx.db.db.execute(sql.raw(migration));
+    expect((await stored(id)).personalInfo).toEqual(COMPLETE_PROFILE);
+    // The custom step keeps its own answers — they were only ever COPIED.
+    expect((await stored(id)).stepData['source-of-funds']).toMatchObject({
+      customField_1790263641710: 'Acme Ltd',
+    });
+
+    // Safe to run again: nothing left to change.
+    const second = await ctx.db.db.execute(sql.raw(migration));
+    expect(second.rowCount).toBe(0);
+  });
+});

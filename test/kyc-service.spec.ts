@@ -7,7 +7,7 @@ import type { AdminsStore } from '../src/store/admins.store';
 import type { EmailService } from '../src/modules/email/email.service';
 import type { KycConfigStore, KycStepConfig } from '../src/store/kyc-config.store';
 import type { Db } from '../src/database/db';
-import { notificationsStubAs } from './notifications-stub';
+import { notificationsStub } from './notifications-stub';
 import {
   AuthorizationError,
   NotFoundError,
@@ -46,6 +46,9 @@ function defaultSteps(): KycStepConfig[] {
         { id: 'f-1', name: 'firstName', label: 'First Name', type: 'text', required: true },
         { id: 'f-2', name: 'lastName', label: 'Last Name', type: 'text', required: true },
         { id: 'f-3', name: 'dateOfBirth', label: 'Date of Birth', type: 'date', required: true },
+        // Optional, so the complete fixture below need not carry one; the
+        // phone rules are pinned by the cases that make it required.
+        { id: 'f-4', name: 'phone', label: 'Phone Number', type: 'phone', required: false },
       ],
     },
     /*
@@ -162,6 +165,9 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
         _unheldOrHeldBy?: string,
       ) => Promise.resolve(from.includes(stored.status) ? { ...stored, ...patch } : undefined),
     ),
+    // The upload's row lock. The stub hands back the stored row; the lock
+    // itself is proven against real Postgres in kyc-http.spec.ts.
+    lockForUpdate: vi.fn().mockResolvedValue(stored),
     // A decision snapshots the attempt before the next one can overwrite it.
     archiveAttempt: vi.fn().mockResolvedValue(undefined),
     listAttempts: vi.fn().mockResolvedValue([]),
@@ -190,6 +196,7 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
   const admins = {
     namesByIds: vi.fn().mockResolvedValue(new Map([['admin-2', 'Sarah Chen']])),
   };
+  const notifications = notificationsStub();
 
   const service = new KycService(
     email as unknown as EmailService,
@@ -209,7 +216,7 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
      * transaction only has to be transparent.
      */
     db as unknown as Db,
-    notificationsStubAs(),
+    notifications,
     /*
      * Appended LAST, matching the constructor.
      *
@@ -220,7 +227,7 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
      */
     admins as unknown as AdminsStore,
   );
-  return { service, kycStore, users, email, kycConfig, admins };
+  return { service, kycStore, users, email, kycConfig, admins, notifications };
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -255,11 +262,11 @@ describe('saveStep', () => {
     const h = build({
       stored: submission({ personalInfo: { firstName: 'Jane', lastName: 'Doe' } }),
     });
-    await h.service.saveStep('user-1', 'personal', { phone: '+9715551234' });
+    await h.service.saveStep('user-1', 'personal', { phone: '+971 50 123 4567' });
     expect(h.kycStore.update).toHaveBeenCalledWith(
       'user-1',
       expect.objectContaining({
-        personalInfo: { firstName: 'Jane', lastName: 'Doe', phone: '+9715551234' },
+        personalInfo: { firstName: 'Jane', lastName: 'Doe', phone: '+971 50 123 4567' },
       }),
     );
   });
@@ -355,6 +362,7 @@ describe('submit', () => {
      * with `Unknown step` — a capability the console offered and the storage
      * could not honour. Migration 0130 gives it `step_data`, keyed by slug.
      */
+    const textField = (name: string) => ({ id: `f-${name}`, name, label: name, type: 'text' });
     const withCustomStep = (h: ReturnType<typeof build>, fields: unknown[]) =>
       h.kycConfig.getSteps.mockResolvedValue([
         ...defaultSteps(),
@@ -371,8 +379,9 @@ describe('submit', () => {
     it('stores its answers under its slug rather than refusing them', async () => {
       const h = build({ stored: submission({ status: 'in_progress' }) });
       // Registered in the config first: a slug the configuration does not name
-      // is still refused, so an arbitrary one cannot write into `step_data`.
-      withCustomStep(h, []);
+      // is still refused, so an arbitrary one cannot write into `step_data` —
+      // and so is a FIELD it does not name (see "only what the step asks for").
+      withCustomStep(h, [textField('sourceOfFunds')]);
       await h.service.saveStep('user-1', 'compliance-questions', { sourceOfFunds: 'salary' });
 
       expect(h.kycStore.update).toHaveBeenCalledWith(
@@ -391,7 +400,7 @@ describe('submit', () => {
           stepData: { 'compliance-questions': { sourceOfFunds: 'salary' } },
         }),
       });
-      withCustomStep(h, []);
+      withCustomStep(h, [textField('sourceOfFunds'), textField('employer')]);
       await h.service.saveStep('user-1', 'compliance-questions', { employer: 'Acme' });
 
       expect(h.kycStore.update).toHaveBeenCalledWith(
@@ -406,7 +415,7 @@ describe('submit', () => {
       const h = build({
         stored: submission({ status: 'in_progress', stepData: { other: { a: '1' } } }),
       });
-      withCustomStep(h, []);
+      withCustomStep(h, [textField('b')]);
       await h.service.saveStep('user-1', 'compliance-questions', { b: '2' });
 
       expect(h.kycStore.update).toHaveBeenCalledWith(
@@ -658,8 +667,10 @@ describe('submit', () => {
     const h = build({
       stored: completeSubmission({
         status: 'rejected',
-        rejectionReason: 'Document was blurry',
-        rejectedFields: ['doc_front'],
+        rejectionReason: 'Date of birth does not match the passport',
+        // A TYPED field: a returned DOCUMENT must be replaced before the
+        // submission can go back at all — pinned in its own block below.
+        rejectedFields: ['dateOfBirth'],
       }),
     });
     await h.service.submit('user-1');
@@ -668,6 +679,320 @@ describe('submit', () => {
       // `rejected` is in the allowed set precisely so this resubmission works.
       expect.arrayContaining(['rejected']),
       expect.objectContaining({ rejectionReason: undefined, rejectedFields: undefined }),
+    );
+  });
+});
+
+describe('saveStep stores only what the step asks for', () => {
+  /*
+   * Reported from production: the portal's review screen posted its WHOLE form
+   * as the personal step, and the reviewer read "Doc Choice Document",
+   * "Custom Field 1790263652846: [object Object]" beside the client's name.
+   * The same merge accepted FILE PATHS into the document columns.
+   */
+  it('drops the review screen’s whole form from the personal step', async () => {
+    const h = build({ stored: submission({ status: 'in_progress' }) });
+    await h.service.saveStep('user-1', 'personal', {
+      firstName: 'Jane',
+      __docChoice__document: 'passport',
+      customField_1790263652846: '[object Object]',
+      customField_1790263641710: 'Acme',
+      docType: 'passport',
+    });
+    expect(h.kycStore.update).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ personalInfo: { firstName: 'Jane' } }),
+    );
+  });
+
+  it('never writes a file path through a step — only the upload route stores files', async () => {
+    const h = build({
+      stored: submission({
+        status: 'in_progress',
+        document: { docType: 'passport', frontFilePath: 'uploads/kyc/mine.jpg' },
+      }),
+    });
+    await h.service.saveStep('user-1', 'document', {
+      docType: 'passport',
+      frontFilePath: 'uploads/kyc/someone-else.jpg',
+      backFilePath: 'uploads/kyc/someone-else-2.jpg',
+    });
+    const patch = h.kycStore.update.mock.calls[0][1];
+    expect(patch.document).toEqual({ docType: 'passport', frontFilePath: 'uploads/kyc/mine.jpg' });
+  });
+
+  it('does not let a blank choice erase the document already chosen', async () => {
+    const h = build({ stored: submission({ document: { docType: 'national_id' } }) });
+    await h.service.saveStep('user-1', 'document', { docType: '' });
+    expect(h.kycStore.update.mock.calls[0][1]).not.toHaveProperty('document');
+  });
+
+  it('refuses a document of the other category', async () => {
+    const h = build({ stored: submission({ document: { docType: 'national_id' } }) });
+    await h.service.saveStep('user-1', 'document', { docType: 'utility_bill' });
+    expect(h.kycStore.update.mock.calls[0][1]).not.toHaveProperty('document');
+  });
+
+  it('refuses an incomplete phone number, naming the field', async () => {
+    const h = build();
+    await expect(h.service.saveStep('user-1', 'personal', { phone: '+961 70 12' })).rejects.toThrow(
+      /Phone Number is incomplete/,
+    );
+    expect(h.kycStore.update).not.toHaveBeenCalled();
+  });
+
+  it('reads a bare country code as not answered — the reported "+961"', async () => {
+    const h = build();
+    await h.service.saveStep('user-1', 'personal', { phone: '+961' });
+    expect(h.kycStore.update).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ personalInfo: { phone: '' } }),
+    );
+  });
+
+  it('cannot forge a stored file into a custom step', async () => {
+    const h = build({ stored: submission({ status: 'in_progress' }) });
+    h.kycConfig.getSteps.mockResolvedValue([
+      ...defaultSteps(),
+      {
+        id: 'step-9',
+        stepNumber: 9,
+        slug: 'source-of-funds',
+        title: 'Source of funds',
+        description: '',
+        icon: '',
+        enabled: true,
+        fields: [
+          { id: 'f-a', name: 'payslip', label: 'Payslip', type: 'file', required: true },
+          { id: 'f-b', name: 'employer', label: 'Employer', type: 'text', required: false },
+        ],
+      },
+    ]);
+    await h.service.saveStep('user-1', 'source-of-funds', {
+      payslip: { filePath: 'uploads/kyc/someone-else.jpg', fileName: 'x.jpg' },
+      employer: 'Acme',
+    });
+    expect(h.kycStore.update).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ stepData: { 'source-of-funds': { employer: 'Acme' } } }),
+    );
+  });
+});
+
+describe('a returned answer is settled by changing it', () => {
+  it('drops the flag of a field whose value changed, and keeps the rest', async () => {
+    const h = build({
+      stored: submission({
+        status: 'rejected',
+        personalInfo: { firstName: 'Jane', lastName: 'Doe', dateOfBirth: '1990-01-01' },
+        rejectedFields: ['dateOfBirth', 'firstName', 'doc_front'],
+      }),
+    });
+    await h.service.saveStep('user-1', 'personal', {
+      firstName: 'Jane',
+      dateOfBirth: '1991-02-02',
+    });
+    expect(h.kycStore.update).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ rejectedFields: ['firstName', 'doc_front'] }),
+    );
+  });
+
+  it('keeps every flag when nothing changed — re-saving is not an answer', async () => {
+    const h = build({
+      stored: submission({
+        status: 'rejected',
+        personalInfo: { firstName: 'Jane', lastName: 'Doe', dateOfBirth: '1990-01-01' },
+        rejectedFields: ['dateOfBirth'],
+      }),
+    });
+    await h.service.saveStep('user-1', 'personal', { dateOfBirth: '1990-01-01' });
+    expect(h.kycStore.update.mock.calls[0][1]).not.toHaveProperty('rejectedFields');
+  });
+});
+
+describe('an upload says which document its page belongs to', () => {
+  /*
+   * Reported from production: a passport shown as uploaded for the national ID
+   * and driving licence. Every identity document shares one column, the type
+   * was GUESSED as passport on upload, and only Continue corrected it.
+   */
+  const upload = (h: ReturnType<typeof build>, field: string, name: string, docType?: string) =>
+    h.service.attachFile('user-1', field, `uploads/kyc/${name}`, name, docType);
+
+  it('starts the document afresh when the page is of a DIFFERENT document', async () => {
+    const h = build({
+      stored: submission({
+        document: {
+          docType: 'national_id',
+          frontFilePath: 'uploads/kyc/id-front.jpg',
+          frontFileName: 'id-front.jpg',
+          backFilePath: 'uploads/kyc/id-back.jpg',
+          backFileName: 'id-back.jpg',
+        },
+      }),
+    });
+    await upload(h, 'doc_front', 'passport.jpg', 'passport');
+    const patch = h.kycStore.update.mock.calls[0][1];
+    expect(patch.document).toEqual({
+      docType: 'passport',
+      frontFilePath: 'uploads/kyc/passport.jpg',
+      frontFileName: 'passport.jpg',
+    });
+  });
+
+  it('keeps the other page of the SAME document', async () => {
+    const h = build({
+      stored: submission({
+        document: {
+          docType: 'national_id',
+          frontFilePath: 'uploads/kyc/id-front.jpg',
+          frontFileName: 'id-front.jpg',
+        },
+      }),
+    });
+    await upload(h, 'doc_back', 'id-back.jpg', 'national_id');
+    expect(h.kycStore.update.mock.calls[0][1].document).toEqual({
+      docType: 'national_id',
+      frontFilePath: 'uploads/kyc/id-front.jpg',
+      frontFileName: 'id-front.jpg',
+      backFilePath: 'uploads/kyc/id-back.jpg',
+      backFileName: 'id-back.jpg',
+    });
+  });
+
+  it('never invents a type for an untyped upload — the guessed "passport" was the bug', async () => {
+    const h = build();
+    await upload(h, 'doc_front', 'front.jpg');
+    const document = h.kycStore.update.mock.calls[0][1].document;
+    expect(document).toEqual({
+      frontFilePath: 'uploads/kyc/front.jpg',
+      frontFileName: 'front.jpg',
+    });
+    expect(document).not.toHaveProperty('docType');
+  });
+
+  it('refuses an address document in an identity slot', async () => {
+    const h = build();
+    await expect(upload(h, 'doc_front', 'bill.jpg', 'utility_bill')).rejects.toThrow(
+      ValidationError,
+    );
+    expect(h.kycStore.update).not.toHaveBeenCalled();
+  });
+
+  it('stores page two as page two, not as both pages', async () => {
+    const h = build();
+    await upload(h, 'address_proof_2', 'page2.jpg', 'tenancy_agreement');
+    expect(h.kycStore.update.mock.calls[0][1].addressProof).toEqual({
+      docType: 'tenancy_agreement',
+      page2FilePath: 'uploads/kyc/page2.jpg',
+      page2FileName: 'page2.jpg',
+    });
+  });
+
+  it('settles the flag of the page it replaces, and leaves typed flags alone', async () => {
+    const h = build({
+      stored: submission({
+        status: 'rejected',
+        document: { docType: 'passport', frontFilePath: 'uploads/kyc/old.jpg' },
+        rejectedFields: ['doc_front', 'dateOfBirth'],
+      }),
+    });
+    await upload(h, 'doc_front', 'new.jpg', 'passport');
+    expect(h.kycStore.update.mock.calls[0][1].rejectedFields).toEqual(['dateOfBirth']);
+  });
+
+  it('re-checks the status under the lock — a submission may have gone to review since', async () => {
+    const h = build({ stored: submission({ status: 'in_progress' }) });
+    h.kycStore.lockForUpdate.mockResolvedValue(submission({ status: 'submitted' }));
+    await expect(upload(h, 'doc_front', 'late.jpg', 'passport')).rejects.toThrow(/under review/i);
+    expect(h.kycStore.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('submit asks for every page and every returned document', () => {
+  it('refuses a national ID without its back — half a card', async () => {
+    const h = build({
+      stored: completeSubmission({
+        document: { docType: 'national_id', frontFilePath: 'uploads/kyc/front.png' },
+      }),
+    });
+    await expect(h.service.submit('user-1')).rejects.toThrow(/National ID: Back Side is required/);
+  });
+
+  it('refuses while a RETURNED document has not been replaced, naming it', async () => {
+    const h = build({
+      stored: completeSubmission({
+        status: 'rejected',
+        rejectionReason: 'The passport photo is blurred',
+        rejectedFields: ['doc_front'],
+      }),
+    });
+    await expect(h.service.submit('user-1')).rejects.toThrow(
+      /replace the documents the reviewer returned: Passport\./,
+    );
+    expect(h.kycStore.transition).not.toHaveBeenCalled();
+  });
+
+  it('accepts it once the returned document is replaced', async () => {
+    const h = build({
+      stored: completeSubmission({
+        status: 'rejected',
+        rejectionReason: 'The passport photo is blurred',
+        rejectedFields: [],
+      }),
+    });
+    await expect(h.service.submit('user-1')).resolves.toBeDefined();
+  });
+
+  it('forgives a returned document on a step the broker has since disabled', async () => {
+    const h = build({
+      stored: completeSubmission({ status: 'rejected', rejectedFields: ['selfie'] }),
+    });
+    h.kycConfig.getSteps.mockResolvedValue(
+      defaultSteps().map((step) => (step.slug === 'selfie' ? { ...step, enabled: false } : step)),
+    );
+    await expect(h.service.submit('user-1')).resolves.toBeDefined();
+  });
+
+  it('refuses a required phone that is only a country code', async () => {
+    const h = build({
+      stored: completeSubmission({
+        personalInfo: {
+          firstName: 'Jane',
+          lastName: 'Doe',
+          dateOfBirth: '1990-01-01',
+          phone: '+961',
+        },
+      }),
+    });
+    h.kycConfig.getSteps.mockResolvedValue(
+      defaultSteps().map((step) =>
+        step.slug === 'personal'
+          ? {
+              ...step,
+              fields: step.fields.map((f) => (f.name === 'phone' ? { ...f, required: true } : f)),
+            }
+          : step,
+      ),
+    );
+    await expect(h.service.submit('user-1')).rejects.toThrow(/phone/);
+  });
+
+  it('announces a correction as a RESUBMISSION even after a step was saved', async () => {
+    /*
+     * Saving any step moves a returned submission to `in_progress`, and the
+     * status was the only thing read — so a client who fixed one field before
+     * resubmitting reached the reviewers as a brand-new submission.
+     */
+    const h = build({
+      stored: completeSubmission({ status: 'in_progress', rejectionReason: 'Blurred passport' }),
+    });
+    await h.service.submit('user-1');
+    expect(h.notifications.notifyAdminsWithPermission).toHaveBeenCalledWith(
+      'kyc.review',
+      expect.objectContaining({ kind: 'admin.kyc.resubmitted' }),
+      expect.anything(),
     );
   });
 });

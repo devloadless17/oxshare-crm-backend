@@ -166,3 +166,49 @@ describe('ageInYears', () => {
     expect(ageInYears(new Date('2008-02-29'), new Date('2026-03-01'))).toBe(18);
   });
 });
+
+describe('a phone number must be one somebody can dial', () => {
+  /*
+   * Reported from production: the picker writes the country code the moment a
+   * country is chosen, so "+961" alone satisfied a REQUIRED phone and reached
+   * the reviewer as the client's number.
+   */
+  const withPhone: ProfileFieldRule[] = [
+    ...RULES,
+    { name: 'phone', label: 'Phone Number', type: 'phone', required: true },
+  ];
+
+  it('treats a country code alone as MISSING', () => {
+    const problem = findProfileProblem(complete({ phone: '+961' }), withPhone, NOW);
+    expect(problem).toMatchObject({ kind: 'missing_fields', fields: ['phone'] });
+  });
+
+  it('refuses a number cut short, naming the field', () => {
+    const problem = findProfileProblem(complete({ phone: '+961 70 12' }), withPhone, NOW);
+    expect(problem).toMatchObject({ kind: 'invalid_phone', fields: ['phone'] });
+    expect(problem?.message).toMatch(/Phone Number is incomplete/);
+  });
+
+  it('accepts a complete number', () => {
+    expect(
+      findProfileProblem(complete({ phone: '+961 70 123 456' }), withPhone, NOW),
+    ).toBeUndefined();
+  });
+
+  it('lets an OPTIONAL phone stay empty — a bare code included — but not half-typed', () => {
+    const optional = withPhone.map((f) => (f.name === 'phone' ? { ...f, required: false } : f));
+    expect(findProfileProblem(complete({ phone: '+961' }), optional, NOW)).toBeUndefined();
+    expect(findProfileProblem(complete(), optional, NOW)).toBeUndefined();
+    expect(findProfileProblem(complete({ phone: '+961 7' }), optional, NOW)?.kind).toBe(
+      'invalid_phone',
+    );
+  });
+
+  it('does not demand a DOCUMENT field as a typed value', () => {
+    const withDoc: ProfileFieldRule[] = [
+      ...RULES,
+      { name: 'passport', label: 'Passport', type: 'doc:passport', required: true },
+    ];
+    expect(findProfileProblem(complete(), withDoc, NOW)).toBeUndefined();
+  });
+});

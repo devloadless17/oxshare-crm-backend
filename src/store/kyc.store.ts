@@ -75,7 +75,13 @@ export interface PersonalInfo {
 }
 
 export interface DocumentInfo {
-  docType: 'passport' | 'national_id' | 'driving_license';
+  /**
+   * A catalogue value (`common/kyc/document-catalogue.ts`), so any identity
+   * document the catalogue offers — it was typed as three of them while the
+   * catalogue held four. Optional because a page can arrive before the client
+   * has said which document it belongs to (a portal predating typed uploads).
+   */
+  docType?: string;
   frontFilePath?: string;
   backFilePath?: string;
   frontFileName?: string;
@@ -88,7 +94,7 @@ export interface SelfieInfo {
 }
 
 export interface AddressInfo {
-  docType: string;
+  docType?: string;
   filePath?: string;
   fileName?: string;
   page2FilePath?: string;
@@ -196,6 +202,17 @@ const toColumns = (
   return set;
 };
 
+/** Every stored file a `step_data` object references — a custom step's uploads. */
+export function stepDataFilePaths(stepData: KycSubmission['stepData'] | undefined): string[] {
+  return Object.values(stepData ?? {}).flatMap((answers) =>
+    Object.values(answers ?? {}).flatMap((answer) =>
+      typeof answer === 'object' && answer !== null && typeof answer.filePath === 'string'
+        ? [answer.filePath]
+        : [],
+    ),
+  );
+}
+
 @Injectable()
 export class KycStore {
   constructor(
@@ -220,6 +237,25 @@ export class KycStore {
       .select()
       .from(kycSubmissions)
       .where(eq(kycSubmissions.userId, userId))
+      .limit(1);
+    return row ? toSubmission(row) : undefined;
+  }
+
+  /**
+   * The row, locked until the caller's transaction ends.
+   *
+   * For writes that MERGE into a document column. An upload reads the column,
+   * places one page and writes the column back, and a client confirming the
+   * front and the back of an ID a moment apart sends two of them at once: each
+   * read the column before the other wrote, and the second write erased the
+   * first page. The lock makes the second read wait for the first write.
+   */
+  async lockForUpdate(userId: string, executor: Executor): Promise<KycSubmission | undefined> {
+    const [row] = await executor
+      .select()
+      .from(kycSubmissions)
+      .where(eq(kycSubmissions.userId, userId))
+      .for('update')
       .limit(1);
     return row ? toSubmission(row) : undefined;
   }
@@ -722,6 +758,13 @@ export class KycStore {
         a.selfie?.filePath,
         a.addressProof?.filePath,
         a.addressProof?.page2FilePath,
+        /*
+         * A custom step's uploads, which an archived attempt keeps too. Without
+         * them a client who replaced a returned custom document could no longer
+         * open the one the reviewer refused, and `resetKyc` would delete a file
+         * that is evidence of a decided attempt.
+         */
+        ...stepDataFilePaths(a.stepData),
       ].filter((p): p is string => typeof p === 'string' && p.length > 0),
     );
   }

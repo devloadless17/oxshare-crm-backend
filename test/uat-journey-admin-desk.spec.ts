@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
+import { uploadStandardKycDocuments } from './support/kyc-upload';
 import {
   actingAs,
   anonymous,
@@ -108,15 +109,8 @@ async function fileKyc(person: (typeof CLIENTS)[number], phone: string) {
       country: 'Lebanon',
     },
   });
-  await client.post('/v1/kyc/step', {
-    step: 'document',
-    data: { docType: 'passport', frontFilePath: '/uploads/kyc/j4.png' },
-  });
-  await client.post('/v1/kyc/step', { step: 'selfie', data: { filePath: '/uploads/kyc/j4s.png' } });
-  await client.post('/v1/kyc/step', {
-    step: 'address',
-    data: { docType: 'utility_bill', filePath: '/uploads/kyc/j4a.png' },
-  });
+  // Uploaded, as a client's are — see test/support/kyc-upload.ts.
+  await uploadStandardKycDocuments(client);
   const submitted = await client.post('/v1/kyc/submit');
   if (submitted.status >= 400) throw new Error(`submit: ${JSON.stringify(submitted.body)}`);
 }

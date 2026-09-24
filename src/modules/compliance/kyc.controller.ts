@@ -120,6 +120,7 @@ export class KycController {
       properties: {
         file: { type: 'string', format: 'binary' },
         field: { type: 'string', example: 'doc_front' },
+        docType: { type: 'string', example: 'national_id' },
       },
     },
   })
@@ -223,6 +224,7 @@ export class KycController {
         dto.field,
         storedPath(KYC_BUCKET.dir, stored.filename),
         file.originalname,
+        dto.docType,
       );
     } catch (error) {
       // The object is already stored. If recording it against the submission

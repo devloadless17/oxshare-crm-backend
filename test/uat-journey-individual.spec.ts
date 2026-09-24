@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
+import { uploadKycFile } from './support/kyc-upload';
 import {
   actingAs,
   anonymous,
@@ -253,13 +254,16 @@ describe('§14 J1 — step 2: manual KYC to verification level 1', () => {
     });
     expect(personal.status, JSON.stringify(personal.body)).toBeLessThan(400);
 
-    for (const [step, data] of [
-      ['document', { docType: 'passport', frontFilePath: '/uploads/kyc/j1-passport.png' }],
-      ['selfie', { filePath: '/uploads/kyc/j1-selfie.png' }],
-      ['address', { docType: 'utility_bill', filePath: '/uploads/kyc/j1-bill.png' }],
+    // The documents arrive as a client's do — uploaded, each page naming its
+    // document. `/kyc/step` no longer takes a file path: see
+    // test/support/kyc-upload.ts for why that was a hole rather than a shortcut.
+    for (const [field, docType] of [
+      ['doc_front', 'passport'],
+      ['selfie', undefined],
+      ['address_proof', 'utility_bill'],
     ] as const) {
-      const res = await client.post('/v1/kyc/step', { step, data });
-      expect(res.status, `${step}: ${JSON.stringify(res.body)}`).toBeLessThan(400);
+      const res = await uploadKycFile(client, field, docType);
+      expect(res.status, `${field}: ${JSON.stringify(res.body)}`).toBeLessThan(400);
     }
   });
 

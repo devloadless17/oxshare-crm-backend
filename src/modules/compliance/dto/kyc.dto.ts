@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsObject, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsNotEmpty, IsObject, IsOptional, IsString, Matches } from 'class-validator';
 
 // Request DTOs for the client-facing KYC surface.
 //
@@ -45,4 +45,24 @@ export class UploadKycFileDto {
   @IsString()
   @IsNotEmpty()
   field: string;
+
+  /**
+   * Which document the page belongs to, for the four canonical document slots.
+   *
+   * Every identity document stores its first page in one column, so without
+   * this the server guessed — `'passport'` — and a national ID's front was
+   * recorded as a passport until the client pressed Continue. Optional, so a
+   * portal predating it still uploads; the service ignores it for a selfie or
+   * a custom step's field.
+   */
+  @ApiPropertyOptional({
+    description:
+      'The catalogue document this page belongs to (doc_front/doc_back: an identity ' +
+      'document; address_proof/address_proof_2: a proof of address).',
+    example: 'national_id',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-z0-9_]{1,64}$/, { message: 'docType must be a catalogue value like national_id' })
+  docType?: string;
 }

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { eq, sql } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
+import { uploadStandardKycDocuments } from './support/kyc-upload';
 import {
   actingAs,
   anonymous,
@@ -134,18 +135,8 @@ async function verifyKyc(
       country: 'Lebanon',
     },
   });
-  await client.post('/v1/kyc/step', {
-    step: 'document',
-    data: { docType: 'passport', frontFilePath: '/uploads/kyc/j2-passport.png' },
-  });
-  await client.post('/v1/kyc/step', {
-    step: 'selfie',
-    data: { filePath: '/uploads/kyc/j2-selfie.png' },
-  });
-  await client.post('/v1/kyc/step', {
-    step: 'address',
-    data: { docType: 'utility_bill', filePath: '/uploads/kyc/j2-bill.png' },
-  });
+  // Uploaded, as a client's are — see test/support/kyc-upload.ts.
+  await uploadStandardKycDocuments(client);
   const submitted = await client.post('/v1/kyc/submit');
   if (submitted.status >= 400) throw new Error(`submit: ${JSON.stringify(submitted.body)}`);
 
@@ -381,20 +372,34 @@ describe('§14 J2 — step 2: a client signs up through the link and is attribut
     expect(row.referredByIbUserId, 'the referral was not attributed').toBe(partnerId);
   });
 
-  it('an UNKNOWN code attributes to nobody rather than to somebody', async () => {
+  it('an UNKNOWN code is REFUSED, naming it — never attributed to somebody, never silently to nobody', async () => {
     /*
-     * The failure worth pinning: a mistyped or retired code must not fall back
-     * to a default partner, because the fallback would pay commission to
-     * somebody who introduced nobody — and it would do it silently, on every
-     * registration, for as long as the wrong link was published.
+     * The failure worth pinning has two halves. A mistyped or retired code must
+     * not fall back to a default partner — that pays commission to somebody who
+     * introduced nobody, silently, for as long as the wrong link is published.
+     *
+     * And since the owner's reversal (referral-attribution.spec.ts carries the
+     * full argument) it must not register the client unattributed either: that
+     * account looks correct to everyone, the partner never appears, and
+     * attribution is permanent. So the registration is refused, loudly, with
+     * the code named so the client can check the link — and no account exists.
      */
-    const stranger = {
+    const res = await anonymous(ctx).post('/v1/auth/register').set('Origin', PORTAL_ORIGIN).send({
+      firstName: 'Journey',
+      lastName: 'Stranger',
       email: 'uat-j2-stranger@oxshare-e2e.test',
       password: 'StrangerPass123!',
-    };
-    const id = await onboard(stranger, { referralCode: 'NOSUCHCODE' });
-    const [row] = await ctx.db.db.select().from(users).where(eq(users.id, id));
-    expect(row.referredByIbUserId).toBeNull();
+      country: 'LB',
+      referralCode: 'NOSUCHCODE',
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/NOSUCHCODE/);
+
+    const rows = await ctx.db.db
+      .select()
+      .from(users)
+      .where(eq(users.email, 'uat-j2-stranger@oxshare-e2e.test'));
+    expect(rows).toHaveLength(0);
   });
 });
 

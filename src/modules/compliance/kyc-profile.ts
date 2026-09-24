@@ -46,6 +46,9 @@
  * other side.
  */
 
+import { isBarePhonePrefix, isCompletePhone } from './kyc-answers';
+import { isFileField } from './step-slugs';
+
 /**
  * The minimum age to hold an account.
  *
@@ -69,8 +72,8 @@ export interface ProfileFieldRule {
 
 /** What a caller must fix, or `undefined` when the profile is acceptable. */
 export interface ProfileProblem {
-  /** `missing_fields` or `underage` — stable, for the error envelope's details. */
-  kind: 'missing_fields' | 'underage' | 'invalid_date_of_birth';
+  /** Stable, for the error envelope's details. */
+  kind: 'missing_fields' | 'underage' | 'invalid_date_of_birth' | 'invalid_phone';
   message: string;
   /** Field names the client must fill, for `missing_fields`. */
   fields?: string[];
@@ -95,6 +98,12 @@ function scalar(value: unknown): string | undefined {
 /** Blank, whitespace, absent and non-scalar all mean "not provided". */
 function isBlank(value: unknown): boolean {
   return scalar(value) === undefined;
+}
+
+/** A phone field holding a country code and nothing after it — see `isBarePhonePrefix`. */
+function isBarePhone(field: ProfileFieldRule, value: unknown): boolean {
+  const text = scalar(value);
+  return field.type === 'phone' && text !== undefined && isBarePhonePrefix(text);
 }
 
 /**
@@ -132,12 +141,12 @@ export function findProfileProblem(
 ): ProfileProblem | undefined {
   const provided = values ?? {};
 
-  // File and camera fields are satisfied by an uploaded path, not by a value in
-  // this blob — `submit()` checks those separately, and demanding them here
-  // would reject every complete submission.
+  // File, camera and document fields are satisfied by an uploaded path, not by
+  // a value in this blob — `submit()` checks those separately, and demanding
+  // them here would reject every complete submission.
   const missing = rules
-    .filter((f) => f.required && f.type !== 'file' && f.type !== 'camera')
-    .filter((f) => isBlank(provided[f.name]))
+    .filter((f) => f.required && !isFileField(f))
+    .filter((f) => isBlank(provided[f.name]) || isBarePhone(f, provided[f.name]))
     .map((f) => f.name);
 
   if (missing.length > 0) {
@@ -145,6 +154,29 @@ export function findProfileProblem(
       kind: 'missing_fields',
       message: `These profile fields are required before submitting: ${missing.join(', ')}.`,
       fields: missing,
+    };
+  }
+
+  /*
+   * A phone number must be one somebody can dial.
+   *
+   * Reported from production: the picker emits the country code the moment a
+   * country is chosen, so "+961" alone satisfied a required field and reached
+   * the reviewer as the client's phone number. A code alone counts as MISSING
+   * above; anything longer must be a complete number for its country.
+   */
+  const badPhone = rules.find(
+    (f) =>
+      f.type === 'phone' &&
+      !isBlank(provided[f.name]) &&
+      !isBarePhone(f, provided[f.name]) &&
+      !isCompletePhone(scalar(provided[f.name])!),
+  );
+  if (badPhone) {
+    return {
+      kind: 'invalid_phone',
+      message: `${badPhone.label} is incomplete. Enter the full number after the country code.`,
+      fields: [badPhone.name],
     };
   }
 
