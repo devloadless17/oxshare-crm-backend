@@ -306,11 +306,16 @@ export class TransactionDto {
    * a screen that treated the earlier two as the whole world rendered the new
    * one as a blank row rather than as something unfamiliar.
    */
+  /*
+   * `rebate` is listed because the CLIENT list returns it (the rebate arm in
+   * `movementsCte`); it was missing here, so the generated type told the portal
+   * a rebate row could not exist and the screen named it a "Deposit".
+   */
   @ApiProperty({
-    enum: ['payment', 'transfer', 'commission_transfer'],
+    enum: ['payment', 'transfer', 'commission_transfer', 'rebate'],
     description: 'Branch on this, never on the absence of a payment field.',
   })
-  kind: 'payment' | 'transfer' | 'commission_transfer';
+  kind: 'payment' | 'transfer' | 'commission_transfer' | 'rebate';
 
   /**
    * The trading account a TRANSFER moved money to or from. Null on a payment.

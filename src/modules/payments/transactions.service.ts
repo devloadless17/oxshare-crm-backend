@@ -1777,23 +1777,7 @@ export class TransactionsService {
      * — a client narrowing to "pending" sees every pending movement, not the
      * pending half of one table.
      */
-    const filters = [
-      ...(query.direction ? [sql`direction = ${query.direction}`] : []),
-      ...(query.state ? [sql`state = ${query.state}`] : []),
-      ...(query.currency ? [sql`currency = ${query.currency}`] : []),
-      /*
-       * INCLUSIVE at both ends, compared by DATE PART.
-       *
-       * `created_at::date >= from` rather than `created_at >= from`. Comparing a
-       * timestamp against the end date parsed as midnight excludes almost the
-       * whole final day — the "my newest transaction vanished when I set an end
-       * date" bug the portal's date-range.ts exists to prevent.
-       */
-      ...(query.from ? [sql`created_at::date >= ${query.from}::date`] : []),
-      ...(query.to ? [sql`created_at::date <= ${query.to}::date`] : []),
-    ];
-
-    const where = filters.length ? sql` WHERE ${sql.join(filters, sql` AND `)}` : sql``;
+    const where = this.clientHistoryWhere(query);
 
     /*
      * The sort column, resolved through a MAP rather than by interpolation.
@@ -1895,6 +1879,88 @@ export class TransactionsService {
       page,
       limit,
     };
+  }
+
+  /**
+   * The WHERE over a client's `combined` history, shared by the page, its count
+   * and the summary so the three can never describe different rows.
+   */
+  private clientHistoryWhere(query: ListTransactionsQueryDto): SQL {
+    const filters = [
+      ...(query.direction ? [sql`direction = ${query.direction}`] : []),
+      ...(query.state ? [sql`state = ${query.state}`] : []),
+      ...(query.currency ? [sql`currency = ${query.currency}`] : []),
+      // Any of the kinds asked for — see the DTO for why direction cannot
+      // separate a deposit from a transfer back out of a trading account.
+      ...(query.kind?.length
+        ? [
+            sql`kind IN (${sql.join(
+              query.kind.map((kind) => sql`${kind}`),
+              sql`, `,
+            )})`,
+          ]
+        : []),
+      /*
+       * INCLUSIVE at both ends, compared by DATE PART.
+       *
+       * `created_at::date >= from` rather than `created_at >= from`. Comparing a
+       * timestamp against the end date parsed as midnight excludes almost the
+       * whole final day — the "my newest transaction vanished when I set an end
+       * date" bug the portal's date-range.ts exists to prevent.
+       */
+      ...(query.from ? [sql`created_at::date >= ${query.from}::date`] : []),
+      ...(query.to ? [sql`created_at::date <= ${query.to}::date`] : []),
+    ];
+
+    return filters.length ? sql` WHERE ${sql.join(filters, sql` AND `)}` : sql``;
+  }
+
+  /**
+   * Count and total per (currency, direction, state) over the client's FILTERED
+   * history —
+   * every matching row, not a page.
+   *
+   * The tiles on the Deposit, Withdraw and Transfer screens read this: "how
+   * much have I deposited", "how much is still pending". Summed in SQL over
+   * NUMERIC, returned as decimal strings, and never across currencies — there
+   * is no FX source, so USD and USDT stay separate lines.
+   *
+   * Paging and sort are ignored: a summary of one page is the under-report
+   * R-2.5 names.
+   */
+  async summaryForUser(
+    userId: string,
+    query: ListTransactionsQueryDto = {},
+  ): Promise<
+    { currency: string; direction: string; state: string; count: number; total: string }[]
+  > {
+    const selection = sql`${this.movementsCte((owner) => sql` WHERE ${owner} = ${userId}`, true)}
+      SELECT * FROM combined
+    `;
+    const where = this.clientHistoryWhere(query);
+    const result = await this.db.execute(sql`
+      WITH filtered AS (${selection}${where})
+      SELECT currency, direction, state,
+             COUNT(*)::int AS count, COALESCE(SUM(amount), 0)::text AS total
+      FROM filtered
+      GROUP BY currency, direction, state
+      ORDER BY currency, direction, state
+    `);
+    return (
+      result.rows as unknown as {
+        currency: string;
+        direction: string;
+        state: string;
+        count: number;
+        total: string;
+      }[]
+    ).map((row) => ({
+      currency: row.currency,
+      direction: row.direction,
+      state: row.state,
+      count: row.count,
+      total: money(row.total),
+    }));
   }
 
   /**

@@ -99,6 +99,10 @@ interface Harness {
     consumeEmailVerification: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
+    issueEmailCode: ReturnType<typeof vi.fn>;
+    issueEmailVerification: ReturnType<typeof vi.fn>;
+    takeEmailCodeAttempt: ReturnType<typeof vi.fn>;
+    consumeEmailCode: ReturnType<typeof vi.fn>;
   };
   email: {
     sendVerificationEmail: ReturnType<typeof vi.fn>;
@@ -120,6 +124,12 @@ function build(overrides: { user?: User | undefined } = {}): Harness {
     consumeEmailVerification: vi.fn().mockResolvedValue(true),
     create: vi.fn((data: Partial<User>) => Promise.resolve({ id: 'new-user', ...data } as User)),
     update: vi.fn((_id: string, patch: Partial<User>) => Promise.resolve(makeUser(patch))),
+    // The 6-digit code's atomic store methods (0138) — proven against real
+    // Postgres in email-code-signin.spec.ts; here they only have to answer.
+    issueEmailCode: vi.fn().mockResolvedValue(undefined),
+    issueEmailVerification: vi.fn().mockResolvedValue(true),
+    takeEmailCodeAttempt: vi.fn().mockResolvedValue(undefined),
+    consumeEmailCode: vi.fn().mockResolvedValue(undefined),
   };
   const email = {
     sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
@@ -469,32 +479,54 @@ describe('verifyEmail', () => {
 });
 
 describe('resendVerification', () => {
-  it('ENDS the previous cycle when it issues a new token', async () => {
+  it('issues a new link AND code through the one atomic store call that also ends the old cycle', async () => {
     /*
      * The redemption marker outlives redemption by design, so a re-send onto a
-     * row that carries one has to clear it. Otherwise the client's very first
-     * click on the brand-new link is answered `already_verified` — verifying
-     * nothing, then refusing them at login on an address that really is
-     * unverified.
+     * row that carries one has to clear it — `issueEmailVerification` does, in
+     * the same UPDATE that enforces the resend cooldown (pinned against real
+     * Postgres in email-code-signin.spec.ts and email-verification-cycle.spec.ts).
      */
     const h = build({ user: makeUser({ emailVerified: false }) });
 
     await h.service.resendVerification('client@oxshare.com');
 
-    const [, patch] = h.users.update.mock.calls[0] as [string, Record<string, unknown>];
-    expect('emailVerificationConsumedAt' in patch).toBe(true);
-    expect(patch.emailVerificationConsumedAt).toBeUndefined();
+    expect(h.users.issueEmailVerification).toHaveBeenCalledOnce();
+    const [, , , cooldownMs] = h.users.issueEmailVerification.mock.calls[0] as [
+      string,
+      unknown,
+      Date,
+      number,
+    ];
+    expect(cooldownMs).toBe(30_000);
   });
 
-  it('stores the HASH and mails the token', async () => {
+  it('stores the HASHES and mails the token and the code', async () => {
     const h = build({ user: makeUser({ emailVerified: false }) });
 
     await h.service.resendVerification('client@oxshare.com');
 
-    const [, mailed] = h.email.sendVerificationEmail.mock.calls[0] as [string, string];
-    const [, patch] = h.users.update.mock.calls[0] as [string, Record<string, unknown>];
-    expect(patch.emailVerificationTokenHash).toBe(hashOf(mailed));
-    expect(patch.emailVerificationTokenHash).not.toBe(mailed);
+    const [, mailed, code] = h.email.sendVerificationEmail.mock.calls[0] as [
+      string,
+      string,
+      string,
+    ];
+    const [, issue] = h.users.issueEmailVerification.mock.calls[0] as [
+      string,
+      { tokenHash: string; codeHash: string },
+    ];
+    expect(issue.tokenHash).toBe(hashOf(mailed));
+    expect(issue.tokenHash).not.toBe(mailed);
+    expect(code).toMatch(/^\d{6}$/);
+    // Keyed, never a plain digest a dump could reverse in a second.
+    expect(issue.codeHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(issue.codeHash).not.toBe(hashOf(code));
+  });
+
+  it('mails nothing when the store says the cooldown has not passed', async () => {
+    const h = build({ user: makeUser({ emailVerified: false }) });
+    h.users.issueEmailVerification.mockResolvedValue(false);
+    await h.service.resendVerification('client@oxshare.com');
+    expect(h.email.sendVerificationEmail).not.toHaveBeenCalled();
   });
 
   const hashOf = (token: string) => createHash('sha256').update(token, 'utf8').digest('hex');
@@ -535,10 +567,12 @@ describe('login', () => {
     // A refused login leaves NO session behind — no cookie, no refresh family.
     expect(Object.keys(cookies)).toHaveLength(0);
     expect(h.refreshTokens.record).not.toHaveBeenCalled();
+    // ...but the owner (the password was right) is mailed a code to finish with.
+    expect(h.email.sendVerificationEmail).toHaveBeenCalledOnce();
   });
 
-  it('carries EMAIL_NOT_VERIFIED, so the portal can offer the resend', async () => {
-    // The login page branches on this code to show its resend button. It used
+  it('carries EMAIL_NOT_VERIFIED, so the portal can open the code screen', async () => {
+    // The login page branches on this code to open the code screen. It used
     // to branch on the English message, which broke the day a translation
     // shipped — so the code is the contract and this pins it.
     const h = await withPassword({ emailVerified: false });

@@ -40,7 +40,11 @@ beforeAll(async () => {
    */
   auth = new AuthService(
     {} as never, // jwt
-    {} as never, // config
+    // Only the key the 6-digit email code is hashed under (0138) is read here.
+    {
+      get: (key: string) =>
+        key === 'JWT_ACCESS_SECRET' ? 'test-email-code-secret-at-least-32-chars' : undefined,
+    } as never,
     { sendVerificationEmail, sendAccountExistsEmail } as never,
     users,
     {} as never, // csrf

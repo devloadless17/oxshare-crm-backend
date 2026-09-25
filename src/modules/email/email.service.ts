@@ -174,10 +174,16 @@ export class EmailService {
     this.logger.warn(`[LOG_EMAIL_LINKS] ${what} for ${to}: ${printed}`);
   }
 
-  async sendVerificationEmail(email: string, token: string): Promise<void> {
+  /**
+   * The link, and — when a client is in front of the code screen — the 6-digit
+   * code beside it. The CODE is never logged, not even under LOG_EMAIL_LINKS:
+   * it signs its holder in, and `email-never-logs-credentials.spec.ts` holds
+   * this file to that.
+   */
+  async sendVerificationEmail(email: string, token: string, code?: string): Promise<void> {
     const url = `${this.portalUrl()}/auth/verify-email?token=${token}`;
     this.logLink('verification link', email, url);
-    await this.send(email, 'verification email', verifyEmail(url));
+    await this.send(email, 'verification email', verifyEmail(url, code));
   }
 
   async sendPasswordResetEmail(email: string, token: string): Promise<void> {

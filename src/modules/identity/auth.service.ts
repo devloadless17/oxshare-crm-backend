@@ -21,6 +21,7 @@ import { Request, Response } from 'express';
 import {
   AuthenticationError,
   AuthorizationError,
+  EmailCodeInvalidError,
   EmailNotVerifiedError,
   NotFoundError,
   SessionReplayedError,
@@ -31,6 +32,14 @@ import {
 } from '../../common/errors/domain-errors';
 import { randomUUID } from 'crypto';
 import { hashEmailedToken } from '../../common/security/emailed-token';
+import {
+  EMAIL_CODE_MAX_ATTEMPTS,
+  EMAIL_CODE_RESEND_COOLDOWN_MS,
+  EMAIL_CODE_TTL_MS,
+  hashEmailCode,
+  newEmailCode,
+  sameEmailCodeHash,
+} from '../../common/security/email-code';
 import { CsrfService } from '../../common/security/csrf.service';
 import {
   RefreshTokensService,
@@ -96,6 +105,11 @@ export class AuthService {
   private readonly accountExistsSentAt = new Map<string, number>();
 
   private static readonly ACCOUNT_EXISTS_WINDOW_MS = 60 * 60_000;
+
+  /** Address → when each verification email in the last hour went. See `verificationBudgetAllows`. */
+  private readonly verificationSentAt = new Map<string, number[]>();
+
+  private static readonly VERIFICATION_SENDS_PER_HOUR = 6;
 
   private readonly logger = new Logger(AuthService.name);
 
@@ -256,8 +270,8 @@ export class AuthService {
      */
     const generic = {
       message:
-        'Check your email. If this address is new, follow the link to verify it — and if you ' +
-        'already have an account, we have sent you a sign-in link instead.',
+        'Check your email. If this address is new, we have sent a 6-digit code to confirm it — ' +
+        'and if you already have an account, we have sent you a sign-in link instead.',
     };
 
     const existing = await this.users.findByEmail(dto.email);
@@ -368,9 +382,24 @@ export class AuthService {
       dedupeKey: `admin.client.registered:${user.id}`,
     });
 
-    // The verification link is a bearer credential. It is emailed and never
-    // written to stdout — it used to be console.logged in every environment.
-    await this.email.sendVerificationEmail(user.email, verificationToken);
+    /*
+     * And a 6-digit CODE beside the link — the registration screen now asks for
+     * it, and the right one signs the client straight in (`verifyEmailCode`).
+     * Issued after the INSERT because the code's hash is bound to the user id.
+     */
+    const code = newEmailCode();
+    const issuedAt = new Date();
+    await this.users.issueEmailCode(
+      user.id,
+      hashEmailCode(this.emailCodeSecret(), user.id, code),
+      new Date(issuedAt.getTime() + EMAIL_CODE_TTL_MS),
+      issuedAt,
+    );
+    this.recordVerificationSend(user.email);
+
+    // The link and the code are bearer credentials. They are emailed and never
+    // written to stdout — the link used to be console.logged in every environment.
+    await this.email.sendVerificationEmail(user.email, verificationToken, code);
     this.logger.log(`Verification email dispatched to ${user.email}`);
 
     /*
@@ -594,31 +623,126 @@ export class AuthService {
   }
 
   // ─── Resend Verification ──────────────────────────────────────────────────────
+  /**
+   * A fresh link AND code for an unconfirmed address.
+   *
+   * Answers the same whether or not the address has an account, is already
+   * confirmed, or is inside its cooldown — the reply must not be an oracle.
+   */
   async resendVerification(email: string) {
     const user = await this.users.findByEmail(email);
-    if (!user || user.emailVerified) {
-      return { message: 'If that email exists and is unverified, a new link has been sent.' };
+    if (user) await this.sendVerification(user);
+    return {
+      message: 'If that address has an account waiting for confirmation, a new code is on its way.',
+    };
+  }
+
+  /**
+   * Mail a new link and code to an unconfirmed address — the one path resend
+   * and an unconfirmed sign-in share.
+   *
+   * Sends NOTHING inside the 30-second cooldown (decided atomically in the
+   * issuing UPDATE, so two quick requests cannot both mail) or past the hourly
+   * budget, and tells nobody: the caller's answer is the same either way.
+   */
+  private async sendVerification(user: User): Promise<void> {
+    if (user.emailVerified || !this.verificationBudgetAllows(user.email)) return;
+    const now = new Date();
+    const token = uuidv4();
+    const code = newEmailCode();
+    const issued = await this.users.issueEmailVerification(
+      user.id,
+      {
+        tokenHash: hashEmailedToken(token),
+        tokenExpiry: new Date(now.getTime() + EMAIL_VERIFICATION_TTL_MS),
+        codeHash: hashEmailCode(this.emailCodeSecret(), user.id, code),
+        codeExpiresAt: new Date(now.getTime() + EMAIL_CODE_TTL_MS),
+      },
+      now,
+      EMAIL_CODE_RESEND_COOLDOWN_MS,
+    );
+    if (!issued) return;
+    this.recordVerificationSend(user.email);
+    await this.email.sendVerificationEmail(user.email, token, code);
+    this.logger.log(`Verification code and link sent to ${user.email}`);
+  }
+
+  /** The key a code is hashed under — see `common/security/email-code.ts`. */
+  private emailCodeSecret(): string {
+    const secret = this.config.get<string>('JWT_ACCESS_SECRET');
+    if (!secret) {
+      throw new Error('JWT_ACCESS_SECRET is not configured; cannot issue or check an email code.');
+    }
+    return secret;
+  }
+
+  /**
+   * At most six verification emails an hour per address, whoever asks.
+   *
+   * The 30-second cooldown bounds how FAST one address is mailed; this bounds
+   * how MUCH, against a caller spreading requests across many IPs to fill
+   * someone's inbox — the same in-memory reasoning as `shouldSendAccountExists`.
+   */
+  private verificationBudgetAllows(email: string): boolean {
+    const recent = this.recentVerificationSends(email.trim().toLowerCase());
+    return recent.length < AuthService.VERIFICATION_SENDS_PER_HOUR;
+  }
+
+  private recordVerificationSend(email: string): void {
+    const key = email.trim().toLowerCase();
+    this.verificationSentAt.set(key, [...this.recentVerificationSends(key), Date.now()]);
+    // Swept on write, as the account-exists map is: bounded by activity, no timer.
+    if (this.verificationSentAt.size > 1_000) {
+      for (const k of this.verificationSentAt.keys()) {
+        if (this.recentVerificationSends(k).length === 0) this.verificationSentAt.delete(k);
+      }
+    }
+  }
+
+  private recentVerificationSends(key: string): number[] {
+    const cutoff = Date.now() - 60 * 60_000;
+    return (this.verificationSentAt.get(key) ?? []).filter((at) => at > cutoff);
+  }
+
+  /**
+   * Confirm the address with the emailed code, and sign in — FROM THE SCREEN
+   * the client registered on (asked for by the client, 25 Sep 2026).
+   *
+   * Every refusal is the same `EMAIL_CODE_INVALID`: an unknown address, one
+   * already confirmed, no code, a wrong one, an expired one, one whose five
+   * attempts are spent. Telling them apart would say which addresses are
+   * registered and unconfirmed. The attempt is counted BEFORE the comparison,
+   * in the statement that reads the hash, so parallel guesses cannot exceed it.
+   *
+   * A suspended account is refused only AFTER the code matched, as `login`
+   * refuses it only after the password did — the status is not for strangers.
+   */
+  async verifyEmailCode(email: string, code: string, res: Response, device?: DeviceFingerprint) {
+    const refused = () =>
+      new EmailCodeInvalidError(
+        'That code is incorrect or has expired. Check the latest email, or send a new code.',
+      );
+    const user = await this.users.findByEmail(email);
+    if (!user || user.emailVerified) throw refused();
+
+    const stored = await this.users.takeEmailCodeAttempt(
+      user.id,
+      EMAIL_CODE_MAX_ATTEMPTS,
+      new Date(),
+    );
+    const presented = hashEmailCode(this.emailCodeSecret(), user.id, code);
+    if (!stored || !sameEmailCodeHash(presented, stored)) throw refused();
+
+    if (user.status === 'suspended') {
+      throw new AuthorizationError('Your account has been suspended. Please contact support.');
     }
 
-    const token = uuidv4();
-    await this.users.update(user.id, {
-      emailVerificationTokenHash: hashEmailedToken(token),
-      emailVerificationExpiry: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS),
-      /*
-       * Cleared, and NOT optional. A new cycle begins here, so the previous
-       * cycle's redemption marker must not survive into it — a fresh link whose
-       * row still said "redeemed" would be answered `already_verified` on its
-       * first click, and the client would be sent to sign in with an address
-       * that is still unverified. See the column comment in schema.ts;
-       * `email-verification-cycle.spec.ts` fails if any writer omits this.
-       */
-      emailVerificationConsumedAt: undefined,
-    });
+    // Of two requests carrying the right code, exactly one confirms.
+    const verified = await this.users.consumeEmailCode(user.id, stored, new Date());
+    if (!verified) throw refused();
 
-    await this.email.sendVerificationEmail(user.email, token);
-    this.logger.log(`Verification email re-sent to ${user.email}`);
-
-    return { message: 'If that email exists and is unverified, a new link has been sent.' };
+    this.logger.log(`Email confirmed by code for user ${user.id}`);
+    return this.startSession(verified, res, device);
   }
 
   // ─── Password reset ─────────────────────────────────────────────────────────
@@ -804,12 +928,26 @@ export class AuthService {
      * Error` already exists and already maps to 403 EMAIL_NOT_VERIFIED.
      */
     if (!user.emailVerified) {
+      /*
+       * The password is right, so this is the owner: mail a fresh code (the
+       * cooldown and hourly budget still apply) and let the portal open the
+       * code screen. This used to be a dead end — "check your inbox for the
+       * link we sent when you registered", which by then had often expired.
+       */
+      await this.sendVerification(user);
       throw new EmailNotVerifiedError(
-        'Please verify your email address before signing in. Check your inbox for the ' +
-          'verification link we sent when you registered.',
+        'Confirm your email to sign in — we have sent a 6-digit code to your inbox.',
       );
     }
 
+    return this.startSession(user, res, device);
+  }
+
+  /**
+   * Sign `user` in on this response — the ONE place a portal session begins,
+   * whether it was a password or an emailed code that proved who they are.
+   */
+  private async startSession(user: User, res: Response, device?: DeviceFingerprint) {
     const familyId = randomUUID();
     const tokens = this.generateTokens(user, familyId);
     await this.refreshTokens.record({

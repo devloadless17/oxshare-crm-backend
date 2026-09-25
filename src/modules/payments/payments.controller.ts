@@ -42,7 +42,11 @@ import { User } from '../../store/users.store';
 import { TransactionsService } from './transactions.service';
 import { RequestWithdrawalDto, TransactionDto, WithdrawalMethodDto } from './dto/withdrawal.dto';
 import { DepositRequestDto, RequestDepositDto } from './dto/deposit.dto';
-import { ListTransactionsQueryDto, TransactionPageDto } from './dto/transaction-query.dto';
+import {
+  ListTransactionsQueryDto,
+  TransactionPageDto,
+  TransactionSummaryRowDto,
+} from './dto/transaction-query.dto';
 import { TransfersService } from './transfers.service';
 import { TransferExecutor } from './transfer-executor.service';
 import { PaymentMethodsService } from './payment-methods.service';
@@ -441,6 +445,26 @@ export class PaymentsController {
   @ApiOkResponse({ type: TransactionPageDto })
   myTransactions(@Req() req: Request & { user: User }, @Query() query: ListTransactionsQueryDto) {
     return this.transactions.listForUser(req.user.id, query);
+  }
+
+  /**
+   * Count and total per currency and state over the same filters as the list —
+   * the figures above the portal's Deposit, Withdraw and Transfer histories.
+   *
+   * Session-scoped exactly like the list; `page`, `limit` and `sort` are
+   * accepted and ignored, so the portal can send one query object to both.
+   */
+  @Get('transactions/summary')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Totals of the signed-in client's filtered transactions, per currency and state",
+  })
+  @ApiOkResponse({ type: [TransactionSummaryRowDto] })
+  myTransactionSummary(
+    @Req() req: Request & { user: User },
+    @Query() query: ListTransactionsQueryDto,
+  ) {
+    return this.transactions.summaryForUser(req.user.id, query);
   }
 
   /**

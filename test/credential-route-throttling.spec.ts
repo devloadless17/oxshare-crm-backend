@@ -120,6 +120,16 @@ const CREDENTIAL_ROUTES: { controller: object; name: string; method: string }[] 
    * that returns PII on a hit.
    */
   { controller: AuthController.prototype, name: 'POST /auth/verify-email', method: 'verifyEmail' },
+  /*
+   * Spends a 6-digit emailed code AND starts a session (0138). The per-code
+   * budget (five attempts) is the real bound; the route limit stops one IP
+   * spraying guesses across many addresses.
+   */
+  {
+    controller: AuthController.prototype,
+    name: 'POST /auth/verify-email-code',
+    method: 'verifyEmailCode',
+  },
   {
     controller: AdminAuthController.prototype,
     name: 'GET /admin/invite/validate',

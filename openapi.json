@@ -417,6 +417,70 @@
         ]
       }
     },
+    "/v1/auth/verify-email-code": {
+      "post": {
+        "operationId": "AuthController_verifyEmailCode[0]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailCodeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthTokensResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Confirm the email with the 6-digit code, and sign in — httpOnly cookies, no tokens",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/identity/verify-email-code": {
+      "post": {
+        "operationId": "AuthController_verifyEmailCode[1]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailCodeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthTokensResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Confirm the email with the 6-digit code, and sign in — httpOnly cookies, no tokens",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/v1/auth/resend-verification": {
       "post": {
         "operationId": "AuthController_resendVerification[0]",
@@ -443,7 +507,7 @@
             }
           }
         },
-        "summary": "Resend email verification link",
+        "summary": "Send a new verification code and link",
         "tags": [
           "auth"
         ]
@@ -475,7 +539,7 @@
             }
           }
         },
-        "summary": "Resend email verification link",
+        "summary": "Send a new verification code and link",
         "tags": [
           "auth"
         ]
@@ -3774,81 +3838,6 @@
         ]
       }
     },
-    "/v1/trading/accounts/{id}": {
-      "patch": {
-        "description": "Changes the account holder's name as MT5 records it, so it updates what the client sees in their terminal and on statements. Nothing is stored CRM-side.",
-        "operationId": "TradingController_renameAccount",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RenameOwnAccountDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Rename a trading account",
-        "tags": [
-          "trading"
-        ]
-      },
-      "get": {
-        "description": "404 when the account does not exist OR belongs to somebody else — the two are the same answer on purpose, because distinguishing them tells a caller which ids are real.\n\n`balance` here is the CRM-held figure, as on the list. For what MT5 holds right now, including equity and floating P/L, call `/trading/accounts/:id/live`.",
-        "operationId": "TradingController_myAccount",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TradingAccountDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "One of the signed-in client's trading accounts",
-        "tags": [
-          "trading"
-        ]
-      }
-    },
     "/v1/trading/accounts/{id}/fund": {
       "post": {
         "description": "Demo accounts only — a live account is funded by transferring from a wallet, which posts both sides of the movement. The amount is capped at the operator ceiling reported as `maxDemoDeposit`; a larger request is clamped rather than refused, so a mistyped extra zero still leaves a working account.",
@@ -3988,6 +3977,43 @@
           }
         ],
         "summary": "The signed-in client's positions — open by default",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/v1/trading/accounts/{id}": {
+      "get": {
+        "description": "404 when the account does not exist OR belongs to somebody else — the two are the same answer on purpose, because distinguishing them tells a caller which ids are real.\n\n`balance` here is the CRM-held figure, as on the list. For what MT5 holds right now, including equity and floating P/L, call `/trading/accounts/:id/live`.",
+        "operationId": "TradingController_myAccount",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "One of the signed-in client's trading accounts",
         "tags": [
           "trading"
         ]
@@ -10868,80 +10894,22 @@
           "message"
         ]
       },
-      "ResendVerificationDto": {
-        "type": "object",
-        "properties": {
-          "email": {
-            "type": "string",
-            "example": "john@example.com"
-          }
-        },
-        "required": [
-          "email"
-        ]
-      },
-      "MessageResponseDto": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string",
-            "example": "Logged out."
-          }
-        },
-        "required": [
-          "message"
-        ]
-      },
-      "ForgotPasswordDto": {
-        "type": "object",
-        "properties": {
-          "email": {
-            "type": "string",
-            "example": "john@example.com"
-          }
-        },
-        "required": [
-          "email"
-        ]
-      },
-      "ResetPasswordDto": {
-        "type": "object",
-        "properties": {
-          "token": {
-            "type": "string",
-            "description": "The token from the emailed reset link."
-          },
-          "newPassword": {
-            "type": "string",
-            "example": "StrongPass123!",
-            "minLength": 8
-          }
-        },
-        "required": [
-          "token",
-          "newPassword"
-        ]
-      },
-      "LoginDto": {
+      "VerifyEmailCodeDto": {
         "type": "object",
         "properties": {
           "email": {
             "type": "string",
             "example": "john@example.com"
           },
-          "password": {
+          "code": {
             "type": "string",
-            "example": "StrongPass123!",
-            "maxLength": 100
-          },
-          "role": {
-            "type": "string",
-            "example": "CLIENT"
+            "example": "482913",
+            "description": "The 6-digit code from the verification email."
           }
         },
         "required": [
           "email",
-          "password"
+          "code"
         ]
       },
       "UserProfileDto": {
@@ -11036,6 +11004,82 @@
         "required": [
           "user",
           "emailVerified"
+        ]
+      },
+      "ResendVerificationDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "john@example.com"
+          }
+        },
+        "required": [
+          "email"
+        ]
+      },
+      "MessageResponseDto": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "Logged out."
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "ForgotPasswordDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "john@example.com"
+          }
+        },
+        "required": [
+          "email"
+        ]
+      },
+      "ResetPasswordDto": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The token from the emailed reset link."
+          },
+          "newPassword": {
+            "type": "string",
+            "example": "StrongPass123!",
+            "minLength": 8
+          }
+        },
+        "required": [
+          "token",
+          "newPassword"
+        ]
+      },
+      "LoginDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "john@example.com"
+          },
+          "password": {
+            "type": "string",
+            "example": "StrongPass123!",
+            "maxLength": 100
+          },
+          "role": {
+            "type": "string",
+            "example": "CLIENT"
+          }
+        },
+        "required": [
+          "email",
+          "password"
         ]
       },
       "RefreshResponseDto": {
@@ -13389,20 +13433,6 @@
         },
         "required": [
           "environment"
-        ]
-      },
-      "RenameOwnAccountDto": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "maxLength": 128,
-            "example": "Swing trading",
-            "description": "The account holder's name as MT5 will show it."
-          }
-        },
-        "required": [
-          "name"
         ]
       },
       "FundDemoAccountDto": {

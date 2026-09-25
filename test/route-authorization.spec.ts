@@ -154,6 +154,10 @@ const PUBLIC_ROUTES: Record<string, string> = {
   'POST /auth/verify-email': 'The emailed token is the credential.',
   'POST /identity/verify-email':
     'Alias of POST /auth/verify-email — the same handler under both prefixes.',
+  'POST /auth/verify-email-code':
+    'Pre-session by definition: the emailed 6-digit code IS the credential, and it starts the session. Five attempts per code; rate limited.',
+  'POST /identity/verify-email-code':
+    'Alias of POST /auth/verify-email-code — the same handler under both prefixes.',
   'POST /auth/resend-verification': 'Pre-session by definition. Rate limited.',
   'POST /identity/resend-verification':
     'Alias of POST /auth/resend-verification — same handler, both prefixes.',

@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { WalletController } from './wallet.controller';
 import { WalletService } from './wallet.service';
+import { StatementService } from './statement.service';
 import { ReconciliationService } from './reconciliation.service';
 import { ReconciliationScheduler } from './reconciliation.scheduler';
 import { WalletProvisioningService } from './wallet-provisioning.service';
@@ -36,6 +37,7 @@ import { WALLET_PROVISIONING } from '../../common/provisioning/wallet-provisioni
   controllers: [WalletController],
   providers: [
     WalletService,
+    StatementService,
     WalletProvisioningService,
     ReconciliationService,
     ReconciliationScheduler,

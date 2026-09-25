@@ -967,6 +967,13 @@
       "when": 1789139298744,
       "tag": "0137_kyc_fields_fit_their_step",
       "breakpoints": true
+    },
+    {
+      "idx": 139,
+      "version": "7",
+      "when": 1789139298745,
+      "tag": "0138_email_verification_code",
+      "breakpoints": true
     }
   ]
 }

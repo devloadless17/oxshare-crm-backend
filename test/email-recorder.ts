@@ -50,6 +50,13 @@ export function emailRecorder() {
     find(method: string, to: string): RecordedMail | undefined {
       return calls.find((c) => c.method === method && c.args[0] === to);
     },
+    /**
+     * The LAST send of `method` to `to` — the one whose link and code are live.
+     * A resend, or a sign-in to an unconfirmed account, supersedes the first.
+     */
+    latest(method: string, to: string): RecordedMail | undefined {
+      return [...calls].reverse().find((c) => c.method === method && c.args[0] === to);
+    },
     sentTo(to: string): string[] {
       return calls.filter((c) => c.args[0] === to).map((c) => c.method);
     },
