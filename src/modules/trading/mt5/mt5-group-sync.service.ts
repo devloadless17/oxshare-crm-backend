@@ -1,8 +1,14 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
-import { mt5Groups, tradingProductGroups } from '../../../database/schema';
+import {
+  mt5Groups,
+  tradingAccounts,
+  tradingProductGroups,
+  tradingProducts,
+} from '../../../database/schema';
+import type { Mt5GroupDto } from './dto/mt5-group.dto';
 import { Mt5BridgeClient, type Mt5Group } from './mt5-bridge.client';
 
 /** One group as the mirror holds it, plus how fresh that record is. */
@@ -201,6 +207,69 @@ export class Mt5GroupSyncService {
       restored,
       ...drift,
     };
+  }
+
+  /**
+   * Every mirrored group — removed ones included — with the product that sells
+   * it and how many accounts the CRM holds in it. The MT5 Groups screen.
+   *
+   * THREE plain queries merged in memory rather than one with correlated
+   * subqueries. Groups number in the dozens, and Drizzle renders a column
+   * inside a select-list `sql` template as a bare name, which inside a
+   * subquery silently binds to the inner table (the bug that made every IB
+   * rung report the whole platform's partner count). Plain selects cannot make
+   * that mistake.
+   *
+   * Matched CASE-INSENSITIVELY on the group path, like every other lookup of a
+   * group here: MT5 treats `real\Standard` and `Real\standard` as one group,
+   * and the mirror's unique index is on `lower(name)`.
+   */
+  async listForAdmin(): Promise<Mt5GroupDto[]> {
+    const [groups, claims, counts] = await Promise.all([
+      this.db
+        .select({
+          name: mt5Groups.name,
+          currency: mt5Groups.currency,
+          leverageDefault: mt5Groups.leverageDefault,
+          firstSeenAt: mt5Groups.firstSeenAt,
+          lastSeenAt: mt5Groups.lastSeenAt,
+          removedAt: mt5Groups.removedAt,
+        })
+        .from(mt5Groups)
+        .orderBy(mt5Groups.name),
+      this.db
+        .select({
+          mt5Group: tradingProductGroups.mt5Group,
+          environment: tradingProductGroups.environment,
+          productId: tradingProducts.id,
+          productName: tradingProducts.name,
+        })
+        .from(tradingProductGroups)
+        .innerJoin(tradingProducts, eq(tradingProducts.id, tradingProductGroups.productId)),
+      this.db
+        .select({
+          group: sql<string>`lower(${tradingAccounts.mt5Group})`,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(tradingAccounts)
+        .where(isNotNull(tradingAccounts.mt5Group))
+        .groupBy(sql`lower(${tradingAccounts.mt5Group})`),
+    ]);
+
+    const claimedBy = new Map(claims.map((claim) => [claim.mt5Group.toLowerCase(), claim]));
+    const accountsIn = new Map(counts.map((row) => [row.group, row.count]));
+
+    return groups.map((group) => {
+      const key = group.name.toLowerCase();
+      const claim = claimedBy.get(key);
+      return {
+        ...group,
+        product: claim
+          ? { id: claim.productId, name: claim.productName, environment: claim.environment }
+          : null,
+        accountCount: accountsIn.get(key) ?? 0,
+      };
+    });
   }
 
   /**

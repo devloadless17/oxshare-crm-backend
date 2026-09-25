@@ -65,6 +65,7 @@
   "GET /v1/admin/kyc/{userId}/history",
   "GET /v1/admin/ledger",
   "GET /v1/admin/leverages",
+  "GET /v1/admin/mt5-groups",
   "GET /v1/admin/mt5/groups",
   "GET /v1/admin/notifications",
   "GET /v1/admin/notifications/unread-count",
