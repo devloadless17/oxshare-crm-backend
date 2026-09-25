@@ -15,7 +15,7 @@ import type { NotificationDispatchPort } from '../src/common/provisioning/notifi
 export function notificationsStub() {
   return {
     notify: vi.fn().mockResolvedValue(undefined),
-    notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
+    notifyAdmins: vi.fn().mockResolvedValue(undefined),
   };
 }
 

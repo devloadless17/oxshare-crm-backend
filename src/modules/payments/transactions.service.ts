@@ -289,6 +289,7 @@ import {
   type NotificationDispatchPort,
 } from '../../common/provisioning/notification-dispatch.port';
 import { PaymentGateways } from './payment-gateways.service';
+import type { DepositAttentionReason } from '../../common/notifications/admin-notification-catalogue';
 import { AuditLogStore } from '../../store/audit-log.store';
 import { SYSTEM_ACTOR } from '../../common/security/actor';
 import {
@@ -890,26 +891,20 @@ export class TransactionsService {
       .then((row) => {
         /*
          * Ring the reviewers' bells AFTER the request has committed, never
-         * inside it: resolving who holds `withdrawals.approve` is several reads,
-         * and a money transaction does not stay open for a courtesy (§6.2 keeps
-         * that transaction to lock → compute → insert → update). The port never
-         * throws, and the polled queue badge remains the durable signal — this
-         * row is the per-item ping with a deep link on top.
+         * inside it: resolving who can act on it (the catalogue's permissions,
+         * each admin's scope) is several reads, and a money transaction does not
+         * stay open for a courtesy (§6.2 keeps that transaction to lock →
+         * compute → insert → update). The port never throws, and the polled
+         * queue badge remains the durable signal — this row is the per-item task
+         * with a deep link on top. Approving or rejecting it resolves it for
+         * every reviewer at once (the `transactions` trigger, migration 0140).
          */
-        void this.notifications.notifyAdminsWithPermission(
-          'withdrawals.approve',
-          {
-            kind: 'admin.withdrawal.requested',
-            params: {
-              transactionId: row.id,
-              userId: row.userId,
-              amount: row.amount,
-              currency: row.currency,
-            },
-            dedupeKey: `admin.withdrawal.requested:${row.id}`,
-          },
-          { subjectClientId: row.userId },
-        );
+        void this.notifications.notifyAdmins({
+          kind: 'admin.withdrawal.requested',
+          params: { transactionId: row.id, amount: row.amount, currency: row.currency },
+          dedupeKey: `admin.withdrawal.requested:${row.id}`,
+          subject: { id: row.id, clientId: row.userId },
+        });
         return row;
       });
   }
@@ -2416,6 +2411,29 @@ export class TransactionsService {
   }
 
   /**
+   * A person reconciled a payment only a person could — clear its attention
+   * flag, in one transaction with whatever the caller records beside it.
+   *
+   * CONDITIONAL on the flag, so a double click or two operators racing resolve
+   * it once and the loser learns it was already done. Clearing the flag is what
+   * ends the matching admin tasks for everyone — the `transactions` trigger
+   * (migration 0140) — so this is the finish line an anomaly never had: no
+   * event path ever cleared it for a deposit.
+   */
+  async resolveAttention(id: string, withinTx: (tx: Executor) => Promise<void>): Promise<boolean> {
+    return this.db.transaction(async (dbTx) => {
+      const [cleared] = await dbTx
+        .update(transactions)
+        .set({ rivalNeedsAttention: false, rivalAttentionReason: null })
+        .where(and(eq(transactions.id, id), eq(transactions.rivalNeedsAttention, true)))
+        .returning({ id: transactions.id });
+      if (!cleared) return false;
+      await withinTx(dbTx);
+      return true;
+    });
+  }
+
+  /**
    * Every state transition that moves money uses the §8.7 conditional update:
    * UPDATE ... WHERE id = ? AND state = <expected>, then check the rowcount.
    * A zero rowcount means someone else already transitioned it — abort rather
@@ -3064,22 +3082,18 @@ export class TransactionsService {
      * on one row also converges on one bell.
      */
     if (!isGateway) {
-      void this.notifications.notifyAdminsWithPermission(
-        'deposits.approve',
-        {
-          kind: 'admin.deposit.submitted',
-          params: {
-            transactionId: tx.id,
-            userId: tx.userId,
-            amount: tx.amount,
-            currency: tx.currency,
-            method: paymentMethod.key,
-            reference,
-          },
-          dedupeKey: `admin.deposit.submitted:${tx.id}`,
+      void this.notifications.notifyAdmins({
+        kind: 'admin.deposit.submitted',
+        params: {
+          transactionId: tx.id,
+          amount: tx.amount,
+          currency: tx.currency,
+          method: paymentMethod.key,
+          reference,
         },
-        { subjectClientId: tx.userId },
-      );
+        dedupeKey: `admin.deposit.submitted:${tx.id}`,
+        subject: { id: tx.id, clientId: tx.userId },
+      });
     }
 
     return {
@@ -3531,6 +3545,7 @@ export class TransactionsService {
           reportedCurrency: result.currency ?? '(not reported)',
         },
       );
+      this.announceDepositAttention(tx, 'amount_mismatch');
       return { state: tx.state };
     }
 
@@ -3775,6 +3790,7 @@ export class TransactionsService {
           'entry is a human decision. Reconcile the transaction against the Rival dashboard.',
         { transactionId: tx.id, rivalExternalId, state: tx.state },
       );
+      this.announceDepositAttention(tx, 'reversed');
       return 'needs-attention';
     }
 
@@ -3809,12 +3825,37 @@ export class TransactionsService {
           'is at Rival and no wallet was credited — reconcile by hand.',
         { transactionId: tx.id, rivalExternalId, state: tx.state },
       );
+      this.announceDepositAttention(tx, 'paid_after_failure');
       return 'needs-attention';
     }
 
     // A `failed` event against a terminal row: at-least-once delivery echoing
     // history. Never regress a terminal state.
     return 'stale';
+  }
+
+  /**
+   * Put a deposit only a person can settle in front of the people who can.
+   *
+   * The pager alert beside each call reaches whoever reads the alert channel
+   * — on a deployment with no sink registered, nobody. This is the task on the
+   * deposit desk's own bell, scoped to the client's territory like every task.
+   * A reason CODE, not the sentence above: the frontends own the copy, and the
+   * provider's wording never reaches a bell. Keyed per reason, so a replayed
+   * webhook rings once, and resolved when somebody clears the flag ("Mark
+   * resolved") or settles the row — migration 0140's trigger, not this code.
+   * Post-write and never-throws, like every fan-out.
+   */
+  private announceDepositAttention(
+    tx: { id: string; userId: string; amount: string; currency: string },
+    reason: DepositAttentionReason,
+  ): void {
+    void this.notifications.notifyAdmins({
+      kind: 'admin.deposit.attention',
+      params: { transactionId: tx.id, amount: tx.amount, currency: tx.currency, reason },
+      dedupeKey: `admin.deposit.attention:${tx.id}:${reason}`,
+      subject: { id: tx.id, clientId: tx.userId },
+    });
   }
 
   /**

@@ -144,6 +144,16 @@
       "post": {
         "operationId": "NotificationsController_markAllRead",
         "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationsReadAllDto"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "",
@@ -161,7 +171,7 @@
             "cookie": []
           }
         ],
-        "summary": "Mark every unread notification read. Idempotent.",
+        "summary": "Mark unread notifications read — every one, or up to the newest one shown. Idempotent.",
         "tags": [
           "notifications"
         ]
@@ -172,9 +182,51 @@
         "operationId": "AdminNotificationsController_list",
         "parameters": [
           {
-            "name": "limit",
+            "name": "view",
             "required": false,
             "in": "query",
+            "description": "'inbox': still waiting on you — unread AND not yet handled by anyone. 'history' (default): everything, handled or not.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "history"
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "History only. 'open': nobody has handled it yet. 'handled': resolved.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "open",
+                "handled"
+              ]
+            }
+          },
+          {
+            "name": "category",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "deposits",
+                "withdrawals",
+                "kyc",
+                "ib",
+                "transfers"
+              ]
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "A client: Portal ID (exact, `#` optional) or part of a name or email.",
             "schema": {
               "type": "string"
             }
@@ -189,12 +241,13 @@
             }
           },
           {
-            "name": "unread",
+            "name": "limit",
             "required": false,
             "in": "query",
-            "description": "Pass 'true' to see only unread.",
             "schema": {
-              "type": "string"
+              "minimum": 1,
+              "maximum": 100,
+              "type": "number"
             }
           }
         ],
@@ -204,7 +257,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotificationListResponseDto"
+                  "$ref": "#/components/schemas/AdminNotificationListResponseDto"
                 }
               }
             }
@@ -215,7 +268,7 @@
             "cookie": []
           }
         ],
-        "summary": "The signed-in admin's notification feed, newest first",
+        "summary": "The signed-in admin's tasks, newest first — inbox or history",
         "tags": [
           "notifications"
         ]
@@ -223,7 +276,7 @@
     },
     "/v1/admin/notifications/unread-count": {
       "get": {
-        "operationId": "AdminNotificationsController_unreadCount",
+        "operationId": "AdminNotificationsController_summary",
         "parameters": [],
         "responses": {
           "200": {
@@ -231,7 +284,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotificationUnreadCountDto"
+                  "$ref": "#/components/schemas/AdminNotificationSummaryDto"
                 }
               }
             }
@@ -242,7 +295,81 @@
             "cookie": []
           }
         ],
-        "summary": "Unread notifications for the signed-in admin — the badge number",
+        "summary": "Tasks waiting on the signed-in admin — the bell badge, in total and per category",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/admin/notifications/read-all": {
+      "post": {
+        "operationId": "AdminNotificationsController_markAllRead",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminNotificationsReadAllDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsMarkAllReadResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark tasks read — all, or one category — up to what was shown",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/admin/notifications/read-subject": {
+      "post": {
+        "operationId": "AdminNotificationsController_markSubjectRead",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminNotificationsReadSubjectDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsMarkAllReadResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The reader opened an item (e.g. a KYC review) — mark their tasks about it read",
         "tags": [
           "notifications"
         ]
@@ -267,7 +394,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotificationDto"
+                  "$ref": "#/components/schemas/AdminNotificationMarkResponseDto"
                 }
               }
             }
@@ -278,23 +405,32 @@
             "cookie": []
           }
         ],
-        "summary": "Mark one notification read. Idempotent.",
+        "summary": "Mark one task read. Idempotent.",
         "tags": [
           "notifications"
         ]
       }
     },
-    "/v1/admin/notifications/read-all": {
+    "/v1/admin/notifications/{id}/unread": {
       "post": {
-        "operationId": "AdminNotificationsController_markAllRead",
-        "parameters": [],
+        "operationId": "AdminNotificationsController_markUnread",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotificationsMarkAllReadResponseDto"
+                  "$ref": "#/components/schemas/AdminNotificationMarkResponseDto"
                 }
               }
             }
@@ -305,7 +441,7 @@
             "cookie": []
           }
         ],
-        "summary": "Mark every unread notification read. Idempotent.",
+        "summary": "Mark one task unread again (undo). Idempotent.",
         "tags": [
           "notifications"
         ]
@@ -9953,6 +10089,53 @@
         ]
       }
     },
+    "/v1/admin/transactions/{id}/attention/resolve": {
+      "patch": {
+        "description": "For a deposit or withdrawal flagged as needing a person: reconcile it first (the platform dashboard, the ledger), then record what you found. Refuses a payment that is no longer flagged. Deposits need deposits.approve; withdrawals need withdrawals.settle.",
+        "operationId": "AdminMoneyController_resolveAttention",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveAttentionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttentionResolvedDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark a payment that needed attention as resolved — clears the flag and its tasks",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/transactions/export": {
       "get": {
         "description": "The same filters as GET /admin/transactions, over every matching row rather than one page. Amounts are the exact decimal strings the ledger holds — never rounded, never locale-formatted (§6.1).",
@@ -11057,6 +11240,16 @@
           "count"
         ]
       },
+      "NotificationsReadAllDto": {
+        "type": "object",
+        "properties": {
+          "upTo": {
+            "type": "string",
+            "description": "The `createdAt` of the newest notification the reader was shown.",
+            "example": "2026-09-25T10:15:00.000Z"
+          }
+        }
+      },
       "NotificationsMarkAllReadResponseDto": {
         "type": "object",
         "properties": {
@@ -11067,6 +11260,283 @@
         },
         "required": [
           "updated"
+        ]
+      },
+      "AdminNotificationSubjectDto": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "transaction",
+              "kyc",
+              "ib_application",
+              "transfer",
+              "ib_accrual"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "The item's id. For a KYC task, the client's id."
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ]
+      },
+      "AdminNotificationClientDto": {
+        "type": "object",
+        "properties": {
+          "portalId": {
+            "type": "number",
+            "nullable": true,
+            "description": "The Portal ID — never masked, so it still names the client under any role."
+          },
+          "firstName": {
+            "type": "string",
+            "nullable": true
+          },
+          "lastName": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "portalId"
+        ]
+      },
+      "AdminNotificationResolutionDto": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string",
+            "description": "When somebody handled the item."
+          },
+          "outcome": {
+            "type": "string",
+            "description": "The item state that ended the task — 'approved', 'rejected', 'success', 'failure', 'reversed', 'settled', 'resolved', 'reset'. Render per category; unknown → 'Handled'.",
+            "example": "approved"
+          },
+          "byName": {
+            "type": "string",
+            "nullable": true,
+            "description": "The administrator who handled it — only when the decision itself recorded one. A cancel, a system settle or a release carries none."
+          }
+        },
+        "required": [
+          "at",
+          "outcome"
+        ]
+      },
+      "AdminNotificationDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "admin.deposit.submitted",
+              "admin.deposit.attention",
+              "admin.withdrawal.requested",
+              "withdrawal.rival_submit_failed",
+              "withdrawal.rival_attention",
+              "admin.kyc.submitted",
+              "admin.kyc.resubmitted",
+              "admin.partner.applied",
+              "admin.commission.clawback",
+              "admin.transfer.stuck"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "deposits",
+              "withdrawals",
+              "kyc",
+              "ib",
+              "transfers"
+            ]
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true,
+            "example": {
+              "transactionId": "a6e1…",
+              "amount": "250.00000000",
+              "currency": "USD"
+            }
+          },
+          "readAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null while unread."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/AdminNotificationSubjectDto"
+          },
+          "client": {
+            "$ref": "#/components/schemas/AdminNotificationClientDto"
+          },
+          "resolution": {
+            "nullable": true,
+            "description": "Null while the item still waits on somebody.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminNotificationResolutionDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "category",
+          "params",
+          "readAt",
+          "createdAt",
+          "subject",
+          "client",
+          "resolution"
+        ]
+      },
+      "AdminNotificationListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminNotificationDto"
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "`null` on the last page (R-2.4)."
+          },
+          "maskedFields": {
+            "description": "Client fields hidden from this reader on every row, e.g. `client.firstName`.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "maskedFields"
+        ]
+      },
+      "AdminNotificationCategoryCountsDto": {
+        "type": "object",
+        "properties": {
+          "deposits": {
+            "type": "number"
+          },
+          "withdrawals": {
+            "type": "number"
+          },
+          "kyc": {
+            "type": "number"
+          },
+          "ib": {
+            "type": "number"
+          },
+          "transfers": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "deposits",
+          "withdrawals",
+          "kyc",
+          "ib",
+          "transfers"
+        ]
+      },
+      "AdminNotificationSummaryDto": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number",
+            "description": "Tasks waiting on the reader — unread and not yet handled by anyone. The bell badge."
+          },
+          "byCategory": {
+            "$ref": "#/components/schemas/AdminNotificationCategoryCountsDto"
+          }
+        },
+        "required": [
+          "count",
+          "byCategory"
+        ]
+      },
+      "AdminNotificationsReadAllDto": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "deposits",
+              "withdrawals",
+              "kyc",
+              "ib",
+              "transfers"
+            ],
+            "description": "Only this category. Omitted: every category the reader can see."
+          },
+          "upTo": {
+            "type": "string",
+            "description": "The `createdAt` of the newest row the reader was shown. Nothing newer is marked — a task that arrived after the list rendered stays unread.",
+            "example": "2026-09-25T10:15:00.000Z"
+          }
+        }
+      },
+      "AdminNotificationsReadSubjectDto": {
+        "type": "object",
+        "properties": {
+          "subjectKind": {
+            "type": "string",
+            "enum": [
+              "transaction",
+              "kyc",
+              "ib_application",
+              "transfer",
+              "ib_accrual"
+            ]
+          },
+          "subjectId": {
+            "type": "string",
+            "description": "The item's id — for a KYC task, the client's id."
+          }
+        },
+        "required": [
+          "subjectKind",
+          "subjectId"
+        ]
+      },
+      "AdminNotificationMarkResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "readAt": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "readAt"
         ]
       },
       "RegisterDto": {
@@ -18567,6 +19037,37 @@
         },
         "required": [
           "reason"
+        ]
+      },
+      "ResolveAttentionDto": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 500,
+            "example": "Checked the platform dashboard — the reversal was a duplicate; client credited correctly.",
+            "description": "What the reconciliation found. The audit record of a decision the system could not make on its own — the same weight as releasing a stuck transfer."
+          }
+        },
+        "required": [
+          "note"
+        ]
+      },
+      "AttentionResolvedDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "needsAttention": {
+            "type": "boolean",
+            "description": "Always false after a successful resolve."
+          }
+        },
+        "required": [
+          "id",
+          "needsAttention"
         ]
       },
       "AdminTransactionSummaryRowDto": {

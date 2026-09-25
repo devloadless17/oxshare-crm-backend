@@ -78,6 +78,7 @@ function scheduler(execute = vi.fn().mockResolvedValue({ state: 'pending' })) {
       ctx.db,
       { execute } as never,
       { run: (_n: string, _t: number, work: () => Promise<void>) => work() } as never,
+      { notifyAdmins: vi.fn().mockResolvedValue(undefined) } as never,
     ),
     execute,
   };

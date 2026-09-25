@@ -44,7 +44,20 @@ const items = (body: unknown) => (body as { items: NotificationRow[] }).items;
 async function seedRow(recipientKind: 'client' | 'admin', recipientId: string, kind: string) {
   const [row] = await ctx.db.db
     .insert(notifications)
-    .values({ recipientKind, recipientId, kind, params: { amount: '10.00000000' } })
+    .values({
+      recipientKind,
+      recipientId,
+      kind,
+      params: { amount: '10.00000000' },
+      /*
+       * An admin row is a TASK and must name its item and client (0140's
+       * CHECK). Client A's KYC is the item here — the admin feeds below are
+       * read by unrestricted admins, so any real client serves.
+       */
+      ...(recipientKind === 'admin'
+        ? { subjectKind: 'kyc' as const, subjectId: clientAId, subjectUserId: clientAId }
+        : {}),
+    })
     .returning();
   return row.id;
 }
@@ -173,9 +186,9 @@ describe('the admin feed', () => {
     expect(items(listB.body).map((n) => n.kind)).not.toContain('admin.withdrawal.requested');
   });
 
-  it('paginates with a cursor and filters unread', async () => {
+  it('paginates with a cursor, and the inbox holds only what is still waiting', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN_A);
-    for (let i = 0; i < 3; i++) await seedRow('admin', adminAId, `admin.page.${i}`);
+    for (let i = 0; i < 3; i++) await seedRow('admin', adminAId, 'admin.kyc.submitted');
 
     const first = await session.get('/v1/admin/notifications?limit=2');
     expect(items(first.body)).toHaveLength(2);
@@ -189,8 +202,23 @@ describe('the admin feed', () => {
     const firstIds = new Set(items(first.body).map((n) => n.id));
     for (const row of items(second.body)) expect(firstIds.has(row.id)).toBe(false);
 
-    const unread = await session.get('/v1/admin/notifications?unread=true');
-    expect(items(unread.body).every((n) => n.readAt === null)).toBe(true);
+    const inbox = await session.get('/v1/admin/notifications?view=inbox');
+    expect(inbox.status).toBe(200);
+    expect(items(inbox.body).every((n) => n.readAt === null)).toBe(true);
+  });
+
+  it('refuses a query parameter it does not know — the retired `unread` filter included', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN_A);
+    expect((await session.get('/v1/admin/notifications?unread=true')).status).toBe(400);
+  });
+
+  it('shows no kind outside the catalogue, whatever is in the table', async () => {
+    // A row of a retired kind — what the migration deleted, written again by
+    // hand. The feed admits only catalogue kinds the reader can act on.
+    await seedRow('admin', adminAId, 'admin.client.registered');
+    const session = await actingAs(ctx, 'admin', ADMIN_A);
+    const list = await session.get('/v1/admin/notifications?limit=100');
+    expect(items(list.body).map((n) => n.kind)).not.toContain('admin.client.registered');
   });
 });
 

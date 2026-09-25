@@ -1,3 +1,4 @@
+import { accrualBeneficiarySql } from '../common/accrual-beneficiary';
 import {
   aliasedTable,
   and,
@@ -634,8 +635,7 @@ export class IbStore {
      * both kinds in one page, and each row has to be judged by its own
      * beneficiary rather than by whichever branch the request happened to take.
      */
-    const beneficiary = sql`CASE WHEN ${ibAccruals.kind} = 'rebate'
-        THEN ${ibAccruals.clientUserId} ELSE ${ibAccruals.ibUserId} END`;
+    const beneficiary = accrualBeneficiarySql();
     const visible = clientScopePredicate(scope, beneficiary);
 
     /*

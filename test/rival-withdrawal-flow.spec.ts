@@ -6,6 +6,7 @@ import { PaymentMethodsService } from '../src/modules/payments/payment-methods.s
 import { RivalWithdrawalsService } from '../src/modules/payments/rival/rival-withdrawals.service';
 import type { RivalClient } from '../src/modules/payments/rival/rival.client';
 import type { RivalConfigService } from '../src/modules/payments/rival/rival-config.service';
+import type { ResourceChangedPublisher } from '../src/common/realtime/resource-changed';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { AuditLogStore } from '../src/store/audit-log.store';
@@ -46,6 +47,11 @@ const rival = {
 const rivalConfig = { isEnabled: vi.fn().mockResolvedValue(true) };
 // Untyped, so mock-call assertions do not trip the unbound-method rule.
 const notifications = notificationsStub();
+/*
+ * The system settle and refund announce a desk refresh instead of a bell row
+ * (migration 0140: a completed or auto-refunded payout is not a task).
+ */
+const resourceChanged = { publish: vi.fn().mockResolvedValue(undefined) };
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
@@ -80,6 +86,7 @@ beforeAll(async () => {
     new UsersStore(ctx.db),
     emailStubAs(),
     notifications,
+    resourceChanged as unknown as ResourceChangedPublisher,
   );
 }, 120_000);
 
@@ -242,10 +249,11 @@ describe('submit on approval — the no-idempotency-key defence', () => {
     // The operator can read WHY, in the platform's own words, on the row.
     expect(row.rival_attention_reason).toContain('INSUFFICIENT_BALANCE at Rival');
     expect(row.state).toBe('approved'); // the approval itself stands
-    expect(notifications.notifyAdminsWithPermission).toHaveBeenCalledWith(
-      'withdrawals.approve',
-      expect.objectContaining({ kind: 'withdrawal.rival_submit_failed' }),
-      expect.anything(),
+    expect(notifications.notifyAdmins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'withdrawal.rival_submit_failed',
+        subject: expect.objectContaining({ id: txId }) as unknown,
+      }),
     );
   });
 

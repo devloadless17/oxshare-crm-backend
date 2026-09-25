@@ -4293,15 +4293,35 @@ export const positions = pgTable(
  * (§6.1), always.
  *
  * These rows are UX, not records — the audit log and the ledger are the
- * records. A daily prune (NotificationsService) drops rows older than 90 days,
- * read or not, because this table collects fan-out multiples of every event
- * and would otherwise out-grow audit_log.
+ * records. A daily prune (NotificationsService) drops them by age, read or not,
+ * because this table collects fan-out multiples of every event and would
+ * otherwise out-grow audit_log: client rows after 90 days, admin rows after a
+ * year — the admin feed's History is where a desk goes back through its work.
+ *
+ * The two audiences differ in kind since 0140. A CLIENT row is an outcome
+ * ("your withdrawal was paid") and is done once seen. An ADMIN row is a TASK
+ * — something the reader must handle — and names the item it is about, so it
+ * can be scope-checked when read and resolved the moment anybody handles it.
  */
 
 export const notificationRecipientKindEnum = pgEnum('notification_recipient_kind', [
   'client',
   'admin',
 ]);
+
+/**
+ * The items an admin task can be about — the closed set
+ * `notifications_subject_kind_ck` enforces (migration 0140). A KYC task's
+ * subject id is the CLIENT's id, because `kyc_submissions` is keyed on it.
+ */
+export const NOTIFICATION_SUBJECT_KINDS = [
+  'transaction',
+  'kyc',
+  'ib_application',
+  'transfer',
+  'ib_accrual',
+] as const;
+export type NotificationSubjectKind = (typeof NOTIFICATION_SUBJECT_KINDS)[number];
 
 export const notifications = pgTable(
   'notifications',
@@ -4341,11 +4361,55 @@ export const notifications = pgTable(
      * at the precision the cursor can carry makes the comparison exact.
      */
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
+    /*
+     * ── An ADMIN row is a task about one item (migration 0140) ──────────────
+     *
+     * `subject_user_id` is the client the task concerns — what the feed's
+     * READ-time scope check runs against, so a re-tagged client's tasks leave
+     * the desk that lost them immediately. `subject_kind` + `subject_id` name
+     * the item (a transaction, a KYC submission keyed by its client, an IB
+     * application, a transfer, a commission accrual), which is what the item
+     * tables' triggers resolve by. All three are required on admin rows
+     * (`notifications_admin_subject_ck`) and absent on client rows.
+     *
+     * No foreign keys, for the recipient's reason above: clients are never
+     * deleted, and a bell row must not add a failure mode to anyone's write.
+     */
+    subjectUserId: uuid('subject_user_id'),
+    subjectKind: varchar('subject_kind', { length: 24 }).$type<NotificationSubjectKind>(),
+    subjectId: uuid('subject_id'),
+    /*
+     * Set by the item tables' triggers the moment somebody handles the item —
+     * for EVERY admin's row about it at once. Never written by application
+     * code: a path that forgot would be the "it keeps showing" bug again.
+     * `resolution` is the item state that ended the task ('approved',
+     * 'rejected', 'success', 'reversed', 'resolved' …); `resolved_by` is the
+     * admin, only when the ending UPDATE itself recorded one.
+     */
+    resolvedAt: timestamp('resolved_at', { withTimezone: true, precision: 3 }),
+    resolution: varchar('resolution', { length: 24 }),
+    resolvedBy: uuid('resolved_by'),
   },
   (t) => [
+    check(
+      'notifications_admin_subject_ck',
+      sql`${t.recipientKind} <> 'admin' OR (${t.subjectUserId} IS NOT NULL AND ${t.subjectKind} IS NOT NULL AND ${t.subjectId} IS NOT NULL)`,
+    ),
+    check(
+      'notifications_subject_kind_ck',
+      sql`${t.subjectKind} IS NULL OR ${t.subjectKind} IN ('transaction', 'kyc', 'ib_application', 'transfer', 'ib_accrual')`,
+    ),
     uniqueIndex('notifications_recipient_dedupe_uq')
       .on(t.recipientKind, t.recipientId, t.dedupeKey)
       .where(sql`${t.dedupeKey} IS NOT NULL`),
+    /* The admin Inbox: still somebody's work — unread AND unresolved. */
+    index('notifications_admin_inbox_idx')
+      .on(t.recipientId, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.recipientKind} = 'admin' AND ${t.readAt} IS NULL AND ${t.resolvedAt} IS NULL`),
+    /* What the resolution triggers look up: the open rows about one item. */
+    index('notifications_subject_open_idx')
+      .on(t.subjectKind, t.subjectId)
+      .where(sql`${t.resolvedAt} IS NULL`),
     /* Keyset paging: both ORDER BY keys in the same direction, same rule
        audit-log.store.ts records. */
     index('notifications_recipient_created_idx').on(

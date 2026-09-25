@@ -62,6 +62,21 @@ export class AbandonTransferDto {
   reason: string;
 }
 
+export class ResolveAttentionDto {
+  @ApiProperty({
+    minLength: 10,
+    maxLength: 500,
+    example:
+      'Checked the platform dashboard — the reversal was a duplicate; client credited correctly.',
+    description:
+      'What the reconciliation found. The audit record of a decision the system could not make ' +
+      'on its own — the same weight as releasing a stuck transfer.',
+  })
+  @IsString()
+  @Length(10, 500)
+  note: string;
+}
+
 export class SettleWithdrawalDto {
   /**
    * The payment provider's own reference. Backs `UNIQUE(provider, provider_ref)`,

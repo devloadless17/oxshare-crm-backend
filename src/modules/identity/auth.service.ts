@@ -16,10 +16,7 @@ import {
   WALLET_PROVISIONING,
   type WalletProvisioningPort,
 } from '../../common/provisioning/wallet-provisioning.port';
-import {
-  NOTIFICATION_DISPATCH,
-  type NotificationDispatchPort,
-} from '../../common/provisioning/notification-dispatch.port';
+import { ResourceChangedPublisher } from '../../common/realtime/resource-changed';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { EmailService } from '../email/email.service';
 import { Request, Response } from 'express';
@@ -165,17 +162,18 @@ export class AuthService {
     @Inject(WALLET_PROVISIONING)
     private readonly walletProvisioning?: WalletProvisioningPort,
     /*
-     * Rings the intake team's bell when a client registers.
+     * Tells every admin screen that the client list moved when somebody
+     * registers — data only, no bell. A registration is not a task (the admin
+     * notification rule, migration 0140): nobody has to DO anything because a
+     * client signed up, and "new / untriaged" is already a derived state the
+     * client list shows. What the intake desk needs is for that list to be
+     * current, which is exactly what `resource.changed` delivers.
      *
-     * A PORT and OPTIONAL, for both reasons the two parameters above record:
-     * `NotificationsModule` depends on identity's guards, so importing it here
-     * closes a cycle; and every hand-constructed `new AuthService(...)` in the
-     * suite passes positionally, so a required parameter would mean editing all
-     * of them. Absent, registration simply rings nobody.
+     * OPTIONAL for the positional-constructor reason the parameters above
+     * record. Absent, the list refreshes on its own next fetch.
      */
     @Optional()
-    @Inject(NOTIFICATION_DISPATCH)
-    private readonly notifications?: NotificationDispatchPort,
+    private readonly resourceChanged?: ResourceChangedPublisher,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -387,44 +385,11 @@ export class AuthService {
      */
 
     /*
-     * Tell the intake team a client has arrived.
-     *
-     * NO `subjectClientId`, and that is the deliberate part. Fan-out normally
-     * scope-filters on the subject so a territoried admin is not told about a
-     * client outside their patch — but a brand-new registration carries no tag
-     * assignments at all, which is precisely the DERIVED "new / untriaged"
-     * state the comment above describes. Passing the id would resolve every
-     * scoped admin's visibility against an untagged client and, for anyone
-     * without the `sees_untriaged` grant, silently drop the bell — so the one
-     * event whose entire purpose is "somebody please triage this" would reach
-     * only unrestricted admins. Holding `clients.view` is the check that
-     * matters here.
-     *
-     * Never throws (see the port), so a bell nobody could ring cannot fail a
-     * registration — the same rule the wallet provisioning above follows, and
-     * for the same reason: past this point the user row is committed and a
-     * thrown error leaves an account whose address is taken and which nobody
-     * can re-create.
-     *
-     * `void`, not awaited: registration already waits on wallet provisioning
-     * and an SMTP round trip, and a permission sweep across the admin roster
-     * is not worth adding to what the client sits watching a spinner for.
+     * Refresh every admin's client list — no bell: see the constructor note.
+     * `void`: registration already waits on wallet provisioning and an SMTP
+     * round trip, and the publisher never throws.
      */
-    void this.notifications?.notifyAdminsWithPermission('clients.view', {
-      kind: 'admin.client.registered',
-      params: {
-        userId: user.id,
-        country: dto.country ?? null,
-        // Whether an introducing partner is owed attribution for this signup —
-        // a boolean, never the partner's id: this row fans out to every admin
-        // holding `clients.view`, and who introduced whom is IB data that the
-        // partner screens are gated on separately.
-        referred: referredByIbUserId !== undefined,
-      },
-      // One bell per account, ever. Registration is not machine-retried, but
-      // the id is the natural key and costs nothing to be certain with.
-      dedupeKey: `admin.client.registered:${user.id}`,
-    });
+    void this.resourceChanged?.publish({ resource: 'clients' });
 
     /*
      * And a 6-digit CODE beside the link — the registration screen now asks for

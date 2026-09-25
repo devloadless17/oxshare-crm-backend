@@ -492,13 +492,14 @@ export class IbApplicationsService {
         website: input.website ?? null,
       });
 
-      // Ring the reviewers' bells — post-write, never-throws, scope-filtered
-      // at write time. The queue badge stays the durable signal.
-      void this.notifications.notifyAdminsWithPermission(
-        'ib.approve',
-        { kind: 'admin.partner.applied', params: { applicationId: created.id, userId } },
-        { subjectClientId: userId },
-      );
+      // Ring the reviewers' bells — post-write, never-throws. The task resolves
+      // itself for every reviewer when the application leaves 'pending'
+      // (migration 0140); the queue badge stays the durable signal.
+      void this.notifications.notifyAdmins({
+        kind: 'admin.partner.applied',
+        params: { applicationId: created.id, userId },
+        subject: { id: created.id, clientId: userId },
+      });
 
       return created;
     } catch (error) {

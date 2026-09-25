@@ -2735,3 +2735,16 @@ export class DepositDecisionDto {
   @ApiPropertyOptional({ nullable: true, type: String, format: 'date-time' })
   settledAt: Date | null;
 }
+
+/**
+ * The answer to "Mark resolved" on a payment that needed attention. The flag is
+ * gone and, with it, every admin's task about it (migration 0140's trigger).
+ */
+@NoClientFields('the state of one payment’s attention flag, no client attribute')
+export class AttentionResolvedDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ description: 'Always false after a successful resolve.' })
+  needsAttention: boolean;
+}

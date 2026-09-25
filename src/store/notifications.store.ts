@@ -1,4 +1,17 @@
-import { and, count, desc, eq, getTableColumns, isNull, sql, SQL } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  getTableColumns,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  ne,
+  sql,
+  SQL,
+} from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import {
   buildCursorPage,
@@ -7,9 +20,22 @@ import {
   type CursorPosition,
 } from '../common/pagination';
 import { NotFoundError } from '../common/errors/domain-errors';
+import type { TaskStillOpen } from '../common/notifications/admin-notification-catalogue';
+import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { notifications } from '../database/schema';
+import {
+  admins,
+  ibAccruals,
+  ibApplications,
+  kycSubmissions,
+  notifications,
+  transactions,
+  transfers,
+  users,
+  type NotificationSubjectKind,
+} from '../database/schema';
+import { clientIdentitySearch } from './users.store';
 
 /**
  * One recipient of a notification. `kind` decides which principal table the
@@ -50,9 +76,76 @@ const toNotification = (r: NotificationColumns): AppNotification => ({
 });
 
 /**
+ * WHO IS READING an admin feed, and therefore what they may see: their OWN
+ * rows, of kinds they can act on right now, about clients inside their
+ * territory right now. Built from the session on every request — never
+ * cached — so a revoked permission or a narrowed scope takes the rows away on
+ * the next read (migration 0140; this was write-time only before).
+ */
+export interface AdminFeedReader {
+  adminId: string;
+  /** `kindsVisibleTo(admin.permissions)`. Empty means an empty feed. */
+  kinds: readonly string[];
+  scope: ClientScope;
+}
+
+export interface AdminFeedFilter {
+  /** `inbox`: still somebody's work — unread AND unresolved. `history`: everything. */
+  view: 'inbox' | 'history';
+  /** History only: `open` = not yet handled (read or not), `handled` = resolved. */
+  status?: 'open' | 'handled';
+  /** A category's kinds, when the reader narrowed to one. */
+  kinds?: readonly string[];
+  /** Portal ID (exact) or name/email — `clientIdentitySearch`, as every client search. */
+  q?: string;
+  cursor?: CursorPosition;
+  limit?: number;
+}
+
+/** One admin task, with the client it names joined in at read time. */
+export interface AdminNotificationRow {
+  id: string;
+  kind: string;
+  params: Record<string, unknown>;
+  readAt: Date | null;
+  createdAt: Date;
+  subjectKind: NotificationSubjectKind;
+  subjectId: string;
+  client: {
+    id: string;
+    portalId: number | null;
+    firstName: string | null;
+    lastName: string | null;
+  };
+  resolvedAt: Date | null;
+  resolution: string | null;
+  resolvedByName: string | null;
+}
+
+/** What the fan-out asks the store to write — see `insertAdminTask`. */
+export interface AdminTaskRow {
+  kind: string;
+  params: Record<string, unknown>;
+  dedupeKey?: string;
+  subjectKind: NotificationSubjectKind;
+  subjectId: string;
+  subjectUserId: string;
+  stillOpen: TaskStillOpen;
+}
+
+/**
+ * `inArray` over an empty list is `false` — spelled out rather than trusted to
+ * the ORM's version: an admin who can act on nothing must see nothing, and an
+ * empty `IN ()` is a syntax error on the older builds.
+ */
+function kindIn(kinds: readonly string[]): SQL {
+  return kinds.length === 0 ? sql`false` : inArray(notifications.kind, [...kinds]);
+}
+
+/**
  * The in-app feed behind the bell in both frontends.
  *
- * Writes come only through the NOTIFICATION_DISPATCH port; reads and the two
+ * Writes come only through the NOTIFICATION_DISPATCH port; reads and the
  * read-markers come through the notifications controllers. The feed is
  * fixed-sort (newest first) — no caller-chosen columns, so no SORT_COLUMNS
  * allowlist, and every cursor is minted for `createdAt`.
@@ -75,7 +168,8 @@ export class NotificationsStore {
    */
   async insert(
     data: {
-      recipient: NotificationRecipient;
+      /** Clients only — an admin row is a task; see `insertAdminTask`. */
+      recipient: { kind: 'client'; id: string };
       kind: string;
       params: Record<string, unknown>;
       dedupeKey?: string;
@@ -102,33 +196,117 @@ export class NotificationsStore {
   }
 
   /**
-   * Fan one event out to many recipients in ONE statement.
+   * Fan one TASK out to many admins — in ONE statement, and only while the
+   * task is still open.
    *
-   * A single multi-row insert rather than a loop, for two reasons that are
-   * really one: a loop is N round-trips, and a loop that fails on recipient
-   * #2 strands recipients #3..N unnotified. One statement either lands every
-   * row or none — and with `onConflictDoNothing`, replayed recipients are
-   * absorbed per-row without disturbing the rest.
+   * ## Why the item is locked first
+   *
+   * The fan-out runs after the event committed, by design (it reads the whole
+   * admin directory, which no money transaction should wait on). That leaves a
+   * window: an admin can approve the withdrawal before the rows announcing it
+   * land. Resolution is a trigger on the ITEM's update, so rows inserted after
+   * it would stay open forever — the "it keeps showing" bug, by a race.
+   *
+   * `FOR SHARE` on the item row closes the window both ways. A decision already
+   * holding the row makes this wait, then re-read the row, find it handled and
+   * write nothing. A decision arriving second waits for this transaction, and
+   * its trigger then sees these rows and resolves them.
+   *
+   * One multi-row insert rather than a loop: a loop that fails on recipient #2
+   * strands #3..N unnotified, and with `onConflictDoNothing` a replayed
+   * recipient is absorbed per-row without disturbing the rest.
    */
-  async insertMany(
-    recipients: NotificationRecipient[],
-    event: { kind: string; params: Record<string, unknown>; dedupeKey?: string },
-  ): Promise<number> {
-    if (recipients.length === 0) return 0;
-    const rows = await this.db
-      .insert(notifications)
-      .values(
-        recipients.map((recipient) => ({
-          recipientKind: recipient.kind,
-          recipientId: recipient.id,
-          kind: event.kind,
-          params: event.params,
-          dedupeKey: event.dedupeKey,
-        })),
-      )
-      .onConflictDoNothing()
-      .returning({ id: notifications.id });
-    return rows.length;
+  async insertAdminTask(adminIds: readonly string[], task: AdminTaskRow): Promise<number> {
+    if (adminIds.length === 0) return 0;
+    return this.db.transaction(async (tx) => {
+      if (!(await this.lockIfStillOpen(tx, task))) return 0;
+      const rows = await tx
+        .insert(notifications)
+        .values(
+          adminIds.map((adminId) => ({
+            recipientKind: 'admin' as const,
+            recipientId: adminId,
+            kind: task.kind,
+            params: task.params,
+            dedupeKey: task.dedupeKey,
+            subjectKind: task.subjectKind,
+            subjectId: task.subjectId,
+            subjectUserId: task.subjectUserId,
+          })),
+        )
+        .onConflictDoNothing()
+        .returning({ id: notifications.id });
+      return rows.length;
+    });
+  }
+
+  /**
+   * Is the item still in the state that makes it somebody's work — and hold
+   * it there until this transaction ends. Each subject table spells "open" in
+   * its own columns; a pairing the catalogue should never produce throws, and
+   * the fan-out logs it rather than writing a row nothing could ever resolve.
+   */
+  private async lockIfStillOpen(
+    tx: Executor,
+    task: Pick<AdminTaskRow, 'subjectKind' | 'subjectId' | 'stillOpen'>,
+  ): Promise<boolean> {
+    const one = { one: sql<number>`1` };
+    const { subjectKind, subjectId, stillOpen } = task;
+
+    if (subjectKind === 'transaction' && stillOpen === 'pending') {
+      const rows = await tx
+        .select(one)
+        .from(transactions)
+        .where(and(eq(transactions.id, subjectId), eq(transactions.state, 'pending')))
+        .for('share');
+      return rows.length > 0;
+    }
+    if (subjectKind === 'transaction' && stillOpen === 'needs-attention') {
+      const rows = await tx
+        .select(one)
+        .from(transactions)
+        .where(and(eq(transactions.id, subjectId), eq(transactions.rivalNeedsAttention, true)))
+        .for('share');
+      return rows.length > 0;
+    }
+    if (subjectKind === 'kyc' && stillOpen === 'awaiting-review') {
+      const rows = await tx
+        .select(one)
+        .from(kycSubmissions)
+        .where(
+          and(
+            eq(kycSubmissions.userId, subjectId),
+            inArray(kycSubmissions.status, ['submitted', 'under_review']),
+          ),
+        )
+        .for('share');
+      return rows.length > 0;
+    }
+    if (subjectKind === 'ib_application' && stillOpen === 'pending') {
+      const rows = await tx
+        .select(one)
+        .from(ibApplications)
+        .where(and(eq(ibApplications.id, subjectId), eq(ibApplications.status, 'pending')))
+        .for('share');
+      return rows.length > 0;
+    }
+    if (subjectKind === 'transfer' && stillOpen === 'pending') {
+      const rows = await tx
+        .select(one)
+        .from(transfers)
+        .where(and(eq(transfers.id, subjectId), eq(transfers.state, 'pending')))
+        .for('share');
+      return rows.length > 0;
+    }
+    if (subjectKind === 'ib_accrual' && stillOpen === 'not-reversed') {
+      const rows = await tx
+        .select(one)
+        .from(ibAccruals)
+        .where(and(eq(ibAccruals.id, subjectId), ne(ibAccruals.status, 'reversed')))
+        .for('share');
+      return rows.length > 0;
+    }
+    throw new Error(`No open-state rule for a '${subjectKind}' task that is '${stillOpen}'.`);
   }
 
   /** The feed, newest first, keyset-paged (R-2.4). */
@@ -143,14 +321,7 @@ export class NotificationsStore {
       eq(notifications.recipientId, recipient.id),
     ];
     if (filter.unreadOnly) conditions.push(isNull(notifications.readAt));
-    if (filter.cursor) {
-      // Fixed DESC ordering, so "after this row" is always `<` — the
-      // direction-following rule audit-log.store.ts records, with only one
-      // direction to follow.
-      conditions.push(
-        sql`(${notifications.createdAt}, ${notifications.id}) < (${filter.cursor.value}::timestamptz, ${filter.cursor.id}::uuid)`,
-      );
-    }
+    if (filter.cursor) conditions.push(this.after(filter.cursor));
 
     const rows = await this.db
       // The whole row PLUS the sort value as text, for the cursor — see
@@ -227,8 +398,15 @@ export class NotificationsStore {
     return toNotification(existing);
   }
 
-  /** Mark everything unread as read. Idempotent; returns rows touched. */
-  async markAllRead(recipient: NotificationRecipient): Promise<number> {
+  /**
+   * Mark everything unread as read. Idempotent; returns rows touched.
+   *
+   * `upTo` is the newest row the reader was SHOWN. Without it, a notification
+   * landing between the panel rendering and this request would be marked read
+   * unseen — the portal marks what it displays, so that race is its ordinary
+   * case, not an edge.
+   */
+  async markAllRead(recipient: NotificationRecipient, upTo?: Date): Promise<number> {
     const updated = await this.db
       .update(notifications)
       .set({ readAt: sql`now()` })
@@ -237,6 +415,191 @@ export class NotificationsStore {
           eq(notifications.recipientKind, recipient.kind),
           eq(notifications.recipientId, recipient.id),
           isNull(notifications.readAt),
+          upTo ? lte(notifications.createdAt, upTo) : undefined,
+        ),
+      )
+      .returning({ id: notifications.id });
+    return updated.length;
+  }
+
+  // ── The admin feed: tasks, scoped and permission-checked on every read ────
+
+  /**
+   * THE one definition of what an admin may see — every admin read and marker
+   * below starts from it, so the list, the badge and "mark read" cannot
+   * disagree about a row. A row outside it does not exist for this reader: a
+   * marker aimed at it answers "not found", never "not yours".
+   */
+  private adminVisibility(reader: AdminFeedReader): SQL[] {
+    const conditions: SQL[] = [
+      eq(notifications.recipientKind, 'admin'),
+      eq(notifications.recipientId, reader.adminId),
+      kindIn(reader.kinds),
+    ];
+    const scoped = clientScopePredicate(reader.scope, notifications.subjectUserId);
+    if (scoped) conditions.push(scoped);
+    return conditions;
+  }
+
+  /** The admin feed, newest first, keyset-paged, with the client joined in. */
+  async findAdminPage(
+    reader: AdminFeedReader,
+    filter: AdminFeedFilter,
+  ): Promise<CursorPage<AdminNotificationRow>> {
+    const limit = pageSize(filter.limit);
+    const conditions = this.adminVisibility(reader);
+
+    if (filter.view === 'inbox') {
+      conditions.push(isNull(notifications.readAt), isNull(notifications.resolvedAt));
+    } else if (filter.status === 'open') {
+      conditions.push(isNull(notifications.resolvedAt));
+    } else if (filter.status === 'handled') {
+      conditions.push(isNotNull(notifications.resolvedAt));
+    }
+    if (filter.kinds) conditions.push(kindIn(filter.kinds));
+    const q = filter.q?.trim();
+    if (q) conditions.push(clientIdentitySearch(q, users));
+    if (filter.cursor) conditions.push(this.after(filter.cursor));
+
+    const rows = await this.db
+      .select({
+        id: notifications.id,
+        kind: notifications.kind,
+        params: notifications.params,
+        readAt: notifications.readAt,
+        createdAt: notifications.createdAt,
+        subjectKind: notifications.subjectKind,
+        subjectId: notifications.subjectId,
+        subjectUserId: notifications.subjectUserId,
+        resolvedAt: notifications.resolvedAt,
+        resolution: notifications.resolution,
+        clientPortalId: users.portalId,
+        clientFirstName: users.firstName,
+        clientLastName: users.lastName,
+        resolverName: admins.name,
+        cursorValue: sql<string>`${notifications.createdAt}::text`,
+      })
+      .from(notifications)
+      .leftJoin(users, eq(users.id, notifications.subjectUserId))
+      .leftJoin(admins, eq(admins.id, notifications.resolvedBy))
+      .where(and(...conditions))
+      .orderBy(desc(notifications.createdAt), desc(notifications.id))
+      .limit(limit + 1);
+
+    return buildCursorPage(
+      rows.map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        params: row.params,
+        readAt: row.readAt,
+        createdAt: row.createdAt,
+        // The CHECK makes all three present on an admin row; the casts state
+        // that invariant rather than widen every consumer to `| null`.
+        subjectKind: row.subjectKind as NotificationSubjectKind,
+        subjectId: row.subjectId as string,
+        client: {
+          id: row.subjectUserId as string,
+          portalId: row.clientPortalId,
+          firstName: row.clientFirstName,
+          lastName: row.clientLastName,
+        },
+        resolvedAt: row.resolvedAt,
+        resolution: row.resolution,
+        resolvedByName: row.resolverName,
+        cursorValue: row.cursorValue,
+      })),
+      limit,
+    );
+  }
+
+  /**
+   * The badge: how many tasks are waiting on this reader, in total and per
+   * category. One scan of the inbox index — the rows that are still somebody's
+   * work — with a FILTER per category, so the chips and the badge are the same
+   * count cut two ways and cannot drift apart.
+   */
+  async adminInboxSummary(
+    reader: AdminFeedReader,
+    categories: Readonly<Record<string, readonly string[]>>,
+  ): Promise<{ count: number; byCategory: Record<string, number> }> {
+    const fields: Record<string, SQL<number>> = { total: sql<number>`count(*)::int` };
+    for (const [category, kinds] of Object.entries(categories)) {
+      fields[category] = sql<number>`(count(*) filter (where ${kindIn(kinds)}))::int`;
+    }
+    const [row] = await this.db
+      .select(fields)
+      .from(notifications)
+      .where(
+        and(
+          ...this.adminVisibility(reader),
+          isNull(notifications.readAt),
+          isNull(notifications.resolvedAt),
+        ),
+      );
+    const byCategory: Record<string, number> = {};
+    for (const category of Object.keys(categories)) byCategory[category] = row?.[category] ?? 0;
+    return { count: row?.total ?? 0, byCategory };
+  }
+
+  /** Mark one of the reader's rows read. Idempotent; invisible reads as absent. */
+  async markAdminRead(
+    reader: AdminFeedReader,
+    id: string,
+  ): Promise<{ id: string; readAt: Date | null }> {
+    return this.setAdminRead(reader, id, true);
+  }
+
+  /**
+   * The undo of a mark-read — "I cleared that by mistake". Idempotent. It does
+   * not reopen a HANDLED task: the inbox excludes resolved rows whatever their
+   * read marker says, so the row stays where History shows it.
+   */
+  async markAdminUnread(
+    reader: AdminFeedReader,
+    id: string,
+  ): Promise<{ id: string; readAt: Date | null }> {
+    return this.setAdminRead(reader, id, false);
+  }
+
+  private async setAdminRead(
+    reader: AdminFeedReader,
+    id: string,
+    read: boolean,
+  ): Promise<{ id: string; readAt: Date | null }> {
+    const target = and(eq(notifications.id, id), ...this.adminVisibility(reader));
+    const [updated] = await this.db
+      .update(notifications)
+      .set({ readAt: read ? sql`now()` : null })
+      .where(and(target, read ? isNull(notifications.readAt) : isNotNull(notifications.readAt)))
+      .returning({ id: notifications.id, readAt: notifications.readAt });
+    if (updated) return updated;
+
+    const [existing] = await this.db
+      .select({ id: notifications.id, readAt: notifications.readAt })
+      .from(notifications)
+      .where(target);
+    if (!existing) throw new NotFoundError('Notification not found.');
+    return existing;
+  }
+
+  /**
+   * Clear the reader's unread markers — all of them, or one category's —
+   * never past `upTo`, the newest row they were shown. Only rows they can see:
+   * a task outside their territory is not theirs to clear.
+   */
+  async markAllAdminRead(
+    reader: AdminFeedReader,
+    options: { kinds?: readonly string[]; upTo?: Date } = {},
+  ): Promise<number> {
+    const updated = await this.db
+      .update(notifications)
+      .set({ readAt: sql`now()` })
+      .where(
+        and(
+          ...this.adminVisibility(reader),
+          isNull(notifications.readAt),
+          options.kinds ? kindIn(options.kinds) : undefined,
+          options.upTo ? lte(notifications.createdAt, options.upTo) : undefined,
         ),
       )
       .returning({ id: notifications.id });
@@ -244,15 +607,56 @@ export class NotificationsStore {
   }
 
   /**
-   * Retention: drop rows older than `days`, read or not. Notifications are
-   * UX, not records — the audit log and the ledger are the records — and this
-   * table collects fan-out multiples of every event.
+   * The reader opened the ITEM itself — a KYC review page — so the task about
+   * it has been seen, whichever door they came through. Returns rows touched.
    */
-  async pruneOlderThan(days: number): Promise<number> {
+  async markAdminSubjectRead(
+    reader: AdminFeedReader,
+    subjectKind: NotificationSubjectKind,
+    subjectId: string,
+  ): Promise<number> {
+    const updated = await this.db
+      .update(notifications)
+      .set({ readAt: sql`now()` })
+      .where(
+        and(
+          ...this.adminVisibility(reader),
+          eq(notifications.subjectKind, subjectKind),
+          eq(notifications.subjectId, subjectId),
+          isNull(notifications.readAt),
+        ),
+      )
+      .returning({ id: notifications.id });
+    return updated.length;
+  }
+
+  /**
+   * Retention, per audience: drop rows older than `days`, read or not.
+   * Notifications are UX, not records — the audit log and the ledger are the
+   * records — and this table collects fan-out multiples of every event.
+   */
+  async pruneOlderThan(
+    recipientKind: NotificationRecipient['kind'],
+    days: number,
+  ): Promise<number> {
     const deleted = await this.db
       .delete(notifications)
-      .where(sql`${notifications.createdAt} < now() - make_interval(days => ${days})`)
+      .where(
+        and(
+          eq(notifications.recipientKind, recipientKind),
+          sql`${notifications.createdAt} < now() - make_interval(days => ${days})`,
+        ),
+      )
       .returning({ id: notifications.id });
     return deleted.length;
+  }
+
+  /**
+   * "After this row" in a fixed DESC order is always `<` — the
+   * direction-following rule audit-log.store.ts records, with only one
+   * direction to follow.
+   */
+  private after(cursor: CursorPosition): SQL {
+    return sql`(${notifications.createdAt}, ${notifications.id}) < (${cursor.value}::timestamptz, ${cursor.id}::uuid)`;
   }
 }

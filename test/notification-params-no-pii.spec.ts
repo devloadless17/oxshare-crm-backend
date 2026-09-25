@@ -6,38 +6,24 @@ import { NotificationsService } from '../src/modules/notifications/notifications
 /**
  * NOTIFICATION PARAMS MAY NOT CARRY CLIENT-OWNED VALUES.
  *
- * ## The gap this closes, and why it is not the obvious one
+ * ## Why this still matters now that the admin feed is scoped when READ
  *
- * `GET /admin/notifications` is `@NotClientScoped`, and its reason says scope
- * is applied at WRITE time: the fan-out only creates rows for admins whose
- * client scope covered the subject at the moment of the event, "so every row
- * here is already inside the reader's territory".
+ * This test was written while `GET /admin/notifications` was scoped only at
+ * WRITE time, and it was the one thing keeping a re-tagged client's rows
+ * harmless: a payload of identifiers is an unresolvable uuid, a payload with a
+ * name is a disclosure. Migration 0140 added the read-time scope that note
+ * called for (`subject_user_id`, `NotificationsStore.adminVisibility`), and a
+ * task now NAMES its client — joined from `users` at read time, masked per
+ * reader by the RBAC-03 interceptor.
  *
- * That sentence is true when the row is written and can stop being true
- * afterwards. Re-tag a client out of a desk and the rows already fanned out to
- * that desk stay readable for the 90-day retention. It is the same shape as the
- * `audit_log.actor_email` defect: a justification that was accurate about the
- * moment it was written and was never re-checked against the moment it is read.
- *
- * ## Why the answer is this test rather than a read-time predicate
- *
- * Measured before deciding: of 1,468 admin notification rows, ZERO contain an
- * address or a name. Every call site passes identifiers, amounts, currencies
- * and states — `{ userId }`, `{ transactionId, amount, currency }`. So what a
- * re-tagged-out admin can still read is "something happened to <uuid> at
- * <time>", and that uuid resolves nowhere else: `GET /admin/clients/:id` 404s
- * for a client outside their territory, by the 404-never-403 rule.
- *
- * A read-time predicate would need a `subject_user_id` column that does not
- * exist, a migration, and a backfill — to close a window that leaks an opaque
- * identifier. The property that actually keeps the severity low is that the
- * PAYLOAD carries no client-owned value, and nothing was enforcing it. So that
- * is what is enforced here: the residual stays an unresolvable uuid rather than
- * becoming a name the day somebody makes a feed entry friendlier.
+ * The rule survives because the paths that do NOT go through that read still
+ * carry `params`: the socket pushes them straight from `pg_notify` (no HTTP,
+ * no mask), and the CLIENT feed is a different audience entirely. A name in
+ * `params` would reach both unmasked. So identity stays out of the payload and
+ * comes only from the masked join — the division of labour this test enforces.
  *
  * If a param ever legitimately needs client PII, this test is the place that
- * says so out loud — and the read-time scope becomes required work, not a
- * judgement call.
+ * says so out loud, and the socket payload has to be re-thought first.
  */
 
 const SRC = join(__dirname, '..', 'src');
@@ -83,6 +69,10 @@ describe('a notification payload carries no client-owned value', () => {
       // notify() call: the payload is frequently built into a local and passed
       // in, and a scanner that only understood the call shape would miss it.
       for (let i = text.indexOf('params:'); i !== -1; i = text.indexOf('params:', i + 1)) {
+        // Only an object LITERAL: `params: row.params` passes a value along,
+        // and the next `{` in the file belongs to whatever follows it.
+        const afterColon = text.slice(i + 'params:'.length).trimStart();
+        if (!afterColon.startsWith('{')) continue;
         const body = paramsLiteral(text, i + 'params:'.length);
         if (body === undefined) continue;
         // Keys only. A VALUE may legitimately mention one of these words —
@@ -98,12 +88,10 @@ describe('a notification payload carries no client-owned value', () => {
     expect(
       offenders,
       'A notification/event payload names a client identity field.\n' +
-        'The admin feed is NotClientScoped on the argument that write-time fan-out\n' +
-        'already bounded it — which stops being true the moment a client is\n' +
-        're-tagged out, and those rows live for 90 days. While the payload holds\n' +
-        'only identifiers that is an unresolvable uuid; with a name in it, it is a\n' +
-        'disclosure. Either keep the value out, or add the read-time scope the\n' +
-        "route's @NotClientScoped reason currently does without.\n" +
+        'Params travel UNMASKED over the socket (pg_notify → the gateway) and into\n' +
+        "the client's own feed. A task's client is named by the masked read-time\n" +
+        'join (NotificationsStore.findAdminPage), never by its payload — keep the\n' +
+        'value out of params.\n' +
         `Offenders:\n  ${offenders.join('\n  ')}`,
     ).toEqual([]);
   });
@@ -124,6 +112,6 @@ describe('a notification payload carries no client-owned value', () => {
       'NotificationsService gained or lost a notify* method. Confirm the payload ' +
         'rule above still covers every path that writes a notification row, then ' +
         'update this list.',
-    ).toEqual(['notify', 'notifyAdminsWithPermission']);
+    ).toEqual(['notify', 'notifyAdmins']);
   });
 });

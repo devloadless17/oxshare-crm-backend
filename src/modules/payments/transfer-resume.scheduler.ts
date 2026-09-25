@@ -3,11 +3,15 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { and, count, eq, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { transfers } from '../../database/schema';
+import { notifications, transfers } from '../../database/schema';
 import { TransferExecutor } from './transfer-executor.service';
 import { JobLeaseService } from '../../common/scheduling/job-lease.service';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { TRANSFER_STALE_MS } from './transfer-staleness';
+import {
+  NOTIFICATION_DISPATCH,
+  type NotificationDispatchPort,
+} from '../../common/provisioning/notification-dispatch.port';
 
 /**
  * Finishes transfers that were left pending, so a client never has to ask.
@@ -53,6 +57,7 @@ export class TransferResumeScheduler {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly executor: TransferExecutor,
     private readonly leases: JobLeaseService,
+    @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
   ) {}
 
   /*
@@ -273,6 +278,7 @@ export class TransferResumeScheduler {
           { count: backlog, inThisBatch: stale.length, oldestId: stale[0]?.id },
         );
       }
+      await this.announceStuck();
     } catch (error) {
       /*
        * The scheduler must never die. An unhandled rejection here would take the
@@ -283,6 +289,65 @@ export class TransferResumeScheduler {
       this.logger.error(
         `Transfer resume run failed: ${error instanceof Error ? error.message : String(error)}`,
       );
+    }
+  }
+
+  /**
+   * Put every stuck transfer in front of the people who can release it — once.
+   *
+   * The page above reaches whoever reads the alert channel, and on a
+   * deployment with no sink registered that is nobody. This is the task on the
+   * desk's own bell, scoped to the client's territory, for the admins holding
+   * `transfers.abandon` (the catalogue decides). It clears itself for all of
+   * them the moment the transfer leaves `pending` — settled, failed, or
+   * released from the desk (migration 0140's trigger).
+   *
+   * Its OWN query rather than `stale`, for the reason the backlog note gives:
+   * `stale` is at most the ten oldest, and a transfer that never reaches the
+   * front of the batch would never be announced. "Once" is decided by the
+   * transfer already having an open task — checked through the open-row index
+   * — so a quiet minute costs one indexed probe per stuck transfer, not a
+   * fan-out. A transfer nobody may be told about (no admin can act, or none
+   * covers the client) is asked again next minute, which is cheap and means a
+   * newly granted admin is told.
+   */
+  private async announceStuck(): Promise<void> {
+    const unannounced = await this.db
+      .select({
+        id: transfers.id,
+        userId: transfers.userId,
+        direction: transfers.direction,
+        amount: transfers.amount,
+        currency: transfers.currency,
+      })
+      .from(transfers)
+      .where(
+        and(
+          eq(transfers.state, 'pending'),
+          lt(transfers.createdAt, new Date(Date.now() - STALE_MS)),
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${notifications} task
+             WHERE task.subject_kind = 'transfer'
+               AND task.subject_id = ${transfers.id}
+               AND task.resolved_at IS NULL
+          )`,
+        ),
+      )
+      .orderBy(transfers.createdAt)
+      .limit(ANNOUNCE_BATCH);
+
+    for (const row of unannounced) {
+      await this.notifications.notifyAdmins({
+        kind: 'admin.transfer.stuck',
+        params: {
+          transferId: row.id,
+          direction: row.direction,
+          amount: row.amount,
+          currency: row.currency,
+        },
+        dedupeKey: `admin.transfer.stuck:${row.id}`,
+        subject: { id: row.id, clientId: row.userId },
+      });
     }
   }
 
@@ -340,3 +405,10 @@ const BATCH = 10;
 
 /** See `transfer-staleness.ts` for the threshold and why it lives there. */
 const STALE_MS = TRANSFER_STALE_MS;
+
+/**
+ * How many stuck transfers to announce per run. Each is one fan-out; a backlog
+ * larger than this is announced over the next minutes, oldest first, while the
+ * page above reports the whole backlog at once.
+ */
+const ANNOUNCE_BATCH = 50;

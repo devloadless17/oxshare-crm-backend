@@ -981,6 +981,13 @@
       "when": 1789139298746,
       "tag": "0139_client_profile_single_home",
       "breakpoints": true
+    },
+    {
+      "idx": 141,
+      "version": "7",
+      "when": 1789139298747,
+      "tag": "0140_admin_notification_tasks",
+      "breakpoints": true
     }
   ]
 }

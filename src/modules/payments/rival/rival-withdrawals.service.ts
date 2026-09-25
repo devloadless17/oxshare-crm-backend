@@ -10,6 +10,7 @@ import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
 } from '../../../common/provisioning/notification-dispatch.port';
+import { ResourceChangedPublisher } from '../../../common/realtime/resource-changed';
 import { AuditLogStore } from '../../../store/audit-log.store';
 import { EmailService } from '../../email/email.service';
 import { UsersStore } from '../../../store/users.store';
@@ -86,6 +87,7 @@ export class RivalWithdrawalsService {
     private readonly users: UsersStore,
     private readonly email: EmailService,
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
+    private readonly resourceChanged: ResourceChangedPublisher,
   ) {}
 
   /**
@@ -280,15 +282,14 @@ export class RivalWithdrawalsService {
         })
         .where(eq(transactions.id, tx.id));
       this.recordSystemAction('withdrawal.rival.submit', tx.id, { failed: true, reason });
-      await this.notifications.notifyAdminsWithPermission(
-        'withdrawals.approve',
-        {
-          kind: 'withdrawal.rival_submit_failed',
-          params: { transactionId: tx.id, amount: tx.amount, currency: tx.currency, reason },
-          dedupeKey: `withdrawal.rival_submit_failed:${tx.id}`,
-        },
-        { subjectClientId: tx.userId },
-      );
+      // A task: retry or cancel. It resolves itself when a retry succeeds (the
+      // attention flag clears) or the payout ends — migration 0140's trigger.
+      await this.notifications.notifyAdmins({
+        kind: 'withdrawal.rival_submit_failed',
+        params: { transactionId: tx.id, amount: tx.amount, currency: tx.currency, reason },
+        dedupeKey: `withdrawal.rival_submit_failed:${tx.id}`,
+        subject: { id: tx.id, clientId: tx.userId },
+      });
       this.logger.error(`Rival refused the withdrawal for ${tx.id}: ${reason}`);
     }
   }
@@ -389,15 +390,14 @@ export class RivalWithdrawalsService {
       },
     );
     void this.emailDecision(row, 'paid');
-    await this.notifications.notifyAdminsWithPermission(
-      'withdrawals.approve',
-      {
-        kind: 'withdrawal.rival_paid',
-        params: { transactionId: row.id, amount: row.amount, currency: row.currency },
-        dedupeKey: `withdrawal.rival_paid:${row.id}`,
-      },
-      { subjectClientId: row.userId },
-    );
+    /*
+     * No bell: a payout that completed needs nobody to do anything, and an
+     * admin notification is a task (the owner's rule, migration 0140). The desk
+     * still has to stop showing the row as awaiting payout on every other
+     * operator's screen, which is what `resource.changed` is for — data, no
+     * chime.
+     */
+    await this.resourceChanged.publish({ resource: 'withdrawals' });
   }
 
   /** Rival refused after our approval: refund, reasoned, audited, emailed. */
@@ -440,27 +440,15 @@ export class RivalWithdrawalsService {
     );
     void this.emailDecision(row, 'rejected', reason);
     /*
-     * The ADMIN hears about this too, not only the client. A payout the desk
-     * approved coming back refused is operator news: the client will call, and
-     * an operator who learns it from that call — while the desk still shows
-     * the row as awaiting payout — is the exact "the admin didn't know"
-     * failure this event exists to prevent.
+     * No bell, deliberately. The refund above is automatic and complete, so
+     * there is nothing left for an operator to DO — and an admin notification
+     * is a task (the owner's rule, migration 0140). What an operator needs is
+     * for the desk in front of them to stop showing the row as awaiting payout,
+     * so that it reads "refunded" when the client calls: `resource.changed`
+     * refreshes every other operator's desk live. A disagreement that DOES need
+     * a person is `flagDisagreement`, which still rings.
      */
-    await this.notifications.notifyAdminsWithPermission(
-      'withdrawals.approve',
-      {
-        kind: 'withdrawal.rival_rejected',
-        params: {
-          transactionId: txId,
-          amount: row.amount,
-          currency: row.currency,
-          reason,
-          event,
-        },
-        dedupeKey: `withdrawal.rival_rejected:${txId}`,
-      },
-      { subjectClientId: row.userId },
-    );
+    await this.resourceChanged.publish({ resource: 'withdrawals' });
   }
 
   /** Terminal states that DISAGREE (our success, their rejected): a human's. */
@@ -483,13 +471,23 @@ export class RivalWithdrawalsService {
         'sides disagree about whether this money moved — reconcile by hand.',
       { transactionId: txId, ourState, event },
     );
-    // The bell rings as well as the pager: the operator working the desk sees
-    // the flagged row announced, not only whoever reads the alert channel.
-    await this.notifications.notifyAdminsWithPermission('withdrawals.approve', {
-      kind: 'withdrawal.rival_attention',
-      params: { transactionId: txId, ourState, event },
-      dedupeKey: `withdrawal.rival_attention:${txId}`,
-    });
+    /*
+     * The bell rings as well as the pager: the operator working the desk sees
+     * the flagged row announced, not only whoever reads the alert channel. It
+     * rings only the operators whose territory holds this client — the row
+     * names the client now, so it went through the same scope as every other
+     * task (this fan-out used to skip it). "Mark resolved" on the desk, once
+     * reconciled, clears it for everyone.
+     */
+    const owner = await this.transactions.ownerOf(txId);
+    if (owner) {
+      await this.notifications.notifyAdmins({
+        kind: 'withdrawal.rival_attention',
+        params: { transactionId: txId, ourState, event },
+        dedupeKey: `withdrawal.rival_attention:${txId}`,
+        subject: { id: txId, clientId: owner },
+      });
+    }
     return 'needs-attention';
   }
 

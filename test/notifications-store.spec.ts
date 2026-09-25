@@ -3,7 +3,11 @@ import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-set
 import { closeDb, resetDb } from '../src/database/db';
 import { NotFoundError } from '../src/common/errors/domain-errors';
 import { decodeCursor } from '../src/common/pagination';
-import { NotificationsStore, type NotificationRecipient } from '../src/store/notifications.store';
+import { sql } from 'drizzle-orm';
+import { NotificationsStore } from '../src/store/notifications.store';
+
+/** The generic insert writes client rows only — an admin row is a task (0140). */
+type NotificationRecipient = { kind: 'client'; id: string };
 
 /**
  * The notifications table's contract, against real Postgres.
@@ -26,7 +30,25 @@ const CLIENT_B: NotificationRecipient = {
   kind: 'client',
   id: '22222222-2222-2222-2222-222222222222',
 };
-const ADMIN: NotificationRecipient = { kind: 'admin', id: '33333333-3333-3333-3333-333333333333' };
+const CLIENT_C: NotificationRecipient = {
+  kind: 'client',
+  id: '33333333-3333-3333-3333-333333333333',
+};
+const ADMIN_1 = 'a1111111-1111-4111-8111-111111111111';
+const ADMIN_2 = 'a2222222-2222-4222-8222-222222222222';
+const ADMIN_3 = 'a3333333-3333-4333-8333-333333333333';
+
+/** A client with a KYC submission in `status` — a real item for a task to be about. */
+async function kycSubject(email: string, status: 'submitted' | 'approved'): Promise<string> {
+  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+    INSERT INTO users (email, password_hash, first_name, last_name)
+    VALUES (${email}, 'x', 'Task', 'Subject') RETURNING id`);
+  const id = rows[0].id;
+  await ctx.db.execute(
+    sql`INSERT INTO kyc_submissions (user_id, status) VALUES (${id}, ${status})`,
+  );
+  return id;
+}
 
 beforeAll(async () => {
   resetDb();
@@ -74,22 +96,57 @@ describe('dedupe — idempotency lives in the constraint (§6.3)', () => {
   });
 });
 
-describe('insertMany — one statement, per-row dedupe', () => {
-  it('fans one event to many recipients and absorbs the already-notified ones', async () => {
-    const event = {
-      kind: 'admin.withdrawal.requested',
-      params: { transactionId: 'tx-fan' },
-      dedupeKey: 'admin.withdrawal.requested:tx-fan',
-    };
-    const newcomer: NotificationRecipient = {
-      kind: 'admin',
-      id: '88888888-8888-8888-8888-888888888888',
+describe('insertAdminTask — one statement, per-row dedupe, only while still open', () => {
+  it('fans one task to many admins and absorbs the already-told ones', async () => {
+    const userId = await kycSubject('task-fan@oxshare-e2e.test', 'submitted');
+    const task = {
+      kind: 'admin.kyc.submitted',
+      params: { userId },
+      dedupeKey: `admin.kyc.submitted:${userId}`,
+      subjectKind: 'kyc' as const,
+      subjectId: userId,
+      subjectUserId: userId,
+      stillOpen: 'awaiting-review' as const,
     };
     // First delivery reaches both; the replay re-lists BOTH plus a newcomer —
     // only the newcomer lands, per-row, without disturbing the others.
-    expect(await store.insertMany([CLIENT_A, CLIENT_B], event)).toBe(2);
-    expect(await store.insertMany([CLIENT_A, CLIENT_B, newcomer], event)).toBe(1);
-    expect(await store.insertMany([], event)).toBe(0);
+    expect(await store.insertAdminTask([ADMIN_1, ADMIN_2], task)).toBe(2);
+    expect(await store.insertAdminTask([ADMIN_1, ADMIN_2, ADMIN_3], task)).toBe(1);
+    expect(await store.insertAdminTask([], task)).toBe(0);
+  });
+
+  it('writes NOTHING for an item already handled — the race that left tasks open forever', async () => {
+    /*
+     * The fan-out runs after the submission committed. An admin who decided
+     * in between would have left rows no trigger could ever resolve. The share
+     * lock + re-check is what stops that: a handled item rings nobody.
+     */
+    const userId = await kycSubject('task-late@oxshare-e2e.test', 'approved');
+    const written = await store.insertAdminTask([ADMIN_1], {
+      kind: 'admin.kyc.submitted',
+      params: { userId },
+      subjectKind: 'kyc',
+      subjectId: userId,
+      subjectUserId: userId,
+      stillOpen: 'awaiting-review',
+    });
+    expect(written).toBe(0);
+  });
+
+  it('refuses an admin row that names no subject — the CHECK, beneath the types', async () => {
+    const error: unknown = await ctx.db
+      .execute(
+        sql`
+        INSERT INTO notifications (recipient_kind, recipient_id, kind)
+        VALUES ('admin', ${ADMIN_1}, 'admin.kyc.submitted')`,
+      )
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    // Drizzle wraps the driver's error; the constraint name is on the cause.
+    const cause = (error as { cause?: { constraint?: string } } | undefined)?.cause;
+    expect(cause?.constraint).toBe('notifications_admin_subject_ck');
   });
 });
 
@@ -109,16 +166,16 @@ describe('transactional insert — the row commits with the caller or not at all
 
 describe('read markers', () => {
   it('markRead is idempotent and unreadCount reflects it', async () => {
-    await store.insert({ recipient: ADMIN, kind: 'admin.kyc.submitted', params: { userId: 'u' } });
-    const [row] = (await store.findPage(ADMIN)).items;
-    expect(await store.unreadCount(ADMIN)).toBe(1);
+    await store.insert({ recipient: CLIENT_C, kind: 'kyc.approved', params: {} });
+    const [row] = (await store.findPage(CLIENT_C)).items;
+    expect(await store.unreadCount(CLIENT_C)).toBe(1);
 
-    const first = await store.markRead(ADMIN, row.id);
+    const first = await store.markRead(CLIENT_C, row.id);
     expect(first.readAt).not.toBeNull();
-    expect(await store.unreadCount(ADMIN)).toBe(0);
+    expect(await store.unreadCount(CLIENT_C)).toBe(0);
 
     // Second call: same row back, no error, readAt still set.
-    const second = await store.markRead(ADMIN, row.id);
+    const second = await store.markRead(CLIENT_C, row.id);
     expect(second.readAt).not.toBeNull();
   });
 
@@ -147,6 +204,24 @@ describe('read markers', () => {
     expect(await store.unreadCount(CLIENT_A)).toBe(before);
     // Idempotent.
     expect(await store.markAllRead(recipient)).toBe(0);
+  });
+
+  it('markAllRead never marks past `upTo` — a row that arrived after the panel rendered stays unread', async () => {
+    const recipient: NotificationRecipient = {
+      kind: 'client',
+      id: '45454545-4545-4545-4545-454545454545',
+    };
+    await store.insert({ recipient, kind: 'seen', params: {} });
+    const [seen] = (await store.findPage(recipient)).items;
+    await ctx.db.execute(
+      sql`UPDATE notifications SET created_at = now() - interval '1 minute' WHERE id = ${seen.id}`,
+    );
+    const shownUpTo = new Date(Date.now() - 30_000);
+    await store.insert({ recipient, kind: 'arrived-later', params: {} });
+
+    expect(await store.markAllRead(recipient, shownUpTo)).toBe(1);
+    const unread = await store.findPage(recipient, { unreadOnly: true });
+    expect(unread.items.map((n) => n.kind)).toEqual(['arrived-later']);
   });
 });
 
@@ -209,16 +284,42 @@ describe('retention', () => {
     // Age one row past the window directly — the store exposes no way to
     // write history, which is the point.
     await store.insert({ recipient, kind: 'stale', params: {}, dedupeKey: 'stale:1' });
-    const { sql } = await import('drizzle-orm');
     await ctx.db.execute(
       sql`UPDATE notifications SET created_at = now() - interval '91 days' WHERE kind = 'stale'`,
     );
 
-    const pruned = await store.pruneOlderThan(90);
+    const pruned = await store.pruneOlderThan('client', 90);
     expect(pruned).toBeGreaterThanOrEqual(1);
 
     const kinds = (await store.findPage(recipient)).items.map((n) => n.kind);
     expect(kinds).toContain('fresh');
     expect(kinds).not.toContain('stale');
+  });
+});
+
+describe('retention is per audience', () => {
+  it('keeps an admin task for its year while pruning what is older', async () => {
+    const userId = await kycSubject('task-retention@oxshare-e2e.test', 'submitted');
+    await store.insertAdminTask([ADMIN_1], {
+      kind: 'admin.kyc.resubmitted',
+      params: { userId },
+      subjectKind: 'kyc',
+      subjectId: userId,
+      subjectUserId: userId,
+      stillOpen: 'awaiting-review',
+    });
+    await ctx.db.execute(sql`
+      UPDATE notifications SET created_at = now() - interval '200 days'
+       WHERE kind = 'admin.kyc.resubmitted' AND subject_id = ${userId}`);
+
+    // A client-window prune never touches admin rows…
+    await store.pruneOlderThan('client', 90);
+    // …and 200 days is inside the admin year.
+    expect(await store.pruneOlderThan('admin', 365)).toBe(0);
+
+    await ctx.db.execute(sql`
+      UPDATE notifications SET created_at = now() - interval '400 days'
+       WHERE kind = 'admin.kyc.resubmitted' AND subject_id = ${userId}`);
+    expect(await store.pruneOlderThan('admin', 365)).toBe(1);
   });
 });
