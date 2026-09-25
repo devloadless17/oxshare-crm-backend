@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -31,6 +32,7 @@ import {
   BalanceMovementPageDto,
 } from './dto/account-detail.dto';
 import { OpenOwnAccountDto } from './dto/open-account.dto';
+import { RenameOwnAccountDto } from './dto/rename-account.dto';
 import { FundDemoAccountDto } from './dto/fund-demo-account.dto';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
 import { SelfServiceGroups } from './mt5/self-service-groups';
@@ -185,21 +187,37 @@ export class TradingController {
     });
   }
 
-  /*
-   * NO RENAME ROUTE — removed 25 Sep 2026 at the owner's instruction.
+  /**
+   * Rename one of the caller's own trading accounts.
    *
-   * `PATCH /trading/accounts/:id` let a client change the account holder's name
-   * as MT5 records it. That field is an IDENTITY, not a label: a statement, a
-   * support ticket and the manager terminal all identify the holder by it, so
-   * it has exactly one correct value — the name the CRM holds — and it is not
-   * the client's to choose. The admin creation path had always sent the CRM
-   * name, so the two paths disagreed and a manager terminal showed real names
-   * beside invented ones.
+   * PATCH rather than PUT: the body carries the one field a client may change,
+   * not a whole account, and the MT5 write underneath is a read-modify-write
+   * that preserves everything it does not name.
    *
-   * The portal heading now shows the client's own name from their profile, so a
-   * correction in the CRM reaches every account at once. Nothing replaced this
-   * route; there is deliberately no way for a client to rename an account.
+   * Throttled far more loosely than the reset above — renaming sends no mail and
+   * invalidates no credential, so the only thing worth bounding is chatter at
+   * the trading server.
    */
+  @Patch('accounts/:id')
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Rename a trading account',
+    description:
+      "Changes the account holder's name as MT5 records it, so it updates what the client " +
+      'sees in their terminal and on statements. Nothing is stored CRM-side.',
+  })
+  async renameAccount(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RenameOwnAccountDto,
+    @Req() req: Request & { user: User },
+  ) {
+    return await this.mt5Accounts.renameOwnAccount({
+      userId: req.user.id,
+      accountId: id,
+      name: dto.name,
+    });
+  }
 
   /**
    * Add practice money to one of the caller's own DEMO accounts.
