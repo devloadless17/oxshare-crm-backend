@@ -1794,4 +1794,49 @@ export class AdminMoneyService {
 
     return failed;
   }
+
+  /**
+   * "Mark resolved" — a person reconciled a deposit or payout that only a
+   * person could: an amount the platform reported differently, a reversal,
+   * money paid against a failed row, the platform and this side disagreeing.
+   *
+   * Before this there was no way to say it was done. The flag had no clearing
+   * path for deposits, so the row carried "needs attention" for ever and the
+   * admin task about it could never finish. Clearing it here ends those tasks
+   * for every admin at once — the `transactions` trigger, not this code.
+   *
+   * Order of checks: FOUND, then SCOPE (an out-of-territory payment 404s like a
+   * missing one, never confirming it exists), then PERMISSION by direction —
+   * `deposits.approve` for a deposit; `withdrawals.settle` for a payout,
+   * because "did this money move" is that permission's judgement, the same
+   * reasoning `abandonTransfer` records.
+   */
+  async resolveAttention(id: string, actor: AuthenticatedAdmin, note: string) {
+    const payment = await this.transactions.getById(id);
+    await this.visibility.assertVisible(payment.userId, actor.clientScope);
+    assertActorCan(
+      actor,
+      payment.direction === 'deposit' ? 'deposits.approve' : 'withdrawals.settle',
+      'resolve a payment that needs attention',
+    );
+
+    const stale = () =>
+      new ValidationError(
+        'This payment no longer needs attention — somebody resolved it while you were looking.',
+      );
+    if (!payment.rivalNeedsAttention) throw stale();
+
+    const resolved = await this.transactions.resolveAttention(id, (tx) =>
+      this.audit.recordWithin(tx, actor.id, 'transaction.attention_resolve', 'transaction', id, {
+        userId: payment.userId,
+        direction: payment.direction,
+        amount: payment.amount,
+        currency: payment.currency,
+        reason: payment.rivalAttentionReason,
+        note: note.trim(),
+      }),
+    );
+    if (!resolved) throw stale();
+    return { id, needsAttention: false };
+  }
 }

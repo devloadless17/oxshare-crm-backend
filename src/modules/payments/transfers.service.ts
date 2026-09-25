@@ -26,6 +26,12 @@ import {
 type Db = ReturnType<typeof getDb>;
 
 /**
+ * A transfer settled within this long of its request finished in front of the
+ * client — its completion is not news, so it rings no bell. See `settle`.
+ */
+const TRANSFER_ECHO_WINDOW_MS = 60_000;
+
+/**
  * Moving money between a client's wallet and one of their MT5 accounts.
  *
  * ## The CRM owns one side of this and not the other
@@ -453,7 +459,17 @@ export class TransfersService {
      * — the bridge webhook, a retried job — ring once. The state guard inside
      * the transaction already makes a second settle a no-op, but that guard
      * returns quietly and execution still arrives here.
+     *
+     * ONLY WHEN IT WAITED. A transfer that settles within a minute of the
+     * request completed while the client watched the screen confirm it; a bell
+     * row saying so again is an echo of their own click — the noise the owner
+     * asked the portal's bell to stop carrying (migration 0140). The message
+     * earns its place exactly when the money sat in neither place for a while:
+     * a queued transfer, one the resume job finished later.
      */
+    if (Date.now() - new Date(transfer.createdAt).getTime() <= TRANSFER_ECHO_WINDOW_MS) {
+      return this.findOne(transfer.id);
+    }
     void this.notifications.notify({
       recipient: { kind: 'client', id: transfer.userId },
       kind: 'transfer.completed',

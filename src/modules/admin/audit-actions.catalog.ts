@@ -171,6 +171,15 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
      why, and the entry an auditor looks for if a client is ever credited
      twice. */
   { action: 'transfer.abandon', label: 'Stuck transfer released', group: 'Compliance' },
+  /* A deposit or payout only a person could settle — an amount mismatch, a
+     reversal, the platform and the CRM disagreeing — reconciled by hand. Like
+     the release above, it records a judgement made on evidence outside this
+     system, so the operator's note is the record. */
+  {
+    action: 'transaction.attention_resolve',
+    label: 'Payment anomaly resolved',
+    group: 'Compliance',
+  },
   /* Money placed into a wallet BY HAND — the only way funds arrive without a
      payment provider, and so the entry an auditor looks for first. The payload
      carries the reason the operator was required to give. */

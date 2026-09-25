@@ -1192,10 +1192,11 @@ describe('submit asks for every page and every returned document', () => {
       stored: completeSubmission({ status: 'in_progress', rejectionReason: 'Blurred passport' }),
     });
     await h.service.submit('user-1');
-    expect(h.notifications.notifyAdminsWithPermission).toHaveBeenCalledWith(
-      'kyc.review',
-      expect.objectContaining({ kind: 'admin.kyc.resubmitted' }),
-      expect.anything(),
+    expect(h.notifications.notifyAdmins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'admin.kyc.resubmitted',
+        subject: { id: 'user-1', clientId: 'user-1' },
+      }),
     );
   });
 });

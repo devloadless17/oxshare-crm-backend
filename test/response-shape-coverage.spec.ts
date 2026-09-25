@@ -148,11 +148,12 @@ const NO_JSON_BODY: readonly string[] = [
  * the mistake above. Giving them real response DTOs remains the way off.
  */
 const AUDITED_WITHOUT_A_SHAPE: readonly string[] = [
-  // ⚠️ These three DO carry client-owned fields. See the note above: masked
-  // explicitly in the controller, not by the interceptor.
+  // ⚠️ These two DO carry client-owned fields. See the note above: masked
+  // explicitly in the controller, not by the interceptor. The third,
+  // `GET /admin/ib/partners`, left this list the way the note says to: it
+  // declares `IbPartnerListResponseDto` since the Partners page returned.
   'GET /admin/ib/accruals',
   'GET /admin/ib/applications',
-  'GET /admin/ib/partners',
   'GET /admin/kyc-config',
   'GET /admin/mt5/groups',
   'GET /admin/trading-accounts/:id/live',

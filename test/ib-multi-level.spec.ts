@@ -171,7 +171,7 @@ beforeAll(async () => {
     new WalletService(ctx.db),
     {
       notify: vi.fn().mockResolvedValue(undefined),
-      notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
+      notifyAdmins: vi.fn().mockResolvedValue(undefined),
     },
 
     // The payout ceiling (0106) — the real store against the real row, so

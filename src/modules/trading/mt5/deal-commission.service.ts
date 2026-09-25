@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { and, asc, eq, inArray, isNotNull, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
@@ -11,6 +11,11 @@ import {
 } from '../../../database/schema';
 import { LEDGER_REFERENCE } from '../../../database/ledger-reference';
 import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
+import { accrualBeneficiary } from '../../../common/accrual-beneficiary';
+import {
+  NOTIFICATION_DISPATCH,
+  type NotificationDispatchPort,
+} from '../../../common/provisioning/notification-dispatch.port';
 import {
   COMMISSION_ACCRUAL,
   CommissionRefusedError,
@@ -249,6 +254,15 @@ export class DealCommissionService {
      * the wallet side to pay commissions out; see the port's own note.
      */
     @Inject(COMMISSION_ACCRUAL) private readonly commissions: CommissionAccrualPort,
+    /*
+     * The bell for clawback tasks — `reportClawback`. OPTIONAL for the reason
+     * `AuthService` records: the specs construct this service positionally with
+     * two arguments, and a clawback task is the one thing here that needs it.
+     * `NotificationsModule` is @Global and binds the token in the application.
+     */
+    @Optional()
+    @Inject(NOTIFICATION_DISPATCH)
+    private readonly notifications?: NotificationDispatchPort,
     /*
      * `AppSettingsStore` used to be injected here, for the backlog decision and
      * the revenue basis. Both left this form in 0104 — the first is
@@ -938,7 +952,15 @@ export class DealCommissionService {
        * id space too, and the constant is where it would be noticed.
        */
       const affected = await this.db
-        .select({ id: ibAccruals.id, status: ibAccruals.status, amount: ibAccruals.amount })
+        .select({
+          id: ibAccruals.id,
+          status: ibAccruals.status,
+          amount: ibAccruals.amount,
+          currency: ibAccruals.currency,
+          kind: ibAccruals.kind,
+          ibUserId: ibAccruals.ibUserId,
+          clientUserId: ibAccruals.clientUserId,
+        })
         .from(ibAccruals)
         .innerJoin(mt5Deals, eq(mt5Deals.id, ibAccruals.sourceId))
         .where(
@@ -971,6 +993,31 @@ export class DealCommissionService {
           credited: paid,
         },
       );
+
+      /*
+       * And a TASK per accrual on the bell of whoever can reverse it — the page
+       * above reaches only an alert channel, and with no sink registered that
+       * is nobody. One per accrual because the reversal is per accrual, and so
+       * is the decision: a desk may reverse the credited one and let a pending
+       * one lapse. Each clears for every admin when THAT accrual is reversed
+       * (migration 0140's trigger). The client is the accrual's beneficiary —
+       * the same rule the commission screens scope by — so nobody is asked to
+       * reverse an accrual they cannot open.
+       */
+      for (const accrual of live) {
+        void this.notifications?.notifyAdmins({
+          kind: 'admin.commission.clawback',
+          params: {
+            accrualId: accrual.id,
+            amount: accrual.amount,
+            currency: accrual.currency,
+            credited: accrual.status === 'confirmed',
+            dealTicket: String(deal.ticket),
+          },
+          dedupeKey: `admin.commission.clawback:${accrual.id}`,
+          subject: { id: accrual.id, clientId: accrualBeneficiary(accrual) },
+        });
+      }
     } catch (error) {
       this.logger.error(
         `Could not check deal ${String(deal.ticket)} for accruals to claw back: ` +

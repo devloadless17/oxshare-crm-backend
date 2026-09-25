@@ -17,9 +17,15 @@ const alwaysLeads = () =>
 
 /**
  * The admin fan-out's two filters — permission and client scope — applied at
- * WRITE time. A wrong include here is a disclosure (a scoped admin holding a
- * row about a client outside their territory), which is why this is unit-pinned
- * separately from the storage contract.
+ * WRITE time, where they decide who is PUSHED a task (the read path applies
+ * them again on every request; see notifications-read-scope.spec.ts). A wrong
+ * include here is a disclosure (a toast about a client outside the reader's
+ * territory), which is why this is unit-pinned separately from the storage
+ * contract.
+ *
+ * Since migration 0140 the PERMISSION comes from the catalogue, never from the
+ * call site — the kind names which keys qualify — and the SUBJECT is required,
+ * so there is no unscoped fan-out left to test.
  */
 
 const CLIENT_ID = 'c1111111-1111-1111-1111-111111111111';
@@ -40,9 +46,9 @@ function build(opts: {
   /** adminIds whose scope covers CLIENT_ID. */
   visibleTo?: string[];
 }) {
-  const insertMany = vi.fn().mockResolvedValue(0);
+  const insertAdminTask = vi.fn().mockResolvedValue(0);
   const service = new NotificationsService(
-    { insertMany } as unknown as NotificationsStore,
+    { insertAdminTask } as unknown as NotificationsStore,
     {
       findAll: vi.fn().mockResolvedValue({ rows: opts.admins, total: opts.admins.length }),
     } as unknown as AdminsStore,
@@ -73,31 +79,47 @@ function build(opts: {
     } as unknown as ClientVisibilityService,
     alwaysLeads(),
   );
-  return { service, insertMany };
+  return { service, insertAdminTask };
 }
 
-describe('notifyAdminsWithPermission', () => {
-  it('notifies only ACTIVE admins holding the permission, resolved live', async () => {
-    const { service, insertMany } = build({
+describe('notifyAdmins', () => {
+  it('rings ACTIVE admins holding ANY of the kind’s catalogue permissions, resolved live', async () => {
+    const { service, insertAdminTask } = build({
       admins: [
         { id: 'a1', status: 'active', permissions: ['withdrawals.approve'] },
         { id: 'a2', status: 'active', permissions: ['kyc.review'] },
         { id: 'a3', status: 'suspended', permissions: ['withdrawals.approve'] },
         // Role wins over a stale snapshot — the live resolution is the point.
         { id: 'a4', status: 'active', roleId: 'r1', permissions: ['withdrawals.approve'] },
+        /*
+         * The recipient bug the catalogue fixed: approving a withdrawal PAYS,
+         * which needs `withdrawals.settle`. The fan-out used to ring only
+         * `withdrawals.approve` holders, so the admin who could actually
+         * approve was never told.
+         */
+        { id: 'a5', status: 'active', permissions: ['withdrawals.settle'] },
       ],
       rolePermissions: { r1: ['clients.view'] },
     });
 
-    await service.notifyAdminsWithPermission('withdrawals.approve', {
+    await service.notifyAdmins({
       kind: 'admin.withdrawal.requested',
       params: { transactionId: 't1', amount: '10.00000000', currency: 'USD' },
+      subject: { id: 't1', clientId: CLIENT_ID },
     });
 
     // One batched statement — a loop would strand recipients after a failure.
-    expect(insertMany).toHaveBeenCalledTimes(1);
-    const recipients = (insertMany.mock.calls[0][0] as { id: string }[]).map((r) => r.id);
-    expect(recipients).toEqual(['a1']);
+    expect(insertAdminTask).toHaveBeenCalledTimes(1);
+    const [recipients, task] = insertAdminTask.mock.calls[0] as [string[], Record<string, unknown>];
+    expect(recipients).toEqual(['a1', 'a5']);
+    // The item's kind and its open-state rule come from the catalogue too.
+    expect(task).toMatchObject({
+      kind: 'admin.withdrawal.requested',
+      subjectKind: 'transaction',
+      subjectId: 't1',
+      subjectUserId: CLIENT_ID,
+      stillOpen: 'pending',
+    });
   });
 
   it('drops scoped admins whose territory does not cover the subject client', async () => {
@@ -111,9 +133,9 @@ describe('notifyAdminsWithPermission', () => {
           : Promise.reject(new ClientNotFoundError());
       }),
     };
-    const insertMany = vi.fn().mockResolvedValue(0);
+    const insertAdminTask = vi.fn().mockResolvedValue(0);
     const service = new NotificationsService(
-      { insertMany } as unknown as NotificationsStore,
+      { insertAdminTask } as unknown as NotificationsStore,
       {
         findAll: vi.fn().mockResolvedValue({
           rows: [
@@ -142,20 +164,55 @@ describe('notifyAdminsWithPermission', () => {
       alwaysLeads(),
     );
 
-    await service.notifyAdminsWithPermission(
-      'kyc.review',
-      { kind: 'admin.kyc.submitted', params: { userId: CLIENT_ID } },
-      { subjectClientId: CLIENT_ID },
-    );
+    await service.notifyAdmins({
+      kind: 'admin.kyc.submitted',
+      params: { userId: CLIENT_ID },
+      subject: { id: CLIENT_ID, clientId: CLIENT_ID },
+    });
 
-    const recipients = (insertMany.mock.calls[0][0] as { id: string }[]).map((r) => r.id);
+    const recipients = insertAdminTask.mock.calls[0][0] as string[];
     expect(recipients).toEqual(['unrestricted', 'in-territory']);
   });
 
-  it('treats an INFRASTRUCTURE error during visibility as a failure to log, not a scoping decision', async () => {
-    const insertMany = vi.fn().mockResolvedValue(0);
+  it('checks scope for EVERY kind — the payout disagreement used to skip it', async () => {
+    const assertVisible = vi.fn().mockRejectedValue(new ClientNotFoundError());
+    const insertAdminTask = vi.fn().mockResolvedValue(0);
     const service = new NotificationsService(
-      { insertMany } as unknown as NotificationsStore,
+      { insertAdminTask } as unknown as NotificationsStore,
+      {
+        findAll: vi.fn().mockResolvedValue({
+          rows: [{ id: 'scoped', status: 'active', permissions: ['withdrawals.settle'] }],
+          total: 1,
+        }),
+      } as unknown as AdminsStore,
+      {
+        resolvePermissions: vi
+          .fn()
+          .mockImplementation((_roleId: string | undefined, snapshot: string[]) =>
+            Promise.resolve(snapshot),
+          ),
+      } as unknown as RolesStore,
+      {
+        scopeFor: vi.fn().mockResolvedValue(scopeOf(['south'])),
+      } as unknown as AdminClientScopesStore,
+      { assertVisible } as unknown as ClientVisibilityService,
+      alwaysLeads(),
+    );
+
+    await service.notifyAdmins({
+      kind: 'withdrawal.rival_attention',
+      params: { transactionId: 't1', ourState: 'success', event: 'rejected' },
+      subject: { id: 't1', clientId: CLIENT_ID },
+    });
+
+    expect(assertVisible).toHaveBeenCalledWith(CLIENT_ID, expect.anything());
+    expect(insertAdminTask.mock.calls[0][0]).toEqual([]);
+  });
+
+  it('treats an INFRASTRUCTURE error during visibility as a failure to log, not a scoping decision', async () => {
+    const insertAdminTask = vi.fn().mockResolvedValue(0);
+    const service = new NotificationsService(
+      { insertAdminTask } as unknown as NotificationsStore,
       {
         findAll: vi.fn().mockResolvedValue({
           rows: [{ id: 'scoped', status: 'active', permissions: ['kyc.review'] }],
@@ -181,20 +238,20 @@ describe('notifyAdminsWithPermission', () => {
     );
 
     await expect(
-      service.notifyAdminsWithPermission(
-        'kyc.review',
-        { kind: 'admin.kyc.submitted', params: {} },
-        { subjectClientId: CLIENT_ID },
-      ),
+      service.notifyAdmins({
+        kind: 'admin.kyc.submitted',
+        params: {},
+        subject: { id: CLIENT_ID, clientId: CLIENT_ID },
+      }),
     ).resolves.toBeUndefined();
     // The failure aborted the sweep into the LOGGING catch — nothing was
     // written under a half-known recipient set.
-    expect(insertMany).not.toHaveBeenCalled();
+    expect(insertAdminTask).not.toHaveBeenCalled();
   });
 
   it('NEVER throws — a fan-out failure must not fail the domain change behind it', async () => {
     const service = new NotificationsService(
-      { insertMany: vi.fn() } as unknown as NotificationsStore,
+      { insertAdminTask: vi.fn() } as unknown as NotificationsStore,
       {
         findAll: vi.fn().mockRejectedValue(new Error('database gone')),
       } as unknown as AdminsStore,
@@ -205,9 +262,10 @@ describe('notifyAdminsWithPermission', () => {
     );
 
     await expect(
-      service.notifyAdminsWithPermission('kyc.review', {
+      service.notifyAdmins({
         kind: 'admin.kyc.submitted',
         params: {},
+        subject: { id: CLIENT_ID, clientId: CLIENT_ID },
       }),
     ).resolves.toBeUndefined();
   });
@@ -216,7 +274,6 @@ describe('notifyAdminsWithPermission', () => {
     const failingStore = {
       insert: vi.fn().mockRejectedValue(new Error('insert failed')),
     } as unknown as NotificationsStore;
-    const { service } = build({ admins: [] });
     const failing = new NotificationsService(
       failingStore,
       {} as unknown as AdminsStore,
@@ -225,7 +282,6 @@ describe('notifyAdminsWithPermission', () => {
       {} as unknown as ClientVisibilityService,
       alwaysLeads(),
     );
-    void service;
 
     const input = {
       recipient: { kind: 'client' as const, id: 'u1' },

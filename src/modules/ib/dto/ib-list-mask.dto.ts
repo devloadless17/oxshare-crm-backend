@@ -105,6 +105,13 @@ export class IbApplicationListMaskDto {
   rows!: IbApplicationListRow[];
 }
 
+/**
+ * The partner list DOES declare its response type now (`IbPartnerListResponseDto`,
+ * since the Partners page returned — 25 Sep 2026), so the interceptor walks it
+ * too. This shape stays for the controller's explicit pass, which
+ * `field-masking-http.spec.ts` pins; masking removes keys, so the second pass is
+ * a no-op rather than a conflict.
+ */
 export class IbPartnerListMaskDto {
   @ApiProperty({ type: () => IbPartnerListRow })
   rows!: IbPartnerListRow[];

@@ -192,8 +192,12 @@ describe("a partner's earnings total", () => {
      * The wallet was never wrong — only this display total — which is the
      * worst way for it to be wrong: an operator reconciling the commission
      * wallet against the screen finds a gap with no explanation.
+     *
+     * One entry per currency since the directory returned — the fixture
+     * accrues in one, so there is exactly one line and it holds 70, not 140.
      */
-    expect(mine?.confirmed).toBe('70.00000000');
+    expect(mine).toHaveLength(1);
+    expect(mine?.[0]?.confirmed).toBe('70.00000000');
   });
 });
 

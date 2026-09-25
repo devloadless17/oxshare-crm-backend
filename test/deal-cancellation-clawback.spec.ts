@@ -48,6 +48,14 @@ import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 let ctx: MoneyTestContext;
 let commissions: CommissionService;
 let deals: DealCommissionService;
+/**
+ * The admin bell — the clawback TASK beside the pager alert (migration 0140).
+ * Recording, so each case can say who was asked to reverse what.
+ */
+const adminBell = {
+  notify: vi.fn().mockResolvedValue(undefined),
+  notifyAdmins: vi.fn().mockResolvedValue(undefined),
+};
 
 let partnerId: string;
 let clientId: string;
@@ -148,7 +156,7 @@ beforeAll(async () => {
     new WalletService(ctx.db),
     {
       notify: vi.fn().mockResolvedValue(undefined),
-      notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
+      notifyAdmins: vi.fn().mockResolvedValue(undefined),
     },
     // The payout ceiling (0106) — the real store against the real row, so
     // this reads the shipped default of 100 rather than a stub's opinion.
@@ -161,7 +169,7 @@ beforeAll(async () => {
        covered by `ib-accrual-reversal.spec.ts`. */
     { assertVisible: () => Promise.resolve() } as never,
   );
-  deals = new DealCommissionService(ctx.db, commissions);
+  deals = new DealCommissionService(ctx.db, commissions, adminBell);
 }, 180_000);
 
 afterAll(async () => {
@@ -187,6 +195,7 @@ beforeEach(async () => {
   process.env['IB_ACCRUAL_START'] = 'all';
 
   errors = [];
+  adminBell.notifyAdmins.mockClear();
   vi.spyOn(Logger.prototype, 'error').mockImplementation((arg: unknown) => {
     errors.push(arg);
   });
@@ -242,6 +251,26 @@ describe('a cancellation against a trade that already paid', () => {
     expect(rows[0].pending).toBe('0');
   });
 
+  it('puts a reversal TASK on the bell for each standing accrual — about its beneficiary', async () => {
+    await tradeThenCancellation();
+    await deals.accruePending();
+
+    const { rows: accruals } = await ctx.db.execute<{ id: string }>(
+      sql`SELECT id FROM ib_accruals WHERE status <> 'reversed'`,
+    );
+    expect(adminBell.notifyAdmins).toHaveBeenCalledTimes(accruals.length);
+    expect(adminBell.notifyAdmins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'admin.commission.clawback',
+        dedupeKey: `admin.commission.clawback:${accruals[0].id}`,
+        // A commission is the PARTNER's money: the task names them, so only a
+        // desk whose territory holds the partner is asked to reverse it.
+        subject: { id: accruals[0].id, clientId: partnerId },
+        params: expect.objectContaining({ credited: false }) as unknown,
+      }),
+    );
+  });
+
   it('reports how many of them have already been CREDITED', async () => {
     await tradeThenCancellation();
     // The settlement window elapsed and the partner was paid, which is the
@@ -269,6 +298,13 @@ describe('a cancellation against a trade that already paid', () => {
     const raised = clawbackAlerts(errors);
     expect(raised).toHaveLength(1);
     expect(raised[0].context.credited).toBe(1);
+    // The task says so too — reversing a credited accrual debits a wallet.
+    expect(adminBell.notifyAdmins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'admin.commission.clawback',
+        params: expect.objectContaining({ credited: true }) as unknown,
+      }),
+    );
   });
 });
 
@@ -285,6 +321,7 @@ describe('a cancellation that owes nobody anything', () => {
      * taking the loud case with it.
      */
     expect(clawbackAlerts(errors)).toHaveLength(0);
+    expect(adminBell.notifyAdmins).not.toHaveBeenCalled();
   });
 
   it('does not match another account holding the same position id', async () => {

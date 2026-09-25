@@ -1,4 +1,5 @@
 import type { Executor } from '../../database/db';
+import type { AdminNotificationKind } from '../notifications/admin-notification-catalogue';
 
 /**
  * "Something happened — put a row in the recipient's bell."
@@ -20,8 +21,12 @@ import type { Executor } from '../../database/db';
  * no call site moves. The committed row is already the outbox.
  */
 export interface NotificationInput {
-  /** `kind` decides which principal table `id` points at — users or admins. */
-  recipient: { kind: 'client' | 'admin'; id: string };
+  /**
+   * A CLIENT — the one audience this method writes for. An admin row is a task
+   * that must name its subject, so it can only be written by `notifyAdmins`
+   * (and `notifications_admin_subject_ck` refuses one written any other way).
+   */
+  recipient: { kind: 'client'; id: string };
   /**
    * Catalogue slug, e.g. 'withdrawal.approved'. The frontends own the copy and
    * the deep link; the backend never encodes either.
@@ -36,6 +41,24 @@ export interface NotificationInput {
    * already protects.
    */
   dedupeKey?: string;
+}
+
+/**
+ * A task for the admins who can act on it. See `notifyAdmins`.
+ */
+export interface AdminTaskInput {
+  /** A catalogue kind — see `common/notifications/admin-notification-catalogue.ts`. */
+  kind: AdminNotificationKind;
+  /** Rendered client-side. Identifiers, amounts (STRINGS, §6.1), codes — never a name. */
+  params: Record<string, string | number | boolean | null>;
+  /** `'<kind>:<uuid>'`. Absorbed per recipient by `notifications_recipient_dedupe_uq`. */
+  dedupeKey?: string;
+  /**
+   * The item and its client. The item's KIND comes from the catalogue, so a
+   * call site cannot mislabel it; a KYC task's `id` is the client's id,
+   * because `kyc_submissions` is keyed on it.
+   */
+  subject: { id: string; clientId: string };
 }
 
 export interface NotificationDispatchPort {
@@ -63,23 +86,22 @@ export interface NotificationDispatchPort {
   notify(input: NotificationInput, executor?: Executor): Promise<void>;
 
   /**
-   * Fan one event out to every ACTIVE admin currently holding
-   * `permissionKey`, resolved live (RolesStore), and — when `subjectClientId`
-   * is given — FILTERED by client scope at write time, so a scoped admin never
-   * receives a row about a client outside their territory (the 404-not-403
-   * discipline, applied where the row is born).
+   * Put a TASK in the bell of every admin who could act on it.
    *
-   * Always post-commit and NEVER THROWS: resolving recipients is several
-   * reads, and holding a money transaction open across a permission sweep is
-   * not worth a best-effort bell row — the polled work-queue badges remain the
-   * durable signal. `event.dedupeKey` still applies per recipient (the unique
-   * index is scoped to the recipient), so a retried caller cannot double-ring.
+   * WHO is decided by the catalogue, not by the caller: the kind names the
+   * permissions (any one qualifies), and the SUBJECT names the client, whose
+   * scope every recipient must cover. There is no way to fan an admin row out
+   * without a client — a row that cannot be scope-checked at read time cannot
+   * be shown, and `notifications_admin_subject_ck` refuses to store one.
+   *
+   * Always post-commit and NEVER THROWS: resolving recipients is several reads,
+   * and holding a money transaction open across a permission sweep is not worth
+   * a bell row — the polled work-queue badges remain the durable signal. The
+   * insert re-checks, under a share lock on the item, that the task is still
+   * open, so an item handled before this ran never rings anyone. `dedupeKey`
+   * applies per recipient, so a retried caller cannot double-ring.
    */
-  notifyAdminsWithPermission(
-    permissionKey: string,
-    event: Omit<NotificationInput, 'recipient'>,
-    options?: { subjectClientId?: string },
-  ): Promise<void>;
+  notifyAdmins(task: AdminTaskInput): Promise<void>;
 }
 
 /**

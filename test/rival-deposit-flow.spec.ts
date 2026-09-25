@@ -9,7 +9,7 @@ import { MoneyLimits } from '../src/config/money-limits';
 import { auditStubAs } from './audit-stub';
 import { AuditLogStore } from '../src/store/audit-log.store';
 import { emailStubAs } from './email-stub';
-import { notificationsStubAs } from './notifications-stub';
+import { notificationsStub } from './notifications-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
 import { gatewayStub } from './gateway-stub';
 import type { PaymentGateways } from '../src/modules/payments/payment-gateways.service';
@@ -32,6 +32,11 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  */
 
 let ctx: MoneyTestContext;
+/**
+ * The admin bell. A deposit only a person can settle is a TASK on the deposit
+ * desk (migration 0140) — the pager alert alone reached nobody.
+ */
+const bell = notificationsStub();
 let wallets: WalletService;
 let transactions: TransactionsService;
 let gateway: ReturnType<typeof gatewayStub>;
@@ -56,7 +61,7 @@ beforeAll(async () => {
     gateway as unknown as PaymentGateways,
     new ConfigService(),
     emailStubAs(),
-    notificationsStubAs(),
+    bell,
     transfersStubAs(),
     transferExecutorStubAs(),
     new AuditLogStore(ctx.db),
@@ -253,6 +258,14 @@ describe('the mapping table, row by row', () => {
     expect(row.needsAttention).toBe(true);
     expect(String(row.rivalAttentionReason)).toMatch(/40/);
     expect(String(row.rivalAttentionReason)).toMatch(/150/);
+    expect(bell.notifyAdmins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'admin.deposit.attention',
+        subject: { id: txId, clientId: userId },
+        // A CODE — the provider's wording never reaches a bell.
+        params: expect.objectContaining({ reason: 'amount_mismatch' }) as unknown,
+      }),
+    );
   });
 
   it('credits normally when the platform AGREES, including on trailing zeros', async () => {
@@ -301,6 +314,13 @@ describe('the mapping table, row by row', () => {
     expect(after.state).toBe('failure');
     expect(after.needsAttention).toBe(true);
     expect(await balanceOf(userId)).toBe('0.00000000');
+    expect(bell.notifyAdmins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'admin.deposit.attention',
+        subject: { id: txId, clientId: userId },
+        params: expect.objectContaining({ reason: 'paid_after_failure' }) as unknown,
+      }),
+    );
   });
 
   it('reversed NEVER touches the ledger — flag, alert, human decision (§6.4)', async () => {
@@ -317,6 +337,13 @@ describe('the mapping table, row by row', () => {
     expect(after.needsAttention).toBe(true);
     // The credit stands until a human writes the compensating entry.
     expect(await balanceOf(userId)).toBe('60.00000000');
+    expect(bell.notifyAdmins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'admin.deposit.attention',
+        subject: { id: txId, clientId: userId },
+        params: expect.objectContaining({ reason: 'reversed' }) as unknown,
+      }),
+    );
   });
 
   it('an event for an unknown externalId reports the race, changing nothing', async () => {

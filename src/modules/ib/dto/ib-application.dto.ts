@@ -461,11 +461,21 @@ export class IbSubPartnerRowDto extends IbPartnerPersonDto {
   approvedAt: Date;
 }
 
-/** Confirmed and pending totals, as decimal strings (§6.1). */
+/**
+ * One currency's commission — confirmed and pending, as decimal strings (§6.1).
+ *
+ * A partner's earnings are a LIST of these, one per currency, never a single
+ * total: an accrual takes the currency of the trade that produced it, and there
+ * is no FX source to add a EUR accrual to a USD one with. It was one object,
+ * summed across currencies and printed as the platform's default — see
+ * `IbStore.earningsByPartner`.
+ */
 @NoClientFields(
   'the application and its commission terms; the shapes naming a PERSON in this file are marked field by field',
 )
 export class IbPartnerEarningsDto {
+  @ApiProperty({ example: 'USD', description: 'The currency both figures are in.' })
+  currency: string;
   @ApiProperty({ type: 'string', example: '73.50000000' }) confirmed: string;
   @ApiProperty({ type: 'string', example: '0.00000000' }) pending: string;
 }
@@ -618,8 +628,13 @@ export class IbPartnerDetailDto {
   @NotClientField(
     'not a client-owned attribute \u2014 earnings describes the record rather than the person',
   )
-  @ApiProperty({ type: IbPartnerEarningsDto })
-  earnings: IbPartnerEarningsDto;
+  @ApiProperty({
+    type: [IbPartnerEarningsDto],
+    description:
+      'One entry per currency they have earned in, sorted by currency. Empty when nothing has ' +
+      'accrued yet — never a zero in a currency nobody chose.',
+  })
+  earnings: IbPartnerEarningsDto[];
   /**
    * RBAC-03: the keys hidden from this viewer, omitted from the body.
    *
@@ -634,4 +649,112 @@ export class IbPartnerDetailDto {
   @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
   @ApiPropertyOptional({ type: [String] })
   maskedFields?: string[];
+}
+
+/** `?status=` on the partner directory — the `active` column, said in words. */
+export const IB_PARTNER_STATUSES = ['active', 'suspended'] as const;
+
+/**
+ * The partner-account fields the DIRECTORY shows — declared rather than the raw
+ * `ib_accounts` row, which also carried `programId` (dead since 0112),
+ * `applicationId` and timestamps, and would have carried whatever the next
+ * migration added.
+ *
+ * No `parentIbUserId`: see `IbPartnerRowDto.parentPortalId`.
+ */
+@NoClientFields(
+  'the partner account: rung, code, state and appointment — none of it an attribute of the person',
+)
+export class IbPartnerListAccountDto {
+  @ApiProperty() userId: string;
+  @ApiProperty({ example: 1, description: 'The rung, which decides their terms (0112).' })
+  level: number;
+  @ApiProperty({ description: 'What a client types at registration to be attributed here.' })
+  referralCode: string;
+  @ApiProperty({ description: 'A suspended partner keeps their code and tree, and stops earning.' })
+  active: boolean;
+  @ApiProperty({ type: 'string', nullable: true }) agencyId: string | null;
+  @ApiProperty() approvedAt: Date;
+}
+
+/**
+ * The partner as a PERSON on a directory row.
+ *
+ * The three identity fields are OPTIONAL because RBAC-03 removes a hidden one
+ * from the payload rather than blanking it; declaring them required would type
+ * a masked row as impossible.
+ */
+export class IbPartnerListPersonDto {
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: 'integer', example: 1000245, description: 'Their Portal ID.' })
+  portalId: number;
+  @ClientField('client.email')
+  @ApiPropertyOptional({ type: 'string' })
+  email?: string;
+  @ClientField('client.firstName')
+  @ApiPropertyOptional({ type: 'string', nullable: true })
+  firstName?: string | null;
+  @ClientField('client.lastName')
+  @ApiPropertyOptional({ type: 'string', nullable: true })
+  lastName?: string | null;
+}
+
+/** One partner in the directory. */
+export class IbPartnerRowDto {
+  @NotClientField('the partner account, whose own shape declares it holds no client fields')
+  @ApiProperty({ type: IbPartnerListAccountDto })
+  account: IbPartnerListAccountDto;
+  @NotClientField(
+    'the nested partner, whose own shape carries the marks \u2014 masked there, not here',
+  )
+  @ApiProperty({ type: IbPartnerListPersonDto })
+  user: IbPartnerListPersonDto;
+  /**
+   * The parent's Portal ID — only when the parent is inside this reader's
+   * territory. The uuid is never sent: ids of people a reader is denied are an
+   * oracle (the reason `IbPartnerDetailDto.parentOutsideTerritory` exists).
+   */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: 'integer', nullable: true, example: 1000210 })
+  parentPortalId: number | null;
+  @NotClientField('a visibility state about the reader, not an attribute of the person')
+  @ApiProperty({
+    description:
+      'True when this partner has a parent the reader may not see. With `parentPortalId` null ' +
+      'and this false, they deal with the broker directly.',
+  })
+  parentOutsideTerritory: boolean;
+  @NotClientField(
+    'not a client-owned attribute \u2014 agencyName describes the record rather than the person',
+  )
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'Null when they are on no agency, which means the full catalogue.',
+  })
+  agencyName: string | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 earnings describes the record rather than the person',
+  )
+  @ApiProperty({
+    type: [IbPartnerEarningsDto],
+    description: 'Commission only (a rebate is the client’s money), one entry per currency.',
+  })
+  earnings: IbPartnerEarningsDto[];
+}
+
+/** `GET /admin/ib/partners` — the partner directory. */
+export class IbPartnerListResponseDto {
+  @NotClientField('the rows, whose own shape carries the marks')
+  @ApiProperty({ type: [IbPartnerRowDto] })
+  rows: IbPartnerRowDto[];
+  @NotClientField('a count of rows, not an attribute of any person')
+  @ApiProperty({ description: 'Every partner matching the filters that this reader may see.' })
+  total: number;
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiProperty({ type: [String] })
+  maskedFields: string[];
 }

@@ -2,16 +2,31 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ClientNotFoundError, NotFoundError } from '../../common/errors/domain-errors';
 import type { Executor } from '../../database/db';
+import type { NotificationSubjectKind } from '../../database/schema';
 import type {
+  AdminTaskInput,
   NotificationDispatchPort,
   NotificationInput,
 } from '../../common/provisioning/notification-dispatch.port';
+import {
+  ADMIN_NOTIFICATION_CATEGORIES,
+  adminNotificationSpec,
+  categoryOf,
+  isAdminNotificationKind,
+  kindsIn,
+  kindsVisibleTo,
+  type AdminNotificationCategory,
+  type AdminNotificationKind,
+} from '../../common/notifications/admin-notification-catalogue';
 import { normalizePermissionKey } from '../../common/security/actor';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
+import type { ClientScope } from '../../common/security/client-scope';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
 import { AdminsStore } from '../../store/admins.store';
 import {
   NotificationsStore,
+  type AdminFeedReader,
+  type AdminNotificationRow,
   type AppNotification,
   type NotificationRecipient,
 } from '../../store/notifications.store';
@@ -19,17 +34,46 @@ import { RolesStore } from '../../store/roles.store';
 import type { CursorPage, CursorPosition } from '../../common/pagination';
 import { JobLeaseService } from '../../common/scheduling/job-lease.service';
 
-/** How long a bell row lives. The audit log and the ledger are the records. */
-const RETENTION_DAYS = 90;
+/**
+ * How long a bell row lives, per audience. The audit log and the ledger are
+ * the records; these are how long each reader can scroll back. A client's
+ * outcomes are done once seen. An admin's History is where a desk goes back
+ * through its work, so it keeps a year — the owner's choice.
+ */
+const RETENTION_DAYS: Record<NotificationRecipient['kind'], number> = {
+  client: 90,
+  admin: 365,
+};
+
+/** The admin a feed is read by — the parts of the session that decide visibility. */
+export interface AdminFeedPrincipal {
+  id: string;
+  permissions: readonly string[];
+  clientScope: ClientScope;
+}
+
+/** A feed row, with its catalogue kind and category settled. */
+export type AdminFeedItem = Omit<AdminNotificationRow, 'kind'> & {
+  kind: AdminNotificationKind;
+  category: AdminNotificationCategory;
+};
+
+export interface AdminFeedQuery {
+  view: 'inbox' | 'history';
+  status?: 'open' | 'handled';
+  category?: AdminNotificationCategory;
+  q?: string;
+  cursor?: CursorPosition;
+  limit?: number;
+}
 
 /**
  * The implementation behind `NOTIFICATION_DISPATCH`, plus the read API the two
  * notifications controllers serve.
  *
- * Writes arrive through the port from domain services; reads and the two
- * read-markers arrive through controllers with the recipient taken from the
- * session — never a parameter. See the port file for the in-tx / post-commit
- * contract split.
+ * Writes arrive through the port from domain services; reads and the markers
+ * arrive through controllers with the reader taken from the session — never a
+ * parameter. See the port file for the in-tx / post-commit contract split.
  */
 @Injectable()
 export class NotificationsService implements NotificationDispatchPort {
@@ -63,47 +107,50 @@ export class NotificationsService implements NotificationDispatchPort {
     }
   }
 
-  async notifyAdminsWithPermission(
-    permissionKey: string,
-    event: Omit<NotificationInput, 'recipient'>,
-    options?: { subjectClientId?: string },
-  ): Promise<void> {
+  async notifyAdmins(task: AdminTaskInput): Promise<void> {
+    const spec = adminNotificationSpec(task.kind);
     try {
-      const recipients = await this.resolveAdminRecipients(permissionKey, options?.subjectClientId);
-      // ONE multi-row insert: N loop round-trips would mean a failure on
-      // recipient #2 strands #3..N unnotified with a log line that reads as a
-      // total failure. One statement lands every row or none.
-      await this.store.insertMany(recipients, {
-        kind: event.kind,
-        params: event.params,
-        dedupeKey: event.dedupeKey,
+      const recipients = await this.resolveAdminRecipients(spec.permissions, task.subject.clientId);
+      await this.store.insertAdminTask(recipients, {
+        kind: task.kind,
+        params: task.params,
+        dedupeKey: task.dedupeKey,
+        subjectKind: spec.subjectKind,
+        subjectId: task.subject.id,
+        subjectUserId: task.subject.clientId,
+        stillOpen: spec.stillOpen,
       });
     } catch (error) {
       // Never throws — see the port. The polled work-queue badges remain the
-      // durable signal; this row is the courtesy on top.
+      // durable signal; this row is the per-item ping on top.
       this.logger.error(
-        `Could not fan out notification '${event.kind}' to admins holding ` +
-          `'${permissionKey}': ${error instanceof Error ? error.message : String(error)}`,
+        `Could not fan out the '${task.kind}' task: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
 
   /**
-   * Every ACTIVE admin currently holding the permission, scope-filtered.
+   * Every ACTIVE admin currently holding ANY of the kind's permissions, whose
+   * client scope covers the subject.
    *
    * Resolved LIVE per event rather than cached across events: admins number
    * in the dozens and events in the handfuls per minute, and a stale cache
    * here would ring a bell for an admin whose permission was just revoked.
    * WITHIN one event, though, the role lookups are deduplicated — five admins
    * sharing one role must not cost five identical role fetches.
+   *
+   * This write-time filter decides who gets PUSHED a toast. The read path
+   * applies the same two tests again on every request, so a later re-tag or
+   * revocation takes the row away as well.
    */
   private async resolveAdminRecipients(
-    permissionKey: string,
-    subjectClientId?: string,
-  ): Promise<NotificationRecipient[]> {
-    const wanted = normalizePermissionKey(permissionKey);
+    permissionKeys: readonly string[],
+    subjectClientId: string,
+  ): Promise<string[]> {
+    const wanted = new Set(permissionKeys.map(normalizePermissionKey));
     const { rows } = await this.admins.findAll();
-    const recipients: NotificationRecipient[] = [];
+    const recipients: string[] = [];
     const heldByRole = new Map<string, string[]>();
 
     for (const admin of rows) {
@@ -127,36 +174,32 @@ export class NotificationsService implements NotificationDispatchPort {
          */
         if (admin.roleId && held !== admin.permissions) heldByRole.set(admin.roleId, held);
       }
-      if (!held.some((key) => normalizePermissionKey(key) === wanted)) continue;
+      if (!held.some((key) => wanted.has(normalizePermissionKey(key)))) continue;
 
-      if (subjectClientId) {
-        // Pass the admin's OWN intake grant (D-60) — omitting it treated an
-        // intake-granted admin as restricted and dropped their bell for an
-        // untagged client's event.
-        const scope = await this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false);
-        if (!scope.unrestricted) {
-          /*
-           * Visibility applied at WRITE time: an out-of-scope admin never
-           * holds a row naming a client they may not see. Only the DOMAIN
-           * answer ("not visible") skips the recipient — an infrastructure
-           * error must reach the outer catch and be LOGGED, or a scoped
-           * admin's silently missing row reads as a scoping decision.
-           */
-          try {
-            await this.visibility.assertVisible(subjectClientId, scope);
-          } catch (error) {
-            if (error instanceof NotFoundError || error instanceof ClientNotFoundError) continue;
-            throw error;
-          }
+      // Pass the admin's OWN intake grant (D-60) — omitting it treated an
+      // intake-granted admin as restricted and dropped their bell for an
+      // untagged client's event.
+      const scope = await this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false);
+      if (!scope.unrestricted) {
+        /*
+         * Only the DOMAIN answer ("not visible") skips the recipient — an
+         * infrastructure error must reach the outer catch and be LOGGED, or a
+         * scoped admin's silently missing row reads as a scoping decision.
+         */
+        try {
+          await this.visibility.assertVisible(subjectClientId, scope);
+        } catch (error) {
+          if (error instanceof NotFoundError || error instanceof ClientNotFoundError) continue;
+          throw error;
         }
       }
 
-      recipients.push({ kind: 'admin', id: admin.id });
+      recipients.push(admin.id);
     }
     return recipients;
   }
 
-  // ── The read API the controllers serve ────────────────────────────────────
+  // ── The client read API ───────────────────────────────────────────────────
 
   async list(
     recipient: NotificationRecipient,
@@ -173,12 +216,79 @@ export class NotificationsService implements NotificationDispatchPort {
     return this.store.markRead(recipient, id);
   }
 
-  async markAllRead(recipient: NotificationRecipient): Promise<number> {
-    return this.store.markAllRead(recipient);
+  async markAllRead(recipient: NotificationRecipient, upTo?: Date): Promise<number> {
+    return this.store.markAllRead(recipient, upTo);
+  }
+
+  // ── The admin read API: tasks, re-checked against the session every time ──
+
+  async adminFeed(
+    admin: AdminFeedPrincipal,
+    query: AdminFeedQuery,
+  ): Promise<CursorPage<AdminFeedItem>> {
+    const page = await this.store.findAdminPage(readerOf(admin), {
+      view: query.view,
+      status: query.view === 'history' ? query.status : undefined,
+      kinds: query.category ? kindsIn(query.category) : undefined,
+      q: query.q,
+      cursor: query.cursor,
+      limit: query.limit,
+    });
+    return {
+      ...page,
+      // The query already admits only catalogue kinds (`kindsVisibleTo`), so
+      // this never drops a row — it states the invariant to the type system
+      // instead of casting it away.
+      items: page.items.flatMap((row) =>
+        isAdminNotificationKind(row.kind)
+          ? [{ ...row, kind: row.kind, category: categoryOf(row.kind) }]
+          : [],
+      ),
+    };
+  }
+
+  async adminSummary(
+    admin: AdminFeedPrincipal,
+  ): Promise<{ count: number; byCategory: Record<AdminNotificationCategory, number> }> {
+    const categories = Object.fromEntries(
+      ADMIN_NOTIFICATION_CATEGORIES.map((category) => [category, kindsIn(category)]),
+    );
+    const summary = await this.store.adminInboxSummary(readerOf(admin), categories);
+    return {
+      count: summary.count,
+      // The store fills a key for every category it was handed — all of them.
+      byCategory: summary.byCategory,
+    };
+  }
+
+  async markAdminRead(admin: AdminFeedPrincipal, id: string) {
+    return this.store.markAdminRead(readerOf(admin), id);
+  }
+
+  async markAdminUnread(admin: AdminFeedPrincipal, id: string) {
+    return this.store.markAdminUnread(readerOf(admin), id);
+  }
+
+  async markAllAdminRead(
+    admin: AdminFeedPrincipal,
+    options: { category?: AdminNotificationCategory; upTo?: Date } = {},
+  ): Promise<number> {
+    return this.store.markAllAdminRead(readerOf(admin), {
+      kinds: options.category ? kindsIn(options.category) : undefined,
+      upTo: options.upTo,
+    });
+  }
+
+  async markAdminSubjectRead(
+    admin: AdminFeedPrincipal,
+    subjectKind: NotificationSubjectKind,
+    subjectId: string,
+  ): Promise<number> {
+    return this.store.markAdminSubjectRead(readerOf(admin), subjectKind, subjectId);
   }
 
   /**
-   * Retention. Daily rather than hourly — the window is 90 days, so precision
+   * Retention. Daily rather than hourly — the windows are months, so precision
    * is not the point — and safe to run on every instance: DELETE by age is
    * naturally idempotent.
    */
@@ -195,17 +305,30 @@ export class NotificationsService implements NotificationDispatchPort {
   }
 
   private async pruneOnce(): Promise<void> {
-    try {
-      const removed = await this.store.pruneOlderThan(RETENTION_DAYS);
-      if (removed > 0) {
-        this.logger.log(`Pruned ${removed} notification(s) older than ${RETENTION_DAYS} days.`);
+    for (const kind of ['client', 'admin'] as const) {
+      try {
+        const removed = await this.store.pruneOlderThan(kind, RETENTION_DAYS[kind]);
+        if (removed > 0) {
+          this.logger.log(
+            `Pruned ${removed} ${kind} notification(s) older than ${RETENTION_DAYS[kind]} days.`,
+          );
+        }
+      } catch (error) {
+        // Nothing lost — rows stay until the next run. Log, don't alert.
+        this.logger.error(
+          `The ${kind} notification prune could not run; rows remain until the next attempt: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
       }
-    } catch (error) {
-      // Nothing lost — rows stay until the next run. Log, don't alert.
-      this.logger.error(
-        `The notification prune job could not run; rows remain until the next attempt: ` +
-          `${error instanceof Error ? error.message : String(error)}`,
-      );
     }
   }
+}
+
+/** The session, reduced to what decides visibility. Rebuilt per request. */
+function readerOf(admin: AdminFeedPrincipal): AdminFeedReader {
+  return {
+    adminId: admin.id,
+    kinds: kindsVisibleTo(admin.permissions),
+    scope: admin.clientScope,
+  };
 }

@@ -55,6 +55,7 @@ import {
   SettleWithdrawalDto,
   AbandonTransferDto,
   DepositRejectDto,
+  ResolveAttentionDto,
   WithdrawalRejectDto,
 } from './dto/requests/money.dto';
 import {
@@ -64,6 +65,7 @@ import {
   WithdrawalListResponseDto,
   DepositDecisionDto,
   WithdrawalRowDto,
+  AttentionResolvedDto,
 } from './dto/responses.dto';
 import {
   PermissionsGuard,
@@ -961,5 +963,44 @@ export class AdminMoneyController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.money.abandonTransfer(id, req.admin, dto.reason);
+  }
+
+  /**
+   * "Mark resolved" on a payment only a person could settle.
+   *
+   * The finish line for the `rival_needs_attention` flag, which had none: an
+   * amount mismatch, a reversal, money paid against a failed row, or the
+   * platform and this side disagreeing sat flagged for ever, and the admin task
+   * about it with it. Clearing the flag here resolves those tasks for everyone
+   * (migration 0140). It moves NO money — whatever the reconciliation required
+   * (a manual credit, a compensating entry) is its own audited action; this is
+   * the record that somebody looked, decided, and said what they found.
+   */
+  @Patch('transactions/:id/attention/resolve')
+  /*
+   * `withdrawals` reaches the payout desk AND the Financial page, where a
+   * flagged deposit shows — the two screens that carry the attention badge.
+   */
+  @AnnouncesChange('withdrawals')
+  @UseGuards(PermissionsGuard)
+  // Any-of here; the service asserts the one matching the payment's direction.
+  @RequirePermissions('deposits.approve', 'withdrawals.settle')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Mark a payment that needed attention as resolved — clears the flag and its tasks',
+    description:
+      'For a deposit or withdrawal flagged as needing a person: reconcile it first (the ' +
+      'platform dashboard, the ledger), then record what you found. Refuses a payment that is ' +
+      'no longer flagged. Deposits need deposits.approve; withdrawals need withdrawals.settle.',
+  })
+  @ApiOkResponse({ type: AttentionResolvedDto })
+  @ScopedToClients('Checks the payment’s owner; out-of-scope 404s like a missing one.')
+  @Audited('transaction.attention_resolve')
+  resolveAttention(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: ResolveAttentionDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.money.resolveAttention(id, req.admin, dto.note);
   }
 }

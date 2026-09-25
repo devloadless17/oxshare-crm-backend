@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from 'pg';
+import { sql } from 'drizzle-orm';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { NotificationsStore } from '../src/store/notifications.store';
 import type { NotificationEvent } from '../src/modules/notifications/realtime.gateway';
@@ -18,11 +20,38 @@ import type { NotificationEvent } from '../src/modules/notifications/realtime.ga
 let ctx: MoneyTestContext;
 let store: NotificationsStore;
 let listener: Client;
-/** Every payload the database has announced, in order. */
+/** Every `notification_created` payload the database has announced, in order. */
 let heard: NotificationEvent[];
+/** Every `notification_changed` payload — a row read or resolved (0140). */
+let changed: { recipientKind: string; recipientId: string }[];
 
 const CLIENT_A = { kind: 'client' as const, id: '11111111-1111-1111-1111-111111111111' };
 const CLIENT_B = { kind: 'client' as const, id: '22222222-2222-2222-2222-222222222222' };
+const ADMIN_1 = 'a1111111-1111-4111-8111-111111111111';
+const ADMIN_2 = 'a2222222-2222-4222-8222-222222222222';
+const ADMIN_3 = 'a3333333-3333-4333-8333-333333333333';
+
+/** A client whose KYC waits for review — a real item for a task to be about. */
+async function kycSubject(email: string): Promise<{ userId: string; portalId: number }> {
+  const { rows } = await ctx.db.execute<{ id: string; portal_id: number }>(sql`
+    INSERT INTO users (email, password_hash, first_name, last_name)
+    VALUES (${email}, 'x', 'Realtime', 'Subject') RETURNING id, portal_id`);
+  await ctx.db.execute(
+    sql`INSERT INTO kyc_submissions (user_id, status) VALUES (${rows[0].id}, 'submitted')`,
+  );
+  return { userId: rows[0].id, portalId: rows[0].portal_id };
+}
+
+function kycTask(userId: string) {
+  return {
+    kind: 'admin.kyc.submitted',
+    params: { userId },
+    subjectKind: 'kyc' as const,
+    subjectId: userId,
+    subjectUserId: userId,
+    stillOpen: 'awaiting-review' as const,
+  };
+}
 
 /** Wait for the listener to hear something, or give up. */
 async function waitForEvents(count: number, timeoutMs = 5_000): Promise<NotificationEvent[]> {
@@ -48,10 +77,17 @@ beforeAll(async () => {
   listener = new Client({ connectionString: uri.toString() });
   await listener.connect();
   await listener.query('LISTEN notification_created');
+  await listener.query('LISTEN notification_changed');
 
   heard = [];
+  changed = [];
   listener.on('notification', (message) => {
-    if (message.payload) heard.push(JSON.parse(message.payload) as NotificationEvent);
+    if (!message.payload) return;
+    if (message.channel === 'notification_changed') {
+      changed.push(JSON.parse(message.payload) as { recipientKind: string; recipientId: string });
+      return;
+    }
+    heard.push(JSON.parse(message.payload) as NotificationEvent);
   });
 }, 120_000);
 
@@ -167,17 +203,17 @@ describe('the database announces a notification when it becomes real', () => {
     expect(heard, 'a rolled-back insert announced itself').toEqual([]);
   });
 
-  it('announces every recipient of a fan-out, one event each', async () => {
+  it('announces every admin a task fans out to, one event each, with its Portal ID', async () => {
+    const { userId, portalId } = await kycSubject('rt-fanout@oxshare-e2e.test');
     heard = [];
-    await store.insertMany([CLIENT_A, CLIENT_B], {
-      kind: 'admin.withdrawal.requested',
-      params: {},
-      dedupeKey: `fanout-${Date.now()}`,
-    });
+    await store.insertAdminTask([ADMIN_1, ADMIN_2], kycTask(userId));
 
     const events = await waitForEvents(2);
     expect(events).toHaveLength(2);
-    expect(events.map((e) => e.recipientId).sort()).toEqual([CLIENT_A.id, CLIENT_B.id].sort());
+    expect(events.map((e) => e.recipientId).sort()).toEqual([ADMIN_1, ADMIN_2].sort());
+    // The toast can say "#1000245" the instant the task lands — and only that:
+    // a name is masked per reader, which only the HTTP read can do.
+    expect(events.every((e) => e.subjectPortalId === portalId)).toBe(true);
   });
 
   it('stays silent for a replay the dedupe index absorbed', async () => {
@@ -201,5 +237,54 @@ describe('the database announces a notification when it becomes real', () => {
     // No row was written, so nobody is told. A trigger on INSERT would
     // otherwise turn every at-least-once redelivery into a second buzz.
     expect(heard).toEqual([]);
+  });
+});
+
+describe('a row read or resolved tells its reader’s open tabs — on commit only (0140)', () => {
+  it('announces a RESOLUTION to every recipient, and a rolled-back decision to nobody', async () => {
+    const { userId } = await kycSubject('rt-resolve@oxshare-e2e.test');
+    await store.insertAdminTask([ADMIN_1, ADMIN_2], kycTask(userId));
+    await waitForEvents(2);
+
+    // A decision that rolls back resolved nothing, so it says nothing.
+    changed = [];
+    await ctx.db
+      .transaction(async (tx) => {
+        await tx.execute(
+          sql`UPDATE kyc_submissions SET status = 'approved' WHERE user_id = ${userId}`,
+        );
+        throw new Error('the approval failed after the status moved');
+      })
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(changed, 'a rolled-back resolution announced itself').toEqual([]);
+
+    // The real one: both admins' tabs are told, once each.
+    await ctx.db.execute(
+      sql`UPDATE kyc_submissions SET status = 'approved' WHERE user_id = ${userId}`,
+    );
+    const deadline = Date.now() + 5_000;
+    while (changed.length < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(changed.map((c) => c.recipientId).sort()).toEqual([ADMIN_1, ADMIN_2].sort());
+  });
+
+  it('folds "mark all as read" on many rows into ONE event for that reader', async () => {
+    for (const n of [1, 2, 3]) {
+      const { userId } = await kycSubject(`rt-bulk-${n}@oxshare-e2e.test`);
+      await store.insertAdminTask([ADMIN_3], kycTask(userId));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    changed = [];
+    const updated = await store.markAllAdminRead({
+      adminId: ADMIN_3,
+      kinds: ['admin.kyc.submitted'],
+      scope: UNRESTRICTED,
+    });
+    expect(updated).toBe(3);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(changed).toEqual([{ recipientKind: 'admin', recipientId: ADMIN_3 }]);
   });
 });

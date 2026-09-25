@@ -492,13 +492,14 @@ export class IbApplicationsService {
         website: input.website ?? null,
       });
 
-      // Ring the reviewers' bells — post-write, never-throws, scope-filtered
-      // at write time. The queue badge stays the durable signal.
-      void this.notifications.notifyAdminsWithPermission(
-        'ib.approve',
-        { kind: 'admin.partner.applied', params: { applicationId: created.id, userId } },
-        { subjectClientId: userId },
-      );
+      // Ring the reviewers' bells — post-write, never-throws. The task resolves
+      // itself for every reviewer when the application leaves 'pending'
+      // (migration 0140); the queue badge stays the durable signal.
+      void this.notifications.notifyAdmins({
+        kind: 'admin.partner.applied',
+        params: { applicationId: created.id, userId },
+        subject: { id: created.id, clientId: userId },
+      });
 
       return created;
     } catch (error) {
@@ -991,9 +992,30 @@ export class IbApplicationsService {
 
   // ── managing partners after approval ───────────────────────────────────────
 
-  /** The partner list, scoped to what this admin may see, WITH earnings. */
+  /**
+   * The partner DIRECTORY, scoped to what this admin may see, WITH earnings.
+   *
+   * Searchable (`q`: Portal ID, name, email or referral code) and filterable by
+   * state since the Partners page returned (25 Sep 2026). It was deleted on
+   * 13 Aug because it and the client list disagreed about who WAS a partner —
+   * 7 against 1 — when this read `ib_accounts` and the client filter read a
+   * label nothing maintained. The client type is derived from `ib_accounts`
+   * now (`DERIVED_CLIENT_TYPE`), so both read one table, and
+   * `test/ib-partner-directory.spec.ts` pins that their totals agree.
+   *
+   * @param filter.active `true`/`false`, already parsed from `?status=` at the
+   *   edge, where an unknown value is a 400 rather than a filter that matches
+   *   nothing.
+   */
   async listPartners(
-    filter: { page?: number; limit?: number; sort?: string; order?: string },
+    filter: {
+      page?: number;
+      limit?: number;
+      sort?: string;
+      order?: string;
+      q?: string;
+      active?: boolean;
+    },
     scope: ClientScope,
   ) {
     const page = Math.max(1, filter.page ?? 1);
@@ -1004,6 +1026,8 @@ export class IbApplicationsService {
       scope,
       sort: sortKey(filter.sort, IB_PARTNER_SORT_COLUMNS, DEFAULT_IB_PARTNER_SORT, 'partners'),
       order: sortOrder(filter.order),
+      q: filter.q,
+      active: filter.active,
     });
 
     /*
@@ -1013,9 +1037,9 @@ export class IbApplicationsService {
      * — the first question anybody opening this screen has. One grouped query
      * for the whole page rather than one per row.
      *
-     * A partner with no accruals is absent from the map and reports '0': the
-     * honest reading of "nothing earned yet", rather than a row invented to fill
-     * a column.
+     * ONE ENTRY PER CURRENCY (see `IbStore.earningsByPartner`). A partner with
+     * no commission reports `[]`: the honest reading of "nothing earned yet",
+     * rather than a zero in a currency nobody chose.
      */
     const earnings = await this.ib.earningsByPartner(result.rows.map((r) => r.account.userId));
 
@@ -1032,11 +1056,39 @@ export class IbApplicationsService {
       result.rows.map((row) => ({ ...row, agencyId: row.account.agencyId })),
     );
 
+    /*
+     * MAPPED to the declared shape (`IbPartnerListResponseDto`), field by field,
+     * rather than spreading the store row.
+     *
+     * The spread returned the raw `ib_accounts` row — `programId` (dead since
+     * 0112), `applicationId`, timestamps — plus a duplicated top-level
+     * `agencyId`, none of it declared anywhere, so both frontends typed this
+     * response by hand and got it wrong. A declared type is only worth having
+     * if it is the WHOLE payload.
+     *
+     * `parentIbUserId` is deliberately not on it. The parent is named by
+     * `parentPortalId`, which the store resolves only inside the reader's
+     * territory; the raw uuid beside it handed over the id of a partner the
+     * reader is specifically denied — the oracle `partnerDetailFor` refuses to
+     * substitute for the same reason. `parentOutsideTerritory` says "there is
+     * one you may not see" without saying who.
+     */
     return {
-      ...result,
+      total: result.total,
       rows: withAgency.map((row) => ({
-        ...row,
-        earnings: earnings.get(row.account.userId) ?? { confirmed: '0', pending: '0' },
+        account: {
+          userId: row.account.userId,
+          level: row.account.level,
+          referralCode: row.account.referralCode,
+          active: row.account.active,
+          agencyId: row.account.agencyId,
+          approvedAt: row.account.approvedAt,
+        },
+        user: row.user,
+        parentPortalId: row.parentPortalId,
+        parentOutsideTerritory: row.account.parentIbUserId !== null && row.parentPortalId === null,
+        agencyName: row.agencyName,
+        earnings: earnings.get(row.account.userId) ?? [],
       })),
     };
   }
@@ -1186,7 +1238,8 @@ export class IbApplicationsService {
       /* How many CLIENTS they introduced — the other half of a partner's line,
          and the number the earnings are a consequence of. */
       referredClientCount: referredCount,
-      earnings: earningsMap.get(userId) ?? { confirmed: '0', pending: '0' },
+      // One entry per currency; `[]` is "nothing earned yet".
+      earnings: earningsMap.get(userId) ?? [],
     };
 
     /*

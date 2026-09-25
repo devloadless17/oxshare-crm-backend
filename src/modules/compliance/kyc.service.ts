@@ -901,14 +901,12 @@ export class KycService {
      * refused once. A queue that renders both identically hides that, and the
      * resubmissions are the ones that go stale.
      */
-    void this.notifications.notifyAdminsWithPermission(
-      'kyc.review',
-      {
-        kind: wasRejected ? 'admin.kyc.resubmitted' : 'admin.kyc.submitted',
-        params: { userId },
-      },
-      { subjectClientId: userId },
-    );
+    void this.notifications.notifyAdmins({
+      kind: wasRejected ? 'admin.kyc.resubmitted' : 'admin.kyc.submitted',
+      params: { userId },
+      // The submission is keyed on its client, so the item IS the client.
+      subject: { id: userId, clientId: userId },
+    });
 
     return submitted;
   }
