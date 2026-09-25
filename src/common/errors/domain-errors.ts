@@ -84,6 +84,19 @@ export class VerificationTokenExpiredError extends ValidationError {
 }
 
 /**
+ * The emailed 6-digit code did not confirm anything. → 400 `EMAIL_CODE_INVALID`
+ *
+ * ONE code for every way a code fails — wrong, expired, used up, superseded, or
+ * an address with no code at all — and deliberately so. Telling those apart
+ * would let anyone learn which addresses are registered and unconfirmed, the
+ * oracle `register` is built not to be. The client's next step is the same in
+ * every case anyway: check the latest email, or send a new code.
+ */
+export class EmailCodeInvalidError extends ValidationError {
+  override readonly code = 'EMAIL_CODE_INVALID';
+}
+
+/**
  * The caller is not authenticated. → 401
  *
  * `code` is annotated `: string` rather than left to infer the literal, because

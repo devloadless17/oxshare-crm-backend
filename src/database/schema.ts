@@ -165,6 +165,37 @@ export const users = pgTable(
       withTimezone: true,
     }),
     /*
+     * ── THE 6-DIGIT CODE, mailed beside the link (0138) ─────────────────────
+     *
+     * The client types it on the screen they registered from and is signed
+     * straight in. Four columns, and every one of them is part of why a code
+     * that short is safe:
+     *
+     *   hash        HMAC-SHA256 under a server secret, bound to the user id.
+     *               Not the plain SHA-256 the link uses: a code has a million
+     *               values, so a digest alone would fall to a dump in seconds.
+     *   expires_at  15 minutes. A code is for the screen in front of you.
+     *   attempts    5 wrong answers burn it — counted in the same statement
+     *               that reads the hash (`takeEmailCodeAttempt`), so parallel
+     *               guesses cannot spend more than the budget.
+     *   sent_at     the resend cooldown, enforced in the UPDATE that issues a
+     *               new one, so two quick requests cannot both mail.
+     *
+     * Deliberately NOT on the `User` object (`toUser` strips them): nothing can
+     * serialise a field it never holds. Only the store's code methods touch
+     * them, and `UsersStore.update` clears them whenever the address or its
+     * verification changes — a code mailed to one address must never confirm
+     * another.
+     */
+    emailVerificationCodeHash: varchar('email_verification_code_hash', { length: 64 }),
+    emailVerificationCodeExpiresAt: timestamp('email_verification_code_expires_at', {
+      withTimezone: true,
+    }),
+    emailVerificationCodeAttempts: integer('email_verification_code_attempts').notNull().default(0),
+    emailVerificationCodeSentAt: timestamp('email_verification_code_sent_at', {
+      withTimezone: true,
+    }),
+    /*
      * When the password last changed - the cutoff that kills outstanding
      * ACCESS tokens.
      *

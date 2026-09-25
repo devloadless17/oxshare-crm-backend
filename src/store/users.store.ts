@@ -7,8 +7,12 @@ import {
   desc,
   eq,
   getTableColumns,
+  gt,
+  isNotNull,
   isNull,
+  lt,
   not,
+  or,
   sql,
 } from 'drizzle-orm';
 import type { CursorPosition } from '../common/pagination';
@@ -192,7 +196,26 @@ export interface User {
 
 type Row = typeof users.$inferSelect;
 
-const toUser = (r: Row): User => ({
+/** What "no outstanding code" is, written wherever a code must end. */
+const NO_EMAIL_CODE = {
+  emailVerificationCodeHash: null,
+  emailVerificationCodeExpiresAt: null,
+  emailVerificationCodeAttempts: 0,
+  emailVerificationCodeSentAt: null,
+} as const;
+
+/*
+ * The code columns (0138) are STRIPPED, not merely left unread: nothing can
+ * serialise, log or return a field the object never holds. The code methods
+ * below are the only way to them.
+ */
+const toUser = ({
+  emailVerificationCodeHash: _codeHash,
+  emailVerificationCodeExpiresAt: _codeExpiresAt,
+  emailVerificationCodeAttempts: _codeAttempts,
+  emailVerificationCodeSentAt: _codeSentAt,
+  ...r
+}: Row): User => ({
   ...r,
   verificationLevel: r.verificationLevel === 1 ? 1 : 0,
   emailVerificationTokenHash: r.emailVerificationTokenHash ?? undefined,
@@ -553,7 +576,8 @@ export class UsersStore {
   async consumeEmailVerification(id: string, tokenHash: string, at: Date): Promise<boolean> {
     const rows = await this.db
       .update(users)
-      .set({ emailVerified: true, emailVerificationConsumedAt: at })
+      // Verified by the link: an outstanding code has nothing left to confirm.
+      .set({ emailVerified: true, emailVerificationConsumedAt: at, ...NO_EMAIL_CODE })
       .where(
         and(
           eq(users.id, id),
@@ -563,6 +587,116 @@ export class UsersStore {
       )
       .returning({ id: users.id });
     return rows.length === 1;
+  }
+
+  // ─── The 6-digit email code (0138) ──────────────────────────────────────────
+
+  /** A code for a brand-new registration — nothing to cool down from yet. */
+  async issueEmailCode(id: string, codeHash: string, expiresAt: Date, at: Date): Promise<void> {
+    await this.db
+      .update(users)
+      .set({
+        emailVerificationCodeHash: codeHash,
+        emailVerificationCodeExpiresAt: expiresAt,
+        emailVerificationCodeAttempts: 0,
+        emailVerificationCodeSentAt: at,
+      })
+      .where(and(eq(users.id, id), eq(users.emailVerified, false)));
+  }
+
+  /**
+   * A new link AND a new code for an unverified address, unless one was sent
+   * within `cooldownMs` — decided in the UPDATE itself, so two quick requests
+   * cannot both win and both mail. `false` means nothing was issued: send
+   * nothing, and tell nobody.
+   */
+  async issueEmailVerification(
+    id: string,
+    issue: { tokenHash: string; tokenExpiry: Date; codeHash: string; codeExpiresAt: Date },
+    at: Date,
+    cooldownMs: number,
+  ): Promise<boolean> {
+    const cutoff = new Date(at.getTime() - cooldownMs);
+    const rows = await this.db
+      .update(users)
+      .set({
+        emailVerificationTokenHash: issue.tokenHash,
+        emailVerificationExpiry: issue.tokenExpiry,
+        // A new cycle: the previous one's redemption must not survive into it.
+        emailVerificationConsumedAt: null,
+        emailVerificationCodeHash: issue.codeHash,
+        emailVerificationCodeExpiresAt: issue.codeExpiresAt,
+        emailVerificationCodeAttempts: 0,
+        emailVerificationCodeSentAt: at,
+      })
+      .where(
+        and(
+          eq(users.id, id),
+          eq(users.emailVerified, false),
+          or(
+            isNull(users.emailVerificationCodeSentAt),
+            lt(users.emailVerificationCodeSentAt, cutoff),
+          ),
+        ),
+      )
+      .returning({ id: users.id });
+    return rows.length === 1;
+  }
+
+  /**
+   * Spend one attempt on the outstanding code and hand back its hash — or
+   * `undefined` when there is no live code, it has expired, or its attempts
+   * are used up.
+   *
+   * The attempt is COUNTED in the statement that reads the hash, before any
+   * comparison: five parallel guesses cannot each read "four left".
+   */
+  async takeEmailCodeAttempt(
+    id: string,
+    maxAttempts: number,
+    at: Date,
+  ): Promise<string | undefined> {
+    const [row] = await this.db
+      .update(users)
+      .set({ emailVerificationCodeAttempts: sql`${users.emailVerificationCodeAttempts} + 1` })
+      .where(
+        and(
+          eq(users.id, id),
+          eq(users.emailVerified, false),
+          isNotNull(users.emailVerificationCodeHash),
+          gt(users.emailVerificationCodeExpiresAt, at),
+          lt(users.emailVerificationCodeAttempts, maxAttempts),
+        ),
+      )
+      .returning({ codeHash: users.emailVerificationCodeHash });
+    return row?.codeHash ?? undefined;
+  }
+
+  /**
+   * Verify the address with the code whose hash the caller has just matched.
+   * One conditional statement, like the link's: of two requests carrying the
+   * right code, exactly one gets the user back.
+   *
+   * The link's redemption is marked too, so the same email's link answers
+   * "already verified" rather than "invalid" if it is clicked afterwards.
+   */
+  async consumeEmailCode(id: string, codeHash: string, at: Date): Promise<User | undefined> {
+    const [row] = await this.db
+      .update(users)
+      .set({
+        emailVerified: true,
+        emailVerificationConsumedAt: sql`coalesce(${users.emailVerificationConsumedAt}, ${at})`,
+        ...NO_EMAIL_CODE,
+      })
+      .where(
+        and(
+          eq(users.id, id),
+          eq(users.emailVerified, false),
+          eq(users.emailVerificationCodeHash, codeHash),
+        ),
+      )
+      .returning();
+    return row ? toUser(row) : undefined;
   }
 
   /**
@@ -636,6 +770,17 @@ export class UsersStore {
       values[key] = value === undefined ? null : value;
     }
     if (Object.keys(values).length === 0) return this.findById(id);
+
+    /*
+     * Any change to the address, or to whether it is verified, ENDS an
+     * outstanding code — here, so no writer can forget. A code mailed to the old
+     * address must never confirm a new one (an admin's email change), and an
+     * address confirmed another way has nothing left to confirm (a password
+     * reset, a link).
+     */
+    if ('email' in rest || 'emailVerified' in rest || 'emailVerificationTokenHash' in rest) {
+      Object.assign(values, NO_EMAIL_CODE);
+    }
 
     const [row] = await (executor ?? this.db)
       .update(users)

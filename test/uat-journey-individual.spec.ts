@@ -207,7 +207,8 @@ describe('§14 J1 — step 1: an individual registers directly', () => {
   });
 
   it('emailed a verification link, and the link works', async () => {
-    const sent = mail.find('sendVerificationEmail', CLIENT.email);
+    // The LATEST: the refused sign-in above may have mailed a fresh link.
+    const sent = mail.latest('sendVerificationEmail', CLIENT.email);
     expect(sent, 'no verification email was sent').toBeDefined();
     const token = sent?.args[1] as string;
     expect(token, 'the verification email carried no token').toBeTruthy();

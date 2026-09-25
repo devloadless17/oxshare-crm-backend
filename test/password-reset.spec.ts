@@ -83,7 +83,11 @@ beforeAll(async () => {
 
   auth = new AuthService(
     {} as never, // jwt — unused on these paths
-    { get: () => undefined } as never,
+    // Only the key the 6-digit email code is hashed under (0138) is read here.
+    {
+      get: (key: string) =>
+        key === 'JWT_ACCESS_SECRET' ? 'test-email-code-secret-at-least-32-chars' : undefined,
+    } as never,
     email as never,
     store,
     {} as never, // csrf — unused

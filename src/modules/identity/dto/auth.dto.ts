@@ -1,4 +1,12 @@
-import { IsEmail, IsString, IsNotEmpty, MinLength, MaxLength, IsOptional } from 'class-validator';
+import {
+  IsEmail,
+  IsString,
+  IsNotEmpty,
+  Matches,
+  MinLength,
+  MaxLength,
+  IsOptional,
+} from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class RegisterDto {
@@ -83,6 +91,18 @@ export class VerifyEmailDto {
   @IsString()
   @IsNotEmpty()
   token: string;
+}
+
+/** The 6-digit code from the verification email — see `AuthService.verifyEmailCode`. */
+export class VerifyEmailCodeDto {
+  @ApiProperty({ example: 'john@example.com' })
+  @IsEmail()
+  email: string;
+
+  @ApiProperty({ example: '482913', description: 'The 6-digit code from the verification email.' })
+  @IsString()
+  @Matches(/^\d{6}$/, { message: 'Enter the 6-digit code from the email.' })
+  code: string;
 }
 
 export class ResendVerificationDto {

@@ -40,6 +40,7 @@ import {
   RegisterDto,
   LoginDto,
   ResendVerificationDto,
+  VerifyEmailCodeDto,
   VerifyEmailDto,
   ForgotPasswordDto,
   ResetPasswordDto,
@@ -111,16 +112,51 @@ export class AuthController {
     return this.auth.verifyEmail(dto.token);
   }
 
+  /*
+   * The code from the verification email — confirms the address AND signs the
+   * client in, from the screen they registered on (asked for by the client, 25
+   * Sep 2026). The link above stays for another device.
+   *
+   * Throttled per IP here; the real bound is per CODE — five attempts, fifteen
+   * minutes, one use — which no spread of IPs can get around
+   * (`common/security/email-code.ts`).
+   */
+  @NoCsrf(
+    'Establishing a session cannot be a forgery of one, exactly as login: there is ' +
+      'nothing yet to protect, and the emailed code is the whole credential. Origin ' +
+      'validation still runs, which is what defends against login CSRF.',
+  )
+  @Post('verify-email-code')
+  @Throttle({ default: { ttl: 900_000, limit: 20 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Confirm the email with the 6-digit code, and sign in — httpOnly cookies, no tokens',
+  })
+  @ApiOkResponse({ type: AuthTokensResponseDto })
+  verifyEmailCode(
+    @Body() dto: VerifyEmailCodeDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.auth.verifyEmailCode(dto.email, dto.code, res, deviceOf(req));
+  }
+
   @NoCsrf(
     'Public and throttled, and the address is supplied in the body, not taken ' +
       'from a session. Demanding the session-bound token refused a signed-in ' +
       'browser for no protection. Origin validation still runs.',
   )
   @Post('resend-verification')
-  // §8.4's pattern: a mail-bomb vector without a per-user limit.
-  @Throttle({ default: { ttl: 900_000, limit: 3 } })
+  /*
+   * §8.4's pattern: a mail-bomb vector without a per-user limit — which it now
+   * has: a 30-second cooldown and six an hour per ADDRESS. Five per IP, not
+   * three, because the code screen's "send a new code" is an ordinary step for
+   * somebody whose mail is slow, and three left them stuck after one bad
+   * minute.
+   */
+  @Throttle({ default: { ttl: 900_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Resend email verification link' })
+  @ApiOperation({ summary: 'Send a new verification code and link' })
   @ApiOkResponse({ type: MessageResponseDto })
   resendVerification(@Body() dto: ResendVerificationDto) {
     return this.auth.resendVerification(dto.email);

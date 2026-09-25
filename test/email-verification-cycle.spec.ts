@@ -78,7 +78,11 @@ beforeAll(async () => {
 
   auth = new AuthService(
     {} as never, // jwt — unused on these paths
-    { get: () => undefined } as never,
+    // Only the key the 6-digit email code is hashed under (0138) is read here.
+    {
+      get: (key: string) =>
+        key === 'JWT_ACCESS_SECRET' ? 'test-email-code-secret-at-least-32-chars' : undefined,
+    } as never,
     email as never,
     store,
     {} as never, // csrf — unused
@@ -302,9 +306,24 @@ describe('issuing a NEW token ends the previous cycle', () => {
 
   it('the OLD token stops working once a new one is issued', async () => {
     const { token: old } = await register('superseded@test.local');
+    // A new cycle begins only once the 30-second resend cooldown has passed
+    // (0138) — see the next case for what happens inside it.
+    await ctx.db
+      .update(users)
+      .set({ emailVerificationCodeSentAt: new Date(Date.now() - 31_000) })
+      .where(eq(users.email, 'superseded@test.local'));
     await auth.resendVerification('superseded@test.local');
 
     await expect(auth.verifyEmail(old)).rejects.toThrow(ValidationError);
+  });
+
+  it('a resend INSIDE the cooldown issues nothing, so the link already sent keeps working', async () => {
+    const { token } = await register('cooldown@test.local');
+    mailed.length = 0;
+    await auth.resendVerification('cooldown@test.local');
+
+    expect(mailed, 'a resend inside the cooldown mailed').toEqual([]);
+    await expect(auth.verifyEmail(token)).resolves.toMatchObject({ status: 'verified' });
   });
 
   it('the store REFUSES a new token that says nothing about the marker', async () => {
