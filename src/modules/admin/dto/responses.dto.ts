@@ -2508,7 +2508,9 @@ export class AdminProfileNameDto {
 }
 
 /**
- * One row on the client profile's Positions tab.
+ * One CLOSED position on the client profile's Positions tab, built from the
+ * ingested MT5 deals: the closing deal, plus its opening deal when that was
+ * ingested too.
  *
  * Prices carry more decimals than money and both cross as STRINGS — §6.1 for
  * the money, and for the prices because a JPY pair quotes to 3 places while
@@ -2517,42 +2519,52 @@ export class AdminProfileNameDto {
 @NoClientFields(
   'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
 )
-export class ClientPositionRowDto {
-  @ApiProperty() id: string;
-  @ApiProperty() ticket: string;
+export class ClientClosedPositionRowDto {
+  @ApiProperty({ description: 'The closing deal’s CRM id.' }) id: string;
+  @ApiProperty({ description: 'The closing deal’s MT5 ticket.' }) ticket: string;
+  @ApiProperty({ type: 'string', nullable: true, description: 'The MT5 position id.' })
+  positionId: string | null;
+  @ApiProperty({ description: 'The MT5 login it was traded on.' }) login: string;
+  @ApiProperty({ enum: ['live', 'demo'] }) environment: string;
   @ApiProperty() symbol: string;
-  @ApiProperty({ enum: ['buy', 'sell'] }) side: string;
-  @ApiProperty({ type: 'string', example: '0.2000', description: 'Lots.' }) volume: string;
-  @ApiProperty({ type: 'string' }) openPrice: string;
-  @ApiProperty({ type: 'string', nullable: true, description: 'NULL while open.' })
-  closePrice: string | null;
+  @ApiProperty({
+    enum: ['buy', 'sell'],
+    description: 'The POSITION’s side — the opening deal’s, not the closing deal’s.',
+  })
+  side: string;
+  @ApiProperty({ type: 'string', example: '0.20000000', description: 'Lots closed.' })
+  volume: string;
   @ApiProperty({
     type: 'string',
     nullable: true,
+    description: 'NULL when the opening deal was never ingested (opened before the CRM was).',
+  })
+  openPrice: string | null;
+  @ApiProperty({ type: 'string' }) closePrice: string;
+  @ApiProperty({ type: 'string', description: 'The realised result of the closing deal.' })
+  profit: string;
+  @ApiProperty({
+    type: 'string',
     description:
-      'The FLOATING result while `status` is open, and the REALISED one once closed. One ' +
-      'column, two meanings, disambiguated by `status` — label it accordingly.',
+      'MT5 commission on the trade: opening and closing deal together. Negative is charged.',
   })
-  profit: string | null;
-  @ApiProperty({ type: 'string', nullable: true }) swap: string | null;
-  @ApiProperty({ type: 'string', nullable: true }) commission: string | null;
+  commission: string;
+  @ApiProperty({ type: 'string' }) swap: string;
   @ApiProperty() currency: string;
-  @ApiProperty({ enum: ['open', 'closed'] }) status: string;
-  @ApiProperty() openedAt: Date;
-  @ApiProperty({ type: Date, nullable: true }) closedAt: Date | null;
   @ApiProperty({
-    type: 'string',
+    type: Date,
     nullable: true,
-    description: 'The account it was traded on. NULL until MT5 issues a login.',
+    description: 'NULL when the opening deal is unknown.',
   })
-  login: string | null;
+  openedAt: Date | null;
+  @ApiProperty() closedAt: Date;
 }
 
 @NoClientFields(
   'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
 )
-export class ClientPositionsPageDto {
-  @ApiProperty({ type: [ClientPositionRowDto] }) rows: ClientPositionRowDto[];
+export class ClientClosedPositionsPageDto {
+  @ApiProperty({ type: [ClientClosedPositionRowDto] }) rows: ClientClosedPositionRowDto[];
   @ApiProperty() total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;

@@ -11246,28 +11246,16 @@
         ]
       }
     },
-    "/v1/admin/clients/{id}/positions": {
+    "/v1/admin/clients/{id}/closed-positions": {
       "get": {
-        "description": "Newest first, joined to the account they were traded on. `profit` is the FLOATING result while a position is open and the REALISED one once it has closed — one column, disambiguated by `status`. Prices and money are strings (§6.1).",
-        "operationId": "AdminHoldingsController_listClientPositions",
+        "description": "One row per closing deal on any of the client’s accounts, newest first. The opening deal supplies the open price, open time and side when it was ingested; they are null otherwise, except the side. Commission is the opening and closing deal together. Prices and money are strings (§6.1).",
+        "operationId": "AdminHoldingsController_listClientClosedPositions",
         "parameters": [
           {
             "name": "id",
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "status",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "enum": [
-                "open",
-                "closed"
-              ],
               "type": "string"
             }
           },
@@ -11294,7 +11282,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ClientPositionsPageDto"
+                  "$ref": "#/components/schemas/ClientClosedPositionsPageDto"
                 }
               }
             }
@@ -11305,7 +11293,7 @@
             "cookie": []
           }
         ],
-        "summary": "One client’s positions, open or closed",
+        "summary": "One client’s closed positions, from the ingested MT5 deals",
         "tags": [
           "admin"
         ]
@@ -20862,14 +20850,32 @@
           "limit"
         ]
       },
-      "ClientPositionRowDto": {
+      "ClientClosedPositionRowDto": {
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "The closing deal’s CRM id."
           },
           "ticket": {
-            "type": "string"
+            "type": "string",
+            "description": "The closing deal’s MT5 ticket."
+          },
+          "positionId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The MT5 position id."
+          },
+          "login": {
+            "type": "string",
+            "description": "The MT5 login it was traded on."
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ]
           },
           "symbol": {
             "type": "string"
@@ -20879,84 +20885,73 @@
             "enum": [
               "buy",
               "sell"
-            ]
+            ],
+            "description": "The POSITION’s side — the opening deal’s, not the closing deal’s."
           },
           "volume": {
             "type": "string",
-            "example": "0.2000",
-            "description": "Lots."
+            "example": "0.20000000",
+            "description": "Lots closed."
           },
           "openPrice": {
-            "type": "string"
-          },
-          "closePrice": {
             "type": "string",
             "nullable": true,
-            "description": "NULL while open."
+            "description": "NULL when the opening deal was never ingested (opened before the CRM was)."
+          },
+          "closePrice": {
+            "type": "string"
           },
           "profit": {
             "type": "string",
-            "nullable": true,
-            "description": "The FLOATING result while `status` is open, and the REALISED one once closed. One column, two meanings, disambiguated by `status` — label it accordingly."
-          },
-          "swap": {
-            "type": "string",
-            "nullable": true
+            "description": "The realised result of the closing deal."
           },
           "commission": {
             "type": "string",
-            "nullable": true
+            "description": "MT5 commission on the trade: opening and closing deal together. Negative is charged."
+          },
+          "swap": {
+            "type": "string"
           },
           "currency": {
             "type": "string"
           },
-          "status": {
-            "type": "string",
-            "enum": [
-              "open",
-              "closed"
-            ]
-          },
           "openedAt": {
             "format": "date-time",
-            "type": "string"
+            "type": "string",
+            "nullable": true,
+            "description": "NULL when the opening deal is unknown."
           },
           "closedAt": {
             "format": "date-time",
-            "type": "string",
-            "nullable": true
-          },
-          "login": {
-            "type": "string",
-            "nullable": true,
-            "description": "The account it was traded on. NULL until MT5 issues a login."
+            "type": "string"
           }
         },
         "required": [
           "id",
           "ticket",
+          "positionId",
+          "login",
+          "environment",
           "symbol",
           "side",
           "volume",
           "openPrice",
           "closePrice",
           "profit",
-          "swap",
           "commission",
+          "swap",
           "currency",
-          "status",
           "openedAt",
-          "closedAt",
-          "login"
+          "closedAt"
         ]
       },
-      "ClientPositionsPageDto": {
+      "ClientClosedPositionsPageDto": {
         "type": "object",
         "properties": {
           "rows": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ClientPositionRowDto"
+              "$ref": "#/components/schemas/ClientClosedPositionRowDto"
             }
           },
           "total": {
