@@ -325,4 +325,35 @@ process.on('uncaughtException', (error) => {
   setTimeout(() => process.exit(1), 250).unref();
 });
 
-void bootstrap();
+/*
+ * A FAILED BOOT EXITS. It used to be `void bootstrap()`, which sent a startup
+ * failure to the `unhandledRejection` handler above — whose policy, "alert and
+ * carry on", is right for a bounced email and wrong for the server itself.
+ *
+ * What that produced, seen on 25 Sep: one query failed while a module was
+ * initialising (`SelfServiceGroups.onModuleInit` reading trading products, only
+ * to print which account types are open), `app.listen` was never reached, and
+ * the process stayed alive holding nothing. `pgrep` saw a backend, :3001 had no
+ * listener, and nothing restarted it — the console read "Cannot reach the
+ * server" until somebody killed it by hand. In production the container would
+ * sit "Up" serving nothing, and a restart policy never fires for a process that
+ * does not exit.
+ *
+ * Exiting hands a failed boot to the restart policy, the same reasoning
+ * `uncaughtException` states above — and a transient database blip at deploy
+ * becomes a restart that succeeds instead of an outage that lasts.
+ */
+bootstrap().catch((error: unknown) => {
+  raiseAlert(
+    new Logger('Process'),
+    ALERT_KINDS.UNCAUGHT_EXCEPTION,
+    'page',
+    `The API failed to start and is exiting: ${error instanceof Error ? error.message : String(error)}`,
+    { stack: error instanceof Error ? (error.stack ?? '').slice(0, 500) : 'none' },
+  );
+  // The code is set FIRST: if the event loop drains before the timer fires, the
+  // process ends on its own — and must not end with 0, which an `on-failure`
+  // restart policy reads as a clean stop.
+  process.exitCode = 1;
+  setTimeout(() => process.exit(1), 250).unref();
+});
