@@ -269,3 +269,56 @@ export class LedgerListResponseDto {
   @ApiProperty({ type: [String], required: false })
   maskedFields?: string[];
 }
+
+/** One movement on a statement, with the balance it left the wallet at. */
+export class StatementLineDto {
+  @ApiProperty() id: string;
+  @ApiProperty() createdAt: Date;
+  @ApiProperty({
+    enum: ['deposit', 'withdrawal', 'commission', 'rebate', 'payout', 'adjustment', 'transfer'],
+  })
+  entryType: string;
+  @ApiProperty({ example: 'transaction' }) referenceType: string;
+  @ApiProperty() referenceId: string;
+  @ApiProperty({ description: 'Signed decimal string: positive credits, negative debits.' })
+  amount: string;
+  @ApiProperty({ description: 'Wallet balance after this line, as stored by the ledger.' })
+  balanceAfter: string;
+  @ApiProperty({ type: String, nullable: true, description: 'Payment rail name, if any.' })
+  methodName: string | null;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Payment provider; `manual_admin` for money the team placed by hand.',
+  })
+  provider: string | null;
+  @ApiProperty({ type: String, nullable: true, description: 'MT5 login, for a transfer line.' })
+  tradingAccountLogin: string | null;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    enum: ['wallet_to_account', 'account_to_wallet'],
+  })
+  transferDirection: string | null;
+}
+
+/**
+ * `GET /wallet/statement` — one wallet over one period, reconciling:
+ * opening + credits − debits = closing, and every line carries the running
+ * balance the ledger stored for it.
+ */
+export class StatementDto {
+  @ApiProperty() walletId: string;
+  @ApiProperty() walletNumber: string;
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty({ example: '2026-09-01' }) from: string;
+  @ApiProperty({ example: '2026-09-30' }) to: string;
+  @ApiProperty({ description: 'Balance at the start of `from`.' }) openingBalance: string;
+  @ApiProperty({ description: 'Balance at the end of `to`.' }) closingBalance: string;
+  @ApiProperty() totalCredits: string;
+  @ApiProperty({ description: 'Positive: the sum of money that left.' }) totalDebits: string;
+  @ApiProperty({ type: [StatementLineDto] }) lines: StatementLineDto[];
+  @ApiProperty({ description: 'True when the period held more lines than one statement returns.' })
+  truncated: boolean;
+  @ApiProperty() generatedAt: Date;
+}

@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsArray, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 import { transactionStateEnum, transactionDirectionEnum } from '../../../database/schema';
 import { TransactionDto } from './withdrawal.dto';
 
@@ -36,6 +36,21 @@ export type TransactionSortField = (typeof TRANSACTION_SORT_FIELDS)[number];
 
 export const SORT_ORDERS = ['asc', 'desc'] as const;
 
+/**
+ * The movement kinds a CLIENT'S history holds — the union's own vocabulary.
+ *
+ * One more than the admin's `TRANSACTION_KINDS`: `rebate` is an arm only the
+ * client list carries (see `movementsCte`), so a client can ask for it and an
+ * operator's Financial list cannot contain it.
+ */
+export const CLIENT_TRANSACTION_KINDS = [
+  'payment',
+  'transfer',
+  'commission_transfer',
+  'rebate',
+] as const;
+export type ClientTransactionKind = (typeof CLIENT_TRANSACTION_KINDS)[number];
+
 /** `YYYY-MM-DD`, matching what the portal's date-range picker holds. */
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -64,6 +79,34 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  * behaviour the endpoint had before, minus the silent cap.
  */
 export class ListTransactionsQueryDto {
+  /**
+   * Which KINDS of movement — comma-separated, any of them.
+   *
+   * The portal's Deposit, Withdraw and Transfer screens each list their own
+   * history, and `direction` cannot draw those lines: a transfer back from a
+   * trading account is a `deposit` from the wallet's side, so "deposits" by
+   * direction alone would list it beside card payments. `kind=payment` with a
+   * direction is a deposit history; `kind=transfer,commission_transfer` is the
+   * transfer history.
+   */
+  @ApiPropertyOptional({
+    type: String,
+    example: 'transfer,commission_transfer',
+    description: `Comma-separated. Any of: ${CLIENT_TRANSACTION_KINDS.join(', ')}.`,
+  })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string'
+      ? value
+          .split(',')
+          .map((part) => part.trim())
+          .filter(Boolean)
+      : value,
+  )
+  @IsArray()
+  @IsIn(CLIENT_TRANSACTION_KINDS, { each: true })
+  kind?: ClientTransactionKind[];
+
   @ApiPropertyOptional({ enum: DIRECTIONS, description: 'Deposits or withdrawals only.' })
   @IsOptional()
   @IsIn(DIRECTIONS)
@@ -152,4 +195,23 @@ export class TransactionPageDto {
 
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
+}
+
+/**
+ * One (currency, direction, state) cell of a client's filtered history — the totals behind
+ * the summary tiles on the Deposit, Withdraw and Transfer screens.
+ *
+ * Summed BY THE DATABASE over every matching row. The alternative, adding up
+ * the page the screen happens to hold, is the R-2.5 under-report this DTO file
+ * opens with: a total over 25 rows presented as a total over the history.
+ * Per currency because there is no FX source — USD and USDT never share a sum.
+ */
+export class TransactionSummaryRowDto {
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty({ enum: DIRECTIONS, description: "Wallet-side, as on the list's rows." })
+  direction: (typeof DIRECTIONS)[number];
+  @ApiProperty({ enum: STATES }) state: (typeof STATES)[number];
+  @ApiProperty() count: number;
+  @ApiProperty({ type: 'string', example: '1250.00000000', description: 'Decimal string (§6.1).' })
+  total: string;
 }

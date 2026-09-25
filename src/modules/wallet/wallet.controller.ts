@@ -1,11 +1,12 @@
-import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, ParseUUIDPipe, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { WalletService } from './wallet.service';
-import { LedgerListResponseDto, WalletDto } from './dto/wallet-response.dto';
+import { LedgerListResponseDto, StatementDto, WalletDto } from './dto/wallet-response.dto';
+import { StatementService } from './statement.service';
 import { decodeCursor } from '../../common/pagination';
 import { enumQuery } from '../../common/query-params';
 import { ledgerEntryTypeEnum } from '../../database/schema';
@@ -28,7 +29,10 @@ import { ledgerEntryTypeEnum } from '../../database/schema';
 @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
 @Controller('wallet')
 export class WalletController {
-  constructor(private readonly wallets: WalletService) {}
+  constructor(
+    private readonly wallets: WalletService,
+    private readonly statements: StatementService,
+  ) {}
 
   @Get()
   @ApiCookieAuth()
@@ -38,6 +42,25 @@ export class WalletController {
   @ApiOkResponse({ type: [WalletDto] })
   myWallets(@Req() req: Request & { user: User }) {
     return this.wallets.listWallets(req.user.id);
+  }
+
+  /**
+   * One wallet's account statement for a period — opening balance, every line
+   * with its running balance, closing balance. See `statement.service.ts`.
+   *
+   * The wallet must be the caller's own; anyone else's answers 404.
+   */
+  @Get('statement')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: "An account statement for one of the signed-in client's wallets" })
+  @ApiOkResponse({ type: StatementDto })
+  statement(
+    @Req() req: Request & { user: User },
+    @Query('walletId', new ParseUUIDPipe()) walletId: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    return this.statements.forWallet(req.user.id, walletId, from ?? '', to ?? '');
   }
 
   @Get('ledger')
