@@ -10,6 +10,16 @@ export interface Mt5Group {
   name: string;
   currency: string;
   leverageDefault: number;
+  /*
+   * MT5's own trading terms on the group, reported by bridges from 26 Sep 2026
+   * on. ABSENT or null from an older bridge, which the group sync reads as "not
+   * reported" and leaves the stored values alone. Checked field by field on
+   * the way in — see `common/mt5-group-terms.ts`.
+   */
+  marginCall?: string | null;
+  marginStopOut?: string | null;
+  marginStopOutMode?: string | null;
+  commissions?: unknown;
 }
 
 export interface Mt5CreatedAccount {
