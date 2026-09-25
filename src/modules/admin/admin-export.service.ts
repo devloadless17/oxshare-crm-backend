@@ -26,7 +26,7 @@ import {
 import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { CsvColumn } from '../../common/export/csv';
-import { emailVerifiedFilter, kycStatusFilter } from './admin-clients.service';
+import { emailVerifiedFilter, kycStatusFilter, UUID_RE } from './admin-clients.service';
 
 /**
  * Row sources for the admin table exports.
@@ -154,6 +154,20 @@ export class AdminExportService {
       }
     }
 
+    /*
+     * REFUSED when malformed, never ignored — the list's rule, for its reason:
+     * an ignored filter is a file of every client under a heading that says it
+     * is one partner's book.
+     */
+    if (
+      query.referredBy !== undefined &&
+      query.referredBy !== '' &&
+      !UUID_RE.test(query.referredBy)
+    ) {
+      throw new ValidationError('referredBy must be a client id.');
+    }
+    const referredBy = query.referredBy || undefined;
+
     const sort = clientSortKey(query.sort);
     const order = clientSortOrder(query.order);
 
@@ -183,6 +197,7 @@ export class AdminExportService {
        */
       emailVerified: emailVerifiedFilter(query.emailVerified),
       kycStatus: kycStatusFilter(query.kycStatus),
+      referredBy,
       sort,
       order,
       // The whole point. Row-level visibility, in the WHERE clause.
@@ -819,6 +834,15 @@ export interface ClientExportQuery {
    */
   emailVerified?: string;
   kycStatus?: string;
+  /**
+   * Everyone one partner introduced — the list's `?referredBy=`, already a
+   * client id by the time it gets here (`ClientRefPipe` resolves a Portal ID).
+   *
+   * The same gap as the two above, found the same way: the clients screen
+   * filtered by it and the export did not accept it, so "export the clients
+   * this partner brought in" produced every client in the scope.
+   */
+  referredBy?: string;
   sort?: string;
   order?: string;
 }

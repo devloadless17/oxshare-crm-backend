@@ -978,6 +978,39 @@ describe('the export honours the SAME filters as the list', () => {
     expect(hasClientRow(all.text, theirsPortalId)).toBe(true);
   });
 
+  /*
+   * The third filter the export used to drop: `?referredBy=` — one partner's
+   * book, reached from the Network tab's "see all". The clients screen
+   * narrowed by it and the file held every client in the scope.
+   */
+  it('narrows by referredBy — one partner’s book, not everyone', async () => {
+    const db = ctx.db.db;
+    // `theirs` becomes the partner who introduced `mine`.
+    await db.update(users).set({ referredByIbUserId: theirsId }).where(eq(users.id, mineId));
+    await db.update(users).set({ referredByIbUserId: null }).where(eq(users.id, theirsId));
+
+    const master = await actingAs(ctx, 'admin', MASTER);
+    // By Portal ID, as the screen sends it — `ClientRefPipe` resolves it.
+    const res = await master.get(`/v1/admin/clients/export?referredBy=${theirsPortalId}`);
+
+    expect(res.status).toBe(200);
+    expect(hasClientRow(res.text, minePortalId), 'the introduced client is missing').toBe(true);
+    expect(
+      hasClientRow(res.text, theirsPortalId),
+      'the filter was ignored and the file holds everybody',
+    ).toBe(false);
+
+    await db.update(users).set({ referredByIbUserId: null }).where(eq(users.id, mineId));
+  });
+
+  it('REFUSES a referredBy that names nobody rather than ignoring it', async () => {
+    const master = await actingAs(ctx, 'admin', MASTER);
+
+    const res = await master.get('/v1/admin/clients/export?referredBy=not-a-client');
+
+    expect(res.status).toBe(400);
+  });
+
   it('REFUSES an unrecognised kycStatus rather than ignoring it', async () => {
     // The same 400 the list gives. A silently ignored filter returns everybody,
     // and "every client" looks enough like a plausible answer that nobody

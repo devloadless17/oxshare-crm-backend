@@ -235,6 +235,13 @@ export class AdminClientsController {
     description: '`not_started` matches clients with no submission row at all.',
   })
   @ApiQuery({ name: 'tag', required: false, description: 'Tag SLUG, not id (ADM-14).' })
+  @ApiQuery({
+    name: 'referredBy',
+    required: false,
+    description:
+      'Clients introduced by this partner, by Portal ID — the same filter as the list, so the ' +
+      'file matches the screen it was exported from.',
+  })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients(
@@ -258,6 +265,7 @@ export class AdminClientsController {
     @Query('emailVerified') emailVerified?: string,
     @Query('kycStatus') kycStatus?: string,
     @Query('tag') tag?: string,
+    @Query('referredBy', ClientRefPipe) referredBy?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
@@ -276,6 +284,9 @@ export class AdminClientsController {
       emailVerified,
       kycStatus,
       tag: searchQuery(tag, 'tag'),
+      // One partner's book — the Network tab's "see all" view. Validated in
+      // `clientBatch` like the list validates it: malformed is a 400.
+      referredBy,
       sort,
       order,
     };

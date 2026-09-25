@@ -128,7 +128,7 @@ const REFERRED_CLIENTS_SHOWN = 50;
  * would be an oracle over the client base, which is the same reason
  * `client-scope.ts` returns 404 rather than 403 for an out-of-scope client.
  */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * ADM-01 client directory and ADM-02 suspension.

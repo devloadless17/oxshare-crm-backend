@@ -7125,6 +7125,15 @@
             }
           },
           {
+            "name": "referredBy",
+            "required": false,
+            "in": "query",
+            "description": "Clients introduced by this partner, by Portal ID — the same filter as the list, so the file matches the screen it was exported from.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "sort",
             "required": false,
             "in": "query",
