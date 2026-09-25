@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
-import { tradingAccounts, tradingProductGroups, tradingProducts } from '../database/schema';
+import { tradingProducts } from '../database/schema';
 
 /**
  * "Which product is this trading account under" — the one place that answers it.
@@ -67,11 +67,31 @@ export const PRODUCT_BY_GROUP = alias(tradingProducts, 'product_by_group');
  * indistinguishable from "this group is in no product": a wrong answer wearing
  * the costume of a right one.
  *
- * At most one row, because `trading_product_groups_group_unique` makes the group
- * unique platform-wide — the constraint whose stated purpose is that this
- * question has a single answer, since it "decides whose commission it pays".
+ * ## At most ONE row, and since 0142 the join has to make that true itself
+ *
+ * `trading_product_groups_group_unique` used to guarantee it: a group belonged
+ * to one product platform-wide. A group may back several products now, and a
+ * plain match would return the account once per product — every list built on
+ * this join would show the same account twice, with two different product
+ * names.
+ *
+ * So the join picks the OLDEST attachment of the account's group. This is the
+ * FALLBACK only — every account opened since 0080 records its product, and
+ * since 0142 the open paths record the product that was actually chosen — so
+ * "oldest" answers only for legacy rows with no recorded product, where it is
+ * the attachment that existed when they were opened.
+ *
+ * Hand-qualified inside the subquery: `g` is the inner table, and the outer
+ * account and product-group tables are named in full so nothing can bind to
+ * the wrong one (Drizzle renders bare column names in some `sql` positions).
  */
-export const PRODUCT_GROUP_JOIN_ON = sql`lower(${tradingProductGroups.mt5Group}) = lower(${tradingAccounts.mt5Group})`;
+export const PRODUCT_GROUP_JOIN_ON = sql`"trading_product_groups"."id" = (
+  SELECT g.id
+    FROM trading_product_groups AS g
+   WHERE lower(g.mt5_group) = lower("trading_accounts"."mt5_group")
+   ORDER BY g.created_at, g.id
+   LIMIT 1
+)`;
 
 /**
  * The product NAME to show: what was recorded, else what is derived, else NULL.

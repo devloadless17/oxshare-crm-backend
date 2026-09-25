@@ -323,13 +323,14 @@ export class CatalogueService {
       );
     }
 
-    const claimed = await this.store.claimedGroups();
-    if (claimed.some((group) => group.toLowerCase() === match.name.toLowerCase())) {
-      throw new ValidationError(
-        `"${match.name}" already belongs to another product. A group can back only one product — ` +
-          'otherwise "which product is this account under" has two answers, and that decides ' +
-          'whose commission it pays.',
-      );
+    /*
+     * A group may back SEVERAL products since 0142 — "which product is this
+     * account under" is answered by the product chosen at account open, not by
+     * the group. What is still refused is the same group on the same product
+     * twice, which would be one offer listed as two.
+     */
+    if (product.groups.some((group) => group.mt5Group.toLowerCase() === match.name.toLowerCase())) {
+      throw new ValidationError(`"${match.name}" is already attached to '${product.name}'.`);
     }
 
     // The server's spelling, never the caller's: a casing difference must not

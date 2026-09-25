@@ -15012,6 +15012,11 @@
             "example": "Swing trading",
             "description": "Defaults to the client's own name."
           },
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The product the client chose, from GET /trading/accounts/self-service. A group may back several products (0142), so this identifies the offer — and the product decides the account’s commission type. Omitted, the first offered product carrying the group is used."
+          },
           "group": {
             "type": "string",
             "maxLength": 128,
@@ -15789,6 +15794,11 @@
             "type": "string",
             "example": "real\\Standard"
           },
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The product to open the account under. Needed when the group is sold by more than one product; must sell the group."
+          },
           "environment": {
             "type": "string",
             "enum": [
@@ -15898,15 +15908,12 @@
             "example": 100,
             "description": "The leverage the server assigns by default, when it reports one."
           },
-          "product": {
-            "nullable": true,
-            "description": "The product that sells this group, or null when no product claims it — in which case no client can open an account in it from the portal.",
-            "type": "object",
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Mt5GroupProductDto"
-              }
-            ]
+          "products": {
+            "description": "Every product that sells this group, by name — several since 0142. Empty when no product does, in which case no client can open an account in it from the portal.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mt5GroupProductDto"
+            }
           },
           "accountCount": {
             "type": "number",
@@ -15918,7 +15925,7 @@
           "name",
           "currency",
           "leverageDefault",
-          "product",
+          "products",
           "accountCount"
         ]
       },
@@ -16749,7 +16756,7 @@
           },
           "claimed": {
             "type": "boolean",
-            "description": "True when another product already claims it. Shown disabled with the reason rather than hidden, so an operator can tell \"not offered\" from \"already taken\"."
+            "description": "True when some product already sells it. Informational since 0142 — a group may back several products — so the form notes it rather than refusing it."
           },
           "lastSeenAt": {
             "type": "string",

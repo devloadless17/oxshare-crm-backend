@@ -493,7 +493,10 @@ export class ProductsStore {
     }));
   }
 
-  /** Every group any product claims, for the "already taken" check in the UI. */
+  /**
+   * Every group any product sells — for the "also sold by another product" hint
+   * in the product form. Informational since 0142: a group may back several.
+   */
   async claimedGroups(): Promise<string[]> {
     const rows = await this.db
       .select({ mt5Group: tradingProductGroups.mt5Group })
@@ -502,7 +505,8 @@ export class ProductsStore {
   }
 
   /**
-   * Which product currently sells this MT5 group, if any.
+   * Which products currently sell this MT5 group — none, one, or (since 0142)
+   * several.
    *
    * Called at ACCOUNT-OPEN time and nowhere else, to snapshot
    * `trading_accounts.product_id`. That is the whole contract: it answers "what
@@ -517,22 +521,41 @@ export class ProductsStore {
    * paths case-insensitively, so an exact match would answer NULL for a group
    * that is plainly listed.
    *
-   * NULL is a normal answer, not a failure: an account may be opened directly
+   * EMPTY is a normal answer, not a failure: an account may be opened directly
    * into a group no product carries. The caller stores NULL rather than
    * refusing.
    *
-   * One row at most, because `trading_product_groups_group_unique` makes the
-   * group unique platform-wide — the constraint whose stated purpose is that
-   * "which product is this account under" has a single answer.
+   * EVERY product that sells the group, oldest attachment first — 0142. A group
+   * may back several products now, so the caller decides what an ambiguous
+   * answer means: the admin open path refuses and asks the operator to choose,
+   * rather than recording a product nobody picked.
    */
-  async productIdForGroup(mt5Group: string): Promise<string | null> {
-    const [row] = await this.db
+  async productIdsForGroup(mt5Group: string): Promise<string[]> {
+    const rows = await this.db
       .select({ productId: tradingProductGroups.productId })
       .from(tradingProductGroups)
       .where(sql`lower(${tradingProductGroups.mt5Group}) = lower(${mt5Group})`)
-      .limit(1);
+      .orderBy(asc(tradingProductGroups.createdAt));
 
-    return row?.productId ?? null;
+    return rows.map((row) => row.productId);
+  }
+
+  /**
+   * Whether this product sells this group — the check behind an explicitly
+   * chosen product on account open. Case-insensitive, like every group lookup.
+   */
+  async productSellsGroup(productId: string, mt5Group: string): Promise<boolean> {
+    const [row] = await this.db
+      .select({ id: tradingProductGroups.id })
+      .from(tradingProductGroups)
+      .where(
+        and(
+          eq(tradingProductGroups.productId, productId),
+          sql`lower(${tradingProductGroups.mt5Group}) = lower(${mt5Group})`,
+        ),
+      )
+      .limit(1);
+    return row !== undefined;
   }
 
   /**

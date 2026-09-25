@@ -37,6 +37,22 @@ export class CreateMt5AccountDto {
   group: string;
 
   /**
+   * Which product the account is opened under — 0142. Required only when the
+   * group is sold by more than one product: the product decides the account's
+   * commission type, so an ambiguous group is refused rather than guessed.
+   * When given, it must be a product that sells the group.
+   */
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'The product to open the account under. Needed when the group is sold by more than one ' +
+      'product; must sell the group.',
+  })
+  @IsOptional()
+  @IsUUID()
+  productId?: string;
+
+  /**
    * `live` or `demo` — the CRM's own classification.
    *
    * Deliberately NOT inferred from the group name. Broker naming conventions
