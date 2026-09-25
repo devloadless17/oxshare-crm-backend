@@ -279,8 +279,8 @@ describe('a deployment with no bridge', () => {
 });
 
 /*
- * The MT5 Groups screen (`GET /admin/mt5-groups`) reads `listForAdmin`: every
- * mirrored group, removed ones included, with the product that sells it and
+ * The MT5 Groups screen (`GET /admin/mt5-groups`) reads `listForAdmin`: the
+ * groups the server currently reports, with the product that sells each and
  * the accounts the CRM holds in it. Its joins are CASE-INSENSITIVE on the
  * group path — MT5 treats a re-cased path as the same group — and it is built
  * from plain selects merged in memory, so a correlated-subquery binding bug
@@ -303,10 +303,11 @@ describe('the MT5 Groups screen', () => {
     `);
   }
 
-  it('lists every group with its product and account count, removed ones included', async () => {
+  it('lists the groups on the server with their product and account count', async () => {
     serverGroups = [group('real\\Standard'), group('real\\ECN', 'EUR'), group('real\\Old')];
     await groups.sync();
-    // The server stops reporting one — it stays listed, marked removed.
+    // The server stops reporting one — the screen leaves it out (the mirror
+    // keeps it, marked removed, so it can be restored if it comes back).
     serverGroups = [group('real\\Standard'), group('real\\ECN', 'EUR')];
     await groups.sync();
 
@@ -319,7 +320,7 @@ describe('the MT5 Groups screen', () => {
     const rows = await groups.listForAdmin();
     const byName = new Map(rows.map((row) => [row.name, row]));
 
-    expect(rows.map((row) => row.name)).toEqual(['real\\ECN', 'real\\Old', 'real\\Standard']);
+    expect(rows.map((row) => row.name)).toEqual(['real\\ECN', 'real\\Standard']);
 
     expect(byName.get('real\\Standard')?.product?.name).toBe('Product REAL\\standard');
     expect(byName.get('real\\Standard')?.product?.environment).toBe('live');
@@ -329,8 +330,11 @@ describe('the MT5 Groups screen', () => {
     expect(byName.get('real\\ECN')?.currency).toBe('EUR');
     expect(byName.get('real\\ECN')?.accountCount).toBe(1);
 
-    expect(byName.get('real\\Old')?.removedAt).not.toBeNull();
-    expect(byName.get('real\\Old')?.accountCount).toBe(0);
+    // Left out of the screen, and still in the mirror.
+    expect(byName.has('real\\Old')).toBe(false);
+    expect((await groups.cached({ includeRemoved: true })).map((row) => row.name)).toContain(
+      'real\\Old',
+    );
   });
 
   it('answers from the mirror without asking the bridge', async () => {

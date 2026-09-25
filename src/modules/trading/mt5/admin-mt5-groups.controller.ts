@@ -12,9 +12,8 @@ import { Mt5GroupDto } from './dto/mt5-group.dto';
  *
  * `GET /admin/mt5/groups` (on `Mt5AccountsController`) reads the bridge LIVE,
  * because it feeds the account-open picker, where a stale group is an MT5
- * failure. This is a reference screen: it lists removed groups too, says when
- * each was last confirmed, and must still render when the bridge is down —
- * which is exactly when an operator comes looking.
+ * failure. This is a reference screen, and it must still render when the
+ * bridge is down — which is exactly when an operator comes looking.
  *
  * ## `trading.view`, like /bridge and /trading-accounts
  *
@@ -32,11 +31,11 @@ export class AdminMt5GroupsController {
   @RequirePermissions('trading.view')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Every MT5 group the sync job has mirrored, removed ones included',
+    summary: 'The MT5 groups the server currently reports, as the sync job mirrored them',
     description:
       'From the local mirror (`mt5_groups`), not the bridge — it renders when the server is ' +
-      'unreachable. Each row names the product that sells the group, if any, and how many ' +
-      'trading accounts the CRM holds in it.',
+      'unreachable. Groups the server stopped reporting are left out. Each row names the ' +
+      'product that sells the group, if any, and how many trading accounts the CRM holds in it.',
   })
   @ApiOkResponse({ type: Mt5GroupDto, isArray: true })
   @NotClientScoped('MT5 server configuration; names no client and returns no client data.')

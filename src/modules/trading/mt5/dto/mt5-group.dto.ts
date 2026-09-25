@@ -18,13 +18,13 @@ export class Mt5GroupProductDto {
 }
 
 /**
- * One MT5 group as the sync job last saw it — `mt5_groups`, the local mirror of
- * the server's group list.
+ * One MT5 group the server currently reports, as the sync job mirrored it into
+ * `mt5_groups`.
  *
  * Read from the MIRROR, never live from the bridge: this is a reference screen,
- * and a table that goes blank whenever the bridge is unreachable is worse than
- * one that says how recently each row was confirmed. `lastSeenAt` is that
- * statement.
+ * and a table that went blank whenever the bridge was unreachable would fail
+ * exactly when an operator comes to look. Groups the server stopped reporting
+ * are left out.
  */
 @NoClientFields('MT5 server configuration - a group path and the product it is sold as')
 export class Mt5GroupDto {
@@ -41,21 +41,6 @@ export class Mt5GroupDto {
     description: 'The leverage the server assigns by default, when it reports one.',
   })
   leverageDefault: number | null;
-
-  @ApiProperty({ description: 'When the sync job first saw this group on the server.' })
-  firstSeenAt: Date;
-
-  @ApiProperty({ description: 'The last sync that saw it on the server.' })
-  lastSeenAt: Date;
-
-  @ApiProperty({
-    type: Date,
-    nullable: true,
-    description:
-      'Set when the server stopped reporting the group. Kept, not deleted: accounts opened in it ' +
-      'still exist, and a group that comes back is restored rather than duplicated.',
-  })
-  removedAt: Date | null;
 
   @ApiProperty({
     type: Mt5GroupProductDto,
