@@ -16,6 +16,7 @@ import { DealCommissionService } from './mt5/deal-commission.service';
 import { DealCommissionScheduler } from './mt5/deal-commission.scheduler';
 import { Mt5GroupSyncService } from './mt5/mt5-group-sync.service';
 import { Mt5GroupSyncScheduler } from './mt5/mt5-group-sync.scheduler';
+import { AdminMt5GroupsController } from './mt5/admin-mt5-groups.controller';
 import { PositionsService } from './positions.service';
 import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
 import { Mt5LiveService } from './mt5/mt5-live.service';
@@ -75,6 +76,7 @@ import { Mt5LivePublisher } from './mt5/live-snapshot';
     DashboardController,
     Mt5WebhooksController,
     Mt5AccountsController,
+    AdminMt5GroupsController,
   ],
   providers: [
     TradingService,

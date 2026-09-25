@@ -277,3 +277,69 @@ describe('a deployment with no bridge', () => {
     expect(await unconfigured.sync()).toBeNull();
   });
 });
+
+/*
+ * The MT5 Groups screen (`GET /admin/mt5-groups`) reads `listForAdmin`: every
+ * mirrored group, removed ones included, with the product that sells it and
+ * the accounts the CRM holds in it. Its joins are CASE-INSENSITIVE on the
+ * group path — MT5 treats a re-cased path as the same group — and it is built
+ * from plain selects merged in memory, so a correlated-subquery binding bug
+ * has nowhere to hide.
+ */
+describe('the MT5 Groups screen', () => {
+  beforeEach(async () => {
+    await ctx.db.execute(sql`DELETE FROM trading_accounts`);
+  });
+
+  async function accountIn(mt5Group: string, login: string): Promise<void> {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO users (email, password_hash, first_name, last_name)
+      VALUES (${`groups-${login}@oxshare-e2e.test`}, 'x', 'Group', 'Holder')
+      RETURNING id
+    `);
+    await ctx.db.execute(sql`
+      INSERT INTO trading_accounts (user_id, login, currency, mt5_group)
+      VALUES (${rows[0].id}, ${login}, 'USD', ${mt5Group})
+    `);
+  }
+
+  it('lists every group with its product and account count, removed ones included', async () => {
+    serverGroups = [group('real\\Standard'), group('real\\ECN', 'EUR'), group('real\\Old')];
+    await groups.sync();
+    // The server stops reporting one — it stays listed, marked removed.
+    serverGroups = [group('real\\Standard'), group('real\\ECN', 'EUR')];
+    await groups.sync();
+
+    // Claimed under a DIFFERENT casing, which is still the same group.
+    await sellGroup('REAL\\standard', 'USD');
+    await accountIn('real\\Standard', '7001');
+    await accountIn('Real\\STANDARD', '7002');
+    await accountIn('real\\ECN', '7003');
+
+    const rows = await groups.listForAdmin();
+    const byName = new Map(rows.map((row) => [row.name, row]));
+
+    expect(rows.map((row) => row.name)).toEqual(['real\\ECN', 'real\\Old', 'real\\Standard']);
+
+    expect(byName.get('real\\Standard')?.product?.name).toBe('Product REAL\\standard');
+    expect(byName.get('real\\Standard')?.product?.environment).toBe('live');
+    expect(byName.get('real\\Standard')?.accountCount).toBe(2);
+
+    expect(byName.get('real\\ECN')?.product).toBeNull();
+    expect(byName.get('real\\ECN')?.currency).toBe('EUR');
+    expect(byName.get('real\\ECN')?.accountCount).toBe(1);
+
+    expect(byName.get('real\\Old')?.removedAt).not.toBeNull();
+    expect(byName.get('real\\Old')?.accountCount).toBe(0);
+  });
+
+  it('answers from the mirror without asking the bridge', async () => {
+    serverGroups = [group('real\\Standard')];
+    await groups.sync();
+    listGroups.mockClear();
+
+    await groups.listForAdmin();
+
+    expect(listGroups).not.toHaveBeenCalled();
+  });
+});

@@ -5088,6 +5088,37 @@
         ]
       }
     },
+    "/v1/admin/mt5-groups": {
+      "get": {
+        "description": "From the local mirror (`mt5_groups`), not the bridge — it renders when the server is unreachable. Each row names the product that sells the group, if any, and how many trading accounts the CRM holds in it.",
+        "operationId": "AdminMt5GroupsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Mt5GroupDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every MT5 group the sync job has mirrored, removed ones included",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/kyc/config": {
       "get": {
         "operationId": "KycController_getConfig",
@@ -15566,6 +15597,94 @@
           "currency",
           "leverage",
           "environment"
+        ]
+      },
+      "Mt5GroupProductDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Standard"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ],
+            "description": "Which environment the product offers this group in."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "environment"
+        ]
+      },
+      "Mt5GroupDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "real\\Standard-USD",
+            "description": "The MT5 group path."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "The deposit currency the server reports."
+          },
+          "leverageDefault": {
+            "type": "number",
+            "nullable": true,
+            "example": 100,
+            "description": "The leverage the server assigns by default, when it reports one."
+          },
+          "firstSeenAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "When the sync job first saw this group on the server."
+          },
+          "lastSeenAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "The last sync that saw it on the server."
+          },
+          "removedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true,
+            "description": "Set when the server stopped reporting the group. Kept, not deleted: accounts opened in it still exist, and a group that comes back is restored rather than duplicated."
+          },
+          "product": {
+            "nullable": true,
+            "description": "The product that sells this group, or null when no product claims it — in which case no client can open an account in it from the portal.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Mt5GroupProductDto"
+              }
+            ]
+          },
+          "accountCount": {
+            "type": "number",
+            "example": 12,
+            "description": "How many trading accounts the CRM holds in this group."
+          }
+        },
+        "required": [
+          "name",
+          "currency",
+          "leverageDefault",
+          "firstSeenAt",
+          "lastSeenAt",
+          "removedAt",
+          "product",
+          "accountCount"
         ]
       },
       "KycDocumentPartDto": {
