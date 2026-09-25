@@ -7,6 +7,8 @@ import type { AdminsStore } from '../src/store/admins.store';
 import type { EmailService } from '../src/modules/email/email.service';
 import type { KycConfigStore, KycStepConfig } from '../src/store/kyc-config.store';
 import type { Db } from '../src/database/db';
+import type { AuditLogStore } from '../src/store/audit-log.store';
+import { ClientProfileService } from '../src/modules/profile/client-profile.service';
 import { notificationsStub } from './notifications-stub';
 import {
   AuthorizationError,
@@ -110,10 +112,10 @@ function submission(over: Partial<KycSubmission> = {}): KycSubmission {
 
 function completeSubmission(over: Partial<KycSubmission> = {}): KycSubmission {
   return submission({
-    // `dateOfBirth` is not decoration here: `submit()` validates the profile
-    // against the configured required fields and enforces the minimum age
-    // (FR-IND-03), so a fixture without it is no longer a COMPLETE submission.
-    personalInfo: { firstName: 'Jane', lastName: 'Doe', dateOfBirth: '1990-01-01' },
+    // The identity is the PROFILE's — `USER` below carries the name and the
+    // date of birth (0139). `personal_info` holds only answers to fields a
+    // broker invented, and this configuration invents none.
+    personalInfo: {},
     document: { docType: 'passport', frontFilePath: '/uploads/front.png' },
     selfie: { filePath: '/uploads/selfie.png' },
     addressProof: { docType: 'utility_bill', filePath: '/uploads/address.png' },
@@ -126,6 +128,10 @@ const USER = {
   email: 'client@oxshare.com',
   firstName: 'Jane',
   lastName: 'Doe',
+  // Not decoration: `submit()` judges the profile against the configured
+  // required fields and the minimum age (FR-IND-03), so a client without one is
+  // not a COMPLETE applicant.
+  dateOfBirth: '1990-01-01',
   verificationLevel: 0,
   status: 'active',
 } as User;
@@ -173,12 +179,43 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
     listAttempts: vi.fn().mockResolvedValue([]),
     archivedDocumentPaths: vi.fn().mockResolvedValue([]),
   };
+  /*
+   * The client's row, LIVE: the profile writes land in it and every later read
+   * sees them, so a case can save a step and then submit and be judged on what
+   * it saved — the way the real tables behave.
+   */
+  const profileRow: User = { ...(options.user ?? USER) };
   const users = {
-    findById: vi.fn().mockResolvedValue(options.user ?? USER),
-    update: vi.fn().mockResolvedValue(options.user ?? USER),
+    findById: vi.fn(() => Promise.resolve(profileRow)),
+    findByIdForUpdate: vi.fn(() => Promise.resolve(profileRow)),
+    update: vi.fn(() => Promise.resolve(profileRow)),
   };
   const email = { sendKycDecisionEmail: vi.fn().mockResolvedValue(undefined) };
-  const db = { transaction: (fn: (tx: unknown) => unknown) => fn(db) };
+  const db = {
+    transaction: (fn: (tx: unknown) => unknown) => fn(db),
+    // The profile service's one write: `tx.update(users).set(changes).where(…)`.
+    update: () => ({
+      set: (changes: Partial<User>) => ({
+        where: () => {
+          Object.assign(profileRow, changes);
+          return Promise.resolve();
+        },
+      }),
+    }),
+  };
+  const auditLog = { record: vi.fn().mockResolvedValue(undefined) };
+  /*
+   * The REAL profile service over the stubs, not a mock of it: the rules a
+   * client's answers must pass (a name with no digits, a dialable phone, an
+   * adult's date of birth) are the ones production applies, and a mock would
+   * let these cases pass against rules nobody runs.
+   */
+  const profile = new ClientProfileService(
+    db as unknown as Db,
+    users as unknown as UsersStore,
+    auditLog as unknown as AuditLogStore,
+    kycStore as unknown as KycStore,
+  );
 
   /*
    * The real seeded profile step, trimmed to what these tests exercise.
@@ -226,8 +263,21 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
      * than the anonymous fallback.
      */
     admins as unknown as AdminsStore,
+    // Appended LAST, matching the constructor: the one write path for the
+    // client's identity (0139).
+    profile,
   );
-  return { service, kycStore, users, email, kycConfig, admins, notifications };
+  return {
+    service,
+    kycStore,
+    users,
+    email,
+    kycConfig,
+    admins,
+    notifications,
+    profileRow,
+    auditLog,
+  };
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -258,17 +308,22 @@ describe('saveStep', () => {
   });
 
   it('MERGES into the existing step rather than replacing it', async () => {
-    // A client editing one field must not blank the rest of the step.
-    const h = build({
-      stored: submission({ personalInfo: { firstName: 'Jane', lastName: 'Doe' } }),
-    });
+    // A client editing one field must not blank the rest of the step — the
+    // broker's own questions in `personal_info`, or the rest of the profile.
+    const h = build({ stored: submission({ personalInfo: { customField_1: 'Acme' } }) });
     await h.service.saveStep('user-1', 'personal', { phone: '+971 50 123 4567' });
     expect(h.kycStore.update).toHaveBeenCalledWith(
       'user-1',
-      expect.objectContaining({
-        personalInfo: { firstName: 'Jane', lastName: 'Doe', phone: '+971 50 123 4567' },
-      }),
+      expect.objectContaining({ personalInfo: { customField_1: 'Acme' } }),
+      expect.anything(),
     );
+    // The phone went to the PROFILE, stored in one canonical shape.
+    expect(h.profileRow).toMatchObject({
+      firstName: 'Jane',
+      lastName: 'Doe',
+      dateOfBirth: '1990-01-01',
+      phone: '+971501234567',
+    });
   });
 
   it('moves a fresh submission to in_progress', async () => {
@@ -277,7 +332,36 @@ describe('saveStep', () => {
     expect(h.kycStore.update).toHaveBeenCalledWith(
       'user-1',
       expect.objectContaining({ status: 'in_progress' }),
+      expect.anything(),
     );
+  });
+
+  it('re-checks the status UNDER THE LOCK — a submission sent from another tab wins', async () => {
+    /*
+     * The status was read before the transaction. A submit from a second tab
+     * landing in between used to be pulled straight back to `in_progress` by
+     * this write — out of the review queue, the reviewer's row vanishing.
+     */
+    const h = build({ stored: submission({ status: 'in_progress' }) });
+    h.kycStore.lockForUpdate.mockResolvedValue(submission({ status: 'submitted' }));
+    await expect(h.service.saveStep('user-1', 'personal', { firstName: 'Janet' })).rejects.toThrow(
+      /under review/,
+    );
+    expect(h.kycStore.update).not.toHaveBeenCalled();
+    expect(h.profileRow.firstName).toBe('Jane');
+  });
+
+  it('builds the write from the LOCKED row, so two saves cannot erase each other', async () => {
+    // The first read saw nothing; by the time the lock was ours another save
+    // had stored an answer. Merging into the stale read would erase it.
+    const h = build({ stored: submission({ personalInfo: {} }) });
+    h.kycStore.lockForUpdate.mockResolvedValue(
+      submission({ personalInfo: { customField_1: 'from the other tab' } }),
+    );
+    await h.service.saveStep('user-1', 'personal', { lastName: 'Doe' });
+    expect(h.kycStore.update.mock.calls[0][1]).toMatchObject({
+      personalInfo: { customField_1: 'from the other tab' },
+    });
   });
 });
 
@@ -389,6 +473,7 @@ describe('submit', () => {
         expect.objectContaining({
           stepData: { 'compliance-questions': { sourceOfFunds: 'salary' } },
         }),
+        expect.anything(),
       );
     });
 
@@ -408,6 +493,7 @@ describe('submit', () => {
         expect.objectContaining({
           stepData: { 'compliance-questions': { sourceOfFunds: 'salary', employer: 'Acme' } },
         }),
+        expect.anything(),
       );
     });
 
@@ -423,6 +509,7 @@ describe('submit', () => {
         expect.objectContaining({
           stepData: { other: { a: '1' }, 'compliance-questions': { b: '2' } },
         }),
+        expect.anything(),
       );
     });
 
@@ -564,17 +651,20 @@ describe('submit', () => {
   });
 
   it('requires all four documents FR-CORE-15 mandates', async () => {
-    const cases: Array<[Partial<KycSubmission>, RegExp]> = [
-      [{ personalInfo: undefined }, /personal information/i],
-      [{ document: undefined }, /document front/i],
-      [{ selfie: undefined }, /selfie/i],
-      [{ addressProof: undefined }, /proof of address/i],
+    const cases: Array<[Partial<KycSubmission>, RegExp, User]> = [
+      // The personal step is judged on the PROFILE (0139): a client whose
+      // profile lost its name owes the step, whatever the submission holds.
+      [
+        { personalInfo: undefined },
+        /required before submitting: firstName/i,
+        { ...USER, firstName: '' },
+      ],
+      [{ document: undefined }, /document front/i, USER],
+      [{ selfie: undefined }, /selfie/i, USER],
+      [{ addressProof: undefined }, /proof of address/i, USER],
     ];
-    for (const [missing, message] of cases) {
-      const h = build({
-        stored: completeSubmission(missing),
-        user: { ...USER, firstName: '' },
-      });
+    for (const [missing, message, user] of cases) {
+      const h = build({ stored: completeSubmission(missing), user });
       await expect(h.service.submit('user-1')).rejects.toThrow(message);
     }
   });
@@ -589,6 +679,7 @@ describe('submit', () => {
       'user-1',
       ['not_started', 'in_progress', 'rejected'],
       expect.objectContaining({ status: 'submitted', submittedAt: expect.any(Date) }),
+      expect.anything(),
     );
   });
 
@@ -601,8 +692,8 @@ describe('submit', () => {
      * account to level 1.
      */
     const h = build({
-      stored: completeSubmission({ personalInfo: {} as never }),
-      user: { ...USER, firstName: '' },
+      stored: completeSubmission({ personalInfo: {} }),
+      user: { ...USER, firstName: '', lastName: '', dateOfBirth: undefined },
     });
     await expect(h.service.submit('user-1')).rejects.toThrow(/required before submitting/i);
     expect(h.kycStore.transition).not.toHaveBeenCalledWith(
@@ -618,24 +709,19 @@ describe('submit', () => {
     // belongs on the server.
     const under18 = new Date();
     under18.setFullYear(under18.getFullYear() - 14);
+    // Stored straight into the row, past the profile's own age rule — the
+    // submission must refuse it anyway, whoever wrote it.
     const h = build({
-      stored: completeSubmission({
-        personalInfo: {
-          firstName: 'Jane',
-          lastName: 'Doe',
-          dateOfBirth: under18.toISOString().slice(0, 10),
-        },
-      }),
+      stored: completeSubmission(),
+      user: { ...USER, dateOfBirth: under18.toISOString().slice(0, 10) },
     });
     await expect(h.service.submit('user-1')).rejects.toThrow(/at least 18 years old/i);
   });
 
   it('names which profile fields are missing, so the client can fix them', async () => {
     const h = build({
-      stored: completeSubmission({
-        personalInfo: { firstName: 'Jane' } as never,
-      }),
-      user: { ...USER, firstName: '' },
+      stored: completeSubmission(),
+      user: { ...USER, lastName: '' },
     });
     // Naming them is the difference between a form the client can complete and
     // one that just says no.
@@ -679,6 +765,7 @@ describe('submit', () => {
       // `rejected` is in the allowed set precisely so this resubmission works.
       expect.arrayContaining(['rejected']),
       expect.objectContaining({ rejectionReason: undefined, rejectedFields: undefined }),
+      expect.anything(),
     );
   });
 });
@@ -699,10 +786,13 @@ describe('saveStep stores only what the step asks for', () => {
       customField_1790263641710: 'Acme',
       docType: 'passport',
     });
+    // The name went to the profile; none of the rest was the step's to keep.
     expect(h.kycStore.update).toHaveBeenCalledWith(
       'user-1',
-      expect.objectContaining({ personalInfo: { firstName: 'Jane' } }),
+      expect.objectContaining({ personalInfo: {} }),
+      expect.anything(),
     );
+    expect(h.profileRow.firstName).toBe('Jane');
   });
 
   it('never writes a file path through a step — only the upload route stores files', async () => {
@@ -745,11 +835,15 @@ describe('saveStep stores only what the step asks for', () => {
   });
 
   it('reads a bare country code as not answered — the reported "+961"', async () => {
-    const h = build();
+    // A client who clears the number down to its prefix has CLEARED it — the
+    // profile holds no phone, rather than a "+961" nobody can dial.
+    const h = build({ user: { ...USER, phone: '+96170123456' } });
     await h.service.saveStep('user-1', 'personal', { phone: '+961' });
+    expect(h.profileRow.phone).toBeNull();
     expect(h.kycStore.update).toHaveBeenCalledWith(
       'user-1',
-      expect.objectContaining({ personalInfo: { phone: '' } }),
+      expect.objectContaining({ personalInfo: {} }),
+      expect.anything(),
     );
   });
 
@@ -778,6 +872,7 @@ describe('saveStep stores only what the step asks for', () => {
     expect(h.kycStore.update).toHaveBeenCalledWith(
       'user-1',
       expect.objectContaining({ stepData: { 'source-of-funds': { employer: 'Acme' } } }),
+      expect.anything(),
     );
   });
 });
@@ -787,7 +882,6 @@ describe('a returned answer is settled by changing it', () => {
     const h = build({
       stored: submission({
         status: 'rejected',
-        personalInfo: { firstName: 'Jane', lastName: 'Doe', dateOfBirth: '1990-01-01' },
         rejectedFields: ['dateOfBirth', 'firstName', 'doc_front'],
       }),
     });
@@ -798,16 +892,13 @@ describe('a returned answer is settled by changing it', () => {
     expect(h.kycStore.update).toHaveBeenCalledWith(
       'user-1',
       expect.objectContaining({ rejectedFields: ['firstName', 'doc_front'] }),
+      expect.anything(),
     );
   });
 
   it('keeps every flag when nothing changed — re-saving is not an answer', async () => {
     const h = build({
-      stored: submission({
-        status: 'rejected',
-        personalInfo: { firstName: 'Jane', lastName: 'Doe', dateOfBirth: '1990-01-01' },
-        rejectedFields: ['dateOfBirth'],
-      }),
+      stored: submission({ status: 'rejected', rejectedFields: ['dateOfBirth'] }),
     });
     await h.service.saveStep('user-1', 'personal', { dateOfBirth: '1990-01-01' });
     expect(h.kycStore.update.mock.calls[0][1]).not.toHaveProperty('rejectedFields');
@@ -952,6 +1043,7 @@ describe('a built-in step holds extra fields, and ONE judge decides every step',
     expect(h.kycStore.update).toHaveBeenCalledWith(
       'user-1',
       expect.objectContaining({ stepData: { address: { note: 'Mr Haddad' } } }),
+      expect.anything(),
     );
     const address = saved.steps.find((state) => state.slug === 'address')!;
     expect(address.missing).toEqual([{ id: 'prooof3', label: 'Lease', kind: 'upload' }]);
@@ -1012,6 +1104,7 @@ describe('a built-in step holds extra fields, and ONE judge decides every step',
     expect(h.kycStore.update).toHaveBeenCalledWith(
       'user-1',
       expect.objectContaining({ document: { docType: 'national_id' } }),
+      expect.anything(),
     );
   });
 
@@ -1072,17 +1165,10 @@ describe('submit asks for every page and every returned document', () => {
     await expect(h.service.submit('user-1')).resolves.toBeDefined();
   });
 
-  it('refuses a required phone that is only a country code', async () => {
-    const h = build({
-      stored: completeSubmission({
-        personalInfo: {
-          firstName: 'Jane',
-          lastName: 'Doe',
-          dateOfBirth: '1990-01-01',
-          phone: '+961',
-        },
-      }),
-    });
+  it('refuses a required phone the profile does not hold', async () => {
+    // "+961" can no longer be stored at all (the profile keeps a dialable number
+    // or none), so what reaches submission is the absence — still refused.
+    const h = build({ stored: completeSubmission(), user: { ...USER, phone: undefined } });
     h.kycConfig.getSteps.mockResolvedValue(
       defaultSteps().map((step) =>
         step.slug === 'personal'
@@ -1106,10 +1192,11 @@ describe('submit asks for every page and every returned document', () => {
       stored: completeSubmission({ status: 'in_progress', rejectionReason: 'Blurred passport' }),
     });
     await h.service.submit('user-1');
-    expect(h.notifications.notifyAdminsWithPermission).toHaveBeenCalledWith(
-      'kyc.review',
-      expect.objectContaining({ kind: 'admin.kyc.resubmitted' }),
-      expect.anything(),
+    expect(h.notifications.notifyAdmins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'admin.kyc.resubmitted',
+        subject: { id: 'user-1', clientId: 'user-1' },
+      }),
     );
   });
 });

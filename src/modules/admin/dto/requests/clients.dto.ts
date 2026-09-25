@@ -6,7 +6,6 @@ import {
   IsOptional,
   IsString,
   Length,
-  Matches,
   MaxLength,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
@@ -56,31 +55,60 @@ export class UpdateClientProfileDto {
   @Length(1, 100)
   lastName?: string;
 
-  /**
-   * NULLABLE on purpose: an empty string clears it.
-   *
-   * "This client never gave us a phone number" and "this client's number is the
-   * empty string" are the same fact to a reader and different rows in the
-   * database. Normalising blank to NULL keeps the column honest.
+  /*
+   * The rest of the profile. Every value here is checked and normalised by
+   * `common/profile/client-profile.ts` in `ClientProfileService` — the same
+   * rules registration and the KYC personal step apply — so the decorators only
+   * bound the SHAPE. An empty string clears an optional field; a name can never
+   * be cleared.
    */
   @ApiPropertyOptional({
     example: '+9613111222',
-    nullable: true,
-    description: 'Send an empty string to clear it.',
+    description: 'International format with the country code; stored as E.164. Empty clears it.',
   })
   @IsOptional()
   @IsString()
   @MaxLength(32)
-  @Matches(/^$|^[+]?[\d\s()-]{6,32}$/, {
-    message: 'phone must be 6 to 32 digits, optionally with +, spaces, dashes or parentheses',
-  })
   phone?: string;
 
-  @ApiPropertyOptional({ example: 'Lebanon', nullable: true })
+  @ApiPropertyOptional({
+    example: 'Lebanon',
+    description: 'Country of residence, from the KYC country list. Empty clears it.',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(100)
   country?: string;
+
+  @ApiPropertyOptional({ example: '1990-04-12', description: 'YYYY-MM-DD, 18 or older.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  dateOfBirth?: string;
+
+  @ApiPropertyOptional({ example: 'Lebanese', description: 'From the KYC nationality list.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  nationality?: string;
+
+  @ApiPropertyOptional({ example: 'Hamra Street, Building 12', maxLength: 200 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  address?: string;
+
+  @ApiPropertyOptional({ example: 'Beirut', maxLength: 100 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  city?: string;
+
+  @ApiPropertyOptional({ example: '1103 2080', maxLength: 12 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(12)
+  postalCode?: string;
 }
 
 /**

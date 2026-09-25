@@ -67,6 +67,46 @@ export class ValidationError extends DomainError {
 }
 
 /**
+ * A form's values refused FIELD BY FIELD → 400 `VALIDATION_FAILED`, with a
+ * `fields` map shaped exactly like the one the request validator emits
+ * (`common/validation.config.ts`).
+ *
+ * Service-layer rules — a profile's date of birth, a phone number that cannot
+ * be dialled — find problems the DTO decorators cannot, and until this existed
+ * they could only answer with one sentence. A screen then had to guess which
+ * box to mark. Same code, same `fields` key, whichever layer found the problem:
+ * a form reads field errors one way.
+ */
+export class FieldValidationError extends ValidationError {
+  constructor(
+    message: string,
+    readonly fields: Record<string, string>,
+  ) {
+    super(message, { fields });
+  }
+}
+
+/**
+ * A profile field the verification has LOCKED. → 409 `PROFILE_LOCKED`, with
+ * `fields` naming each one and where it can be changed instead.
+ *
+ * A 409 rather than a 400: nothing about the values is wrong — the record's
+ * state refuses them. Once a KYC submission leaves the client's hands the
+ * identity it carries is what a reviewer is checking, or has checked, against
+ * documents; `deskLocks` (`common/profile/client-profile.ts`) holds the rule.
+ */
+export class ProfileLockedError extends DomainError {
+  readonly code = 'PROFILE_LOCKED';
+
+  constructor(
+    message: string,
+    readonly fields: Record<string, string>,
+  ) {
+    super(message, { fields });
+  }
+}
+
+/**
  * The verification link's 24 hours are up. → 400 `VERIFICATION_TOKEN_EXPIRED`
  *
  * A distinct subclass ONLY so it carries a distinct `code`, exactly as

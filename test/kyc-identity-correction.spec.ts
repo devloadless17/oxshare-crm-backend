@@ -38,13 +38,15 @@ import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
  *                         `kyc-gates-money.spec.ts` proves takes
  *                         verificationLevel to 0 and shuts both money doors
  *
- * ## Why the values are not on the users row
+ * ## Where the values live — the PROFILE (0139)
  *
- * They cannot be. `users` has no dateOfBirth and no address column — those
- * fields exist only in `kyc_submissions.personalInfo`. The first shape proposed
- * for this fix added them to the client edit DTO, which patches `users`, and
- * would have created a SECOND home for a field that has one. The consistency
- * problem that shape was meant to prevent is the problem it would have caused.
+ * This spec used to explain why the values were NOT on the users row: date of
+ * birth and address existed only in `kyc_submissions.personalInfo`, and adding
+ * `users` columns to carry a copy would have created a second home for a field
+ * that had one. That was right about copies. 0139 answered it the other way
+ * round: the profile columns are the ONLY home, `personal_info` keeps only a
+ * broker's own questions, and a correction is a profile write — so these cases
+ * read the `users` row, and prove the submission's own answers are untouched.
  *
  * ## The case that matters most is the REFUSAL
  *
@@ -67,10 +69,16 @@ const ORIGINAL = {
   firstName: 'Layla',
   lastName: 'Haddad',
   dateOfBirth: '1985-04-12',
-  nationality: 'Lebanon',
-  address: '12 Rue Verdun, Beirut',
+  nationality: 'Lebanese',
+  address: '12 Rue Verdun',
+  city: 'Beirut',
+  postalCode: '1103',
   phone: '+9613111222',
+  country: 'Lebanon',
 };
+
+/** A broker's own question on the personal step — the one thing `personal_info` holds. */
+const CUSTOM_ANSWERS = { customField_1790000000001: 'Engineer' };
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -153,21 +161,41 @@ afterAll(async () => {
   await stopHttpTestApp(ctx);
 });
 
-/** Back to an APPROVED submission carrying the original details. */
+/** Back to an APPROVED submission, over a profile holding the original details. */
 beforeEach(async () => {
   const db = ctx.db.db;
+  await db.update(users).set(ORIGINAL).where(eq(users.id, userId));
   await db.delete(kycSubmissions).where(eq(kycSubmissions.userId, userId));
   await db.insert(kycSubmissions).values({
     userId,
     status: 'approved',
     submittedAt: new Date(),
     reviewedAt: new Date(),
-    personalInfo: ORIGINAL,
+    personalInfo: CUSTOM_ANSWERS,
     document: { docType: 'passport' },
   });
 });
 
-const personalInfo = async () => {
+/** The client's identity, as stored — the profile columns (0139). */
+const profile = async () => {
+  const [row] = await ctx.db.db
+    .select({
+      firstName: users.firstName,
+      lastName: users.lastName,
+      dateOfBirth: users.dateOfBirth,
+      nationality: users.nationality,
+      address: users.address,
+      city: users.city,
+      postalCode: users.postalCode,
+      phone: users.phone,
+      country: users.country,
+    })
+    .from(users)
+    .where(eq(users.id, userId));
+  return row as Record<string, unknown>;
+};
+
+const storedPersonalInfo = async () => {
   const [row] = await ctx.db.db
     .select({ personalInfo: kycSubmissions.personalInfo })
     .from(kycSubmissions)
@@ -182,19 +210,52 @@ describe('correcting an approved submission', () => {
 
     expect(res.status, `correction answered ${res.status}`).toBe(200);
 
-    const after = await personalInfo();
+    const after = await profile();
     expect(after['dateOfBirth']).toBe('1985-04-21');
     /*
-     * A MERGE, not a replace. The column is jsonb and also carries whatever a
-     * configured custom field was named, so writing the patch alone would drop
-     * the rest of a compliance record silently — the worst possible outcome for
-     * a route whose whole purpose is correcting one field.
+     * A MERGE, not a replace: correcting one field must leave every other one
+     * exactly as it was — the rest of the profile, and the broker's own
+     * questions in the submission — or a route whose whole purpose is
+     * correcting one field silently drops the rest of a compliance record.
      */
-    expect(after['nationality'], 'the correction replaced the record instead of merging').toBe(
-      'Lebanon',
-    );
-    expect(after['address']).toBe(ORIGINAL.address);
-    expect(after['firstName']).toBe('Layla');
+    expect(after, 'the correction replaced the record instead of merging').toEqual({
+      ...ORIGINAL,
+      dateOfBirth: '1985-04-21',
+    });
+    expect(await storedPersonalInfo()).toEqual(CUSTOM_ANSWERS);
+  });
+
+  it('corrects the whole address in one go, in its canonical shape', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session
+      .patch(ROUTE(userId))
+      .send({ address: '  4 Hamra   Street ', city: 'Jounieh', postalCode: 'lb 1200' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    expect(await profile()).toMatchObject({
+      address: '4 Hamra Street',
+      city: 'Jounieh',
+      postalCode: 'LB 1200',
+      dateOfBirth: ORIGINAL.dateOfBirth,
+    });
+  });
+
+  it('shows the corrected value on the review screen — one record, not a copy', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.patch(ROUTE(userId)).send({ dateOfBirth: '1985-04-21' });
+    expect(res.status).toBe(200);
+    // The route answers with the submission as the reviewer reads it.
+    const personal = (res.body as { personalInfo?: Record<string, unknown> }).personalInfo;
+    expect(personal).toMatchObject({
+      dateOfBirth: '1985-04-21',
+      firstName: ORIGINAL.firstName,
+      ...CUSTOM_ANSWERS,
+    });
+
+    const detail = await session.get(`/v1/admin/kyc/${userId}`);
+    expect((detail.body as { personalInfo?: Record<string, unknown> }).personalInfo).toMatchObject({
+      dateOfBirth: '1985-04-21',
+    });
   });
 
   it('audits the SUBMISSION with the value on BOTH sides', async () => {
@@ -229,13 +290,21 @@ describe('correcting an approved submission', () => {
         'never find it',
     ).toBe('kyc_submission');
 
-    const details = row?.details as { before?: Record<string, unknown>; after?: unknown };
+    const details = row?.details as {
+      before?: Record<string, unknown>;
+      after?: unknown;
+      via?: unknown;
+    };
     expect(
       details?.before?.['dateOfBirth'],
       'the audit row carries only the new value, so "what was it before" — the whole ' +
         'question this row exists to answer — is unanswerable',
     ).toBe(ORIGINAL.dateOfBirth);
     expect(details?.after).toEqual({ dateOfBirth: '1985-04-21' });
+    expect(details?.via).toBe('kyc_correction');
+    // Written by the profile write, in its transaction — not a second row
+    // under the generic action beside it.
+    expect(rows.filter((r) => r.action === 'client.profile_update')).toEqual([]);
   });
 });
 
@@ -264,7 +333,7 @@ describe('the correction is RE-VALIDATED, or this route is a bypass', () => {
     ).toMatch(/at least 18 years old/i);
 
     expect(
-      (await personalInfo())['dateOfBirth'],
+      (await profile())['dateOfBirth'],
       'the refusal answered 409 and wrote the value anyway',
     ).toBe(ORIGINAL.dateOfBirth);
   });
@@ -276,7 +345,7 @@ describe('the correction is RE-VALIDATED, or this route is a bypass', () => {
     expect(res.status).toBe(409);
     expect((res.body as { code?: string }).code).toBe('KYC_CORRECTION_REFUSED');
     expect((res.body as { message?: string }).message).toMatch(/cannot be in the future/i);
-    expect((await personalInfo())['dateOfBirth']).toBe(ORIGINAL.dateOfBirth);
+    expect((await profile())['dateOfBirth']).toBe(ORIGINAL.dateOfBirth);
   });
 });
 
@@ -297,7 +366,7 @@ describe('what the route refuses', () => {
     const res = await session.patch(ROUTE(userId)).send({ dateOfBirth: '1985-04-21' });
 
     expect(res.status, `a rejected submission answered ${res.status}`).toBe(400);
-    expect((await personalInfo())['dateOfBirth']).toBe(ORIGINAL.dateOfBirth);
+    expect((await profile())['dateOfBirth']).toBe(ORIGINAL.dateOfBirth);
   });
 
   it('refuses a REVIEWER — deciding a submission is not rewriting the claim in it', async () => {
@@ -315,7 +384,22 @@ describe('what the route refuses', () => {
       `a kyc.review admin correcting an identity answered ${res.status}; 401 would mean the ` +
         'session failed and would prove nothing about the permission',
     ).toBe(403);
-    expect((await personalInfo())['dateOfBirth']).toBe(ORIGINAL.dateOfBirth);
+    expect((await profile())['dateOfBirth']).toBe(ORIGINAL.dateOfBirth);
+  });
+
+  it('cannot change a NAME or a NATIONALITY — those need a new verification', async () => {
+    /*
+     * What a reviewer checked against the passport, and what the client's own
+     * sentence says needs a new verification (`resetKyc`). The DTO refuses the
+     * keys outright; were one to slip past it, the profile write's own guard
+     * refuses anything outside the correctable set under the locks.
+     */
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    for (const body of [{ firstName: 'Leila' }, { nationality: 'Syrian' }, { country: 'Syria' }]) {
+      const res = await session.patch(ROUTE(userId)).send(body);
+      expect(res.status, `${JSON.stringify(body)} answered ${res.status}`).toBe(400);
+    }
+    expect(await profile()).toEqual(ORIGINAL);
   });
 
   it('refuses an empty body rather than logging a correction that changed nothing', async () => {

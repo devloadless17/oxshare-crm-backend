@@ -5,6 +5,8 @@ import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { seedProductTerms, setLadderShares, type RungShares } from './support/commission-terms';
+import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 import { UNRESTRICTED, scopeOf } from '../src/common/security/client-scope';
 import { ClientVisibilityService } from '../src/common/security/client-visibility.service';
 import { UsersStore } from '../src/store/users.store';
@@ -59,55 +61,21 @@ async function makeUser(email: string): Promise<string> {
 }
 
 /**
- * Set the programme, LADDER AND ALL.
- *
- * The ladder is rewritten wholesale rather than patched, because its LENGTH is
- * how far the programme pays. The share-ceiling trigger is DEFERRABLE, so the
- * delete-then-insert is checked once at COMMIT rather than against a
- * half-written ladder.
+ * The product's rate card: $100 a lot to the partners and $100 a lot back to
+ * the client (0140). Every trade here is ONE LOT, so a share of either figure
+ * is the same number of dollars, and every amount asserted below reads as it
+ * did when the rung was a percentage of $100 of revenue.
  */
-async function setTerms(terms: {
-  /** Rates by depth, 1 first. Omit or pass [] for a programme paying no partner. */
-  tiers?: string[];
-  rebateRate: string;
-}): Promise<void> {
-  /*
-   * ONE TRANSACTION, and that is not tidiness.
-   *
-   * The share ceiling is a DEFERRED constraint trigger: it asks "what does this
-   * programme pay in total" at COMMIT. Run as separate statements, raising the
-   * rebate commits while the PREVIOUS ladder is still in place, so setting a 5%
-   * rebate on a programme already paying 70 + 30 is refused at 105% — for a
-   * state the caller never asked for and is one statement away from leaving.
-   *
-   * Inside a transaction the question is asked once, about the terms as they
-   * end up. This is the same shape `IbProgramsService.update` uses, for the
-   * same reason.
-   */
-  await ctx.db.transaction(async (tx) => {
-    /*
-     * Every rung is reset first, then the requested rates applied. A rate left
-     * behind by a previous case would pay a partner these terms never
-     * configured, and these suites share a database.
-     */
-    await tx.execute(sql`
-      UPDATE ib_levels
-         SET commission_mode = 'percent', commission_amount_per_lot = NULL, commission_rate = 0,
-             rebate_mode = 'percent', rebate_amount_per_lot = NULL, rebate_rate = 0,
-             enabled = true
-    `);
-    /* The rebate is a term of the INTRODUCER's rung — level 1. */
-    await tx.execute(sql`
-      UPDATE ib_levels SET rebate_rate = ${terms.rebateRate} WHERE level = 1
-    `);
+let terms: CommissionTypeTerms;
 
-    const tiers = (terms.tiers ?? []).filter((rate) => Number.parseFloat(rate) > 0);
-    for (const [index, rate] of tiers.entries()) {
-      await tx.execute(sql`
-        UPDATE ib_levels SET commission_mode = 'percent', commission_amount_per_lot = NULL, commission_rate = ${rate} WHERE level = ${index + 1}
-      `);
-    }
-  });
+/** The ladder: commission shares level 1 first, the rebate share on level 1. */
+async function setTerms(ladder: { tiers?: string[]; rebateRate: string }): Promise<void> {
+  const shares: RungShares[] = (ladder.tiers ?? [])
+    .filter((rate) => Number.parseFloat(rate) > 0)
+    .map((commission) => ({ commission }));
+  if (shares.length === 0) shares.push({ commission: '0' });
+  shares[0] = { ...shares[0], rebate: ladder.rebateRate };
+  await setLadderShares(ctx.db, shares);
 }
 
 /** One closed trade on which the broker kept 100. */
@@ -116,9 +84,9 @@ async function accrue(): Promise<number> {
     dealRowId: DEAL_ROW_ID,
     ticket: '90210',
     clientUserId: clientId,
-    brokerRevenue: '100.00000000',
     lots: '1.00000000',
     currency: 'USD',
+    terms,
   });
 }
 
@@ -168,12 +136,25 @@ beforeAll(async () => {
     sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,
   );
 
+  const seeded = await seedProductTerms(ctx.db, {
+    name: 'Reversal terms',
+    commissionPerLot: '100',
+    rebatePerLot: '100',
+  });
+  terms = {
+    id: seeded.typeId,
+    name: 'Reversal terms',
+    enabled: true,
+    commissionPerLot: '100.00000000',
+    rebatePerLot: '100.00000000',
+  };
+
   commissions = new CommissionService(
     ctx.db,
     new WalletService(ctx.db),
     {
       notify: vi.fn().mockResolvedValue(undefined),
-      notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
+      notifyAdmins: vi.fn().mockResolvedValue(undefined),
     },
     // The payout ceiling (0106) — the real store against the real row, so
     // this reads the shipped default of 100 rather than a stub's opinion.
@@ -419,7 +400,7 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
       new WalletService(ctx.db),
       {
         notify: vi.fn().mockResolvedValue(undefined),
-        notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
+        notifyAdmins: vi.fn().mockResolvedValue(undefined),
       },
       new AppSettingsStore(ctx.db),
       emailStubAs(),

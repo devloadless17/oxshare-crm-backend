@@ -370,7 +370,7 @@ describe('how deep the ladder may go', () => {
 
   it('accepts a third level with no ceiling to raise first', async () => {
     const created = await levels().create(
-      { level: 3, name: 'Three Deep', commissionRate: '10' },
+      { level: 3, name: 'Three Deep', commissionShare: '10' },
       REVIEWER,
     );
 
@@ -383,7 +383,7 @@ describe('how deep the ladder may go', () => {
    */
   it('refuses a level deeper than the commission engine walks', async () => {
     await expect(
-      levels().create({ level: 11, name: 'Unreachable', commissionRate: '10' }, REVIEWER),
+      levels().create({ level: 11, name: 'Unreachable', commissionShare: '10' }, REVIEWER),
     ).rejects.toThrow(/deeper than the commission engine walks/i);
   });
 
@@ -393,7 +393,7 @@ describe('how deep the ladder may go', () => {
    */
   it('accepts a level no partner stands on yet', async () => {
     const created = await levels().create(
-      { level: 4, name: 'Room To Grow', commissionRate: '5' },
+      { level: 4, name: 'Room To Grow', commissionShare: '5' },
       REVIEWER,
     );
 
@@ -623,7 +623,7 @@ describe('status', () => {
     const { client } = await twoRungChain('reopened');
 
     await new IbLevelsService(ctx.db, auditStubAs()).create(
-      { level: 3, name: 'Three Deep', commissionRate: '10' },
+      { level: 3, name: 'Three Deep', commissionShare: '10' },
       REVIEWER,
     );
     try {
@@ -692,7 +692,7 @@ describe('status', () => {
     const { middle, client } = await twoRungChain('accepted');
 
     await new IbLevelsService(ctx.db, auditStubAs()).create(
-      { level: 3, name: 'Three Deep', commissionRate: '10' },
+      { level: 3, name: 'Three Deep', commissionShare: '10' },
       REVIEWER,
     );
     try {

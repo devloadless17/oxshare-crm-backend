@@ -64,15 +64,16 @@ export const NEEDS_REVIEW_STATUSES = [
   'under_review',
 ] as const satisfies readonly KycStatus[];
 
-export interface PersonalInfo {
-  firstName: string;
-  lastName: string;
-  dateOfBirth?: string;
-  nationality?: string;
-  country?: string;
-  phone?: string;
-  address?: string;
-}
+/**
+ * The personal step's answers.
+ *
+ * STORED (`kyc_submissions.personal_info`), it holds ONLY answers to fields a
+ * broker invented: the client's identity — name, date of birth, nationality,
+ * phone, residence and address — lives on the profile (`users`, 0139), and
+ * nothing may write it here. READ through `KycService`, the profile's values
+ * are merged in for the fields the step asks for, so a screen sees one record.
+ */
+export type PersonalInfo = Record<string, string>;
 
 export interface DocumentInfo {
   /**
@@ -493,7 +494,8 @@ export class KycStore {
           reviewedBy: kycSubmissions.reviewedBy,
           createdAt: kycSubmissions.createdAt,
           updatedAt: kycSubmissions.updatedAt,
-          country: sql<string | null>`${kycSubmissions.personalInfo}->>'country'`,
+          // The PROFILE's country of residence — its one home since 0139.
+          country: users.country,
           user: {
             id: users.id,
             portalId: users.portalId,
@@ -634,7 +636,7 @@ export class KycStore {
           WHERE ${kycSubmissionAttempts.userId} = ${submission.userId}
         )`,
         status: submission.status,
-        personalInfo: submission.personalInfo as unknown as Record<string, string>,
+        personalInfo: submission.personalInfo,
         document: submission.document as unknown as Record<string, string>,
         selfie: submission.selfie as unknown as Record<string, string>,
         addressProof: submission.addressProof as unknown as Record<string, string>,

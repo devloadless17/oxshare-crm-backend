@@ -36,7 +36,26 @@ export interface NotificationEvent {
   recipientId: string;
   kind: string;
   params?: Record<string, unknown>;
+  /**
+   * The Portal ID of the client an ADMIN task is about (migration 0140), so a
+   * toast can say "#1000245" on arrival. Never a name: names are masked per
+   * reader, which only the HTTP read can do.
+   */
+  subjectPortalId?: number | null;
 }
+
+/**
+ * A row was READ or RESOLVED — the recipient's badge and lists are stale.
+ * Names a room and nothing else; the browser re-reads through the scoped,
+ * permission-checked endpoint.
+ */
+export interface NotificationChangedEvent {
+  recipientKind: 'client' | 'admin';
+  recipientId: string;
+}
+
+/** Postgres channel for `NotificationChangedEvent` — see migration 0140. */
+export const NOTIFICATION_CHANGED_CHANNEL = 'notification_changed';
 
 /** The one namespace both apps connect to. See the class note on why one. */
 export const REALTIME_NAMESPACE = '/realtime';
@@ -50,6 +69,13 @@ export const NOTIFICATION_EVENT = 'notification.created';
  * `common/realtime/resource-changed.ts` for why that emptiness is the point.
  */
 export const RESOURCE_EVENT = 'resource.changed';
+
+/**
+ * "Your notifications changed" — one of yours was read in another tab, or a
+ * task you hold was handled by somebody else and left your inbox. Carries no
+ * data at all; see `NotificationChangedEvent`.
+ */
+export const NOTIFICATION_CHANGED_EVENT = 'notification.changed';
 
 /**
  * Every admin socket, whoever they are.
@@ -372,7 +398,25 @@ export class NotificationsRealtimeGateway
       id: event.id,
       kind: event.kind,
       ...(event.params ? { params: event.params } : {}),
+      ...(typeof event.subjectPortalId === 'number'
+        ? { subjectPortalId: event.subjectPortalId }
+        : {}),
     });
+  }
+
+  /**
+   * Tell one principal's open tabs that their notifications changed.
+   *
+   * The room is the whole routing decision and the payload is empty: what
+   * changed is re-read over HTTP, where scope and permissions apply. That is
+   * what lets a resolution — one admin approving — clear the task from every
+   * other admin's inbox within a second, without this event ever describing a
+   * client to somebody who may no longer be allowed to see them.
+   */
+  publishNotificationChange(event: NotificationChangedEvent): void {
+    this.server
+      ?.to(roomFor({ kind: event.recipientKind, id: event.recipientId }))
+      .emit(NOTIFICATION_CHANGED_EVENT, {});
   }
 
   /**
@@ -484,6 +528,10 @@ export class NotificationsRealtimeGateway
           this.publishResourceChange(JSON.parse(message.payload) as ResourceChangedEvent);
           return;
         }
+        if (message.channel === NOTIFICATION_CHANGED_CHANNEL) {
+          this.publishNotificationChange(JSON.parse(message.payload) as NotificationChangedEvent);
+          return;
+        }
         if (message.channel === MT5_LIVE_CHANNEL) {
           /*
            * `decodeLiveEvent`, not `JSON.parse`: a large reading arrives gzipped
@@ -523,7 +571,15 @@ export class NotificationsRealtimeGateway
        * is parsed and emitted into one room.
        */
       await client.query(`LISTEN ${MT5_LIVE_CHANNEL}`);
-      this.logger.log('Listening for notification, resource-change and live-account events.');
+      /*
+       * A FOURTH, low-rate: a row read or resolved (migration 0140). Same
+       * connection for the same reason as the others, and the same shape as
+       * the first — a room to address, never data to leak.
+       */
+      await client.query(`LISTEN ${NOTIFICATION_CHANGED_CHANNEL}`);
+      this.logger.log(
+        'Listening for notification, notification-change, resource-change and live-account events.',
+      );
     } catch (error) {
       this.logger.error(
         `Could not start listening for notifications: ` +

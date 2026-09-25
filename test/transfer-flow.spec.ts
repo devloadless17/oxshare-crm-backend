@@ -12,7 +12,7 @@ import {
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { auditStubAs } from './audit-stub';
-import { notificationsStubAs } from './notifications-stub';
+import { notificationsStub } from './notifications-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -30,6 +30,8 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
 let ctx: MoneyTestContext;
 let transfers: TransfersService;
 let wallets: WalletService;
+/** The client's bell — recorded, so the echo rule below can be asserted. */
+const bell = notificationsStub();
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
@@ -42,7 +44,7 @@ beforeAll(async () => {
     wallets,
     new CurrenciesService(ctx.db, auditStubAs()),
     ctx.db,
-    notificationsStubAs(),
+    bell,
   );
 }, 120_000);
 
@@ -813,5 +815,54 @@ describe('an unanswered MT5 call: who keeps the hold', () => {
     );
     expect(state).toBe('failed');
     expect(wallet.onHold).toBe('0.00000000');
+  });
+});
+
+describe('the client is told a transfer completed only when it WAITED (0140)', () => {
+  /*
+   * A transfer that settles inside a minute finished while the client watched
+   * the screen confirm it — a bell row saying so again is an echo of their own
+   * click, the noise the owner asked the portal to stop carrying. One that sat
+   * in neither place for a while — queued, resumed later — is exactly what the
+   * message is for.
+   */
+  async function pendingTransfer(email: string) {
+    const userId = await makeClient(email);
+    const accountId = await makeAccount(userId);
+    return transfers.request({
+      userId,
+      tradingAccountId: accountId,
+      direction: 'wallet_to_account',
+      amount: '50',
+      currency: 'USD',
+    });
+  }
+
+  it('rings nothing for a transfer that settled in front of the client', async () => {
+    const transfer = await pendingTransfer('echo-instant@test.local');
+    bell.notify.mockClear();
+
+    await transfers.settle(transfer.id, '50.00000000', new Date());
+
+    expect(bell.notify).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'transfer.completed' }),
+    );
+  });
+
+  it('tells the client when the money was in flight for a while', async () => {
+    const transfer = await pendingTransfer('echo-delayed@test.local');
+    await ctx.db.execute(
+      sql`UPDATE transfers SET created_at = now() - interval '5 minutes' WHERE id = ${transfer.id}`,
+    );
+    bell.notify.mockClear();
+
+    await transfers.settle(transfer.id, '50.00000000', new Date());
+
+    expect(bell.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'transfer.completed',
+        params: expect.objectContaining({ transferId: transfer.id }) as unknown,
+      }),
+    );
   });
 });

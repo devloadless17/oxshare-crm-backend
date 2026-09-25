@@ -4,6 +4,7 @@ import {
   boolean,
   char,
   check,
+  date,
   foreignKey,
   uniqueIndex,
   index,
@@ -256,8 +257,30 @@ export const users = pgTable(
      */
     passwordResetTokenHash: varchar('password_reset_token_hash', { length: 64 }),
     passwordResetExpiry: timestamp('password_reset_expiry', { withTimezone: true }),
+    /*
+     * THE CLIENT PROFILE lives in these columns and NOWHERE ELSE (0139) — see
+     * `common/profile/client-profile.ts` for the rules every writer obeys.
+     *
+     * `country` is the country of RESIDENCE, as the name `countries-list` gives
+     * it (the KYC select's own list). `phone` is E.164 (`+96170123456`).
+     * `date_of_birth` is a DATE, not text: the KYC blob used to hold whatever
+     * string parsed, including a timestamp, and a column that cannot hold
+     * "2026-02-31" is the cheapest validation there is.
+     *
+     * Until 0139, date of birth, nationality and address lived only in
+     * `kyc_submissions.personal_info`, while name, phone and country lived here
+     * AND there — two copies that nothing kept equal, so a client could hold one
+     * name on their account and another on their verification. The KYC personal
+     * step now reads and writes these columns, and `personal_info` keeps only
+     * answers to fields a broker invented.
+     */
     country: varchar('country', { length: 100 }),
     phone: varchar('phone', { length: 32 }),
+    dateOfBirth: date('date_of_birth', { mode: 'string' }),
+    nationality: varchar('nationality', { length: 100 }),
+    address: varchar('address', { length: 200 }),
+    city: varchar('city', { length: 100 }),
+    postalCode: varchar('postal_code', { length: 12 }),
     /**
      * The partner who introduced this client, captured at registration.
      *
@@ -1757,6 +1780,86 @@ export const tradingEnvironmentEnum = pgEnum('trading_environment', ['live', 'de
  */
 export const productTypeEnum = pgEnum('product_type', ['real', 'demo']);
 
+/**
+ * WHAT A PRODUCT PAYS PARTNERS — the rate card a product is sold on (0140).
+ *
+ * ## Why the money moved off the ladder and onto the product
+ *
+ * Until 0140 every rung of `ib_levels` carried an ABSOLUTE amount per lot, and
+ * one ladder therefore described one product. The moment the broker sells two
+ * products on different terms — "$10 a lot on Standard, $6 on ECN" — a rung has
+ * no single number to hold, and the alternative (a ladder per product) writes
+ * the tree's shape once per product, which is the duplication `agencies`
+ * already refused for the same reason.
+ *
+ * So the ABSOLUTE figures live here, one row per named arrangement, and a
+ * product points at the one it is sold on. A rung then holds a PERCENTAGE of
+ * whatever the product says: level 1 takes 70% of the product's commission,
+ * level 2 takes 30%, and the same two numbers price every product in the
+ * catalogue. Different types of commission and rebate, assigned to products as
+ * a type — which is what was asked for.
+ *
+ * ## Two amounts, and they are different pools
+ *
+ * `commission_per_lot` is what the PARTNERS' side of a trade is worth. Each
+ * rung in the chain above the client takes its own percentage of it — see
+ * `calculate` for the arithmetic and for why the shares are independent rather
+ * than carved out of each other.
+ *
+ * `rebate_per_lot` is what returns to the TRADING CLIENT, before the
+ * introducer's level applies its own percentage. It is a separate figure
+ * because it is a separate promise: "$3 back per lot" is quoted to a client
+ * and "$10 a lot" to a partner, and neither is a slice of the other.
+ *
+ * ## A disabled type pays nobody
+ *
+ * The same rule as a disabled level or a disabled product: switching a rate
+ * card off stops it paying and keeps every row that references it, so accruals
+ * priced on it stay explicable. Deleting is `restrict`ed from both directions —
+ * `trading_products.commission_type_id` and `ib_accruals.commission_type_id`.
+ */
+export const ibCommissionTypes = pgTable(
+  'ib_commission_types',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** What an operator picks in the product form. "Standard", "Gold terms". */
+    name: varchar('name', { length: 80 }).notNull().unique(),
+    /** What was agreed, in the desk's words. Nothing computes with it. */
+    description: text('description'),
+    enabled: boolean('enabled').notNull().default(true),
+    /**
+     * Money per standard lot for the PARTNERS, before the ladder's shares.
+     * NUMERIC(28,8) because it is money (§6.1); a string at every boundary.
+     */
+    commissionPerLot: numeric('commission_per_lot', { precision: 28, scale: 8 })
+      .notNull()
+      .default('0'),
+    /** Money per standard lot for the CLIENT, before the introducer's share. */
+    rebatePerLot: numeric('rebate_per_lot', { precision: 28, scale: 8 }).notNull().default('0'),
+    /** The order the picker lists them in. Ties broken by name. */
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /*
+     * Non-negative, and bounded far above any real rate card. The upper bound
+     * is a TYPO guard — a "1000" typed where "10.00" was meant — in the same
+     * spirit as `ib_max_payout_per_lot`, which is the ceiling that actually
+     * decides at accrual time. NOT NULL on the column means the
+     * CHECK-evaluates-to-NULL trap 0111 hit cannot apply here.
+     */
+    check(
+      'ib_commission_types_commission_range',
+      sql`${t.commissionPerLot} >= 0 AND ${t.commissionPerLot} <= 10000`,
+    ),
+    check(
+      'ib_commission_types_rebate_range',
+      sql`${t.rebatePerLot} >= 0 AND ${t.rebatePerLot} <= 10000`,
+    ),
+  ],
+);
+
 /*
  * ── What the broker SELLS, and who is allowed to sell it ─────────────────────
  *
@@ -1842,33 +1945,31 @@ export const tradingProducts = pgTable(
      */
     type: productTypeEnum('type').notNull().default('real'),
     /**
-     * The broker's spread markup per standard lot, in the account currency.
+     * WHAT THIS PRODUCT PAYS PARTNERS — the rate card it is sold on (0140).
      *
-     * ADM-07's "per-tier" markup, on the PRODUCT because the product IS the
-     * tier — `trading_accounts.tier` is inert and labelled dead on the
-     * reasoning that "a tier would be a second name for the same thing", and a
-     * `tiers` table now would create exactly that second name.
+     * See `ibCommissionTypes`. Each rung of `ib_levels` takes a percentage of
+     * the figures on that row, so one ladder prices every product and a
+     * product's terms are read off one row rather than resolved from a tree.
      *
-     * ── ⚠️ IT DRIVES NOTHING, AND THAT IS THE POINT ────────────────────────
+     * NULLABLE, and null means this product pays NO partner commission — a
+     * configured state, not a missing one. A trade on it accrues nothing and
+     * `calculate` says so. An account linked to no product AT ALL is the
+     * missing case, and that one is REFUSED and retried rather than paid
+     * nothing — the money may be owed, and what is missing is a link somebody
+     * can restore.
      *
-     * A COMMERCIAL RECORD: what the desk says a product is sold on. Nothing
-     * reads it, and in particular it is NOT part of `brokerRevenueOf`, which is
-     * `commission + swap` and decides what every partner is paid.
+     * `restrict`: a type that products still sell on cannot be deleted. The
+     * service names the products in its refusal.
      *
-     * Adding it to that sum is a real next step — spread is the other half of
-     * what a broker earns on a trade — but it changes what every partner is
-     * paid on every future trade, and MT5 reports no per-deal spread revenue to
-     * check the answer against. That is a decision with a person behind it, not
-     * a consequence of a column existing. The database carries the same warning
-     * as a COMMENT, because the failure being guarded is somebody two quarters
-     * from now finding a populated, plausible number and reading it as live.
-     *
-     * A string in and out, like every `NUMERIC(28,8)` here: it is money, and
-     * §6 forbids it ever becoming a float.
+     * `spread_markup_per_lot` stood here until 0140: a commercial record that
+     * drove nothing, and the `spread` revenue basis that would have read it.
+     * Both went with the percentage-of-revenue model, because a partner's pay
+     * is a share of the product's commission type now and never of what the
+     * broker earned on the trade.
      */
-    spreadMarkupPerLot: numeric('spread_markup_per_lot', { precision: 28, scale: 8 })
-      .notNull()
-      .default('0'),
+    commissionTypeId: uuid('commission_type_id').references(() => ibCommissionTypes.id, {
+      onDelete: 'restrict',
+    }),
     /** The order a client sees them in. Ties broken by name. */
     sortOrder: integer('sort_order').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -1880,6 +1981,9 @@ export const tradingProducts = pgTable(
     uniqueIndex('trading_products_single_demo_uq')
       .on(t.type)
       .where(sql`${t.type} = 'demo'`),
+    /* "Which products are sold on this type?" — asked before a type may be
+       deleted or disabled, to name them in the refusal. */
+    index('trading_products_commission_type_idx').on(t.commissionTypeId),
   ],
 );
 
@@ -3398,28 +3502,39 @@ export const ibRevenueBasisEnum = pgEnum('ib_revenue_basis', [
 ]);
 
 /**
- * The commission ladder — 0112.
+ * The commission ladder — 0112, re-priced in 0140.
  *
  * A partner's terms come from their LEVEL in the partner tree: level 1
  * introduces clients directly, level 2 was recruited by a level 1, and so on.
- * Each level carries one commission term and one rebate term, either of which
- * may be a percentage of broker revenue or a flat amount per standard lot.
+ * Each level carries one commission share and one rebate share, and both are
+ * PERCENTAGES of the product's commission type (`ib_commission_types`).
  *
- * ## What this replaced, and what changed about who earns what
+ * ## What 0140 changed, and what it kept
  *
- * It replaces `ibPrograms` on the live path. The chain walk is UNCHANGED, so
- * both rules the business stated still hold by construction: a sub-partner
- * earns nothing from their parent's own clients (they never appear in that
- * chain), and a parent does earn from clients introduced beneath them.
+ * Until 0140 a rung held an ABSOLUTE amount per lot, so the ladder described
+ * one product. The amounts moved to the product's commission type, and a rung
+ * now says what fraction of that type its partners take — one ladder pricing
+ * every product. See `ibCommissionTypes` for the reasoning.
  *
- * What changed is WHICH number each earner is paid. Programmes chose the rate by
- * DEPTH — how many hops the trade sat below that earner. Levels choose it by the
- * earner's own position in the tree, so a level 1 partner earns their level 1
- * term on everything that reaches them, however deep. That is what "static per
- * lot for the main partner, percent for the partner under him" describes.
+ * The chain walk is UNCHANGED, so both rules the business stated still hold by
+ * construction: a sub-partner earns nothing from their parent's own clients
+ * (they never appear in that chain), and a parent does earn from clients
+ * introduced beneath them. And the rate is still keyed on the earner's own
+ * POSITION rather than on the trade's depth — a level 1 partner takes their
+ * level 1 share on everything that reaches them, however deep.
+ *
+ * ## The shares are INDEPENDENT, not carved out of each other (0114's rule)
+ *
+ * On a sub-partner's client's trade, level 2 takes its share of the product's
+ * commission AND level 1 takes its own share in full. The deeper the tree, the
+ * more one lot costs the broker — chosen deliberately in 0114 over splitting
+ * one figure, because recruiting must not reduce what the main partner earns.
+ * A ladder of 100% / 30% reproduces the old "$10 to the main partner, $3 to
+ * the sub" exactly on a $10 type; a ladder of 70% / 30% makes the product's
+ * figure a hard pool instead. Both are expressible; neither is imposed.
  *
  * ⚠️ This reverses 0102 and deviates from FR-IB-06, which commits to a named
- * programme catalogue. Done on an explicit instruction; see the migration.
+ * programme catalogue. Done on an explicit instruction; see migration 0112.
  */
 export const ibLevels = pgTable(
   'ib_levels',
@@ -3441,51 +3556,44 @@ export const ibLevels = pgTable(
      */
     enabled: boolean('enabled').notNull().default(true),
 
-    /** How the PARTNER's leg is priced at this level. */
-    commissionMode: ibPayoutModeEnum('commission_mode').notNull().default('percent'),
-    /** A percentage of broker revenue. Read only in `percent` mode. */
-    commissionRate: numeric('commission_rate', { precision: 12, scale: 4 }).notNull().default('0'),
-    /** Money per standard lot — NUMERIC(28,8) because it is money (§6.1). */
-    commissionAmountPerLot: numeric('commission_amount_per_lot', { precision: 28, scale: 8 }),
-
-    /** How the CLIENT's rebate is priced at this level. */
-    rebateMode: ibPayoutModeEnum('rebate_mode').notNull().default('percent'),
-    rebateRate: numeric('rebate_rate', { precision: 12, scale: 4 }).notNull().default('0'),
-    rebateAmountPerLot: numeric('rebate_amount_per_lot', { precision: 28, scale: 8 }),
-
     /**
-     * WHICH revenue a percentage at this level is a share of — FR-IB-16.
-     *
-     * Per level rather than a platform constant, because the base is half of
-     * what a partner agreed to: "30% of the spread markup" and "30% of
-     * commission and swap" are different contracts. A per-lot term ignores it
-     * entirely — that is priced from volume and never from revenue.
+     * The PARTNER's share of the product's `commission_per_lot`, as a
+     * percentage. 12,4 leaves a 2.5% share and a 33.3333% one both intact,
+     * and it is a decimal STRING in and out (§6.1) because it multiplies money.
      */
-    revenueBasis: ibRevenueBasisEnum('revenue_basis').notNull().default('commission_swap'),
+    commissionShare: numeric('commission_share', { precision: 12, scale: 4 })
+      .notNull()
+      .default('0'),
+    /**
+     * The CLIENT's share of the product's `rebate_per_lot`, as a percentage —
+     * read from the INTRODUCER's rung only, because there is one trading client
+     * per trade and they stand in exactly one relationship.
+     */
+    rebateShare: numeric('rebate_share', { precision: 12, scale: 4 }).notNull().default('0'),
+
+    /*
+     * `commission_mode`, `commission_rate`, `commission_amount_per_lot`,
+     * `rebate_mode`, `rebate_rate`, `rebate_amount_per_lot` and
+     * `revenue_basis` stood here until 0140. The two rate columns were RENAMED
+     * into the shares above; the rest were dropped with the modes they served.
+     * `ib_payout_mode` and `ib_revenue_basis` survive as enum types because the
+     * historical `ib_programs` tables still use them.
+     */
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     /*
-     * Each mode requires exactly the column it reads and forbids the other, so a
-     * row can never be ambiguous about which number pays.
-     *
-     * `IS NOT NULL` beside `>= 0` is NOT redundant: a CHECK evaluating to NULL
-     * passes in Postgres, so the comparison alone would accept a per-lot term
-     * carrying no amount. 0111 hit exactly that and the constraint suite caught
-     * it rather than review.
+     * A share is a fraction of ONE figure on the product, so it cannot exceed
+     * the whole of it. NOT NULL on the columns keeps the CHECK-evaluates-to-NULL
+     * trap (0111) away from these two.
      */
     check(
-      'ib_levels_commission_shape',
-      sql`(${t.commissionMode} = 'percent' AND ${t.commissionAmountPerLot} IS NULL)
-          OR (${t.commissionMode} = 'per_lot' AND ${t.commissionAmountPerLot} IS NOT NULL AND ${t.commissionAmountPerLot} >= 0)`,
+      'ib_levels_commission_share_range',
+      sql`${t.commissionShare} >= 0 AND ${t.commissionShare} <= 100`,
     ),
-    check(
-      'ib_levels_rebate_shape',
-      sql`(${t.rebateMode} = 'percent' AND ${t.rebateAmountPerLot} IS NULL)
-          OR (${t.rebateMode} = 'per_lot' AND ${t.rebateAmountPerLot} IS NOT NULL AND ${t.rebateAmountPerLot} >= 0)`,
-    ),
+    check('ib_levels_rebate_share_range', sql`${t.rebateShare} >= 0 AND ${t.rebateShare} <= 100`),
     /*
      * The STRUCTURAL bound, wider than the policy one. `ib_max_levels` decides
      * how deep a broker actually pays and is a settings change; this only bounds
@@ -3493,15 +3601,12 @@ export const ibLevels = pgTable(
      */
     check('ib_levels_level_range', sql`${t.level} BETWEEN 1 AND 10`),
     /*
-     * Percentages are shares of ONE revenue figure, so a level cannot hand out
-     * more than there is. Per-lot terms contribute nothing here and are bounded
-     * at accrual time by `ib_max_payout_per_lot`, where the lot count is known.
+     * There is deliberately NO cross-rung sum here. The shares of the rungs in a
+     * chain are paid independently (see the header), so their sum is the
+     * broker's cost per lot at full depth rather than a fraction that must fit
+     * inside 100. What bounds that cost is `ib_max_payout_per_lot`, enforced by
+     * `checkPlausible` at accrual time where the lot count is known.
      */
-    check(
-      'ib_levels_share_fits',
-      sql`(CASE WHEN ${t.commissionMode} = 'percent' THEN ${t.commissionRate} ELSE 0 END)
-          + (CASE WHEN ${t.rebateMode} = 'percent' THEN ${t.rebateRate} ELSE 0 END) <= 100`,
-    ),
   ],
 );
 
@@ -4044,6 +4149,21 @@ export const ibAccruals = pgTable(
      * arithmetic behind a credited amount is reproducible from the row alone.
      */
     levelId: uuid('level_id').references(() => ibLevels.id, { onDelete: 'restrict' }),
+    /**
+     * WHICH COMMISSION TYPE's amounts this is a share of — 0140.
+     *
+     * The other half of the terms: `level_id` says which percentage applied,
+     * this says which product rate card it was a percentage OF. With both, and
+     * `rate_value` and `base_amount` on the row, a disputed payout is still
+     * settled from the row alone after either card has been edited.
+     *
+     * NULLABLE for rows written before 0140, which were priced on a level's
+     * own per-lot amount and had no type to name. `restrict` on delete, like
+     * `level_id`: a card that has ever paid anybody cannot be removed.
+     */
+    commissionTypeId: uuid('commission_type_id').references(() => ibCommissionTypes.id, {
+      onDelete: 'restrict',
+    }),
     /** The rate applied, so the arithmetic is reproducible from the row alone. */
     rateValue: numeric('rate_value', { precision: 12, scale: 4 }).notNull(),
     /** The revenue base this is a share of. */
@@ -4104,6 +4224,9 @@ export const ibAccruals = pgTable(
     /* The drill-down from one wallet line to the trades behind it — the
        whole reason the per-trade rows are kept (0116). */
     index('ib_accruals_batch_idx').on(t.batchId),
+    /* "Has this rate card ever paid anybody?" — asked before a type may be
+       deleted, so the refusal can say so rather than surfacing a constraint. */
+    index('ib_accruals_commission_type_idx').on(t.commissionTypeId),
     /* A commission is a share of revenue and can never be negative — a clawback
        is a REVERSAL of the row, not a negative accrual. */
     check('ib_accruals_amount_positive', sql`${t.amount} > 0`),
@@ -4270,15 +4393,35 @@ export const positions = pgTable(
  * (§6.1), always.
  *
  * These rows are UX, not records — the audit log and the ledger are the
- * records. A daily prune (NotificationsService) drops rows older than 90 days,
- * read or not, because this table collects fan-out multiples of every event
- * and would otherwise out-grow audit_log.
+ * records. A daily prune (NotificationsService) drops them by age, read or not,
+ * because this table collects fan-out multiples of every event and would
+ * otherwise out-grow audit_log: client rows after 90 days, admin rows after a
+ * year — the admin feed's History is where a desk goes back through its work.
+ *
+ * The two audiences differ in kind since 0140. A CLIENT row is an outcome
+ * ("your withdrawal was paid") and is done once seen. An ADMIN row is a TASK
+ * — something the reader must handle — and names the item it is about, so it
+ * can be scope-checked when read and resolved the moment anybody handles it.
  */
 
 export const notificationRecipientKindEnum = pgEnum('notification_recipient_kind', [
   'client',
   'admin',
 ]);
+
+/**
+ * The items an admin task can be about — the closed set
+ * `notifications_subject_kind_ck` enforces (migration 0140). A KYC task's
+ * subject id is the CLIENT's id, because `kyc_submissions` is keyed on it.
+ */
+export const NOTIFICATION_SUBJECT_KINDS = [
+  'transaction',
+  'kyc',
+  'ib_application',
+  'transfer',
+  'ib_accrual',
+] as const;
+export type NotificationSubjectKind = (typeof NOTIFICATION_SUBJECT_KINDS)[number];
 
 export const notifications = pgTable(
   'notifications',
@@ -4318,11 +4461,55 @@ export const notifications = pgTable(
      * at the precision the cursor can carry makes the comparison exact.
      */
     createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
+    /*
+     * ── An ADMIN row is a task about one item (migration 0140) ──────────────
+     *
+     * `subject_user_id` is the client the task concerns — what the feed's
+     * READ-time scope check runs against, so a re-tagged client's tasks leave
+     * the desk that lost them immediately. `subject_kind` + `subject_id` name
+     * the item (a transaction, a KYC submission keyed by its client, an IB
+     * application, a transfer, a commission accrual), which is what the item
+     * tables' triggers resolve by. All three are required on admin rows
+     * (`notifications_admin_subject_ck`) and absent on client rows.
+     *
+     * No foreign keys, for the recipient's reason above: clients are never
+     * deleted, and a bell row must not add a failure mode to anyone's write.
+     */
+    subjectUserId: uuid('subject_user_id'),
+    subjectKind: varchar('subject_kind', { length: 24 }).$type<NotificationSubjectKind>(),
+    subjectId: uuid('subject_id'),
+    /*
+     * Set by the item tables' triggers the moment somebody handles the item —
+     * for EVERY admin's row about it at once. Never written by application
+     * code: a path that forgot would be the "it keeps showing" bug again.
+     * `resolution` is the item state that ended the task ('approved',
+     * 'rejected', 'success', 'reversed', 'resolved' …); `resolved_by` is the
+     * admin, only when the ending UPDATE itself recorded one.
+     */
+    resolvedAt: timestamp('resolved_at', { withTimezone: true, precision: 3 }),
+    resolution: varchar('resolution', { length: 24 }),
+    resolvedBy: uuid('resolved_by'),
   },
   (t) => [
+    check(
+      'notifications_admin_subject_ck',
+      sql`${t.recipientKind} <> 'admin' OR (${t.subjectUserId} IS NOT NULL AND ${t.subjectKind} IS NOT NULL AND ${t.subjectId} IS NOT NULL)`,
+    ),
+    check(
+      'notifications_subject_kind_ck',
+      sql`${t.subjectKind} IS NULL OR ${t.subjectKind} IN ('transaction', 'kyc', 'ib_application', 'transfer', 'ib_accrual')`,
+    ),
     uniqueIndex('notifications_recipient_dedupe_uq')
       .on(t.recipientKind, t.recipientId, t.dedupeKey)
       .where(sql`${t.dedupeKey} IS NOT NULL`),
+    /* The admin Inbox: still somebody's work — unread AND unresolved. */
+    index('notifications_admin_inbox_idx')
+      .on(t.recipientId, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.recipientKind} = 'admin' AND ${t.readAt} IS NULL AND ${t.resolvedAt} IS NULL`),
+    /* What the resolution triggers look up: the open rows about one item. */
+    index('notifications_subject_open_idx')
+      .on(t.subjectKind, t.subjectId)
+      .where(sql`${t.resolvedAt} IS NULL`),
     /* Keyset paging: both ORDER BY keys in the same direction, same rule
        audit-log.store.ts records. */
     index('notifications_recipient_created_idx').on(

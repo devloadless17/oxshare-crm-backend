@@ -1,6 +1,28 @@
 {
   "openapi": "3.0.0",
   "paths": {
+    "/v1/profile/options": {
+      "get": {
+        "operationId": "ProfileOptionsController_options",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileOptionsDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "The countries and nationalities a client profile accepts",
+        "tags": [
+          "profile"
+        ]
+      }
+    },
     "/v1/notifications": {
       "get": {
         "operationId": "NotificationsController_list",
@@ -122,6 +144,16 @@
       "post": {
         "operationId": "NotificationsController_markAllRead",
         "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationsReadAllDto"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "",
@@ -139,7 +171,7 @@
             "cookie": []
           }
         ],
-        "summary": "Mark every unread notification read. Idempotent.",
+        "summary": "Mark unread notifications read — every one, or up to the newest one shown. Idempotent.",
         "tags": [
           "notifications"
         ]
@@ -150,9 +182,51 @@
         "operationId": "AdminNotificationsController_list",
         "parameters": [
           {
-            "name": "limit",
+            "name": "view",
             "required": false,
             "in": "query",
+            "description": "'inbox': still waiting on you — unread AND not yet handled by anyone. 'history' (default): everything, handled or not.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "history"
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "description": "History only. 'open': nobody has handled it yet. 'handled': resolved.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "open",
+                "handled"
+              ]
+            }
+          },
+          {
+            "name": "category",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "deposits",
+                "withdrawals",
+                "kyc",
+                "ib",
+                "transfers"
+              ]
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "A client: Portal ID (exact, `#` optional) or part of a name or email.",
             "schema": {
               "type": "string"
             }
@@ -167,12 +241,13 @@
             }
           },
           {
-            "name": "unread",
+            "name": "limit",
             "required": false,
             "in": "query",
-            "description": "Pass 'true' to see only unread.",
             "schema": {
-              "type": "string"
+              "minimum": 1,
+              "maximum": 100,
+              "type": "number"
             }
           }
         ],
@@ -182,7 +257,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotificationListResponseDto"
+                  "$ref": "#/components/schemas/AdminNotificationListResponseDto"
                 }
               }
             }
@@ -193,7 +268,7 @@
             "cookie": []
           }
         ],
-        "summary": "The signed-in admin's notification feed, newest first",
+        "summary": "The signed-in admin's tasks, newest first — inbox or history",
         "tags": [
           "notifications"
         ]
@@ -201,7 +276,7 @@
     },
     "/v1/admin/notifications/unread-count": {
       "get": {
-        "operationId": "AdminNotificationsController_unreadCount",
+        "operationId": "AdminNotificationsController_summary",
         "parameters": [],
         "responses": {
           "200": {
@@ -209,7 +284,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotificationUnreadCountDto"
+                  "$ref": "#/components/schemas/AdminNotificationSummaryDto"
                 }
               }
             }
@@ -220,7 +295,81 @@
             "cookie": []
           }
         ],
-        "summary": "Unread notifications for the signed-in admin — the badge number",
+        "summary": "Tasks waiting on the signed-in admin — the bell badge, in total and per category",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/admin/notifications/read-all": {
+      "post": {
+        "operationId": "AdminNotificationsController_markAllRead",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminNotificationsReadAllDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsMarkAllReadResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark tasks read — all, or one category — up to what was shown",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/admin/notifications/read-subject": {
+      "post": {
+        "operationId": "AdminNotificationsController_markSubjectRead",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminNotificationsReadSubjectDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsMarkAllReadResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The reader opened an item (e.g. a KYC review) — mark their tasks about it read",
         "tags": [
           "notifications"
         ]
@@ -245,7 +394,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotificationDto"
+                  "$ref": "#/components/schemas/AdminNotificationMarkResponseDto"
                 }
               }
             }
@@ -256,23 +405,32 @@
             "cookie": []
           }
         ],
-        "summary": "Mark one notification read. Idempotent.",
+        "summary": "Mark one task read. Idempotent.",
         "tags": [
           "notifications"
         ]
       }
     },
-    "/v1/admin/notifications/read-all": {
+    "/v1/admin/notifications/{id}/unread": {
       "post": {
-        "operationId": "AdminNotificationsController_markAllRead",
-        "parameters": [],
+        "operationId": "AdminNotificationsController_markUnread",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotificationsMarkAllReadResponseDto"
+                  "$ref": "#/components/schemas/AdminNotificationMarkResponseDto"
                 }
               }
             }
@@ -283,7 +441,7 @@
             "cookie": []
           }
         ],
-        "summary": "Mark every unread notification read. Idempotent.",
+        "summary": "Mark one task unread again (undo). Idempotent.",
         "tags": [
           "notifications"
         ]
@@ -2512,7 +2670,7 @@
     },
     "/v1/admin/ib/partners": {
       "get": {
-        "description": "Joined to the person and the programme they are paid on, newest approval first.",
+        "description": "Every partner the acting admin may see, joined to the person, their agency and what they have earned (one entry per currency). Searchable by Portal ID, name, email or referral code; newest approval first.",
         "operationId": "AdminIbController_listPartners",
         "parameters": [
           {
@@ -2557,11 +2715,39 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "A Portal ID (exact), a name or email, or a referral code (exact).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "active",
+                "suspended"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbPartnerListResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2569,7 +2755,7 @@
             "cookie": []
           }
         ],
-        "summary": "The partner list",
+        "summary": "The partner directory",
         "tags": [
           "admin"
         ]
@@ -2577,7 +2763,7 @@
     },
     "/v1/admin/ib/partners/export": {
       "get": {
-        "description": "Every partner the acting admin may see, joined to the person and their programme. The list takes no filters, so neither does its export.",
+        "description": "Every partner the acting admin may see, joined to the person and their level — narrowed by the same `q` and `status` the directory takes, so the file is the list on screen.",
         "operationId": "AdminIbController_exportPartners",
         "parameters": [
           {
@@ -2587,6 +2773,26 @@
             "schema": {
               "enum": [
                 "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "active",
+                "suspended"
               ],
               "type": "string"
             }
@@ -2964,6 +3170,148 @@
         ]
       }
     },
+    "/v1/admin/ib-commission-types": {
+      "get": {
+        "description": "Each row names the products sold on it, so a delete or a disable can be refused on the screen before the API refuses it.",
+        "operationId": "AdminIbCommissionTypesController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IbCommissionTypeDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every commission type, disabled ones included",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Money per standard lot for the partners’ commission and for the client’s rebate. Each level of the ladder takes a percentage of these. Assign it to products on the product form.",
+        "operationId": "AdminIbCommissionTypesController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateIbCommissionTypeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbCommissionTypeDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add a commission type",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib-commission-types/{id}": {
+      "patch": {
+        "description": "Applies to the NEXT trade on every product sold on it. Accruals record the type AND the pool it produced, so nothing already earned is restated. Disabling one that products are sold on is refused: a disabled type stops paying, and those products would keep trading while every partner on them earned nothing.",
+        "operationId": "AdminIbCommissionTypesController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateIbCommissionTypeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbCommissionTypeDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update a commission type",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "description": "Refuses one that products are sold on, naming them, and one that has ever priced a payout — the record of what was paid has to stay explicable. Disable it instead.",
+        "operationId": "AdminIbCommissionTypesController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Remove a commission type",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/payments/methods": {
       "get": {
         "description": "Enabled methods with configured pay-to details, in the operator’s chosen order. A method the operator has not finished setting up is absent rather than shown as unusable.",
@@ -3279,6 +3627,16 @@
         "operationId": "PaymentsController_myTransactions",
         "parameters": [
           {
+            "name": "kind",
+            "required": false,
+            "in": "query",
+            "description": "Comma-separated. Any of: payment, transfer, commission_transfer, rebate.",
+            "schema": {
+              "example": "transfer,commission_transfer",
+              "type": "string"
+            }
+          },
+          {
             "name": "direction",
             "required": false,
             "in": "query",
@@ -3404,6 +3762,154 @@
           }
         ],
         "summary": "The signed-in client's own transactions, filtered, ordered and paged",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/v1/payments/transactions/summary": {
+      "get": {
+        "operationId": "PaymentsController_myTransactionSummary",
+        "parameters": [
+          {
+            "name": "kind",
+            "required": false,
+            "in": "query",
+            "description": "Comma-separated. Any of: payment, transfer, commission_transfer, rebate.",
+            "schema": {
+              "example": "transfer,commission_transfer",
+              "type": "string"
+            }
+          },
+          {
+            "name": "direction",
+            "required": false,
+            "in": "query",
+            "description": "Deposits or withdrawals only.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "deposit",
+                "withdrawal"
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ]
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "USD",
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "example": "2026-08-01",
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "Inclusive, YYYY-MM-DD.",
+            "schema": {
+              "example": "2026-08-31",
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": "createdAt",
+              "type": "string",
+              "enum": [
+                "createdAt",
+                "amount",
+                "direction",
+                "currency",
+                "state"
+              ]
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": "desc",
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TransactionSummaryRowDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Totals of the signed-in client's filtered transactions, per currency and state",
         "tags": [
           "payments"
         ]
@@ -3691,6 +4197,58 @@
           }
         ],
         "summary": "The signed-in client's wallets — balance, on_hold and available, all as strings",
+        "tags": [
+          "wallet"
+        ]
+      }
+    },
+    "/v1/wallet/statement": {
+      "get": {
+        "operationId": "WalletController_statement",
+        "parameters": [
+          {
+            "name": "walletId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatementDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "An account statement for one of the signed-in client's wallets",
         "tags": [
           "wallet"
         ]
@@ -9721,6 +10279,53 @@
         ]
       }
     },
+    "/v1/admin/transactions/{id}/attention/resolve": {
+      "patch": {
+        "description": "For a deposit or withdrawal flagged as needing a person: reconcile it first (the platform dashboard, the ledger), then record what you found. Refuses a payment that is no longer flagged. Deposits need deposits.approve; withdrawals need withdrawals.settle.",
+        "operationId": "AdminMoneyController_resolveAttention",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveAttentionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttentionResolvedDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark a payment that needed attention as resolved — clears the flag and its tasks",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/transactions/export": {
       "get": {
         "description": "The same filters as GET /admin/transactions, over every matching row rather than one page. Amounts are the exact decimal strings the ledger holds — never rounded, never locale-formatted (§6.1).",
@@ -10724,6 +11329,37 @@
       }
     },
     "schemas": {
+      "ProfileOptionsDto": {
+        "type": "object",
+        "properties": {
+          "countries": {
+            "description": "Countries of residence, sorted by name. Exactly the values the profile accepts.",
+            "example": [
+              "Lebanon",
+              "United Arab Emirates"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nationalities": {
+            "description": "Nationalities, as demonyms. Exactly the values the profile accepts.",
+            "example": [
+              "Emirati",
+              "Lebanese"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "countries",
+          "nationalities"
+        ]
+      },
       "NotificationDto": {
         "type": "object",
         "properties": {
@@ -10794,6 +11430,16 @@
           "count"
         ]
       },
+      "NotificationsReadAllDto": {
+        "type": "object",
+        "properties": {
+          "upTo": {
+            "type": "string",
+            "description": "The `createdAt` of the newest notification the reader was shown.",
+            "example": "2026-09-25T10:15:00.000Z"
+          }
+        }
+      },
       "NotificationsMarkAllReadResponseDto": {
         "type": "object",
         "properties": {
@@ -10806,16 +11452,297 @@
           "updated"
         ]
       },
+      "AdminNotificationSubjectDto": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "transaction",
+              "kyc",
+              "ib_application",
+              "transfer",
+              "ib_accrual"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "The item's id. For a KYC task, the client's id."
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ]
+      },
+      "AdminNotificationClientDto": {
+        "type": "object",
+        "properties": {
+          "portalId": {
+            "type": "number",
+            "nullable": true,
+            "description": "The Portal ID — never masked, so it still names the client under any role."
+          },
+          "firstName": {
+            "type": "string",
+            "nullable": true
+          },
+          "lastName": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "portalId"
+        ]
+      },
+      "AdminNotificationResolutionDto": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string",
+            "description": "When somebody handled the item."
+          },
+          "outcome": {
+            "type": "string",
+            "description": "The item state that ended the task — 'approved', 'rejected', 'success', 'failure', 'reversed', 'settled', 'resolved', 'reset'. Render per category; unknown → 'Handled'.",
+            "example": "approved"
+          },
+          "byName": {
+            "type": "string",
+            "nullable": true,
+            "description": "The administrator who handled it — only when the decision itself recorded one. A cancel, a system settle or a release carries none."
+          }
+        },
+        "required": [
+          "at",
+          "outcome"
+        ]
+      },
+      "AdminNotificationDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "admin.deposit.submitted",
+              "admin.deposit.attention",
+              "admin.withdrawal.requested",
+              "withdrawal.rival_submit_failed",
+              "withdrawal.rival_attention",
+              "admin.kyc.submitted",
+              "admin.kyc.resubmitted",
+              "admin.partner.applied",
+              "admin.commission.clawback",
+              "admin.transfer.stuck"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "deposits",
+              "withdrawals",
+              "kyc",
+              "ib",
+              "transfers"
+            ]
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true,
+            "example": {
+              "transactionId": "a6e1…",
+              "amount": "250.00000000",
+              "currency": "USD"
+            }
+          },
+          "readAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null while unread."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/AdminNotificationSubjectDto"
+          },
+          "client": {
+            "$ref": "#/components/schemas/AdminNotificationClientDto"
+          },
+          "resolution": {
+            "nullable": true,
+            "description": "Null while the item still waits on somebody.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminNotificationResolutionDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "category",
+          "params",
+          "readAt",
+          "createdAt",
+          "subject",
+          "client",
+          "resolution"
+        ]
+      },
+      "AdminNotificationListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminNotificationDto"
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "`null` on the last page (R-2.4)."
+          },
+          "maskedFields": {
+            "description": "Client fields hidden from this reader on every row, e.g. `client.firstName`.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor",
+          "maskedFields"
+        ]
+      },
+      "AdminNotificationCategoryCountsDto": {
+        "type": "object",
+        "properties": {
+          "deposits": {
+            "type": "number"
+          },
+          "withdrawals": {
+            "type": "number"
+          },
+          "kyc": {
+            "type": "number"
+          },
+          "ib": {
+            "type": "number"
+          },
+          "transfers": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "deposits",
+          "withdrawals",
+          "kyc",
+          "ib",
+          "transfers"
+        ]
+      },
+      "AdminNotificationSummaryDto": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number",
+            "description": "Tasks waiting on the reader — unread and not yet handled by anyone. The bell badge."
+          },
+          "byCategory": {
+            "$ref": "#/components/schemas/AdminNotificationCategoryCountsDto"
+          }
+        },
+        "required": [
+          "count",
+          "byCategory"
+        ]
+      },
+      "AdminNotificationsReadAllDto": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "deposits",
+              "withdrawals",
+              "kyc",
+              "ib",
+              "transfers"
+            ],
+            "description": "Only this category. Omitted: every category the reader can see."
+          },
+          "upTo": {
+            "type": "string",
+            "description": "The `createdAt` of the newest row the reader was shown. Nothing newer is marked — a task that arrived after the list rendered stays unread.",
+            "example": "2026-09-25T10:15:00.000Z"
+          }
+        }
+      },
+      "AdminNotificationsReadSubjectDto": {
+        "type": "object",
+        "properties": {
+          "subjectKind": {
+            "type": "string",
+            "enum": [
+              "transaction",
+              "kyc",
+              "ib_application",
+              "transfer",
+              "ib_accrual"
+            ]
+          },
+          "subjectId": {
+            "type": "string",
+            "description": "The item's id — for a KYC task, the client's id."
+          }
+        },
+        "required": [
+          "subjectKind",
+          "subjectId"
+        ]
+      },
+      "AdminNotificationMarkResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "readAt": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "readAt"
+        ]
+      },
       "RegisterDto": {
         "type": "object",
         "properties": {
           "firstName": {
             "type": "string",
-            "example": "John"
+            "example": "John",
+            "maxLength": 100,
+            "description": "As on the ID document."
           },
           "lastName": {
             "type": "string",
-            "example": "Doe"
+            "example": "Doe",
+            "maxLength": 100,
+            "description": "As on the ID document."
           },
           "email": {
             "type": "string",
@@ -10826,13 +11753,41 @@
             "example": "StrongPass123!",
             "minLength": 8
           },
-          "country": {
+          "dateOfBirth": {
             "type": "string",
-            "example": "US"
+            "example": "1990-04-12",
+            "description": "YYYY-MM-DD. At least 18 years ago."
+          },
+          "nationality": {
+            "type": "string",
+            "example": "Lebanese",
+            "description": "From the KYC nationality list."
           },
           "phone": {
             "type": "string",
-            "example": "+1234567890"
+            "example": "+96170123456",
+            "description": "International format with the country code. Stored as E.164."
+          },
+          "country": {
+            "type": "string",
+            "example": "Lebanon",
+            "description": "Country of residence, from the KYC country list."
+          },
+          "address": {
+            "type": "string",
+            "example": "Hamra Street, Building 12, 3rd floor",
+            "maxLength": 200
+          },
+          "city": {
+            "type": "string",
+            "example": "Beirut",
+            "maxLength": 100
+          },
+          "postalCode": {
+            "type": "string",
+            "example": "1103 2080",
+            "maxLength": 12,
+            "description": "Optional — many addresses have none."
           },
           "referralCode": {
             "type": "string",
@@ -10965,6 +11920,27 @@
           "phone": {
             "type": "string",
             "example": "+971501234567"
+          },
+          "dateOfBirth": {
+            "type": "string",
+            "example": "1990-04-12",
+            "description": "YYYY-MM-DD."
+          },
+          "nationality": {
+            "type": "string",
+            "example": "Emirati"
+          },
+          "address": {
+            "type": "string",
+            "example": "Sheikh Zayed Road, Tower 2, Apt 1204"
+          },
+          "city": {
+            "type": "string",
+            "example": "Dubai"
+          },
+          "postalCode": {
+            "type": "string",
+            "example": "00000"
           },
           "createdAt": {
             "format": "date-time",
@@ -12241,6 +13217,160 @@
           "reason"
         ]
       },
+      "IbPartnerListAccountDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "level": {
+            "type": "number",
+            "example": 1,
+            "description": "The rung, which decides their terms (0112)."
+          },
+          "referralCode": {
+            "type": "string",
+            "description": "What a client types at registration to be attributed here."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "A suspended partner keeps their code and tree, and stops earning."
+          },
+          "agencyId": {
+            "type": "string",
+            "nullable": true
+          },
+          "approvedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userId",
+          "level",
+          "referralCode",
+          "active",
+          "agencyId",
+          "approvedAt"
+        ]
+      },
+      "IbPartnerListPersonDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "portalId": {
+            "type": "integer",
+            "example": 1000245,
+            "description": "Their Portal ID."
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string",
+            "nullable": true
+          },
+          "lastName": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "portalId"
+        ]
+      },
+      "IbPartnerEarningsDto": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "The currency both figures are in."
+          },
+          "confirmed": {
+            "type": "string",
+            "example": "73.50000000"
+          },
+          "pending": {
+            "type": "string",
+            "example": "0.00000000"
+          }
+        },
+        "required": [
+          "currency",
+          "confirmed",
+          "pending"
+        ]
+      },
+      "IbPartnerRowDto": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/IbPartnerListAccountDto"
+          },
+          "user": {
+            "$ref": "#/components/schemas/IbPartnerListPersonDto"
+          },
+          "parentPortalId": {
+            "type": "integer",
+            "nullable": true,
+            "example": 1000210
+          },
+          "parentOutsideTerritory": {
+            "type": "boolean",
+            "description": "True when this partner has a parent the reader may not see. With `parentPortalId` null and this false, they deal with the broker directly."
+          },
+          "agencyName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null when they are on no agency, which means the full catalogue."
+          },
+          "earnings": {
+            "description": "Commission only (a rebate is the client’s money), one entry per currency.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IbPartnerEarningsDto"
+            }
+          }
+        },
+        "required": [
+          "account",
+          "user",
+          "parentPortalId",
+          "parentOutsideTerritory",
+          "agencyName",
+          "earnings"
+        ]
+      },
+      "IbPartnerListResponseDto": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IbPartnerRowDto"
+            }
+          },
+          "total": {
+            "type": "number",
+            "description": "Every partner matching the filters that this reader may see."
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "rows",
+          "total",
+          "maskedFields"
+        ]
+      },
       "IbPartnerPersonDto": {
         "type": "object",
         "properties": {
@@ -12329,23 +13459,6 @@
           "approvedAt"
         ]
       },
-      "IbPartnerEarningsDto": {
-        "type": "object",
-        "properties": {
-          "confirmed": {
-            "type": "string",
-            "example": "73.50000000"
-          },
-          "pending": {
-            "type": "string",
-            "example": "0.00000000"
-          }
-        },
-        "required": [
-          "confirmed",
-          "pending"
-        ]
-      },
       "IbPartnerDetailDto": {
         "type": "object",
         "properties": {
@@ -12366,41 +13479,15 @@
             "type": "boolean",
             "description": "False when the level is disabled OR not configured at all. A disabled level pays nothing."
           },
-          "levelCommissionMode": {
-            "type": "string",
-            "enum": [
-              "percent",
-              "per_lot"
-            ],
-            "nullable": true,
-            "description": "How their own commission is priced."
-          },
-          "levelCommissionRate": {
+          "levelCommissionShare": {
             "type": "string",
             "nullable": true,
-            "description": "Their share of broker revenue, as a percentage. Read in `percent` mode."
+            "description": "Their rung’s percentage of the traded product’s commission per lot (0140). Null when the rung is not configured."
           },
-          "levelCommissionAmountPerLot": {
+          "levelRebateShare": {
             "type": "string",
             "nullable": true,
-            "description": "Money per standard lot. Read in `per_lot` mode."
-          },
-          "levelRebateMode": {
-            "type": "string",
-            "enum": [
-              "percent",
-              "per_lot"
-            ],
-            "nullable": true
-          },
-          "levelRebateRate": {
-            "type": "string",
-            "nullable": true,
-            "description": "What their clients get back, as a percentage of the same revenue."
-          },
-          "levelRebateAmountPerLot": {
-            "type": "string",
-            "nullable": true
+            "description": "What their clients get back, as a percentage of the product’s rebate per lot."
           },
           "referralCode": {
             "type": "string"
@@ -12453,7 +13540,11 @@
             "description": "How many clients they introduced."
           },
           "earnings": {
-            "$ref": "#/components/schemas/IbPartnerEarningsDto"
+            "description": "One entry per currency they have earned in, sorted by currency. Empty when nothing has accrued yet — never a zero in a currency nobody chose.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IbPartnerEarningsDto"
+            }
           },
           "maskedFields": {
             "type": "array",
@@ -12467,12 +13558,8 @@
           "level",
           "levelName",
           "levelEnabled",
-          "levelCommissionMode",
-          "levelCommissionRate",
-          "levelCommissionAmountPerLot",
-          "levelRebateMode",
-          "levelRebateRate",
-          "levelRebateAmountPerLot",
+          "levelCommissionShare",
+          "levelRebateShare",
           "referralCode",
           "active",
           "approvedAt",
@@ -12553,52 +13640,15 @@
             "type": "boolean",
             "description": "A disabled rung pays nobody standing on it. Disabling is refused while partners are there — see the service."
           },
-          "commissionMode": {
+          "commissionShare": {
             "type": "string",
-            "enum": [
-              "per_lot",
-              "percent",
-              "share_of_parent"
-            ],
-            "description": "How the PARTNER’s leg is priced. Always `per_lot` on anything saved since 0117; the other two appear only on rungs configured before it."
+            "example": "70.0000",
+            "description": "The partner’s percentage of the product’s commission per lot. Paid on every trade that reaches this rung, independently of the shares on the rungs beneath it."
           },
-          "commissionRate": {
+          "rebateShare": {
             "type": "string",
-            "example": "30.0000",
-            "description": "The partner’s share of broker revenue, as a percentage. Read in `percent` mode."
-          },
-          "commissionAmountPerLot": {
-            "type": "string",
-            "nullable": true,
-            "example": "10.00000000",
-            "description": "Money per standard lot. Set in `per_lot` mode, NULL in the other."
-          },
-          "rebateMode": {
-            "type": "string",
-            "enum": [
-              "per_lot",
-              "percent",
-              "share_of_parent"
-            ],
-            "description": "How the CLIENT’s rebate is priced. Always `per_lot` on anything saved since 0117."
-          },
-          "rebateRate": {
-            "type": "string",
-            "example": "0.0000"
-          },
-          "rebateAmountPerLot": {
-            "type": "string",
-            "nullable": true,
-            "example": "2.00000000"
-          },
-          "revenueBasis": {
-            "type": "string",
-            "enum": [
-              "commission_swap",
-              "spread",
-              "commission_swap_spread"
-            ],
-            "description": "WHICH revenue a percentage at this rung is a share of — FR-IB-16. Ignored entirely by a per-lot term, which is priced from volume and never from revenue."
+            "example": "50.0000",
+            "description": "The client’s percentage of the product’s rebate per lot, read from the introducer’s rung."
           },
           "partnerCount": {
             "type": "number",
@@ -12620,13 +13670,8 @@
           "name",
           "description",
           "enabled",
-          "commissionMode",
-          "commissionRate",
-          "commissionAmountPerLot",
-          "rebateMode",
-          "rebateRate",
-          "rebateAmountPerLot",
-          "revenueBasis",
+          "commissionShare",
+          "rebateShare",
           "partnerCount",
           "createdAt",
           "updatedAt"
@@ -12637,8 +13682,8 @@
         "properties": {
           "maxLevels": {
             "type": "number",
-            "example": 2,
-            "description": "How deep the ladder may run, from `IB_MAX_LEVELS`. Read by the form so it stops offering \"add a level\" at the right point — a hardcoded copy would drift the day a broker negotiates a deeper structure."
+            "example": 10,
+            "description": "How deep the ladder may run. Read by the form so it stops offering \"add a level\" at the right point — a hardcoded copy would drift the day the engine changes."
           },
           "absoluteMaxLevels": {
             "type": "number",
@@ -12671,43 +13716,15 @@
             "nullable": true,
             "maxLength": 2000
           },
-          "commissionMode": {
+          "commissionShare": {
             "type": "string",
-            "enum": [
-              "per_lot"
-            ],
-            "default": "per_lot"
+            "example": "30.0000",
+            "default": "0"
           },
-          "commissionRate": {
+          "rebateShare": {
             "type": "string",
-            "example": "30.0000"
-          },
-          "commissionAmountPerLot": {
-            "type": "string",
-            "example": "10.00000000"
-          },
-          "rebateMode": {
-            "type": "string",
-            "enum": [
-              "per_lot"
-            ],
-            "default": "per_lot"
-          },
-          "rebateRate": {
-            "type": "string",
-            "example": "0.0000"
-          },
-          "rebateAmountPerLot": {
-            "type": "string",
-            "example": "2.00000000"
-          },
-          "revenueBasis": {
-            "type": "string",
-            "enum": [
-              "commission_swap",
-              "spread",
-              "commission_swap_spread"
-            ]
+            "example": "50.0000",
+            "default": "0"
           },
           "enabled": {
             "type": "boolean",
@@ -12732,40 +13749,144 @@
             "nullable": true,
             "maxLength": 2000
           },
-          "commissionMode": {
-            "type": "string",
-            "enum": [
-              "per_lot"
-            ]
-          },
-          "commissionRate": {
+          "commissionShare": {
             "type": "string"
           },
-          "commissionAmountPerLot": {
+          "rebateShare": {
             "type": "string"
-          },
-          "rebateMode": {
-            "type": "string",
-            "enum": [
-              "per_lot"
-            ]
-          },
-          "rebateRate": {
-            "type": "string"
-          },
-          "rebateAmountPerLot": {
-            "type": "string"
-          },
-          "revenueBasis": {
-            "type": "string",
-            "enum": [
-              "commission_swap",
-              "spread",
-              "commission_swap_spread"
-            ]
           },
           "enabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "IbCommissionTypeDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Standard terms"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "A disabled type pays nobody on the products sold on it. Disabling is refused while products are assigned — move them first."
+          },
+          "commissionPerLot": {
+            "type": "string",
+            "example": "10.00000000",
+            "description": "Money per standard lot for the PARTNERS, before each level’s share. A decimal string."
+          },
+          "rebatePerLot": {
+            "type": "string",
+            "example": "3.00000000",
+            "description": "Money per standard lot returned to the trading CLIENT, before the introducer level’s share. A decimal string."
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 0
+          },
+          "productNames": {
+            "description": "The products sold on this type, by name. Part of the row so a delete or a disable can be refused on the screen before the API refuses it.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "enabled",
+          "commissionPerLot",
+          "rebatePerLot",
+          "sortOrder",
+          "productNames",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "CreateIbCommissionTypeDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Standard terms",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000
+          },
+          "commissionPerLot": {
+            "type": "string",
+            "example": "10"
+          },
+          "rebatePerLot": {
+            "type": "string",
+            "example": "3"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 0,
+            "minimum": 0,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "name",
+          "commissionPerLot",
+          "rebatePerLot"
+        ]
+      },
+      "UpdateIbCommissionTypeDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000
+          },
+          "commissionPerLot": {
+            "type": "string"
+          },
+          "rebatePerLot": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000
           }
         }
       },
@@ -13050,7 +14171,8 @@
             "enum": [
               "payment",
               "transfer",
-              "commission_transfer"
+              "commission_transfer",
+              "rebate"
             ],
             "description": "Branch on this, never on the absence of a payment field."
           },
@@ -13096,6 +14218,48 @@
           "total",
           "page",
           "limit"
+        ]
+      },
+      "TransactionSummaryRowDto": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal"
+            ],
+            "description": "Wallet-side, as on the list's rows."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "success",
+              "failure",
+              "rejected"
+            ]
+          },
+          "count": {
+            "type": "number"
+          },
+          "total": {
+            "type": "string",
+            "example": "1250.00000000",
+            "description": "Decimal string (§6.1)."
+          }
+        },
+        "required": [
+          "currency",
+          "direction",
+          "state",
+          "count",
+          "total"
         ]
       },
       "RequestTransferDto": {
@@ -13272,6 +14436,153 @@
         },
         "required": [
           "logoUrl"
+        ]
+      },
+      "StatementLineDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "entryType": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal",
+              "commission",
+              "rebate",
+              "payout",
+              "adjustment",
+              "transfer"
+            ]
+          },
+          "referenceType": {
+            "type": "string",
+            "example": "transaction"
+          },
+          "referenceId": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string",
+            "description": "Signed decimal string: positive credits, negative debits."
+          },
+          "balanceAfter": {
+            "type": "string",
+            "description": "Wallet balance after this line, as stored by the ledger."
+          },
+          "methodName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Payment rail name, if any."
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true,
+            "description": "Payment provider; `manual_admin` for money the team placed by hand."
+          },
+          "tradingAccountLogin": {
+            "type": "string",
+            "nullable": true,
+            "description": "MT5 login, for a transfer line."
+          },
+          "tradingAccountName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Trading account name, for a transfer line."
+          },
+          "transferDirection": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "wallet_to_account",
+              "account_to_wallet"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "createdAt",
+          "entryType",
+          "referenceType",
+          "referenceId",
+          "amount",
+          "balanceAfter",
+          "methodName",
+          "provider",
+          "tradingAccountLogin",
+          "tradingAccountName",
+          "transferDirection"
+        ]
+      },
+      "StatementDto": {
+        "type": "object",
+        "properties": {
+          "walletId": {
+            "type": "string"
+          },
+          "walletNumber": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "from": {
+            "type": "string",
+            "example": "2026-09-01"
+          },
+          "to": {
+            "type": "string",
+            "example": "2026-09-30"
+          },
+          "openingBalance": {
+            "type": "string",
+            "description": "Balance at the start of `from`."
+          },
+          "closingBalance": {
+            "type": "string",
+            "description": "Balance at the end of `to`."
+          },
+          "totalCredits": {
+            "type": "string"
+          },
+          "totalDebits": {
+            "type": "string",
+            "description": "Positive: the sum of money that left."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StatementLineDto"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the period held more lines than one statement returns."
+          },
+          "generatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "walletId",
+          "walletNumber",
+          "currency",
+          "from",
+          "to",
+          "openingBalance",
+          "closingBalance",
+          "totalCredits",
+          "totalDebits",
+          "lines",
+          "truncated",
+          "generatedAt"
         ]
       },
       "LedgerEntryDto": {
@@ -15043,10 +16354,11 @@
             ],
             "description": "Fixed at creation. At most ONE demo product exists; it is offered to every client for demo accounts regardless of agency, and cannot be assigned to an agency. Real products carry live groups, the demo product carries demo groups."
           },
-          "spreadMarkupPerLot": {
+          "commissionTypeId": {
             "type": "string",
-            "example": "1.50000000",
-            "description": "The broker's spread markup per standard lot, in the account currency. A COMMERCIAL RECORD ONLY — nothing computes from it, and it is deliberately not part of the revenue partners are paid a share of. A decimal string, never a number: it is money."
+            "format": "uuid",
+            "nullable": true,
+            "description": "The commission type this product pays partners on (0140) — the rate card whose per-lot amounts each level takes a share of. NULL means the product pays no partner commission at all; the demo product never carries one."
           },
           "sortOrder": {
             "type": "number",
@@ -15064,7 +16376,7 @@
           "name",
           "enabled",
           "type",
-          "spreadMarkupPerLot",
+          "commissionTypeId",
           "sortOrder",
           "groups"
         ]
@@ -15123,9 +16435,10 @@
               "demo"
             ]
           },
-          "spreadMarkupPerLot": {
+          "commissionTypeId": {
             "type": "string",
-            "example": "1.50000000"
+            "format": "uuid",
+            "nullable": true
           },
           "sortOrder": {
             "type": "number",
@@ -16017,6 +17330,22 @@
           "phone": {
             "type": "string"
           },
+          "dateOfBirth": {
+            "type": "string",
+            "example": "1990-04-12"
+          },
+          "nationality": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "postalCode": {
+            "type": "string"
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -16026,6 +17355,13 @@
             "items": {
               "$ref": "#/components/schemas/ClientTagDto"
             }
+          },
+          "lockedFields": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The profile fields the desk may not change right now, each with where it can be changed instead — the verification's lock (`deskLocks`). Present only for a reader holding clients.edit; empty when nothing is locked."
           },
           "kyc": {
             "description": "Absent without kyc.view.",
@@ -16108,13 +17444,37 @@
           "phone": {
             "type": "string",
             "example": "+9613111222",
-            "nullable": true,
-            "description": "Send an empty string to clear it."
+            "description": "International format with the country code; stored as E.164. Empty clears it."
           },
           "country": {
             "type": "string",
             "example": "Lebanon",
-            "nullable": true
+            "description": "Country of residence, from the KYC country list. Empty clears it."
+          },
+          "dateOfBirth": {
+            "type": "string",
+            "example": "1990-04-12",
+            "description": "YYYY-MM-DD, 18 or older."
+          },
+          "nationality": {
+            "type": "string",
+            "example": "Lebanese",
+            "description": "From the KYC nationality list."
+          },
+          "address": {
+            "type": "string",
+            "example": "Hamra Street, Building 12",
+            "maxLength": 200
+          },
+          "city": {
+            "type": "string",
+            "example": "Beirut",
+            "maxLength": 100
+          },
+          "postalCode": {
+            "type": "string",
+            "example": "1103 2080",
+            "maxLength": 12
           }
         }
       },
@@ -16174,6 +17534,27 @@
             "type": "string",
             "nullable": true
           },
+          "dateOfBirth": {
+            "type": "string",
+            "nullable": true,
+            "example": "1990-04-12"
+          },
+          "nationality": {
+            "type": "string",
+            "nullable": true
+          },
+          "address": {
+            "type": "string",
+            "nullable": true
+          },
+          "city": {
+            "type": "string",
+            "nullable": true
+          },
+          "postalCode": {
+            "type": "string",
+            "nullable": true
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -16198,6 +17579,11 @@
           "emailVerified",
           "country",
           "phone",
+          "dateOfBirth",
+          "nationality",
+          "address",
+          "city",
+          "postalCode",
           "createdAt",
           "maskedFields"
         ]
@@ -16694,7 +18080,19 @@
           },
           "address": {
             "type": "string",
-            "example": "12 Rue Verdun, Beirut"
+            "example": "12 Rue Verdun",
+            "maxLength": 200
+          },
+          "city": {
+            "type": "string",
+            "example": "Beirut",
+            "maxLength": 100
+          },
+          "postalCode": {
+            "type": "string",
+            "example": "1103 2080",
+            "maxLength": 12,
+            "description": "Send an empty string to clear it — many addresses have none."
           }
         }
       },
@@ -17976,6 +19374,37 @@
         },
         "required": [
           "reason"
+        ]
+      },
+      "ResolveAttentionDto": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 500,
+            "example": "Checked the platform dashboard — the reversal was a duplicate; client credited correctly.",
+            "description": "What the reconciliation found. The audit record of a decision the system could not make on its own — the same weight as releasing a stuck transfer."
+          }
+        },
+        "required": [
+          "note"
+        ]
+      },
+      "AttentionResolvedDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "needsAttention": {
+            "type": "boolean",
+            "description": "Always false after a successful resolve."
+          }
+        },
+        "required": [
+          "id",
+          "needsAttention"
         ]
       },
       "AdminTransactionSummaryRowDto": {

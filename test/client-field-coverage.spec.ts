@@ -8,6 +8,7 @@ import { PATH_METADATA } from '@nestjs/common/constants';
 import type { INestApplication } from '@nestjs/common';
 import { AppModule } from '../src/app.module';
 import {
+  clientFieldMapOthersOf,
   clientFieldMapsOf,
   clientFieldsOf,
   noClientFieldsReason,
@@ -280,6 +281,11 @@ describe('every admin-reachable shape says whose data it holds', () => {
       }
       for (const [property, prefix] of clientFieldMapsOf(type)) {
         if (!prefixes.has(prefix)) unknown.push(`${name}.${property} -> ${prefix}.*`);
+      }
+      // The key that hides a map's unnamed entries must exist too, or those
+      // entries — a broker's own questions — are unmaskable again.
+      for (const [property, rule] of clientFieldMapOthersOf(type)) {
+        if (!known.has(rule.others)) unknown.push(`${name}.${property} (others) -> ${rule.others}`);
       }
     }
     expect(

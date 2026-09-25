@@ -17,10 +17,6 @@ import { AppSettingsStore } from '../../../store/app-settings.store';
 import { ProductsStore } from '../../../store/products.store';
 import { Mt5AccountSyncService } from './mt5-account-sync.service';
 import { tradingTermsFrom } from '../../../common/trading-terms';
-import {
-  NOTIFICATION_DISPATCH,
-  type NotificationDispatchPort,
-} from '../../../common/provisioning/notification-dispatch.port';
 
 /**
  * Clamp demo funding to the configured ceiling.
@@ -73,14 +69,6 @@ export class Mt5AccountsService {
     private readonly audit: AdminAuditService,
     private readonly email: EmailService,
     private readonly settings: AppSettingsStore,
-    /*
-     * The TOKEN from `common/`, not `NotificationsService` — the port recipe
-     * every domain module here follows, and `NotificationsModule` is `@Global`
-     * so this needs no import to resolve. Required rather than optional: unlike
-     * `AuthService`, nothing hand-constructs this service.
-     */
-    @Inject(NOTIFICATION_DISPATCH)
-    private readonly notifications: NotificationDispatchPort,
     /*
      * The catalogue, read once per create to snapshot `product_id` (0080).
      *
@@ -686,58 +674,18 @@ export class Mt5AccountsService {
     );
 
     /*
-     * Both sides of the event, from the one place that knows it happened.
+     * NO bell, on either side — the owner's notification rules (migration 0140).
      *
-     * The CLIENT's bell matters here because the credentials went to their
-     * mailbox and nothing on screen said so: this call returns
-     * `credentialsSentTo` and the portal renders it once, so a client who
-     * navigated away — or whose mail is slow — had no in-app record that the
-     * account exists. No password or login secret travels in `params`; the
-     * login number is public-facing (it is on every statement) and the
-     * credentials remain email-only, which is the whole point of the note above.
+     * The CLIENT just opened this account themselves and is looking at it: the
+     * response names the mailbox the credentials went to, and the account is on
+     * their accounts list from this moment. A bell row repeating that is an
+     * echo of their own click, which is what made the portal's bell look full.
+     * The credentials email above is the durable record, and it is unchanged.
      *
-     * The ADMIN kind is `opened`, not `requested`, because that is what
-     * occurred. This path is self-service and completes immediately — there is
-     * no approval queue and nobody has to act — so naming it "requested" would
-     * put a work item in an operator's bell that they cannot action and cannot
-     * clear. It is informational: dealing desks want to know when live accounts
-     * appear on their groups.
-     *
-     * `trading.view` holds it, matching the screen it links to, and the fan-out
-     * IS scope-filtered on the subject (unlike registration): by the time a
-     * client opens an account they have been through intake, so a territoried
-     * admin who cannot see the client should not be told about their account.
-     *
-     * Post-write and never-throws, and `void` rather than awaited: the account
-     * is already open at MT5 and the row already committed, so no failure here
-     * may propagate into a response that would suggest otherwise.
+     * The ADMINS are not told either. Self-service opening completes at once
+     * with no approval step, so there is nothing for an operator to do — and an
+     * admin notification is a task, never information.
      */
-    void this.notifications.notify({
-      recipient: { kind: 'client', id: client.id },
-      kind: 'trading_account.opened',
-      params: {
-        login: String(created.login),
-        environment: input.environment,
-        currency: created.currency,
-        leverage: created.leverage,
-      },
-      dedupeKey: `trading_account.opened:${row.id}`,
-    });
-
-    void this.notifications.notifyAdminsWithPermission(
-      'trading.view',
-      {
-        kind: 'admin.trading_account.opened',
-        params: {
-          userId: client.id,
-          login: String(created.login),
-          environment: input.environment,
-          currency: created.currency,
-        },
-        dedupeKey: `admin.trading_account.opened:${row.id}`,
-      },
-      { subjectClientId: client.id },
-    );
 
     return {
       id: row.id,

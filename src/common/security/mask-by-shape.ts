@@ -1,5 +1,9 @@
 import 'reflect-metadata';
-import { clientFieldMapsOf, clientFieldsOf } from './client-field.decorator';
+import {
+  clientFieldMapOthersOf,
+  clientFieldMapsOf,
+  clientFieldsOf,
+} from './client-field.decorator';
 import type { FieldMask } from './field-mask';
 
 /**
@@ -136,12 +140,19 @@ function walk(
    * Removing by `<prefix>.<key>` reaches them whatever they are called,
    * including fields added after this was written.
    */
+  const othersOf = clientFieldMapOthersOf(shape);
   for (const [property, prefix] of clientFieldMapsOf(shape)) {
     const map = row[property];
     if (map === null || typeof map !== 'object' || Array.isArray(map)) continue;
 
     const entries = map as Record<string, unknown>;
-    const doomed = Object.keys(entries).filter((key) => hidden.has(`${prefix}.${key}`));
+    // A key the catalogue does not name — a broker's own question — is hidden
+    // by the map's `others` key (see `ClientFieldMap`), never left unmaskable.
+    const others = othersOf.get(property);
+    const hidesOthers = others !== undefined && hidden.has(others.others);
+    const doomed = Object.keys(entries).filter(
+      (key) => hidden.has(`${prefix}.${key}`) || (hidesOthers && !others.named.includes(key)),
+    );
     if (doomed.length === 0) continue;
 
     const kept: Record<string, unknown> = {};

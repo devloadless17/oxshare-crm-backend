@@ -4,6 +4,7 @@ import { IbStore } from '../../store/ib.store';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import {
   ClientNotFoundError,
+  ProfileLockedError,
   ReferralCodeUnknownError,
   ReferralPartnerInactiveError,
   ReferralSelfError,
@@ -91,6 +92,12 @@ function documentFilenames(submission: KycSubmission | undefined): string[] {
 import type { ClientScope } from '../../common/security/client-scope';
 import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
+import { ClientProfileService } from '../profile/client-profile.service';
+import {
+  deskLocks,
+  PROFILE_FIELD_KEYS,
+  type ProfileKey,
+} from '../../common/profile/client-profile';
 
 /**
  * How many referred clients the profile carries — one screen's worth.
@@ -152,6 +159,8 @@ export class AdminClientsService {
      * downline is read from `users` by attribution. @Global StoreModule.
      */
     private readonly ib: IbStore,
+    /** The one write path for a client's identity — @Global ProfileModule. */
+    private readonly profile: ClientProfileService,
   ) {}
 
   // ─── Clients list (ADM-01 / ADM-14) ───────────────────────────────────────
@@ -360,48 +369,62 @@ export class AdminClientsService {
      * `referral_attributions` table was replaced by in 0032.
      */
     const canSeeNetwork = may('ib.view');
-    const [tags, kyc, referrer, referredClients, referredTotal, referredOutsideScope, trading] =
-      await Promise.all([
-        this.tags.tagsForClient(clientId),
-        may('kyc.view') || may('kyc.review') ? this.kyc.findByUserId(clientId) : undefined,
-        canSeeNetwork ? this.referrerOf(client, actor.clientScope) : undefined,
-        canSeeNetwork ? this.referredClientsOf(clientId, actor.clientScope) : undefined,
-        /*
-         * The TOTAL, from SQL, under the same `ib.view` gate and the same scope.
-         *
-         * `referredShown` is `referredClients.length` — the size of what fitted —
-         * and on its own it cannot say "50 of 213" because the cap is published
-         * nowhere in the contract. `IbOverviewDto` already says this in capitals
-         * about its own capped array: "Read referredClientCount for how many
-         * there actually are — NEVER this array's length". The admin profile did
-         * the forbidden thing one module away, and `countReferredBy` — written
-         * for exactly this and used by the partner detail — went uncalled here.
-         */
-        canSeeNetwork ? this.users.countReferredBy(clientId, actor.clientScope) : undefined,
-        /*
-         * And how many this reader may NOT see — so an empty Network tab can say
-         * "outside your territory" rather than "introduced nobody". Those are
-         * opposite facts about a partner, and the scoped total alone cannot tell
-         * them apart. A count, never a name: see `countReferredOutsideScope`.
-         */
-        canSeeNetwork
-          ? this.users.countReferredOutsideScope(clientId, actor.clientScope)
-          : undefined,
-        /*
-         * ABSENT without `trading.view`, an empty array with it — the same rule
-         * the Network sections below follow, for the same reason. The card can
-         * then say "hidden by your permissions" rather than "no accounts", which
-         * are opposite facts about a client who may hold three.
-         *
-         * This section was DECLARED on the response and populated by nothing, so
-         * every profile reported no trading accounts — the same wrong answer the
-         * portal's own accounts page once gave, on the console this time, and to
-         * the reader most likely to act on it.
-         */
-        may('trading.view')
-          ? this.holdings.accountsForProfile(clientId, actor.clientScope)
-          : undefined,
-      ]);
+    /*
+     * The submission is read for the lock too, and for that reason alone when
+     * the reader holds `clients.edit` without `kyc.view`: the edit dialog must
+     * say which fields verification has locked BEFORE the operator types into
+     * one, and the save would say it anyway. What leaves this method is the
+     * lock's sentences, not the submission (`lockedFields` below).
+     */
+    const readsKyc = may('kyc.view') || may('kyc.review');
+    const [
+      tags,
+      submission,
+      referrer,
+      referredClients,
+      referredTotal,
+      referredOutsideScope,
+      trading,
+    ] = await Promise.all([
+      this.tags.tagsForClient(clientId),
+      readsKyc || may('clients.edit') ? this.kyc.findByUserId(clientId) : undefined,
+      canSeeNetwork ? this.referrerOf(client, actor.clientScope) : undefined,
+      canSeeNetwork ? this.referredClientsOf(clientId, actor.clientScope) : undefined,
+      /*
+       * The TOTAL, from SQL, under the same `ib.view` gate and the same scope.
+       *
+       * `referredShown` is `referredClients.length` — the size of what fitted —
+       * and on its own it cannot say "50 of 213" because the cap is published
+       * nowhere in the contract. `IbOverviewDto` already says this in capitals
+       * about its own capped array: "Read referredClientCount for how many
+       * there actually are — NEVER this array's length". The admin profile did
+       * the forbidden thing one module away, and `countReferredBy` — written
+       * for exactly this and used by the partner detail — went uncalled here.
+       */
+      canSeeNetwork ? this.users.countReferredBy(clientId, actor.clientScope) : undefined,
+      /*
+       * And how many this reader may NOT see — so an empty Network tab can say
+       * "outside your territory" rather than "introduced nobody". Those are
+       * opposite facts about a partner, and the scoped total alone cannot tell
+       * them apart. A count, never a name: see `countReferredOutsideScope`.
+       */
+      canSeeNetwork ? this.users.countReferredOutsideScope(clientId, actor.clientScope) : undefined,
+      /*
+       * ABSENT without `trading.view`, an empty array with it — the same rule
+       * the Network sections below follow, for the same reason. The card can
+       * then say "hidden by your permissions" rather than "no accounts", which
+       * are opposite facts about a client who may hold three.
+       *
+       * This section was DECLARED on the response and populated by nothing, so
+       * every profile reported no trading accounts — the same wrong answer the
+       * portal's own accounts page once gave, on the console this time, and to
+       * the reader most likely to act on it.
+       */
+      may('trading.view')
+        ? this.holdings.accountsForProfile(clientId, actor.clientScope)
+        : undefined,
+    ]);
+    const kyc = readsKyc ? submission : undefined;
 
     const profile = {
       id: client.id,
@@ -415,8 +438,23 @@ export class AdminClientsService {
       emailVerified: client.emailVerified,
       country: client.country,
       phone: client.phone,
+      dateOfBirth: client.dateOfBirth,
+      nationality: client.nationality,
+      address: client.address,
+      city: client.city,
+      postalCode: client.postalCode,
       createdAt: client.createdAt,
       tags,
+      /*
+       * Which fields the desk may NOT change right now, each with where it can
+       * be changed instead — the server's rule (`deskLocks`), stated once, so
+       * the dialog disables them rather than keeping a copy of the rule that
+       * could drift from the one that refuses. Only for an editor: nobody else
+       * has a form to render it on.
+       */
+      ...(may('clients.edit')
+        ? { lockedFields: deskLocks(PROFILE_FIELD_KEYS, submission?.status) }
+        : {}),
       ...(kyc === undefined
         ? {}
         : {
@@ -564,88 +602,56 @@ export class AdminClientsService {
    * and an endpoint that lets an operator type the answer directly is a way to
    * mark a client verified without anyone having looked at a document.
    *
-   * What is left is exactly the clerical set — the name, phone and country a
-   * client gave at registration and a support desk fixes when they were typed
-   * wrong. That is the whole intended job.
+   * What is left is the CLERICAL set — the profile a client gave at
+   * registration, which a support desk fixes when it was typed wrong. That is
+   * the whole intended job, and it ends where verification begins: once a KYC
+   * submission leaves the client's hands, only the phone stays the desk's to
+   * change. The rest is evidence a reviewer is checking or has checked, and it
+   * has its own narrower routes — `deskLocks` says which, per field, and the
+   * refusal (409 `PROFILE_LOCKED`) names them. Decided under the same locks the
+   * write takes, so a submission cannot slip in between the check and the edit.
    */
   async updateClientProfile(
     userId: string,
-    patch: { firstName?: string; lastName?: string; phone?: string; country?: string },
+    patch: Partial<Record<ProfileKey, string>>,
     actor: AuthenticatedAdmin,
   ) {
     assertActorCan(actor, 'clients.edit', "edit a client's profile");
 
-    // Scoped: an out-of-scope client is 404, never 403 — see `setClientStatus`
-    // for why a 403 here would be an enumeration oracle.
     const user = await this.users.findForAdmin(userId, actor.clientScope);
     if (!user) throw new ClientNotFoundError();
 
-    /*
-     * A blank string CLEARS an optional field; it is not a value.
-     *
-     * "No phone number on file" and "the phone number is the empty string" read
-     * identically on a screen and behave differently in a search, an export and
-     * a `WHERE phone IS NOT NULL`. Normalising here keeps that distinction from
-     * depending on which form posted the row.
-     */
-    const blankToNull = (value: string | undefined) =>
-      value === undefined ? undefined : value.trim() === '' ? null : value.trim();
-
-    const changes: Record<string, unknown> = {};
-    if (patch.firstName !== undefined) changes.firstName = patch.firstName.trim();
-    if (patch.lastName !== undefined) changes.lastName = patch.lastName.trim();
-    if (patch.phone !== undefined) changes.phone = blankToNull(patch.phone);
-    if (patch.country !== undefined) changes.country = blankToNull(patch.country);
-
-    if (Object.keys(changes).length === 0) {
+    const named = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    ) as Partial<Record<ProfileKey, string>>;
+    if (Object.keys(named).length === 0) {
       throw new ValidationError('Name a field to change.');
     }
 
     /*
-     * Only what ACTUALLY moved reaches the audit row.
+     * THE SAME WRITE PATH AS THE CLIENT'S OWN (0139).
      *
-     * A form that posts every field on every save would otherwise record four
-     * changes each time somebody fixes one, and the log's whole value is being
-     * able to ask "what did this administrator change" and get a short answer.
+     * This set the columns itself — names trimmed, blanks to NULL, and nothing
+     * else checked: a desk edit could store a phone nobody can dial, a country
+     * the KYC list does not contain, or a name with digits in it, and the KYC
+     * personal step then showed the client a value its own form would refuse.
+     * `ClientProfileService` applies one set of rules to every writer, writes
+     * only what actually changed, and records `client.profile_update` — before
+     * and after — in the write's own transaction.
      */
-    const before: Record<string, unknown> = {};
-    const after: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(changes)) {
-      const current = (user as unknown as Record<string, unknown>)[key] ?? null;
-      if (current !== value) {
-        before[key] = current;
-        after[key] = value;
-      }
-    }
-
-    if (Object.keys(after).length === 0) {
-      // Nothing moved. Not an error — a double-submitted form reaches here — and
-      // an audit row saying nothing changed is noise in the log that matters.
-      return this.profileView(user, actor);
-    }
-
-    const updated = (await this.users.update(userId, changes))!;
-
-    this.audit.record(actor.id, 'client.profile_update', 'user', userId, {
-      /*
-       * The client's address is NOT recorded here, and its absence is the point.
-       *
-       * `subject_id` on this row IS the client, and `before`/`after` carry the
-       * change itself, so the address was pure denormalised context — it made
-       * the row no more answerable and put client PII into the one store this
-       * system cannot mask. `audit_log.details` is free-form jsonb with no
-       * declared shape, so neither `applyMask` nor the response interceptor can
-       * reach inside it: an administrator whose role hides `client.email` read
-       * addresses straight off the audit screen.
-       *
-       * `client.email_change` still records both addresses, and must — there
-       * the addresses ARE the change, and a record of an email change that does
-       * not say which emails is not a record of anything.
-       */
-      before,
-      after,
-    });
-
+    const { user: updated } = await this.profile.update(
+      userId,
+      named,
+      { kind: 'admin', id: actor.id, email: actor.email },
+      {
+        audit: { via: 'admin_edit' },
+        guard: (changed, verification) => {
+          const locked = deskLocks(changed, verification);
+          const first = Object.values(locked)[0];
+          if (first) throw new ProfileLockedError(first, locked);
+        },
+      },
+    );
     return this.profileView(updated, actor);
   }
 
@@ -783,6 +789,11 @@ export class AdminClientsService {
       emailVerified: boolean;
       country?: string | null;
       phone?: string | null;
+      dateOfBirth?: string | null;
+      nationality?: string | null;
+      address?: string | null;
+      city?: string | null;
+      postalCode?: string | null;
       createdAt: Date;
     },
     actor: AuthenticatedAdmin,
@@ -799,6 +810,11 @@ export class AdminClientsService {
       emailVerified: user.emailVerified,
       country: user.country ?? null,
       phone: user.phone ?? null,
+      dateOfBirth: user.dateOfBirth ?? null,
+      nationality: user.nationality ?? null,
+      address: user.address ?? null,
+      city: user.city ?? null,
+      postalCode: user.postalCode ?? null,
       createdAt: user.createdAt,
     };
     return {

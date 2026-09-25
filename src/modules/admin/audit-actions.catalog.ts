@@ -64,6 +64,19 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * without reading every clerical correction.
    */
   { action: 'client.profile_update', label: 'Client profile edited', group: 'Clients' },
+  /*
+   * One row per client, written ONCE by migration 0139 when each client's two
+   * copies of their identity became one profile: what changed, and any KYC
+   * answer that was not taken because the desk had corrected the profile since.
+   */
+  {
+    action: 'client.profile_consolidated',
+    label: 'Client profile consolidated (one-time merge)',
+    group: 'Clients',
+    // Written ONCE, by migration 0139's SQL, which no TypeScript scan can see —
+    // the rows exist from the day it runs, and no code writes another.
+    historical: true,
+  },
   { action: 'client.email_change', label: 'Client sign-in email changed', group: 'Clients' },
   { action: 'client.suspend', label: 'Client suspended', group: 'Clients' },
   {
@@ -158,6 +171,15 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
      why, and the entry an auditor looks for if a client is ever credited
      twice. */
   { action: 'transfer.abandon', label: 'Stuck transfer released', group: 'Compliance' },
+  /* A deposit or payout only a person could settle — an amount mismatch, a
+     reversal, the platform and the CRM disagreeing — reconciled by hand. Like
+     the release above, it records a judgement made on evidence outside this
+     system, so the operator's note is the record. */
+  {
+    action: 'transaction.attention_resolve',
+    label: 'Payment anomaly resolved',
+    group: 'Compliance',
+  },
   /* Money placed into a wallet BY HAND — the only way funds arrive without a
      payment provider, and so the entry an auditor looks for first. The payload
      carries the reason the operator was required to give. */
@@ -347,6 +369,22 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'ib_level.create', label: 'IB level added', group: 'Configuration' },
   { action: 'ib_level.update', label: 'IB level changed', group: 'Configuration' },
   { action: 'ib_level.delete', label: 'IB level removed', group: 'Configuration' },
+  /*
+   * The rate cards products are sold on (0140). Beside the ladder, because the
+   * two decide a payout together: the type says what a lot is worth, the level
+   * says what share of it a partner takes.
+   */
+  { action: 'ib_commission_type.create', label: 'Commission type added', group: 'Configuration' },
+  {
+    action: 'ib_commission_type.update',
+    label: 'Commission type changed',
+    group: 'Configuration',
+  },
+  {
+    action: 'ib_commission_type.delete',
+    label: 'Commission type removed',
+    group: 'Configuration',
+  },
   // Renumbering moves every partner's placement with it, so it is its own act.
   {
     action: 'ib_level.reorder',

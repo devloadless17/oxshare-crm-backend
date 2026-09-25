@@ -77,7 +77,7 @@ export function ClientField(catalogueKey: string): PropertyDecorator {
  * the base down, with the child written last, is the only reading that keeps
  * both.
  */
-function inherited(key: string, type: unknown): ClientFieldMap {
+function inherited<V = string>(key: string, type: unknown): ReadonlyMap<string, V> {
   if (typeof type !== 'function') return new Map();
 
   const chain: unknown[] = [];
@@ -89,9 +89,9 @@ function inherited(key: string, type: unknown): ClientFieldMap {
     chain.unshift(c);
   }
 
-  const merged = new Map<string, string>();
+  const merged = new Map<string, V>();
   for (const link of chain) {
-    const own = Reflect.getOwnMetadata(key, link as object) as Map<string, string> | undefined;
+    const own = Reflect.getOwnMetadata(key, link as object) as Map<string, V> | undefined;
     if (own) for (const [property, value] of own) merged.set(property, value);
   }
   return merged;
@@ -193,19 +193,52 @@ export const CLIENT_FIELD_MAP_KEY = 'rbac03:client_field_map';
  * fields added after this code was written, which is the property a fixed DTO
  * could never have.
  *
+ * ## The keys NOBODY named — `others`
+ *
+ * A prefix reaches only the keys the catalogue spells out. The personal step's
+ * profile fields are spelled out; a question a broker added last week
+ * (`customField_1790…`) is not, and never can be — so under a prefix alone it
+ * could never be masked, however the role was configured.
+ *
+ * `others` closes that: every key NOT in `named` is governed by ONE catalogue
+ * key instead — for the personal step, `kyc.stepData`, "answers to fields a
+ * broker added to the KYC form", which is exactly what those keys are. The same
+ * coarse-but-honest unit custom steps already get.
+ *
  * @param prefix the catalogue prefix the map's own keys hang off.
+ * @param options.others the catalogue key that hides every key not in `named`.
+ * @param options.named the keys the catalogue addresses under `prefix`.
  */
 export const ClientFieldMap =
-  (prefix: string): PropertyDecorator =>
+  (prefix: string, options?: ClientFieldMapOthers): PropertyDecorator =>
   (target, propertyKey) => {
     const owner = target.constructor;
     const existing = (Reflect.getOwnMetadata(CLIENT_FIELD_MAP_KEY, owner) ??
       new Map<string, string>()) as Map<string, string>;
     existing.set(String(propertyKey), prefix);
     Reflect.defineMetadata(CLIENT_FIELD_MAP_KEY, existing, owner);
+    if (options) {
+      const others = (Reflect.getOwnMetadata(CLIENT_FIELD_MAP_OTHERS_KEY, owner) ??
+        new Map<string, ClientFieldMapOthers>()) as Map<string, ClientFieldMapOthers>;
+      others.set(String(propertyKey), options);
+      Reflect.defineMetadata(CLIENT_FIELD_MAP_OTHERS_KEY, others, owner);
+    }
   };
+
+export const CLIENT_FIELD_MAP_OTHERS_KEY = 'rbac03:client_field_map_others';
+
+/** Which catalogue key hides the keys of a map that the catalogue does not name. */
+export interface ClientFieldMapOthers {
+  others: string;
+  named: readonly string[];
+}
 
 /** The free-form maps declared on `type`, as `property -> catalogue prefix`. */
 export function clientFieldMapsOf(type: unknown): ClientFieldMap {
   return inherited(CLIENT_FIELD_MAP_KEY, type);
+}
+
+/** The `others` rule of each free-form map on `type` that declares one. */
+export function clientFieldMapOthersOf(type: unknown): ReadonlyMap<string, ClientFieldMapOthers> {
+  return inherited<ClientFieldMapOthers>(CLIENT_FIELD_MAP_OTHERS_KEY, type);
 }

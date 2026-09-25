@@ -44,6 +44,22 @@ import {
 } from '../../common/provisioning/notification-dispatch.port';
 import type { Db } from '../../database/db';
 import type { ClientScope } from '../../common/security/client-scope';
+import { isProfileKey, KYC_CORRECTABLE_KEYS } from '../../common/profile/client-profile';
+import {
+  ClientProfileService,
+  profileOf,
+  type ProfileActor,
+} from '../profile/client-profile.service';
+
+/** The answers that are NOT profile fields — what `personal_info` may store. */
+function customAnswersOf(answers: Record<string, string> | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(answers ?? {}).filter(([key]) => !isProfileKey(key)));
+}
+
+/** The answers that ARE profile fields — written to the profile, never stored here. */
+function profileAnswersOf(answers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(answers).filter(([key]) => isProfileKey(key)));
+}
 
 /**
  * The user, as a REVIEWER may see them.
@@ -98,6 +114,20 @@ function reviewerView(user: User) {
  * Uploads are the client's to make until the submission leaves their hands —
  * see the note in `attachFile` for the two attacks the guard closes.
  */
+/**
+ * May the client still change their answers? The same two refusals `saveStep`
+ * has always given — asked once as a cheap early answer, and again UNDER THE
+ * LOCK, where the answer actually decides (see `saveStep`).
+ */
+function assertOpenForAnswers(submission: { status: KycStatus }): void {
+  if (submission.status === 'approved') {
+    throw new AuthorizationError('KYC already approved.');
+  }
+  if (submission.status === 'under_review' || submission.status === 'submitted') {
+    throw new AuthorizationError('KYC is under review. You cannot edit it now.');
+  }
+}
+
 function assertOpenForUploads(submission: { status: KycStatus }): void {
   if (submission.status === 'approved') {
     throw new AuthorizationError('KYC already approved.');
@@ -242,7 +272,45 @@ export class KycService {
      * shifts every one after it.
      */
     private readonly admins: AdminsStore,
+    /**
+     * The one write path for the client's identity (0139): the personal step's
+     * profile fields are the PROFILE, read and written here, never a copy in
+     * `personal_info`. APPENDED LAST, for the positional construction above.
+     */
+    private readonly profile: ClientProfileService,
   ) {}
+
+  /**
+   * The personal step's answers as ONE record — what every reader sees.
+   *
+   * The profile's values for the identity fields the step asks for, and the
+   * stored answers to the fields a broker invented. Before 0139 the step kept
+   * its own copy of the name, phone and country, so a client could hold one
+   * name on their account and another on their verification, and the review
+   * screen printed both. Now there is one value, and it is the profile's.
+   */
+  private personalView(
+    submission: KycSubmission,
+    user: User | undefined,
+    steps: readonly KycStepConfig[],
+  ): Record<string, string> {
+    const asked = new Set(
+      (steps.find((s) => s.slug === 'personal')?.fields ?? []).map((field) => field.name),
+    );
+    const identity = Object.fromEntries(
+      Object.entries(user ? profileOf(user) : {}).filter(([key]) => asked.has(key)),
+    );
+    return { ...customAnswersOf(submission.personalInfo), ...identity };
+  }
+
+  /** The submission, with its personal step read as one record. */
+  private withPersonalView(
+    submission: KycSubmission,
+    user: User | undefined,
+    steps: readonly KycStepConfig[],
+  ): KycSubmission {
+    return { ...submission, personalInfo: this.personalView(submission, user, steps) };
+  }
 
   /**
    * The profile rules for this deployment, read from the configured steps.
@@ -308,25 +376,19 @@ export class KycService {
     chosen?: ChosenDocument,
   ): Promise<KycSubmission & { verificationLevel: number; steps: StepState[] }> {
     const user = await this.users.findById(userId);
+    const view = this.withPersonalView(submission, user, steps);
     return {
-      ...submission,
+      ...view,
       verificationLevel: user?.verificationLevel ?? 0,
-      steps: stepStates(steps, submission, new Date(), chosen),
+      steps: stepStates(steps, view, new Date(), chosen),
     };
   }
 
   // ─── Save step data ────────────────────────────────────────────────────────
   async saveStep(userId: string, step: string, data: Record<string, unknown>) {
     const submission = await this.kycStore.getOrCreate(userId);
-
-    if (submission.status === 'approved') {
-      throw new AuthorizationError('KYC already approved.');
-    }
-    if (submission.status === 'under_review' || submission.status === 'submitted') {
-      throw new AuthorizationError('KYC is under review. You cannot edit it now.');
-    }
-
-    const patch: Record<string, unknown> = { status: 'in_progress' };
+    // The early answer; the deciding one is re-asked under the lock below.
+    assertOpenForAnswers(submission);
 
     /*
      * ── A CUSTOM STEP NOW HAS SOMEWHERE TO PUT ITS ANSWERS ──────────────────
@@ -396,31 +458,15 @@ export class KycService {
      * pages already on file are left alone until one of the new document's
      * arrives (which starts it afresh, in `placePage`).
      */
-    let chosen: ChosenDocument | undefined;
-    if (step === 'document' || step === 'address') {
-      const docType = documentTypeFor(
-        step === 'document' ? 'identity' : 'address',
-        data['docType'],
-      );
-      const stored = step === 'document' ? submission.document : submission.addressProof;
-      const onFile =
-        step === 'document'
-          ? Boolean(submission.document?.frontFilePath || submission.document?.backFilePath)
-          : Boolean(submission.addressProof?.filePath || submission.addressProof?.page2FilePath);
-      if (docType && docType !== stored?.docType) {
-        if (onFile) chosen = { slug: step, docType };
-        else if (step === 'document') patch['document'] = { ...submission.document, docType };
-        else patch['addressProof'] = { ...submission.addressProof, docType };
-      }
-    }
-
     /*
      * ── THE STEP'S TYPED ANSWERS, on every step ──────────────────────────────
      *
-     * The personal step's go to `personal_info`, read by name across the system
-     * (the verified phone and country are promoted from it). Every other step's
-     * — an added step's, and the extra questions a broker puts on a built-in
-     * step — go to `step_data` under the step's slug.
+     * The personal step's IDENTITY fields — name, date of birth, nationality,
+     * phone, residence, address — are the client's PROFILE (0139): they are
+     * written there, through `ClientProfileService`, and never stored here.
+     * `personal_info` keeps only answers to fields a broker invented. Every
+     * other step's answers — an added step's, and the extra questions a broker
+     * puts on a built-in step — go to `step_data` under the step's slug.
      */
     const fields = steps.find((s) => s.slug === step)?.fields ?? [];
     const { answers, problems } = typedAnswersFor(fields, data);
@@ -430,40 +476,94 @@ export class KycService {
         fields: problems.map((p) => p.field),
       });
     }
-    const current = (
-      step === 'personal' ? submission.personalInfo : submission.stepData?.[step]
-    ) as Record<string, unknown> | undefined;
-    const changed = Object.keys(answers).filter((key) => current?.[key] !== answers[key]);
+    const identity = step === 'personal' ? profileAnswersOf(answers) : {};
+    const custom = step === 'personal' ? customAnswersOf(answers) : answers;
+    const user = Object.keys(identity).length > 0 ? await this.users.findById(userId) : undefined;
 
-    if (step === 'personal') {
-      // `PersonalInfo` names the seeded fields; the column also carries any
-      // field the builder added, so the cast widens to what is stored.
-      patch['personalInfo'] = {
-        ...(submission.personalInfo ?? {}),
-        ...answers,
-      };
-    } else if (!isDataBearingStep(step) || Object.keys(answers).length > 0) {
-      patch['stepData'] = {
-        ...submission.stepData,
-        [step]: { ...(submission.stepData?.[step] ?? {}), ...answers },
-      };
-    }
+    let chosen: ChosenDocument | undefined;
+    const saved = await this.db.transaction(async (tx) => {
+      /*
+       * ── RE-READ UNDER THE LOCK, and build the write from THAT row ─────────
+       *
+       * The status was checked above, before this transaction — and a
+       * submission sent from another tab in between used to be pulled straight
+       * back to `in_progress` by the write below: out of the review queue, the
+       * reviewer's row vanishing under them. Two saves racing each other
+       * merged into the same stale copy, and the second erased the first's
+       * answers. Locking the row first settles both: whatever committed before
+       * us is what we read, and nothing commits in between.
+       *
+       * The KYC row is locked BEFORE the profile's (inside `profile.update`) —
+       * the order every writer takes them in, so two of them cannot deadlock.
+       */
+      const locked = (await this.kycStore.lockForUpdate(userId, tx)) ?? submission;
+      assertOpenForAnswers(locked);
 
-    /*
-     * An answer the reviewer returned is settled by CHANGING it. Kept when the
-     * value is the same, so the portal goes on showing it red — a client who
-     * re-saves an untouched step has not answered the reviewer.
-     */
-    const flagged = submission.rejectedFields ?? [];
-    const remaining = flagged.filter((id) => !changed.includes(id));
-    if (remaining.length !== flagged.length) patch['rejectedFields'] = remaining;
+      const patch: Record<string, unknown> = { status: 'in_progress' };
+      if (step === 'document' || step === 'address') {
+        const docType = documentTypeFor(
+          step === 'document' ? 'identity' : 'address',
+          data['docType'],
+        );
+        const stored = step === 'document' ? locked.document : locked.addressProof;
+        const onFile =
+          step === 'document'
+            ? Boolean(locked.document?.frontFilePath || locked.document?.backFilePath)
+            : Boolean(locked.addressProof?.filePath || locked.addressProof?.page2FilePath);
+        if (docType && docType !== stored?.docType) {
+          if (onFile) chosen = { slug: step, docType };
+          else if (step === 'document') patch['document'] = { ...locked.document, docType };
+          else patch['addressProof'] = { ...locked.addressProof, docType };
+        }
+      }
+
+      const current = (step === 'personal' ? locked.personalInfo : locked.stepData?.[step]) as
+        Record<string, unknown> | undefined;
+      const changed: string[] = Object.keys(custom).filter((key) => current?.[key] !== custom[key]);
+
+      if (step === 'personal') {
+        // Only invented fields, and never a profile key — even one stored by an
+        // older build, which is dropped here rather than carried forward.
+        patch['personalInfo'] = { ...customAnswersOf(locked.personalInfo), ...custom };
+      } else if (!isDataBearingStep(step) || Object.keys(answers).length > 0) {
+        patch['stepData'] = {
+          ...locked.stepData,
+          [step]: { ...(locked.stepData?.[step] ?? {}), ...answers },
+        };
+      }
+
+      if (user) {
+        /*
+         * The profile and the step land together or not at all. What CHANGED
+         * is judged after normalisation, so re-typing the same phone number
+         * differently does not answer a reviewer who returned it.
+         */
+        const written = await this.profile.update(
+          userId,
+          identity,
+          { kind: 'client', id: userId, email: user.email },
+          { executor: tx, audit: { via: 'kyc' } },
+        );
+        changed.push(...written.changed);
+      }
+
+      /*
+       * An answer the reviewer returned is settled by CHANGING it. Kept when the
+       * value is the same, so the portal goes on showing it red — a client who
+       * re-saves an untouched step has not answered the reviewer.
+       */
+      const flagged = locked.rejectedFields ?? [];
+      const remaining = flagged.filter((id) => !changed.includes(id));
+      if (remaining.length !== flagged.length) patch['rejectedFields'] = remaining;
+
+      return this.kycStore.update(userId, patch, tx);
+    });
 
     /*
      * Answered with every step's state — this step's judged against the
      * document the client says they are presenting — so Continue can ask the
      * server rather than guess.
      */
-    const saved = await this.kycStore.update(userId, patch);
     return this.statusView(userId, saved, steps, chosen);
   }
 
@@ -631,21 +731,13 @@ export class KycService {
 
   // ─── Submit KYC ────────────────────────────────────────────────────────────
   async submit(userId: string) {
-    const submission = await this.kycStore.getOrCreate(userId);
-    const user = await this.users.findById(userId);
-
-    if (!submission.personalInfo && user?.firstName) {
-      submission.personalInfo = {
-        firstName: user.firstName,
-        lastName: user.lastName,
-      };
-      await this.kycStore.update(userId, { personalInfo: submission.personalInfo });
-    }
-
-    const finalSub = await this.kycStore.getOrCreate(userId);
-
-    if (!finalSub.personalInfo)
-      throw new ValidationError('Personal information is required before submitting.');
+    /*
+     * The personal step is judged on the PROFILE's values (0139). This used to
+     * copy the account's name INTO `personal_info` when the blob was empty — one
+     * of the two paths that let the two copies drift apart — and then refuse a
+     * submission whose blob was absent. The one record below replaces both.
+     */
+    await this.kycStore.getOrCreate(userId);
 
     /*
      * The profile's CONTENTS, not just its presence — FR-IND-03.
@@ -679,99 +771,119 @@ export class KycService {
     this.profileRulesFrom(steps);
 
     /*
-     * ── ONE JUDGE: `stepStates` ─────────────────────────────────────────────
+     * ── JUDGED AND MOVED UNDER ONE LOCK ─────────────────────────────────────
      *
-     * Everything a submission must hold — the profile's required answers and
-     * its age rule, every required page of the chosen documents, the selfie,
-     * every required answer and upload on every step, built-in or added — is
-     * decided in `kyc-step-state.ts`. It is the same judgement
-     * `GET /kyc/status` serves, so the portal and this refusal cannot
-     * disagree: this used to be six hand-written checks here and another set in
-     * the browser, and their disagreements were a week of bug reports.
-     *
-     * Steps whose broker has disabled them owe nothing: a step that is present
-     * and enabled is a promise the client was asked for that; one that is not
-     * is a promise nobody made. Refused at the FIRST step that still owes
-     * something, in the order the client meets them, with the message that
-     * kind of gap has always produced (`refusalFor`).
+     * The judgement below reads the PROFILE, and the profile has writers of its
+     * own — the client in another tab, the support desk. Read outside a lock,
+     * one of them could land between "this is complete" and `submitted`, and
+     * the reviewer would open a submission that was never judged in the shape
+     * they see. Every profile write takes this same row lock first
+     * (`ClientProfileService.update`), so here nothing moves between the
+     * judgement and the transition.
      */
-    for (const state of stepStates(steps, finalSub, new Date())) {
-      if (state.missing.length === 0) continue;
-      throw refusalFor(
-        steps.find((step) => step.slug === state.slug)!,
-        state.missing,
+    const { submitted, wasRejected } = await this.db.transaction(async (tx) => {
+      const finalSub = (await this.kycStore.lockForUpdate(userId, tx))!;
+      const user = await this.users.findById(userId, tx);
+
+      /*
+       * ── ONE JUDGE: `stepStates` ─────────────────────────────────────────────
+       *
+       * Everything a submission must hold — the profile's required answers and
+       * its age rule, every required page of the chosen documents, the selfie,
+       * every required answer and upload on every step, built-in or added — is
+       * decided in `kyc-step-state.ts`. It is the same judgement
+       * `GET /kyc/status` serves, so the portal and this refusal cannot
+       * disagree: this used to be six hand-written checks here and another set in
+       * the browser, and their disagreements were a week of bug reports.
+       *
+       * Steps whose broker has disabled them owe nothing: a step that is present
+       * and enabled is a promise the client was asked for that; one that is not
+       * is a promise nobody made. Refused at the FIRST step that still owes
+       * something, in the order the client meets them, with the message that
+       * kind of gap has always produced (`refusalFor`).
+       */
+      const view = this.withPersonalView(finalSub, user, steps);
+      for (const state of stepStates(steps, view, new Date())) {
+        if (state.missing.length === 0) continue;
+        throw refusalFor(
+          steps.find((step) => step.slug === state.slug)!,
+          state.missing,
+        );
+      }
+
+      /*
+       * A DOCUMENT THE REVIEWER RETURNED MUST BE REPLACED before it goes back.
+       *
+       * It was not: the flag drew a typed field red and did nothing for a file,
+       * and resubmitting the very passport the reviewer had refused went straight
+       * back into the queue. Each upload into a flagged slot settles its flag
+       * (`attachFile`), so what is left here is what the client has not answered.
+       * Typed fields are highlighted but not enforced — `kyc-document-rules.ts`
+       * says why.
+       */
+      const owed = outstandingDocumentFlags(finalSub.rejectedFields, steps);
+      if (owed.length > 0) {
+        const names = [...new Set(owed.map((id) => documentFlagLabel(id, steps, finalSub)))];
+        throw new ValidationError(
+          `Please replace the documents the reviewer returned: ${names.join(', ')}.`,
+          { kind: 'returned_documents', fields: owed },
+        );
+      }
+
+      /*
+       * Read BEFORE the transition below overwrites it — this is what tells a
+       * first submission from a client returning to fix one.
+       *
+       * The REASON as well as the status: saving any step moves a returned
+       * submission to `in_progress`, so a client who corrected one field before
+       * resubmitting was announced to the reviewers as a brand-new submission —
+       * the resubmission the reviewer is waiting on, filed as a stranger's. The
+       * reason survives until this transition clears it.
+       */
+      const rejectedBefore = finalSub.status === 'rejected' || Boolean(finalSub.rejectionReason);
+
+      /*
+       * `transition`, NOT `update`, and the difference was a real bug.
+       *
+       * This wrote `status: 'submitted'` unconditionally, with no check on what
+       * the status already was. Nothing here touches `verificationLevel`, so an
+       * approved client calling `POST /kyc/submit` again landed on `submitted`
+       * WITH level 1 still granted — in the review queue and able to withdraw at
+       * the same time. That is exactly the divergence `reject()` claws the level
+       * back to prevent, reached by a route neither it nor `approve` covers.
+       *
+       * It also let a client bounce a claimed row out of `under_review` from
+       * under the reviewer holding it.
+       *
+       * The `from` list is the set of states a submission may legitimately be
+       * sent from: never started, part-filled, or returned for correction. A
+       * resubmission after rejection starts a fresh review, so stale rejection
+       * data must not follow it into the admin queue.
+       */
+      const moved = await this.kycStore.transition(
+        userId,
+        ['not_started', 'in_progress', 'rejected'],
+        {
+          status: 'submitted',
+          submittedAt: new Date(),
+          rejectionReason: undefined,
+          rejectedFields: undefined,
+        },
+        tx,
       );
-    }
 
-    /*
-     * A DOCUMENT THE REVIEWER RETURNED MUST BE REPLACED before it goes back.
-     *
-     * It was not: the flag drew a typed field red and did nothing for a file,
-     * and resubmitting the very passport the reviewer had refused went straight
-     * back into the queue. Each upload into a flagged slot settles its flag
-     * (`attachFile`), so what is left here is what the client has not answered.
-     * Typed fields are highlighted but not enforced — `kyc-document-rules.ts`
-     * says why.
-     */
-    const owed = outstandingDocumentFlags(finalSub.rejectedFields, steps);
-    if (owed.length > 0) {
-      const names = [...new Set(owed.map((id) => documentFlagLabel(id, steps, finalSub)))];
-      throw new ValidationError(
-        `Please replace the documents the reviewer returned: ${names.join(', ')}.`,
-        { kind: 'returned_documents', fields: owed },
-      );
-    }
-
-    /*
-     * Read BEFORE the transition below overwrites it — this is what tells a
-     * first submission from a client returning to fix one.
-     *
-     * The REASON as well as the status: saving any step moves a returned
-     * submission to `in_progress`, so a client who corrected one field before
-     * resubmitting was announced to the reviewers as a brand-new submission —
-     * the resubmission the reviewer is waiting on, filed as a stranger's. The
-     * reason survives until this transition clears it.
-     */
-    const wasRejected = finalSub.status === 'rejected' || Boolean(finalSub.rejectionReason);
-
-    /*
-     * `transition`, NOT `update`, and the difference was a real bug.
-     *
-     * This wrote `status: 'submitted'` unconditionally, with no check on what
-     * the status already was. Nothing here touches `verificationLevel`, so an
-     * approved client calling `POST /kyc/submit` again landed on `submitted`
-     * WITH level 1 still granted — in the review queue and able to withdraw at
-     * the same time. That is exactly the divergence `reject()` claws the level
-     * back to prevent, reached by a route neither it nor `approve` covers.
-     *
-     * It also let a client bounce a claimed row out of `under_review` from
-     * under the reviewer holding it.
-     *
-     * The `from` list is the set of states a submission may legitimately be
-     * sent from: never started, part-filled, or returned for correction. A
-     * resubmission after rejection starts a fresh review, so stale rejection
-     * data must not follow it into the admin queue.
-     */
-    const submitted = await this.kycStore.transition(
-      userId,
-      ['not_started', 'in_progress', 'rejected'],
-      {
-        status: 'submitted',
-        submittedAt: new Date(),
-        rejectionReason: undefined,
-        rejectedFields: undefined,
-      },
-    );
-
-    if (!submitted) {
-      // No row matched, so the status moved under us — already submitted, in
-      // review, or approved. Reporting the current state beats a generic 500.
-      throw new AuthorizationError(
-        finalSub.status === 'approved'
-          ? 'KYC already approved.'
-          : 'KYC has already been submitted and is awaiting review.',
-      );
-    }
+      if (!moved) {
+        // No row matched: the status is not one a submission may be sent
+        // from — already submitted, in review, or approved. Reporting the
+        // current state beats a generic 500.
+        throw new AuthorizationError(
+          finalSub.status === 'approved'
+            ? 'KYC already approved.'
+            : 'KYC has already been submitted and is awaiting review.',
+        );
+      }
+      return { submitted: moved, wasRejected: rejectedBefore };
+    });
 
     /*
      * Ring the reviewers' bells — post-write, never-throws, scope-filtered at
@@ -789,14 +901,12 @@ export class KycService {
      * refused once. A queue that renders both identically hides that, and the
      * resubmissions are the ones that go stale.
      */
-    void this.notifications.notifyAdminsWithPermission(
-      'kyc.review',
-      {
-        kind: wasRejected ? 'admin.kyc.resubmitted' : 'admin.kyc.submitted',
-        params: { userId },
-      },
-      { subjectClientId: userId },
-    );
+    void this.notifications.notifyAdmins({
+      kind: wasRejected ? 'admin.kyc.resubmitted' : 'admin.kyc.submitted',
+      params: { userId },
+      // The submission is keyed on its client, so the item IS the client.
+      subject: { id: userId, clientId: userId },
+    });
 
     return submitted;
   }
@@ -840,8 +950,14 @@ export class KycService {
   async getByUserId(userId: string) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
-    const user = await this.users.findById(userId);
-    return { ...submission, user: user ? reviewerView(user) : undefined };
+    const [user, steps] = await Promise.all([
+      this.users.findById(userId),
+      this.kycConfig.getSteps(),
+    ]);
+    return {
+      ...this.withPersonalView(submission, user, steps),
+      user: user ? reviewerView(user) : undefined,
+    };
   }
 
   // ─── Admin: approve ────────────────────────────────────────────────────────
@@ -889,6 +1005,11 @@ export class KycService {
      * what actually enforces it. If they disagree, the database wins.
      */
     await this.assertNotHeldByAnother(submission, adminId);
+    // For the archived attempt: what the reviewer decided on, as one record.
+    const [client, steps] = await Promise.all([
+      this.users.findById(userId),
+      this.kycConfig.getSteps(),
+    ]);
 
     await this.db.transaction(async (tx) => {
       const updated = await this.kycStore.transition(
@@ -906,35 +1027,21 @@ export class KycService {
       }
 
       // Snapshot inside the transaction: the evidence and the decision are one
-      // fact, so a rolled-back approval must not leave an archived attempt.
-      await this.kycStore.archiveAttempt(updated, tx);
+      // fact, so a rolled-back approval must not leave an archived attempt. The
+      // snapshot carries the PROFILE's values the reviewer read, so history
+      // shows the record as it was decided even after the profile moves on.
+      await this.kycStore.archiveAttempt(this.withPersonalView(updated, client, steps), tx);
       /*
-       * The VERIFIED identity is promoted onto the client record.
+       * NOTHING is promoted onto the client record any more — it IS the record.
        *
-       * Approval is the moment `personal_info` stops being a claim and becomes
-       * evidence somebody checked against a document. Until this ran, that
-       * evidence stayed locked in the submission's JSONB and the columns the
-       * rest of the system reads stayed empty — so an operator opening a fully
-       * verified client saw "—" for phone and country, and the client list's
-       * country filter (which has two indexes built for it) matched none of
-       * them. Every real client was invisible to a filter that worked
-       * perfectly on the seeded ones.
-       *
-       * Only fields the submission actually carries are written, so an
-       * approval that captured no phone cannot blank a phone taken at
-       * registration. Where both exist the verified value wins: it is the one
-       * backed by a document.
-       *
-       * Name is deliberately NOT promoted here. It is `not null` on the row,
-       * it is what every screen and every audit entry already calls this
-       * person, and a silent rename on approval is a change nobody asked for
-       * — that belongs to the admin's own edit (CORE-18), where it is audited.
+       * Approval used to copy the submission's phone and country onto `users`
+       * (and deliberately not the name), because the verified identity lived in
+       * `personal_info` while the rest of the system read the columns. Since
+       * 0139 the personal step reads and writes the profile directly, so what
+       * the reviewer approved is already what every screen shows. A copy step
+       * here would be a second writer with nothing to copy.
        */
-      const verified = updated.personalInfo;
-      const identity: { phone?: string; country?: string } = {};
-      if (verified?.phone?.trim()) identity.phone = verified.phone.trim();
-      if (verified?.country?.trim()) identity.country = verified.country.trim();
-      await this.users.update(userId, { verificationLevel: 1, ...identity }, tx);
+      await this.users.update(userId, { verificationLevel: 1 }, tx);
       // The bell row commits WITH the decision — a rolled-back approval must
       // not leave a "you're verified" the client can read.
       await this.notifications.notify(
@@ -1140,15 +1247,17 @@ export class KycService {
    * inside a form error. `problem.kind` rides in the details so the caller can
    * say WHICH.
    *
-   * ## The values live in ONE place
+   * ## The values live in ONE place — the profile (0139)
    *
-   * `users` has no `dateOfBirth` and no `address` column — the fields exist only
-   * in `kyc_submissions.personalInfo`. So there is no second row to keep in step
-   * and nothing here writes to `users`. Adding those columns to carry a copy was
-   * the first shape considered and rejected: it would have created the
-   * disagreement it was meant to prevent.
+   * This wrote `kyc_submissions.personalInfo` while date of birth and address
+   * existed only there, and its note said adding `users` columns "to carry a
+   * copy" would create the disagreement it was meant to prevent. That was right
+   * about copies. 0139 made the profile the ONLY home instead, so a correction
+   * is a profile write — through `ClientProfileService`, audited as
+   * `kyc.identity_correct` on the submission, inside the write's own
+   * transaction rather than after it.
    */
-  async correctIdentity(userId: string, patch: Record<string, unknown>) {
+  async correctIdentity(userId: string, patch: Record<string, unknown>, actor: ProfileActor) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
 
@@ -1159,38 +1268,20 @@ export class KycService {
       );
     }
 
-    const current = (submission.personalInfo ?? {}) as unknown as Record<string, unknown>;
-    const before = Object.fromEntries(Object.keys(patch).map((k) => [k, current[k]]));
-    const merged = { ...current, ...patch };
-
     /*
-     * ⚠️ VALIDATES WHAT CHANGED, NOT THE WHOLE RECORD — and the first version of
-     * this did the opposite, which my own test caught.
+     * ⚠️ VALIDATES WHAT CHANGED, NOT THE WHOLE RECORD — completeness was
+     * established at submission and is not what a correction re-opens; a record
+     * approved before a field became required must still be correctable. So the
+     * rules are narrowed to the corrected fields, and the date-of-birth rules
+     * fire exactly when a date of birth is what changed.
      *
-     * Running `findProfileProblem` over the merged object also runs its
-     * COMPLETENESS branch against TODAY's config. So a client approved before a
-     * required field was added to the form has a record that is legitimately
-     * incomplete by current rules, and every correction on them fails with
-     * `missing_fields` — for a field this route cannot even accept. That is
-     * CORE-18 all over again: an operator who cannot fix a typo because of
-     * something unrelated, on the one state that already had no way out.
-     *
-     * Completeness was established at submission and is not what a correction
-     * re-opens. What must still hold is that the NEW VALUE is one the system
-     * would accept, so the rule set is narrowed to the corrected fields: the
-     * missing-fields branch is then vacuous by construction, and the date-of-
-     * birth rules fire exactly when a date of birth is what changed.
-     *
-     * Correcting an ADDRESS therefore does not re-check an untouched date of
-     * birth. That is deliberate — it is the same "unrelated field blocks the
-     * fix" trap from the other direction, and a record whose stored DOB is
-     * disqualifying is a rejection to make on purpose, not a side effect of
-     * someone fixing a street name.
+     * A value that would DISQUALIFY an approved record — underage, impossible —
+     * is refused as a conflict (409), not an input error: it is a fact about the
+     * record, and the product's answer to it is a rejection, made on purpose.
      */
     const corrected = Object.keys(patch);
-    const subject = Object.fromEntries(corrected.map((k) => [k, merged[k]]));
     const rules = (await this.profileRules()).filter((rule) => corrected.includes(rule.name));
-    const problem = findProfileProblem(subject, rules, new Date());
+    const problem = findProfileProblem(patch, rules, new Date());
     if (problem) {
       throw new KycCorrectionRefusedError(
         `The corrected details do not pass verification: ${problem.message} ` +
@@ -1200,17 +1291,38 @@ export class KycService {
       );
     }
 
-    /*
-     * The cast mirrors `submitKyc`'s, and for the same reason: `PersonalInfo`
-     * declares named fields while the COLUMN is jsonb and also carries whatever
-     * a custom KYC field was named. Widening to what is actually stored is
-     * honest; narrowing to the interface would drop a configured field on every
-     * correction, silently.
-     */
-    const updated = await this.kycStore.update(userId, {
-      personalInfo: merged as unknown as KycSubmission['personalInfo'],
+    const written = await this.profile.update(userId, patch, actor, {
+      audit: {
+        action: 'kyc.identity_correct',
+        subjectType: 'kyc_submission',
+        subjectId: userId,
+        via: 'kyc_correction',
+      },
+      /*
+       * Re-asked under the locks: the status check above is a read, and this is
+       * the decision. And only what a correction may touch — a name or a
+       * nationality sent here would be a verified identity rewritten without a
+       * new verification, which is exactly what this route exists to NOT be.
+       */
+      guard: (changed, verification) => {
+        if (verification !== 'approved') {
+          throw new ValidationError(
+            'This correction applies to an APPROVED submission, and this one no longer is.',
+          );
+        }
+        const outside = changed.filter((key) => !KYC_CORRECTABLE_KEYS.includes(key));
+        if (outside.length > 0) {
+          throw new ValidationError(
+            `A correction can change the date of birth and the address only, not ${outside.join(', ')}.`,
+          );
+        }
+      },
     });
-    return { submission: updated, before, after: patch };
+    return {
+      submission: await this.getByUserId(userId),
+      before: written.before,
+      after: written.after,
+    };
   }
 
   /**
@@ -1323,7 +1435,14 @@ export class KycService {
           `Only a submitted KYC can be rejected; this one is ${now?.status ?? submission.status}.`,
         );
       }
-      await this.kycStore.archiveAttempt(updated, tx);
+      await this.kycStore.archiveAttempt(
+        this.withPersonalView(
+          updated,
+          await this.users.findById(userId),
+          await this.kycConfig.getSteps(),
+        ),
+        tx,
+      );
       /*
        * Take the verification level back, in the SAME transaction.
        *

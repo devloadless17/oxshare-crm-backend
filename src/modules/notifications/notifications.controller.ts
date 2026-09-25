@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   HttpCode,
@@ -21,6 +22,7 @@ import {
   NotificationListResponseDto,
   NotificationUnreadCountDto,
   NotificationsMarkAllReadResponseDto,
+  NotificationsReadAllDto,
 } from './dto/notifications.dto';
 
 /**
@@ -80,13 +82,20 @@ export class NotificationsController {
   @Post('read-all')
   @HttpCode(200)
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Mark every unread notification read. Idempotent.' })
+  @ApiOperation({
+    summary:
+      'Mark unread notifications read — every one, or up to the newest one shown. Idempotent.',
+  })
   @ApiOkResponse({ type: NotificationsMarkAllReadResponseDto })
   async markAllRead(
     @Req() req: Request & { user: User },
+    @Body() body: NotificationsReadAllDto,
   ): Promise<NotificationsMarkAllReadResponseDto> {
     return {
-      updated: await this.notifications.markAllRead({ kind: 'client', id: req.user.id }),
+      updated: await this.notifications.markAllRead(
+        { kind: 'client', id: req.user.id },
+        body.upTo ? new Date(body.upTo) : undefined,
+      ),
     };
   }
 }

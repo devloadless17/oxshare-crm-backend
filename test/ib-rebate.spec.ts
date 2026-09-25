@@ -5,6 +5,8 @@ import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { seedProductTerms, setLadderShares, type RungShares } from './support/commission-terms';
+import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 
 /**
  * The CLIENT's leg — FR-IB-05's rebate — against real Postgres.
@@ -44,71 +46,24 @@ async function makeUser(email: string): Promise<string> {
 }
 
 /**
- * Set the one programme both partners are on, LADDER AND ALL.
- *
- * The ladder is rewritten wholesale rather than patched, because its LENGTH is
- * how far the programme pays: a helper that only updated rates could not
- * express "this programme now reaches one level", which is the setup half of
- * every reach assertion.
- *
- * The share-ceiling trigger is DEFERRABLE, so the delete-then-insert below is
- * checked once at COMMIT rather than against a half-written ladder.
+ * The product's rate card: $100 a lot to the partners AND $100 a lot back to
+ * the client (0140). Every trade here is ONE LOT, so a rung's SHARE of either
+ * figure is the same number of dollars — a 10% commission share pays $10, a
+ * 5% rebate share returns $5 — and every assertion downstream reads as it did
+ * when the rung was a percentage of $100 of revenue.
  */
-async function setTerms(terms: {
-  /**
-   * Rates by RUNG, level 1 first. Omit or pass [] for a ladder paying no
-   * partner — which is what "rebate only" is now that a level carries one
-   * commission term rather than a declared mode.
-   */
-  tiers?: string[];
-  rebateRate: string;
-}): Promise<void> {
-  /*
-   * ONE TRANSACTION, and that is not tidiness.
-   *
-   * `ib_levels_share_fits` bounds one rung's commission plus its rebate to
-   * 100%. Run as separate statements, raising the rebate commits while the old
-   * commission rate is still in place — so setting a 5% rebate on a rung paying
-   * 96% is refused for a state the caller never asked for and is one statement
-   * away from leaving.
-   *
-   * Unlike the programme trigger this replaced, the check is per ROW rather
-   * than deferred across a ladder: a level's two terms live on one row, so
-   * there is no half-written ladder for it to see.
-   */
-  await ctx.db.transaction(async (tx) => {
-    const rates = terms.tiers ?? [];
+let terms: CommissionTypeTerms;
 
-    /*
-     * Every rung is reset, not only the ones being set. A rate left behind on
-     * level 2 from a previous test would pay a partner the current one never
-     * configured — and these suites share a database across cases.
-     */
-    await tx.execute(sql`
-      UPDATE ib_levels
-         SET commission_mode = 'percent',
-             commission_amount_per_lot = NULL,
-             commission_rate = 0,
-             rebate_mode = 'percent',
-             rebate_amount_per_lot = NULL,
-             rebate_rate = 0,
-             enabled = true
-    `);
-
-    for (const [index, rate] of rates.entries()) {
-      await tx.execute(sql`
-        UPDATE ib_levels SET commission_rate = ${rate} WHERE level = ${index + 1}
-      `);
-    }
-
-    /*
-     * The rebate is a term of the INTRODUCER's rung, so it goes on level 1 —
-     * that is the partner the client is actually in a relationship with.
-     */
-    await tx.execute(sql`
-      UPDATE ib_levels SET rebate_rate = ${terms.rebateRate} WHERE level = 1
-    `);
-  });
+/**
+ * Set the ladder: one commission share per rung, level 1 first, and the
+ * rebate share on level 1 — the INTRODUCER's rung, the partner the client is
+ * actually in a relationship with. Every rung is reset first.
+ */
+async function setTerms(ladder: { tiers?: string[]; rebateRate: string }): Promise<void> {
+  const shares: RungShares[] = (ladder.tiers ?? []).map((commission) => ({ commission }));
+  if (shares.length === 0) shares.push({ commission: '0' });
+  shares[0] = { ...shares[0], rebate: ladder.rebateRate };
+  await setLadderShares(ctx.db, shares);
 }
 
 /** One closed trade on which the broker kept 100. */
@@ -117,9 +72,9 @@ async function accrue(sourceId = POSITION_ID): Promise<number> {
     dealRowId: sourceId,
     ticket: '90210',
     clientUserId: clientId,
-    brokerRevenue: '100.00000000',
     lots: '1.00000000',
     currency: 'USD',
+    terms,
   });
 }
 
@@ -158,12 +113,25 @@ beforeAll(async () => {
     sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,
   );
 
+  const seeded = await seedProductTerms(ctx.db, {
+    name: 'Rebate terms',
+    commissionPerLot: '100',
+    rebatePerLot: '100',
+  });
+  terms = {
+    id: seeded.typeId,
+    name: 'Rebate terms',
+    enabled: true,
+    commissionPerLot: '100.00000000',
+    rebatePerLot: '100.00000000',
+  };
+
   commissions = new CommissionService(
     ctx.db,
     new WalletService(ctx.db),
     {
       notify: vi.fn().mockResolvedValue(undefined),
-      notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
+      notifyAdmins: vi.fn().mockResolvedValue(undefined),
     },
     // The payout ceiling (0106) — the real store against the real row, so
     // this reads the shipped default of 100 rather than a stub's opinion.

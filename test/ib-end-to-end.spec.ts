@@ -5,6 +5,8 @@ import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { seedProductTerms, setLadderShares, type RungShares } from './support/commission-terms';
+import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 
 /**
  * THE WHOLE IB FEATURE, END TO END, on one populated platform.
@@ -89,30 +91,23 @@ async function makeUser(handle: string): Promise<string> {
  * these as per-lot instead would leave the percentage paths untested while
  * live rows still use them.
  */
+/**
+ * The product's rate card: $100 a lot to the partners and $100 a lot back to
+ * the client (0140). Every trade here is ONE LOT, so a rung's SHARE of either
+ * figure is the same number of dollars — "30%" pays $30 — and every `@n=amount`
+ * asserted below reads as it did when a rung was a percentage of $100 of
+ * revenue. The two-partner chain arithmetic is unchanged by the model: each
+ * rung is still paid its own share, independently.
+ */
+let terms: CommissionTypeTerms;
+
+/** The ladder: commission shares level 1 first, the rebate share on level 1 —
+    the INTRODUCER's rung, the client's own partner. Every rung is reset. */
 async function setLadder(rates: string[], rebate = '0'): Promise<void> {
-  await ctx.db.execute(
-    sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
-  );
-  await ctx.db.execute(sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_rebate_shape`);
-  await ctx.db.execute(sql`
-    UPDATE ib_levels
-       SET commission_mode = 'percent', commission_amount_per_lot = NULL, commission_rate = 0,
-           rebate_mode = 'percent', rebate_amount_per_lot = NULL, rebate_rate = 0,
-           enabled = true
-  `);
-
-  for (const [index, rate] of rates.entries()) {
-    await ctx.db.execute(sql`
-      INSERT INTO ib_levels (level, name, commission_mode, commission_rate)
-      VALUES (${index + 1}, ${'Level ' + String(index + 1)}, 'percent', ${rate})
-      ON CONFLICT (level) DO UPDATE
-        SET commission_mode = 'percent', commission_amount_per_lot = NULL,
-            commission_rate = ${rate}, enabled = true
-    `);
-  }
-
-  /* The rebate is a term of the INTRODUCER's rung — the client's own partner. */
-  await ctx.db.execute(sql`UPDATE ib_levels SET rebate_rate = ${rebate} WHERE level = 1`);
+  const shares: RungShares[] = rates.map((commission) => ({ commission }));
+  if (shares.length === 0) shares.push({ commission: '0' });
+  shares[0] = { ...shares[0], rebate };
+  await setLadderShares(ctx.db, shares);
 }
 
 async function makeAgency(name: string): Promise<string> {
@@ -159,15 +154,15 @@ async function makeClient(handle: string, introducer: string): Promise<string> {
   return id;
 }
 
-/** One closed trade the broker earned `revenue` on. */
-async function trade(clientUserId: string, sourceId: string, revenue = '100.00000000') {
+/** One closed one-lot trade on the product above. */
+async function trade(clientUserId: string, sourceId: string) {
   return commissions.accrueForDeal({
     dealRowId: sourceId,
     ticket: sourceId.slice(0, 6),
     clientUserId,
-    brokerRevenue: revenue,
     lots: '1.00000000',
     currency: 'USD',
+    terms,
   });
 }
 
@@ -198,12 +193,26 @@ const uuid = (n: number) => `${String(n).padStart(8, '0')}-0000-4000-8000-000000
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
+
+  const seeded = await seedProductTerms(ctx.db, {
+    name: 'End-to-end terms',
+    commissionPerLot: '100',
+    rebatePerLot: '100',
+  });
+  terms = {
+    id: seeded.typeId,
+    name: 'End-to-end terms',
+    enabled: true,
+    commissionPerLot: '100.00000000',
+    rebatePerLot: '100.00000000',
+  };
+
   commissions = new CommissionService(
     ctx.db,
     new WalletService(ctx.db),
     {
       notify: vi.fn().mockResolvedValue(undefined),
-      notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
+      notifyAdmins: vi.fn().mockResolvedValue(undefined),
     },
 
     new AppSettingsStore(ctx.db),
@@ -261,9 +270,10 @@ beforeEach(async () => {
    * mentioned. A shared setting is exactly the state a per-test fixture cannot
    * see it is inheriting.
    */
+  /* Back to the shipped per-lot ceiling: a case that lowers it must not leak. */
   await ctx.db.execute(sql`
-    INSERT INTO trading_settings (id, ib_max_total_payout_pct) VALUES (true, '100')
-    ON CONFLICT (id) DO UPDATE SET ib_max_total_payout_pct = '100'
+    INSERT INTO trading_settings (id, ib_max_payout_per_lot) VALUES (true, '50')
+    ON CONFLICT (id) DO UPDATE SET ib_max_payout_per_lot = '50'
   `);
   for (const key of Object.keys(who)) delete who[key];
 
@@ -501,11 +511,17 @@ describe('a rung pays whichever of its two terms is set', () => {
 
 /* ── The broker's ceiling, across a chain no single programme can see ─────── */
 
-describe('the total payout ceiling', () => {
-  async function setCeiling(pct: string) {
+describe('the per-lot payout ceiling', () => {
+  /*
+   * `ib_max_payout_per_lot` — the unit-error guard, and the only ceiling
+   * since 0140 (the percentage-of-revenue one had nothing left to bound).
+   * On a $100-a-lot type and one-lot trades, a ceiling of N dollars a lot is
+   * exactly what "N% of the revenue" used to be here.
+   */
+  async function setCeiling(perLot: string) {
     await ctx.db.execute(sql`
-      INSERT INTO trading_settings (id, ib_max_total_payout_pct) VALUES (true, ${pct})
-      ON CONFLICT (id) DO UPDATE SET ib_max_total_payout_pct = ${pct}
+      INSERT INTO trading_settings (id, ib_max_payout_per_lot) VALUES (true, ${perLot})
+      ON CONFLICT (id) DO UPDATE SET ib_max_payout_per_lot = ${perLot}
     `);
   }
 
@@ -537,7 +553,8 @@ describe('the total payout ceiling', () => {
   });
 
   it('counts the client’s rebate against the ceiling too', async () => {
-    await setCeiling('22');
+    /* Rami's 30% alone fits under 31; with the 3% rebate the trade costs 33. */
+    await setCeiling('31');
     const rami = await makePartner('rami', 1, undefined, agency['E2E Levant']);
     const client = await makeClient('rebate-ceiling-client', rami);
 

@@ -94,7 +94,7 @@ async function onboard(
       lastName: 'Person',
       email: credentials.email,
       password: credentials.password,
-      country: 'LB',
+      country: 'Lebanon',
       ...extra,
     });
   if (res.status >= 400) {
@@ -131,7 +131,7 @@ async function verifyKyc(
       lastName: 'Person',
       dateOfBirth: '1990-04-12',
       phone,
-      nationality: 'Lebanon',
+      nationality: 'Lebanese',
       country: 'Lebanon',
     },
   });
@@ -255,15 +255,38 @@ beforeAll(async () => {
    * here rather than asserted away.
    */
   await db.execute(sql`
-    INSERT INTO ib_levels (level, name, commission_mode, commission_amount_per_lot,
-                           rebate_mode, rebate_amount_per_lot, enabled)
-    VALUES (1, 'UAT Standard', 'per_lot', 1.50000000, 'per_lot', 0.50000000, true)
+    INSERT INTO ib_levels (level, name, commission_share, rebate_share, enabled)
+    VALUES (1, 'UAT Standard', 100, 100, true)
     ON CONFLICT (level) DO UPDATE
-      SET name = 'UAT Standard',
-          commission_mode = 'per_lot', commission_amount_per_lot = 1.50000000,
-          commission_rate = 0,
-          rebate_mode = 'per_lot', rebate_amount_per_lot = 0.50000000,
-          rebate_rate = 0, enabled = true
+      SET name = 'UAT Standard', commission_share = 100, rebate_share = 100, enabled = true
+  `);
+
+  /*
+   * The PRODUCT the account below is opened on, sold on a COMMISSION TYPE of
+   * 1.50 a lot to the partner and 0.50 a lot back to the client (0140). The
+   * admin opens the account in `real\Standard`, and the group is what links the
+   * account to the product — so the group has to be on the catalogue before
+   * step 3, or the trade in step 4 belongs to no product and is refused.
+   */
+  const { rows: uatTypes } = await db.execute<{ id: string }>(sql`
+    INSERT INTO ib_commission_types (name, commission_per_lot, rebate_per_lot)
+    VALUES ('UAT Standard', 1.50000000, 0.50000000)
+    ON CONFLICT (name) DO UPDATE
+      SET commission_per_lot = 1.50000000, rebate_per_lot = 0.50000000, enabled = true
+    RETURNING id
+  `);
+  const { rows: uatProducts } = await db.execute<{ id: string }>(sql`
+    INSERT INTO trading_products (name, enabled, type, sort_order, commission_type_id)
+    VALUES ('UAT Standard', true, 'real', 900, ${uatTypes[0].id})
+    ON CONFLICT (name) DO UPDATE SET commission_type_id = ${uatTypes[0].id}
+    RETURNING id
+  `);
+  /* BOUND, not inlined: a backslash inside the query text is eaten on the
+     way to the server, and `realStandard` matches no account's group. */
+  await db.execute(sql`
+    INSERT INTO trading_product_groups (product_id, environment, mt5_group, currency)
+    VALUES (${uatProducts[0].id}, 'live', ${'real\\Standard'}, 'USD')
+    ON CONFLICT (mt5_group) DO UPDATE SET product_id = ${uatProducts[0].id}
   `);
 }, 240_000);
 
@@ -389,7 +412,7 @@ describe('§14 J2 — step 2: a client signs up through the link and is attribut
       lastName: 'Stranger',
       email: 'uat-j2-stranger@oxshare-e2e.test',
       password: 'StrangerPass123!',
-      country: 'LB',
+      country: 'Lebanon',
       referralCode: 'NOSUCHCODE',
     });
     expect(res.status).toBe(400);

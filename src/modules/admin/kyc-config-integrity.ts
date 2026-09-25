@@ -1,6 +1,12 @@
 import { ValidationError } from '../../common/errors/domain-errors';
 import { DOCUMENT_TYPE_PREFIX, documentForFieldType } from '../../common/kyc/document-catalogue';
 import type { KycStepConfig } from '../../store/kyc-config.store';
+import {
+  isProfileKey,
+  PROFILE_CHOICES,
+  PROFILE_FIELD_KEYS,
+  PROFILE_FIELD_TYPE,
+} from '../../common/profile/client-profile';
 
 /**
  * What a saved KYC configuration must satisfy to be a working form.
@@ -24,23 +30,87 @@ import type { KycStepConfig } from '../../store/kyc-config.store';
  * is not the person who hits it.
  */
 
-/** Keys the SERVER reads by literal string. Renaming one silently disables it. */
+/**
+ * Keys the SERVER reads by literal string. Renaming one silently disables it.
+ *
+ * Since 0139 that is every profile field: the KEY is the column the answer is
+ * stored in. `dateOfBirth` renamed to `dob` is not a relabel — the answer stops
+ * reaching the profile, lands in `personal_info` as an anonymous custom answer,
+ * and the minimum-age rule, which reads the profile, stops running. The form
+ * still looks right, which makes these the most expensive keys on the screen.
+ */
 const RESERVED_FIELD_KEYS: Readonly<Record<string, string>> = {
-  /*
-   * `kyc-profile.ts` reads `provided['dateOfBirth']` and returns early when it
-   * is absent — so a rename does not fail, it SKIPS. The minimum-age rule stops
-   * running and the form still looks right, which makes this the most expensive
-   * key on the screen.
-   */
-  dateOfBirth: 'the minimum-age check (clients under 18 would no longer be refused)',
-  /*
-   * Both are promoted onto the client record on approval — `kyc.service.ts`
-   * reads `personalInfo.phone` and `.country`. A rename leaves the verified
-   * value in the submission and the client record showing whatever
-   * registration guessed.
-   */
-  phone: 'promoting the verified phone number onto the client record',
-  country: 'promoting the verified country onto the client record',
+  ...Object.fromEntries(
+    PROFILE_FIELD_KEYS.map((key) => [key, "the client's profile, where that answer is stored"]),
+  ),
+  dateOfBirth:
+    "the client's profile and the minimum-age check (clients under 18 would no longer be refused)",
+};
+
+/**
+ * A PROFILE FIELD KEEPS ITS KIND, AND LIVES ON THE PERSONAL STEP (0139).
+ *
+ * The broker owns the KYC form: any of these fields may be relabelled,
+ * reordered, required, made optional or removed. Two edits are refused, because
+ * each quietly breaks the client's record rather than the form:
+ *
+ *  - **Re-typing one.** The answer lands in a typed column. A date of birth
+ *    re-typed as free text hands that column "next spring"; a country re-typed
+ *    as text offers a box where the list of valid answers used to be, and every
+ *    answer typed into it is then refused by the profile's own rules.
+ *  - **Asking for one on another step.** The personal step is the ONE place the
+ *    KYC form reads and writes the profile. A `phone` field on another step
+ *    would store a second phone number beside the profile's — the two-copies
+ *    defect 0139 removed, rebuilt from the builder.
+ */
+export function assertProfileFieldsKeepTheirPlace(steps: readonly KycStepConfig[]): void {
+  for (const step of steps) {
+    for (const field of step.fields ?? []) {
+      if (!isProfileKey(field.name)) continue;
+      const where = `"${field.label || field.name}" in "${step.title || step.slug}"`;
+      if (step.slug !== 'personal') {
+        throw new ValidationError(
+          `${where} uses the key "${field.name}", which is the client's profile. The profile is ` +
+            `asked for on the Personal Information step only — anywhere else the answer would be ` +
+            `a second copy beside the profile. Move the field there, or give it another key.`,
+        );
+      }
+      const kind = PROFILE_FIELD_TYPE[field.name];
+      if (field.type !== kind) {
+        throw new ValidationError(
+          `${where} must stay a ${TYPE_NAME[kind] ?? kind} field: its answer is stored in the ` +
+            `client's profile, which holds ${TYPE_NAME[kind] ?? kind} values there. You can relabel ` +
+            `it, require it or remove it — but not change its type.`,
+        );
+      }
+      /*
+       * The choices are the platform's list, served on every read. The builder
+       * sends back what it was served, so the list arriving unchanged is the
+       * ordinary save; anything else is an edit the profile would refuse.
+       */
+      const choices = PROFILE_CHOICES[field.name];
+      if (choices && field.options?.length && !sameList(field.options, choices)) {
+        throw new ValidationError(
+          `${where} offers the platform's own list, and its choices cannot be edited here: ` +
+            `the answer is stored in the client's profile, which accepts exactly that list — so ` +
+            `a choice added here could never be saved, and one removed here could still be ` +
+            `registered with.`,
+        );
+      }
+    }
+  }
+}
+
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/** How the builder names each field type, for the sentence above. */
+const TYPE_NAME: Readonly<Record<string, string>> = {
+  text: 'text',
+  date: 'date',
+  select: 'drop-down',
+  phone: 'phone-number',
 };
 
 /**
@@ -237,5 +307,6 @@ export function assertKycConfigIntegrity(
 ): void {
   assertFieldKeysUniquePerStep(next);
   assertFieldsFitTheirStep(next);
+  assertProfileFieldsKeepTheirPlace(next);
   assertReservedKeysNotRenamed(previous, next);
 }

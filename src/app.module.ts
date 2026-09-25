@@ -58,6 +58,7 @@ import { SettingsModule } from './modules/settings/settings.module';
 import { ProductsModule } from './modules/products/products.module';
 import { ComplianceModule } from './modules/compliance/compliance.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { ProfileModule } from './modules/profile/profile.module';
 import { HealthModule } from './modules/health/health.module';
 import { SecurityModule } from './common/security/security.module';
 import { CsrfGuard } from './common/security/csrf.guard';
@@ -139,6 +140,8 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     // Infrastructure
     DatabaseModule,
     StoreModule,
+    // The one write path for a client's identity — see client-profile.service.ts.
+    ProfileModule,
     ResourceChangedModule,
     /*
      * @Global(), so the eight `@Cron` jobs spread across five feature modules

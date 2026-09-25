@@ -182,7 +182,7 @@ describe('§14 J1 — step 1: an individual registers directly', () => {
       lastName: 'Applicant',
       email: CLIENT.email,
       password: CLIENT.password,
-      country: 'LB',
+      country: 'Lebanon',
       phone: '+96170111222',
     });
 
@@ -249,7 +249,7 @@ describe('§14 J1 — step 2: manual KYC to verification level 1', () => {
         lastName: 'Applicant',
         dateOfBirth: '1990-04-12',
         phone: '+96170111222',
-        nationality: 'Lebanon',
+        nationality: 'Lebanese',
         country: 'Lebanon',
       },
     });

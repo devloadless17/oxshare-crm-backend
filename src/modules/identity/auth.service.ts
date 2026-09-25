@@ -1,5 +1,10 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { lockoutMessage } from '../../common/security/lockout-message';
+import {
+  checkProfile,
+  firstProfileError,
+  type ProfileKey,
+} from '../../common/profile/client-profile';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { normaliseReferralCode } from '../../common/referral-code';
 import { JwtService } from '@nestjs/jwt';
@@ -11,10 +16,7 @@ import {
   WALLET_PROVISIONING,
   type WalletProvisioningPort,
 } from '../../common/provisioning/wallet-provisioning.port';
-import {
-  NOTIFICATION_DISPATCH,
-  type NotificationDispatchPort,
-} from '../../common/provisioning/notification-dispatch.port';
+import { ResourceChangedPublisher } from '../../common/realtime/resource-changed';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { EmailService } from '../email/email.service';
 import { Request, Response } from 'express';
@@ -22,6 +24,7 @@ import {
   AuthenticationError,
   AuthorizationError,
   EmailCodeInvalidError,
+  FieldValidationError,
   EmailNotVerifiedError,
   NotFoundError,
   SessionReplayedError,
@@ -159,17 +162,18 @@ export class AuthService {
     @Inject(WALLET_PROVISIONING)
     private readonly walletProvisioning?: WalletProvisioningPort,
     /*
-     * Rings the intake team's bell when a client registers.
+     * Tells every admin screen that the client list moved when somebody
+     * registers — data only, no bell. A registration is not a task (the admin
+     * notification rule, migration 0140): nobody has to DO anything because a
+     * client signed up, and "new / untriaged" is already a derived state the
+     * client list shows. What the intake desk needs is for that list to be
+     * current, which is exactly what `resource.changed` delivers.
      *
-     * A PORT and OPTIONAL, for both reasons the two parameters above record:
-     * `NotificationsModule` depends on identity's guards, so importing it here
-     * closes a cycle; and every hand-constructed `new AuthService(...)` in the
-     * suite passes positionally, so a required parameter would mean editing all
-     * of them. Absent, registration simply rings nobody.
+     * OPTIONAL for the positional-constructor reason the parameters above
+     * record. Absent, the list refreshes on its own next fetch.
      */
     @Optional()
-    @Inject(NOTIFICATION_DISPATCH)
-    private readonly notifications?: NotificationDispatchPort,
+    private readonly resourceChanged?: ResourceChangedPublisher,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -274,6 +278,45 @@ export class AuthService {
         'and if you already have an account, we have sent you a sign-in link instead.',
     };
 
+    /*
+     * ── THE PROFILE IS CHECKED BEFORE WE LOOK THE ADDRESS UP ────────────────
+     *
+     * Registration now seeds the whole client profile (25 Sep 2026) — name,
+     * date of birth, nationality, phone, residence — by the same rules every
+     * later writer obeys (`common/profile/client-profile.ts`).
+     *
+     * FIRST, deliberately: a profile refused for a new address and accepted for
+     * a taken one would be a membership oracle — send an underage date of birth
+     * with somebody's email and read which answer comes back. Checked here, the
+     * refusal is the same whoever the address belongs to.
+     *
+     * Optional on the wire beyond the name, so a portal build that predates the
+     * fields keeps registering; the portal asks for all of them, and KYC
+     * completeness is enforced at submission either way.
+     */
+    const profile = checkProfile(
+      {
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        ...(dto.dateOfBirth !== undefined ? { dateOfBirth: dto.dateOfBirth } : {}),
+        ...(dto.nationality !== undefined ? { nationality: dto.nationality } : {}),
+        ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+        ...(dto.country !== undefined ? { country: dto.country } : {}),
+        ...(dto.address !== undefined ? { address: dto.address } : {}),
+        ...(dto.city !== undefined ? { city: dto.city } : {}),
+        ...(dto.postalCode !== undefined ? { postalCode: dto.postalCode } : {}),
+      },
+      { required: ['firstName', 'lastName'] },
+    );
+    const profileError = firstProfileError(profile.errors);
+    if (profileError) {
+      throw new FieldValidationError(profileError, profile.errors);
+    }
+    // A blank optional field is simply not stored — there is nothing to clear yet.
+    const seeded = Object.fromEntries(
+      Object.entries(profile.values).filter(([, value]) => value !== null),
+    ) as Partial<Record<ProfileKey, string>>;
+
     const existing = await this.users.findByEmail(dto.email);
     if (existing) {
       // Awaited, not fire-and-forget: this is the ONLY signal the legitimate
@@ -307,8 +350,9 @@ export class AuthService {
     const user = await this.users.create({
       email: dto.email.toLowerCase(),
       passwordHash,
-      firstName: dto.firstName,
-      lastName: dto.lastName,
+      ...seeded,
+      firstName: seeded.firstName!,
+      lastName: seeded.lastName!,
       type: 'individual',
       status: 'active',
       verificationLevel: 0,
@@ -318,8 +362,6 @@ export class AuthService {
       // exactly "outstanding".
       emailVerificationTokenHash: hashEmailedToken(verificationToken),
       emailVerificationExpiry: verificationExpiry,
-      country: dto.country,
-      phone: dto.phone,
       referredByIbUserId,
     });
 
@@ -343,44 +385,11 @@ export class AuthService {
      */
 
     /*
-     * Tell the intake team a client has arrived.
-     *
-     * NO `subjectClientId`, and that is the deliberate part. Fan-out normally
-     * scope-filters on the subject so a territoried admin is not told about a
-     * client outside their patch — but a brand-new registration carries no tag
-     * assignments at all, which is precisely the DERIVED "new / untriaged"
-     * state the comment above describes. Passing the id would resolve every
-     * scoped admin's visibility against an untagged client and, for anyone
-     * without the `sees_untriaged` grant, silently drop the bell — so the one
-     * event whose entire purpose is "somebody please triage this" would reach
-     * only unrestricted admins. Holding `clients.view` is the check that
-     * matters here.
-     *
-     * Never throws (see the port), so a bell nobody could ring cannot fail a
-     * registration — the same rule the wallet provisioning above follows, and
-     * for the same reason: past this point the user row is committed and a
-     * thrown error leaves an account whose address is taken and which nobody
-     * can re-create.
-     *
-     * `void`, not awaited: registration already waits on wallet provisioning
-     * and an SMTP round trip, and a permission sweep across the admin roster
-     * is not worth adding to what the client sits watching a spinner for.
+     * Refresh every admin's client list — no bell: see the constructor note.
+     * `void`: registration already waits on wallet provisioning and an SMTP
+     * round trip, and the publisher never throws.
      */
-    void this.notifications?.notifyAdminsWithPermission('clients.view', {
-      kind: 'admin.client.registered',
-      params: {
-        userId: user.id,
-        country: dto.country ?? null,
-        // Whether an introducing partner is owed attribution for this signup —
-        // a boolean, never the partner's id: this row fans out to every admin
-        // holding `clients.view`, and who introduced whom is IB data that the
-        // partner screens are gated on separately.
-        referred: referredByIbUserId !== undefined,
-      },
-      // One bell per account, ever. Registration is not machine-retried, but
-      // the id is the natural key and costs nothing to be certain with.
-      dedupeKey: `admin.client.registered:${user.id}`,
-    });
+    void this.resourceChanged?.publish({ resource: 'clients' });
 
     /*
      * And a 6-digit CODE beside the link — the registration screen now asks for
@@ -1339,6 +1348,12 @@ export class AuthService {
       emailVerified: user.emailVerified,
       country: user.country,
       phone: user.phone,
+      // The rest of the client's own profile (0139) — theirs to read.
+      dateOfBirth: user.dateOfBirth,
+      nationality: user.nationality,
+      address: user.address,
+      city: user.city,
+      postalCode: user.postalCode,
       createdAt: user.createdAt,
       /*
        * A URL, composed here, from a FILENAME stored in the column.

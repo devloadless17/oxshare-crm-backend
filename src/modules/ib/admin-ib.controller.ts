@@ -41,7 +41,9 @@ import {
   IbAccountDto,
   IbApplicationDto,
   IbPartnerDetailDto,
+  IbPartnerListResponseDto,
   IB_APPLICATION_STATUSES,
+  IB_PARTNER_STATUSES,
   ReassignIbParentDto,
   RejectIbApplicationDto,
   SetIbActiveDto,
@@ -49,6 +51,7 @@ import {
 } from './dto/ib-application.dto';
 import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
 import { maskByShape } from '../../common/security/mask-by-shape';
+import { maskedFieldsFor } from '../../common/security/field-mask';
 import {
   IbAccrualListMaskDto,
   IbApplicationListMaskDto,
@@ -463,13 +466,23 @@ export class AdminIbController {
   @RequirePermissions('ib.view')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'The partner list',
-    description: 'Joined to the person and the programme they are paid on, newest approval first.',
+    summary: 'The partner directory',
+    description:
+      'Every partner the acting admin may see, joined to the person, their agency and what they ' +
+      'have earned (one entry per currency). Searchable by Portal ID, name, email or referral ' +
+      'code; newest approval first.',
   })
+  @ApiOkResponse({ type: IbPartnerListResponseDto })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_PARTNER_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description: 'A Portal ID (exact), a name or email, or a referral code (exact).',
+  })
+  @ApiQuery({ name: 'status', required: false, enum: IB_PARTNER_STATUSES })
   @ScopedToClients('IbStore.findPartnersPage applies the predicate to ib_accounts.user_id.')
   async listPartners(
     @Req() req: Request & { admin: AuthenticatedAdmin },
@@ -477,13 +490,30 @@ export class AdminIbController {
     @Query('limit') limit?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
-  ) {
+    @Query('q') q?: string,
+    @Query('status') status?: string,
+  ): Promise<IbPartnerListResponseDto> {
     const result = await this.applications.listPartners(
-      { page: parsePositive(page), limit: parsePositive(limit), sort, order },
+      {
+        page: parsePositive(page),
+        limit: parsePositive(limit),
+        sort,
+        order,
+        q,
+        active: partnerActiveFilter(status),
+      },
       req.admin.clientScope,
     );
-    // Same reasoning as `list` above.
-    return maskByShape(IbPartnerListMaskDto, result, req.admin.fieldMask);
+    /*
+     * Masked EXPLICITLY as well as by shape. The route declares its type now,
+     * so `FieldMaskInterceptor` walks it too; the explicit pass stays because it
+     * is what `field-masking-http.spec.ts` pinned when the route declared
+     * nothing, and masking removes a key — a second pass finds nothing to do.
+     */
+    return {
+      ...maskByShape(IbPartnerListMaskDto, result, req.admin.fieldMask),
+      maskedFields: maskedFieldsFor('client', req.admin.fieldMask),
+    };
   }
 
   /**
@@ -513,14 +543,16 @@ export class AdminIbController {
   @ApiOperation({
     summary: 'Export the partner list as CSV',
     description:
-      'Every partner the acting admin may see, joined to the person and their programme. The list ' +
-      'takes no filters, so neither does its export.',
+      'Every partner the acting admin may see, joined to the person and their level — narrowed ' +
+      'by the same `q` and `status` the directory takes, so the file is the list on screen.',
   })
   @ApiOkResponse({
     description: 'A CSV file, named `ib-partners-<YYYY-MM-DD>.csv`.',
     content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
   })
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'status', required: false, enum: IB_PARTNER_STATUSES })
   @ScopedToClients(
     'AdminExportService.ibPartnerBatch → IbStore.findPartnersPage with actor.clientScope, the same predicate on users.id the list applies.',
   )
@@ -529,15 +561,23 @@ export class AdminIbController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Res() res: Response,
     @Query('format') format?: string,
+    @Query('q') q?: string,
+    @Query('status') status?: string,
   ) {
     const chosen = exportFormat(format);
+    // Parsed BEFORE the audit row: a refused filter exported nothing.
+    const active = partnerActiveFilter(status);
 
     this.audit.record(req.admin.id, 'export.ib_partners', 'ib_partners', req.admin.id, {
       format: chosen,
+      // What was exported, not only that something was — the same file with
+      // and without a search are two different disclosures.
+      ...(q?.trim() ? { q: q.trim() } : {}),
+      ...(active === undefined ? {} : { status }),
     });
 
     await streamCsv(res, 'ib-partners', chosen, this.exports.ibPartnerColumns, (offset, limit) =>
-      this.exports.ibPartnerBatch(req.admin, offset, limit),
+      this.exports.ibPartnerBatch(req.admin, offset, limit, { q, active }),
     );
   }
 
@@ -663,4 +703,16 @@ function parseStatus(value?: string): IbApplicationStatusDto | undefined {
 function parsePositive(value?: string): number | undefined {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * `?status=active|suspended` → the `active` column, or no filter.
+ *
+ * Validated here, at the edge, against the declared vocabulary: an unknown value
+ * is a 400 naming what is allowed, never a filter that silently matches nobody —
+ * which on a directory reads as "we have no suspended partners".
+ */
+function partnerActiveFilter(status: string | undefined): boolean | undefined {
+  const parsed = enumQuery(status, IB_PARTNER_STATUSES, 'status');
+  return parsed === undefined ? undefined : parsed === 'active';
 }

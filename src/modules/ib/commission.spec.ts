@@ -1,3 +1,4 @@
+import Decimal from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 import {
   calculate,
@@ -6,6 +7,7 @@ import {
   MAX_CHAIN_DEPTH,
   type ChainEntry,
   type ChainNode,
+  type CommissionTypeTerms,
   type LevelTerms,
   type RevenueEvent,
 } from './commission';
@@ -15,66 +17,53 @@ import {
  *
  * Every assertion here covers a case with a WRONG answer that pays real money
  * and does not throw: a suspended partner still earning, a cycle hanging the
- * payout walk, a rate applied to the wrong base, a unit error paying seventy
- * times the revenue, a rebate credited to the introducer instead of the client
- * it is owed to. None of these surface as errors — they surface as a balance
- * somebody has to claw back.
+ * payout walk, a share applied to the wrong pool, a unit error paying a
+ * hundred times the rate card, a rebate credited to the introducer instead of
+ * the client it is owed to, a trade on an unlinked account marked done having
+ * paid nobody. None of these surface as errors — they surface as a balance
+ * somebody has to claw back, or as one nobody ever receives.
  *
- * Mutation-checked when written: each guarantee was deliberately broken and the
- * named test failed on the right assertion. A test asserting "10% of 1000 is
- * 100" would prove nothing on its own, which is why the ugly values and the
- * refusal paths carry most of the weight below.
+ * ## The model under test (0140)
  *
- * ## What changed when programmes landed, and why some numbers are mirrored
+ *     partner at level N  earns  lots × type.commissionPerLot × level_N.commissionShare / 100
+ *     the trading client  gets   lots × type.rebatePerLot     × introducer.rebateShare  / 100
  *
- * The rate used to be keyed on the RUNG an earner occupied. It is keyed on
- * DEPTH now: tier 1 is what you earn from your OWN client, tier 2 from a
- * sub-partner's. So a sub-partner who introduced this client is paid the tier-1
- * rate — under the old model they were paid the level-2 rate for business they
- * had brought in themselves, which is the defect the change fixes and the
- * reason several expectations below are the mirror of what they were.
- *
- * ## What changed again in 0102: the ladder is a LIST
- *
- * `level1Rate` / `level2Rate` were a fixed PAIR, so two levels was the deepest
- * anything could express and `MAX_CHAIN_DEPTH` was 2 to match. A programme now
- * carries `tiers`, a map from depth to rate, and its SIZE is how far its
- * holder's earnings reach. `MAX_CHAIN_DEPTH` is 10 and is a cycle guard.
- *
- * `ladder()` below builds that map, so most expectations here are unchanged —
- * the arithmetic did not move, only where the rates are read from.
+ * The TYPE is the traded product's rate card; a LEVEL is a percentage of it,
+ * keyed on the earner's own rung. The shares of the rungs in a chain are
+ * INDEPENDENT — level 1 takes its full share on a sub-partner's client's trade
+ * — which is 0114's rule kept, and several expectations below are shaped by it.
  */
 
-/**
- * A closed trade on which the BROKER kept 1000 — its own commission plus swap.
- * This is the only base a revenue share may be taken of.
- */
-const DEAL: RevenueEvent = {
-  grossAmount: '1000.00000000',
-  currency: 'USD',
-  source: 'deal',
-  lots: '10',
+/** The product's rate card: $10 a lot to the partners, $3 a lot back to the client. */
+const TYPE: CommissionTypeTerms = {
+  id: 'type-standard',
+  name: 'Standard terms',
+  enabled: true,
+  commissionPerLot: '10.00000000',
+  rebatePerLot: '3.00000000',
 };
 
-/** The same size with no lot count. Lots never enter the arithmetic. */
-const DEAL_NO_LOTS: RevenueEvent = {
-  grossAmount: '1000.00000000',
+/** A closed trade of TWO lots on that product: a $20 commission pool, a $6 rebate pool. */
+const DEAL: RevenueEvent = {
   currency: 'USD',
   source: 'deal',
+  lots: '2',
+  terms: TYPE,
 };
 
 /** The same size, from the source a share may NOT be taken of. */
 const DEPOSIT: RevenueEvent = {
-  grossAmount: '1000.00000000',
   currency: 'USD',
   source: 'deposit',
+  lots: '2',
+  terms: TYPE,
 };
 
 /**
  * A partner in the tree.
  *
  * `level` defaults to 1 — a partner dealing with the broker directly. Tests
- * about a recruited partner set it, because that is what decides their terms.
+ * about a recruited partner set it, because that is what decides their share.
  */
 function node(overrides: Partial<ChainNode> & { userId: string }): ChainNode {
   return { parentIbUserId: null, active: true, level: 1, ...overrides };
@@ -86,21 +75,15 @@ function lookupFrom(nodes: ChainNode[]): (id: string) => ChainNode | undefined {
 }
 
 /**
- * One rung of the ladder, defaulted to a percentage commission and no rebate.
- *
- * A LEVEL rather than a programme (0112): it carries one commission term and
- * one rebate term, and the earner's own rung is what selects it. There is no
- * per-depth map any more — a level 1 partner is paid their level 1 terms on
- * everything that reaches them, however far below it happened.
+ * One rung of the ladder: 70% of the product's commission to the partner, 50%
+ * of its rebate to the client, unless a test says otherwise.
  */
 function level(over: Partial<LevelTerms> & { level: number }): LevelTerms {
   return {
     id: `lvl-${over.level}`,
     enabled: true,
-    commissionMode: 'percent',
-    commissionRate: '10.0000',
-    rebateMode: 'percent',
-    rebateRate: '0.0000',
+    commissionShare: '70.0000',
+    rebateShare: '50.0000',
     ...over,
   };
 }
@@ -110,15 +93,9 @@ function ladderOf(...rungs: LevelTerms[]): Map<number, LevelTerms> {
   return new Map(rungs.map((rung) => [rung.level, rung]));
 }
 
-/**
- * The default two-rung ladder: 10% at level 1, 5% at level 2.
- *
- * Mirrors what `program()` used to default to, so the assertions that were
- * about SPLITTING a revenue across a chain still read the same — what changed
- * underneath is which of the two numbers each earner gets.
- */
+/** The default two-rung ladder: 70% at level 1, 30% at level 2. */
 function defaultLadder(): Map<number, LevelTerms> {
-  return ladderOf(level({ level: 1 }), level({ level: 2, commissionRate: '5.0000' }));
+  return ladderOf(level({ level: 1 }), level({ level: 2, commissionShare: '30.0000' }));
 }
 
 /**
@@ -147,9 +124,8 @@ describe('resolveChain', () => {
   });
 
   /*
-   * The programme travels WITH the earner. Reading it from anywhere else — the
-   * client, the deal, the first rung — pays one partner on another's negotiated
-   * terms, and nothing about the resulting amount would look wrong.
+   * The historical programme travels WITH the earner, so an accrual for a
+   * partner never re-levelled still records what used to price them.
    */
   it('carries each partner’s own programme into the chain', () => {
     const chain = resolveChain(
@@ -170,10 +146,8 @@ describe('resolveChain', () => {
    * THE 0102 regression, and the reason the walk had to stop being capped at 2.
    *
    * A three-deep chain used to return two entries, so the third ancestor was
-   * unreachable however their programme was configured — while the console
-   * derived a payout depth from the rung count and told an operator earnings
-   * travelled three levels. `calculate` is what decides who is PAID; resolution
-   * must reach far enough for it to be asked.
+   * unreachable however the ladder was configured. `calculate` is what decides
+   * who is PAID; resolution must reach far enough for it to be asked.
    */
   it('resolves past two, so a third-level ancestor can be considered at all', () => {
     const chain = resolveChain(
@@ -194,7 +168,7 @@ describe('resolveChain', () => {
 
   /*
    * The cycle guard, on a chain with no cycle in it. `MAX_CHAIN_DEPTH` is not a
-   * payout policy — how far earnings travel is each programme's tier count —
+   * payout policy — how far earnings travel is which rungs are on the ladder —
    * but an unbounded walk over a self-referencing key is the one thing that
    * hangs the money path, so the bound is asserted rather than assumed.
    */
@@ -262,68 +236,36 @@ describe('resolveChain', () => {
   });
 });
 
-describe('calculate — whose rate applies', () => {
-  /*
-   * THE regression the programme model exists for.
-   *
-   * `ib-2` is a sub-partner who introduced this client themselves, so they are
-   * paid the TIER-1 rate — what you earn from your own business. Their parent,
-   * one hop further from the trade, takes tier 2. Keyed on a rung instead,
-   * `ib-2` would collect 5% on a client they brought in while the parent
-   * collected 10% on one they never met.
-   */
-  it('pays by DEPTH, not by where the earner sits in the tree', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-2', depth: 1 }), earner({ ibUserId: 'ib-1', depth: 2 })],
-      defaultLadder(),
-    );
+describe('calculate — whose share applies', () => {
+  it('pays the introducer their rung’s share of the product’s commission', () => {
+    const result = calculate(DEAL, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder());
 
-    expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([
-      ['ib-2', '100.00000000'],
-      ['ib-1', '50.00000000'],
+    /* 70% of a $20 pool (2 lots × $10). */
+    expect(result.accruals).toEqual([
+      {
+        ibUserId: 'ib-1',
+        depth: 1,
+        levelId: 'lvl-1',
+        programId: undefined,
+        commissionTypeId: 'type-standard',
+        rateValue: '70.0000',
+        baseAmount: '20.00000000',
+        amount: '14.00000000',
+      },
     ]);
+    expect(result.skippedReason).toBeUndefined();
+    expect(result.unpriceable).toBeUndefined();
   });
 
   /*
-   * Two partners in one chain, each paid by the rung THEY stand on.
+   * ── THE SHARES ARE INDEPENDENT, AND THAT IS 0114's RULE ─────────────────
    *
-   * This is the whole difference 0112 made. The rate follows the EARNER, not
-   * the trade: `ib-2` is a level 1 and takes the level 1 term, `ib-1` is their
-   * recruiter at level 2 and takes the level 2 term. Neither number depends on
-   * how far below them the trade happened.
+   * On a sub-partner's client's trade the sub takes their share AND the main
+   * partner takes their own in full. Nothing is carved out of anybody:
+   * recruiting must not reduce what the main partner earns.
    */
-  it('pays each earner from their OWN rung', () => {
+  it('pays each earner from their OWN rung, independently of the others', () => {
     const result = calculate(
-      DEAL,
-      [
-        earner({ ibUserId: 'ib-2', depth: 1, level: 1 }),
-        earner({ ibUserId: 'ib-1', depth: 2, level: 2 }),
-      ],
-      defaultLadder(),
-    );
-
-    expect(result.accruals.map((a) => [a.ibUserId, a.amount, a.rateValue])).toEqual([
-      ['ib-2', '100.00000000', '10.0000'],
-      ['ib-1', '50.00000000', '5.0000'],
-    ]);
-  });
-
-  /*
-   * THE rule the business stated, and the reason a rung is not a depth.
-   *
-   * A level 1 partner earns their level 1 term on EVERYTHING that reaches them
-   * — their own client's trade and a sub-partner's alike. Under programmes the
-   * same partner took a different rate on each, because the rate was chosen by
-   * how far below them the trade sat.
-   */
-  it('pays a rung the same wherever in the chain the trade happened', () => {
-    const own = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1, level: 1 })],
-      defaultLadder(),
-    );
-    const beneath = calculate(
       DEAL,
       [
         earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
@@ -332,1102 +274,477 @@ describe('calculate — whose rate applies', () => {
       defaultLadder(),
     );
 
-    const paidToIb1 = beneath.accruals.find((a) => a.ibUserId === 'ib-1')?.amount;
-    expect(own.accruals[0]?.amount).toBe('100.00000000');
-    expect(paidToIb1).toBe('100.00000000');
-  });
-
-  /*
-   * ── FR-IB-17: MULTI-LEVEL DISTRIBUTION ─────────────────────────────────────
-   *
-   * "Commission is distributed up the chain" past two, which the fixed
-   * `level1Rate` / `level2Rate` pair could not express at all. Three tiers, three
-   * earners, each on their own depth's rate.
-   *
-   * The ugly middle rate is deliberate: 60/25/12.5 of 1000 would pass with the
-   * depth-2 and depth-3 rates transposed if they were the same number.
-   */
-  it('pays every depth its own tier, past the old two-level ceiling', () => {
-    const result = calculate(
-      DEAL,
-      [
-        earner({ ibUserId: 'ib-3', depth: 1 }),
-        earner({ ibUserId: 'ib-2', depth: 2 }),
-        earner({ ibUserId: 'ib-1', depth: 3 }),
-      ],
-      ladderOf(
-        level({ level: 1, commissionRate: '60.0000' }),
-        level({ level: 2, commissionRate: '25.0000' }),
-        level({ level: 3, commissionRate: '12.5000' }),
-      ),
-    );
-
-    expect(result.accruals.map((a) => [a.ibUserId, a.depth, a.amount])).toEqual([
-      ['ib-3', 1, '600.00000000'],
-      ['ib-2', 2, '250.00000000'],
-      ['ib-1', 3, '125.00000000'],
+    expect(result.accruals.map((a) => [a.ibUserId, a.depth, a.rateValue, a.amount])).toEqual([
+      ['ib-2', 1, '30.0000', '6.00000000'],
+      ['ib-1', 2, '70.0000', '14.00000000'],
     ]);
   });
 
   /*
-   * ## The ROW COUNT is the reach, and this is what that means at runtime
-   *
-   * A two-tier programme pays its holder nothing on a client three hops below
-   * them. Not zero — NOTHING, with no accrual row written, because a zero-amount
-   * row is refused by `ib_accruals_amount_positive` and would take every
-   * legitimate earner on the same trade down with it.
-   *
-   * The old engine had no third branch: `depth === 1 ? level1Rate : level2Rate`
-   * paid `level2Rate` to a depth-3 ancestor, silently treating "as deep as the
-   * type can express" as "as deep as the broker configured".
+   * The rung is a property of the PARTNER, not of the trade. A level 1
+   * partner is paid the same on their own client's trade (depth 1) and on a
+   * sub-partner's (depth 2): the depth is recorded, the share does not move.
    */
-  it('pays nobody standing on a rung the ladder does not reach', () => {
-    const result = calculate(
-      DEAL,
-      [
-        earner({ ibUserId: 'ib-3', depth: 1, level: 1 }),
-        earner({ ibUserId: 'ib-2', depth: 2, level: 2 }),
-        earner({ ibUserId: 'ib-1', depth: 3, level: 3 }),
-      ],
-      defaultLadder(),
-    );
-
-    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['ib-3', 'ib-2']);
-    // Named, not swallowed: an operator has to be able to see that a partner
-    // sits deeper than the broker has configured terms for.
-    expect(result.skippedReason).toContain('not on the ladder');
-  });
-
-  /*
-   * Reach is per PROGRAMME, so one partner's contract cannot cancel another's.
-   *
-   * The introducer here is on a one-tier programme and the two above them are on
-   * a three-tier one. If reach were read from the introducer — or capped
-   * platform-wide, as the rung ladder did — both ancestors would earn nothing on
-   * terms they had negotiated and were never told had been overridden.
-   */
-  it('lets a deep programme pay through a shallow one below it', () => {
-    const result = calculate(
-      DEAL,
-      [
-        earner({ ibUserId: 'ib-3', depth: 1, programId: 'shallow' }),
-        earner({ ibUserId: 'ib-2', depth: 2, programId: 'deep' }),
-        earner({ ibUserId: 'ib-1', depth: 3, programId: 'deep' }),
-      ],
-      ladderOf(
-        level({ level: 1, commissionRate: '40.0000' }),
-        level({ level: 2, commissionRate: '8.0000' }),
-        level({ level: 3, commissionRate: '4.0000' }),
-      ),
-    );
-
-    expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([
-      ['ib-3', '400.00000000'],
-      ['ib-2', '80.00000000'],
-      ['ib-1', '40.00000000'],
-    ]);
-  });
-
-  /*
-   * An ABSENT tier and a ZERO tier are different statements, and the reason each
-   * is reported differently is that they need different fixes: "your programme
-   * does not reach that far" is a ladder to extend, "it pays nothing there" is a
-   * rate to correct. An empty result with one message for both sends an operator
-   * to the wrong screen.
-   *
-   * The database refuses the zero outright (`ib_program_tiers_rate_positive`), so
-   * this path is reachable only through an in-memory caller — which is exactly
-   * why the pure function keeps its own guard.
-   */
-  it('distinguishes a ladder that ends from a rung that pays nothing', () => {
-    const ended = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 2, level: 2 })],
-      ladderOf(level({ level: 1 })),
-    );
-    const zeroed = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 2, level: 2 })],
-      ladderOf(level({ level: 1 }), level({ level: 2, commissionRate: '0.0000' })),
-    );
-
-    // Two different problems, and they send an operator to two different
-    // screens: one adds a rung, the other corrects a rate on a rung that exists.
-    expect(ended.accruals).toEqual([]);
-    expect(ended.skippedReason).toContain('not on the ladder');
-
-    expect(zeroed.accruals).toEqual([]);
-    expect(zeroed.skippedReason).toContain('pays no commission');
-  });
-
-  /*
-   * A fractional rate on an eight-decimal base. The assertion is an ugly value
-   * on purpose: a refactor to `Number()` still passes "10% of 1000" and fails
-   * this one.
-   */
-  it('keeps full precision on a fractional rate', () => {
-    const result = calculate(
-      { grossAmount: '12345678901234567.89', currency: 'USD', source: 'deal' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      ladderOf(
-        level({ level: 1, commissionRate: '2.5000' }),
-        level({ level: 2, commissionRate: '5.0000' }),
-      ),
-    );
-
-    expect(result.accruals[0]?.amount).toBe('308641972530864.19725000');
-  });
-
-  /*
-   * A share of a deposit is a share of the CLIENT's money. This was live once:
-   * a level at 70% paid a partner $700 of the broker's own funds on a $1,000
-   * deposit the client could still withdraw in full.
-   */
-  it('refuses to take a share of a deposit, whatever the rate', () => {
-    const result = calculate(
-      DEPOSIT,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      ladderOf(
-        level({ level: 1, commissionRate: '70.0000' }),
-        level({ level: 2, commissionRate: '5.0000' }),
-      ),
-    );
-
-    expect(result.accruals).toEqual([]);
-    expect(result.skippedReason).toContain('deposit');
-  });
-
-  it('pays nothing under a disabled programme, and says why', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      ladderOf(
-        level({ level: 1, commissionRate: '10.0000', enabled: false }),
-        level({ level: 2, commissionRate: '5.0000', enabled: false }),
-      ),
-    );
-
-    expect(result.accruals).toEqual([]);
-    expect(result.skippedReason).toContain('disabled');
-  });
-
-  it('pays nothing when the ladder has no rung for the earner at all', () => {
-    const result = calculate(DEAL, [earner({ ibUserId: 'ib-1', depth: 1 })], ladderOf());
-
-    expect(result.accruals).toEqual([]);
-    expect(result.skippedReason).toContain('not on the ladder');
-  });
-
-  it('pays nothing on a rung rated at zero', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 2, level: 2 })],
-      ladderOf(level({ level: 1 }), level({ level: 2, commissionRate: '0.0000' })),
-    );
-
-    expect(result.accruals).toEqual([]);
-    expect(result.skippedReason).toContain('level 2');
-  });
-
-  it('pays nothing on a non-positive base', () => {
-    const result = calculate(
-      { ...DEAL, grossAmount: '0.00000000' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      defaultLadder(),
-    );
-
-    expect(result.accruals).toEqual([]);
-    expect(result.skippedReason).toContain('non-positive');
-  });
-
-  /*
-   * `ib_accruals_amount_positive` REFUSES a zero row, and every earner on a
-   * trade is inserted in ONE statement — so a single dust-sized leg would take
-   * down the accrual of every legitimate earner beside it.
-   */
-  it('skips a leg that rounds to nothing rather than writing an empty accrual', () => {
-    const result = calculate(
-      { ...DEAL, grossAmount: '0.00000001' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      ladderOf(
-        level({ level: 1, commissionRate: '0.0001' }),
-        level({ level: 2, commissionRate: '5.0000' }),
-      ),
-    );
-
-    expect(result.accruals).toEqual([]);
-  });
-
-  it('pays one earner while skipping another in the same chain', () => {
-    const result = calculate(
-      DEAL,
-      [
-        earner({ ibUserId: 'ib-2', depth: 1, level: 1 }),
-        earner({ ibUserId: 'ib-1', depth: 2, level: 2 }),
-      ],
-      ladderOf(level({ level: 1 }), level({ level: 2, enabled: false })),
-    );
-
-    // Disabling a rung stops IT paying and leaves every other rung alone. A
-    // switch that quietly took the whole chain down with it would be a way to
-    // stop paying everybody by editing one row.
-    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['ib-2']);
-    expect(result.skippedReason).toContain('disabled');
-  });
-});
-
-describe('calculate — the client’s rebate', () => {
-  /*
-   * The whole point of the mode. A commission-only programme paying a rebate
-   * would hand the client money the broker never agreed to give back, on every
-   * trade, silently.
-   */
-  it('pays no rebate under a commission-only programme', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      ladderOf(
-        level({ level: 1, commissionRate: '10.0000' }),
-        level({ level: 2, commissionRate: '5.0000' }),
-      ),
-    );
-
-    expect(result.rebate).toBeUndefined();
-    expect(result.accruals).toHaveLength(1);
-  });
-
-  it('pays both legs under a hybrid programme', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      ladderOf(
-        level({ level: 1, commissionRate: '10.0000', rebateRate: '5.0000' }),
-        level({ level: 2, commissionRate: '5.0000' }),
-      ),
-    );
-
-    expect(result.accruals[0].amount).toBe('100.00000000');
-    expect(result.rebate?.amount).toBe('50.00000000');
-    expect(result.rebate?.rateValue).toBe('5.0000');
-  });
-
-  /*
-   * `rebate_only` is a real model — the broker buys volume by handing the
-   * spread back — and the partner earning nothing on it is the point rather
-   * than an omission.
-   */
-  /*
-   * "Rebate-only" is a SHAPE now, not a declared mode.
-   *
-   * A level carries one commission term and one rebate term, so a rung paying
-   * nothing to the partner and something to the client IS rebate-only — the
-   * broker buying volume by handing the spread back. `mode` went with the
-   * programme catalogue, and with it the way a programme could claim to be
-   * rebate-only while carrying commission tiers nobody could see.
-   */
-  it('pays the client and no partner when the rung rates commission at zero', () => {
-    const result = calculate(
+  it('pays a rung the same wherever in the chain the trade happened', () => {
+    const own = calculate(
       DEAL,
       [earner({ ibUserId: 'ib-1', depth: 1, level: 1 })],
-      ladderOf(level({ level: 1, commissionRate: '0.0000', rebateRate: '5.0000' })),
-    );
-
-    expect(result.accruals).toEqual([]);
-    expect(result.rebate?.amount).toBe('50.00000000');
-    expect(result.skippedReason).toContain('pays no commission');
-  });
-
-  /*
-   * THE attribution rule. The rebate is a term of the relationship the client is
-   * actually in, so it comes from the partner who introduced them. A parent
-   * further up setting it would be altering terms in a relationship they do not
-   * own, and two programmes in one chain would otherwise have no defined answer
-   * at all.
-   */
-  it('takes the rebate from the introducer’s rung, never the parent’s', () => {
-    const result = calculate(
-      DEAL,
-      [
-        earner({ ibUserId: 'ib-2', depth: 1, level: 1 }),
-        earner({ ibUserId: 'ib-1', depth: 2, level: 2 }),
-      ],
-      ladderOf(
-        level({ level: 1, rebateRate: '2.0000' }),
-        // The parent's rung carries a far richer rebate, and it must not reach
-        // a client who is not in a relationship with them.
-        level({ level: 2, commissionRate: '5.0000', rebateRate: '90.0000' }),
-      ),
-    );
-
-    expect(result.rebate?.levelId).toBe('lvl-1');
-    expect(result.rebate?.amount).toBe('20.00000000');
-  });
-
-  /*
-   * `ibUserId` on a rebate is ATTRIBUTION, not entitlement. Reading it as the
-   * beneficiary pays the introducer their own client's rebate — which balances
-   * perfectly and is wrong about who holds the money.
-   */
-  it('records the introducer as the source of the rebate, not its recipient', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      ladderOf(
-        level({ level: 1, commissionRate: '10.0000', rebateRate: '5.0000' }),
-        level({ level: 2, commissionRate: '5.0000' }),
-      ),
-    );
-
-    expect(result.rebate?.ibUserId).toBe('ib-1');
-  });
-
-  it('omits a rebate that rounds away rather than writing an empty one', () => {
-    const result = calculate(
-      { ...DEAL, grossAmount: '0.00000001' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      ladderOf(
-        level({ level: 1, commissionRate: '10.0000', rebateRate: '0.0001' }),
-        level({ level: 2, commissionRate: '5.0000' }),
-      ),
-    );
-
-    expect(result.rebate).toBeUndefined();
-  });
-
-  it('pays no rebate on a deposit, exactly as it pays no commission', () => {
-    const result = calculate(
-      DEPOSIT,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      ladderOf(
-        level({ level: 1, commissionRate: '10.0000', rebateRate: '5.0000' }),
-        level({ level: 2, commissionRate: '5.0000' }),
-      ),
-    );
-
-    expect(result.rebate).toBeUndefined();
-  });
-
-  /*
-   * A suspended introducer breaks the chain before the rebate is reached, so
-   * the client stops receiving one too. The conservative reading, deliberately:
-   * the rebate is a term of the relationship the operator has just suspended.
-   */
-  it('pays no rebate when the chain resolves to nobody', () => {
-    const result = calculate(
-      DEAL,
-      [],
-      ladderOf(
-        level({ level: 1, commissionRate: '10.0000', rebateRate: '5.0000' }),
-        level({ level: 2, commissionRate: '5.0000' }),
-      ),
-    );
-
-    expect(result.rebate).toBeUndefined();
-    expect(result.accruals).toEqual([]);
-  });
-});
-
-/*
- * `describe('the broker's revenue cap')` IS GONE (0103), with the cap itself.
- *
- * Six cases covered `maxSharePct`: that it scaled the chain pro rata rather
- * than paying rungs in order until the pool ran out, that the rebate was inside
- * the cap rather than beside it, and that a leg scaled below the storable
- * minimum was dropped instead of stored as a zero the CHECK constraint would
- * refuse.
- *
- * All of it went with the "Maximum paid to partners" setting. What still stops
- * an over-payment is `checkPlausible` below — which REFUSES rather than scales,
- * so a chain configured past 100% defers on the retry backoff and pays in full
- * once the programmes are corrected, instead of paying a reduced amount and
- * logging that it had.
- */
-
-describe('checkPlausible', () => {
-  const leg = (ibUserId: string, amount: string) => ({
-    ibUserId,
-    depth: 1,
-    programId: 'prog-a',
-    rateValue: '10.0000',
-    /* The base this leg is a share of (0106). `checkPlausible` bounds the
-     * TOTAL against the event, so the per-leg base is carried but not read
-     * here — it is required by the type because a money row must always be
-     * able to explain its own arithmetic. */
-    baseAmount: '1000.00000000',
-    amount,
-  });
-
-  /*
-   * The backstop against a unit error — `70` meaning 70% versus `70` meaning
-   * 70× — reaching a wallet.
-   */
-  it('refuses a total that exceeds the revenue it is a share of', () => {
-    const verdict = checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '70000.00000000')]);
-
-    expect(verdict.ok).toBe(false);
-    if (!verdict.ok) expect(verdict.reason).toContain('exceeds');
-  });
-
-  it('accepts a normal share of the same revenue', () => {
-    expect(checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '100.00000000')]).ok).toBe(true);
-  });
-
-  it('refuses legs that are individually fine but together exceed the base', () => {
-    const verdict = checkPlausible(DEAL_NO_LOTS, [
-      leg('ib-1', '600.00000000'),
-      leg('ib-2', '600.00000000'),
-    ]);
-
-    expect(verdict.ok).toBe(false);
-  });
-
-  it('accepts a total exactly equal to the base', () => {
-    expect(checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '1000.00000000')]).ok).toBe(true);
-  });
-
-  /*
-   * The rebate leaves the broker by the same door. A check that ignored it
-   * would pass a programme handing 900% back to the client while refusing one
-   * paying 101% to a partner.
-   */
-  it('counts the rebate in the total it checks', () => {
-    const verdict = checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '600.00000000')], {
-      ibUserId: 'ib-1',
-      programId: 'prog-a',
-      rateValue: '50.0000',
-      baseAmount: '1000.00000000',
-      amount: '600.00000000',
-    });
-
-    expect(verdict.ok).toBe(false);
-  });
-
-  /*
-   * A lot count does NOT exempt an event. Both guards that used to do so dated
-   * from `per_lot`, and because the live feed always sets `lots` they returned
-   * `ok: true` on 100% of real accruals — the ceiling was dead code in
-   * production while every test of it passed on a fixture with no lots.
-   */
-  it('refuses an impossible total on a deal that CARRIES a lot count', () => {
-    expect(checkPlausible(DEAL, [leg('ib-1', '70000.00000000')]).ok).toBe(false);
-  });
-
-  it('still accepts a sane share on a deal that carries a lot count', () => {
-    expect(checkPlausible(DEAL, [leg('ib-1', '100.00000000')]).ok).toBe(true);
-  });
-});
-
-describe('the numbers', () => {
-  it('ignores the lot count entirely', () => {
-    const withLots = calculate(
-      { ...DEAL, lots: '10000' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
       defaultLadder(),
     );
-    const without = calculate(
-      DEAL_NO_LOTS,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+    const below = calculate(
+      DEAL,
+      [
+        earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
+        earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+      ],
       defaultLadder(),
     );
 
-    expect(withLots.accruals[0].amount).toBe(without.accruals[0].amount);
+    const mainOwn = own.accruals.find((a) => a.ibUserId === 'ib-1');
+    const mainBelow = below.accruals.find((a) => a.ibUserId === 'ib-1');
+    expect(mainOwn?.amount).toBe('14.00000000');
+    expect(mainBelow?.amount).toBe('14.00000000');
+    expect(mainOwn?.depth).toBe(1);
+    expect(mainBelow?.depth).toBe(2);
   });
 
-  it('rounds a half up at the eighth decimal rather than truncating', () => {
+  /*
+   * The arrangement this deployment ran before 0140 — "$10 to the main partner,
+   * $3 to the sub" — is a 100% / 30% ladder on a $10 type. Pinned so the
+   * conversion has a number to be checked against, and because the sum being
+   * MORE than the type's figure is the model working, not a fault.
+   */
+  it('reproduces the old $10 main / $3 sub arrangement with 100% and 30%', () => {
     const result = calculate(
-      { ...DEAL, grossAmount: '0.00000005' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      ladderOf(
-        level({ level: 1, commissionRate: '50.0000' }),
-        level({ level: 2, commissionRate: '5.0000' }),
-      ),
-    );
-
-    // 0.00000005 × 50% = 0.000000025 → 0.00000003, not 0.00000002.
-    expect(result.accruals[0].amount).toBe('0.00000003');
-  });
-
-  /*
-   * Pinned so the division stays a division. A rate multiplied by 100 instead
-   * of divided by it passes every "10% of 1000" assertion above — it is only
-   * visible against a rate whose two readings differ by four orders of
-   * magnitude.
-   */
-  it('divides the rate by a hundred, so 200% is twice the revenue and not 200×', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      ladderOf(
-        level({ level: 1, commissionRate: '200.0000' }),
-        level({ level: 2, commissionRate: '5.0000' }),
-      ),
-    );
-
-    expect(result.accruals[0].amount).toBe('2000.00000000');
-  });
-});
-
-/*
- * ── THE BROKER'S TOTAL PAYOUT CEILING (0106) ─────────────────────────────────
- *
- * `ib_max_total_payout_pct` bounds what ONE TRADE may cost across every leg.
- *
- * It exists because the per-programme guard cannot see a chain: two partners
- * holding different programmes are each within their own limit and together
- * over the broker's. The seeded catalogue proved it — 60% at depth 1 and 40% at
- * depth 2 paid out exactly 100% of the revenue, and nothing refused it, because
- * `checkPlausible` only ever refused a total ABOVE the revenue.
- */
-describe('checkPlausible — the broker’s ceiling', () => {
-  const leg = (ibUserId: string, amount: string) => ({
-    ibUserId,
-    depth: 1,
-    programId: 'prog-a',
-    rateValue: '10.0000',
-    /* The base this leg is a share of (0106). `checkPlausible` bounds the
-     * TOTAL against the event, so the per-leg base is carried but not read
-     * here — it is required by the type because a money row must always be
-     * able to explain its own arithmetic. */
-    baseAmount: '1000.00000000',
-    amount,
-  });
-
-  it('refuses a chain that costs more than the configured ceiling', () => {
-    // 400 of a 1000 revenue, against a ceiling of 30%.
-    const verdict = checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '400.00000000')], undefined, '30');
-
-    expect(verdict.ok).toBe(false);
-    if (!verdict.ok) {
-      expect(verdict.reason).toContain('ceiling');
-      expect(verdict.reason).toContain('30%');
-    }
-  });
-
-  it('accepts a chain exactly ON the ceiling', () => {
-    const verdict = checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '300.00000000')], undefined, '30');
-
-    expect(verdict.ok).toBe(true);
-  });
-
-  /*
-   * The regression this whole control exists for. Before 0106 this passed:
-   * a share of exactly 100% is not GREATER than the revenue, so the only guard
-   * in place let it through and the broker kept nothing.
-   */
-  it('refuses the 60/40 chain that used to pay out the entire revenue', () => {
-    const chain = [leg('sara', '600.00000000'), leg('ahmad', '400.00000000')];
-
-    // The old guard alone still lets it through — this is what was shipping.
-    expect(checkPlausible(DEAL_NO_LOTS, chain).ok).toBe(true);
-
-    // With a ceiling the broker can actually live on, it is refused.
-    const verdict = checkPlausible(DEAL_NO_LOTS, chain, undefined, '70');
-    expect(verdict.ok).toBe(false);
-  });
-
-  /*
-   * The default must not change what a running platform pays, so 100 has to
-   * behave exactly like no ceiling at all.
-   */
-  it('defaults to 100, which refuses only what the old guard refused', () => {
-    expect(checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '1000.00000000')]).ok).toBe(true);
-    expect(checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '1000.00000000')], undefined, '100').ok).toBe(
-      true,
-    );
-    expect(checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '1000.00000001')], undefined, '100').ok).toBe(
-      false,
-    );
-  });
-
-  /*
-   * A unit error and a chain over budget send an operator to two different
-   * screens, so the message that fires has to name the right one. At the
-   * default both thresholds are the same number, and the rate is the likelier
-   * fault — so it wins.
-   */
-  it('reports a unit error as a unit error, not as a ceiling breach', () => {
-    const verdict = checkPlausible(DEAL_NO_LOTS, [leg('ib-1', '70000.00000000')], undefined, '30');
-
-    expect(verdict.ok).toBe(false);
-    if (!verdict.ok) {
-      expect(verdict.reason).toContain('exceeds');
-      expect(verdict.reason).not.toContain('ceiling');
-    }
-  });
-
-  it('counts the client’s rebate against the ceiling too', () => {
-    const verdict = checkPlausible(
-      DEAL_NO_LOTS,
-      [leg('ib-1', '200.00000000')],
-      {
-        ibUserId: 'ib-1',
-        programId: 'prog-a',
-        rateValue: '15.0000',
-        baseAmount: '1000.00000000',
-        amount: '150.00000000',
-      },
-      '30',
-    );
-
-    // 200 + 150 = 350, over the 300 the ceiling allows.
-    expect(verdict.ok).toBe(false);
-  });
-});
-
-/*
- * ── FR-IB-16: WHICH REVENUE A PROGRAMME'S RATES ARE A PERCENTAGE OF ──────────
- *
- * "configure the exact commission and rebate mathematics ... through the IB
- * program catalogue". The base is half of what a partner agreed to, so it
- * travels with their terms rather than switching platform-wide.
- */
-describe('calculate — the revenue basis is a term of the programme', () => {
-  const CHAIN = [earner({ ibUserId: 'sara', depth: 1, programId: 'charges' })];
-
-  const byBasis = new Map<'commission_swap' | 'spread' | 'commission_swap_spread', string>([
-    ['commission_swap', '1000.00000000'],
-    ['spread', '400.00000000'],
-  ]);
-
-  it('prices a leg on the basis its own programme names', () => {
-    const onSpread = calculate(
-      DEAL_NO_LOTS,
-      [earner({ ibUserId: 'sara', depth: 1, programId: 'spread-priced' })],
-      ladderOf(level({ level: 1, commissionRate: '10.0000', revenueBasis: 'spread' })),
-      byBasis,
-    );
-
-    // 10% of the SPREAD figure (400), not of the charges figure (1000).
-    expect(onSpread.accruals[0]?.amount).toBe('40.00000000');
-  });
-
-  it('pays two partners in one chain on the two bases they each agreed to', () => {
-    const result = calculate(
-      DEAL_NO_LOTS,
-      [
-        earner({ ibUserId: 'sara', depth: 1, level: 1 }),
-        earner({ ibUserId: 'ahmad', depth: 2, level: 2 }),
-      ],
-      ladderOf(
-        level({ level: 1, revenueBasis: 'commission_swap' }),
-        level({ level: 2, commissionRate: '5.0000', revenueBasis: 'spread' }),
-      ),
-      byBasis,
-    );
-
-    // sara: 10% of 1000. ahmad: 5% of 400 — his own rung, on his own basis.
-    expect(result.accruals.map((a) => a.amount)).toEqual(['100.00000000', '20.00000000']);
-  });
-
-  /*
-   * A basis the caller could not price is ABSENT from the map, and absent is
-   * not zero. Zero is a price; absent means "no answer" — most often an account
-   * linked to no product under a basis that needs one. Falling back to the
-   * default revenue would pay this partner on terms nobody agreed to, at a
-   * number that looks perfectly ordinary on the accrual row.
-   */
-  it('refuses a leg whose basis could not be priced, rather than substituting another', () => {
-    const result = calculate(
-      DEAL_NO_LOTS,
-      CHAIN,
-      ladderOf(
-        level({ level: 1, commissionRate: '10.0000', revenueBasis: 'commission_swap_spread' }),
-      ),
-      byBasis,
-    );
-
-    expect(result.accruals).toEqual([]);
-    /*
-     * `unpriceable`, and NOT `skippedReason` — the distinction is the whole
-     * point. `skippedReason` means the partner is owed nothing and the deal is
-     * finished with, which the queue acts on by marking it DONE. This partner
-     * IS owed something and we cannot say how much, so the caller must refuse
-     * and defer. Asserting the wrong field here would pass while the commission
-     * was being discarded.
-     */
-    expect(result.unpriceable?.join(' ')).toContain('commission_swap_spread');
-    expect(result.skippedReason).toBeUndefined();
-  });
-
-  /*
-   * Backward compatibility, and it is load-bearing: every caller that has one
-   * revenue figure — and every deployment before 0106 — must keep pricing every
-   * leg on it.
-   */
-  it('prices everything on the single gross when no map is given', () => {
-    const result = calculate(
-      DEAL_NO_LOTS,
-      CHAIN,
-      ladderOf(level({ level: 1, commissionRate: '10.0000', revenueBasis: 'spread' })),
-    );
-
-    expect(result.accruals[0]?.amount).toBe('100.00000000');
-  });
-});
-
-/**
- * PER-LOT terms — migration 0111.
- *
- * ## What makes this different from everything above
- *
- * Every other payout in this file is a SHARE of what the broker earned, so it is
- * bounded by that revenue by definition. A per-lot leg is a flat amount for each
- * standard lot traded and is deliberately indifferent to revenue: over volume
- * the broker is ahead, and on any single trade it may be a loss they chose.
- *
- * That difference is the whole risk surface. `per_lot` existed once before and
- * was removed in 0055, and it left behind an `event.lots !== undefined`
- * exemption in `checkPlausible` that waved the ceiling through for EVERY real
- * accrual — the deal feed always supplies lots — so the refusal and its alarm
- * were dead code in production while looking covered by tests using a fixture
- * without lots.
- *
- * These exist so the reintroduced mode cannot repeat that. The exemption is per
- * LEG and by MODE now, never per event, and the two assertions that matter most
- * are in the ceiling block: a legitimate per-lot payout above revenue is
- * ALLOWED, and a percentage leg on the same trade is still bounded.
- *
- * Per-lot is outside the Phase 1 FSD — FR-IB-05 says the rebate is "dynamic,
- * not a fixed per-lot figure". It is here on an explicit business decision; see
- * migration 0111.
- */
-
-/** A rung paying a flat amount for every standard lot traded. */
-function perLotLevel(over: Partial<LevelTerms> = {}): Map<number, LevelTerms> {
-  return ladderOf(
-    level({
-      level: 1,
-      commissionMode: 'per_lot',
-      commissionAmountPerLot: '10.00000000',
-      ...over,
-    }),
-  );
-}
-
-describe('calculate — a partner paid per lot', () => {
-  it('pays the amount for every lot traded', () => {
-    const result = calculate(DEAL, [earner({ ibUserId: 'ib-1', depth: 1 })], perLotLevel());
-
-    // $10 a lot on 10 lots. The $1,000 of revenue does not enter it.
-    expect(result.accruals.map((a) => a.amount)).toEqual(['100.00000000']);
-  });
-
-  /*
-   * THE property that separates this model from a revenue share. The broker
-   * earned two dollars and pays out a hundred, which under a percentage would
-   * be a unit error and here is a deliberate purchase of volume.
-   */
-  it('pays the same on a trade that earned the broker almost nothing', () => {
-    const result = calculate(
-      { ...DEAL, grossAmount: '2.00000000' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      perLotLevel(),
-    );
-
-    expect(result.accruals.map((a) => a.amount)).toEqual(['100.00000000']);
-  });
-
-  /*
-   * `baseAmount` records what the figure was computed AGAINST, and for a
-   * per-lot leg that is the volume. Writing the revenue there would produce a
-   * row whose amount is not derivable from its own base — an accrual nobody can
-   * check by arithmetic, which is the one property a money ledger has to keep.
-   */
-  it('records the volume as the base, not the revenue', () => {
-    const [accrual] = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      perLotLevel(),
-    ).accruals;
-
-    expect(accrual?.baseAmount).toBe('10.00000000');
-    expect(accrual?.rateValue).toBe('10.00000000');
-    expect(accrual?.pricedPerLot).toBe(true);
-  });
-
-  /*
-   * A per-lot programme on an event carrying no volume owes nothing, and has to
-   * SAY so. Treating absent lots as zero would pay nothing silently, which is
-   * indistinguishable from a programme that does not reach this depth.
-   */
-  it('earns nothing and reports why when the trade has no volume', () => {
-    const result = calculate(DEAL_NO_LOTS, [earner({ ibUserId: 'ib-1', depth: 1 })], perLotLevel());
-
-    expect(result.accruals).toEqual([]);
-    expect(result.skippedReason).toContain('no volume');
-  });
-
-  it('still stops at the end of its own ladder', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 }), earner({ ibUserId: 'ib-2', depth: 2 })],
-      perLotLevel(),
-    );
-
-    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['ib-1']);
-  });
-
-  it('pays the client a per-lot rebate from the introducer’s rung', () => {
-    const result = calculate(
-      DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
-      perLotLevel({ rebateMode: 'per_lot', rebateAmountPerLot: '2.00000000' }),
-    );
-
-    expect(result.rebate?.amount).toBe('20.00000000');
-    expect(result.rebate?.pricedPerLot).toBe(true);
-  });
-
-  /*
-   * Per-lot terms REPLACE the percentage rather than adding to it. A programme
-   * pricing its rebate per lot must never also pay `rebateRate` — and the case
-   * that catches a fall-through is the one where the per-lot branch produces
-   * nothing.
-   */
-  it('does not fall back to a percentage rebate when the per-lot one pays nothing', () => {
-    const result = calculate(DEAL_NO_LOTS, [earner({ ibUserId: 'ib-1', depth: 1 })], perLotLevel());
-
-    expect(result.rebate).toBeUndefined();
-  });
-});
-
-describe('checkPlausible — per-lot terms are bounded in their own units', () => {
-  const perLotAccrual = (amount: string) => ({
-    ibUserId: 'ib-1',
-    depth: 1,
-    programId: 'prog-a',
-    rateValue: '10.00000000',
-    baseAmount: '10.00000000',
-    amount,
-    pricedPerLot: true,
-  });
-
-  /*
-   * THE regression this block exists for.
-   *
-   * $100 paid out on a trade that earned $2 is not an error under per-lot terms
-   * — it is the model. The revenue-based guard must not see these legs at all,
-   * or every honest volume purchase would be refused.
-   */
-  it('allows a per-lot payout that exceeds the revenue of the trade', () => {
-    const result = checkPlausible(
-      { ...DEAL, grossAmount: '2.00000000' },
-      [perLotAccrual('100.00000000')],
-      undefined,
-      '100',
-      '50',
-    );
-
-    expect(result.ok).toBe(true);
-  });
-
-  /*
-   * The unit-error backstop, in the units per-lot terms are quoted in. $1,000 a
-   * lot is a "1000" typed where "10.00" was meant, and the industry runs at a
-   * few dollars to low double digits — so a ceiling of $50 refuses it without
-   * ever refusing a real rate card.
-   */
-  it('refuses an amount per lot that is a unit error', () => {
-    const result = checkPlausible(DEAL, [perLotAccrual('10000.00000000')], undefined, '100', '50');
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain('per lot');
-  });
-
-  /*
-   * A chain may legitimately mix the two models — different partners hold
-   * different programmes — and each half has to be judged by its own rule. This
-   * is the assertion that would have caught the 0055-era hole: the percentage
-   * leg is still checked even though a per-lot leg is present on the same trade.
-   */
-  it('still bounds a percentage leg on a trade that also pays per lot', () => {
-    const result = checkPlausible(
-      { ...DEAL, grossAmount: '100.00000000' },
-      [
-        perLotAccrual('100.00000000'),
-        {
-          ibUserId: 'ib-2',
-          depth: 2,
-          programId: 'prog-b',
-          rateValue: '700.0000',
-          baseAmount: '100.00000000',
-          amount: '700.00000000',
-        },
-      ],
-      undefined,
-      '100',
-      '50',
-    );
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain('exceeds');
-  });
-
-  it('counts the client per-lot rebate against the per-lot ceiling', () => {
-    const result = checkPlausible(
-      DEAL,
-      [perLotAccrual('300.00000000')],
-      {
-        ibUserId: 'ib-1',
-        programId: 'prog-a',
-        rateValue: '30.00000000',
-        baseAmount: '10.00000000',
-        amount: '300.00000000',
-        pricedPerLot: true,
-      },
-      '100',
-      '50',
-    );
-
-    // 600 total on 10 lots is 60 a lot, over the 50 ceiling.
-    expect(result.ok).toBe(false);
-  });
-});
-
-/*
- * ── THE SHAPE THE BUSINESS ASKED FOR, IN THEIR OWN NUMBERS (0114) ──────────
- *
- * "A main partner should get ten dollars per lot and two dollar rebate. And the
- * sub-partner should take thirty percent of the ten dollars the main partner
- * gets, and he gets three dollars."
- *
- * Every case here is one sentence of that, and each has a wrong version that
- * looks entirely plausible: 30% of the REVENUE instead of 30% of the parent's
- * rate is also "30%", also produces a number, and is not $3.
- */
-describe('calculate — a level paid a share of the rung above', () => {
-  /** The two rungs as described: $10/lot at level 1, 30% of it at level 2. */
-  function sharedLadder(): Map<number, LevelTerms> {
-    return ladderOf(
-      level({ level: 1, commissionMode: 'per_lot', commissionAmountPerLot: '10.00000000' }),
-      level({ level: 2, commissionMode: 'share_of_parent', commissionRate: '30.0000' }),
-    );
-  }
-
-  it('pays 30% of the parent’s per-lot rate, not 30% of the revenue', () => {
-    /* One lot, so the amounts read as the rates themselves. */
-    const result = calculate(
-      { ...DEAL, lots: '1.00000000' },
-      [earner({ ibUserId: 'sub', depth: 1, level: 2 })],
-      sharedLadder(),
-    );
-
-    /*
-     * $3 — 30% of $10. The trade earned the broker $1,000, so a percentage of
-     * REVENUE would have paid $300. Both are "30%"; only one is what was asked
-     * for, and the size of the gap is why this is asserted on the number rather
-     * than on the mode.
-     */
-    expect(result.accruals.map((a) => a.amount)).toEqual(['3.00000000']);
-  });
-
-  /*
-   * The whole tree, on one trade by the SUB-partner's own client — the case the
-   * business described end to end.
-   */
-  it('pays the sub-partner their share AND the main partner their full rate', () => {
-    const result = calculate(
-      { ...DEAL, lots: '1.00000000' },
+      { ...DEAL, lots: '1' },
       [
         earner({ ibUserId: 'sub', depth: 1, level: 2 }),
         earner({ ibUserId: 'main', depth: 2, level: 1 }),
       ],
-      sharedLadder(),
+      ladderOf(
+        level({ level: 1, commissionShare: '100.0000' }),
+        level({ level: 2, commissionShare: '30.0000' }),
+      ),
     );
 
-    /*
-     * ⚠️ THE MAIN PARTNER IS NOT DILUTED. The sub's $3 is ADDED to the main's
-     * $10 rather than carved out of it, so one lot costs $13 rather than $10.
-     * That was chosen deliberately — recruiting must not reduce what the
-     * recruiter earns — and it is what makes `ib_max_payout_per_lot` the only
-     * thing bounding a long chain.
-     */
     expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([
       ['sub', '3.00000000'],
       ['main', '10.00000000'],
     ]);
   });
 
-  /*
-   * The row has to explain itself. Storing the configured "30" would leave a
-   * ledger entry reading `rate 30` against an amount of $3 — thirty of what? —
-   * while the RESOLVED $3 is the figure that produced the amount and the one a
-   * disputed payout is settled from.
-   */
-  it('records the resolved per-lot rate, not the configured percentage', () => {
-    const result = calculate(
-      { ...DEAL, lots: '1.00000000' },
-      [earner({ ibUserId: 'sub', depth: 1, level: 2 })],
-      sharedLadder(),
+  it('scales with volume, because every term is per lot', () => {
+    const half = calculate(
+      { ...DEAL, lots: '0.5' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      defaultLadder(),
+    );
+    const ten = calculate(
+      { ...DEAL, lots: '10' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      defaultLadder(),
     );
 
-    expect(result.accruals[0].rateValue).toBe('3.00000000');
-    expect(result.accruals[0].pricedPerLot).toBe(true);
+    expect(half.accruals[0]?.amount).toBe('3.50000000');
+    expect(ten.accruals[0]?.amount).toBe('70.00000000');
   });
 
-  it('scales with volume like any other per-lot term', () => {
-    /* DEAL is 10 lots: 30% of $10 is $3 a lot, so $30. */
+  it('keeps full precision on a fractional share', () => {
+    const result = calculate(
+      { ...DEAL, lots: '1' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      ladderOf(level({ level: 1, commissionShare: '33.3333' })),
+    );
+
+    expect(result.accruals[0]?.amount).toBe('3.33333000');
+    expect(result.accruals[0]?.rateValue).toBe('33.3333');
+  });
+
+  /*
+   * A rung the ladder does not reach pays nothing AND SAYS SO. The rest of the
+   * chain is unaffected: one partner's missing rung must not cancel another's.
+   */
+  it('pays nobody standing on a rung the ladder does not reach, and says which', () => {
     const result = calculate(
       DEAL,
-      [earner({ ibUserId: 'sub', depth: 1, level: 2 })],
-      sharedLadder(),
+      [
+        earner({ ibUserId: 'ib-3', depth: 1, level: 3 }),
+        earner({ ibUserId: 'ib-2', depth: 2, level: 2 }),
+        earner({ ibUserId: 'ib-1', depth: 3, level: 1 }),
+      ],
+      defaultLadder(),
     );
 
-    expect(result.accruals.map((a) => a.amount)).toEqual(['30.00000000']);
+    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['ib-2', 'ib-1']);
+    expect(result.skippedReason).toMatch(/level 3/);
+    expect(result.unpriceable).toBeUndefined();
+  });
+
+  it('pays nothing under a disabled level, and says why', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      ladderOf(level({ level: 1, enabled: false })),
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.skippedReason).toMatch(/disabled/);
+  });
+
+  it('pays nothing on a rung whose share is zero', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      ladderOf(level({ level: 1, commissionShare: '0.0000' })),
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.skippedReason).toMatch(/no share/);
+  });
+
+  it('refuses to take a share of a deposit, whatever the ladder says', () => {
+    const result = calculate(DEPOSIT, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder());
+
+    expect(result.accruals).toEqual([]);
+    expect(result.rebate).toBeUndefined();
+    expect(result.skippedReason).toMatch(/deposit/);
+  });
+
+  it('pays nobody when the chain resolves to nobody, without a reason', () => {
+    expect(calculate(DEAL, [], defaultLadder())).toEqual({ accruals: [] });
   });
 
   /*
-   * A share of a rung that pays a PERCENTAGE has nothing to take a share of: a
-   * slice of broker revenue is not a per-lot figure. Skipped with a reason
-   * rather than paid as zero — an accrual of nothing is indistinguishable from
-   * a partner nobody configured.
+   * A leg that rounds to nothing at eight places is not written: the ledger
+   * refuses a zero amount, and an empty accrual is noise, not a record.
    */
-  it('refuses when the rung above is not a per-lot rate', () => {
+  it('skips a leg that rounds to nothing rather than writing an empty accrual', () => {
     const result = calculate(
-      { ...DEAL, lots: '1.00000000' },
-      [earner({ ibUserId: 'sub', depth: 1, level: 2 })],
+      { ...DEAL, lots: '0.0001' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      ladderOf(level({ level: 1, commissionShare: '0.0001' })),
+    );
+
+    expect(result.accruals).toEqual([]);
+  });
+});
+
+describe('calculate — the product’s terms', () => {
+  /*
+   * ── NO PRODUCT IS A REFUSAL, NOT AN EMPTY RESULT ──────────────────────────
+   *
+   * An account linked to no product has nothing that says what its trades pay.
+   * The money may be owed, and what is missing is a link somebody can restore
+   * in ten seconds — so the trade must be REFUSED and retried, never marked
+   * done having paid nobody. `unpriceable` is what the caller keys that on.
+   */
+  it('refuses a trade on an account linked to no product', () => {
+    const result = calculate(
+      { ...DEAL, terms: undefined },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      defaultLadder(),
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.rebate).toBeUndefined();
+    expect(result.unpriceable).toHaveLength(1);
+    expect(result.unpriceable?.[0]).toMatch(/no product/);
+    expect(result.skippedReason).toBeUndefined();
+  });
+
+  /* A product configured to pay nothing is DONE, and says so — the opposite
+     of the case above, and the two must not look the same to the queue. */
+  it('pays nobody on a product with no commission type, and says so', () => {
+    const result = calculate(
+      { ...DEAL, terms: null },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      defaultLadder(),
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.unpriceable).toBeUndefined();
+    expect(result.skippedReason).toMatch(/no commission type/);
+  });
+
+  it('pays nobody on a disabled commission type', () => {
+    const result = calculate(
+      { ...DEAL, terms: { ...TYPE, enabled: false } },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      defaultLadder(),
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.rebate).toBeUndefined();
+    expect(result.skippedReason).toMatch(/disabled/);
+  });
+
+  it('pays nobody when the type pays nothing per lot, and says which type', () => {
+    const result = calculate(
+      { ...DEAL, terms: { ...TYPE, commissionPerLot: '0' } },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      defaultLadder(),
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.skippedReason).toMatch(/Standard terms/);
+  });
+
+  it('earns nothing and reports why when the trade has no volume', () => {
+    const noLots = calculate(
+      { ...DEAL, lots: undefined },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      defaultLadder(),
+    );
+    const zeroLots = calculate(
+      { ...DEAL, lots: '0' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      defaultLadder(),
+    );
+
+    expect(noLots.accruals).toEqual([]);
+    expect(noLots.skippedReason).toMatch(/no volume/);
+    expect(zeroLots.accruals).toEqual([]);
+    expect(zeroLots.skippedReason).toMatch(/no volume/);
+  });
+
+  /*
+   * The one property a money ledger has to keep: the amount on a row is
+   * reproducible from the row alone. `baseAmount` is the POOL (lots × the
+   * type's amount) and `rateValue` the share, so `base × rate / 100 = amount`
+   * holds after the type or the level has been edited.
+   */
+  it('records the type and the pool so the row reproduces its own arithmetic', () => {
+    const result = calculate(
+      { ...DEAL, lots: '1.37' },
+      [
+        earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
+        earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+      ],
+      defaultLadder(),
+    );
+
+    for (const leg of [...result.accruals, result.rebate]) {
+      expect(leg?.commissionTypeId).toBe('type-standard');
+      const reproduced = new Decimal(leg?.baseAmount ?? '0')
+        .times(leg?.rateValue ?? '0')
+        .dividedBy(100)
+        .toFixed(8);
+      expect(reproduced).toBe(leg?.amount);
+    }
+    expect(result.accruals[0]?.baseAmount).toBe('13.70000000');
+    expect(result.rebate?.baseAmount).toBe('4.11000000');
+  });
+});
+
+describe('calculate — the client’s rebate', () => {
+  it('pays the client their introducer’s share of the product’s rebate', () => {
+    const result = calculate(DEAL, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder());
+
+    /* 50% of a $6 pool (2 lots × $3). */
+    expect(result.rebate).toEqual({
+      ibUserId: 'ib-1',
+      levelId: 'lvl-1',
+      programId: undefined,
+      commissionTypeId: 'type-standard',
+      rateValue: '50.0000',
+      baseAmount: '6.00000000',
+      amount: '3.00000000',
+    });
+  });
+
+  /*
+   * The rebate is a term of the ONE relationship the client is actually in.
+   * A partner further up the chain setting it would be altering terms in a
+   * relationship they do not own.
+   */
+  it('takes the rebate from the introducer’s rung, never the parent’s', () => {
+    const result = calculate(
+      DEAL,
+      [
+        earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
+        earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+      ],
       ladderOf(
-        level({ level: 1, commissionMode: 'percent', commissionRate: '25.0000' }),
-        level({ level: 2, commissionMode: 'share_of_parent', commissionRate: '30.0000' }),
+        level({ level: 1, rebateShare: '50.0000' }),
+        level({ level: 2, commissionShare: '30.0000', rebateShare: '20.0000' }),
       ),
     );
 
-    expect(result.accruals).toHaveLength(0);
-    expect(result.skippedReason).toMatch(/share of the level above/i);
+    expect(result.rebate?.ibUserId).toBe('ib-2');
+    expect(result.rebate?.rateValue).toBe('20.0000');
+    expect(result.rebate?.amount).toBe('1.20000000');
+  });
+
+  it('records the introducer as the source of the rebate, not its recipient', () => {
+    const result = calculate(DEAL, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder());
+
+    /* The beneficiary is the trading client, who is not in the chain at all —
+       the caller supplies them. The row must not name the partner as payee. */
+    expect(result.rebate?.ibUserId).toBe('ib-1');
+    expect(result.accruals.map((a) => a.ibUserId)).not.toContain('client');
+  });
+
+  it('pays no rebate when the introducer’s rung has a zero rebate share', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      ladderOf(level({ level: 1, rebateShare: '0.0000' })),
+    );
+
+    expect(result.rebate).toBeUndefined();
+    expect(result.accruals).toHaveLength(1);
+  });
+
+  it('pays the client and no partner when the rung’s commission share is zero', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      ladderOf(level({ level: 1, commissionShare: '0.0000', rebateShare: '100.0000' })),
+    );
+
+    expect(result.accruals).toEqual([]);
+    expect(result.rebate?.amount).toBe('6.00000000');
+  });
+
+  it('pays no rebate when the type returns nothing to the client', () => {
+    const result = calculate(
+      { ...DEAL, terms: { ...TYPE, rebatePerLot: '0' } },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      defaultLadder(),
+    );
+
+    expect(result.rebate).toBeUndefined();
+    expect(result.accruals).toHaveLength(1);
+  });
+
+  it('pays no rebate on a deposit, exactly as it pays no commission', () => {
+    expect(
+      calculate(DEPOSIT, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder()).rebate,
+    ).toBeUndefined();
+  });
+
+  it('pays no rebate when the chain resolves to nobody', () => {
+    expect(calculate(DEAL, [], defaultLadder()).rebate).toBeUndefined();
+  });
+
+  it('omits a rebate that rounds away rather than writing an empty one', () => {
+    const result = calculate(
+      { ...DEAL, lots: '0.0001' },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      ladderOf(level({ level: 1, rebateShare: '0.0001' })),
+    );
+
+    expect(result.rebate).toBeUndefined();
+  });
+
+  /* The rebate is a term of the introducer's rung; a disabled rung has no
+     terms. The parent above is unaffected — the chain does not break. */
+  it('pays no rebate when the introducer’s rung is disabled, and still pays the parent', () => {
+    const result = calculate(
+      DEAL,
+      [
+        earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
+        earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+      ],
+      ladderOf(level({ level: 1 }), level({ level: 2, enabled: false })),
+    );
+
+    expect(result.rebate).toBeUndefined();
+    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['ib-1']);
+  });
+});
+
+describe('checkPlausible — the per-lot ceiling', () => {
+  const chain = [
+    earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
+    earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+  ];
+
+  it('accepts a chain inside the ceiling', () => {
+    const result = calculate(DEAL, chain, defaultLadder());
+    /* $6 + $14 + $3 = $23 on 2 lots, against a $100 allowance at the default. */
+    expect(checkPlausible(DEAL, result.accruals, result.rebate)).toEqual({ ok: true });
+  });
+
+  it('accepts nothing to check', () => {
+    expect(checkPlausible(DEAL, [], undefined)).toEqual({ ok: true });
   });
 
   /*
-   * Level 1 has no rung above it, so the mode is meaningless there. Reachable
-   * by an operator setting it on the top rung, and it must say so rather than
-   * silently paying nothing.
+   * THE UNIT ERROR. A "1000" typed on the type where "10.00" was meant pays a
+   * hundred times the rate card, and nothing about the accrual row would look
+   * wrong — the share is right, the pool is what the type says. This is the
+   * only guard that sees the sum, and it refuses rather than scales.
    */
-  it('refuses a share on level 1, which has nothing above it', () => {
-    const result = calculate(
-      { ...DEAL, lots: '1.00000000' },
-      [earner({ ibUserId: 'top', depth: 1, level: 1 })],
-      ladderOf(level({ level: 1, commissionMode: 'share_of_parent', commissionRate: '30.0000' })),
-    );
+  it('refuses a total over the ceiling, naming it as the unit-error guard', () => {
+    const typo: RevenueEvent = { ...DEAL, terms: { ...TYPE, commissionPerLot: '1000' } };
+    const result = calculate(typo, chain, defaultLadder());
 
-    expect(result.accruals).toHaveLength(0);
+    const verdict = checkPlausible(typo, result.accruals, result.rebate);
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) {
+      expect(verdict.reason).toMatch(/ceiling of 50 per lot/);
+      expect(verdict.reason).toMatch(/unit-error/);
+    }
+  });
+
+  it('honours a configured ceiling rather than the default', () => {
+    const result = calculate(DEAL, chain, defaultLadder());
+
+    /* $23 on 2 lots is $11.50 a lot: fine at 12, refused at 11. */
+    expect(checkPlausible(DEAL, result.accruals, result.rebate, '12')).toEqual({ ok: true });
+    expect(checkPlausible(DEAL, result.accruals, result.rebate, '11').ok).toBe(false);
+  });
+
+  it('accepts a total exactly ON the ceiling', () => {
+    const result = calculate(DEAL, chain, defaultLadder());
+    expect(checkPlausible(DEAL, result.accruals, result.rebate, '11.5')).toEqual({ ok: true });
   });
 
   /*
-   * A share OF a share resolves upward until it reaches a real per-lot rate:
-   * 50% of 30% of $10 is $1.50. Worth pinning because the recursion is the one
-   * part of this that could loop, and the ladder's integer keys are what stop
-   * it — each rung reads a strictly smaller one.
+   * The client's leg leaves the broker by the same door, so a unit error on
+   * the rebate is exactly as expensive as one on the commission. A check that
+   * ignored it would pass a type paying $900 a lot back to the client.
    */
-  it('resolves a share of a share up to the per-lot rung', () => {
+  it('counts the client’s rebate against the ceiling', () => {
+    const result = calculate(DEAL, chain, defaultLadder());
+
+    /* Commission alone is $20 on 2 lots = $10 a lot; with the $3 rebate it is $11.50. */
+    expect(checkPlausible(DEAL, result.accruals, undefined, '10')).toEqual({ ok: true });
+    expect(checkPlausible(DEAL, result.accruals, result.rebate, '10').ok).toBe(false);
+  });
+});
+
+describe('the numbers', () => {
+  it('rounds a half up at the eighth decimal rather than truncating', () => {
     const result = calculate(
-      { ...DEAL, lots: '1.00000000' },
-      [earner({ ibUserId: 'deep', depth: 1, level: 3 })],
-      ladderOf(
-        level({ level: 1, commissionMode: 'per_lot', commissionAmountPerLot: '10.00000000' }),
-        level({ level: 2, commissionMode: 'share_of_parent', commissionRate: '30.0000' }),
-        level({ level: 3, commissionMode: 'share_of_parent', commissionRate: '50.0000' }),
-      ),
+      { ...DEAL, lots: '1', terms: { ...TYPE, commissionPerLot: '0.00000015' } },
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      ladderOf(level({ level: 1, commissionShare: '50.0000' })),
     );
 
-    expect(result.accruals.map((a) => a.amount)).toEqual(['1.50000000']);
+    /* 0.000000075 → 0.00000008, not 0.00000007. */
+    expect(result.accruals[0]?.amount).toBe('0.00000008');
+  });
+
+  it('divides the share by a hundred, so 100% is the whole pool and not 100×', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      ladderOf(level({ level: 1, commissionShare: '100.0000', rebateShare: '100.0000' })),
+    );
+
+    expect(result.accruals[0]?.amount).toBe('20.00000000');
+    expect(result.rebate?.amount).toBe('6.00000000');
+  });
+
+  it('never hands back a JS number', () => {
+    const result = calculate(DEAL, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder());
+
+    for (const leg of [...result.accruals, result.rebate]) {
+      expect(typeof leg?.amount).toBe('string');
+      expect(typeof leg?.baseAmount).toBe('string');
+      expect(typeof leg?.rateValue).toBe('string');
+    }
   });
 });

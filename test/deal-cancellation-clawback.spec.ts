@@ -8,6 +8,8 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { ALERT_KINDS } from '../src/common/logging/alerts';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { seedProductTerms, setLadderShares } from './support/commission-terms';
+import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 
 /*
  * The backlog decision now lives in `trading_settings`, with the environment as
@@ -46,9 +48,19 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
 let ctx: MoneyTestContext;
 let commissions: CommissionService;
 let deals: DealCommissionService;
+/**
+ * The admin bell — the clawback TASK beside the pager alert (migration 0140).
+ * Recording, so each case can say who was asked to reverse what.
+ */
+const adminBell = {
+  notify: vi.fn().mockResolvedValue(undefined),
+  notifyAdmins: vi.fn().mockResolvedValue(undefined),
+};
 
 let partnerId: string;
 let clientId: string;
+/** The product's rate card — see the ladder note in `beforeAll`. */
+let terms: CommissionTypeTerms;
 let programId: string;
 
 const LOGIN = '500123';
@@ -111,17 +123,22 @@ beforeAll(async () => {
          SET mode = 'commission_only'::ib_program_mode, rebate_rate = 0, enabled = true
        WHERE id = ${programId}
     `);
-
-    /* Legacy `percent` row — see the note in ib-end-to-end.spec.ts. The form
-       cannot create these since 0117; the engine must still price them. In the
-       SAME transaction as the write, or the constraint is back before it runs. */
-    await tx.execute(
-      sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
-    );
-    await tx.execute(
-      sql`UPDATE ib_levels SET commission_mode = 'percent', commission_amount_per_lot = NULL, commission_rate = 10 WHERE level = 1`,
-    );
   });
+
+  /* Level 1 takes 10% of a $100-a-lot type: $10 on the one-lot trade below (0140). */
+  await setLadderShares(ctx.db, [{ commission: '10' }]);
+  const seeded = await seedProductTerms(ctx.db, {
+    name: 'Clawback terms',
+    commissionPerLot: '100',
+    rebatePerLot: '0',
+  });
+  terms = {
+    id: seeded.typeId,
+    name: 'Clawback terms',
+    enabled: true,
+    commissionPerLot: '100.00000000',
+    rebatePerLot: '0',
+  };
 
   partnerId = await makeUser('clawback-partner@oxshare-e2e.test');
   clientId = await makeUser('clawback-client@oxshare-e2e.test');
@@ -139,7 +156,7 @@ beforeAll(async () => {
     new WalletService(ctx.db),
     {
       notify: vi.fn().mockResolvedValue(undefined),
-      notifyAdminsWithPermission: vi.fn().mockResolvedValue(undefined),
+      notifyAdmins: vi.fn().mockResolvedValue(undefined),
     },
     // The payout ceiling (0106) — the real store against the real row, so
     // this reads the shipped default of 100 rather than a stub's opinion.
@@ -152,7 +169,7 @@ beforeAll(async () => {
        covered by `ib-accrual-reversal.spec.ts`. */
     { assertVisible: () => Promise.resolve() } as never,
   );
-  deals = new DealCommissionService(ctx.db, commissions);
+  deals = new DealCommissionService(ctx.db, commissions, adminBell);
 }, 180_000);
 
 afterAll(async () => {
@@ -178,6 +195,7 @@ beforeEach(async () => {
   process.env['IB_ACCRUAL_START'] = 'all';
 
   errors = [];
+  adminBell.notifyAdmins.mockClear();
   vi.spyOn(Logger.prototype, 'error').mockImplementation((arg: unknown) => {
     errors.push(arg);
   });
@@ -196,9 +214,9 @@ async function tradeThenCancellation(): Promise<void> {
     dealRowId: closing,
     ticket: '4001',
     clientUserId: clientId,
-    brokerRevenue: '100.00000000',
     lots: '1.00000000',
     currency: 'USD',
+    terms,
   });
   // The close itself is settled business; this suite is about what the
   // cancellation does next.
@@ -233,6 +251,26 @@ describe('a cancellation against a trade that already paid', () => {
     expect(rows[0].pending).toBe('0');
   });
 
+  it('puts a reversal TASK on the bell for each standing accrual — about its beneficiary', async () => {
+    await tradeThenCancellation();
+    await deals.accruePending();
+
+    const { rows: accruals } = await ctx.db.execute<{ id: string }>(
+      sql`SELECT id FROM ib_accruals WHERE status <> 'reversed'`,
+    );
+    expect(adminBell.notifyAdmins).toHaveBeenCalledTimes(accruals.length);
+    expect(adminBell.notifyAdmins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'admin.commission.clawback',
+        dedupeKey: `admin.commission.clawback:${accruals[0].id}`,
+        // A commission is the PARTNER's money: the task names them, so only a
+        // desk whose territory holds the partner is asked to reverse it.
+        subject: { id: accruals[0].id, clientId: partnerId },
+        params: expect.objectContaining({ credited: false }) as unknown,
+      }),
+    );
+  });
+
   it('reports how many of them have already been CREDITED', async () => {
     await tradeThenCancellation();
     // The settlement window elapsed and the partner was paid, which is the
@@ -260,6 +298,13 @@ describe('a cancellation against a trade that already paid', () => {
     const raised = clawbackAlerts(errors);
     expect(raised).toHaveLength(1);
     expect(raised[0].context.credited).toBe(1);
+    // The task says so too — reversing a credited accrual debits a wallet.
+    expect(adminBell.notifyAdmins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'admin.commission.clawback',
+        params: expect.objectContaining({ credited: true }) as unknown,
+      }),
+    );
   });
 });
 
@@ -276,6 +321,7 @@ describe('a cancellation that owes nobody anything', () => {
      * taking the loud case with it.
      */
     expect(clawbackAlerts(errors)).toHaveLength(0);
+    expect(adminBell.notifyAdmins).not.toHaveBeenCalled();
   });
 
   it('does not match another account holding the same position id', async () => {

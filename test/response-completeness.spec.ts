@@ -161,8 +161,15 @@ beforeAll(async () => {
       passwordHash: 'x',
       firstName: 'Completeness',
       lastName: 'Target',
-      phone: '+961 3 000 111',
+      phone: '+9613000111',
       country: 'Lebanon',
+      // Every profile field filled (0139), so a response that carries one the
+      // DTO does not declare cannot pass by the field being empty.
+      dateOfBirth: '1988-02-02',
+      nationality: 'Lebanese',
+      address: 'Completeness Street 1',
+      city: 'Beirut',
+      postalCode: '1103',
       emailVerified: true,
     })
     .returning();
@@ -172,15 +179,8 @@ beforeAll(async () => {
     userId: clientId,
     status: 'submitted',
     submittedAt: new Date(),
-    personalInfo: {
-      firstName: 'Completeness',
-      lastName: 'Target',
-      email: 'completeness-target@oxshare-e2e.test',
-      phone: '+961 3 000 111',
-      dateOfBirth: '1988-02-02',
-      nationality: 'Lebanon',
-      country: 'Lebanon',
-    },
+    // The identity is the profile's; only a broker's own answers live here.
+    personalInfo: { customField_1: 'Completeness answer' },
     document: { docType: 'passport', fileName: 'doc.png' },
     selfie: { fileName: 'selfie.png' },
     addressProof: { docType: 'utility_bill', fileName: 'proof.png' },
@@ -482,8 +482,11 @@ describe('the remaining person-carrying responses declare the keys they return',
 
   it('the client PROFILE EDIT response', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
+    // The PHONE: this client's KYC is submitted, and from then on the phone is
+    // the one field the desk may still change — the name is being checked
+    // against their documents (`deskLocks`), and a rename answers 409.
     const res = await session
-      .patch(`/v1/admin/clients/${clientId}`, { firstName: 'Completeness', lastName: 'Edited' })
+      .patch(`/v1/admin/clients/${clientId}`, { phone: '+961 3 000 222' })
       .expect(200);
 
     const keys = undeclared(ClientAccountDto, res.body as Record<string, unknown>);

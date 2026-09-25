@@ -12,6 +12,7 @@ import {
 } from '../../../database/schema';
 import { TRANSACTION_KINDS } from '../../payments/transactions.service';
 import type { RejectionContext } from '../../../store/rejection-reasons.store';
+import { PROFILE_FIELD_KEYS } from '../../../common/profile/client-profile';
 
 // Response DTOs so /api/docs-json carries response schemas (API-CONTRACTS
 // Part C). Both frontends generate TypeScript types from the Swagger JSON —
@@ -298,7 +299,7 @@ export class KycSubmissionDto {
     type: 'object',
     additionalProperties: { type: 'string' },
   })
-  @ClientFieldMap('kyc.personalInfo')
+  @ClientFieldMap('kyc.personalInfo', { others: 'kyc.stepData', named: PROFILE_FIELD_KEYS })
   personalInfo?: Record<string, string>;
   @NotClientField(
     'a stored-document REFERENCE (its type and file name), never the document contents',
@@ -426,7 +427,7 @@ export class KycAttemptDto {
   @ApiPropertyOptional({ type: [String] })
   rejectedFields?: string[];
   @ApiPropertyOptional({ type: 'object', additionalProperties: { type: 'string' } })
-  @ClientFieldMap('kyc.personalInfo')
+  @ClientFieldMap('kyc.personalInfo', { others: 'kyc.stepData', named: PROFILE_FIELD_KEYS })
   personalInfo?: Record<string, string>;
   @NotClientField(
     'a stored-document REFERENCE (its type and file name), never the document contents',
@@ -845,6 +846,22 @@ export class ClientAccountDto {
   @ClientField('client.phone')
   @ApiProperty({ type: String, nullable: true })
   phone: string | null;
+  // The rest of the profile (0139), each behind its own mask key.
+  @ClientField('client.dateOfBirth')
+  @ApiProperty({ type: String, nullable: true, example: '1990-04-12' })
+  dateOfBirth: string | null;
+  @ClientField('client.nationality')
+  @ApiProperty({ type: String, nullable: true })
+  nationality: string | null;
+  @ClientField('client.address')
+  @ApiProperty({ type: String, nullable: true })
+  address: string | null;
+  @ClientField('client.city')
+  @ApiProperty({ type: String, nullable: true })
+  city: string | null;
+  @ClientField('client.postalCode')
+  @ApiProperty({ type: String, nullable: true })
+  postalCode: string | null;
   @ClientField('client.createdAt')
   @ApiProperty()
   createdAt: Date;
@@ -900,6 +917,22 @@ export class ClientProfileDto {
   @ClientField('client.phone')
   @ApiPropertyOptional()
   phone?: string;
+  // The rest of the profile (0139), each behind its own mask key.
+  @ClientField('client.dateOfBirth')
+  @ApiPropertyOptional({ example: '1990-04-12' })
+  dateOfBirth?: string;
+  @ClientField('client.nationality')
+  @ApiPropertyOptional()
+  nationality?: string;
+  @ClientField('client.address')
+  @ApiPropertyOptional()
+  address?: string;
+  @ClientField('client.city')
+  @ApiPropertyOptional()
+  city?: string;
+  @ClientField('client.postalCode')
+  @ApiPropertyOptional()
+  postalCode?: string;
   @ClientField('client.createdAt')
   @ApiPropertyOptional()
   createdAt?: Date;
@@ -908,6 +941,16 @@ export class ClientProfileDto {
   @ApiProperty({ type: [ClientTagDto] })
   tags: ClientTagDto[];
 
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: { type: 'string' },
+    description:
+      "The profile fields the desk may not change right now, each with where it can be changed instead — the verification's lock (`deskLocks`). Present only for a reader holding clients.edit; empty when nothing is locked.",
+  })
+  @NotClientField(
+    "the verification's rule about the record, in the system's words — which fields are locked, never their values",
+  )
+  lockedFields?: Record<string, string>;
   @ApiPropertyOptional({ type: ProfileKycDto, description: 'Absent without kyc.view.' })
   @NotClientField(
     'not a client-owned attribute \u2014 kyc describes the record rather than the person',
@@ -2691,4 +2734,17 @@ export class DepositDecisionDto {
   )
   @ApiPropertyOptional({ nullable: true, type: String, format: 'date-time' })
   settledAt: Date | null;
+}
+
+/**
+ * The answer to "Mark resolved" on a payment that needed attention. The flag is
+ * gone and, with it, every admin's task about it (migration 0140's trigger).
+ */
+@NoClientFields('the state of one payment’s attention flag, no client attribute')
+export class AttentionResolvedDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ description: 'Always false after a successful resolve.' })
+  needsAttention: boolean;
 }

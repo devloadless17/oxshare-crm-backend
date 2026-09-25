@@ -7,6 +7,7 @@ import {
   agencies,
   agencyProducts,
   ibAccounts,
+  ibCommissionTypes,
   tradingProductGroups,
   tradingProducts,
   users,
@@ -44,12 +45,10 @@ export interface ProductRow {
    */
   type: 'real' | 'demo';
   /**
-   * A decimal STRING, never a number. It is `NUMERIC(28,8)` and it is money —
-   * §6 forbids it becoming a float anywhere between the form and the column,
-   * and a markup of `1.5` that arrives as `1.4999999999` is the kind of wrong
-   * that survives review because it looks almost right.
+   * The commission type this product pays partners on (0140), or null for a
+   * product that pays no partner commission. The amounts live on the type.
    */
-  spreadMarkupPerLot: string;
+  commissionTypeId: string | null;
   sortOrder: number;
   groups: ProductGroupRow[];
 }
@@ -120,7 +119,7 @@ export class ProductsStore {
       name: row.name,
       description: row.description,
       enabled: row.enabled,
-      spreadMarkupPerLot: row.spreadMarkupPerLot,
+      commissionTypeId: row.commissionTypeId,
       type: row.type,
       sortOrder: row.sortOrder,
       groups: groups
@@ -173,7 +172,7 @@ export class ProductsStore {
     description: string | null;
     enabled: boolean;
     type: 'real' | 'demo';
-    spreadMarkupPerLot: string;
+    commissionTypeId: string | null;
     sortOrder: number | undefined;
   }): Promise<ProductRow> {
     const row = await this.db.transaction(async (tx) => {
@@ -192,9 +191,9 @@ export class ProductsStore {
   /**
    * `type` is deliberately absent from the values: it is fixed at creation.
    *
-   * `spreadMarkupPerLot` is NOT — a markup is exactly the commercial term that
-   * gets renegotiated, so it lives in the update path and the caller audits
-   * both sides of the change.
+   * `commissionTypeId` is NOT — which rate card a product is sold on is exactly
+   * the commercial term that gets renegotiated, so it lives in the update path
+   * and the caller audits both sides of the change.
    */
   async updateProduct(
     id: string,
@@ -202,7 +201,7 @@ export class ProductsStore {
       name: string;
       description: string | null;
       enabled: boolean;
-      spreadMarkupPerLot: string;
+      commissionTypeId: string | null;
       sortOrder: number | undefined;
     },
   ): Promise<ProductRow | null> {
@@ -222,6 +221,20 @@ export class ProductsStore {
     if (!row) return null;
     const groups = await this.groupsOf(id);
     return { ...row, groups };
+  }
+
+  /**
+   * The rate card a product is about to be put on, so the service can refuse a
+   * missing one with a sentence rather than letting the foreign key answer
+   * with a 500.
+   */
+  async findCommissionType(id: string): Promise<{ id: string; name: string } | null> {
+    const [row] = await this.db
+      .select({ id: ibCommissionTypes.id, name: ibCommissionTypes.name })
+      .from(ibCommissionTypes)
+      .where(eq(ibCommissionTypes.id, id))
+      .limit(1);
+    return row ?? null;
   }
 
   /** Returns false when nothing matched, so the caller can 404 rather than lie. */

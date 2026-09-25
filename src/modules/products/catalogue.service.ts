@@ -45,12 +45,13 @@ export class CatalogueService {
       description?: string | null;
       enabled: boolean;
       type?: 'real' | 'demo';
-      spreadMarkupPerLot?: string;
+      commissionTypeId?: string | null;
       sortOrder?: number;
     },
     actor: Actor,
   ): Promise<ProductDto> {
     const type = input.type ?? 'real';
+    const commissionTypeId = await this.resolveCommissionType(type, input.commissionTypeId ?? null);
 
     /*
      * At most one demo product. This check is the readable sentence; the
@@ -69,13 +70,7 @@ export class CatalogueService {
         description: emptyToNull(input.description),
         enabled: input.enabled,
         type,
-        /*
-         * Defaulted HERE as a string, never `Number(...) ?? 0`. The value goes
-         * form → column untouched, which is the §6 rule and the reason ADM-10's
-         * commission rates are handled the same way: a markup that round-trips
-         * through a float is wrong in a way that looks right.
-         */
-        spreadMarkupPerLot: input.spreadMarkupPerLot ?? '0',
+        commissionTypeId,
         sortOrder: input.sortOrder,
       })
       .catch((error: unknown) => {
@@ -87,9 +82,33 @@ export class CatalogueService {
       name: row.name,
       enabled: row.enabled,
       type: row.type,
-      spreadMarkupPerLot: row.spreadMarkupPerLot,
+      commissionTypeId: row.commissionTypeId,
     });
     return toProductDto(row);
+  }
+
+  /**
+   * Which rate card a product may be put on.
+   *
+   * The DEMO product never carries one: demo trades never accrue, so a type on
+   * it is a number that looks configured and pays nobody — refused rather than
+   * stored. A type that does not exist is refused with its id, because the
+   * alternative is the foreign key answering with a 500.
+   */
+  private async resolveCommissionType(
+    type: 'real' | 'demo',
+    commissionTypeId: string | null,
+  ): Promise<string | null> {
+    if (commissionTypeId === null) return null;
+    if (type === 'demo') {
+      throw new ValidationError(
+        'The demo product cannot carry a commission type: practice trades never pay partner ' +
+          'commission, so the type would look configured and pay nobody.',
+      );
+    }
+    const found = await this.store.findCommissionType(commissionTypeId);
+    if (!found) throw new NotFoundError('Commission type not found.');
+    return found.id;
   }
 
   async updateProduct(
@@ -99,13 +118,25 @@ export class CatalogueService {
       description?: string | null;
       enabled: boolean;
       type?: 'real' | 'demo';
-      spreadMarkupPerLot?: string;
+      commissionTypeId?: string | null;
       sortOrder?: number;
     },
     actor: Actor,
   ): Promise<ProductDto> {
     const before = (await this.store.listProducts()).find((product) => product.id === id);
     if (!before) throw new NotFoundError('Product not found.');
+
+    /*
+     * OMITTED means UNCHANGED, and an explicit null CLEARS it.
+     *
+     * This is a PUT, so a client that does not know about this field would
+     * otherwise silently strip a product's terms every time somebody renamed
+     * it — and the audit row would faithfully record a change nobody made.
+     */
+    const commissionTypeId =
+      input.commissionTypeId === undefined
+        ? before.commissionTypeId
+        : await this.resolveCommissionType(before.type, input.commissionTypeId);
 
     /*
      * The type is FIXED at creation. real→demo would strand the agency links
@@ -124,15 +155,7 @@ export class CatalogueService {
       name: input.name.trim(),
       description: emptyToNull(input.description),
       enabled: input.enabled,
-      /*
-       * Omitted means UNCHANGED, not zero.
-       *
-       * This is a PUT, so a client that does not know about this field would
-       * otherwise silently reset a negotiated markup to nothing every time
-       * somebody renamed a product — and the audit row would faithfully record
-       * a change nobody made.
-       */
-      spreadMarkupPerLot: input.spreadMarkupPerLot ?? before.spreadMarkupPerLot,
+      commissionTypeId,
       sortOrder: input.sortOrder,
     });
     if (!row) throw new NotFoundError('Product not found.');
@@ -158,12 +181,12 @@ export class CatalogueService {
       'description',
       'enabled',
       /*
-       * In the diff because changing it changes what the desk says a product
-       * earns — the same reason `ib.program_change` records both programmes.
-       * Nothing is paid from it today, but the record of who set it and when is
-       * the part that cannot be reconstructed later.
+       * In the diff because changing it changes what every partner is paid on
+       * this product from the next trade on — the same reason `ib.level_change`
+       * records both rungs. The record of who set it and when is the part that
+       * cannot be reconstructed later.
        */
-      'spreadMarkupPerLot',
+      'commissionTypeId',
       'sortOrder',
     ] as const) {
       if (before[field] !== row[field])
@@ -521,7 +544,7 @@ function toProductDto(row: ProductRow): ProductDto {
     description: row.description,
     enabled: row.enabled,
     type: row.type,
-    spreadMarkupPerLot: row.spreadMarkupPerLot,
+    commissionTypeId: row.commissionTypeId,
     sortOrder: row.sortOrder,
     groups: row.groups,
   };

@@ -9,15 +9,24 @@ import {
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+/**
+ * A registration — the account, and the client profile it starts with.
+ *
+ * The decorators bound SHAPE (strings, lengths); the RULES — a name made of
+ * letters, a real date of birth at least 18 years back, a dialable phone, a
+ * country and nationality from the KYC lists — are `common/profile/
+ * client-profile.ts`, applied by `AuthService.register` and by every later
+ * writer, so a value registration accepts is one KYC accepts too.
+ */
 export class RegisterDto {
-  @ApiProperty({ example: 'John' })
+  @ApiProperty({ example: 'John', maxLength: 100, description: 'As on the ID document.' })
   @IsString()
-  @MaxLength(50)
+  @MaxLength(100)
   firstName: string;
 
-  @ApiProperty({ example: 'Doe' })
+  @ApiProperty({ example: 'Doe', maxLength: 100, description: 'As on the ID document.' })
   @IsString()
-  @MaxLength(50)
+  @MaxLength(100)
   lastName: string;
 
   @ApiProperty({ example: 'john@example.com' })
@@ -30,15 +39,60 @@ export class RegisterDto {
   @MaxLength(100)
   password: string;
 
-  @ApiPropertyOptional({ example: 'US' })
+  @ApiPropertyOptional({
+    example: '1990-04-12',
+    description: 'YYYY-MM-DD. At least 18 years ago.',
+  })
   @IsOptional()
   @IsString()
+  @MaxLength(10)
+  dateOfBirth?: string;
+
+  @ApiPropertyOptional({ example: 'Lebanese', description: 'From the KYC nationality list.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  nationality?: string;
+
+  @ApiPropertyOptional({
+    example: '+96170123456',
+    description: 'International format with the country code. Stored as E.164.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  phone?: string;
+
+  @ApiPropertyOptional({
+    example: 'Lebanon',
+    description: 'Country of residence, from the KYC country list.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
   country?: string;
 
-  @ApiPropertyOptional({ example: '+1234567890' })
+  @ApiPropertyOptional({ example: 'Hamra Street, Building 12, 3rd floor', maxLength: 200 })
   @IsOptional()
   @IsString()
-  phone?: string;
+  @MaxLength(200)
+  address?: string;
+
+  @ApiPropertyOptional({ example: 'Beirut', maxLength: 100 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  city?: string;
+
+  @ApiPropertyOptional({
+    example: '1103 2080',
+    maxLength: 12,
+    description: 'Optional — many addresses have none.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(12)
+  postalCode?: string;
 
   /**
    * A partner's referral code, from the `?ref=` on the link they shared.

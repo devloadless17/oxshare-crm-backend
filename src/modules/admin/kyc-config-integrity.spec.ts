@@ -2,9 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   assertFieldKeysUniquePerStep,
   assertFieldsFitTheirStep,
+  assertKycConfigIntegrity,
+  assertProfileFieldsKeepTheirPlace,
   assertReservedKeysNotRenamed,
 } from './kyc-config-integrity';
 import { DEFAULT_KYC_STEPS, type KycStepConfig } from '../../store/kyc-config.store';
+import {
+  PROFILE_CHOICES,
+  PROFILE_FIELD_KEYS,
+  PROFILE_FIELD_TYPE,
+} from '../../common/profile/client-profile';
 
 /**
  * The rules that stop the builder saving a form that cannot work.
@@ -78,14 +85,26 @@ describe('two fields in one step cannot share a key', () => {
 describe('a reserved key cannot be renamed out from under the server', () => {
   const reserved = (name: string) => [step({ fields: [field({ id: 'f1', name })] })];
 
-  it.each([
-    ['dateOfBirth', /minimum-age/],
-    ['phone', /phone number/],
-    ['country', /country/],
-  ])('refuses renaming %s, and names what would break', (key, expected) => {
-    const before = reserved(key);
-    const after = [step({ fields: [field({ id: 'f1', name: 'renamed' })] })];
-    expect(() => assertReservedKeysNotRenamed(before, after)).toThrow(expected);
+  /*
+   * EVERY profile field since 0139: the key IS the profile column the answer
+   * is stored in, so a renamed key stops reaching the profile — the answer
+   * lands in `personal_info` as an anonymous custom answer, and the reviewer's
+   * record of the client stops matching what the client typed.
+   */
+  it.each(PROFILE_FIELD_KEYS.filter((key) => key !== 'dateOfBirth'))(
+    'refuses renaming %s, and names what would break',
+    (key) => {
+      const before = reserved(key);
+      const after = [step({ fields: [field({ id: 'f1', name: 'renamed' })] })];
+      expect(() => assertReservedKeysNotRenamed(before, after)).toThrow(/client's profile/);
+    },
+  );
+
+  it('refuses renaming dateOfBirth, naming the age check it would switch off', () => {
+    const after = [step({ fields: [field({ id: 'f1', name: 'dob' })] })];
+    expect(() => assertReservedKeysNotRenamed(reserved('dateOfBirth'), after)).toThrow(
+      /minimum-age/,
+    );
   });
 
   /**
@@ -222,5 +241,168 @@ describe('documents at home, every other field anywhere, and no step left imposs
     // `constructor` is a step somebody added, not an entry on the prototype.
     expect(check('constructor', passport)).toThrow(/document type/);
     expect(check('constructor', field({ type: 'file' }))).not.toThrow();
+  });
+});
+
+describe('a profile field keeps its kind, its list, and its step (0139)', () => {
+  /*
+   * The personal step is where the KYC form reads and writes the client's
+   * PROFILE, and each profile field lands in a typed column. The broker still
+   * owns the form — relabel, reorder, require, remove — but three edits would
+   * break the client's record rather than the form, and each is refused here.
+   */
+  const personal = (fields: ReturnType<typeof field>[]) => [
+    step({ slug: 'personal', title: 'Personal Information', fields }),
+  ];
+  const profileField = (name: string, over: Partial<ReturnType<typeof field>> = {}) =>
+    field({
+      id: `f-${name}`,
+      name,
+      label: name,
+      type: PROFILE_FIELD_TYPE[name as keyof typeof PROFILE_FIELD_TYPE],
+      ...over,
+    });
+
+  it('accepts the default configuration, and every profile field in it at its own type', () => {
+    expect(() => assertProfileFieldsKeepTheirPlace(DEFAULT_KYC_STEPS)).not.toThrow();
+    expect(() => assertKycConfigIntegrity(DEFAULT_KYC_STEPS, DEFAULT_KYC_STEPS)).not.toThrow();
+    const onPersonal = DEFAULT_KYC_STEPS.find((s) => s.slug === 'personal')!.fields.map(
+      (f) => f.name,
+    );
+    // The seeded form asks for the WHOLE profile, city and postal code included.
+    expect([...onPersonal].sort()).toEqual([...PROFILE_FIELD_KEYS].sort());
+  });
+
+  it.each(
+    PROFILE_FIELD_KEYS.flatMap((key) =>
+      ['text', 'date', 'select', 'phone', 'checkbox', 'file']
+        .filter((type) => type !== PROFILE_FIELD_TYPE[key])
+        .map((type) => [key, type] as const),
+    ),
+  )('refuses %s re-typed as %s — its answer lands in a typed column', (key, type) => {
+    expect(() =>
+      assertProfileFieldsKeepTheirPlace(personal([profileField(key, { type })])),
+    ).toThrow(/must stay a .* field/);
+  });
+
+  it.each(PROFILE_FIELD_KEYS)(
+    'refuses %s on any other step — it would be a second copy beside the profile',
+    (key) => {
+      for (const slug of ['document', 'address', 'selfie', 'source-of-funds']) {
+        expect(
+          () =>
+            assertProfileFieldsKeepTheirPlace([
+              step({ slug, title: slug, fields: [profileField(key)] }),
+            ]),
+          `${key} on ${slug}`,
+        ).toThrow(/Personal Information step only/);
+      }
+    },
+  );
+
+  it('ALLOWS relabelling, requiring, un-requiring and hinting a profile field', () => {
+    expect(() =>
+      assertProfileFieldsKeepTheirPlace(
+        personal([
+          profileField('dateOfBirth', { label: 'Birth date', required: false, hint: 'As on ID' }),
+          profileField('city', { label: 'Town', required: true }),
+        ]),
+      ),
+    ).not.toThrow();
+  });
+
+  it('ALLOWS removing profile fields — the broker decides what is collected', () => {
+    expect(() => assertProfileFieldsKeepTheirPlace(personal([]))).not.toThrow();
+    expect(() =>
+      assertKycConfigIntegrity(DEFAULT_KYC_STEPS, [
+        ...DEFAULT_KYC_STEPS.filter((s) => s.slug !== 'personal'),
+        {
+          ...DEFAULT_KYC_STEPS.find((s) => s.slug === 'personal')!,
+          fields: DEFAULT_KYC_STEPS.find((s) => s.slug === 'personal')!.fields.filter(
+            (f) => f.name !== 'postalCode' && f.name !== 'nationality',
+          ),
+        },
+      ]),
+    ).not.toThrow();
+  });
+
+  it('leaves a broker’s own fields alone — any type, any step', () => {
+    for (const slug of ['personal', 'document', 'source-of-funds']) {
+      for (const type of ['text', 'date', 'select', 'phone', 'checkbox', 'file']) {
+        expect(() =>
+          assertProfileFieldsKeepTheirPlace([
+            step({ slug, fields: [field({ id: 'x', name: 'customField_1', type })] }),
+          ]),
+        ).not.toThrow();
+      }
+    }
+  });
+
+  it('reads the profile keys by OWN name — a key is typed by an operator', () => {
+    // `constructor` and `toString` are a broker's words, not profile fields.
+    for (const name of ['constructor', 'toString', '__proto__', 'Phone', 'first_name']) {
+      expect(() =>
+        assertProfileFieldsKeepTheirPlace([
+          step({ slug: 'document', fields: [field({ id: 'x', name, type: 'text' })] }),
+        ]),
+      ).not.toThrow();
+    }
+  });
+
+  describe('the drop-downs offer the platform’s list, and only that', () => {
+    it.each(['country', 'nationality'] as const)(
+      '%s: the list arriving back unchanged is an ordinary save',
+      (key) => {
+        const options = [...PROFILE_CHOICES[key]!];
+        expect(() =>
+          assertProfileFieldsKeepTheirPlace(personal([profileField(key, { options })])),
+        ).not.toThrow();
+        // …and so is no list at all — it is served on every read.
+        expect(() =>
+          assertProfileFieldsKeepTheirPlace(personal([profileField(key, { options: [] })])),
+        ).not.toThrow();
+      },
+    );
+
+    it.each(['country', 'nationality'] as const)(
+      '%s: refuses an added choice — the profile could never store it',
+      (key) => {
+        const options = [...PROFILE_CHOICES[key]!, 'UAE'];
+        expect(() =>
+          assertProfileFieldsKeepTheirPlace(personal([profileField(key, { options })])),
+        ).toThrow(/choices cannot be edited/);
+      },
+    );
+
+    it.each(['country', 'nationality'] as const)(
+      '%s: refuses a removed choice — registration would still accept it',
+      (key) => {
+        const options = PROFILE_CHOICES[key]!.slice(1);
+        expect(() =>
+          assertProfileFieldsKeepTheirPlace(personal([profileField(key, { options })])),
+        ).toThrow(/choices cannot be edited/);
+      },
+    );
+
+    it('refuses a reordered list too — it is not the list the profile is judged by', () => {
+      const options = [...PROFILE_CHOICES.country!].reverse();
+      expect(() =>
+        assertProfileFieldsKeepTheirPlace(personal([profileField('country', { options })])),
+      ).toThrow(/choices cannot be edited/);
+    });
+  });
+
+  it('is part of every save — `assertKycConfigIntegrity` runs it', () => {
+    const retyped = DEFAULT_KYC_STEPS.map((s) =>
+      s.slug === 'personal'
+        ? {
+            ...s,
+            fields: s.fields.map((f) => (f.name === 'dateOfBirth' ? { ...f, type: 'text' } : f)),
+          }
+        : s,
+    );
+    expect(() => assertKycConfigIntegrity(DEFAULT_KYC_STEPS, retyped)).toThrow(
+      /must stay a date field/,
+    );
   });
 });

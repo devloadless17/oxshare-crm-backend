@@ -123,8 +123,23 @@ describe('a step stores what it asks for, and nothing else', () => {
       })
       .expect(201);
 
+    // None of the debris is stored anywhere — and neither is the identity, in
+    // the submission: that is the PROFILE's, held once (0139).
     const row = await stored(id);
-    expect(row.personalInfo).toEqual(COMPLETE_PROFILE);
+    expect(row.personalInfo).toEqual({});
+    const [profile] = await ctx.db.db
+      .select({
+        firstName: users.firstName,
+        lastName: users.lastName,
+        dateOfBirth: users.dateOfBirth,
+        phone: users.phone,
+        nationality: users.nationality,
+        country: users.country,
+      })
+      .from(users)
+      .where(eq(users.id, id));
+    // The phone in its one canonical shape, whatever spacing was typed.
+    expect(profile).toEqual({ ...COMPLETE_PROFILE, phone: '+96170123456' });
   });
 
   it('never lets a step write a file path — only an upload stores a file', async () => {
@@ -143,7 +158,14 @@ describe('a step stores what it asks for, and nothing else', () => {
     await session
       .post('/v1/kyc/step', { step: 'personal', data: { ...COMPLETE_PROFILE, phone: '+961' } })
       .expect(201);
-    expect((await stored(id)).personalInfo).toMatchObject({ phone: '' });
+    // The profile holds NO phone — not a "+961" nobody can dial — and the
+    // submission holds no copy of it either (0139).
+    const [profile] = await ctx.db.db
+      .select({ phone: users.phone, dateOfBirth: users.dateOfBirth })
+      .from(users)
+      .where(eq(users.id, id));
+    expect(profile).toEqual({ phone: null, dateOfBirth: COMPLETE_PROFILE.dateOfBirth });
+    expect((await stored(id)).personalInfo).toEqual({});
 
     const res = await session.post('/v1/kyc/step', {
       step: 'personal',

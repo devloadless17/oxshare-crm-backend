@@ -1,4 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsISO8601, IsOptional } from 'class-validator';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
 
 /**
@@ -54,4 +55,18 @@ export class NotificationUnreadCountDto {
 export class NotificationsMarkAllReadResponseDto {
   @ApiProperty({ description: 'Rows marked read by this call. 0 when everything already was.' })
   updated: number;
+}
+
+/**
+ * The portal marks what it SHOWED: `upTo` is the newest row on screen, so a
+ * notification arriving while the panel was open is never marked read unseen.
+ */
+export class NotificationsReadAllDto {
+  @ApiPropertyOptional({
+    description: 'The `createdAt` of the newest notification the reader was shown.',
+    example: '2026-09-25T10:15:00.000Z',
+  })
+  @IsOptional()
+  @IsISO8601({ strict: true })
+  upTo?: string;
 }

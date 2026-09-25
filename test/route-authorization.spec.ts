@@ -187,6 +187,17 @@ const PUBLIC_ROUTES: Record<string, string> = {
     'Operator currency list. No client data, and the signed-out registration screen needs it.',
 
   /*
+   * The country and nationality lists the client profile accepts (0139). Open
+   * for the reason /currencies is: the same answer for everybody, no client
+   * data, and the registration screen that needs it has no session. It is the
+   * ONE copy of those lists outside the KYC config, so a form cannot offer a
+   * choice the profile then refuses.
+   */
+  'GET /profile/options':
+    'The countries and nationalities a profile accepts. No client data, and the signed-out ' +
+    'registration screen needs them.',
+
+  /*
    * The payment gateway's return URL. Open because the CALLER IS THE PROVIDER,
    * or the client's browser bouncing back off the provider's hosted page —
    * neither carries our cookies, and Whish has no way to obtain one.

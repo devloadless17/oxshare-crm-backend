@@ -38,8 +38,16 @@ export class UserProfileDto {
 
   @ApiProperty() emailVerified: boolean;
 
+  /** Country of RESIDENCE, as the KYC country list names it. */
   @ApiPropertyOptional({ example: 'United Arab Emirates' }) country?: string;
+  /** E.164. */
   @ApiPropertyOptional({ example: '+971501234567' }) phone?: string;
+  @ApiPropertyOptional({ example: '1990-04-12', description: 'YYYY-MM-DD.' })
+  dateOfBirth?: string;
+  @ApiPropertyOptional({ example: 'Emirati' }) nationality?: string;
+  @ApiPropertyOptional({ example: 'Sheikh Zayed Road, Tower 2, Apt 1204' }) address?: string;
+  @ApiPropertyOptional({ example: 'Dubai' }) city?: string;
+  @ApiPropertyOptional({ example: '00000' }) postalCode?: string;
   @ApiProperty() createdAt: Date;
 
   @ApiPropertyOptional({

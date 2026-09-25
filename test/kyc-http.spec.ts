@@ -46,7 +46,7 @@ const COMPLETE_PROFILE = {
   lastName: 'Why-See',
   dateOfBirth: '1990-01-01',
   phone: '+971501234567',
-  nationality: 'Lebanon',
+  nationality: 'Lebanese',
   country: 'United Arab Emirates',
 };
 
@@ -123,6 +123,9 @@ beforeAll(async () => {
         firstName: 'Kay',
         lastName: 'Client',
         emailVerified: c.email !== UNVERIFIED.email,
+        // The CLIENT's contact details live on its profile (0139), as the KYC
+        // personal step would have stored them — E.164, trimmed.
+        ...(c.email === CLIENT.email ? { phone: '+96170111111', country: 'Lebanon' } : {}),
       })),
     )
     .returning();
@@ -134,15 +137,8 @@ beforeAll(async () => {
       userId: clientId,
       status: 'submitted',
       submittedAt: new Date(),
-      personalInfo: {
-        firstName: 'Kay',
-        lastName: 'Client',
-        // The two fields approval must PROMOTE onto the client row. Spaced
-        // deliberately: the promotion trims, and an untrimmed value in a
-        // `varchar(32)` phone column is how a silent truncation starts.
-        phone: '  +961 70111111  ',
-        country: '  Lebanon  ',
-      },
+      // Only a broker's own questions live here; this client answered none.
+      personalInfo: {},
       document: { docType: 'passport', frontFilePath: '/uploads/kyc/a.png' },
       selfie: { filePath: '/uploads/kyc/b.png' },
       addressProof: { docType: 'utility_bill', filePath: '/uploads/kyc/c.png' },
@@ -242,20 +238,42 @@ describe('the client KYC routes', () => {
     expect(JSON.stringify(res.body)).toMatch(/document|selfie|address/i);
   });
 
-  it('refuse a submit from a client under the minimum age', async () => {
+  it('refuse an under-age date of birth the moment it is SAVED, naming the field', async () => {
     // "Must be 18+" was a hint string in the seeded config and a check in the
-    // browser. This asserts it is now a rule on the server — and it runs against
-    // the REAL seeded field set, so it also proves the age check is reached only
-    // once everything else the configuration demands is present.
+    // browser. It is a rule of the PROFILE now (0139), so it holds at the door —
+    // the step refuses the date field by field, and the stored one survives.
     const session = await actingAs(ctx, 'portal', OTHER);
-    await session.post('/v1/kyc/step', {
+    const res = await session.post('/v1/kyc/step', {
       step: 'personal',
       data: { ...COMPLETE_PROFILE, dateOfBirth: '2015-01-01' },
     });
-
-    const res = await session.post('/v1/kyc/submit');
     expect(res.status).toBe(400);
-    expect(JSON.stringify(res.body)).toMatch(/at least 18 years old/i);
+    expect((res.body as { fields?: Record<string, string> }).fields?.dateOfBirth).toMatch(
+      /at least 18 years old/i,
+    );
+    const [row] = await ctx.db.db.select().from(users).where(eq(users.id, otherId));
+    expect(row.dateOfBirth, 'the refused date was stored anyway').toBe(
+      COMPLETE_PROFILE.dateOfBirth,
+    );
+  });
+
+  it('refuse a submit from a client whose STORED date of birth is under age', async () => {
+    // A date that reached the profile by some other road — written before the
+    // rule, or by hand in SQL — is still refused where completeness is judged.
+    // It runs against the REAL seeded field set, so it also proves the age
+    // check is reached before anything later in the flow.
+    await ctx.db.db.update(users).set({ dateOfBirth: '2015-01-01' }).where(eq(users.id, otherId));
+    try {
+      const session = await actingAs(ctx, 'portal', OTHER);
+      const res = await session.post('/v1/kyc/submit');
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toMatch(/at least 18 years old/i);
+    } finally {
+      await ctx.db.db
+        .update(users)
+        .set({ dateOfBirth: COMPLETE_PROFILE.dateOfBirth })
+        .where(eq(users.id, otherId));
+    }
   });
 });
 
@@ -460,16 +478,24 @@ describe('the review lifecycle, over HTTP', () => {
     const [user] = await ctx.db.db.select().from(users).where(eq(users.id, clientId));
     expect(user.verificationLevel).toBe(1);
     /*
-     * The VERIFIED identity reaches the client row.
+     * The VERIFIED identity IS the client row.
      *
-     * Until this shipped, approval wrote the level and nothing else: phone and
-     * country stayed locked in the submission's JSONB, an operator opening a
-     * fully verified client saw "—" for both, and the client list's country
-     * filter — which `users_country_idx` exists to serve — matched no real
-     * client at all. Seventeen approved clients were in that state.
+     * Approval once wrote the level and nothing else: phone and country stayed
+     * locked in the submission's JSONB, an operator opening a fully verified
+     * client saw "—" for both, and the client list's country filter matched no
+     * real client at all — seventeen approved clients were in that state. The
+     * first fix PROMOTED the two fields on approval; 0139 removed the copy that
+     * needed promoting. What the reviewer approved is what the account holds,
+     * so there is nothing to move — and nothing moved.
      */
-    expect(user.phone).toBe('+961 70111111');
+    expect(user.phone).toBe('+96170111111');
     expect(user.country).toBe('Lebanon');
+    const review = await master.get(`/v1/admin/kyc/${clientId}`).expect(200);
+    const personal = (review.body as { personalInfo?: Record<string, string> }).personalInfo;
+    expect(personal?.phone, 'the review showed a different phone from the account').toBe(
+      user.phone,
+    );
+    expect(personal?.country).toBe(user.country);
   });
 
   it('does not blank a value the submission did not carry', async () => {
