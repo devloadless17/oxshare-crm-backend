@@ -10581,6 +10581,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "attention",
+            "required": false,
+            "in": "query",
+            "description": "Only payments flagged for a person to reconcile. Omit for every movement.",
+            "schema": {
+              "enum": [
+                "true"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -10696,6 +10708,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "attention",
+            "required": false,
+            "in": "query",
+            "description": "Only payments flagged for a person to reconcile. Omit for every movement.",
+            "schema": {
+              "enum": [
+                "true"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -10808,6 +10832,18 @@
             "in": "query",
             "description": "Inclusive, YYYY-MM-DD.",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attention",
+            "required": false,
+            "in": "query",
+            "description": "Only payments flagged for a person to reconcile. Omit for every movement.",
+            "schema": {
+              "enum": [
+                "true"
+              ],
               "type": "string"
             }
           },
@@ -19913,6 +19949,15 @@
             "type": "string",
             "nullable": true
           },
+          "needsAttention": {
+            "type": "boolean",
+            "description": "A person must reconcile this payment. False on transfers."
+          },
+          "attentionReason": {
+            "type": "string",
+            "nullable": true,
+            "description": "WHY it needs attention, in words the operator can act on. Null when not flagged."
+          },
           "user": {
             "$ref": "#/components/schemas/WithdrawalUserDto"
           }
@@ -19928,6 +19973,7 @@
           "provider",
           "walletId",
           "createdAt",
+          "needsAttention",
           "user"
         ]
       },

@@ -24,6 +24,7 @@ import type { TaskStillOpen } from '../common/notifications/admin-notification-c
 import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
+import type { PgTable } from 'drizzle-orm/pg-core';
 import {
   admins,
   ibAccruals,
@@ -131,6 +132,51 @@ export interface AdminTaskRow {
   subjectId: string;
   subjectUserId: string;
   stillOpen: TaskStillOpen;
+}
+
+/**
+ * How each subject table spells "still waiting on somebody", per catalogue
+ * rule. The fan-out locks the item row with it `FOR SHARE` and writes only if it
+ * still holds — see `insertAdminTask` for why that closes the race.
+ */
+const OPEN_RULES: Readonly<
+  Record<string, (id: string) => { table: PgTable; where: SQL | undefined }>
+> = {
+  'transaction:pending': (id) => ({
+    table: transactions,
+    where: and(eq(transactions.id, id), eq(transactions.state, 'pending')),
+  }),
+  'transaction:needs-attention': (id) => ({
+    table: transactions,
+    where: and(eq(transactions.id, id), eq(transactions.rivalNeedsAttention, true)),
+  }),
+  'kyc:awaiting-review': (id) => ({
+    table: kycSubmissions,
+    where: and(
+      eq(kycSubmissions.userId, id),
+      inArray(kycSubmissions.status, ['submitted', 'under_review']),
+    ),
+  }),
+  'ib_application:pending': (id) => ({
+    table: ibApplications,
+    where: and(eq(ibApplications.id, id), eq(ibApplications.status, 'pending')),
+  }),
+  'transfer:pending': (id) => ({
+    table: transfers,
+    where: and(eq(transfers.id, id), eq(transfers.state, 'pending')),
+  }),
+  'ib_accrual:not-reversed': (id) => ({
+    table: ibAccruals,
+    where: and(eq(ibAccruals.id, id), ne(ibAccruals.status, 'reversed')),
+  }),
+};
+
+/** Whether the store can check a catalogue kind's open state — pinned per kind by a spec. */
+export function hasOpenRule(
+  subjectKind: NotificationSubjectKind,
+  stillOpen: TaskStillOpen,
+): boolean {
+  return Object.hasOwn(OPEN_RULES, `${subjectKind}:${stillOpen}`);
 }
 
 /**
@@ -243,70 +289,30 @@ export class NotificationsStore {
   /**
    * Is the item still in the state that makes it somebody's work — and hold
    * it there until this transaction ends. Each subject table spells "open" in
-   * its own columns; a pairing the catalogue should never produce throws, and
-   * the fan-out logs it rather than writing a row nothing could ever resolve.
+   * its own columns (`OPEN_RULES`); a pairing with no rule throws, and the
+   * fan-out logs it rather than writing a row nothing could ever resolve —
+   * `admin-notification-catalogue.spec.ts` keeps the catalogue inside the rules.
    */
   private async lockIfStillOpen(
     tx: Executor,
     task: Pick<AdminTaskRow, 'subjectKind' | 'subjectId' | 'stillOpen'>,
   ): Promise<boolean> {
-    const one = { one: sql<number>`1` };
-    const { subjectKind, subjectId, stillOpen } = task;
-
-    if (subjectKind === 'transaction' && stillOpen === 'pending') {
-      const rows = await tx
-        .select(one)
-        .from(transactions)
-        .where(and(eq(transactions.id, subjectId), eq(transactions.state, 'pending')))
-        .for('share');
-      return rows.length > 0;
+    const rule = OPEN_RULES[`${task.subjectKind}:${task.stillOpen}`];
+    if (!rule) {
+      throw new Error(
+        `No open-state rule for a '${task.subjectKind}' task that is '${task.stillOpen}'.`,
+      );
     }
-    if (subjectKind === 'transaction' && stillOpen === 'needs-attention') {
-      const rows = await tx
-        .select(one)
-        .from(transactions)
-        .where(and(eq(transactions.id, subjectId), eq(transactions.rivalNeedsAttention, true)))
-        .for('share');
-      return rows.length > 0;
-    }
-    if (subjectKind === 'kyc' && stillOpen === 'awaiting-review') {
-      const rows = await tx
-        .select(one)
-        .from(kycSubmissions)
-        .where(
-          and(
-            eq(kycSubmissions.userId, subjectId),
-            inArray(kycSubmissions.status, ['submitted', 'under_review']),
-          ),
-        )
-        .for('share');
-      return rows.length > 0;
-    }
-    if (subjectKind === 'ib_application' && stillOpen === 'pending') {
-      const rows = await tx
-        .select(one)
-        .from(ibApplications)
-        .where(and(eq(ibApplications.id, subjectId), eq(ibApplications.status, 'pending')))
-        .for('share');
-      return rows.length > 0;
-    }
-    if (subjectKind === 'transfer' && stillOpen === 'pending') {
-      const rows = await tx
-        .select(one)
-        .from(transfers)
-        .where(and(eq(transfers.id, subjectId), eq(transfers.state, 'pending')))
-        .for('share');
-      return rows.length > 0;
-    }
-    if (subjectKind === 'ib_accrual' && stillOpen === 'not-reversed') {
-      const rows = await tx
-        .select(one)
-        .from(ibAccruals)
-        .where(and(eq(ibAccruals.id, subjectId), ne(ibAccruals.status, 'reversed')))
-        .for('share');
-      return rows.length > 0;
-    }
-    throw new Error(`No open-state rule for a '${subjectKind}' task that is '${stillOpen}'.`);
+    const { table, where } = rule(task.subjectId);
+    // `and()` of nothing is undefined, and an unfiltered FOR SHARE would lock
+    // the whole table — refuse rather than trust every rule to stay two-sided.
+    if (!where) throw new Error(`Empty open-state rule for '${task.subjectKind}'.`);
+    const rows = await tx
+      .select({ one: sql<number>`1` })
+      .from(table)
+      .where(where)
+      .for('share');
+    return rows.length > 0;
   }
 
   /** The feed, newest first, keyset-paged (R-2.4). */

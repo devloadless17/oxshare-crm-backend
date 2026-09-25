@@ -1772,6 +1772,22 @@ export class AdminTransactionRowDto {
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiPropertyOptional({ type: Date, nullable: true })
   settledAt?: Date | null;
+  /**
+   * A person must reconcile this payment — the platform reported another
+   * amount, reversed it, paid against a failed row, or disagrees about a
+   * payout's outcome. The page badges the row and offers "Mark resolved",
+   * which is what ends the admin task about it. Always false on a transfer.
+   */
+  @NotClientField('a lifecycle flag the desk acts on, describing the record rather than the person')
+  @ApiProperty({ description: 'A person must reconcile this payment. False on transfers.' })
+  needsAttention: boolean;
+  @NotClientField('system-written text about the record, not an attribute of the person')
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'WHY it needs attention, in words the operator can act on. Null when not flagged.',
+  })
+  attentionReason?: string | null;
   @NotClientField(
     'the nested person, whose own shape carries the marks \u2014 masked there, not here',
   )

@@ -73,6 +73,12 @@ function FinancialFilterQueries() {
     }),
     ApiQuery({ name: 'from', required: false, description: 'Inclusive, YYYY-MM-DD.' }),
     ApiQuery({ name: 'to', required: false, description: 'Inclusive, YYYY-MM-DD.' }),
+    ApiQuery({
+      name: 'attention',
+      required: false,
+      enum: ['true'],
+      description: 'Only payments flagged for a person to reconcile. Omit for every movement.',
+    }),
   );
 }
 
@@ -86,6 +92,7 @@ interface RawFilterParams {
   q?: string;
   from?: string;
   to?: string;
+  attention?: string;
 }
 
 /**
@@ -150,6 +157,8 @@ export class AdminFinancialController {
       q: searchQuery(raw.q),
       from: dateQuery(raw.from, 'from'),
       to: dateQuery(raw.to, 'to'),
+      // `true` or absent — anything else is a 400, like every enum filter here.
+      attention: enumQuery(raw.attention, ['true'] as const, 'attention') ? true : undefined,
     };
   }
 
@@ -211,9 +220,20 @@ export class AdminFinancialController {
     @Query('q') q?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('attention') attention?: string,
   ) {
     const chosen = exportFormat(format);
-    const query = await this.filters({ direction, kind, state, userId, currency, q, from, to });
+    const query = await this.filters({
+      direction,
+      kind,
+      state,
+      userId,
+      currency,
+      q,
+      from,
+      to,
+      attention,
+    });
 
     this.audit.record(req.admin.id, 'export.transactions', 'transaction_list', req.admin.id, {
       format: chosen,
@@ -270,9 +290,10 @@ export class AdminFinancialController {
     @Query('q') q?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('attention') attention?: string,
   ) {
     return this.money.transactionsSummary(
-      await this.filters({ direction, kind, state, userId, currency, q, from, to }),
+      await this.filters({ direction, kind, state, userId, currency, q, from, to, attention }),
       req.admin,
     );
   }
@@ -318,6 +339,7 @@ export class AdminFinancialController {
     @Query('q') q?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('attention') attention?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
@@ -326,7 +348,17 @@ export class AdminFinancialController {
   ) {
     return this.money.listTransactions(
       {
-        ...(await this.filters({ direction, kind, state, userId, currency, q, from, to })),
+        ...(await this.filters({
+          direction,
+          kind,
+          state,
+          userId,
+          currency,
+          q,
+          from,
+          to,
+          attention,
+        })),
         page,
         limit,
         cursor,

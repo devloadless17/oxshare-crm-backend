@@ -238,3 +238,51 @@ describe('Mark resolved', () => {
     expect((await master.patch(resolvePath(txId), {})).status).toBe(400);
   });
 });
+
+describe('the Financial page — where a deposit anomaly task lands', () => {
+  interface Row {
+    id: string;
+    needsAttention: boolean;
+    attentionReason?: string | null;
+  }
+  const listPath = (clientId: string, extra = '') =>
+    `/v1/admin/transactions?userId=${clientId}${extra}`;
+
+  it('badges the flagged payment with its reason, and attention=true narrows to exactly it', async () => {
+    const clientId = await client('north');
+    const { txId } = await flagged(clientId, 'deposit');
+    // An ordinary deposit beside it, so the narrowing has something to leave out.
+    const { rows: ordinary } = await ctx.db.db.execute<{ id: string }>(sql`
+      INSERT INTO transactions (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref)
+      SELECT ${clientId}, id, 'deposit', '10.00000000', 'USD', 'success', 'whish', ${`attn-plain-${seq}`}
+        FROM wallets WHERE user_id = ${clientId}
+      RETURNING id`);
+    const master = await actingAs(ctx, 'admin', MASTER);
+
+    const all = await master.get(listPath(clientId));
+    expect(all.status).toBe(200);
+    const items = all.body.items as Row[];
+    expect(items.find((row) => row.id === txId)).toMatchObject({
+      needsAttention: true,
+      attentionReason: 'The platform REVERSED this deposit after it settled.',
+    });
+    expect(items.find((row) => row.id === ordinary[0].id)).toMatchObject({
+      needsAttention: false,
+      attentionReason: null,
+    });
+
+    const narrowed = await master.get(listPath(clientId, '&attention=true'));
+    expect((narrowed.body.items as Row[]).map((row) => row.id)).toEqual([txId]);
+
+    // Resolved: out of the attention view, still in the history, flag down.
+    expect((await master.patch(resolvePath(txId), { note: NOTE })).status).toBe(200);
+    expect((await master.get(listPath(clientId, '&attention=true'))).body.items).toEqual([]);
+    const after = (await master.get(listPath(clientId))).body.items as Row[];
+    expect(after.find((row) => row.id === txId)?.needsAttention).toBe(false);
+  });
+
+  it('refuses an attention value that is not `true`, like every enum filter there', async () => {
+    const master = await actingAs(ctx, 'admin', MASTER);
+    expect((await master.get('/v1/admin/transactions?attention=yes')).status).toBe(400);
+  });
+});
