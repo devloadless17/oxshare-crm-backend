@@ -21,8 +21,12 @@ import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Min } from 'cl
  * where a `javascript:` URL would land. Two shapes are allowed and nothing else
  * — a path under our own upload bucket, or an absolute https URL.
  */
-const LOGO_URL_PATTERN = /^(https:\/\/\S+|\/v1\/uploads\/payment-logos\/[A-Za-z0-9._-]+)$/;
-const LOGO_URL_MESSAGE =
+/*
+ * Exported: withdrawal methods (`withdrawal-method.dto.ts`) take their logos
+ * through the SAME upload endpoint, so they validate against the same rule.
+ */
+export const LOGO_URL_PATTERN = /^(https:\/\/\S+|\/v1\/uploads\/payment-logos\/[A-Za-z0-9._-]+)$/;
+export const LOGO_URL_MESSAGE =
   'logoUrl must be an https URL or a path returned by POST /admin/payment-methods/logo';
 
 /** What a client is shown and what a deposit is checked against. */

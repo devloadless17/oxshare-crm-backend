@@ -203,6 +203,8 @@ const WRITES_DETAILS: readonly string[] = [
   'withdrawal.rival.reject',
   'withdrawal.rival.submit',
   'withdrawal.settle',
+  'withdrawal_method.create',
+  'withdrawal_method.update',
 ];
 
 describe('audit details payloads are declared, not accidental', () => {

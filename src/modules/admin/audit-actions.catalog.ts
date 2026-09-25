@@ -476,6 +476,21 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'payment_method.create', label: 'Payment method added', group: 'Configuration' },
   { action: 'payment_method.update', label: 'Payment method changed', group: 'Configuration' },
   /*
+   * The payout side's twin. Its own actions rather than `payment_method.*`: a
+   * deposit rail and a withdrawal rail are separate rows switched separately,
+   * and "who stopped Whish payouts" must not be answered by a deposit change.
+   */
+  {
+    action: 'withdrawal_method.create',
+    label: 'Withdrawal method added',
+    group: 'Configuration',
+  },
+  {
+    action: 'withdrawal_method.update',
+    label: 'Withdrawal method changed',
+    group: 'Configuration',
+  },
+  /*
    * `payment_method.delete` is GONE, for the reason the `ip_allowlist` entries
    * below were removed: nothing writes it. A payment method is disabled, never
    * deleted — the only writers are `create` and `update`
