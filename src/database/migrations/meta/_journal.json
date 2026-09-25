@@ -1002,6 +1002,13 @@
       "when": 1789139298749,
       "tag": "0142_a_group_may_back_several_products",
       "breakpoints": true
+    },
+    {
+      "idx": 144,
+      "version": "7",
+      "when": 1789139298750,
+      "tag": "0143_withdrawal_method_logos",
+      "breakpoints": true
     }
   ]
 }

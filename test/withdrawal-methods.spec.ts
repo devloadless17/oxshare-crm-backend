@@ -124,3 +124,44 @@ describe('changing a method', () => {
     expect(await offeredToClients()).toEqual(['bank', 'whish']);
   });
 });
+
+describe('migration 0143 — withdrawal logos from the deposit twin', () => {
+  /*
+   * Re-applies the migration's statement against this suite's database, where
+   * the migration has already run once: the point is that it FILLS gaps from
+   * the same-key deposit method and never overwrites a logo that is set.
+   */
+  async function runBackfill(): Promise<void> {
+    await ctx.db.execute(sql`
+      UPDATE withdrawal_payment_methods AS w
+         SET logo_url = d.logo_url, updated_at = now()
+        FROM payment_methods AS d
+       WHERE d.key = w.key AND w.logo_url IS NULL AND d.logo_url IS NOT NULL
+    `);
+  }
+
+  it('fills a missing logo from the deposit method with the same key, and only then', async () => {
+    const logo = '/v1/uploads/payment-logos/whish-logo.svg';
+    await ctx.db.execute(sql`
+      INSERT INTO payment_methods (key, name, currency, logo_url)
+      VALUES ('whish', 'Whish Money', 'USD', ${logo})
+      ON CONFLICT (key) DO UPDATE SET logo_url = ${logo}
+    `);
+    await ctx.db.execute(
+      sql`UPDATE withdrawal_payment_methods SET logo_url = NULL WHERE key = 'whish'`,
+    );
+    await methods.create({ key: 'bank', name: 'Bank transfer' }, TEST_ACTOR);
+
+    await runBackfill();
+
+    const rows = await methods.listAll();
+    expect(rows.find((row) => row.key === 'whish')?.logoUrl).toBe(logo);
+    // No deposit twin with a logo — left as it was.
+    expect(rows.find((row) => row.key === 'bank')?.logoUrl).toBeNull();
+
+    // An operator's own withdrawal logo is never overwritten.
+    await methods.update('whish', { logoUrl: 'https://cdn.example.com/whish-out.svg' }, TEST_ACTOR);
+    await runBackfill();
+    expect((await methods.findOne('whish'))?.logoUrl).toBe('https://cdn.example.com/whish-out.svg');
+  });
+});
