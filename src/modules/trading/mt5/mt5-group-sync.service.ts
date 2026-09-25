@@ -210,8 +210,13 @@ export class Mt5GroupSyncService {
   }
 
   /**
-   * Every mirrored group — removed ones included — with the product that sells
-   * it and how many accounts the CRM holds in it. The MT5 Groups screen.
+   * The groups the server currently reports, with the product that sells each
+   * and how many accounts the CRM holds in it. The MT5 Groups screen.
+   *
+   * Groups the server stopped reporting are LEFT OUT (25 Sep 2026, the owner's
+   * call): the screen lists what MT5 holds today. They stay in the mirror —
+   * `removed_at` is what lets a group that comes back be restored rather than
+   * duplicated — they are just not shown.
    *
    * THREE plain queries merged in memory rather than one with correlated
    * subqueries. Groups number in the dozens, and Drizzle renders a column
@@ -231,11 +236,9 @@ export class Mt5GroupSyncService {
           name: mt5Groups.name,
           currency: mt5Groups.currency,
           leverageDefault: mt5Groups.leverageDefault,
-          firstSeenAt: mt5Groups.firstSeenAt,
-          lastSeenAt: mt5Groups.lastSeenAt,
-          removedAt: mt5Groups.removedAt,
         })
         .from(mt5Groups)
+        .where(isNull(mt5Groups.removedAt))
         .orderBy(mt5Groups.name),
       this.db
         .select({
