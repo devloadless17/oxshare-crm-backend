@@ -2986,6 +2986,148 @@
         ]
       }
     },
+    "/v1/admin/ib-commission-types": {
+      "get": {
+        "description": "Each row names the products sold on it, so a delete or a disable can be refused on the screen before the API refuses it.",
+        "operationId": "AdminIbCommissionTypesController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IbCommissionTypeDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every commission type, disabled ones included",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Money per standard lot for the partners’ commission and for the client’s rebate. Each level of the ladder takes a percentage of these. Assign it to products on the product form.",
+        "operationId": "AdminIbCommissionTypesController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateIbCommissionTypeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbCommissionTypeDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add a commission type",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib-commission-types/{id}": {
+      "patch": {
+        "description": "Applies to the NEXT trade on every product sold on it. Accruals record the type AND the pool it produced, so nothing already earned is restated. Disabling one that products are sold on is refused: a disabled type stops paying, and those products would keep trading while every partner on them earned nothing.",
+        "operationId": "AdminIbCommissionTypesController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateIbCommissionTypeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbCommissionTypeDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update a commission type",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "description": "Refuses one that products are sold on, naming them, and one that has ever priced a payout — the record of what was paid has to stay explicable. Disable it instead.",
+        "operationId": "AdminIbCommissionTypesController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Remove a commission type",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/payments/methods": {
       "get": {
         "description": "Enabled methods with configured pay-to details, in the operator’s chosen order. A method the operator has not finished setting up is absent rather than shown as unusable.",
@@ -12682,41 +12824,15 @@
             "type": "boolean",
             "description": "False when the level is disabled OR not configured at all. A disabled level pays nothing."
           },
-          "levelCommissionMode": {
-            "type": "string",
-            "enum": [
-              "percent",
-              "per_lot"
-            ],
-            "nullable": true,
-            "description": "How their own commission is priced."
-          },
-          "levelCommissionRate": {
+          "levelCommissionShare": {
             "type": "string",
             "nullable": true,
-            "description": "Their share of broker revenue, as a percentage. Read in `percent` mode."
+            "description": "Their rung’s percentage of the traded product’s commission per lot (0140). Null when the rung is not configured."
           },
-          "levelCommissionAmountPerLot": {
+          "levelRebateShare": {
             "type": "string",
             "nullable": true,
-            "description": "Money per standard lot. Read in `per_lot` mode."
-          },
-          "levelRebateMode": {
-            "type": "string",
-            "enum": [
-              "percent",
-              "per_lot"
-            ],
-            "nullable": true
-          },
-          "levelRebateRate": {
-            "type": "string",
-            "nullable": true,
-            "description": "What their clients get back, as a percentage of the same revenue."
-          },
-          "levelRebateAmountPerLot": {
-            "type": "string",
-            "nullable": true
+            "description": "What their clients get back, as a percentage of the product’s rebate per lot."
           },
           "referralCode": {
             "type": "string"
@@ -12783,12 +12899,8 @@
           "level",
           "levelName",
           "levelEnabled",
-          "levelCommissionMode",
-          "levelCommissionRate",
-          "levelCommissionAmountPerLot",
-          "levelRebateMode",
-          "levelRebateRate",
-          "levelRebateAmountPerLot",
+          "levelCommissionShare",
+          "levelRebateShare",
           "referralCode",
           "active",
           "approvedAt",
@@ -12869,52 +12981,15 @@
             "type": "boolean",
             "description": "A disabled rung pays nobody standing on it. Disabling is refused while partners are there — see the service."
           },
-          "commissionMode": {
+          "commissionShare": {
             "type": "string",
-            "enum": [
-              "per_lot",
-              "percent",
-              "share_of_parent"
-            ],
-            "description": "How the PARTNER’s leg is priced. Always `per_lot` on anything saved since 0117; the other two appear only on rungs configured before it."
+            "example": "70.0000",
+            "description": "The partner’s percentage of the product’s commission per lot. Paid on every trade that reaches this rung, independently of the shares on the rungs beneath it."
           },
-          "commissionRate": {
+          "rebateShare": {
             "type": "string",
-            "example": "30.0000",
-            "description": "The partner’s share of broker revenue, as a percentage. Read in `percent` mode."
-          },
-          "commissionAmountPerLot": {
-            "type": "string",
-            "nullable": true,
-            "example": "10.00000000",
-            "description": "Money per standard lot. Set in `per_lot` mode, NULL in the other."
-          },
-          "rebateMode": {
-            "type": "string",
-            "enum": [
-              "per_lot",
-              "percent",
-              "share_of_parent"
-            ],
-            "description": "How the CLIENT’s rebate is priced. Always `per_lot` on anything saved since 0117."
-          },
-          "rebateRate": {
-            "type": "string",
-            "example": "0.0000"
-          },
-          "rebateAmountPerLot": {
-            "type": "string",
-            "nullable": true,
-            "example": "2.00000000"
-          },
-          "revenueBasis": {
-            "type": "string",
-            "enum": [
-              "commission_swap",
-              "spread",
-              "commission_swap_spread"
-            ],
-            "description": "WHICH revenue a percentage at this rung is a share of — FR-IB-16. Ignored entirely by a per-lot term, which is priced from volume and never from revenue."
+            "example": "50.0000",
+            "description": "The client’s percentage of the product’s rebate per lot, read from the introducer’s rung."
           },
           "partnerCount": {
             "type": "number",
@@ -12936,13 +13011,8 @@
           "name",
           "description",
           "enabled",
-          "commissionMode",
-          "commissionRate",
-          "commissionAmountPerLot",
-          "rebateMode",
-          "rebateRate",
-          "rebateAmountPerLot",
-          "revenueBasis",
+          "commissionShare",
+          "rebateShare",
           "partnerCount",
           "createdAt",
           "updatedAt"
@@ -12953,8 +13023,8 @@
         "properties": {
           "maxLevels": {
             "type": "number",
-            "example": 2,
-            "description": "How deep the ladder may run, from `IB_MAX_LEVELS`. Read by the form so it stops offering \"add a level\" at the right point — a hardcoded copy would drift the day a broker negotiates a deeper structure."
+            "example": 10,
+            "description": "How deep the ladder may run. Read by the form so it stops offering \"add a level\" at the right point — a hardcoded copy would drift the day the engine changes."
           },
           "absoluteMaxLevels": {
             "type": "number",
@@ -12987,43 +13057,15 @@
             "nullable": true,
             "maxLength": 2000
           },
-          "commissionMode": {
+          "commissionShare": {
             "type": "string",
-            "enum": [
-              "per_lot"
-            ],
-            "default": "per_lot"
+            "example": "30.0000",
+            "default": "0"
           },
-          "commissionRate": {
+          "rebateShare": {
             "type": "string",
-            "example": "30.0000"
-          },
-          "commissionAmountPerLot": {
-            "type": "string",
-            "example": "10.00000000"
-          },
-          "rebateMode": {
-            "type": "string",
-            "enum": [
-              "per_lot"
-            ],
-            "default": "per_lot"
-          },
-          "rebateRate": {
-            "type": "string",
-            "example": "0.0000"
-          },
-          "rebateAmountPerLot": {
-            "type": "string",
-            "example": "2.00000000"
-          },
-          "revenueBasis": {
-            "type": "string",
-            "enum": [
-              "commission_swap",
-              "spread",
-              "commission_swap_spread"
-            ]
+            "example": "50.0000",
+            "default": "0"
           },
           "enabled": {
             "type": "boolean",
@@ -13048,40 +13090,144 @@
             "nullable": true,
             "maxLength": 2000
           },
-          "commissionMode": {
-            "type": "string",
-            "enum": [
-              "per_lot"
-            ]
-          },
-          "commissionRate": {
+          "commissionShare": {
             "type": "string"
           },
-          "commissionAmountPerLot": {
+          "rebateShare": {
             "type": "string"
-          },
-          "rebateMode": {
-            "type": "string",
-            "enum": [
-              "per_lot"
-            ]
-          },
-          "rebateRate": {
-            "type": "string"
-          },
-          "rebateAmountPerLot": {
-            "type": "string"
-          },
-          "revenueBasis": {
-            "type": "string",
-            "enum": [
-              "commission_swap",
-              "spread",
-              "commission_swap_spread"
-            ]
           },
           "enabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "IbCommissionTypeDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Standard terms"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "A disabled type pays nobody on the products sold on it. Disabling is refused while products are assigned — move them first."
+          },
+          "commissionPerLot": {
+            "type": "string",
+            "example": "10.00000000",
+            "description": "Money per standard lot for the PARTNERS, before each level’s share. A decimal string."
+          },
+          "rebatePerLot": {
+            "type": "string",
+            "example": "3.00000000",
+            "description": "Money per standard lot returned to the trading CLIENT, before the introducer level’s share. A decimal string."
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 0
+          },
+          "productNames": {
+            "description": "The products sold on this type, by name. Part of the row so a delete or a disable can be refused on the screen before the API refuses it.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "enabled",
+          "commissionPerLot",
+          "rebatePerLot",
+          "sortOrder",
+          "productNames",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "CreateIbCommissionTypeDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Standard terms",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000
+          },
+          "commissionPerLot": {
+            "type": "string",
+            "example": "10"
+          },
+          "rebatePerLot": {
+            "type": "string",
+            "example": "3"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 0,
+            "minimum": 0,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "name",
+          "commissionPerLot",
+          "rebatePerLot"
+        ]
+      },
+      "UpdateIbCommissionTypeDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000
+          },
+          "commissionPerLot": {
+            "type": "string"
+          },
+          "rebatePerLot": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000
           }
         }
       },
@@ -15549,10 +15695,11 @@
             ],
             "description": "Fixed at creation. At most ONE demo product exists; it is offered to every client for demo accounts regardless of agency, and cannot be assigned to an agency. Real products carry live groups, the demo product carries demo groups."
           },
-          "spreadMarkupPerLot": {
+          "commissionTypeId": {
             "type": "string",
-            "example": "1.50000000",
-            "description": "The broker's spread markup per standard lot, in the account currency. A COMMERCIAL RECORD ONLY — nothing computes from it, and it is deliberately not part of the revenue partners are paid a share of. A decimal string, never a number: it is money."
+            "format": "uuid",
+            "nullable": true,
+            "description": "The commission type this product pays partners on (0140) — the rate card whose per-lot amounts each level takes a share of. NULL means the product pays no partner commission at all; the demo product never carries one."
           },
           "sortOrder": {
             "type": "number",
@@ -15570,7 +15717,7 @@
           "name",
           "enabled",
           "type",
-          "spreadMarkupPerLot",
+          "commissionTypeId",
           "sortOrder",
           "groups"
         ]
@@ -15629,9 +15776,10 @@
               "demo"
             ]
           },
-          "spreadMarkupPerLot": {
+          "commissionTypeId": {
             "type": "string",
-            "example": "1.50000000"
+            "format": "uuid",
+            "nullable": true
           },
           "sortOrder": {
             "type": "number",

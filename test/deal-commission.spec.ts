@@ -8,6 +8,8 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CommissionRefusedError } from '../src/common/provisioning/commission-accrual.port';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { seedProductTerms, setLadderShares } from './support/commission-terms';
+import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 
 /*
  * The backlog decision now lives in `trading_settings`, with the environment as
@@ -49,6 +51,17 @@ const ORPHAN_LOGIN = '5009999';
 /* The referred client's DEMO account. Same client, same partner, practice money.
    Past the block-scoped logins below, which run to 5000006. */
 const DEMO_LOGIN = '5000007';
+
+/**
+ * The product every fixture account here is sold on: $10 a lot to the
+ * partners, nothing back to the client (0140). With level 1 at 30% a one-lot
+ * trade pays $3.00 on a $10.00 pool — the same two figures the suite asserted
+ * when the base was "the 10.00 the broker kept", which is why most
+ * expectations below did not have to move. What the broker earned on a trade
+ * no longer enters the arithmetic at all.
+ */
+let terms: CommissionTypeTerms;
+let productId: string;
 
 async function makeUser(email: string): Promise<string> {
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
@@ -192,20 +205,7 @@ beforeAll(async () => {
    *
    * 0102 removed the ladder, so that class of drift has nowhere left to live.
    */
-  /* Legacy `percent` rows — see the note in ib-end-to-end.spec.ts. The form
-     cannot create these since 0117; the engine must still price them. */
-  await ctx.db.execute(
-    sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
-  );
-  await ctx.db.execute(sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_rebate_shape`);
-
-  await ctx.db.execute(sql`
-    UPDATE ib_levels
-       SET commission_mode = 'percent', commission_amount_per_lot = NULL,
-           rebate_amount_per_lot = NULL, commission_rate = 30.0000,
-           rebate_mode = 'percent', rebate_rate = 0.0000, enabled = true
-     WHERE level = 1
-  `);
+  await setLadderShares(ctx.db, [{ commission: '30' }]);
 
   partnerId = await makeUser('deal-partner@oxshare-e2e.test');
   clientId = await makeUser('deal-client@oxshare-e2e.test');
@@ -236,6 +236,22 @@ beforeAll(async () => {
     INSERT INTO trading_accounts (user_id, login, currency, environment)
     VALUES (${clientId}, ${DEMO_LOGIN}, 'USD', 'demo')
   `);
+
+  /* Every account above onto the product, and the product onto its type. */
+  const seeded = await seedProductTerms(ctx.db, {
+    name: 'Deal terms',
+    commissionPerLot: '10',
+    rebatePerLot: '0',
+    logins: [LOGIN, UNREFERRED_LOGIN, DEMO_LOGIN],
+  });
+  productId = seeded.productId;
+  terms = {
+    id: seeded.typeId,
+    name: 'Deal terms',
+    enabled: true,
+    commissionPerLot: '10.00000000',
+    rebatePerLot: '0',
+  };
 
   commissions = new CommissionService(
     ctx.db,
@@ -422,7 +438,7 @@ describe('an ingested deal pays the partner behind the client', () => {
     const run = await deals.accruePending(2);
 
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(closing))[0].amount).toBe('1.50000000');
+    expect((await accrualsFor(closing))[0].amount).toBe('3.00000000');
   });
 
   it('pays the whole position when it closes, entry charge included', async () => {
@@ -446,10 +462,12 @@ describe('an ingested deal pays the partner behind the client', () => {
     await deals.accruePending();
 
     const [accrual] = await accrualsFor(closing);
-    // 30% of the 10.00 the broker kept across BOTH legs — not of the 6.00 on
-    // the closing row alone.
+    // 30% of the $10 pool ONE closing lot puts on the table. The charges on
+    // either leg are not what pays (0140) — but both legs are consumed by the
+    // close, so the opener never comes back as an unpaid deal.
     expect(accrual.amount).toBe('3.00000000');
     expect(accrual.base_amount).toBe('10.00000000');
+    expect(await isProcessed(closing)).toBe(true);
   });
 
   /*
@@ -476,7 +494,8 @@ describe('an ingested deal pays the partner behind the client', () => {
     });
 
     await deals.accruePending();
-    expect((await accrualsFor(firstClose))[0].base_amount).toBe('7.00000000');
+    /* Each close is priced on ITS OWN volume: one lot, a $10 pool (0140). */
+    expect((await accrualsFor(firstClose))[0].base_amount).toBe('10.00000000');
 
     const secondClose = await ingest({
       ticket: '90232',
@@ -489,8 +508,9 @@ describe('an ingested deal pays the partner behind the client', () => {
 
     await deals.accruePending();
 
-    // Its own 3.00 only. The opener was already paid for by the first close.
-    expect((await accrualsFor(secondClose))[0].base_amount).toBe('3.00000000');
+    // Its own lot, its own $10 pool. The opener was consumed by the first
+    // close and is neither counted again nor re-queued by the second.
+    expect((await accrualsFor(secondClose))[0].base_amount).toBe('10.00000000');
   });
 
   it('counts a swap the client was charged, and not one they were paid', async () => {
@@ -509,9 +529,9 @@ describe('an ingested deal pays the partner behind the client', () => {
 
     await deals.accruePending();
 
-    // 30% of 15.00 — the broker kept both.
-    expect((await accrualsFor(charged))[0].amount).toBe('4.50000000');
-    // 30% of 10.00 — the broker PAID the swap out, so it is not revenue.
+    // The SAME on both. A partner is owed the product's per-lot terms on
+    // volume (0140); what MT5 charged or credited does not move the number.
+    expect((await accrualsFor(charged))[0].amount).toBe('3.00000000');
     expect((await accrualsFor(credited))[0].amount).toBe('3.00000000');
   });
 });
@@ -571,10 +591,11 @@ describe('what is finished, and what waits', () => {
     expect(await accrualsFor(id)).toHaveLength(0);
     expect(await deals.orphanBacklog()).toBe(1);
 
-    // The account is linked, which is the ordinary onboarding sequence.
+    // The account is linked, which is the ordinary onboarding sequence — and
+    // onto a product, because an account on none cannot be priced (0140).
     await ctx.db.execute(sql`
-      INSERT INTO trading_accounts (user_id, login, currency)
-      VALUES (${clientId}, ${ORPHAN_LOGIN}, 'USD')
+      INSERT INTO trading_accounts (user_id, login, currency, product_id)
+      VALUES (${clientId}, ${ORPHAN_LOGIN}, 'USD', ${productId})
     `);
 
     const second = await deals.accruePending();
@@ -604,17 +625,21 @@ describe('what is finished, and what waits', () => {
     expect(await processedAt(id)).not.toBeNull();
   });
 
-  it('finishes a trade the broker earned nothing on', async () => {
+  it('pays a trade the broker earned nothing on, because the terms are per lot', async () => {
+    /*
+     * A raw-spread round turn: MT5 charged nothing at all. This used to be
+     * marked done having paid nobody — a live bug on an ordinary setup. The
+     * product's terms are per lot (0140), so the partner is owed on volume.
+     */
     const id = await ingest({
       ticket: '90232',
       login: LOGIN,
       commission: '0.00000000',
       swap: '0.00000000',
     });
-
     const run = await deals.accruePending();
-
-    expect(run.nothingOwed).toBe(1);
+    expect(run.accrued).toBe(1);
+    expect((await accrualsFor(id))[0].amount).toBe('3.00000000');
     expect(await processedAt(id)).not.toBeNull();
   });
 
@@ -872,7 +897,7 @@ describe('only one feed pays for a trade', () => {
       // The SAME client whose deals pay a partner throughout this suite, so a
       // zero here is the refusal and not an unreferred client.
       clientUserId: clientId,
-      brokerRevenue: '10.00000000',
+      terms,
       lots: '1.00000000',
       currency: 'USD',
     });
@@ -1081,289 +1106,140 @@ describe('what the engine is allowed to pay for', () => {
 });
 
 /**
- * WHAT the accrual is a share of — FR-IB-04, FR-IB-16.
+ * ── WHAT THE ACCRUAL IS A SHARE OF: the product's commission TYPE (0140) ────
  *
- * ## This used to be a setting, and is now a constant
- *
- * `trading_settings.ib_revenue_basis` let an operator choose between MT5's
- * charged commission + swap, the product's spread markup, and both. Four cases
- * here covered the switching: that the setting reached the query, that a spread
- * basis found the product behind the trading account, and that an account
- * linked to NO product was refused-and-deferred rather than priced at zero.
- *
- * The control was removed in 0104 — commission is configured on the Commission
- * Programmes page, and a Trading-settings field that re-prices every partner is
- * a second place for two answers to disagree. `DEFAULT_REVENUE_BASIS` is
- * `commission_swap`, which is what this platform has always paid on, so nobody's
- * money moved.
- *
- * ## The one case worth keeping is the one that mattered most anyway
- *
- * The markup must not enter the base. It is a real column with a real value on
- * real products, one join from the number every partner is paid from — and the
- * whole reason the basis was ever a setting was that wiring it in silently
- * would re-price a live book. Now that nothing can switch it on, this is the
- * assertion that keeps it off.
+ * A trade is priced on the rate card of the product the account is sold on,
+ * and on nothing else — not on the charges MT5 reported, and not on a markup.
+ * Three shapes of product reach this queue and each has to end differently:
+ * a product on a type PAYS; a product with no type is DONE, having paid
+ * nobody, because that is a configured state; and an account linked to no
+ * product at all is REFUSED and retried, because nothing says what its trades
+ * are worth and marking it done would discard the commission permanently.
  */
 describe('what the accrual is a share of', () => {
-  const PRODUCT_LOGIN = '5000003';
-  let productClientId: string;
+  const RICH_LOGIN = '5000003';
+  const NO_PRODUCT_LOGIN = '5000004';
+  const UNTYPED_LOGIN = '5000005';
+  let richTypeId: string;
 
   beforeAll(async () => {
-    productClientId = await makeUser('deal-product-client@oxshare-e2e.test');
-    await ctx.db.execute(
-      sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${productClientId}`,
-    );
-
-    /*
-     * 7.50 per standard lot — the DESK's figure for this product, and a number
-     * that must reach no accrual.
-     */
+    const richClientId = await makeUser('deal-rich-client@oxshare-e2e.test');
+    const noProductClientId = await makeUser('deal-noproduct-client@oxshare-e2e.test');
+    const untypedClientId = await makeUser('deal-untyped-client@oxshare-e2e.test');
     await ctx.db.execute(sql`
-      INSERT INTO trading_products (name, enabled, type, sort_order, spread_markup_per_lot)
-      VALUES ('E2E Spread Product', true, 'real', 900, 7.50000000)
-      ON CONFLICT (name) DO UPDATE SET spread_markup_per_lot = 7.50000000
+      UPDATE users SET referred_by_ib_user_id = ${partnerId}
+      WHERE id IN (${richClientId}, ${noProductClientId}, ${untypedClientId})
+    `);
+
+    /* A SECOND product on a richer card: $25 a lot, against the suite's $10. */
+    const rich = await seedProductTerms(ctx.db, {
+      name: 'Rich terms',
+      commissionPerLot: '25',
+      rebatePerLot: '4',
+    });
+    richTypeId = rich.typeId;
+    await ctx.db.execute(sql`
+      INSERT INTO trading_accounts (user_id, login, currency, product_id)
+      VALUES (${richClientId}, ${RICH_LOGIN}, 'USD', ${rich.productId})
     `);
 
     await ctx.db.execute(sql`
+      INSERT INTO trading_accounts (user_id, login, currency)
+      VALUES (${noProductClientId}, ${NO_PRODUCT_LOGIN}, 'USD')
+    `);
+
+    /* A product configured to pay no partner commission: real, enabled, no type. */
+    await ctx.db.execute(sql`
+      INSERT INTO trading_products (name, enabled, type, sort_order)
+      VALUES ('Untyped product', true, 'real', 901)
+      ON CONFLICT (name) DO NOTHING
+    `);
+    await ctx.db.execute(sql`
       INSERT INTO trading_accounts (user_id, login, currency, product_id)
-      VALUES (${productClientId}, ${PRODUCT_LOGIN}, 'USD',
-              (SELECT id FROM trading_products WHERE name = 'E2E Spread Product'))
+      VALUES (${untypedClientId}, ${UNTYPED_LOGIN}, 'USD',
+              (SELECT id FROM trading_products WHERE name = 'Untyped product'))
     `);
   });
 
-  it('ignores the product markup entirely, however large it is', async () => {
-    /*
-     * The account below is linked to a product carrying a 7.50 markup and trades
-     * 2 lots — 15.00 of spread sitting one join away from the base. The accrual
-     * is a share of the 10.00 of CHARGES and nothing else.
-     *
-     * If this assertion ever fails, a deployment has been silently re-priced.
-     */
+  it('prices the trade on the product’s own type, not on the charges beside it', async () => {
     const opening = await ingest({
       ticket: '90310',
-      login: PRODUCT_LOGIN,
+      login: RICH_LOGIN,
       commission: '-4.00000000',
       swap: '0.00000000',
       entry: 0,
       volume: '2.00000000',
-      positionId: 'P-DEFAULT',
+      positionId: 'P-RICH',
     });
     const closing = await ingest({
       ticket: '90311',
-      login: PRODUCT_LOGIN,
+      login: RICH_LOGIN,
       commission: '-6.00000000',
       swap: '0.00000000',
       entry: 1,
       volume: '2.00000000',
-      positionId: 'P-DEFAULT',
+      positionId: 'P-RICH',
     });
-
     await deals.accruePending();
 
+    /* 30% of a $50 pool: two lots at $25. The $10 of charges is not in it. */
     const [accrual] = await accrualsFor(closing);
-    expect(accrual.base_amount).toBe('10.00000000');
+    expect(accrual.amount).toBe('15.00000000');
+    expect(accrual.base_amount).toBe('50.00000000');
     expect(await isProcessed(opening)).toBe(true);
+
+    /* The card that priced it is on the row, beside the rung. */
+    const { rows } = await ctx.db.execute<{ commission_type_id: string | null }>(
+      sql`SELECT commission_type_id FROM ib_accruals WHERE source_id = ${closing}`,
+    );
+    expect(rows[0].commission_type_id).toBe(richTypeId);
   });
 
-  /*
-   * An account linked to NO product is priced identically, and that is the other
-   * half of the same guarantee. Under a spread basis this was a REFUSAL — there
-   * was no honest number — and the deal deferred on the backoff. With the markup
-   * out of the base there is nothing to look up, so an unlinked account is an
-   * ordinary trade again.
-   */
-  it('pays an account linked to no product like any other', async () => {
+  it('refuses a trade on an account linked to no product, and keeps it queued', async () => {
     const closing = await ingest({
       ticket: '90312',
-      login: LOGIN,
+      login: NO_PRODUCT_LOGIN,
       commission: '-10.00000000',
       swap: '0.00000000',
       entry: 1,
       volume: '2.00000000',
       positionId: 'P-NOPRODUCT',
     });
-
     const run = await deals.accruePending();
 
-    expect(run.failed).toBe(0);
-    const [accrual] = await accrualsFor(closing);
-    expect(accrual.base_amount).toBe('10.00000000');
-  });
-});
-
-/*
- * ── FR-IB-16: A PROGRAMME PRICES ON THE BASIS IT NAMES (0106) ────────────────
- *
- * The block above pins the DEFAULT: a 7.50 markup sitting one join from the
- * base reaches no accrual, because `commission_swap` is what every deployment
- * computes on. That is the guard against a silent re-pricing, and it stays.
- *
- * It is only half the requirement. FR-IB-16 asks for the commission
- * mathematics to be "configured through the IB program catalogue, so that the
- * economics applied at runtime MATCH the agreed, documented method" — so the
- * other half is that a programme actually set to `spread` is paid on the
- * markup. Without this, `revenue_basis` could be stored, shown on the form,
- * audited, and read by nothing, and every test in this file would still pass.
- *
- * Fully isolated — its own programme, partner, client and account — rather than
- * re-pointing the shared partner. Two tests in this file assert
- * `accrual.ib_user_id === partnerId`, and a shared fixture that changes
- * economics halfway through the file is how a suite starts depending on its own
- * ordering.
- */
-describe('a programme priced on the spread', () => {
-  const SPREAD_LOGIN = '5000004';
-  const NO_PRODUCT_LOGIN = '5000005';
-  let spreadPartnerId: string;
-
-  beforeAll(async () => {
-    /*
-     * 20% at depth 1, deliberately not the 30% the shared programme carries.
-     * Both bases are live on this trade — 10.00 of charges and 15.00 of spread
-     * — so a rate shared with the other fixture would make "which base was
-     * used" and "which programme was read" the same question, and a wrong
-     * answer to either would look like a right answer to the other.
-     */
-    /*
-     * RUNG 2 carries these terms, not rung 1, and that is forced rather than
-     * chosen (0112).
-     *
-     * Terms belong to a rung now, so two partners standing on the SAME rung
-     * cannot be priced differently — which this suite needs, because the other
-     * fixture's partner is on rung 1 at 30% of charges and this one has to be
-     * on the spread at 20%. Putting this partner a rung deeper is the only way
-     * to express two contracts on one platform, and it is worth knowing that
-     * the programme catalogue could express it without moving anybody.
-     */
-    await ctx.db.execute(sql`
-      INSERT INTO ib_levels (level, name, commission_mode, commission_rate, revenue_basis)
-      VALUES (2, 'Spread Priced', 'percent', 20.0000, 'spread')
-      ON CONFLICT (level) DO UPDATE
-        SET commission_mode = 'percent', commission_amount_per_lot = NULL,
-            commission_rate = 20.0000, revenue_basis = 'spread', enabled = true
-    `);
-
-    spreadPartnerId = await makeUser('deal-spread-partner@oxshare-e2e.test');
-    const spreadClientId = await makeUser('deal-spread-client@oxshare-e2e.test');
-    const noProductClientId = await makeUser('deal-spread-noproduct@oxshare-e2e.test');
-
-    await ctx.db.execute(sql`
-      INSERT INTO ib_accounts (user_id, referral_code, active, level)
-      VALUES (${spreadPartnerId}, 'DEALSPREAD', true, 2)
-    `);
-    await ctx.db.execute(sql`
-      UPDATE users SET referred_by_ib_user_id = ${spreadPartnerId}
-      WHERE id IN (${spreadClientId}, ${noProductClientId})
-    `);
-
-    /* One account on the 7.50 product, one linked to nothing at all. */
-    await ctx.db.execute(sql`
-      INSERT INTO trading_accounts (user_id, login, currency, product_id)
-      VALUES (${spreadClientId}, ${SPREAD_LOGIN}, 'USD',
-              (SELECT id FROM trading_products WHERE name = 'E2E Spread Product'))
-    `);
-    await ctx.db.execute(sql`
-      INSERT INTO trading_accounts (user_id, login, currency)
-      VALUES (${noProductClientId}, ${NO_PRODUCT_LOGIN}, 'USD')
-    `);
+    expect(run.failed).toBe(1);
+    expect(await accrualsFor(closing)).toEqual([]);
+    expect(await isProcessed(closing)).toBe(false);
+    /* Deferred on the backoff with the reason on the row, like any refusal. */
+    expect((await retryState(closing)).commission_last_error).toMatch(/no product/);
+    expect(await deals.backlog()).toBe(1);
   });
 
-  it('pays on the product markup, not on the charges beside it', async () => {
-    /*
-     * 2 lots on a product marked up 7.50 per lot, with 10.00 of charges on the
-     * same round turn. Both numbers are real and only one is this programme's.
-     *
-     *   spread base  = 2 × 7.50 = 15.00   ← what this programme agreed to
-     *   charges base =            10.00   ← what the DEFAULT programme uses
-     *
-     * At 20%: 3.00 from the spread, or 2.00 from the charges. The two are far
-     * enough apart that a base picked from the wrong place cannot round into
-     * looking correct.
-     */
-    const opening = await ingest({
-      ticket: '90320',
-      login: SPREAD_LOGIN,
-      commission: '-4.00000000',
-      swap: '0.00000000',
-      entry: 0,
-      volume: '2.00000000',
-      positionId: 'P-SPREAD',
-    });
+  it('finishes a trade on a product with no commission type, paying nobody', async () => {
     const closing = await ingest({
-      ticket: '90321',
-      login: SPREAD_LOGIN,
-      commission: '-6.00000000',
-      swap: '0.00000000',
-      entry: 1,
-      volume: '2.00000000',
-      positionId: 'P-SPREAD',
-    });
-
-    await deals.accruePending();
-
-    const [accrual] = await accrualsFor(closing);
-    expect(accrual.base_amount).toBe('15.00000000');
-    expect(accrual.amount).toBe('3.00000000');
-    expect(accrual.ib_user_id).toBe(spreadPartnerId);
-    expect(await isProcessed(opening)).toBe(true);
-  });
-
-  /*
-   * ── THE DANGEROUS HALF ───────────────────────────────────────────────────
-   *
-   * An account linked to NO product has no markup, so a spread-priced
-   * programme has no honest number to pay on. `brokerRevenueFor` REFUSES, the
-   * basis is omitted from the map rather than stored as zero, and `calculate`
-   * declines that leg.
-   *
-   * The deal must stay UNPROCESSED. A zero would be marked done and the
-   * commission lost for good; falling back to the charges would pay the partner
-   * on terms they never agreed to, at a number that looks entirely ordinary on
-   * the row. Deferring is the only outcome that keeps the money owed while
-   * somebody links the product.
-   */
-  it('refuses rather than falling back when the account has no product', async () => {
-    const closing = await ingest({
-      ticket: '90322',
-      login: NO_PRODUCT_LOGIN,
+      ticket: '90313',
+      login: UNTYPED_LOGIN,
       commission: '-10.00000000',
       swap: '0.00000000',
       entry: 1,
       volume: '2.00000000',
-      positionId: 'P-SPREAD-NOPRODUCT',
+      positionId: 'P-UNTYPED',
     });
+    const run = await deals.accruePending();
 
-    await deals.accruePending();
-
+    expect(run.nothingOwed).toBe(1);
+    expect(run.failed).toBe(0);
     expect(await accrualsFor(closing)).toEqual([]);
-    /* Still queued, so it pays in full the moment the product is linked. */
-    expect(await isProcessed(closing)).toBe(false);
+    expect(await isProcessed(closing)).toBe(true);
   });
 });
 
-/*
- * ── A ZERO-REVENUE TRADE STILL OWES A PER-LOT PARTNER ──────────────────────
+/**
+ * ── A TRADE THE BROKER EARNED NOTHING ON ─────────────────────────────────────
  *
- * This was a LIVE BUG and it lost money silently.
- *
- * `accruePending` short-circuited when the broker's revenue was zero: no
- * revenue, no share to take, mark the deal done. That reasoning held while
- * every payout was a PERCENTAGE of what the broker earned.
- *
- * Per-lot terms broke it. $10 a lot is owed on VOLUME and is deliberately
- * indifferent to what the broker made — `calculate` pays a per-lot leg before
- * the base is even required to be positive, because a trade earning the house
- * nothing still owes the partner their amount.
- *
- * So on a raw-spread group — no commission, no swap, which is an ordinary setup
- * and what this deployment actually runs — EVERY deal was marked processed
- * having paid nobody. Nothing reported it: "nothing owed" is a legitimate
- * outcome, the row looked handled, and the partners simply never got paid.
- *
- * Both directions are pinned, because the fix is a deletion and a deletion is
- * easy to over-apply: a per-lot rung must now be PAID on a zero-revenue trade,
- * and a percentage rung must still accrue NOTHING on one.
+ * A raw-spread group — no commission, no swap — is an ordinary setup, and it
+ * is the one on which every closed trade was once marked processed having
+ * paid nobody. The terms are per lot (0140), so volume is what pays.
  */
 describe('a trade the broker earned nothing on', () => {
   const ZERO_LOGIN = '5000006';
@@ -1372,7 +1248,6 @@ describe('a trade the broker earned nothing on', () => {
   beforeAll(async () => {
     zeroPartnerId = await makeUser('deal-zero-partner@oxshare-e2e.test');
     const zeroClientId = await makeUser('deal-zero-client@oxshare-e2e.test');
-
     await ctx.db.execute(sql`
       INSERT INTO ib_accounts (user_id, referral_code, active, level)
       VALUES (${zeroPartnerId}, 'DEALZERO', true, 1)
@@ -1381,41 +1256,12 @@ describe('a trade the broker earned nothing on', () => {
       UPDATE users SET referred_by_ib_user_id = ${zeroPartnerId} WHERE id = ${zeroClientId}
     `);
     await ctx.db.execute(sql`
-      INSERT INTO trading_accounts (user_id, login, currency)
-      VALUES (${zeroClientId}, ${ZERO_LOGIN}, 'USD')
+      INSERT INTO trading_accounts (user_id, login, currency, product_id)
+      VALUES (${zeroClientId}, ${ZERO_LOGIN}, 'USD', ${productId})
     `);
   });
 
-  /** Level 1 pays a flat amount per lot, indifferent to revenue. */
-  async function perLotLadder(): Promise<void> {
-    await ctx.db.execute(sql`
-      UPDATE ib_levels
-         SET commission_mode = 'per_lot', commission_amount_per_lot = 10.00000000,
-             commission_rate = 0, rebate_mode = 'per_lot', rebate_amount_per_lot = 0,
-             rebate_rate = 0, enabled = true
-       WHERE level = 1
-    `);
-  }
-
-  /** Back to the percentage rung the rest of this file assumes. */
-  async function percentLadder(): Promise<void> {
-    await ctx.db.execute(sql`
-      UPDATE ib_levels
-         SET commission_mode = 'percent', commission_amount_per_lot = NULL,
-             commission_rate = 30.0000, rebate_mode = 'percent',
-             rebate_amount_per_lot = NULL, rebate_rate = 0, enabled = true
-       WHERE level = 1
-    `);
-  }
-
-  afterEach(async () => {
-    await percentLadder();
-  });
-
-  it('pays a per-lot partner on a trade with no commission and no swap', async () => {
-    await perLotLadder();
-
-    /* A raw-spread round turn: MT5 charged nothing at all. */
+  it('pays the partner on volume when MT5 charged nothing at all', async () => {
     const opening = await ingest({
       ticket: '90400',
       login: ZERO_LOGIN,
@@ -1434,38 +1280,12 @@ describe('a trade the broker earned nothing on', () => {
       volume: '2.00000000',
       positionId: 'P-ZERO',
     });
-
     await deals.accruePending();
 
-    /* $10 a lot on 2 lots. The broker's $0 does not enter it. */
+    /* 30% of a $20 pool: two lots at $10. */
     const [accrual] = await accrualsFor(closing);
-    expect(accrual?.amount).toBe('20.00000000');
+    expect(accrual?.amount).toBe('6.00000000');
     expect(accrual?.ib_user_id).toBe(zeroPartnerId);
     expect(await isProcessed(opening)).toBe(true);
-  });
-
-  /*
-   * The other direction, and it is why the fix is "ask `calculate`" rather than
-   * "always accrue": a percentage of nothing is nothing, and the deal is still
-   * marked done rather than retried forever. MT5's amounts are final the moment
-   * they are reported, so re-reading the row can only reach the same answer.
-   */
-  it('accrues nothing for a percentage partner, and still marks the deal done', async () => {
-    await percentLadder();
-
-    const closing = await ingest({
-      ticket: '90403',
-      login: ZERO_LOGIN,
-      commission: '0.00000000',
-      swap: '0.00000000',
-      entry: 1,
-      volume: '2.00000000',
-      positionId: 'P-ZERO-PCT',
-    });
-
-    await deals.accruePending();
-
-    expect(await accrualsFor(closing)).toHaveLength(0);
-    expect(await isProcessed(closing)).toBe(true);
   });
 });

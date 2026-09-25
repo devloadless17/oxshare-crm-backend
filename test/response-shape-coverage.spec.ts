@@ -84,6 +84,7 @@ const NO_JSON_BODY: readonly string[] = [
   'DELETE /admin/agencies/:id',
   'DELETE /admin/currencies/:code',
   'DELETE /admin/external-links/:id',
+  'DELETE /admin/ib-commission-types/:id',
   'DELETE /admin/ib-levels/:level',
   'DELETE /admin/kyc-config/steps/:id',
   'DELETE /admin/leverages/:ratio',

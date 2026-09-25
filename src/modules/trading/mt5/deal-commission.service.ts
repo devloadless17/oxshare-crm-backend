@@ -2,20 +2,21 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, asc, eq, inArray, isNotNull, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
-import { ibAccruals, mt5Deals, tradingAccounts, tradingProducts } from '../../../database/schema';
+import {
+  ibAccruals,
+  ibCommissionTypes,
+  mt5Deals,
+  tradingAccounts,
+  tradingProducts,
+} from '../../../database/schema';
 import { LEDGER_REFERENCE } from '../../../database/ledger-reference';
 import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
 import {
   COMMISSION_ACCRUAL,
   CommissionRefusedError,
   type CommissionAccrualPort,
+  type ProductCommissionTerms,
 } from '../../../common/provisioning/commission-accrual.port';
-import { brokerRevenueFor } from '../broker-revenue';
-import {
-  DEFAULT_REVENUE_BASIS,
-  REVENUE_BASES,
-  type RevenueBasis,
-} from '../../../common/revenue-basis';
 import {
   CLOSING_ENTRIES,
   TRADE_ACTIONS,
@@ -300,22 +301,12 @@ export class DealCommissionService {
     /*
      * ── WHAT A PARTNER IS PAID ON ──────────────────────────────────────────
      *
-     * FR-IB-16, and it is now a CONSTANT rather than a setting (0104).
-     *
-     * `trading_settings.ib_revenue_basis` let an operator choose between MT5's
-     * charged commission + swap and the product's spread markup. It was removed
-     * at the operator's request: commission is configured on the Commission
-     * Programmes page, and a control on a different screen that changes what
-     * every partner earns is a second place to look when a payout surprises
-     * somebody.
-     *
-     * `commission_swap` is what the platform has always shipped and paid on, so
-     * removing the choice moved nobody's money. The spread-markup arithmetic
-     * stays in `brokerRevenueFor` — reachable by changing this one line, which
-     * is where a broker who wants it should have the conversation.
+     * The traded PRODUCT's commission type, since 0140 — money per lot on the
+     * rate card the product is sold on, split by each rung's share. What the
+     * broker earned on the trade no longer enters the arithmetic at all; the
+     * `revenue_basis` that chose between MT5's charges and the spread markup
+     * went with the percentage-of-revenue model it qualified.
      */
-    const basis: RevenueBasis = DEFAULT_REVENUE_BASIS;
-
     /*
      * ── NOBODY HAS SAID WHAT TO DO WITH THE BACKLOG, SO NOTHING IS PAID ────
      *
@@ -385,18 +376,19 @@ export class DealCommissionService {
          */
         environment: tradingAccounts.environment,
         /*
-         * What the DESK says this account's product is sold on, per standard
-         * lot — the spread half of `brokerRevenueFor`.
-         *
-         * NULL means two different things and the difference matters: the
-         * column itself is `NOT NULL DEFAULT 0`, so a product always carries a
-         * figure and zero is a legitimate one. A null arriving here can only
-         * come from the LEFT JOIN — the account is linked to no product at all,
-         * so nothing in the system knows what it is sold on. Under a
-         * spread-inclusive basis that is a configuration hole rather than a
-         * price, and `brokerRevenueFor` refuses it.
+         * The PRODUCT the account is sold on, and the commission TYPE that
+         * product pays partners on (0140). Both LEFT-joined, and the two nulls
+         * mean different things: a null `productId` is an account linked to no
+         * product — nothing says what its trades pay, so the trade is REFUSED
+         * and retried — while a null `commissionTypeId` on a real product is a
+         * product configured to pay no partner commission, which is done.
          */
-        spreadMarkupPerLot: tradingProducts.spreadMarkupPerLot,
+        productId: tradingAccounts.productId,
+        commissionTypeId: tradingProducts.commissionTypeId,
+        commissionTypeName: ibCommissionTypes.name,
+        commissionTypeEnabled: ibCommissionTypes.enabled,
+        commissionPerLot: ibCommissionTypes.commissionPerLot,
+        rebatePerLot: ibCommissionTypes.rebatePerLot,
       })
       .from(mt5Deals)
       /*
@@ -414,13 +406,14 @@ export class DealCommissionService {
       /*
        * LEFT for the same reason as the join above it, one step further out: an
        * account with no product must still be RETURNED so the loop can decide
-       * what that costs. Under the default basis it costs nothing — the markup
-       * is never read. Under a spread-inclusive one it is a refusal that defers
-       * the deal on the existing backoff. An inner join would silently strand
-       * every such deal instead, which is the failure the orphan note above
-       * describes and the one this module works hardest to avoid.
+       * what that costs — a refusal that defers the deal on the existing
+       * backoff, because nothing says what the trade pays. An inner join would
+       * silently strand every such deal instead, which is the failure the
+       * orphan note above describes and the one this module works hardest to
+       * avoid. The type is one hop further, LEFT for the same reason.
        */
       .leftJoin(tradingProducts, eq(tradingProducts.id, tradingAccounts.productId))
+      .leftJoin(ibCommissionTypes, eq(ibCommissionTypes.id, tradingProducts.commissionTypeId))
       /*
        * ── OPEN LEGS ARE EXCLUDED HERE, NOT SKIPPED IN THE LOOP ──────────────
        *
@@ -667,116 +660,44 @@ export class DealCommissionService {
       run.legsConsumed += Math.max(0, legs.length - 1);
 
       /*
-       * ── WHAT THE BROKER EARNED, under the basis the operator chose ────────
+       * ── WHAT THIS TRADE PAYS: the product's commission type (0140) ────────
        *
-       * The charges half sums the position's unconsumed LEGS; the spread half
-       * prices the CLOSING deal's volume once. Both halves and the reason they
-       * are counted differently live in `brokerRevenueFor` — a round turn's
-       * legs each carry the same lot count, so summing the markup across them
-       * would charge one trade's spread twice.
+       * The engine prices every leg from the traded product's rate card and
+       * the trade's volume; what the broker earned on the trade no longer
+       * enters the arithmetic. What is decided HERE is only which of the three
+       * states the card is in — see `RevenueEvent.terms` in the engine for why
+       * an account with no product is REFUSED (and defers on the backoff via
+       * the catch below) while a product with no type is done.
        */
-      const revenue = brokerRevenueFor({
-        basis,
-        legs,
-        lots: deal.volume,
-        spreadMarkupPerLot: deal.spreadMarkupPerLot,
-      });
-
-      /*
-       * The account is linked to no product under a basis that prices on one.
-       *
-       * Deferred on the existing backoff and left UNMARKED, exactly like a
-       * refused accrual — because it is one, and for the same reason: the money
-       * is owed, and what is missing is a setting a person fixes on a screen.
-       * Marking it done would discard commission permanently over a link
-       * somebody can restore in ten seconds.
-       *
-       * Counted as `failed` rather than as its own tally so it reaches the
-       * COMMISSION_QUEUE_STALLED alarm through the machinery already watching
-       * for refusals — a new silent counter would be a second thing to notice.
-       */
-      if (!revenue.ok) {
-        run.failed += 1;
-        const refusal = new CommissionRefusedError(revenue.reason);
-        await this.deferRetry(deal.id, refusal);
-        this.logger.error(
-          `Deal ${deal.ticket} was REFUSED and stays queued; retrying will keep failing until ` +
-            `the commission configuration is corrected. ${refusal.message}`,
-        );
-        continue;
-      }
-
-      const brokerRevenue = revenue.revenue;
-
+      const terms: ProductCommissionTerms | null | undefined =
+        deal.productId === null
+          ? undefined
+          : deal.commissionTypeId === null
+            ? null
+            : {
+                id: deal.commissionTypeId,
+                name: deal.commissionTypeName ?? '',
+                enabled: deal.commissionTypeEnabled ?? false,
+                commissionPerLot: deal.commissionPerLot ?? '0',
+                rebatePerLot: deal.rebatePerLot ?? '0',
+              };
       /*
        * ── ZERO REVENUE DOES NOT MEAN NOBODY IS OWED ANYTHING ───────────────
        *
-       * This used to short-circuit here: the broker kept nothing, so there was
-       * no share to take, and the deal was marked done.
-       *
-       * That was true while every payout was a PERCENTAGE of revenue. It stopped
-       * being true when levels could be priced PER LOT (0111/0114): $10 a lot is
-       * owed on volume and is deliberately indifferent to what the broker
-       * earned — that is the whole point of the model, and `calculate` says so
-       * where it pays a per-lot leg before the base is even required to be
-       * positive.
-       *
-       * ⚠️ THIS WAS A LIVE BUG AND IT LOST MONEY SILENTLY. A broker whose group
-       * charges no commission and no swap — which is an ordinary raw-spread
-       * setup, and what this deployment actually has — produced zero revenue on
-       * every deal, so every deal was marked DONE having paid nobody. Nothing
-       * reported it: `nothingOwed` is a legitimate outcome, the row looked
-       * processed, and the partners simply never got paid.
-       *
-       * `calculate` is the right place to decide this, because it is the only
-       * thing that knows which rungs are per-lot. So the run now continues and
-       * lets it answer — a chain of purely percentage rungs still accrues
-       * nothing on a zero-revenue trade, reaching the same outcome by asking
-       * rather than by assuming.
-       *
-       * The FINALITY is unchanged and still matters: whatever `calculate`
-       * decides, the amounts are final the moment MT5 reports them. That is why
-       * a spread-inclusive basis stays order-sensitive — a product whose markup
-       * is still 0 pays its percentage rungs nothing, permanently. The settings
-       * form says so; migration 0101 says why.
+       * This used to short-circuit on a trade that earned the broker nothing.
+       * That was a LIVE BUG on a raw-spread group — no commission, no swap, an
+       * ordinary setup — where every deal was marked done having paid nobody.
+       * Nothing reads the broker's revenue any more: a partner is owed the
+       * product's per-lot terms on volume, whatever the trade earned, and
+       * `calculate` is the only thing that decides whether that is zero.
        */
-
-      /*
-       * ── WHAT THE TRADE EARNED UNDER EACH BASIS (FR-IB-16, 0106) ──────────
-       *
-       * The chain's partners may hold programmes that price on different
-       * bases, so one figure is not enough: each earner is paid a percentage
-       * of the revenue THEIR programme names.
-       *
-       * All three are priced here, from the same legs and the same lot count,
-       * because the arithmetic needs MT5 legs and a product markup and
-       * `commission.ts` is a pure seam that lint keeps away from both.
-       *
-       * A basis that cannot be priced — an account linked to no product, under
-       * a basis that needs one — is OMITTED rather than stored as zero. Zero is
-       * a price; a missing entry means "could not price this", and `calculate`
-       * refuses that leg instead of quietly paying nothing on it. The
-       * difference is the whole reason `spreadMarkupPerLot` is nullable.
-       */
-      const revenueByBasis = new Map<RevenueBasis, string>();
-      for (const candidate of REVENUE_BASES) {
-        const priced = brokerRevenueFor({
-          basis: candidate,
-          legs,
-          lots: deal.volume,
-          spreadMarkupPerLot: deal.spreadMarkupPerLot,
-        });
-        if (priced.ok) revenueByBasis.set(candidate, priced.revenue);
-      }
-
       try {
         const rows = await this.commissions.accrueForDeal({
           dealRowId: deal.id,
           ticket: deal.ticket,
           clientUserId: deal.userId,
-          brokerRevenue,
-          revenueByBasis,
           lots: deal.volume,
+          terms,
           currency: deal.currency,
         });
 

@@ -360,6 +360,22 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'ib_level.create', label: 'IB level added', group: 'Configuration' },
   { action: 'ib_level.update', label: 'IB level changed', group: 'Configuration' },
   { action: 'ib_level.delete', label: 'IB level removed', group: 'Configuration' },
+  /*
+   * The rate cards products are sold on (0140). Beside the ladder, because the
+   * two decide a payout together: the type says what a lot is worth, the level
+   * says what share of it a partner takes.
+   */
+  { action: 'ib_commission_type.create', label: 'Commission type added', group: 'Configuration' },
+  {
+    action: 'ib_commission_type.update',
+    label: 'Commission type changed',
+    group: 'Configuration',
+  },
+  {
+    action: 'ib_commission_type.delete',
+    label: 'Commission type removed',
+    group: 'Configuration',
+  },
   // Renumbering moves every partner's placement with it, so it is its own act.
   {
     action: 'ib_level.reorder',

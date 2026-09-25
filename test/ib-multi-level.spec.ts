@@ -5,6 +5,8 @@ import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { seedProductTerms, setLadderShares } from './support/commission-terms';
+import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 
 /**
  * FR-IB-17 — MULTI-LEVEL DISTRIBUTION — against real Postgres.
@@ -42,6 +44,14 @@ let ib1: string;
 let ib2: string;
 let ib3: string;
 let clientId: string;
+/**
+ * The product's rate card: $100 a lot to the partners (0140).
+ *
+ * Every trade here is ONE LOT, so a rung's SHARE of $100 is the same number
+ * of dollars — "25%" pays $25 — and every assertion downstream reads as it
+ * did when the rung carried "$25 a lot" itself.
+ */
+let terms: CommissionTypeTerms;
 
 const POSITION_ID = '22222222-2222-4222-8222-222222222222';
 
@@ -55,52 +65,16 @@ async function makeUser(email: string): Promise<string> {
 }
 
 /**
- * Set the whole ladder — one PER-LOT amount per rung, level 1 first.
- *
- * ## Per lot, not percentages (0117)
- *
- * Every rung is priced per lot now; `percent` and `share_of_parent` are refused
- * by `ib_levels_commission_shape`. The figures below are unchanged because the
- * trade in this suite is exactly ONE LOT — so "$50 a lot" and "50% of a $100
- * base" produce the same $50, and every assertion downstream still reads as it
- * did.
- *
- * That equivalence is a property of this fixture, not of the model: with two
- * lots the per-lot rate would pay double where the percentage would not. It is
- * spelled out here so nobody changes `lots` and wonders why the amounts moved.
- *
- * Every rung is reset first: a rate left on level 3 by a previous case would pay
- * a partner the current one never configured, and these suites share a database.
+ * Set the whole ladder — one SHARE per rung, level 1 first, as a percentage of
+ * the product's $100 a lot (0140). Every rung is reset first: a share left on
+ * level 3 by a previous case would pay a partner the current one never
+ * configured, and these suites share a database.
  */
-async function setLadder(amountsPerLot: string[]): Promise<void> {
-  await ctx.db.execute(sql`
-    UPDATE ib_levels
-       SET commission_mode = 'per_lot',
-           commission_amount_per_lot = 0,
-           commission_rate = 0,
-           rebate_mode = 'per_lot',
-           rebate_amount_per_lot = 0,
-           rebate_rate = 0,
-           enabled = true
-  `);
-
-  for (const [index, amount] of amountsPerLot.entries()) {
-    /*
-     * The seed ships two rungs; a deeper ladder needs the row to exist first.
-     * `ON CONFLICT` makes this the same statement either way.
-     */
-    await ctx.db.execute(sql`
-      INSERT INTO ib_levels (level, name, commission_mode, commission_amount_per_lot,
-                             rebate_mode, rebate_amount_per_lot)
-      VALUES (${index + 1}, ${'Level ' + String(index + 1)}, 'per_lot', ${amount},
-              'per_lot', 0)
-      ON CONFLICT (level) DO UPDATE
-        SET commission_mode = 'per_lot',
-            commission_amount_per_lot = ${amount},
-            commission_rate = 0,
-            enabled = true
-    `);
-  }
+async function setLadder(shares: string[]): Promise<void> {
+  await setLadderShares(
+    ctx.db,
+    shares.map((commission) => ({ commission })),
+  );
 }
 
 /** Move a partner to a rung — what decides their terms. */
@@ -114,9 +88,9 @@ async function accrue(sourceId = POSITION_ID): Promise<number> {
     dealRowId: sourceId,
     ticket: '90211',
     clientUserId: clientId,
-    brokerRevenue: '100.00000000',
     lots: '1.00000000',
     currency: 'USD',
+    terms,
   });
 }
 
@@ -177,6 +151,18 @@ beforeAll(async () => {
    * eighty dollars a lot. Halving them keeps the three rungs distinct and the
    * total ($40) inside the ceiling.
    */
+  const seeded = await seedProductTerms(ctx.db, {
+    name: 'Deep terms',
+    commissionPerLot: '100',
+    rebatePerLot: '0',
+  });
+  terms = {
+    id: seeded.typeId,
+    name: 'Deep terms',
+    enabled: true,
+    commissionPerLot: '100.00000000',
+    rebatePerLot: '0',
+  };
   await setLadder(['25.0000', '10.0000', '5.0000']);
   /* One level: pays its holder on their own clients and nothing beyond. */
 

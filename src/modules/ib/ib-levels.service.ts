@@ -1,87 +1,39 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { asc, count, eq, sql } from 'drizzle-orm';
+import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
-import { ibAccounts, ibLevels } from '../../database/schema';
+import { ibLevels } from '../../database/schema';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
-import { DEFAULT_REVENUE_BASIS } from '../../common/revenue-basis';
 import { ABSOLUTE_IB_MAX_LEVELS } from '../../common/ib-levels';
-import type {
-  CreateIbLevelDto,
-  IbLevelDto,
-  IbPayoutMode,
-  UpdateIbLevelDto,
-} from './dto/ib-level.dto';
+import type { CreateIbLevelDto, IbLevelDto, UpdateIbLevelDto } from './dto/ib-level.dto';
 
 type Db = ReturnType<typeof getDb>;
-/*
- * `MAX_TOTAL_SHARE` is GONE (0117).
- *
- * It was the configuration-time floor under `checkPlausible`, catching an
- * operator who typed 70 at every rung while they could still fix it. Both
- * retired modes were percentages of ONE revenue figure, so their sum meant
- * something; per-lot amounts are not shares of anything and cannot be summed
- * against a percentage ceiling.
- *
- * The ceiling that still applies is `ib_max_payout_per_lot`, enforced by
- * `checkPlausible` at ACCRUAL time — where the trade's volume is known, which
- * is what a per-lot bound has to compare against.
- */
 
 /**
- * The columns a term actually reads, from its mode — mirrors
- * `ib_levels_commission_shape` and `ib_levels_rebate_shape`.
+ * The commission ladder — one row per RUNG of the partner tree (0112), each
+ * rung a SHARE of the product's commission type (0140).
  *
- * The constraint requires exactly the column the mode reads and FORBIDS the
- * other, so the unused one is NULLed explicitly rather than left to a default:
- * an update switching a rung from percent to per-lot has to clear the rate it is
- * no longer paid on, or the row is refused.
+ * ## What a rung holds now
  *
- * The unused RATE is zeroed rather than kept for the same reason a per-lot rate
- * is not stored: a live-looking percentage sitting beside the amount that
- * actually pays is how somebody reads the wrong number off the row later, and it
- * would also inflate `ib_levels_share_fits` with a figure nobody is paid.
- */
-function payoutColumns(amountPerLot: string | null | undefined): {
-  mode: IbPayoutMode;
-  rate: string;
-  amountPerLot: string;
-} {
-  /*
-   * ONE SHAPE since 0117: every rung is a flat amount per standard lot.
-   *
-   * The `rate` column is still written, as ZERO. It holds the percentage the
-   * two retired modes were paid on, and a live-looking percentage sitting
-   * beside the amount that actually pays is how somebody reads the wrong number
-   * off the row later.
-   */
-  return { mode: 'per_lot', rate: '0', amountPerLot: amountPerLot ?? '0' };
-}
-
-/**
- * The commission ladder — one row per RUNG of the partner tree (0112).
+ * Two percentages: the partner's share of the traded product's commission per
+ * lot, and the client's share of its rebate per lot. The amounts themselves
+ * live on `ib_commission_types`, assigned to products — so one ladder prices
+ * the whole catalogue, and a rung never has to know which product traded.
  *
- * ## What replaced the programme catalogue, and why
- *
- * A programme was a card assigned to a partner, keyed on DEPTH: how many hops
- * the trade sat below the earner. A level is keyed on the earner's own POSITION:
- * a partner dealing with the broker directly is level 1, a partner they recruit
- * is level 2. The business asked for a static per-lot figure for the main
- * partner and a percentage for the partner beneath them, with a sub-partner
- * earning nothing from their parent's clients while the parent still earns from
- * clients under the sub-partner — and that asymmetry is a property of the tree,
- * so it belongs to where somebody stands rather than to what they hold.
- *
- * The chain walk is unchanged. `resolveChain` still climbs `parent_ib_user_id`
- * upward from the client's introducer, so a sub-partner never appears in their
- * parent's own clients' chains at all — the first rule holds by construction
- * rather than by a rate.
+ * The shares of the rungs in a chain are paid INDEPENDENTLY (0114's rule,
+ * kept): on a sub-partner's client's trade, level 2 takes its share and level
+ * 1 takes its own in full. There is deliberately no "the shares must add to
+ * 100%" check here — their sum is the broker's cost per lot at full depth, and
+ * `ib_max_payout_per_lot` bounds that at accrual time where the lot count is
+ * known. What IS bounded here is each share on its own: a fraction of one
+ * figure cannot exceed the whole of it.
  *
  * ## Nothing here edits money already earned
  *
- * A rate change applies to the NEXT trade. Accruals record the rate AND the
+ * A share change applies to the NEXT trade. Accruals record the share AND the
  * rung that priced them (`ib_accruals.rate_value`, `ib_accruals.level_id`), so
  * re-reading a level can never restate what a partner was already paid — which
  * is why editing one is an ordinary update rather than something that has to
@@ -97,12 +49,6 @@ export class IbLevelsService {
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly audit: AdminAuditService,
-    /*
-     * `AppSettingsStore` stood here for the ladder ceiling, read fresh on every
-     * save so an operator who had just raised it saw the next rung accept. The
-     * ceiling went in 0113 and nothing on this service reads a setting now —
-     * how deep the ladder goes is decided by the rows in it.
-     */
   ) {}
 
   /**
@@ -111,7 +57,7 @@ export class IbLevelsService {
    *
    * The count is part of the row rather than a second call: it is what makes a
    * delete refusable in the UI before the database refuses it, and what tells an
-   * operator how many people a rate change is about to affect.
+   * operator how many people a share change is about to affect.
    */
   async listAll(): Promise<IbLevelDto[]> {
     return this.db
@@ -121,17 +67,20 @@ export class IbLevelsService {
         name: ibLevels.name,
         description: ibLevels.description,
         enabled: ibLevels.enabled,
-        commissionMode: ibLevels.commissionMode,
-        commissionRate: ibLevels.commissionRate,
-        commissionAmountPerLot: ibLevels.commissionAmountPerLot,
-        rebateMode: ibLevels.rebateMode,
-        rebateRate: ibLevels.rebateRate,
-        rebateAmountPerLot: ibLevels.rebateAmountPerLot,
-        revenueBasis: ibLevels.revenueBasis,
+        commissionShare: ibLevels.commissionShare,
+        rebateShare: ibLevels.rebateShare,
         createdAt: ibLevels.createdAt,
         updatedAt: ibLevels.updatedAt,
+        /*
+         * ⚠️ QUALIFIED BY HAND. Inside a select-list `sql` template Drizzle
+         * renders a column as its bare name, so `${ibLevels.level}` became
+         * `"level"` and, inside a subquery FROM ib_accounts, resolved to the
+         * inner table's own column: `WHERE "level" = "level"` — every rung
+         * reported the platform's whole partner count. Found while writing the
+         * same shape for commission types (0140).
+         */
         partnerCount: sql<number>`(
-          SELECT COUNT(*)::int FROM ${ibAccounts} WHERE ${ibAccounts.level} = ${ibLevels.level}
+          SELECT COUNT(*)::int FROM ib_accounts AS a WHERE a.level = "ib_levels"."level"
         )`,
       })
       .from(ibLevels)
@@ -141,22 +90,11 @@ export class IbLevelsService {
   /**
    * What a screen must know before it draws the ladder controls.
    *
-   * Read rather than assumed by the console: a hardcoded copy is the drift this
-   * setting exists to prevent.
+   * There is no configurable ceiling any more (0113): how deep the ladder goes
+   * is decided by the rows in it. Both numbers answer the structural bound, so
+   * the form keeps one contract for "how deep may I go".
    */
   limits(): { maxLevels: number; absoluteMaxLevels: number } {
-    /*
-     * ── THERE IS NO CEILING ANY MORE (0113) ──────────────────────────────
-     *
-     * `ib_max_levels` capped this and defaulted to 2, so adding a third rung
-     * meant first raising a number on the Trading settings tab. This page is
-     * the only thing that decides depth now, which is what was asked for.
-     *
-     * The SHAPE is kept — both numbers still answered, both equal to the
-     * structural bound — so the form keeps one contract for "how deep may I
-     * go" rather than branching on whether a ceiling exists. It is what the
-     * database CHECK and the chain walk actually permit.
-     */
     return { maxLevels: ABSOLUTE_IB_MAX_LEVELS, absoluteMaxLevels: ABSOLUTE_IB_MAX_LEVELS };
   }
 
@@ -168,15 +106,9 @@ export class IbLevelsService {
   /**
    * A rung must be one the engine can actually pay on.
    *
-   * This used to enforce `ib_max_levels`, a configurable ceiling that defaulted
-   * to 2 — removed in 0113, because it put a second screen between an operator
-   * and a third level for no benefit this page does not already give.
-   *
-   * What is left is the STRUCTURAL bound, and it is not a commercial one: the
-   * chain walk stops at `MAX_CHAIN_DEPTH`, so a rung deeper than that is one no
-   * trade could ever reach. Saving it would be accepting a rate that silently
-   * pays nobody. (A true cycle in the tree is caught separately by
-   * `resolveChain`'s `seen` set, which is independent of any depth number.)
+   * The STRUCTURAL bound, not a commercial one: the chain walk stops at
+   * `MAX_CHAIN_DEPTH`, so a rung deeper than that is one no trade could ever
+   * reach. Saving it would be accepting a share that silently pays nobody.
    */
   private assertLevelIsReachable(level: number): void {
     if (level > ABSOLUTE_IB_MAX_LEVELS) {
@@ -189,38 +121,31 @@ export class IbLevelsService {
   }
 
   /**
-   * Refuse terms that hand out more of a trade than the broker earned.
+   * A share is a fraction of ONE figure on the product, so it cannot exceed
+   * the whole of it.
    *
-   * Named separately from `ib_levels_share_fits` because a constraint violation
-   * reaches an operator as a 500 with a Postgres string in it. This one says
-   * which numbers were involved and what they add up to.
+   * Named separately from `ib_levels_*_share_range` because a constraint
+   * violation reaches an operator as a 500 with a Postgres string in it. This
+   * one says which number was too big.
    *
-   * PERCENTAGES only. "These add up to more than 100% of the revenue" is a
-   * statement about shares, and a per-lot term is not a share of anything: $10 a
-   * lot has no meaningful sum with 30%. Per-lot legs are bounded instead at
-   * ACCRUAL time by `ib_max_payout_per_lot`, where the lot count is known.
+   * Compared with decimal.js, never `Number()`: the value multiplies money one
+   * call later (§6.1).
    */
-  /*
-   * ── `assertShareFits` IS GONE (0117) ──────────────────────────────────────
-   *
-   * It bounded commission + rebate to 100% while both were shares of the SAME
-   * broker revenue, so they added up. Neither can be a percentage any more, so
-   * the check could never fail — and a guard that cannot fail reads to the next
-   * person as a protection that is in force.
-   *
-   * The real ceiling on a per-lot rung is `ib_max_payout_per_lot`, enforced by
-   * `checkPlausible` at ACCRUAL time. That is where a per-lot bound belongs: it
-   * compares against the trade's VOLUME, which nothing on this form can see.
-   *
-   * Migration 0117 dropped the matching database constraint for the same
-   * reason.
-   */
+  private assertShareFits(label: string, share: string): void {
+    if (new Decimal(share).greaterThan(100)) {
+      throw new ValidationError(
+        `${label} is ${share}%, and a share of the product's figure cannot exceed 100% of it.`,
+      );
+    }
+  }
 
   async create(dto: CreateIbLevelDto, actor: Actor): Promise<IbLevelDto> {
     this.assertLevelIsReachable(dto.level);
 
-    const commission = payoutColumns(dto.commissionAmountPerLot);
-    const rebate = payoutColumns(dto.rebateAmountPerLot);
+    const commissionShare = dto.commissionShare ?? '0';
+    const rebateShare = dto.rebateShare ?? '0';
+    this.assertShareFits('The commission share', commissionShare);
+    this.assertShareFits('The rebate share', rebateShare);
 
     if (await this.findOne(dto.level)) {
       throw new ConflictError(
@@ -235,19 +160,8 @@ export class IbLevelsService {
         level: dto.level,
         name: dto.name,
         description: dto.description ?? null,
-        commissionMode: commission.mode,
-        commissionRate: commission.rate,
-        commissionAmountPerLot: commission.amountPerLot,
-        rebateMode: rebate.mode,
-        rebateRate: rebate.rate,
-        rebateAmountPerLot: rebate.amountPerLot,
-        /*
-         * Defaulted to the charges basis rather than to whatever was last used:
-         * the other two can only pay LESS on a deployment whose spread markups
-         * are unset, and a rung quietly pricing on an unpopulated markup pays
-         * nothing on every deal it touches.
-         */
-        revenueBasis: dto.revenueBasis ?? DEFAULT_REVENUE_BASIS,
+        commissionShare,
+        rebateShare,
         enabled: dto.enabled ?? true,
       })
       .returning();
@@ -255,13 +169,8 @@ export class IbLevelsService {
     this.audit.record(actor.id, 'ib_level.create', 'ib_level', created.id, {
       level: created.level,
       name: created.name,
-      commissionMode: created.commissionMode,
-      commissionRate: created.commissionRate,
-      commissionAmountPerLot: created.commissionAmountPerLot,
-      rebateMode: created.rebateMode,
-      rebateRate: created.rebateRate,
-      rebateAmountPerLot: created.rebateAmountPerLot,
-      revenueBasis: created.revenueBasis,
+      commissionShare: created.commissionShare,
+      rebateShare: created.rebateShare,
       enabled: created.enabled,
     });
 
@@ -272,32 +181,12 @@ export class IbLevelsService {
     const current = await this.findOne(level);
     if (!current) throw new NotFoundError(`Level ${level} does not exist.`);
 
-    /*
-     * The amount falls back to what is STORED, so a PATCH that changes only the
-     * name leaves the rate alone.
-     *
-     * ⚠️ A rung still on a RETIRED mode has no stored per-lot amount — its
-     * money lived in the rate column — so `?? '0'` inside `payoutColumns` would
-     * silently zero it. 0117 converted every such rung, so none exist; this
-     * refusal is what makes that a fact the code checks rather than assumes.
-     */
-    if (current.commissionMode !== 'per_lot' && dto.commissionAmountPerLot === undefined) {
-      throw new ValidationError(
-        `Level ${level} was priced on a model that has been retired. Set a commission amount ` +
-          'per lot to bring it up to date.',
-      );
-    }
-    if (current.rebateMode !== 'per_lot' && dto.rebateAmountPerLot === undefined) {
-      throw new ValidationError(
-        `Level ${level} was priced on a model that has been retired. Set a rebate amount per ` +
-          'lot to bring it up to date.',
-      );
-    }
-
-    const commission = payoutColumns(
-      dto.commissionAmountPerLot ?? current.commissionAmountPerLot ?? undefined,
-    );
-    const rebate = payoutColumns(dto.rebateAmountPerLot ?? current.rebateAmountPerLot ?? undefined);
+    /* Omitted means LEAVE IT — a PATCH that changes only the name leaves the
+       shares alone. */
+    const commissionShare = dto.commissionShare ?? current.commissionShare;
+    const rebateShare = dto.rebateShare ?? current.rebateShare;
+    this.assertShareFits('The commission share', commissionShare);
+    this.assertShareFits('The rebate share', rebateShare);
 
     /*
      * DISABLING a rung partners stand on is refused.
@@ -319,15 +208,8 @@ export class IbLevelsService {
         name: dto.name ?? current.name,
         /* `undefined` leaves it; an explicit null clears it. */
         description: dto.description === undefined ? current.description : dto.description,
-        commissionMode: commission.mode,
-        commissionRate: commission.rate,
-        commissionAmountPerLot: commission.amountPerLot,
-        rebateMode: rebate.mode,
-        rebateRate: rebate.rate,
-        rebateAmountPerLot: rebate.amountPerLot,
-        /* Omitted means LEAVE IT — re-pricing a rung is never something an
-         * operator did by not mentioning it. */
-        revenueBasis: dto.revenueBasis ?? current.revenueBasis,
+        commissionShare,
+        rebateShare,
         enabled: dto.enabled ?? current.enabled,
         updatedAt: new Date(),
       })
@@ -337,24 +219,14 @@ export class IbLevelsService {
     this.audit.record(actor.id, 'ib_level.update', 'ib_level', updated.id, {
       before: {
         name: current.name,
-        commissionMode: current.commissionMode,
-        commissionRate: current.commissionRate,
-        commissionAmountPerLot: current.commissionAmountPerLot,
-        rebateMode: current.rebateMode,
-        rebateRate: current.rebateRate,
-        rebateAmountPerLot: current.rebateAmountPerLot,
-        revenueBasis: current.revenueBasis,
+        commissionShare: current.commissionShare,
+        rebateShare: current.rebateShare,
         enabled: current.enabled,
       },
       after: {
         name: updated.name,
-        commissionMode: updated.commissionMode,
-        commissionRate: updated.commissionRate,
-        commissionAmountPerLot: updated.commissionAmountPerLot,
-        rebateMode: updated.rebateMode,
-        rebateRate: updated.rebateRate,
-        rebateAmountPerLot: updated.rebateAmountPerLot,
-        revenueBasis: updated.revenueBasis,
+        commissionShare: updated.commissionShare,
+        rebateShare: updated.rebateShare,
         enabled: updated.enabled,
       },
     });
@@ -412,12 +284,8 @@ export class IbLevelsService {
     this.audit.record(actor.id, 'ib_level.delete', 'ib_level', current.id, {
       level: current.level,
       name: current.name,
-      commissionMode: current.commissionMode,
-      commissionRate: current.commissionRate,
-      commissionAmountPerLot: current.commissionAmountPerLot,
-      rebateMode: current.rebateMode,
-      rebateRate: current.rebateRate,
-      rebateAmountPerLot: current.rebateAmountPerLot,
+      commissionShare: current.commissionShare,
+      rebateShare: current.rebateShare,
     });
 
     return { deleted: true };

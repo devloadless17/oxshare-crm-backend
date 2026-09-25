@@ -1,6 +1,5 @@
-import type { RevenueBasis } from '../revenue-basis';
 /**
- * "This deposit settled — accrue whatever partners are owed for it."
+ * "This trade closed — accrue whatever partners are owed for it."
  *
  * ## Why a port rather than an import
  *
@@ -23,18 +22,37 @@ import type { RevenueBasis } from '../revenue-basis';
  * the implementation. The edge runs module → common, like every other shared
  * piece.
  */
+
+/**
+ * The product's rate card, as the deal feed hands it to the engine — 0140.
+ *
+ * Declared here rather than imported from `modules/ib/commission.ts` because
+ * `common/` must not depend on `modules/`. The engine's own
+ * `CommissionTypeTerms` is structurally identical; a caller passes one shape and
+ * both sides read it.
+ */
+export interface ProductCommissionTerms {
+  /** The `ib_commission_types` row id. */
+  id: string;
+  name: string;
+  enabled: boolean;
+  /** Money per standard lot, decimal strings (§6.1). */
+  commissionPerLot: string;
+  rebatePerLot: string;
+}
+
 /**
  * The accrual was REFUSED — something WAS owed, and the amount did not survive
- * the §12.4 plausibility check.
+ * the §12.4 plausibility check, or could not be worked out at all.
  *
  * ## Its own class, because the two failure modes need different humans
  *
  * A caller must not mark the event done on either. But a database failure is
  * transient and fixes itself on the next run, while this one will fail
- * identically forever until somebody changes a setting — overwhelmingly a rate
- * configured in the wrong unit. A queue that logs them the same way sends an
- * engineer to look at the database while the actual fix is one field on the
- * levels screen.
+ * identically forever until somebody changes a setting — a rate in the wrong
+ * unit, or an account linked to no product. A queue that logs them the same way
+ * sends an engineer to look at the database while the actual fix is one field
+ * on a configuration screen.
  *
  * Declared HERE rather than beside `CommissionService` so the queue in
  * `TradingModule` can catch it without importing `IbModule` — which is the
@@ -49,29 +67,7 @@ export class CommissionRefusedError extends Error {
 
 export interface CommissionAccrualPort {
   /**
-   * Accrue partner commissions for one settled deposit. Returns rows CREATED.
-   *
-   * ## Idempotent, and NEVER throws
-   *
-   * Both halves are load-bearing, and both mirror `WalletProvisioningPort`'s
-   * no-throw contract for the same class of reason.
-   *
-   * IDEMPOTENT because this is called from a path that is itself retried: a
-   * replayed provider callback must not pay a partner twice. The guarantee is
-   * the `ib_accruals_source_earner_uq` constraint, never a check-then-insert.
-   *
-   * NEVER THROWS because a deposit that has already credited the client's
-   * wallet must not be rolled back — or reported as failed — because a
-   * COMMISSION could not be computed. The client's money landing is the
-   * important half; a missing accrual is recoverable by re-running the
-   * pipeline, and an implementation logs and returns 0 rather than propagating.
-   */
-  /**
    * "This trade closed — accrue whatever partners are owed for it."
-   *
-   * The ONLY event that pays a revenue share, because it is the only one that
-   * carries revenue: `brokerRevenue` is what the house kept on the trade. A
-   * deposit is the client's own money and pays nothing — see `calculate`.
    *
    * Same no-throw contract as the deposit hook below: by the time this runs the
    * position is already closed and the client's balance already settled, so a
@@ -80,13 +76,27 @@ export interface CommissionAccrualPort {
   accrueForClosedPosition(position: {
     positionId: string;
     clientUserId: string;
-    /** What the broker earned on this trade — its commission plus swap. */
-    brokerRevenue: string;
-    /** Lots traded, for `per_lot` levels. */
+    /** Lots traded — what every term is priced against. */
     lots: string;
     currency: string;
+    /**
+     * The traded product's rate card — see `RevenueEvent.terms` in the engine.
+     * `null` for a product with no type (pays nobody, done); `undefined` for an
+     * account linked to no product (unpriceable, refused).
+     */
+    terms: ProductCommissionTerms | null | undefined;
   }): Promise<number>;
 
+  /**
+   * Accrue partner commissions for one settled deposit. Returns rows CREATED.
+   *
+   * ## Idempotent, and NEVER throws
+   *
+   * Both halves mirror `WalletProvisioningPort`'s no-throw contract: a deposit
+   * that has already credited the client's wallet must not be rolled back — or
+   * reported as failed — because a COMMISSION could not be computed. The
+   * implementation refuses at the door (a deposit is not revenue) and returns 0.
+   */
   accrueForSettledDeposit(deposit: {
     transactionId: string;
     clientUserId: string;
@@ -113,7 +123,7 @@ export interface CommissionAccrualPort {
    * unmarked, and the next run tries again.
    *
    * Returning 0 still means "nothing was owed" — an unreferred client, a chain
-   * that resolves to nobody, a deal carrying no broker revenue. Those are
+   * that resolves to nobody, a product that pays no commission. Those are
    * finished, not failed, and the queue is right to mark them done.
    *
    * IDEMPOTENT on the same guarantee as the others: one accrual per earner per
@@ -126,24 +136,11 @@ export interface CommissionAccrualPort {
     /** MT5's ticket, for logging. */
     ticket: string;
     clientUserId: string;
-    /** What the broker earned on this deal under the DEFAULT basis. */
-    brokerRevenue: string;
-    /**
-     * What it earned under EACH basis — FR-IB-16 (0106).
-     *
-     * Optional, so a caller with one figure keeps the pre-0106 behaviour of
-     * pricing every leg on `brokerRevenue`. With it, each partner is paid a
-     * percentage of the revenue their OWN programme names, which is what lets a
-     * chain mix programmes that priced differently.
-     *
-     * A basis the caller could not price is OMITTED, never zero: zero is a
-     * price, absent means "no answer", and the accrual refuses rather than
-     * paying nothing under terms nobody agreed to.
-     */
-    revenueByBasis?: ReadonlyMap<RevenueBasis, string>;
-    /** Lots, for `per_lot` levels. */
+    /** Lots traded — what every term is priced against. */
     lots: string;
     currency: string;
+    /** The traded product's rate card — see `accrueForClosedPosition`. */
+    terms: ProductCommissionTerms | null | undefined;
   }): Promise<number>;
 }
 

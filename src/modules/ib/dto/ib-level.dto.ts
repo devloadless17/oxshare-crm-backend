@@ -1,128 +1,52 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
-import {
-  IsBoolean,
-  IsIn,
-  IsInt,
-  IsOptional,
-  IsString,
-  Length,
-  Matches,
-  Max,
-  Min,
-} from 'class-validator';
-import { REVENUE_BASES, type RevenueBasis } from '../../../common/revenue-basis';
+import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
 
 /**
- * How a leg is priced.
- *
- *   `per_lot`  money for each standard lot traded. THE ONLY MODE (0117).
- *
- * ## Why the other two are gone
- *
- * `percent` was a share of BROKER REVENUE — MT5's charged commission plus swap
- * — which is ZERO on a raw-spread group. A rate card reading "30%" therefore
- * paid nothing at all on a whole class of accounts, silently, because 30% of
- * nothing is a legitimate-looking zero. That is the live bug this deployment
- * already hit, where every closed trade was marked processed having paid
- * nobody.
- *
- * `share_of_parent` (0114) was sound arithmetic — 30% of the rung above's $10
- * resolved to $3 a lot, and it kept a ladder proportional when the top rate was
- * renegotiated. It is removed on an explicit instruction, and the reason is a
- * good one: with several sub-partner rungs, a rate you cannot read off the card
- * without resolving a chain upward is a rate somebody will eventually get
- * wrong. "$3.00 per lot" is checkable by looking at it.
- *
- * The trade, stated plainly: raising level 1 from $10 to $12 no longer moves
- * level 2. Each rung is edited on its own, deliberately.
- *
- * ⚠️ THE ENUM VALUES STILL EXIST in the database (`ib_payout_mode`), because
- * Postgres cannot drop an enum label and rewriting the type would rewrite a
- * column on a table whose rows priced real payouts. They are values the
- * database now REFUSES to store — see 0117 — rather than values it never had.
- * The engine still reads them so that historical rows remain explicable.
- */
-export const IB_PAYOUT_MODES = ['per_lot'] as const;
-export type IbPayoutMode = (typeof IB_PAYOUT_MODES)[number];
-
-/**
- * What a STORED row may say — wider than what a new one may be WRITTEN as.
- *
- * The two retired labels still exist in `ib_payout_mode` and on rows that
- * priced real payouts (Postgres cannot drop an enum label, and rewriting the
- * type would rewrite a money table). A read must therefore be able to describe
- * them; only a WRITE is restricted to `per_lot`.
- *
- * Keeping one type for both would have forced a choice between lying about
- * history and re-opening the form to a mode that pays nobody.
- */
-export const IB_STORED_PAYOUT_MODES = ['per_lot', 'percent', 'share_of_parent'] as const;
-export type IbStoredPayoutMode = (typeof IB_STORED_PAYOUT_MODES)[number];
-
-/**
- * A rate, as a decimal STRING (§6.1).
+ * A SHARE, as a decimal STRING (§6.1).
  *
  * Every one of these multiplies money, and a JSON number would round-trip
  * through a float on the way here — which is how a 33.3333% share becomes
  * 33.333299999999994 before anybody has done any arithmetic with it.
  *
- * Up to four decimals, matching NUMERIC(12,4).
+ * Up to four decimals, matching NUMERIC(12,4). The regex bounds the DIGITS;
+ * the service and the CHECK bound the VALUE to 100.
  */
-const RATE = /^\d{1,8}(\.\d{1,4})?$/;
-const RATE_MESSAGE =
-  'must be a non-negative decimal with at most four places, as a string — e.g. "12.5" or "33.3333"';
-
-/**
- * An amount per lot — money, so eight places rather than the rate's four (§6.1).
- *
- * A separate constant rather than a looser shared one: a percentage with eight
- * decimals is a typo, and an amount rounded to four is a payout that disagrees
- * with the ledger it lands in.
- */
-const AMOUNT = /^\d{1,8}(\.\d{1,8})?$/;
-const AMOUNT_MESSAGE =
-  'must be a non-negative decimal with at most eight places, as a string — e.g. "10" or "7.50000000"';
+export const SHARE = /^\d{1,3}(\.\d{1,4})?$/;
+export const SHARE_MESSAGE =
+  'must be a percentage between 0 and 100 with at most four places, as a string — e.g. "70" or "33.3333"';
 
 /**
  * The deepest rung a level may name — the STRUCTURAL bound, not the policy one.
- *
- * Mirrors `ib_levels_level_range`: what the column can hold. How deep an
- * operator may actually configure is `IB_MAX_LEVELS`, which defaults to 2
- * (Feature List Rev 9, IB-17) and is enforced by the service — a decorator
- * cannot read a setting.
+ * Mirrors `ib_levels_level_range`: what the column can hold.
  */
 const MAX_LEVEL = 10;
 
 /**
- * One RUNG of the partner tree, and the terms of everybody standing on it —
- * 0112.
+ * One RUNG of the partner tree, and the terms of everybody standing on it.
  *
- * ## A rung, not a card
+ * ## A rung, not a card, and a share, not an amount (0112, 0140)
  *
- * This replaced the programme catalogue, and the difference is where terms
- * live. A programme was assigned to a partner and keyed its rates on DEPTH —
- * hops between the trading client and the earner — so the same partner was paid
- * differently on their own clients than on a sub-partner's, from one row.
+ * A level is keyed on the earner's POSITION in the tree: level 1 is a partner
+ * dealing with the broker directly, and a partner they recruit is level 2. A
+ * level 1 partner takes their level 1 share on everything that reaches them,
+ * however deep.
  *
- * A level is keyed on the earner's POSITION in the tree instead. Level 1 is a
- * partner dealing with the broker directly; a partner they recruit is level 2.
- * The business asked for exactly this: a static per-lot figure for the main
- * partner, a percentage for the partner under them, and a sub-partner earning
- * NOTHING from their parent's clients while the parent still earns from clients
- * under the sub-partner. That asymmetry is a property of the tree, so it is
- * expressed by where somebody stands rather than by which card they hold.
+ * What a rung holds is a PERCENTAGE of the product's commission type — the
+ * rate card carrying the money per lot. Until 0140 the amount itself sat here,
+ * which meant one ladder could describe only one product. Now one ladder
+ * prices the whole catalogue, and a product's terms are read off the type.
  *
- * ## Two terms on one row
+ * ## Two shares on one row, of two different pools
  *
- * `commission*` pays the PARTNER, `rebate*` pays the trading CLIENT, and each
- * has its own mode. The three programme "modes" (`commission_only`,
- * `rebate_only`, `hybrid`) are gone: they were a label describing which of two
- * numbers were set, and the numbers say that themselves. A rung with a zero
- * commission pays no partner; one with a zero rebate returns nothing to the
- * client; one with both pays both.
+ * `commissionShare` is the PARTNER's cut of the type's `commissionPerLot`.
+ * `rebateShare` is what the trading CLIENT gets of the type's `rebatePerLot`,
+ * read from the introducer's rung only. A rung with a zero commission share
+ * pays no partner; one with a zero rebate share returns nothing to the client.
  */
-@NoClientFields('commission terms for a RUNG - rates and modes, not the partners standing on it')
+@NoClientFields(
+  'commission terms for a RUNG - shares of the product type, not the partners standing on it',
+)
 export class IbLevelDto {
   @ApiProperty({ format: 'uuid' })
   id: string;
@@ -155,48 +79,21 @@ export class IbLevelDto {
   enabled: boolean;
 
   @ApiProperty({
-    enum: IB_STORED_PAYOUT_MODES,
+    type: 'string',
+    example: '70.0000',
     description:
-      'How the PARTNER’s leg is priced. Always `per_lot` on anything saved since 0117; the other ' +
-      'two appear only on rungs configured before it.',
+      'The partner’s percentage of the product’s commission per lot. Paid on every trade that ' +
+      'reaches this rung, independently of the shares on the rungs beneath it.',
   })
-  commissionMode: IbStoredPayoutMode;
+  commissionShare: string;
 
   @ApiProperty({
     type: 'string',
-    example: '30.0000',
-    description: 'The partner’s share of broker revenue, as a percentage. Read in `percent` mode.',
-  })
-  commissionRate: string;
-
-  @ApiProperty({
-    type: 'string',
-    nullable: true,
-    example: '10.00000000',
-    description: 'Money per standard lot. Set in `per_lot` mode, NULL in the other.',
-  })
-  commissionAmountPerLot: string | null;
-
-  @ApiProperty({
-    enum: IB_STORED_PAYOUT_MODES,
+    example: '50.0000',
     description:
-      'How the CLIENT’s rebate is priced. Always `per_lot` on anything saved since 0117.',
+      'The client’s percentage of the product’s rebate per lot, read from the introducer’s rung.',
   })
-  rebateMode: IbStoredPayoutMode;
-
-  @ApiProperty({ type: 'string', example: '0.0000' })
-  rebateRate: string;
-
-  @ApiProperty({ type: 'string', nullable: true, example: '2.00000000' })
-  rebateAmountPerLot: string | null;
-
-  @ApiProperty({
-    enum: REVENUE_BASES,
-    description:
-      'WHICH revenue a percentage at this rung is a share of — FR-IB-16. Ignored entirely by a ' +
-      'per-lot term, which is priced from volume and never from revenue.',
-  })
-  revenueBasis: RevenueBasis;
+  rebateShare: string;
 
   @ApiProperty({
     example: 4,
@@ -215,14 +112,15 @@ export class IbLevelDto {
 }
 
 /** The bounds a rung must fit inside, read by the form rather than hardcoded. */
-@NoClientFields('commission terms for a RUNG - rates and modes, not the partners standing on it')
+@NoClientFields(
+  'commission terms for a RUNG - shares of the product type, not the partners standing on it',
+)
 export class IbLevelLimitsDto {
   @ApiProperty({
-    example: 2,
+    example: 10,
     description:
-      'How deep the ladder may run, from `IB_MAX_LEVELS`. Read by the form so it stops offering ' +
-      '"add a level" at the right point — a hardcoded copy would drift the day a broker ' +
-      'negotiates a deeper structure.',
+      'How deep the ladder may run. Read by the form so it stops offering "add a level" at ' +
+      'the right point — a hardcoded copy would drift the day the engine changes.',
   })
   maxLevels: number;
 
@@ -251,44 +149,17 @@ export class CreateIbLevelDto {
   @Length(0, 2000)
   description?: string | null;
 
-  @ApiPropertyOptional({ enum: IB_PAYOUT_MODES, default: 'per_lot' })
-  @IsOptional()
-  @IsIn(IB_PAYOUT_MODES)
-  commissionMode?: IbPayoutMode;
-
-  @ApiPropertyOptional({ type: 'string', example: '30.0000' })
+  @ApiPropertyOptional({ type: 'string', example: '30.0000', default: '0' })
   @IsOptional()
   @IsString()
-  @Matches(RATE, { message: `commissionRate ${RATE_MESSAGE}` })
-  commissionRate?: string;
+  @Matches(SHARE, { message: `commissionShare ${SHARE_MESSAGE}` })
+  commissionShare?: string;
 
-  @ApiPropertyOptional({ type: 'string', example: '10.00000000' })
+  @ApiPropertyOptional({ type: 'string', example: '50.0000', default: '0' })
   @IsOptional()
   @IsString()
-  @Matches(AMOUNT, { message: `commissionAmountPerLot ${AMOUNT_MESSAGE}` })
-  commissionAmountPerLot?: string;
-
-  @ApiPropertyOptional({ enum: IB_PAYOUT_MODES, default: 'per_lot' })
-  @IsOptional()
-  @IsIn(IB_PAYOUT_MODES)
-  rebateMode?: IbPayoutMode;
-
-  @ApiPropertyOptional({ type: 'string', example: '0.0000' })
-  @IsOptional()
-  @IsString()
-  @Matches(RATE, { message: `rebateRate ${RATE_MESSAGE}` })
-  rebateRate?: string;
-
-  @ApiPropertyOptional({ type: 'string', example: '2.00000000' })
-  @IsOptional()
-  @IsString()
-  @Matches(AMOUNT, { message: `rebateAmountPerLot ${AMOUNT_MESSAGE}` })
-  rebateAmountPerLot?: string;
-
-  @ApiPropertyOptional({ enum: REVENUE_BASES })
-  @IsOptional()
-  @IsIn(REVENUE_BASES)
-  revenueBasis?: RevenueBasis;
+  @Matches(SHARE, { message: `rebateShare ${SHARE_MESSAGE}` })
+  rebateShare?: string;
 
   @ApiPropertyOptional({ default: true })
   @IsOptional()
@@ -316,44 +187,17 @@ export class UpdateIbLevelDto {
   @Length(0, 2000)
   description?: string | null;
 
-  @ApiPropertyOptional({ enum: IB_PAYOUT_MODES })
+  @ApiPropertyOptional({ type: 'string' })
   @IsOptional()
-  @IsIn(IB_PAYOUT_MODES)
-  commissionMode?: IbPayoutMode;
+  @IsString()
+  @Matches(SHARE, { message: `commissionShare ${SHARE_MESSAGE}` })
+  commissionShare?: string;
 
   @ApiPropertyOptional({ type: 'string' })
   @IsOptional()
   @IsString()
-  @Matches(RATE, { message: `commissionRate ${RATE_MESSAGE}` })
-  commissionRate?: string;
-
-  @ApiPropertyOptional({ type: 'string' })
-  @IsOptional()
-  @IsString()
-  @Matches(AMOUNT, { message: `commissionAmountPerLot ${AMOUNT_MESSAGE}` })
-  commissionAmountPerLot?: string;
-
-  @ApiPropertyOptional({ enum: IB_PAYOUT_MODES })
-  @IsOptional()
-  @IsIn(IB_PAYOUT_MODES)
-  rebateMode?: IbPayoutMode;
-
-  @ApiPropertyOptional({ type: 'string' })
-  @IsOptional()
-  @IsString()
-  @Matches(RATE, { message: `rebateRate ${RATE_MESSAGE}` })
-  rebateRate?: string;
-
-  @ApiPropertyOptional({ type: 'string' })
-  @IsOptional()
-  @IsString()
-  @Matches(AMOUNT, { message: `rebateAmountPerLot ${AMOUNT_MESSAGE}` })
-  rebateAmountPerLot?: string;
-
-  @ApiPropertyOptional({ enum: REVENUE_BASES })
-  @IsOptional()
-  @IsIn(REVENUE_BASES)
-  revenueBasis?: RevenueBasis;
+  @Matches(SHARE, { message: `rebateShare ${SHARE_MESSAGE}` })
+  rebateShare?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

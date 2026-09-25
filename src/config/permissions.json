@@ -260,6 +260,18 @@
       {
         "key": "ib.levels.delete",
         "label": "Delete commission levels"
+      },
+      {
+        "key": "ib.commission_types.create",
+        "label": "Create commission types"
+      },
+      {
+        "key": "ib.commission_types.edit",
+        "label": "Edit commission types"
+      },
+      {
+        "key": "ib.commission_types.delete",
+        "label": "Delete commission types"
       }
     ]
   },

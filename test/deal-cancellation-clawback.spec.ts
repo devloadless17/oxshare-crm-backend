@@ -8,6 +8,8 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { ALERT_KINDS } from '../src/common/logging/alerts';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { seedProductTerms, setLadderShares } from './support/commission-terms';
+import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 
 /*
  * The backlog decision now lives in `trading_settings`, with the environment as
@@ -49,6 +51,8 @@ let deals: DealCommissionService;
 
 let partnerId: string;
 let clientId: string;
+/** The product's rate card — see the ladder note in `beforeAll`. */
+let terms: CommissionTypeTerms;
 let programId: string;
 
 const LOGIN = '500123';
@@ -111,17 +115,22 @@ beforeAll(async () => {
          SET mode = 'commission_only'::ib_program_mode, rebate_rate = 0, enabled = true
        WHERE id = ${programId}
     `);
-
-    /* Legacy `percent` row — see the note in ib-end-to-end.spec.ts. The form
-       cannot create these since 0117; the engine must still price them. In the
-       SAME transaction as the write, or the constraint is back before it runs. */
-    await tx.execute(
-      sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
-    );
-    await tx.execute(
-      sql`UPDATE ib_levels SET commission_mode = 'percent', commission_amount_per_lot = NULL, commission_rate = 10 WHERE level = 1`,
-    );
   });
+
+  /* Level 1 takes 10% of a $100-a-lot type: $10 on the one-lot trade below (0140). */
+  await setLadderShares(ctx.db, [{ commission: '10' }]);
+  const seeded = await seedProductTerms(ctx.db, {
+    name: 'Clawback terms',
+    commissionPerLot: '100',
+    rebatePerLot: '0',
+  });
+  terms = {
+    id: seeded.typeId,
+    name: 'Clawback terms',
+    enabled: true,
+    commissionPerLot: '100.00000000',
+    rebatePerLot: '0',
+  };
 
   partnerId = await makeUser('clawback-partner@oxshare-e2e.test');
   clientId = await makeUser('clawback-client@oxshare-e2e.test');
@@ -196,9 +205,9 @@ async function tradeThenCancellation(): Promise<void> {
     dealRowId: closing,
     ticket: '4001',
     clientUserId: clientId,
-    brokerRevenue: '100.00000000',
     lots: '1.00000000',
     currency: 'USD',
+    terms,
   });
   // The close itself is settled business; this suite is about what the
   // cancellation does next.

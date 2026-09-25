@@ -315,9 +315,8 @@ describe('recorded: the feature modules', () => {
     const res = await session.post('/v1/admin/ib-levels', {
       level: 3,
       name: `Audit Level ${Date.now() % 100000}`,
-      /* Per lot — the only mode the form accepts since 0117. */
-      commissionMode: 'per_lot',
-      commissionAmountPerLot: '1.5000',
+      /* A SHARE of the product's commission type — the only shape since 0140. */
+      commissionShare: '1.5',
       enabled: false,
     });
     expect([200, 201]).toContain(res.status);
@@ -339,11 +338,11 @@ describe('recorded: the feature modules', () => {
      * pin a constant and stop proving that the audit trail records the figure
      * that actually decides what a partner is paid.
      */
-    const details = row?.details as { commissionAmountPerLot?: unknown } | undefined;
+    const details = row?.details as { commissionShare?: unknown } | undefined;
     /* Eight decimal places: the per-lot column is NUMERIC(28,8), where the rate
        it replaced was NUMERIC(9,4). Same money, wider column. */
-    expect(details?.commissionAmountPerLot).toBe('1.50000000');
-    expect(typeof details?.commissionAmountPerLot).toBe('string');
+    expect(details?.commissionShare).toBe('1.5000');
+    expect(typeof details?.commissionShare).toBe('string');
 
     /* Put the ladder back, so an ordering-sensitive neighbour is unaffected. */
     await session.del('/v1/admin/ib-levels/3');

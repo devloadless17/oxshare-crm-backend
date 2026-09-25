@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { CatalogueService } from '../src/modules/products/catalogue.service';
+import { IbCommissionTypesService } from '../src/modules/ib/ib-commission-types.service';
 import { ProductsStore } from '../src/store/products.store';
-import { ValidationError } from '../src/common/errors/domain-errors';
+import { ConflictError, NotFoundError, ValidationError } from '../src/common/errors/domain-errors';
 import type { AdminAuditService } from '../src/modules/admin/admin-audit.service';
 import type { Mt5AccountsService } from '../src/modules/trading/mt5/mt5-accounts.service';
 import type { Mt5GroupSyncService } from '../src/modules/trading/mt5/mt5-group-sync.service';
@@ -367,117 +368,122 @@ describe('offeredTo: demo is global, live is agency-scoped', () => {
 });
 
 /**
- * ── ADM-07: a product records the spread markup it is sold on ─────────────
+ * ── A product is sold on a COMMISSION TYPE (0140) ──────────────────────────
  *
- * On the PRODUCT because the product IS the tier — `trading_accounts.tier` is
- * inert and labelled dead on the reasoning that "a tier would be a second name
- * for the same thing".
- *
- * ⚠️ It drives NOTHING. Nothing computes from it, and it is deliberately not
- * part of `brokerRevenueOf` (commission + swap), which decides what partners
- * are paid. These tests pin the recording, the arithmetic-free round trip, and
- * the two refusals — not any effect on money, because there is none.
+ * The rate card lives on `ib_commission_types`; the product only points at
+ * one. These pin the pointer's round trip and its three refusals — an unknown
+ * type, a type on the demo product, and deleting or disabling a type a product
+ * is still sold on — not the arithmetic, which is `commission.spec.ts`'s.
  */
-describe('a product records its spread markup', () => {
-  it('defaults to zero rather than to nothing anybody has to interpret', async () => {
-    // Every product carries a defined value, so no reader has to invent a
-    // meaning for NULL. Zero is honest: it is what the system knew before the
-    // column existed, and a raw-spread product genuinely carries no markup.
-    const id = await makeProduct('Markup default');
+describe('a product is sold on a commission type', () => {
+  let types: IbCommissionTypesService;
+
+  beforeAll(() => {
+    types = new IbCommissionTypesService(ctx.db, auditStubAs());
+  });
+
+  async function makeType(name: string): Promise<string> {
+    const type = await types.create(
+      { name, description: null, commissionPerLot: '10', rebatePerLot: '3' },
+      TEST_ACTOR,
+    );
+    return type.id;
+  }
+
+  it('carries no type until one is assigned, and says so with null', async () => {
+    const id = await makeProduct('Untyped product');
     const [product] = (await service.listProducts()).filter((p) => p.id === id);
 
-    expect(product.spreadMarkupPerLot).toBe('0.00000000');
+    expect(product.commissionTypeId).toBeNull();
   });
 
-  it('keeps every decimal place the operator typed', async () => {
-    /*
-     * THE ONE THAT MATTERS. It is NUMERIC(28,8) and it is money, so it travels
-     * as a decimal string end to end. A JSON number would round-trip through a
-     * float and 1.5 comes back as something that looks right in a table and is
-     * not the number anybody agreed to.
-     */
+  it('is put on a type, and an update that omits the field keeps it', async () => {
+    const typeId = await makeType('Typed terms');
     const created = await service.createProduct(
-      {
-        name: 'Markup precise',
-        description: null,
-        enabled: true,
-        spreadMarkupPerLot: '7.12345678',
-        sortOrder: 0,
-      },
+      { name: 'Typed product', description: null, enabled: true, commissionTypeId: typeId },
       TEST_ACTOR,
     );
+    expect(created.commissionTypeId).toBe(typeId);
 
-    expect(created.spreadMarkupPerLot).toBe('7.12345678');
-    expect(typeof created.spreadMarkupPerLot).toBe('string');
-
-    const [read] = (await service.listProducts()).filter((p) => p.id === created.id);
-    expect(read.spreadMarkupPerLot).toBe('7.12345678');
-  });
-
-  it('leaves a negotiated markup alone when an update omits it', async () => {
-    /*
-     * This endpoint is a PUT, so a caller that predates the field — the admin
-     * screen as it stands today — would otherwise reset a markup to zero every
-     * time somebody renamed a product, and the audit row would faithfully
-     * record a change nobody made.
-     */
-    const created = await service.createProduct(
-      {
-        name: 'Markup preserved',
-        description: null,
-        enabled: true,
-        spreadMarkupPerLot: '2.50000000',
-        sortOrder: 0,
-      },
-      TEST_ACTOR,
-    );
-
-    const updated = await service.updateProduct(
+    /* A PUT from a client that predates the field must not strip the terms. */
+    const renamed = await service.updateProduct(
       created.id,
-      { name: 'Markup preserved (renamed)', description: null, enabled: true, sortOrder: 0 },
+      { name: 'Typed product (renamed)', description: null, enabled: true },
       TEST_ACTOR,
     );
+    expect(renamed.commissionTypeId).toBe(typeId);
 
-    expect(updated.name).toBe('Markup preserved (renamed)');
-    expect(updated.spreadMarkupPerLot).toBe('2.50000000');
-  });
-
-  it('changes it when an update actually says so', async () => {
-    const created = await service.createProduct(
-      {
-        name: 'Markup changed',
-        description: null,
-        enabled: true,
-        spreadMarkupPerLot: '1.00000000',
-        sortOrder: 0,
-      },
-      TEST_ACTOR,
-    );
-
-    const updated = await service.updateProduct(
+    /* An explicit null is the way to say "this product pays nobody". */
+    const cleared = await service.updateProduct(
       created.id,
-      {
-        name: 'Markup changed',
-        description: null,
-        enabled: true,
-        spreadMarkupPerLot: '3.25000000',
-        sortOrder: 0,
-      },
+      { name: 'Typed product (renamed)', description: null, enabled: true, commissionTypeId: null },
+      TEST_ACTOR,
+    );
+    expect(cleared.commissionTypeId).toBeNull();
+  });
+
+  it('lists the products sold on a type beside it', async () => {
+    const typeId = await makeType('Listed terms');
+    await service.createProduct(
+      { name: 'Listed product', description: null, enabled: true, commissionTypeId: typeId },
       TEST_ACTOR,
     );
 
-    expect(updated.spreadMarkupPerLot).toBe('3.25000000');
+    const type = (await types.listAll()).find((row) => row.id === typeId);
+    expect(type?.productNames).toEqual(['Listed product']);
   });
 
-  it('records BOTH sides of a markup change in the audit trail', async () => {
-    /*
-     * The same reason `ib.program_change` names the old programme and the new
-     * one: nothing is paid from this number today, but WHO set it and WHEN is
-     * the part that cannot be reconstructed afterwards from the row itself.
-     *
-     * A dedicated stub rather than the shared one, so this reads only the calls
-     * this test caused.
-     */
+  it('refuses a type that does not exist rather than letting the key answer', async () => {
+    await expect(
+      service.createProduct(
+        {
+          name: 'Ghost-typed product',
+          description: null,
+          enabled: true,
+          commissionTypeId: '00000000-0000-4000-8000-000000000000',
+        },
+        TEST_ACTOR,
+      ),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('refuses a type on the demo product, which never accrues', async () => {
+    const typeId = await makeType('Demo-refused terms');
+    const demo = (await service.listProducts()).find((p) => p.type === 'demo');
+    const demoId = demo?.id ?? (await makeProduct('Demo for types', 'demo'));
+
+    await expect(
+      service.updateProduct(
+        demoId,
+        {
+          name: demo?.name ?? 'Demo for types',
+          description: null,
+          enabled: true,
+          commissionTypeId: typeId,
+        },
+        TEST_ACTOR,
+      ),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('refuses to delete or disable a type a product is still sold on', async () => {
+    const typeId = await makeType('Held terms');
+    await service.createProduct(
+      { name: 'Held product', description: null, enabled: true, commissionTypeId: typeId },
+      TEST_ACTOR,
+    );
+
+    await expect(types.remove(typeId, TEST_ACTOR)).rejects.toBeInstanceOf(ConflictError);
+    await expect(types.update(typeId, { enabled: false }, TEST_ACTOR)).rejects.toBeInstanceOf(
+      ConflictError,
+    );
+    /* A rename is not a disable, and goes through. */
+    const renamed = await types.update(typeId, { name: 'Held terms (renamed)' }, TEST_ACTOR);
+    expect(renamed.name).toBe('Held terms (renamed)');
+  });
+
+  it('records the type change in the audit diff, by id', async () => {
+    const typeId = await makeType('Audited terms');
     const audit = auditStub();
     const scoped = new CatalogueService(
       store,
@@ -487,70 +493,42 @@ describe('a product records its spread markup', () => {
     );
 
     const created = await scoped.createProduct(
-      {
-        name: 'Markup audited',
-        description: null,
-        enabled: true,
-        spreadMarkupPerLot: '1.00000000',
-        sortOrder: 0,
-      },
+      { name: 'Type audited', description: null, enabled: true, sortOrder: 0 },
       TEST_ACTOR,
     );
-
     await scoped.updateProduct(
       created.id,
-      {
-        name: 'Markup audited',
-        description: null,
-        enabled: true,
-        spreadMarkupPerLot: '4.75000000',
-        sortOrder: 0,
-      },
+      { name: 'Type audited', description: null, enabled: true, commissionTypeId: typeId },
       TEST_ACTOR,
     );
 
+    /* The one edit that changes what every partner is paid on this product. */
     const update = audit.record.mock.calls.find((call) => call[1] === 'product.update');
     expect(update, 'no product.update audit row was written').toBeDefined();
-
     const changed = (
       update![4] as { changed?: Record<string, { before: unknown; after: unknown }> }
     ).changed;
-    expect(changed?.spreadMarkupPerLot).toEqual({
-      before: '1.00000000',
-      after: '4.75000000',
-    });
+    expect(changed?.commissionTypeId).toEqual({ before: null, after: typeId });
   });
 
-  it('refuses a negative markup in the DATABASE, not only in a DTO', async () => {
-    /*
-     * A markup is what the broker ADDS. A negative one describes paying clients
-     * to trade, which this system does not sell and is far likelier to be a
-     * sign error — and the guarantee belongs in the column, because the DTO
-     * only guards the one path that happens to go through it.
-     */
-    const id = await makeProduct('Markup negative');
+  it('keeps every decimal place of the amounts, as strings', async () => {
+    const type = await types.create(
+      { name: 'Precise terms', commissionPerLot: '7.12345678', rebatePerLot: '0.5' },
+      TEST_ACTOR,
+    );
+    expect(type.commissionPerLot).toBe('7.12345678');
+    expect(type.rebatePerLot).toBe('0.50000000');
+    expect(typeof type.commissionPerLot).toBe('string');
+  });
 
+  it('refuses an amount far past any real rate card, because that is a typo', async () => {
+    const typeId = await makeType('Absurd terms');
     expect(
       await constraintViolatedBy(
         ctx.db.execute(
-          sql`UPDATE trading_products SET spread_markup_per_lot = -1 WHERE id = ${id}`,
+          sql`UPDATE ib_commission_types SET commission_per_lot = 150000 WHERE id = ${typeId}`,
         ),
       ),
-    ).toBe('trading_products_spread_markup_ck');
-  });
-
-  it('refuses a markup far past any real one, because that is a typo', async () => {
-    // The bound is a typo guard rather than a commercial limit: 10,000 per lot
-    // is orders of magnitude past any real markup, and well short of the
-    // mistake that turns 1.5 into 150000.
-    const id = await makeProduct('Markup absurd');
-
-    expect(
-      await constraintViolatedBy(
-        ctx.db.execute(
-          sql`UPDATE trading_products SET spread_markup_per_lot = 150000 WHERE id = ${id}`,
-        ),
-      ),
-    ).toBe('trading_products_spread_markup_ck');
+    ).toBe('ib_commission_types_commission_range');
   });
 });

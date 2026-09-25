@@ -10,7 +10,6 @@ import { money, toDecimal } from '../wallet/money';
 import { LIVE_REVENUE_FEED, isLiveRevenueFeed } from './revenue-feed';
 import { AppSettingsStore } from '../../store/app-settings.store';
 import { EmailService } from '../email/email.service';
-import type { RevenueBasis } from '../../common/revenue-basis';
 import { tradingTermsFrom } from '../../common/trading-terms';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { WalletService } from '../wallet/wallet.service';
@@ -30,6 +29,7 @@ import {
   resolveChain,
   MAX_CHAIN_DEPTH,
   type ChainNode,
+  type CommissionTypeTerms,
   type LevelTerms,
   type RevenueEvent,
 } from './commission';
@@ -146,10 +146,6 @@ export class CommissionService implements CommissionAccrualPort {
    */
   private async maxPayoutPerLot(): Promise<string> {
     return tradingTermsFrom(await this.settings.getTrading()).ibMaxPayoutPerLot;
-  }
-
-  private async maxTotalPayoutPct(): Promise<string> {
-    return tradingTermsFrom(await this.settings.getTrading()).ibMaxTotalPayoutPct;
   }
 
   /**
@@ -298,9 +294,10 @@ export class CommissionService implements CommissionAccrualPort {
   async accrueForClosedPosition(position: {
     positionId: string;
     clientUserId: string;
-    brokerRevenue: string;
     lots: string;
     currency: string;
+    /** The traded product's rate card — see `RevenueEvent.terms`. */
+    terms: CommissionTypeTerms | null | undefined;
   }): Promise<number> {
     /*
      * ── ONE FEED PAYS, AND TODAY IT IS NOT THIS ONE ──────────────────────
@@ -345,8 +342,8 @@ export class CommissionService implements CommissionAccrualPort {
         sourceId: position.positionId,
         describe: `position ${position.positionId}`,
         clientUserId: position.clientUserId,
-        brokerRevenue: position.brokerRevenue,
         lots: position.lots,
+        terms: position.terms,
         currency: position.currency,
       });
     } catch (error) {
@@ -393,18 +390,15 @@ export class CommissionService implements CommissionAccrualPort {
     /** MT5's ticket, for the log line only. */
     ticket: string;
     clientUserId: string;
-    brokerRevenue: string;
-    /**
-     * What the broker earned under EACH basis, for FR-IB-16 (0106).
-     *
-     * Optional: without it every earner is priced on `brokerRevenue`, which is
-     * the behaviour that shipped before programmes carried a basis. The deal
-     * feed passes it, so a chain mixing programmes prices each partner on the
-     * terms they actually agreed to.
-     */
-    revenueByBasis?: ReadonlyMap<RevenueBasis, string>;
+    /** Lots traded — what every term is priced against. */
     lots: string;
     currency: string;
+    /**
+     * The traded product's rate card (0140) — see `RevenueEvent.terms` for the
+     * three states and why an account with no product is REFUSED rather than
+     * paid nothing.
+     */
+    terms: CommissionTypeTerms | null | undefined;
   }): Promise<number> {
     /*
      * The other half of the one-feed rule guarded in `accrueForClosedPosition`.
@@ -429,9 +423,8 @@ export class CommissionService implements CommissionAccrualPort {
       sourceId: deal.dealRowId,
       describe: `deal ${deal.ticket}`,
       clientUserId: deal.clientUserId,
-      brokerRevenue: deal.brokerRevenue,
-      revenueByBasis: deal.revenueByBasis,
       lots: deal.lots,
+      terms: deal.terms,
       currency: deal.currency,
     });
   }
@@ -465,20 +458,11 @@ export class CommissionService implements CommissionAccrualPort {
     /** How to name this event in a log line, e.g. `deal 90210`. */
     describe: string;
     clientUserId: string;
-    /**
-     * The broker's own earning on this trade under the DEFAULT basis.
-     *
-     * Still the figure every leg is priced on when `revenueByBasis` is absent,
-     * and still what `checkPlausible` bounds the total against — see the note
-     * at that call for why the ceiling has one denominator even when the legs
-     * do not.
-     */
-    brokerRevenue: string;
-    /** Per-basis revenue for FR-IB-16 (0106); absent means price everything on `brokerRevenue`. */
-    revenueByBasis?: ReadonlyMap<RevenueBasis, string>;
-    /** Lots traded, for per_lot levels. */
+    /** Lots traded — what every term is priced against. */
     lots: string;
     currency: string;
+    /** The traded product's rate card — see `RevenueEvent.terms`. */
+    terms: CommissionTypeTerms | null | undefined;
   }): Promise<number> {
     /*
      * Read from the CLIENT rather than taken as a parameter, for the reason the
@@ -507,13 +491,13 @@ export class CommissionService implements CommissionAccrualPort {
     const levels = await this.loadLevels(this.db);
 
     const revenue: RevenueEvent = {
-      grossAmount: event.brokerRevenue,
       currency: event.currency,
       source: 'deal',
       lots: event.lots,
+      terms: event.terms,
     };
 
-    const result = calculate(revenue, chain, levels, event.revenueByBasis);
+    const result = calculate(revenue, chain, levels);
     if (result.skippedReason) {
       this.logger.warn(
         `Commission partially skipped for ${event.describe}: ${result.skippedReason}`,
@@ -545,7 +529,6 @@ export class CommissionService implements CommissionAccrualPort {
       revenue,
       result.accruals,
       result.rebate,
-      await this.maxTotalPayoutPct(),
       await this.maxPayoutPerLot(),
     );
     if (!plausible.ok) {
@@ -564,7 +547,7 @@ export class CommissionService implements CommissionAccrualPort {
         ALERT_KINDS.COMMISSION_CEILING_BREACH,
         'page',
         `Refusing commission for ${event.describe}: ${plausible.reason}`,
-        { source: event.sourceType, base: event.brokerRevenue, currency: event.currency },
+        { source: event.sourceType, lots: event.lots, currency: event.currency },
       );
       throw new CommissionRefusedError(
         `Refusing commission for ${event.describe}: ${plausible.reason}`,
@@ -589,6 +572,7 @@ export class CommissionService implements CommissionAccrualPort {
         depth: accrual.depth,
         programId: accrual.programId ?? null,
         levelId: accrual.levelId ?? null,
+        commissionTypeId: accrual.commissionTypeId ?? null,
         rateValue: accrual.rateValue,
         baseAmount: accrual.baseAmount,
         amount: accrual.amount,
@@ -601,6 +585,7 @@ export class CommissionService implements CommissionAccrualPort {
               depth: 1,
               programId: result.rebate.programId ?? null,
               levelId: result.rebate.levelId ?? null,
+              commissionTypeId: result.rebate.commissionTypeId ?? null,
               rateValue: result.rebate.rateValue,
               baseAmount: result.rebate.baseAmount,
               amount: result.rebate.amount,
@@ -636,6 +621,8 @@ export class CommissionService implements CommissionAccrualPort {
            */
           programId: accrual.programId ?? null,
           levelId: accrual.levelId ?? null,
+          /* Which rate card the share was taken of — the other half of the terms (0140). */
+          commissionTypeId: accrual.commissionTypeId ?? null,
           rateValue: accrual.rateValue,
           /*
            * The leg's OWN base (0106), not the trade's default-basis revenue.
@@ -1409,20 +1396,8 @@ export class CommissionService implements CommissionAccrualPort {
           id: row.id,
           level: row.level,
           enabled: row.enabled,
-          commissionMode: row.commissionMode,
-          commissionRate: row.commissionRate,
-          /*
-           * Passed only in the mode that reads it. Handing `calculate` an amount
-           * on a percentage level would re-price the leg, because the presence
-           * of the field is not what it branches on — the MODE is — but leaving
-           * a stale figure visible on the terms object invites the next reader
-           * to use it.
-           */
-          commissionAmountPerLot: row.commissionAmountPerLot ?? undefined,
-          rebateMode: row.rebateMode,
-          rebateRate: row.rebateRate,
-          rebateAmountPerLot: row.rebateAmountPerLot ?? undefined,
-          revenueBasis: row.revenueBasis,
+          commissionShare: row.commissionShare,
+          rebateShare: row.rebateShare,
         },
       ]),
     );

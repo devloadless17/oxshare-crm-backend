@@ -529,51 +529,25 @@ export class IbPartnerDetailDto {
   )
   levelEnabled: boolean;
   @ApiProperty({
-    enum: ['percent', 'per_lot'],
+    type: 'string',
     nullable: true,
-    description: 'How their own commission is priced.',
+    description:
+      'Their rung’s percentage of the traded product’s commission per lot (0140). Null when ' +
+      'the rung is not configured.',
   })
   @NotClientField(
-    'not a client-owned attribute \u2014 levelCommissionMode describes the record rather than the person',
+    'not a client-owned attribute \u2014 levelCommissionShare describes the record rather than the person',
   )
-  levelCommissionMode: 'percent' | 'per_lot' | null;
+  levelCommissionShare: string | null;
   @ApiProperty({
     type: 'string',
     nullable: true,
-    description: 'Their share of broker revenue, as a percentage. Read in `percent` mode.',
+    description: 'What their clients get back, as a percentage of the product’s rebate per lot.',
   })
   @NotClientField(
-    'not a client-owned attribute \u2014 levelCommissionRate describes the record rather than the person',
+    'not a client-owned attribute \u2014 levelRebateShare describes the record rather than the person',
   )
-  levelCommissionRate: string | null;
-  @ApiProperty({
-    type: 'string',
-    nullable: true,
-    description: 'Money per standard lot. Read in `per_lot` mode.',
-  })
-  @NotClientField(
-    'not a client-owned attribute \u2014 levelCommissionAmountPerLot describes the record rather than the person',
-  )
-  levelCommissionAmountPerLot: string | null;
-  @ApiProperty({ enum: ['percent', 'per_lot'], nullable: true })
-  @NotClientField(
-    'not a client-owned attribute \u2014 levelRebateMode describes the record rather than the person',
-  )
-  levelRebateMode: 'percent' | 'per_lot' | null;
-  @ApiProperty({
-    type: 'string',
-    nullable: true,
-    description: 'What their clients get back, as a percentage of the same revenue.',
-  })
-  @NotClientField(
-    'not a client-owned attribute \u2014 levelRebateRate describes the record rather than the person',
-  )
-  levelRebateRate: string | null;
-  @ApiProperty({ type: 'string', nullable: true })
-  @NotClientField(
-    'not a client-owned attribute \u2014 levelRebateAmountPerLot describes the record rather than the person',
-  )
-  levelRebateAmountPerLot: string | null;
+  levelRebateShare: string | null;
   @NotClientField(
     'not a client-owned attribute \u2014 referralCode describes the record rather than the person',
   )

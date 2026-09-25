@@ -2,15 +2,18 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { positions, tradingAccounts, tradingProducts } from '../../database/schema';
+import {
+  ibCommissionTypes,
+  positions,
+  tradingAccounts,
+  tradingProducts,
+} from '../../database/schema';
 import {
   COMMISSION_ACCRUAL,
   type CommissionAccrualPort,
+  type ProductCommissionTerms,
 } from '../../common/provisioning/commission-accrual.port';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
-import { brokerRevenueFor } from './broker-revenue';
-import { basisCountsSpread } from '../../common/revenue-basis';
-import { DEFAULT_REVENUE_BASIS } from '../../common/revenue-basis';
 
 /**
  * Open positions, and what happens when one closes.
@@ -173,61 +176,30 @@ export class PositionsService {
     }
 
     /*
-     * ── The basis applies HERE TOO, and that is not decoration ────────────
+     * ── The product's TERMS apply here too, and that is not decoration ─────
      *
      * This path is dormant: `LIVE_REVENUE_FEED` is `deal`, so the accrual below
      * refuses and nothing writes `positions` anyway. It would therefore have
-     * been easy to leave this computing `commission + swap` directly.
+     * been easy to leave this passing nothing.
      *
      * That is exactly the trap the deal feed's own notes warn about. The day
-     * somebody flips the feed to `position`, a hardcoded base here would
-     * silently ignore a repricing an operator had already made and audited —
-     * two paths paying two different amounts for one trade, which is the failure
-     * `brokerRevenueOf` was extracted into a function to prevent in the first
-     * place. `brokerRevenueFor` takes the basis and the markup as required
-     * arguments so that a call site cannot inherit the old pricing by omission.
+     * somebody flips the feed to `position`, a call site that inherited some
+     * default would price a trade on terms nobody configured — two paths
+     * paying two different amounts for one trade. So this resolves the same
+     * three states the deal feed does, from the same tables.
      */
-    const basis = DEFAULT_REVENUE_BASIS;
-
-    /*
-     * Looked up ONLY when the basis needs it. A dormant path should not pay for
-     * a join on every close to satisfy a setting nobody has switched on — and
-     * under the default the markup is not read at all, so a missing product
-     * link cannot refuse a close that would otherwise have succeeded.
-     */
-    const spreadMarkupPerLot = basisCountsSpread(basis)
-      ? await this.markupFor(row.tradingAccountId)
-      : null;
-
-    const revenue = brokerRevenueFor({
-      basis,
-      legs: [{ commission: row.commission ?? '0', swap: row.swap ?? '0' }],
-      lots: row.volume,
-      spreadMarkupPerLot,
-    });
-
-    /*
-     * A close is a CLIENT-FACING write that has already happened — the row above
-     * is updated and committed logic-wise — so an unpriceable trade must not
-     * take the close down with it. It throws a ValidationError naming the
-     * missing link, which is the same shape every other refusal on this path
-     * takes, rather than a 500 that says nothing an operator can act on.
-     */
-    if (!revenue.ok) throw new ValidationError(revenue.reason);
-
-    const brokerRevenue = revenue.revenue;
-
+    const terms = await this.termsFor(row.tradingAccountId);
     const accrued = await this.commissions.accrueForClosedPosition({
       positionId: row.id,
       clientUserId: row.userId,
-      brokerRevenue,
       lots: row.volume,
       currency: row.currency,
+      terms,
     });
 
     if (accrued > 0) {
       this.logger.log(
-        `Position ${row.ticket} closed: broker revenue ${brokerRevenue} ${row.currency}, ` +
+        `Position ${row.ticket} closed: ${row.volume} lot(s) in ${row.currency}, ` +
           `${accrued} accrual(s) written.`,
       );
     }
@@ -236,23 +208,40 @@ export class PositionsService {
   }
 
   /**
-   * The spread markup the account's product is sold on, or `null` when the
-   * account is linked to no product.
+   * The rate card the account's product is sold on — the same three states the
+   * deal feed resolves, and for the same reasons (0140).
    *
-   * `null` is deliberately NOT collapsed to `'0'`. Zero is a real markup — a
-   * raw-spread product carries none — and a missing product link is a
-   * configuration hole. Returning zero for both would price an unconfigured
-   * account at nothing and pay a partner nothing, silently, which is the one
-   * answer this whole module is built to avoid.
+   * `undefined` when the account is linked to no product: NOT collapsed to a
+   * zero card, because a missing link is a configuration hole and the engine
+   * refuses it rather than paying nothing silently. `null` when the product
+   * carries no type: a configured "pays no partner commission".
    */
-  private async markupFor(tradingAccountId: string): Promise<string | null> {
+  private async termsFor(
+    tradingAccountId: string,
+  ): Promise<ProductCommissionTerms | null | undefined> {
     const [row] = await this.db
-      .select({ spreadMarkupPerLot: tradingProducts.spreadMarkupPerLot })
+      .select({
+        productId: tradingAccounts.productId,
+        commissionTypeId: tradingProducts.commissionTypeId,
+        name: ibCommissionTypes.name,
+        enabled: ibCommissionTypes.enabled,
+        commissionPerLot: ibCommissionTypes.commissionPerLot,
+        rebatePerLot: ibCommissionTypes.rebatePerLot,
+      })
       .from(tradingAccounts)
-      .innerJoin(tradingProducts, eq(tradingProducts.id, tradingAccounts.productId))
+      .leftJoin(tradingProducts, eq(tradingProducts.id, tradingAccounts.productId))
+      .leftJoin(ibCommissionTypes, eq(ibCommissionTypes.id, tradingProducts.commissionTypeId))
       .where(eq(tradingAccounts.id, tradingAccountId))
       .limit(1);
 
-    return row?.spreadMarkupPerLot ?? null;
+    if (!row || row.productId === null) return undefined;
+    if (row.commissionTypeId === null) return null;
+    return {
+      id: row.commissionTypeId,
+      name: row.name ?? '',
+      enabled: row.enabled ?? false,
+      commissionPerLot: row.commissionPerLot ?? '0',
+      rebatePerLot: row.rebatePerLot ?? '0',
+    };
   }
 }

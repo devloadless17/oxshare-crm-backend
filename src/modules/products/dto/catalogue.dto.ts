@@ -8,30 +8,18 @@ import {
   IsOptional,
   IsString,
   IsUUID,
-  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
 
-/**
- * A spread markup, as a decimal STRING (§6.1).
- *
- * It is money and it is `NUMERIC(28,8)`, so a JSON number would round-trip
- * through a float before anybody did arithmetic with it — the mistake ADM-10's
- * commission rates are spelled this way to avoid. Eight decimals, matching the
- * column; longer is refused rather than silently rounded, because a markup an
- * operator typed and a markup the system stored must be the same number.
- *
- * The upper bound is the same typo guard the CHECK constraint carries: four
- * digits before the point. 10,000 per lot is orders of magnitude past any real
- * markup and well short of the mistake that turns 1.5 into 150000.
+/*
+ * `SPREAD_MARKUP` stood here until 0140. The product's spread markup is gone —
+ * it was a commercial record that drove nothing — and what a product pays
+ * partners is now the COMMISSION TYPE it points at (`commissionTypeId`), whose
+ * amounts are validated on its own DTO.
  */
-const SPREAD_MARKUP = /^\d{1,5}(\.\d{1,8})?$/;
-const SPREAD_MARKUP_MESSAGE =
-  'must be a non-negative decimal with at most eight places, as a string — e.g. "1.5" or "0.00000000"';
-
 /* ── Products ─────────────────────────────────────────────────────────────── */
 
 @NoClientFields(
@@ -82,13 +70,14 @@ export class ProductDto {
 
   @ApiProperty({
     type: 'string',
-    example: '1.50000000',
+    format: 'uuid',
+    nullable: true,
     description:
-      "The broker's spread markup per standard lot, in the account currency. A COMMERCIAL " +
-      'RECORD ONLY — nothing computes from it, and it is deliberately not part of the revenue ' +
-      'partners are paid a share of. A decimal string, never a number: it is money.',
+      'The commission type this product pays partners on (0140) — the rate card whose per-lot ' +
+      'amounts each level takes a share of. NULL means the product pays no partner ' +
+      'commission at all; the demo product never carries one.',
   })
-  spreadMarkupPerLot: string;
+  commissionTypeId: string | null;
 
   @ApiProperty({ example: 0 })
   sortOrder: number;
@@ -125,17 +114,17 @@ export class UpsertProductDto {
   type?: 'real' | 'demo';
 
   /**
-   * Optional, and omitting it KEEPS the stored value rather than zeroing it.
+   * OMITTED keeps the stored type; an explicit NULL clears it.
    *
-   * This is a PUT, so a client that predates the field would otherwise reset a
-   * negotiated markup every time somebody renamed a product — and the audit row
-   * would faithfully record a change nobody made.
+   * This is a PUT, so a client that predates the field would otherwise strip a
+   * product's terms every time somebody renamed it — and the audit row would
+   * faithfully record a change nobody made. Refused on the demo product, which
+   * never accrues, and refused when the id names no type.
    */
-  @ApiPropertyOptional({ type: 'string', example: '1.50000000' })
+  @ApiPropertyOptional({ type: 'string', format: 'uuid', nullable: true })
   @IsOptional()
-  @IsString()
-  @Matches(SPREAD_MARKUP, { message: `spreadMarkupPerLot ${SPREAD_MARKUP_MESSAGE}` })
-  spreadMarkupPerLot?: string;
+  @IsUUID()
+  commissionTypeId?: string | null;
 
   /**
    * Where this row sits, or OMITTED for "wherever" — which appends.
