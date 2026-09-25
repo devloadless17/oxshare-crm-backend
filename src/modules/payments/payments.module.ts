@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { PaymentsController } from './payments.controller';
 import { PaymentsReturnController } from './payments-return.controller';
 import { AdminPaymentMethodsController } from './admin-payment-methods.controller';
+import { AdminWithdrawalMethodsController } from './admin-withdrawal-methods.controller';
+import { WithdrawalMethodsService } from './withdrawal-methods.service';
 import { AdminAuthModule } from '../admin/admin-auth.module';
 import { TransactionsService } from './transactions.service';
 import { TransfersService } from './transfers.service';
@@ -59,6 +61,7 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
     PaymentsReturnController,
     RivalWebhookController,
     AdminPaymentMethodsController,
+    AdminWithdrawalMethodsController,
   ],
   /*
    * `AdminAuditService` is provided here rather than imported from
@@ -72,6 +75,7 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
   providers: [
     TransactionsService,
     PaymentMethodsService,
+    WithdrawalMethodsService,
     TransfersService,
     /*
      * The MT5 leg of a transfer. `TransfersService` moves the CRM's two

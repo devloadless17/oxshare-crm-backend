@@ -4172,6 +4172,120 @@
         ]
       }
     },
+    "/v1/admin/withdrawal-methods": {
+      "get": {
+        "description": "Includes disabled methods — switching them is the point of the screen. Clients see only the enabled ones, through GET /payments/withdrawal-methods.",
+        "operationId": "AdminWithdrawalMethodsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminWithdrawalMethodDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every withdrawal method, enabled or not",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Key, name and an optional logo. `enabled` decides whether clients are offered it on the withdraw form.",
+        "operationId": "AdminWithdrawalMethodsController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWithdrawalMethodDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminWithdrawalMethodDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add a withdrawal method",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/withdrawal-methods/{key}": {
+      "patch": {
+        "description": "PATCH, and `key` itself is not editable: it is the primary key and withdrawal requests reference it. Disabling hides the method from new requests and leaves existing ones for the desk to settle.",
+        "operationId": "AdminWithdrawalMethodsController_update",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWithdrawalMethodDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminWithdrawalMethodDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Update a withdrawal method",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/wallet": {
       "get": {
         "operationId": "WalletController_myWallets",
@@ -14468,6 +14582,101 @@
         "required": [
           "logoUrl"
         ]
+      },
+      "AdminWithdrawalMethodDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "whish",
+            "description": "A stable machine key. Never renamed: `transactions.withdrawal_method_key` references it."
+          },
+          "name": {
+            "type": "string",
+            "example": "Whish Money",
+            "description": "What the client picks from."
+          },
+          "logoUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether clients are offered it on the withdraw form. Disabling leaves requests already made on it untouched — the desk still settles them."
+          },
+          "sortOrder": {
+            "type": "number",
+            "example": 0,
+            "description": "The order clients see the methods in."
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "logoUrl",
+          "enabled",
+          "sortOrder",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "CreateWithdrawalMethodDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "bank_transfer",
+            "maxLength": 40
+          },
+          "name": {
+            "type": "string",
+            "example": "Bank transfer"
+          },
+          "logoUrl": {
+            "type": "string",
+            "maxLength": 2048,
+            "example": "/v1/uploads/payment-logos/8f2c….png"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "sortOrder": {
+            "type": "number",
+            "default": 0
+          }
+        },
+        "required": [
+          "key",
+          "name"
+        ]
+      },
+      "UpdateWithdrawalMethodDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "logoUrl": {
+            "type": "string",
+            "maxLength": 2048,
+            "example": "/v1/uploads/payment-logos/8f2c….png"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "number"
+          }
+        }
       },
       "StatementLineDto": {
         "type": "object",
