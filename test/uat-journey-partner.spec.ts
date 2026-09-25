@@ -283,10 +283,17 @@ beforeAll(async () => {
   `);
   /* BOUND, not inlined: a backslash inside the query text is eaten on the
      way to the server, and `realStandard` matches no account's group. */
+  /*
+   * The group is made THIS product's alone. A group may back several products
+   * since 0142, and the admin open path refuses an ambiguous group rather than
+   * guessing its commission type — so any other attachment would stop step 3.
+   */
+  await db.execute(sql`
+    DELETE FROM trading_product_groups WHERE lower(mt5_group) = lower(${'real\\Standard'})
+  `);
   await db.execute(sql`
     INSERT INTO trading_product_groups (product_id, environment, mt5_group, currency)
     VALUES (${uatProducts[0].id}, 'live', ${'real\\Standard'}, 'USD')
-    ON CONFLICT (mt5_group) DO UPDATE SET product_id = ${uatProducts[0].id}
   `);
 }, 240_000);
 

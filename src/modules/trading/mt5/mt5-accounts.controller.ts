@@ -83,6 +83,7 @@ export class Mt5AccountsController {
       {
         userId: dto.userId,
         group: dto.group,
+        productId: dto.productId,
         environment: dto.environment,
         leverage: dto.leverage,
       },

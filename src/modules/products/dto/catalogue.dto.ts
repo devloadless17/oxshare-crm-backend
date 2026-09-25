@@ -176,8 +176,8 @@ export class AvailableGroupDto {
 
   @ApiProperty({
     description:
-      'True when another product already claims it. Shown disabled with the reason rather than ' +
-      'hidden, so an operator can tell "not offered" from "already taken".',
+      'True when some product already sells it. Informational since 0142 — a group may back ' +
+      'several products — so the form notes it rather than refusing it.',
   })
   claimed: boolean;
 

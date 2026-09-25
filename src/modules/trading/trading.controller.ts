@@ -125,13 +125,19 @@ export class TradingController {
      * partner's agency. Resolved for THIS client, so what they are allowed to
      * open is decided by their own introducing broker and not by the request.
      */
-    const group = await this.selfServiceGroups.resolve(req.user.id, dto.environment, dto.group);
+    const { mt5Group: group, productId } = await this.selfServiceGroups.resolve(
+      req.user.id,
+      dto.environment,
+      dto.group,
+      dto.productId,
+    );
     const leverage = await this.selfServiceGroups.resolveLeverage(dto.leverage);
 
     return await this.mt5Accounts.createOwnAccount({
       userId: req.user.id,
       environment: dto.environment,
       group,
+      productId,
       leverage,
       name: dto.name,
       startingBalance: dto.startingBalance,
@@ -287,6 +293,9 @@ export class TradingController {
         group: option.mt5Group,
         currency: known.get(option.mt5Group.toLowerCase()) ?? option.currency,
         product: option.productName,
+        // Sent back on create (0142): a group may back several products, so
+        // the product is what identifies which offer the client picked.
+        productId: option.productId,
       }));
 
     const [liveTypes, demoTypes] = await Promise.all([describe('live'), describe('demo')]);

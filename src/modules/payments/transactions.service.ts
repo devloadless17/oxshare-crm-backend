@@ -158,6 +158,12 @@ export interface AdminMovementsFilter {
   /** Inclusive date bounds, compared by DATE PART — see the union's filters. */
   from?: string;
   to?: string;
+  /**
+   * Only payments a PERSON must reconcile (`rival_needs_attention`) — where an
+   * attention task's link lands, and the desk's "what is flagged" view. The
+   * transfer arms carry no flag, so they never match.
+   */
+  attention?: boolean;
 }
 
 /** One row of the Financial CSV export — flattened, the amount a STRING. */
@@ -2048,6 +2054,7 @@ export class TransactionsService {
       if (filter.kind) conditions.push(sql`combined.kind = ${filter.kind}`);
       if (!omit.state && filter.state) conditions.push(sql`combined.state = ${filter.state}`);
       if (filter.currency) conditions.push(sql`combined.currency = ${filter.currency}`);
+      if (filter.attention) conditions.push(sql`combined.rival_needs_attention`);
       /*
        * INCLUSIVE at both ends, and SARGABLE: the bounds are computed on the
        * constants, never by casting the column. `created_at::date >= x` wraps
@@ -2183,6 +2190,10 @@ export class TransactionsService {
       ...toMovementRow(row),
       tradingAccountId: row.trading_account_id,
       walletId: row.wallet_id,
+      // The row's badge and its "Mark resolved" — the finish line of the
+      // attention task the admin followed here (0140).
+      needsAttention: row.rival_needs_attention,
+      attentionReason: row.rival_attention_reason,
       user: {
         id: row.user_id,
         portalId: row.user_portal_id,

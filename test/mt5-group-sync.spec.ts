@@ -322,11 +322,13 @@ describe('the MT5 Groups screen', () => {
 
     expect(rows.map((row) => row.name)).toEqual(['real\\ECN', 'real\\Standard']);
 
-    expect(byName.get('real\\Standard')?.product?.name).toBe('Product REAL\\standard');
-    expect(byName.get('real\\Standard')?.product?.environment).toBe('live');
+    expect(byName.get('real\\Standard')?.products.map((p) => p.name)).toEqual([
+      'Product REAL\\standard',
+    ]);
+    expect(byName.get('real\\Standard')?.products[0]?.environment).toBe('live');
     expect(byName.get('real\\Standard')?.accountCount).toBe(2);
 
-    expect(byName.get('real\\ECN')?.product).toBeNull();
+    expect(byName.get('real\\ECN')?.products).toEqual([]);
     expect(byName.get('real\\ECN')?.currency).toBe('EUR');
     expect(byName.get('real\\ECN')?.accountCount).toBe(1);
 
@@ -335,6 +337,24 @@ describe('the MT5 Groups screen', () => {
     expect((await groups.cached({ includeRemoved: true })).map((row) => row.name)).toContain(
       'real\\Old',
     );
+  });
+
+  /* A group may back several products since 0142; the screen names them all. */
+  it('names every product that sells a group', async () => {
+    serverGroups = [group('real\\Standard')];
+    await groups.sync();
+    await sellGroup('real\\Standard', 'USD');
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO trading_products (name) VALUES ('Second Standard') RETURNING id
+    `);
+    await ctx.db.execute(sql`
+      INSERT INTO trading_product_groups (product_id, environment, mt5_group, currency)
+      VALUES (${rows[0].id}, 'live', ${'real\\Standard'}, 'USD')
+    `);
+
+    const [row] = await groups.listForAdmin();
+
+    expect(row?.products.map((p) => p.name)).toEqual(['Product real\\Standard', 'Second Standard']);
   });
 
   it('answers from the mirror without asking the bridge', async () => {

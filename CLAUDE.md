@@ -931,9 +931,11 @@ kind is part of the name so two audiences cannot collide on a shared uuid) and t
 trigger (migration 0047) and is delivered only on COMMIT, so a rolled-back money transaction
 cannot announce itself. That also removes the need for a Redis adapter — every instance LISTENs.
 
-**Three channels share that one listening connection**, separated by `message.channel`:
-`notification_created` (the bell), `resource_changed` (a shared admin queue moved), and `mt5_live`
-(live MT5 figures for an account somebody has on screen). A channel per feature would cost a
+**Four channels share that one listening connection**, separated by `message.channel`:
+`notification_created` (a bell row landed), `notification_changed` (one of a reader's rows was
+READ or RESOLVED — migration 0140; the payload names a room and nothing else, and the browser
+re-reads), `resource_changed` (a shared admin queue moved), and `mt5_live` (live MT5 figures for an
+account somebody has on screen). A channel per feature would cost a
 permanent Postgres connection each. `mt5_live` is the odd one out and worth knowing about: it is
 high-rate, it carries real data rather than a hint, and it is published from a plain `SELECT
 pg_notify` rather than a trigger — it describes an observation the bridge already made, so there is
@@ -945,6 +947,49 @@ said.
 and `JwtStrategy.validate` — the same objects the HTTP guards use. Do not re-implement those
 checks for sockets; that is how two authorization paths drift until one is missing an enforcement
 point. Sockets close at token expiry (15-minute ceiling) so the reconnect re-authenticates.
+
+## Admin notifications are TASKS (migration 0140, D-78)
+
+The owner's rule, from the broker buying the platform: an admin notification means "you must
+HANDLE something", it is scoped to the reader's clients always, and it disappears when the reader
+opens it — and for EVERY admin the moment anybody handles the item. Read these before touching
+`modules/notifications`, the dispatch port, or any item table's status column:
+
+- **`common/notifications/admin-notification-catalogue.ts` is the one list** of what may ring an
+  admin's bell. The PERMISSION comes from it (any one of a kind's keys qualifies), never from the
+  call site. Before adding a kind, name what the recipient must DO; if nothing, it is not a
+  notification. The frontend's display map is keyed by the same enum (typegen), so it cannot lag.
+- **`notifyAdmins({ kind, params, dedupeKey?, subject: { id, clientId } })`** — the subject is
+  mandatory. Post-commit and never throws, like before; the insert locks the item `FOR SHARE` and
+  re-checks it is still open (`stillOpen`), so an item decided before the fan-out landed rings
+  nobody. `notify()` writes CLIENT rows only — an admin row without a subject is refused by type and
+  by `notifications_admin_subject_ck`.
+- **Handled is decided by TRIGGERS on the item tables**, not by code: `transactions` (leaves
+  `pending`, becomes terminal, or `rival_needs_attention` clears), `kyc_submissions` (leaves
+  submitted/under_review, or is deleted — claim/release do NOT resolve), `ib_applications`,
+  `transfers`, `ib_accruals` (reversed). `resolve_admin_notifications` catches everything it could
+  raise and WARNs: a bell can never roll back the decision it describes. `resolved_by` is set only
+  when the ending UPDATE itself wrote the reviewer — a cancel or a system settle leaves it blank
+  rather than crediting the approver. **A new path that moves one of these items needs no bell
+  code** — which is the point.
+- **Scope is applied on READ.** `NotificationsStore.adminVisibility` (recipient, the kinds the
+  admin can act on NOW, `clientScopePredicate` over `subject_user_id`) is ANDed into the list, the
+  badge summary and every marker; out of scope reads as not found. The client's name is joined at
+  read time and masked by the RBAC-03 interceptor; `params` still carries no identity
+  (`notification-params-no-pii.spec.ts`), because the socket and the client feed are unmasked.
+- **Inbox** = unread AND unresolved; **History** = everything, with `resolution`. Markers: read,
+  unread (the undo), read-all (`category?`, `upTo` — never past the newest row shown),
+  read-subject (the reader opened the item itself).
+- **An attention task ends with "Mark resolved"** — `PATCH /admin/transactions/:id/attention/resolve`
+  (a note, audited `transaction.attention_resolve`); it moves no money, it clears the flag, and the
+  trigger ends the task. `GET /admin/transactions` carries `needsAttention`/`attentionReason` per row
+  and takes `attention=true` (list, summary and export alike, through the one predicate builder) —
+  where the deposit task links.
+- **Retention**: admin rows a year, client rows 90 days (`RETENTION_DAYS`).
+- ⚠️ **0140/0141 numbering**: HazimeHsen's commission-types migration was `0140` with the SAME
+  journal `when` as this one before the merge renumbered it `0141`. A database that ran HIS 0140
+  before the merge has watermark `1789139298747` and would silently SKIP this migration. Repair:
+  delete that `drizzle.__drizzle_migrations` row, then `db:migrate` (his 0141 is re-runnable).
 
 ## Object storage — R2, and the two rules that keep it honest
 

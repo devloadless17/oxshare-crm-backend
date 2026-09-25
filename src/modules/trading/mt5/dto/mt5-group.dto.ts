@@ -43,13 +43,12 @@ export class Mt5GroupDto {
   leverageDefault: number | null;
 
   @ApiProperty({
-    type: Mt5GroupProductDto,
-    nullable: true,
+    type: [Mt5GroupProductDto],
     description:
-      'The product that sells this group, or null when no product claims it — in which case no ' +
-      'client can open an account in it from the portal.',
+      'Every product that sells this group, by name — several since 0142. Empty when no product ' +
+      'does, in which case no client can open an account in it from the portal.',
   })
-  product: Mt5GroupProductDto | null;
+  products: Mt5GroupProductDto[];
 
   @ApiProperty({
     example: 12,

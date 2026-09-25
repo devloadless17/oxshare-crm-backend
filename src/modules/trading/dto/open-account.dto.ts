@@ -1,5 +1,15 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 /**
  * A client opening their own trading account.
@@ -42,6 +52,21 @@ export class OpenOwnAccountDto {
   @IsString()
   @MaxLength(64)
   name?: string;
+
+  /**
+   * The product the client chose — validated with the group against the offered
+   * pairs in `SelfServiceGroups.resolve` (0142).
+   */
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'The product the client chose, from GET /trading/accounts/self-service. A group may back ' +
+      'several products (0142), so this identifies the offer — and the product decides the ' +
+      'account’s commission type. Omitted, the first offered product carrying the group is used.',
+  })
+  @IsOptional()
+  @IsUUID()
+  productId?: string;
 
   /**
    * The account type, as an MT5 group path.

@@ -259,17 +259,21 @@ export class Mt5GroupSyncService {
         .groupBy(sql`lower(${tradingAccounts.mt5Group})`),
     ]);
 
-    const claimedBy = new Map(claims.map((claim) => [claim.mt5Group.toLowerCase(), claim]));
+    /* Several products may sell one group (0142), so each group maps to a list. */
+    const soldBy = new Map<string, Mt5GroupDto['products']>();
+    for (const claim of claims) {
+      const key = claim.mt5Group.toLowerCase();
+      const list = soldBy.get(key) ?? [];
+      list.push({ id: claim.productId, name: claim.productName, environment: claim.environment });
+      soldBy.set(key, list);
+    }
     const accountsIn = new Map(counts.map((row) => [row.group, row.count]));
 
     return groups.map((group) => {
       const key = group.name.toLowerCase();
-      const claim = claimedBy.get(key);
       return {
         ...group,
-        product: claim
-          ? { id: claim.productId, name: claim.productName, environment: claim.environment }
-          : null,
+        products: (soldBy.get(key) ?? []).sort((a, b) => a.name.localeCompare(b.name)),
         accountCount: accountsIn.get(key) ?? 0,
       };
     });

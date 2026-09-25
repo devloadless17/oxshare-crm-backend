@@ -179,7 +179,18 @@ export class SelfServiceGroups implements OnModuleInit {
    * then be paid to somebody who introduced nobody. The portal's dropdown is a
    * convenience; this is the control.
    */
-  async resolve(userId: string, environment: 'live' | 'demo', requested?: string): Promise<string> {
+  async resolve(
+    userId: string,
+    environment: 'live' | 'demo',
+    requested?: string,
+    /**
+     * The product the client chose — 0142. A group may back several products,
+     * so the pair is what identifies the offer; the product decides the
+     * account's commission type. Validated against the OFFERED pairs like the
+     * group, so a client cannot name a product outside their agency.
+     */
+    requestedProductId?: string,
+  ): Promise<{ mt5Group: string; productId: string }> {
     const offered = await this.offeredTo(userId, environment);
 
     if (offered.length === 0) {
@@ -190,22 +201,26 @@ export class SelfServiceGroups implements OnModuleInit {
       );
     }
 
-    if (!requested) return offered[0].mt5Group;
-
     /*
      * Case-insensitive, because MT5 group paths are and a browser round trip
      * can change nothing else about the string. Matched against the OFFERED
      * spelling, which is what gets sent onward — never the caller's, so a
      * casing difference cannot reach the server.
+     *
+     * With no product named, the FIRST offered pair carrying the group wins —
+     * the broker's own order. That keeps a portal that predates 0142 working,
+     * and it is the pairing that same portal showed the client.
      */
     const match = offered.find(
-      (option) => option.mt5Group.toLowerCase() === requested.trim().toLowerCase(),
+      (option) =>
+        (!requested || option.mt5Group.toLowerCase() === requested.trim().toLowerCase()) &&
+        (!requestedProductId || option.productId === requestedProductId),
     );
     if (!match) {
       throw new ValidationError('That account type is not available. Choose one from the list.');
     }
 
-    return match.mt5Group;
+    return { mt5Group: match.mt5Group, productId: match.productId };
   }
 
   /**

@@ -167,16 +167,76 @@ export class Mt5AccountsService {
     return actual;
   }
 
-  private async productForGroup(group: string): Promise<string | null> {
+  /**
+   * The product an account opened in `group` is recorded under — 0142.
+   *
+   * A group may back several products, and the product decides the account's
+   * commission type, so it must be the one somebody CHOSE:
+   *
+   *  - `chosen` given → it must actually sell the group, or the request is
+   *    refused (a product that does not sell the group would record terms the
+   *    account was never opened on).
+   *  - not given, one product sells the group → that one.
+   *  - not given, several do → REFUSED, naming them. Guessing would record a
+   *    commission type nobody picked, and it decides what every trade pays.
+   *  - none does → NULL. An account may be opened into a group no product
+   *    carries; that is recorded honestly rather than refused.
+   */
+  /**
+   * The product to RECORD once MT5 has opened the account.
+   *
+   * Normally the one resolved before the bridge call. MT5 reports back the group
+   * it actually used, and if that is not the one requested (beyond casing), the
+   * pre-resolved product may not sell it — so the product is looked up again
+   * for the real group, and recorded only when exactly one product sells it.
+   * Never a refusal here: the account already exists on MT5.
+   */
+  private async recordedProduct(
+    createdGroup: string,
+    requestedGroup: string,
+    resolved: string | null,
+  ): Promise<string | null> {
+    if (createdGroup.toLowerCase() === requestedGroup.toLowerCase()) return resolved;
+
     try {
-      return await this.products.productIdForGroup(group);
+      const candidates = await this.products.productIdsForGroup(createdGroup);
+      if (candidates.length === 1) return candidates[0];
+      this.logger.error(
+        `MT5 opened the account in ${createdGroup}, not the requested ${requestedGroup}, and ` +
+          `${candidates.length === 0 ? 'no product' : 'more than one product'} sells that group. ` +
+          'It is recorded with no product; set one on the account.',
+      );
+      return null;
     } catch (error) {
       this.logger.error(
-        `Could not resolve the product for group ${group}; the account is being opened with ` +
-          `no product recorded. ${error instanceof Error ? error.message : String(error)}`,
+        `Could not resolve the product for group ${createdGroup}; the account is being recorded ` +
+          `with no product. ${error instanceof Error ? error.message : String(error)}`,
       );
       return null;
     }
+  }
+
+  private async productForGroup(group: string, chosen?: string): Promise<string | null> {
+    if (chosen) {
+      if (!(await this.products.productSellsGroup(chosen, group))) {
+        throw new ValidationError(
+          `The chosen product does not sell the MT5 group "${group}". Choose a product that ` +
+            'carries this group, or attach the group to it first.',
+        );
+      }
+      return chosen;
+    }
+
+    const candidates = await this.products.productIdsForGroup(group);
+    if (candidates.length <= 1) return candidates[0] ?? null;
+
+    const names = (await this.products.listProducts())
+      .filter((product) => candidates.includes(product.id))
+      .map((product) => product.name);
+    throw new ValidationError(
+      `The MT5 group "${group}" is sold by more than one product (${names.join(', ')}). ` +
+        'Choose which product this account is opened under.',
+    );
   }
 
   /**
@@ -233,6 +293,8 @@ export class Mt5AccountsService {
     input: {
       userId: string;
       group: string;
+      /** Required only when the group is sold by more than one product (0142). */
+      productId?: string;
       leverage?: number;
       environment: 'live' | 'demo';
     },
@@ -266,6 +328,13 @@ export class Mt5AccountsService {
 
     if (!client) throw new NotFoundError('Client not found.');
     this.assertBridge();
+
+    /*
+     * The product BEFORE the bridge: an ambiguous group is refused here, while
+     * nothing exists on MT5 yet, rather than after an account was opened that
+     * the CRM then cannot record.
+     */
+    const productId = await this.productForGroup(input.group, input.productId);
 
     const created = await this.bridge.createAccount({
       group: input.group,
@@ -317,7 +386,7 @@ export class Mt5AccountsService {
          * arrangement, an internal test account, a group added on the server this
          * morning. NULL records that honestly instead of guessing.
          */
-        productId: await this.productForGroup(created.group),
+        productId: await this.recordedProduct(created.group, input.group, productId),
         /* From the group MT5 confirmed, not from the request — see the helper. */
         environment: await this.environmentForGroup(
           created.group,
@@ -438,6 +507,11 @@ export class Mt5AccountsService {
     userId: string;
     environment: 'live' | 'demo';
     group: string;
+    /**
+     * The product the client chose, from the offered pairs (0142). Resolved by
+     * the controller, so it is always one of the products actually offered.
+     */
+    productId?: string;
     /** Validated against the offered ladder by the caller. */
     leverage?: number;
     /** A label for the account. Defaults to the client's own name. */
@@ -547,6 +621,9 @@ export class Mt5AccountsService {
      * NULL also cannot collide, so `trading_accounts_user_name_uq` stops being
      * reachable from here — a client may open any number of accounts.
      */
+    // Before the bridge, for the reason the admin path gives.
+    const productId = await this.productForGroup(input.group, input.productId);
+
     const created = await this.bridge.createAccount({
       group: input.group,
       // The CRM's name for this client, always — the same value and the same
@@ -636,7 +713,7 @@ export class Mt5AccountsService {
          * the catalogue, so this is NULL here only if the group was detached
          * between the picker rendering and the account opening.
          */
-        productId: await this.productForGroup(created.group),
+        productId: await this.recordedProduct(created.group, input.group, productId),
         /* From the group MT5 confirmed, not from the request — see the helper. */
         environment: await this.environmentForGroup(
           created.group,

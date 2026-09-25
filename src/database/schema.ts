@@ -2015,13 +2015,18 @@ export const tradingProductGroups = pgTable(
   },
   (t) => [
     /*
-     * ONE product per group, platform-wide.
-     *
-     * Two products claiming the same group would make "which product is this
-     * account under" unanswerable from the account — and that question is what
-     * decides whose commission it pays.
+     * A group may back SEVERAL products (0142) — but not the same product
+     * twice. `trading_product_groups_group_unique` used to make it unique
+     * platform-wide so "which product is this account under" could be read
+     * off the group; that answer now comes from the product chosen when the
+     * account is opened, recorded on `trading_accounts.product_id`. See the
+     * migration for how each open path chooses.
      */
-    unique('trading_product_groups_group_unique').on(t.mt5Group),
+    uniqueIndex('trading_product_groups_product_group_uq').on(
+      t.productId,
+      sql`lower(${t.mt5Group})`,
+    ),
+    index('trading_product_groups_group_idx').on(sql`lower(${t.mt5Group})`),
     /* One group per product per environment per currency: offering a client two
        rows that both say "Standard · USD · demo" is a choice with no meaning. */
     unique('trading_product_groups_slot_unique').on(t.productId, t.environment, t.currency),
